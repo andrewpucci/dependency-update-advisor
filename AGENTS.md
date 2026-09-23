@@ -8,19 +8,17 @@ conversation history alone is not approval.
 
 ## Current phase
 
-The seven-module map and the copied module specs await human review. There is
-no reviewer implementation, package manifest, workflow, or release yet. The
-next task is to review the map and resolve its module boundaries, then finish
-and review the missing specs. Do not treat the example commands in draft specs
-as executable in this checkout until the corresponding tooling exists.
+See [CONTEXT.md](CONTEXT.md) for the current checkpoint. Do not treat example
+commands in draft specs as executable until the corresponding tooling exists.
 
 ## Sources of truth
 
 - The capability map indexes modules and their approval state.
 - Each `SPEC-*.md` records a module or cross-cutting contract. Record explicit
   approval in the file before planning or implementing that scope.
-- `CONTEXT.md` records current project state and the next handoff; keep it
-  current when a phase completes.
+- `CONTEXT.md` is a one-screen orientation index (aim for 40 lines or fewer).
+  Replace stale status when a phase changes. Link to specs, ADRs, and issues
+  instead of copying decisions or appending session logs.
 - Approved architectural decisions belong in `docs/adr/` when they need a
   durable explanation of why. Create an ADR when a decision is made; do not
   prefill placeholder decisions.
