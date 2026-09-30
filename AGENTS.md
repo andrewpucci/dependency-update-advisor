@@ -2,8 +2,8 @@
 
 This file is project-specific and applies to work in
 `dependency-update-advisor`. Read [CONTEXT.md](CONTEXT.md), the
-[capability map](CAPABILITY-MAP-shared-dependabot-review.md), the relevant
-module spec, and `git status` before changing files. Treat a draft as a draft;
+[capability map](docs/specs/README.md), the relevant module spec, and
+`git status` before changing files. Treat a draft as a draft;
 conversation history alone is not approval.
 
 ## Current phase
@@ -13,15 +13,18 @@ commands in draft specs as executable until the corresponding tooling exists.
 
 ## Sources of truth
 
-- The capability map indexes modules and their approval state.
-- Each `SPEC-*.md` records a module or cross-cutting contract. Record explicit
-  approval in the file before planning or implementing that scope.
+- The [capability map](docs/specs/README.md) indexes modules and their approval
+  state. Keep the map and module specs together in `docs/specs/` when applying
+  a spec-driven workflow.
+- Each `docs/specs/SPEC-*.md` records a module or cross-cutting contract. Index
+  new specs in the map and record explicit approval in the file before planning
+  or implementing that scope.
 - `CONTEXT.md` is a one-screen orientation index (aim for 40 lines or fewer).
   Replace stale status when a phase changes. Link to specs, ADRs, and issues
   instead of copying decisions or appending session logs.
 - Approved architectural decisions belong in `docs/adr/` when they need a
-  durable explanation of why. Create an ADR when a decision is made; do not
-  prefill placeholder decisions.
+  durable explanation of why. Follow the [ADR guide](docs/adr/README.md):
+  create a record when a specific decision is ready, not as a placeholder.
 - Use GitHub Issues for individual implementation tasks. If an approved plan
   needs an ordered working handoff, use `tasks/plan.md` on the working branch
   and link its issues. The plan need not remain after the work is complete.
@@ -44,6 +47,7 @@ commands in draft specs as executable until the corresponding tooling exists.
 
 ## Verification
 
-For documentation changes, run `git diff --check` and inspect the staged diff
-for private consumer details before publishing. Once code exists, run the
-commands documented in the repository and relevant spec before committing.
+For documentation changes, run `npm run lint:md`, `npm run format:check`, and
+`git diff --check`; inspect the staged diff for private consumer details
+before publishing. Once code exists, run the commands documented in the
+repository and relevant spec before committing.

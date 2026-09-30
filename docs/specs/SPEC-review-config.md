@@ -1,7 +1,7 @@
 # Spec: Shared Dependabot Review Configuration
 
-Status: draft for human review. Module: `review-config` in
-`CAPABILITY-MAP-shared-dependabot-review.md`.
+Status: approved for planning, 2026-09-23. Module: `review-config` in
+[the capability map](README.md).
 
 ## Objective
 
@@ -21,8 +21,8 @@ boundaries remain accurate.
 
 The repository configuration selects context, provider, and advisory policy;
 it does not select an evidence collector. In v1, the shared reviewer calls
-GitHub's dependency review REST API where available, preserves manifest and
-workflow diff fallbacks, and adds independent uv evidence. An API error cannot
+GitHub's dependency review REST API where available and runs independent npm,
+Actions, and uv evidence collectors. An API error cannot
 be interpreted as an empty vulnerability result or complete coverage.
 When the comparison API omits a package or is unavailable, the reviewer uses
 the shared bounded advisory lookup and reports unresolved vulnerability
@@ -63,10 +63,11 @@ policy difference, not a regression.
 
 ## Tech Stack
 
-Node.js 24 ESM, JSON, the existing review schemas and policy engine, and a
-strict configuration parser in the shared reviewer. Use the existing
-`.github/dependabot.yml` as read-only data when locating configured ecosystems
-and directories. No executable configuration or repository-local plugin code.
+The shared reviewer uses Node.js 24 ESM with strict TypeScript source, JSON,
+the existing review schemas and policy engine, and a strict configuration
+parser. It reads the existing `.github/dependabot.yml` as read-only data to
+locate configured ecosystems and directories. Configuration cannot contain
+executable code or a local plugin.
 
 ## Commands
 
@@ -77,18 +78,16 @@ npm ci
 npm test -- --run
 npm run lint
 npm run check
+npm run build
 ```
 
-Until extraction, the source repository's config-focused regression command is:
-
-```sh
-vp test run .github/actions-scripts/dependabot-review/config.test.ts
-```
+There is no config-focused regression test in the current source checkout;
+the shared parser and schema tests are required with the first implementation.
 
 ## Project Structure
 
 ```text
-shared repo: src/config.mjs                → parse, default, and validate review config
+shared repo: src/config.ts                → parse, default, and validate review config
 shared repo: src/config.test.ts            → contract and security boundary tests
 shared repo: schemas/review-config-v1.json → published JSON Schema for editors
 consumer: .github/dependabot-review.json  → optional repository-local choices
@@ -121,6 +120,8 @@ fields except `version` are optional:
 }
 ```
 
+### Provider selection
+
 The example shows the contract, not an approved consumer policy. `analysis` is
 required for model-backed review. When present, both `provider` and `model`
 are required. The first release accepts only the provider ID `mistral`; the
@@ -133,6 +134,8 @@ reports analysis as unavailable, without implying that the dependency review
 was complete. An unknown provider or missing credential is a configuration
 error and never falls back to Mistral or another provider.
 
+### Advisory policy
+
 Every named rule is optional and falls back to the shared default when absent.
 Supported rule names are `incompleteEvidence`, `highOrCriticalVulnerability`,
 `moderateOrLowVulnerability`, `incompatibleMigration`, and `applicableCodemod`.
@@ -141,6 +144,11 @@ verdict for a rule replaces its default; independent findings still combine
 using the most restrictive applicable verdict. The comment identifies when a
 local override changed the default recommendation and still displays the
 underlying evidence and coverage status.
+`incompleteEvidence` applies to an assessed decision unit with a visible
+evidence gap. It cannot turn an unassessed unit's `decision_incomplete` state
+into a merge recommendation or a successful review execution status.
+
+### Source excerpts
 
 `sendSourceExcerptsToModel` defaults to `false`. A repository must set it to
 `true` on its trusted default branch to enable bounded source-excerpt
@@ -247,8 +255,8 @@ GitHub and LLM API calls mocked, and assert requests and credentials reach
 only the selected provider. Test that invalid config leaves the managed comment
 unchanged and publishes a failed status on the current head, that a stale head
 cannot receive a current status, and that a status publishing failure fails
-the job. Private-consumer fixtures must include a dependency name on a line with a
-credential-like value and prove the line is dropped before model projection.
+the job. Private-consumer fixtures must include a dependency name on a line
+with a credential-like value and prove the line is dropped before model projection.
 
 ## Boundaries
 
@@ -291,6 +299,5 @@ credential-like value and prove the line is dropped before model projection.
 
 ## Open Questions
 
-- Whether the first implementation should parse Dependabot YAML with a
-  bundled parser or use a narrow, separately validated reader. This is an
-  implementation choice for the plan; the behavior above is required.
+None for the configuration behavior. The implementation plan chooses a
+bounded Dependabot YAML reader and validates it against the parser fixtures.

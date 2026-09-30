@@ -1,6 +1,6 @@
-# Spec: Dependabot review comment experience — 2026-09-23
+# Spec: Dependabot Review Comment Experience
 
-**Status:** Draft revision for the shared reviewer. This spec describes the
+Status: approved for planning, 2026-09-23. This spec describes the
 maintainer-facing comment; the shared workflow spec owns when a comment is
 published and how its current-head status is reported.
 
@@ -18,18 +18,23 @@ substitute for required branch checks.
 
 ## Tech Stack
 
-Deterministic Markdown rendering from validated review data in Node.js ESM,
-with source-adjacent Vitest tests. Use GitHub's native Markdown, links, and
-controlled `<details>` sections for low-priority material. No client-side code,
-new dependency, or external publishing service is required.
+Deterministic Markdown rendering from validated review data in strict
+TypeScript for Node.js 24 ESM, with source-adjacent Vitest tests. Use GitHub's
+native Markdown, links, and controlled `<details>` sections for low-priority
+material. The renderer requires no client-side code, new dependency, or
+external publishing service.
 
 ## Commands
+
+After implementation provides the test, check, and build scripts, validate
+the shared repository with:
 
 ```sh
 npm ci
 npm test -- --run
 npm run lint
 npm run check
+npm run build
 ```
 
 Until extraction, the source repository's focused renderer command is
@@ -38,8 +43,8 @@ Until extraction, the source repository's focused renderer command is
 ## Project Structure
 
 ```text
-SPEC-comment-experience.md                            → maintainer-facing comment contract
-src/reporting.mjs                                     → proposed deterministic renderer
+docs/specs/SPEC-comment-experience.md                 → maintainer-facing comment contract
+src/reporting.ts                                     → proposed deterministic renderer
 src/reporting.test.ts                                 → proposed renderer tests
 source repo: .github/actions-scripts/dependabot-review/ → current parity baseline
 ```
@@ -50,7 +55,7 @@ Render from structured, validated fields. Keep headings plain, sentences
 short, and links descriptive. Escape untrusted text and link targets before
 interpolating them into Markdown.
 
-```js
+```ts
 lines.push(`**Next action:** ${escape(action)}`);
 ```
 

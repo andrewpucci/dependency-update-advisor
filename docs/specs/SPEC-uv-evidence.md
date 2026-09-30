@@ -1,7 +1,7 @@
 # Spec: uv Dependency Evidence
 
-Status: draft for human review. Module: `uv-evidence` in
-`CAPABILITY-MAP-shared-dependabot-review.md`.
+Status: approved for planning, 2026-09-23. Module: `uv-evidence` in
+[the capability map](README.md).
 
 ## Objective
 
@@ -20,10 +20,11 @@ endpoint for Python inventory.
 
 ## Tech Stack
 
-Node.js 24 ESM, bounded retrieval of base and head `pyproject.toml` and
-`uv.lock` blobs, validated TOML data, and the shared review-input and
-coverage schemas. A GitHub global-advisory lookup may supplement vulnerability
-evidence for resolved PyPI package versions. The reviewer does not install
+The collector uses Node.js 24 ESM with strict TypeScript source, bounded
+retrieval of base/head `pyproject.toml` and `uv.lock` blobs, validated TOML
+data, and the shared review-input and coverage schemas. A GitHub
+global-advisory lookup may supplement vulnerability evidence for resolved
+PyPI package versions. The reviewer does not install
 Python dependencies or execute either commit's code.
 
 ## Commands
@@ -35,14 +36,15 @@ npm ci
 npm test -- --run
 npm run lint
 npm run check
+npm run build
 ```
 
 ## Project Structure
 
 ```text
-shared repo: src/evidence/uv.mjs         → validated uv inventory and coverage
+shared repo: src/evidence/uv.ts         → validated uv inventory and coverage
 shared repo: src/evidence/uv.test.ts     → base/head and failure fixtures
-shared repo: src/evidence/advisories.mjs → bounded shared advisory lookup
+shared repo: src/evidence/advisories.ts → bounded shared advisory lookup
 consumer: pyproject.toml               → direct dependencies and extras
 consumer: uv.lock                      → resolved package graph
 ```
@@ -62,6 +64,9 @@ Uncertain classification is explicit rather than guessed.
    syntax, lockfile version, and required fields before comparing. A missing,
    malformed, unsupported, or truncated file produces a bounded coverage
    diagnostic, not an empty inventory or a successful zero-change review.
+   The first implementation must support the lockfile schema used by the
+   initial uv consumer at adoption and record that supported version in
+   parser tests; other versions remain explicitly unsupported until tested.
 2. Compare `pyproject.toml` direct dependencies and all declared optional
    extras with `uv.lock` resolved packages for both commits. Preserve package
    names, versions, sources, markers, and dependency relationships needed to
@@ -126,6 +131,7 @@ incomplete. Network calls are mocked; no test executes PR content.
 
 ## Open Questions
 
-- Which bounded TOML reader and lockfile versions the first implementation
-  will support. The plan may choose these, but unsupported versions must
-  produce incomplete coverage rather than guessed results.
+None for v1 behavior. The plan chooses a bounded TOML reader and records
+the initial consumer's lockfile schema version in tests without publishing
+private consumer paths or fixtures here. Unsupported versions produce
+incomplete coverage rather than guessed results.
