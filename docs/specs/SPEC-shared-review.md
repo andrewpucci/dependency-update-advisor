@@ -1,7 +1,7 @@
 # Spec: Shared Dependabot Review Flow
 
-Status: draft for human review. Module: `shared-review` in
-`CAPABILITY-MAP-shared-dependabot-review.md`.
+Status: approved for planning, 2026-09-23. Module: `shared-review` in
+[the capability map](README.md).
 
 ## Objective
 
@@ -19,12 +19,12 @@ to their own modules.
 
 ## Tech Stack
 
-GitHub Actions `workflow_run` and `workflow_call`, a public reusable workflow
-pinned to a full commit SHA by each caller, Node.js 24 ESM, GitHub REST API,
-and a GitHub App installation token with only the permissions required to
-manage the PR comment and a commit status. GitHub documents that a
-[`workflow_run` job can access secrets and write tokens](https://docs.github.com/en/actions/reference/workflows-and-actions/events-that-trigger-workflows),
-and that [the caller can pin a reusable workflow to a SHA](https://docs.github.com/en/actions/how-tos/reuse-automations/reuse-workflows).
+The flow uses GitHub Actions `workflow_run` and `workflow_call`, with each
+caller pinning the public reusable workflow to a full commit SHA. The action
+uses Node.js 24 ESM, strict TypeScript source, GitHub REST API, and a GitHub
+App installation token limited to the PR comment and commit status. GitHub
+documents [`workflow_run` access to secrets and write tokens](https://docs.github.com/en/actions/reference/workflows-and-actions/events-that-trigger-workflows)
+and [SHA pinning for reusable workflows](https://docs.github.com/en/actions/how-tos/reuse-automations/reuse-workflows).
 
 ## Commands
 
@@ -35,13 +35,16 @@ npm ci
 npm test -- --run
 npm run lint
 npm run check
+npm run build
 ```
 
 Until extraction, run focused workflow and event regression tests in the
 source repository with:
 
 ```sh
-vp test run .github/actions-scripts/dependabot-review/workflow.test.js .github/actions-scripts/dependabot-review/event.test.ts
+vp test run \
+  .github/actions-scripts/dependabot-review/workflow.test.js \
+  .github/actions-scripts/dependabot-review/event.test.ts
 ```
 
 ## Project Structure
@@ -49,14 +52,25 @@ vp test run .github/actions-scripts/dependabot-review/workflow.test.js .github/a
 ```text
 shared repo: .github/workflows/dependabot-review.yml → workflow_call entry point
 shared repo: .github/actions/dependabot-review/      → action at the workflow's commit
-shared repo: src/event.mjs                            → CI run and PR-head binding
-shared repo: src/status.mjs                           → current-head review status
-shared repo: src/review.mjs                           → orchestration and comment handoff
+shared repo: src/index.ts                            → action entry point
+shared repo: src/event.ts                            → CI run and PR-head binding
+shared repo: src/status.ts                           → current-head review status
+shared repo: src/review.ts                           → orchestration and comment handoff
 shared repo: src/*.test.ts                            → event, status, and workflow tests
+shared repo: .github/actions/dependabot-review/dist/index.js → committed action bundle
 consumer: .github/workflows/dependabot-review.yml   → minimal workflow_run caller
 ```
 
 ## Code Style and Workflow Contract
+
+Keep reviewer source and tests in TypeScript. Run strict TypeScript checking
+over both through `npm run check`; this is a build gate, not a substitute for
+runtime validation of GitHub, config, or model data. Build a self-contained
+JavaScript action from the trusted TypeScript entry point, commit its output,
+and have `action.yml` use `runs.using: node24` and `runs.main: dist/index.js`.
+CI must fail when the committed bundle differs from a fresh build. The
+bundled action must not require a TypeScript loader or dependency install on
+the consumer runner. See [ADR 0001](../adr/0001-typescript-source.md).
 
 Use immutable repository, workflow-run, PR number, and full head-SHA
 identities. Keep event parsing pure and validate data again before every
@@ -136,6 +150,11 @@ Never load the action from a moving branch or from a PR checkout.
    response context; neither can be treated as an empty dependency change
    set. Keep secrets, source excerpts, raw model payloads, and untrusted PR
    text out of logs. [GitHub secret redaction is not guaranteed](https://docs.github.com/en/actions/concepts/security/secrets).
+10. Invoke every applicable npm, Actions, and uv evidence collector and retain
+    its coverage separately in the validated review packet. A mixed PR may
+    combine assessments, but complete evidence from one ecosystem cannot
+    conceal an unresolved change or lookup in another. Only validated,
+    bounded evidence reaches the analysis-provider contract.
 
 ## Testing Strategy
 
@@ -148,7 +167,9 @@ current comment, a completed `do_not_merge` recommendation, and a successful
 current-head comment. Assert the status
 SHA and context in every case. Verify SHA-pinned callers, `$/.github/actions`
 resolution, named secrets, minimum permissions, and absence of PR checkout,
-artifact downloads, cache restore, and untrusted script execution.
+artifact downloads, cache restore, and untrusted script execution. Include a
+mixed npm/Actions fixture with complete npm evidence and incomplete Actions
+coverage; the combined result must remain incomplete.
 
 ## Boundaries
 

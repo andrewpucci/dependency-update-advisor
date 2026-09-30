@@ -1,0 +1,25 @@
+{
+  "globs": ["**/*.md"],
+  "ignores": [".context/**", "node_modules/**"],
+  "fix": false,
+  "config": {
+    // Oxfmt formats syntax; markdownlint checks structure and preserved prose.
+    "default": false,
+    "MD001": true,
+    "MD013": {
+      "tables": false,
+      "code_blocks": false,
+    },
+    "MD024": true,
+    "MD025": true,
+    "MD036": true,
+    "MD040": true,
+    "MD041": true,
+    "MD042": true,
+    "MD045": true,
+    "MD051": true,
+    "MD052": true,
+    "MD056": true,
+    "MD059": true,
+  },
+}

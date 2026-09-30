@@ -6,9 +6,10 @@ security and compatibility evidence, show what remains unknown, and give a
 maintainer a concrete next action. Each consumer keeps its own review policy
 and context configuration.
 
-**Status:** Design draft. This repository has no runnable reviewer or published
-workflow yet. Do not point consumer repositories at it until implementation,
-parity checks, and the staged cutover are complete.
+**Status:** Specification phase. The module specs are approved for planning.
+The implementation plan will be published separately. This repository has no
+runnable reviewer or published workflow. Do not point consumer repositories
+at it until implementation, parity checks, and the staged cutover are complete.
 
 ## V1 scope
 
@@ -27,11 +28,10 @@ Other update bots and code hosts are possible later additions, not v1 scope.
 ## Design documents
 
 Start with [project context](CONTEXT.md) and the
-[capability map](CAPABILITY-MAP-shared-dependabot-review.md). The map indexes
-the draft module specs and identifies the three still to be written.
-[Comment experience](SPEC-comment-experience.md) defines the reader-facing
-review brief. These files are working specifications; their status lines show
-what still needs approval.
+[capability map](docs/specs/README.md). The map indexes the eight approved
+module specs and supporting contract in `docs/specs/`.
+[Comment experience](docs/specs/SPEC-comment-experience.md) defines the
+reader-facing review brief.
 
 The existing reviewer in
 [`andrewpucci.com`](https://github.com/andrewpucci/andrewpucci.com) is the
@@ -40,7 +40,14 @@ passed the documented parity and cutover gates.
 
 ## Working on this project
 
-Read [AGENTS.md](AGENTS.md) for repository rules and the next handoff. No
-package manager commands are available in this repository yet. Add build,
-lint, test, and release commands with the first implementation slice, then
-update this README and the specs to match.
+Read [CONTRIBUTING.md](CONTRIBUTING.md) for contribution practices and
+[AGENTS.md](AGENTS.md) for agent-specific rules. With Node.js 24, install the
+pinned local toolchain using `npm ci`. Run `npm run lint` for code linting and
+Markdown linting, or `npm run lint:md` for Markdown alone. Run
+`npm run format:check` to check Markdown, config, and code formatting, and
+`npm run format` to apply formatting. Type-check, test, and build commands
+arrive with the reviewer implementation; none is available yet.
+
+Oxfmt formats Markdown syntax while preserving prose line breaks.
+markdownlint-cli2 checks document structure, links, image alt text, code-fence
+labels, and prose length without changing files.

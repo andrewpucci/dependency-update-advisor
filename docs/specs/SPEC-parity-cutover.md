@@ -1,14 +1,15 @@
 # Spec: Shared Reviewer Parity and Cutover
 
-Status: draft for human review. Module: `parity-cutover` in
-`CAPABILITY-MAP-shared-dependabot-review.md`.
+Status: approved for planning, 2026-09-23. Module: `parity-cutover` in
+[the capability map](README.md).
 
 ## Objective
 
 Adopt the shared Dependabot reviewer in four initial consumers, then retire
-the source repository's current reviewer only after the shared flow has demonstrated comparable review
-fidelity and visible current-head failure behavior. A repository with no
-explicit analysis configuration is not cut over by default.
+the source repository's current reviewer only after the shared flow has
+demonstrated comparable review fidelity and visible current-head failure
+behavior. A repository with no explicit analysis configuration is not cut over
+by default.
 
 ## Tech Stack
 
@@ -21,13 +22,15 @@ a required branch check in v1.
 ## Commands
 
 In each consumer repository, run its documented lint, type-check, and test
-commands before changing its caller. In the shared repository run:
+commands before changing its caller. After implementation provides the test,
+check, and build scripts, run these commands in the shared repository:
 
 ```sh
 npm ci
 npm test -- --run
 npm run lint
 npm run check
+npm run build
 ```
 
 In the public source repository, run the existing no-write comparison on representative
@@ -66,8 +69,9 @@ resolves at the called workflow's commit; callers do not select a moving tag.
    repository. An absent config or provider remains a secure runtime default,
    but cannot satisfy this cutover gate because analysis would be unavailable.
 2. For a private uv consumer, keep the `uv` Dependabot entry and `uv.lock`.
-   Before enabling source excerpts, review the exact `context.excerptFiles` allowlist and a
-   no-send model-packet sample. Record the allowed Python, JavaScript, and
+   Before enabling source excerpts, review the exact
+   `context.excerptFiles` allowlist and a no-send model-packet sample. Record
+   the allowed Python, JavaScript, and
    Svelte source-line shape, 500-character bound, exclusions, Mistral
    destination, and residual risk that a checked-in line can contain a
    sensitive value despite screening. Do not rely on GitHub log redaction,
@@ -87,9 +91,9 @@ resolves at the called workflow's commit; callers do not select a moving tag.
 5. Include the observed failure cases: public source PR #302's omitted
    `github/codeql-action/upload-sarif` action in the comparison API, PR
    #307's 20 unpaired npm additions, and a sanitized private uv scenario with
-   an unavailable dependency comparison endpoint. An introduced-vulnerability fixture must
-   verify nonempty advisory findings, since the public action pilot did not
-   exercise that case.
+   an unavailable dependency comparison endpoint. An introduced-vulnerability
+   fixture must verify nonempty advisory findings, since the public action
+   pilot did not exercise that case.
 6. If any required evidence source fails or a package cannot be classified,
    publish explicit incomplete coverage. A private-repo 403 or empty uv graph
    cannot become an unqualified zero-change or zero-vulnerability review.
@@ -97,8 +101,9 @@ resolves at the called workflow's commit; callers do not select a moving tag.
    but not erase the underlying finding or coverage status.
 7. Adopt one repository at a time. Keep a reversible caller SHA and the
    previous implementation available until current-head success and failure
-   paths pass in that repository. Retire the source repository's local workflow and
-   scripts only after all four adoption records and the parity matrix pass.
+   paths pass in that repository. Retire the source repository's local
+   workflow and scripts only after all four adoption records and the parity
+   matrix pass.
    A failed cutover restores the prior caller or local workflow without
    rewriting Git history.
 
@@ -129,8 +134,9 @@ until the parity matrix is reviewed.
    their callers use a full shared-workflow SHA.
 2. Every adopter proves a current-head success and a visible failed advisory
    status for an invalid config, with the older comment preserved.
-3. The parity matrix covers all four ecosystems and the observed API gaps,
-   with every package change assessed or explicitly marked incomplete.
+3. The parity matrix covers npm, GitHub Actions, and uv, plus the observed
+   API gaps, with every dependency change assessed or explicitly marked
+   incomplete and each ecosystem's coverage visible in mixed PRs.
 4. The current reviewer is retired from the source repository only after all
    adoption and parity gates pass; rollback remains documented and tested.
 

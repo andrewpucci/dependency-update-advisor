@@ -1,0 +1,19 @@
+{
+  "name": "dependency-update-advisor",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "lint": "npm run lint:code && npm run lint:md",
+    "lint:code": "vp lint",
+    "lint:md": "markdownlint-cli2",
+    "format": "vp fmt",
+    "format:check": "vp fmt --check"
+  },
+  "devDependencies": {
+    "markdownlint-cli2": "0.23.3",
+    "vite-plus": "1.0.0"
+  },
+  "engines": {
+    "node": ">=24.11.0 <25"
+  }
+}
