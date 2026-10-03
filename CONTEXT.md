@@ -8,18 +8,19 @@ for the existing reviewer in
 The [scenario handoff](tests/parity/scenarios.md) records known gaps and
 required shared behavior. No shared reviewer code or consumer workflow has
 been added; the old reviewer remains active. Local code and Markdown lint
-and format checks are available.
+and format checks, strict TypeScript checking, and Node tests are available.
 
 The [eight-module capability map](docs/specs/README.md)
 and all eight module specs are approved for planning. The
 [comment-experience contract](docs/specs/SPEC-comment-experience.md) is also approved.
 The [B1 specification](docs/specs/SPEC-extraction-baseline.md) is approved.
 The [B2 local-tooling specification](docs/specs/SPEC-local-tooling.md) is approved
-for execution; local-toolchain implementation is in progress.
+for execution; [B2 verification](docs/verification/B2-local-tooling.md) records
+the implemented revision and clean-checkout results.
 
 ## Next action
 
-Complete and verify the B2 local tooling for issue #3 using the working plan.
+Review and publish B2's verified local tooling, then select B3 CI enforcement.
 Preserve the documented source fixes and coverage gaps during extraction.
 
 ## Where details live
