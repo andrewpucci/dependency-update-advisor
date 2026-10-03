@@ -8,6 +8,10 @@ agent.
 
 ## Design and review
 
+- Use the [PR body template](.github/pull_request_template.md) to state the
+  change, contract, validation, and risks. Before completing a review, apply
+  the relevant checks in the [review guide](docs/pr-review.md). Use its
+  summary template to report findings.
 - Treat every spec marked `draft` as a proposal. Record explicit approval in
   that file before planning or implementing its scope.
 - Keep each change within an approved module boundary. Update the relevant
@@ -47,6 +51,14 @@ npm ci
 npm run lint
 npm run format:check
 ```
+
+The [CI workflow](.github/workflows/ci.yml) runs these checks on every pull
+request targeting `main` and every push to `main`. Its `Repository quality`
+check must pass before merging, and the PR branch must be up to date with
+`main`. The [main ruleset](https://github.com/andrewpucci/dependency-update-advisor/rules)
+also requires pull requests and resolved review threads, blocks force pushes
+and deletion, and has no bypass actors. No approving reviews are required.
+The planned `dependabot-review` status remains advisory.
 
 Oxfmt formats Markdown syntax through `npm run format` and preserves prose
 line breaks. markdownlint-cli2 checks structure, links, and prose length but
