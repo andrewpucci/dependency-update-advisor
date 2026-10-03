@@ -80,7 +80,7 @@ No audit repair or install-script approval was performed as part of B2.
 These warnings do not turn the successful command exit into a failed result,
 and they remain unresolved rather than being omitted from the evidence.
 
-The user accepted a temporary remediation deferral on 2026-10-03.
+Remediation is temporarily deferred as of 2026-10-03.
 [Issue #33](https://github.com/andrewpucci/dependency-update-advisor/issues/33)
 tracks the single underlying
 [braces advisory](https://github.com/advisories/GHSA-vfj7-8cjw-p6xm), its
