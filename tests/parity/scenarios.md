@@ -63,7 +63,7 @@ only `vite-plus` and `wrangler`. These path-level counts are not GitHub
 comparison records and do not reproduce the pilot's 20-addition observation.
 
 Baseline behavior: the committed
-[`dependencyUpdates` filter](https://github.com/andrewpucci/andrewpucci.com/blob/0f767f27c92f55fc5aecf1cc93cacb3897d6290b/.github/actions-scripts/dependabot-review/inputs.mjs#L232)
+[`dependencyUpdates` filter](https://github.com/andrewpucci/andrewpucci.com/blob/0f767f27c92f55fc5aecf1cc93cacb3897d6290b/.github/actions-scripts/dependabot-review/inputs.mjs#L228)
 requires both `from` and `to`. Lockfile coverage classifies only supplied
 updates; it does not independently inventory unpaired additions or removals.
 A synthetic probe supplied exactly 20 added-only npm comparison records and
@@ -123,9 +123,10 @@ coverage remains a required synthetic extraction/parity scenario.
 
 Run this equivalent no-write command from an isolated checkout of the
 [selected baseline SHA](README.md). The workflow patches are the public
-PR #302 `uses` diffs trimmed to changed action lines. The version descriptions
-and four comparison records are synthetic; all upstream requests return mocked
-404 responses. No external request or write occurs.
+PR #302 `uses` diffs trimmed to changed action lines, and the three version
+descriptions are copied from its public body. The four comparison records are
+synthetic; all upstream requests return mocked 404 responses. No external
+request or write occurs.
 
 ```sh
 node --input-type=module <<'JS'
