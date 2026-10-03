@@ -80,6 +80,16 @@ No audit repair or install-script approval was performed as part of B2.
 These warnings do not turn the successful command exit into a failed result,
 and they remain unresolved rather than being omitted from the evidence.
 
+The user accepted a temporary remediation deferral on 2026-10-03.
+[Issue #33](https://github.com/andrewpucci/dependency-update-advisor/issues/33)
+tracks the single underlying
+[braces advisory](https://github.com/advisories/GHSA-vfj7-8cjw-p6xm), its
+dependency paths, limited current lint exposure, and absence of a published
+patch. Review is due **2026-10-10**, or earlier if a fix is released or lint
+inputs change. Audit results remain visible; no dependency or audit-policy
+change was made. The issue records the recheck at
+`ff7b55654a95d964e05eb2ecb32963c4f6fffdb8` separately from B2's original run.
+
 ## Discovery and Failure Probes
 
 These checks ran in the isolated checkout of the same implemented revision.
