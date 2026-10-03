@@ -77,6 +77,8 @@ gaps and an introduced vulnerability before parity is claimed.
 - [Parity and cutover](SPEC-parity-cutover.md) — approved for planning.
 - [Extraction baseline](SPEC-extraction-baseline.md) — approved supporting
   contract for `parity-cutover`, scoped to issue #2 (B1).
+- [Local tooling](SPEC-local-tooling.md) — approved supporting contract for
+  B2 execution in `shared-review`, scoped to issue #3.
 
 The source repository's existing Dependabot specs and reviewer code provide
 the fidelity baseline. Private consumer policy, exact excerpt allowlists,

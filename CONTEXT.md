@@ -13,12 +13,13 @@ and format checks are available.
 The [eight-module capability map](docs/specs/README.md)
 and all eight module specs are approved for planning. The
 [comment-experience contract](docs/specs/SPEC-comment-experience.md) is also approved.
-The [B1 specification](docs/specs/SPEC-extraction-baseline.md) and
-[execution plan](tasks/plan.md) are approved.
+The [B1 specification](docs/specs/SPEC-extraction-baseline.md) is approved.
+The [B2 local-tooling specification](docs/specs/SPEC-local-tooling.md) is approved
+for execution; local-toolchain implementation is in progress.
 
 ## Next action
 
-Review and publish the B1 evidence, then select the next implementation issue.
+Complete and verify the B2 local tooling for issue #3 using the working plan.
 Preserve the documented source fixes and coverage gaps during extraction.
 
 ## Where details live
@@ -30,8 +31,8 @@ Preserve the documented source fixes and coverage gaps during extraction.
   and packaged JavaScript action choice. [ADR 0002](docs/adr/0002-privileged-review-boundary.md)
   and [ADR 0003](docs/adr/0003-immutable-files-for-dependency-inventory.md)
   record the trusted review boundary and dependency inventory source.
-- GitHub Issues track implementation work. A working `tasks/plan.md` may link
-  issues when an ordered handoff is useful.
+- GitHub Issues track implementation work. The working `tasks/plan.md` is
+  gitignored and transient per PR; durable contracts and evidence stay tracked.
 - Private consumer evidence and configuration stay in their own repositories.
 
 Update this checkpoint in place when the phase changes. Keep detailed decisions,
