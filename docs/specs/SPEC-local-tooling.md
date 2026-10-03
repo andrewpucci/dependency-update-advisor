@@ -53,7 +53,7 @@ downloaded on demand. Record the actual Node.js and npm versions used.
 
 ## Commands
 
-These are required after B2 implementation, not all available today:
+The implemented B2 toolchain provides these commands:
 
 ```sh
 npm ci
@@ -69,7 +69,7 @@ or through a repository-local script. `strict: true` must also be configured.
 Keep the existing lint and format commands. No build or development server
 command is introduced by this scope.
 
-For this documentation draft, use the existing checks:
+For changes to this specification, use the documentation checks:
 
 ```sh
 npm run lint:md
@@ -179,6 +179,6 @@ unchanged; the action build remains a later packaging scope.
 
 ## Open Questions
 
-None requiring a product decision. Exact compiler/type-declaration pins and
-compatible ESM compiler options are planning choices to verify and record.
+None. The [B2 verification record](../verification/B2-local-tooling.md) records
+the selected pins, compiler configuration adjustment, and command outcomes.
 The user authorized the B2 implementation plan through `as-build auto`.
