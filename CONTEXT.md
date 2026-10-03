@@ -2,22 +2,24 @@
 
 ## Current checkpoint
 
-This public repository is in the specification phase. It will house a shared
-reviewer for dependency update PRs. No reviewer code or consumer workflow has
-been added. Local code and Markdown lint and format checks are available. The
-existing reviewer in
-[`andrewpucci.com`](https://github.com/andrewpucci/andrewpucci.com) is the
-running baseline; inspect its current checkout before extraction.
+The [B1 extraction baseline](tests/parity/README.md) is established locally
+for the existing reviewer in
+[`andrewpucci.com`](https://github.com/andrewpucci/andrewpucci.com).
+The [scenario handoff](tests/parity/scenarios.md) records known gaps and
+required shared behavior. No shared reviewer code or consumer workflow has
+been added; the old reviewer remains active. Local code and Markdown lint
+and format checks are available.
 
 The [eight-module capability map](docs/specs/README.md)
 and all eight module specs are approved for planning. The
 [comment-experience contract](docs/specs/SPEC-comment-experience.md) is also approved.
-The implementation plan will be published separately from this scaffold.
+The [B1 specification](docs/specs/SPEC-extraction-baseline.md) and
+[execution plan](tasks/plan.md) are approved.
 
 ## Next action
 
-Land the scaffold, then publish the approved implementation plan and establish
-the exact source baseline before extracting reviewer code.
+Review and publish the B1 evidence, then select the next implementation issue.
+Preserve the documented source fixes and coverage gaps during extraction.
 
 ## Where details live
 
