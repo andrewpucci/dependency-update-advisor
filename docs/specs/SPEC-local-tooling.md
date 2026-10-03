@@ -3,8 +3,8 @@
 Status: approved for B2 execution, 2026-10-03. Supporting contract for `shared-review`
 in [the capability map](README.md), scoped to
 [issue #3: B2](https://github.com/andrewpucci/dependency-update-advisor/issues/3).
-Approval: the user requested `as-plan` and then `as-build auto` for this
-specification and its presented plan on 2026-10-03, authorizing execution.
+Approval: B2's specification and implementation plan were approved for
+execution on 2026-10-03.
 The approved [shared-review contract](SPEC-shared-review.md) and
 [ADR 0001](../adr/0001-typescript-source.md) remain authoritative.
 
@@ -25,8 +25,7 @@ their existing scopes. No action build is required for B2.
 
 - The attached issue and live GitHub issue agree on the command sequence and
   strict checking of both source and tests.
-- The user selected Vitest through the existing pinned Vite+ toolchain on
-  2026-10-03. This selects the runner; it does not approve this specification.
+- Vitest runs through the existing pinned Vite+ toolchain.
 - At drafting revision `01fa737238959d19dd3039475f85a33c3f3b4270`, the
   repository has no reviewer source, TypeScript configuration, or `check`,
   `test`, or `build` scripts. `tests/parity/` contains baseline documentation.
@@ -181,4 +180,3 @@ unchanged; the action build remains a later packaging scope.
 
 None. The [B2 verification record](../verification/B2-local-tooling.md) records
 the selected pins, compiler configuration adjustment, and command outcomes.
-The user authorized the B2 implementation plan through `as-build auto`.
