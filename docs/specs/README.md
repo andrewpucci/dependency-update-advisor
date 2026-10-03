@@ -75,6 +75,8 @@ gaps and an introduced vulnerability before parity is claimed.
 - [Repository adoption](SPEC-repo-adoption.md) — approved for planning.
 - [Comment experience](SPEC-comment-experience.md) — approved supporting contract.
 - [Parity and cutover](SPEC-parity-cutover.md) — approved for planning.
+- [Extraction baseline](SPEC-extraction-baseline.md) — approved supporting
+  contract for `parity-cutover`, scoped to issue #2 (B1).
 
 The source repository's existing Dependabot specs and reviewer code provide
 the fidelity baseline. Private consumer policy, exact excerpt allowlists,
