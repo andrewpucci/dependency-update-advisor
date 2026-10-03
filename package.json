@@ -3,6 +3,8 @@
   "private": true,
   "type": "module",
   "scripts": {
+    "check": "tsc --project tsconfig.json --noEmit",
+    "test": "vp test",
     "lint": "npm run lint:code && npm run lint:md",
     "lint:code": "vp lint",
     "lint:md": "markdownlint-cli2",
@@ -10,7 +12,9 @@
     "format:check": "vp fmt --check"
   },
   "devDependencies": {
+    "@types/node": "24.19.1",
     "markdownlint-cli2": "0.23.3",
+    "typescript": "7.0.2",
     "vite-plus": "1.0.0"
   },
   "engines": {
