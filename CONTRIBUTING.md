@@ -8,6 +8,10 @@ agent.
 
 ## Design and review
 
+- Use the [PR body template](.github/pull_request_template.md) to state the
+  change, contract, validation, and risks. Before completing a review, apply
+  the relevant checks in the [review guide](docs/pr-review.md). Use its
+  summary template to report findings.
 - Treat every spec marked `draft` as a proposal. Record explicit approval in
   that file before planning or implementing its scope.
 - Keep each change within an approved module boundary. Update the relevant
