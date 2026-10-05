@@ -1,7 +1,7 @@
 # Contributing to Dependency Update Advisor
 
-This repository is public and currently contains specifications, not a runnable
-reviewer. Start with [CONTEXT.md](CONTEXT.md), the
+This public repository contains specifications and local validation tooling,
+but no runnable shared reviewer. Start with [CONTEXT.md](CONTEXT.md), the
 [capability map](docs/specs/README.md), and the spec for
 the area you want to change. Follow [AGENTS.md](AGENTS.md) when using a coding
 agent.
@@ -43,14 +43,23 @@ inspect the diff for private consumer details. Before publishing, inspect the
 staged diff as well. Report the exact commands and revision checked; do not
 claim tests that were not run.
 
-Node.js 24, pinned Vite+, and markdownlint-cli2 provide the current checks.
-`npm run lint` runs code and Markdown linting:
+With Node.js 24 (`>=24.11.0 <25`), run the full local and CI sequence using
+the pinned repository toolchain:
 
 ```sh
 npm ci
 npm run lint
 npm run format:check
+npm run check
+npm test -- --run
 ```
+
+`npm ci` installs the committed lockfile. `npm run lint` runs code and
+Markdown linting. `npm run format:check` checks formatting without changing
+files. `npm run check` invokes the strict TypeScript compiler with `noEmit`
+over source, tests, and tool configuration. `npm test -- --run` executes
+the Node test suite once through Vite+; `--run` avoids watch mode. These
+four validation commands do not repair or rewrite tracked files.
 
 The [CI workflow](.github/workflows/ci.yml) runs these checks on every pull
 request targeting `main` and every push to `main`. Its `Repository quality`
@@ -60,28 +69,18 @@ also requires pull requests and resolved review threads, blocks force pushes
 and deletion, and has no bypass actors. No approving reviews are required.
 The planned `dependabot-review` status remains advisory.
 
-Oxfmt formats Markdown syntax through `npm run format` and preserves prose
-line breaks. markdownlint-cli2 checks structure, links, and prose length but
-does not fix files; its line-length rule excludes tables and code blocks.
-The foundation slice will add strict TypeScript checking and tests; action
-packaging will add the build script. The expected sequence after those slices
-is:
+CI logs the actual checkout SHA and Node/npm versions before validation and
+verifies that the checkout matches the event SHA. Pull-request CI keeps the
+default merge-commit checkout; it tests integration with `main`. Record that
+tested merge SHA separately from the PR head when reporting verification.
 
-```sh
-npm ci
-npm run lint
-npm run format:check
-npm run check
-npm test -- --run
-npm run build
-```
+Use `npm run format` to apply formatting locally. Oxfmt formats Markdown
+syntax and preserves prose line breaks. markdownlint-cli2 checks structure,
+links, and prose length without fixing files; its line-length rule excludes
+tables and code blocks.
 
-The `check`, `test`, and `build` commands are not available in this repository
-yet. `npm run check` must include strict TypeScript compiler checking of source
-and tests. Once the action exists, `npm run build` must reproduce its committed
-JavaScript bundle, and CI must check that bundle for drift. Run the focused
-tests and other checks named by the relevant approved spec. CI should run the
-same checks before a change is merged.
-
-Confirm the documented commands as the foundation and action packaging work
-lands.
+No build command is available yet. A1 adds `npm run build` once the action
+entry point exists, along with CI enforcement that a fresh build reproduces
+the committed JavaScript bundle without drift. Until then, run the focused
+tests and other checks named by the relevant approved spec, without invoking
+an unavailable build command.

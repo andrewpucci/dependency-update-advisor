@@ -6,10 +6,10 @@ security and compatibility evidence, show what remains unknown, and give a
 maintainer a concrete next action. Each consumer keeps its own review policy
 and context configuration.
 
-**Status:** Specification phase. The module specs are approved for planning.
-The implementation plan will be published separately. This repository has no
-runnable reviewer or published workflow. Do not point consumer repositories
-at it until implementation, parity checks, and the staged cutover are complete.
+**Status:** Foundation tooling is available; the module specs are approved
+for planning. This repository has no runnable shared reviewer or published
+reusable review workflow. Do not point consumer repositories at it until
+implementation, parity checks, and the staged cutover are complete.
 
 ## V1 scope
 
@@ -41,12 +41,25 @@ passed the documented parity and cutover gates.
 ## Working on this project
 
 Read [CONTRIBUTING.md](CONTRIBUTING.md) for contribution practices and
-[AGENTS.md](AGENTS.md) for agent-specific rules. With Node.js 24, install the
-pinned local toolchain using `npm ci`. Run `npm run lint` for code linting and
-Markdown linting, or `npm run lint:md` for Markdown alone. Run
-`npm run format:check` to check Markdown, config, and code formatting, and
-`npm run format` to apply formatting. Type-check, test, and build commands
-arrive with the reviewer implementation; none is available yet.
+[AGENTS.md](AGENTS.md) for agent-specific rules. With Node.js 24
+(`>=24.11.0 <25`), run the same sequence as repository CI:
+
+```sh
+npm ci
+npm run lint
+npm run format:check
+npm run check
+npm test -- --run
+```
+
+These commands install the pinned toolchain, lint code and Markdown, check
+formatting, strictly type-check TypeScript source and tests without emitting
+files, and run Node tests once. Use `npm run lint:md` for Markdown alone.
+`npm run format:check` checks Markdown, config, and code without changing
+files; use `npm run format` to apply formatting locally.
+
+The action build and committed-bundle integrity gate arrive with A1 once an
+action entry point exists. No build command is available yet.
 
 Oxfmt formats Markdown syntax while preserving prose line breaks.
 markdownlint-cli2 checks document structure, links, image alt text, code-fence
