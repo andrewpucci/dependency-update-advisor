@@ -20,8 +20,8 @@ the implemented revision and clean-checkout results.
 
 ## Next action
 
-Review and publish B2's verified local tooling, then select B3 CI enforcement.
-Preserve the documented source fixes and coverage gaps during extraction.
+Execute the approved B3 handoff in `tasks/plan.md` for issue #4.
+The [B3 CI contract](docs/specs/SPEC-ci-enforcement.md) defines its gates.
 
 ## Where details live
 
