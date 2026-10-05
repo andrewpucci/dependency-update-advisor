@@ -79,6 +79,8 @@ gaps and an introduced vulnerability before parity is claimed.
   contract for `parity-cutover`, scoped to issue #2 (B1).
 - [Local tooling](SPEC-local-tooling.md) — approved supporting contract for
   B2 execution in `shared-review`, scoped to issue #3.
+- [CI enforcement](SPEC-ci-enforcement.md) — approved supporting contract for
+  B3 execution in `shared-review`, scoped to issue #4.
 
 The source repository's existing Dependabot specs and reviewer code provide
 the fidelity baseline. Private consumer policy, exact excerpt allowlists,
