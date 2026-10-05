@@ -7,8 +7,8 @@ for the existing reviewer in
 [`andrewpucci.com`](https://github.com/andrewpucci/andrewpucci.com).
 The [scenario handoff](tests/parity/scenarios.md) records known gaps and
 required shared behavior. No shared reviewer code or consumer workflow has
-been added; the old reviewer remains active. Local code and Markdown lint
-and format checks, strict TypeScript checking, and Node tests are available.
+been added; the old reviewer remains active. Repository CI now enforces lint,
+formatting, strict TypeScript checking, and finite Node tests.
 
 The [eight-module capability map](docs/specs/README.md)
 and all eight module specs are approved for planning. The
@@ -20,8 +20,8 @@ the implemented revision and clean-checkout results.
 
 ## Next action
 
-Execute the approved B3 handoff in `tasks/plan.md` for issue #4.
-The [B3 CI contract](docs/specs/SPEC-ci-enforcement.md) defines its gates.
+Review the [B3 verification](docs/verification/B3-ci-enforcement.md).
+Then select the next approved foundation task; action packaging remains A1.
 
 ## Where details live
 
