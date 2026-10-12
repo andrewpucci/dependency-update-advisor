@@ -1,6 +1,7 @@
 # Spec: T1 CI Event and Current PR Head Verification
 
-Status: approved for T1 execution, 2026-10-12. Supporting contract for `shared-review`
+Status: approved for T1 execution, 2026-10-12; source implemented on working
+branch `issue-8`, pending merge. Supporting contract for `shared-review`
 in [the capability map](README.md), scoped to
 [issue #8: T1](https://github.com/andrewpucci/dependency-update-advisor/issues/8).
 Approval: the user invoked `as-build auto` on 2026-10-12 to execute the complete
@@ -40,9 +41,9 @@ their write obligations live in the [publication handoff](#publication-handoff).
 
 ## Inputs and Decisions
 
-- The attached issue and live issue #8 agree. The
-  [contributor checks](../../CONTRIBUTING.md#checks) exist; the event verifier
-  and shared reviewer workflow do not yet exist.
+- The [event verifier and freshness operation](../../src/event.ts) are
+  implemented on `issue-8`. The [verification issue](https://github.com/andrewpucci/dependency-update-advisor/issues/62)
+  records revision-specific checks; no shared reviewer workflow exists.
 - The existing capability map already places this responsibility in
   `shared-review`; no new module or capability-map approval is needed.
 - Current prerequisites: B1–B3 and C1–C3 are complete and merged into `main`.
@@ -362,8 +363,8 @@ network transport.
 ## Project Structure
 
 ```text
-src/event.ts                           → proposed validation and freshness boundary
-src/event.test.ts                      → proposed synthetic event/API/replay fixtures
+src/event.ts                           → validation and freshness boundary
+src/event.test.ts                      → synthetic event/API/replay fixtures
 docs/specs/SPEC-event-verification.md   → this T1 supporting contract
 docs/specs/README.md                    → spec index and approval state
 ```

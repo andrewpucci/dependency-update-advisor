@@ -5,25 +5,26 @@
 The [C1 config parser and schema](docs/specs/SPEC-config-parser.md),
 [C2 source-context boundary](docs/specs/SPEC-source-context.md), and
 [C3 advisory policy](docs/specs/SPEC-advisory-policy.md) are merged into `main`.
-C3 includes ten configurable rules, a fixed malware hold,
-override provenance, unchecked signals, and an unresolved-decision guard.
+C3 preserves override provenance, unchecked signals, and unresolved decisions.
 Its [verification issue](https://github.com/andrewpucci/dependency-update-advisor/issues/52)
-records exact-revision evidence. No shared reviewer workflow exists; the old
+records exact-revision evidence. [T1 verification and freshness](src/event.ts)
+are implemented on `issue-8`, pending merge; [T1 evidence](https://github.com/andrewpucci/dependency-update-advisor/issues/62)
+records local checks and their limits. No shared reviewer workflow exists; the old
 reviewer in [`andrewpucci.com`](https://github.com/andrewpucci/andrewpucci.com)
 remains active. CI enforces lint, formatting, strict TypeScript, and finite tests.
 
 ## Next action
 
-Execute the approved T1 implementation plan in `tasks/plan.md` for
-[issue #8](https://github.com/andrewpucci/dependency-update-advisor/issues/8), under
-the [approved contract](docs/specs/SPEC-event-verification.md).
+Review the T1 implementation for [issue #8](https://github.com/andrewpucci/dependency-update-advisor/issues/8)
+under the [approved contract](docs/specs/SPEC-event-verification.md).
+W1/W2 must supply bounded reads and exclusive claims before T2/T3 writes.
 B1–B3 and C1–C3 are complete. Open downstream work:
 [S3](https://github.com/andrewpucci/dependency-update-advisor/issues/53) supplies
 evidence, [T5](https://github.com/andrewpucci/dependency-update-advisor/issues/12)
 forms units, [M2](https://github.com/andrewpucci/dependency-update-advisor/issues/22)
 validates assessments, [O1](https://github.com/andrewpucci/dependency-update-advisor/issues/23)
 renders results, and T2/T3/W2 own publication. C2 handoffs remain gates;
-packaging remains A1. C3 unit tests do not certify these integrations or cutover.
+packaging remains A1. Unit tests do not certify these integrations or cutover.
 
 ## Where details live
 

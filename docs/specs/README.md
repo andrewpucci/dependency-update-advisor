@@ -77,8 +77,9 @@ gaps and an introduced vulnerability before parity is claimed.
   remain separate from downstream collector, provider, renderer, and workflow gates.
 - [Shared workflow](SPEC-shared-review.md) — approved for planning.
 - [CI event and current PR head verification](SPEC-event-verification.md) —
-  approved supporting contract for T1 #8 execution in `shared-review`;
-  implementation in progress.
+  approved supporting contract for T1 #8 in `shared-review`; source implemented
+  on working branch `issue-8`, pending merge. [Verification evidence](https://github.com/andrewpucci/dependency-update-advisor/issues/62)
+  remains separate from W1/W2 transport/claims and T2/T3 publication gates.
 - [Analysis providers](SPEC-analysis-providers.md) — approved for planning.
 - [npm evidence](SPEC-npm-evidence.md) — approved for planning.
 - [GitHub Actions evidence](SPEC-actions-evidence.md) — approved for planning.
