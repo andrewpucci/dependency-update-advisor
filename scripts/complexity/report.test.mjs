@@ -78,13 +78,15 @@ test('renders scores, revisions, and bounded escaped regression details', () => 
   const head = [{ path: 'src/a&b|c.ts', name: 'odd`name', score: 16, line: 3 }];
   const report = render(head, [], 'a'.repeat(40), 'b'.repeat(40));
   assert.match(report, /<!-- complexity-report -->/);
+  assert.match(report, /^### 🐙 Cognitive complexity$/m);
+  assert.match(report, /^⚠️ \*\*1 new or worsened/m);
   assert.match(report, /1 functions/);
   assert.match(report, /advisory threshold of 15/);
   assert.match(report, /<code>odd&#96;name<\/code>/);
   assert.match(report, /<code>src\/a&#38;b&#124;c\.ts:3<\/code>/);
   assert.match(report, /new/);
   assert.match(report, /aaaaaaa/);
-  assert.match(render([], [], 'a'.repeat(40), 'b'.repeat(40)), /No functions regressed/);
+  assert.match(render([], [], 'a'.repeat(40), 'b'.repeat(40)), /^✅ No functions regressed/m);
   assert.ok(
     render(
       Array.from({ length: 1000 }, (_, i) => ({
