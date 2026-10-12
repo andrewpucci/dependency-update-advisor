@@ -9,6 +9,10 @@ verification.
 The approved [shared-review contract](SPEC-shared-review.md) and
 [local-tooling contract](SPEC-local-tooling.md) remain authoritative.
 
+Implementation: completed and merged into `main` for B3 #4. Tasks #35–#37
+are closed; [verification evidence](https://github.com/andrewpucci/dependency-update-advisor/issues/37)
+records local and observed CI results. Packaging and bundle checks remain A1.
+
 ## Objective
 
 Give contributors and maintainers one executable validation sequence locally
@@ -117,7 +121,8 @@ commands. For example, the missing checks should read:
 Use the existing ESM TypeScript conventions and explicit imports from
 `vite-plus/test` for workflow assertions. Test observable workflow behavior
 without imposing unrelated formatting or adding a YAML dependency merely
-to inspect this small workflow. Select the assertion mechanism in planning.
+to inspect this small workflow. [The workflow tests](../../tests/ci-workflow.test.ts)
+use bounded text assertions without a YAML parsing dependency.
 
 ### Required behavior
 

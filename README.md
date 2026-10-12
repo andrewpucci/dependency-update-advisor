@@ -6,13 +6,21 @@ security and compatibility evidence, show what remains unknown, and give a
 maintainer a concrete next action. Each consumer keeps its own review policy
 and context configuration.
 
-**Status:** Foundation tooling is available; the module specs are approved
-for planning. This repository has no runnable shared reviewer or published
+**Status:** B1–B3 foundation work and C1–C3 configuration, source context,
+and advisory policy are complete and merged into `main`. T1 event verification
+is approved for execution and implementation is in progress.
+The remaining module specs are approved for planning.
+This repository has no runnable shared reviewer or published
 reusable review workflow. Do not point consumer repositories at it until
 implementation, parity checks, and the staged cutover are complete.
 
-The [C1 config parser](src/config.ts) and [v1 schema](schemas/review-config-v1.json)
-are implemented and [locally verified](https://github.com/andrewpucci/dependency-update-advisor/issues/5#issuecomment-6116293460).
+The [C1 config parser](src/config.ts) and [v1 schema](schemas/review-config-v1.json),
+[C2 source-context boundary](src/context.ts), and [C3 advisory policy](src/policy.ts)
+are implemented. Verification evidence lives in
+[C1 #5](https://github.com/andrewpucci/dependency-update-advisor/issues/5#issuecomment-6116293460),
+[C2 #47](https://github.com/andrewpucci/dependency-update-advisor/issues/47), and
+[C3 #52](https://github.com/andrewpucci/dependency-update-advisor/issues/52).
+These local contracts do not certify downstream integration or cutover.
 
 ## V1 scope
 
@@ -32,7 +40,7 @@ Other update bots and code hosts are possible later additions, not v1 scope.
 
 Start with [project context](CONTEXT.md) and the
 [capability map](docs/specs/README.md). The map indexes the eight approved
-module specs and supporting contract in `docs/specs/`.
+module specs and supporting contracts in `docs/specs/`.
 [Comment experience](docs/specs/SPEC-comment-experience.md) defines the
 reader-facing review brief.
 

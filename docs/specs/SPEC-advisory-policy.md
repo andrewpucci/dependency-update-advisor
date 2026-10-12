@@ -9,6 +9,10 @@ Approval: the user approved this contract and the C3 implementation plan for
 execution on 2026-10-12. The approved
 [configuration module](SPEC-review-config.md) remains authoritative.
 
+Implementation: completed and merged into `main`. C3 #7 and tasks #49–#52
+are closed; [verification evidence](https://github.com/andrewpucci/dependency-update-advisor/issues/52)
+records the tested revisions and remaining integration gates.
+
 ## Objective
 
 Let repository maintainers change the ten named advisory rules in either
@@ -29,7 +33,7 @@ prove the policy invariants without claiming those integrations are complete.
   is closed. `src/config.ts` already returns effective verdicts, explicit
   overrides, and `origin: 'file' | 'missing'` on success. A failed config
   result contains no usable policy and must stop the caller.
-- C1 currently accepts five rules. C3 implements the amendment recorded in the
+- C1 now accepts all ten rules under the C3 amendment recorded in the
   configuration module and the [C1 parser contract](SPEC-config-parser.md):
   `src/config.ts`, its tests, and the JSON Schema accept the five new rule
   names, each defaulting to `merge_with_followups`, and
@@ -368,8 +372,8 @@ test('preserves an explicit advisory relaxation', () => {
 });
 ```
 
-The example is illustrative; exact evaluator signatures and normalized types
-are selected during planning within the observable contract above.
+The example is illustrative; [the implementation](../../src/policy.ts) defines
+the evaluator signatures and normalized types within the contract above.
 
 ## Testing Strategy
 

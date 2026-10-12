@@ -8,6 +8,10 @@ execution on 2026-10-03.
 The approved [shared-review contract](SPEC-shared-review.md) and
 [ADR 0001](../adr/0001-typescript-source.md) remain authoritative.
 
+Implementation: completed and merged into `main` for B2 #3.
+[Verification evidence](https://github.com/andrewpucci/dependency-update-advisor/issues/3#issuecomment-6116292296)
+records the clean-checkout checks. CI enforcement is also complete under B3.
+
 ## Objective
 
 Let contributors validate TypeScript source and tests from a clean checkout
@@ -31,9 +35,8 @@ their existing scopes. No action build is required for B2.
   `test`, or `build` scripts. `tests/parity/` contains baseline documentation.
 - B2 depends on B1. GitHub marks
   [issue #2](https://github.com/andrewpucci/dependency-update-advisor/issues/2)
-  completed as of 2026-10-03; the local context and B1 plan still describe
-  handoff review and publication as pending. B2 does not rewrite those records
-  or infer shared-reviewer parity from issue closure.
+  completed as of 2026-10-03. Its [baseline handoff](../../tests/parity/README.md)
+  is recorded and merged. B1 completion does not establish shared-reviewer parity.
 
 ## Tech Stack
 
@@ -43,10 +46,9 @@ Vite+ package supplies Vitest 5.0.1 and exposes its APIs through
 `vite-plus/test`; no separate Vitest dependency is needed. This matches the
 [Vite+ test documentation](https://viteplus.dev/guide/test).
 
-Add exact development-dependency pins for the TypeScript compiler and
-Node.js 24 type declarations, with the updated npm lockfile committed.
-Select compatible versions during planning and record them before execution;
-do not upgrade the existing toolchain as an incidental change. The compiler
+The implemented development dependencies pin TypeScript to 7.0.2 and
+Node.js 24 type declarations to 24.19.1, with the npm lockfile committed.
+Do not upgrade the existing toolchain as an incidental change. The compiler
 must be the repository-local `tsc`, not a global installation or a tool
 downloaded on demand. Record the actual Node.js and npm versions used.
 
