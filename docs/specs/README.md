@@ -72,6 +72,8 @@ gaps and an introduced vulnerability before parity is claimed.
 - [Bounded source context](SPEC-source-context.md) — approved for C2 execution
   in `review-config`, scoped to issue #6; implemented, with
   [verification evidence](https://github.com/andrewpucci/dependency-update-advisor/issues/47).
+- [Advisory policy rules and overrides](SPEC-advisory-policy.md) — approved
+  for C3 execution in `review-config`, scoped to issue #7.
 - [Shared workflow](SPEC-shared-review.md) — approved for planning.
 - [Analysis providers](SPEC-analysis-providers.md) — approved for planning.
 - [npm evidence](SPEC-npm-evidence.md) — approved for planning.

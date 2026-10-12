@@ -6,16 +6,16 @@ The [C1 config parser and schema](docs/specs/SPEC-config-parser.md) and
 [C2 source-context boundary](docs/specs/SPEC-source-context.md) are implemented.
 [C1 evidence](https://github.com/andrewpucci/dependency-update-advisor/issues/5#issuecomment-6116293460)
 and [C2 evidence](https://github.com/andrewpucci/dependency-update-advisor/issues/47)
-record local verification. C3 is next; no shared reviewer workflow exists. The
-old reviewer in
-[`andrewpucci.com`](https://github.com/andrewpucci/andrewpucci.com) remains active.
-CI enforces lint, formatting, strict TypeScript, and finite Node tests.
+record local verification. The [C3 policy contract](docs/specs/SPEC-advisory-policy.md)
+and its plan are approved for execution. No shared reviewer workflow exists;
+the old reviewer in [`andrewpucci.com`](https://github.com/andrewpucci/andrewpucci.com)
+remains active. CI enforces lint, formatting, strict TypeScript, and finite tests.
 
 ## Next action
 
-Select [C3 policy evaluation](https://github.com/andrewpucci/dependency-update-advisor/issues/7)
-after reviewing the [configuration contract](docs/specs/SPEC-review-config.md).
-C2's integration handoffs remain gates. Action packaging remains A1.
+Start [C3.1](https://github.com/andrewpucci/dependency-update-advisor/issues/49).
+[S3](https://github.com/andrewpucci/dependency-update-advisor/issues/53) tracks
+new evidence lookups; C2 handoffs remain gates; packaging remains A1.
 
 ## Where details live
 

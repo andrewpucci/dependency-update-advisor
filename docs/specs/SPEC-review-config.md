@@ -3,6 +3,17 @@
 Status: approved for planning, 2026-09-23. Module: `review-config` in
 [the capability map](README.md).
 
+Amendment approved 2026-10-11:
+
+- Accept the overridable `compatibilityUncertainty`, `supplyChainChange`,
+  `licenseChange`, `recentRelease`, and `deprecatedRelease` rules, each
+  defaulting to `merge_with_followups`.
+- Accept `policy.minimumReleaseAgeDays`, an integer from 1 through 30 that
+  defaults to 1.
+- Treat `maliciousPackage` as a fixed hold, not a configurable rule.
+
+The [C3 policy contract](SPEC-advisory-policy.md) defines applicability.
+
 ## Objective
 
 Let the four consuming repositories choose bounded review context and override
@@ -138,12 +149,20 @@ error and never falls back to Mistral or another provider.
 
 Every named rule is optional and falls back to the shared default when absent.
 Supported rule names are `incompleteEvidence`, `highOrCriticalVulnerability`,
-`moderateOrLowVulnerability`, `incompatibleMigration`, and `applicableCodemod`.
-Each accepts `merge`, `merge_with_followups`, or `do_not_merge`. The configured
-verdict for a rule replaces its default; independent findings still combine
-using the most restrictive applicable verdict. The comment identifies when a
-local override changed the default recommendation and still displays the
-underlying evidence and coverage status.
+`moderateOrLowVulnerability`, `incompatibleMigration`, `applicableCodemod`,
+`compatibilityUncertainty`, `supplyChainChange`, `licenseChange`,
+`recentRelease`, and `deprecatedRelease`. Each accepts `merge`,
+`merge_with_followups`, or `do_not_merge`.
+
+The configured verdict for a rule replaces its default; independent findings
+still combine using the most restrictive applicable verdict. The comment
+identifies when a local override changed the default recommendation and still
+displays the underlying evidence and coverage status.
+
+`policy.minimumReleaseAgeDays` sets the `recentRelease` window as an integer
+from 1 through 30 days and defaults to 1. A verified malware advisory always
+holds the update with `do_not_merge`; no configuration can relax it.
+
 `incompleteEvidence` applies to an assessed decision unit with a visible
 evidence gap. It cannot turn an unassessed unit's `decision_incomplete` state
 into a merge recommendation or a successful review execution status.
@@ -206,7 +225,7 @@ used as the protection for payloads; [GitHub does not guarantee that redaction](
    and shared type and content exclusions. A private repository with
    `sendSourceExcerptsToModel: true` must provide a nonempty `excerptFiles`
    list; otherwise it sends no excerpts and fails configuration validation.
-5. Allow local overrides of only the five named advisory verdict rules above.
+5. Allow local overrides of only the ten named advisory verdict rules above.
    Apply an override before combining independent findings. Local policy can
    be more or less restrictive than the default, but cannot delete findings,
    change evidence statuses, or claim that incomplete coverage is complete.
