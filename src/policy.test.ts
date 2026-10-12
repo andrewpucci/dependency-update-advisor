@@ -217,6 +217,23 @@ describe('default policy evaluation', () => {
     },
   );
 
+  test.each(['publishtime', 'license', '', null])(
+    'treats failed source with unrecognized signal %j as a required gap',
+    (signal) => {
+      const source = {
+        id: 'lookup',
+        signal,
+        status: 'unavailable',
+        reason: 'Lookup failed',
+        coverageLimits: ['Missing data'],
+      } as PolicyUnit['sources'][number];
+      const result = evaluate([unit([], [source])]);
+      expect(result.units[0].uncheckedSignals).toEqual([]);
+      expect(result.units[0].gaps).toMatchObject([{ sourceId: 'lookup' }]);
+      expect(result.units[0].rules.map((trace) => trace.rule)).toEqual(['incompleteEvidence']);
+    },
+  );
+
   test.each(['critical', 'high', 'moderate', 'low', undefined] as const)(
     'classifies advisory severity %s',
     (severity) => {
@@ -258,6 +275,14 @@ describe('default policy evaluation', () => {
     const advisory = { ...fact, kind, severity: 'high', applicability } as Finding;
     expect(() => evaluate([unit([advisory])])).toThrow('Invalid advisory applicability');
   });
+
+  test.each(['Malware', 'unknownKind', undefined])(
+    'rejects unrecognized finding kind %j',
+    (kind) => {
+      const finding = { ...fact, kind } as unknown as Finding;
+      expect(() => evaluate([unit([finding])])).toThrow('Invalid finding kind');
+    },
+  );
 
   test.each(['resolved_by_proposed', 'unaffected', 'withdrawn'] as const)(
     'retains %s advisories without a vulnerability verdict',
