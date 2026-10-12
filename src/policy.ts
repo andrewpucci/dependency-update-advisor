@@ -159,6 +159,140 @@ function strictest(verdicts: readonly Verdict[]): Verdict {
   );
 }
 
+function validateAdvisory(finding: Finding): void {
+  if (
+    (finding.kind === 'vulnerability' || finding.kind === 'malware') &&
+    !applicabilities.includes(finding.applicability)
+  )
+    throw new TypeError('Invalid advisory applicability');
+  if (finding.kind === 'vulnerability') {
+    if (
+      finding.severity !== undefined &&
+      !['critical', 'high', 'moderate', 'low'].includes(finding.severity)
+    )
+      throw new TypeError('Invalid advisory severity');
+  }
+}
+
+function evaluateUnit(
+  input: PolicyUnit,
+  policy: PolicyEvaluation['policy'],
+  evaluatedAt: number,
+): EvaluatedUnit {
+  const unit = structuredClone(input);
+  const rules: RuleTrace[] = [];
+  const gaps: EvidenceGap[] = [];
+  const uncheckedSignals: UncheckedSignal[] = [];
+  const releaseExemptions: EvaluatedUnit['releaseExemptions'][number][] = [];
+  function apply(
+    rule: RuleTrace['rule'],
+    identity: Pick<RuleTrace, 'findingId' | 'sourceId' | 'recheckAt'>,
+  ) {
+    const fixed = rule === 'maliciousPackage';
+    const defaultVerdict = fixed ? 'do_not_merge' : DEFAULT_VERDICTS[rule];
+    rules.push({
+      unitId: unit.id,
+      ...identity,
+      rule,
+      defaultVerdict,
+      effectiveVerdict: fixed ? 'do_not_merge' : policy.verdicts[rule],
+      explicitlyConfigured: !fixed && Object.hasOwn(policy.overrides, rule),
+      ...(!fixed && Object.hasOwn(policy.overrides, rule)
+        ? { configField: `.github/dependabot-review.json#policy.verdicts.${rule}` }
+        : {}),
+      fixed,
+    });
+  }
+  for (const source of unit.sources) {
+    if (source.status === 'available' || source.status === 'group_backed') continue;
+    const gap: EvidenceGap = {
+      id: JSON.stringify([unit.id, source.id]),
+      unitId: unit.id,
+      sourceId: source.id,
+      status: source.status,
+      reason: source.reason,
+      coverageLimits: source.coverageLimits,
+    };
+    if (source.signal !== undefined && optionalSignals.includes(source.signal))
+      uncheckedSignals.push({ ...gap, signal: source.signal });
+    else {
+      gaps.push(gap);
+      apply('incompleteEvidence', { sourceId: source.id });
+    }
+  }
+  function applyReleaseMetadata(finding: Extract<Finding, { kind: 'releaseMetadata' }>) {
+    const identity = { findingId: finding.id };
+    const fixes = unit.findings.filter(
+      (advisory) =>
+        advisory.kind === 'vulnerability' &&
+        advisory.memberId === finding.memberId &&
+        advisory.applicability === 'resolved_by_proposed',
+    );
+    const recheckAt =
+      finding.publishedAt === undefined
+        ? undefined
+        : finding.publishedAt + policy.minimumReleaseAgeDays * 86_400_000;
+    // Only a release inside the window can be exempted from recentRelease.
+    if (recheckAt !== undefined && evaluatedAt < recheckAt) {
+      if (fixes.length)
+        releaseExemptions.push({
+          unitId: unit.id,
+          memberId: finding.memberId,
+          findingId: finding.id,
+          advisoryIds: fixes.map((advisory) => advisory.id),
+        });
+      else apply('recentRelease', { ...identity, recheckAt });
+    }
+    if (finding.deprecated) apply('deprecatedRelease', identity);
+  }
+
+  function applyFinding(finding: Finding) {
+    const identity = { findingId: finding.id };
+    validateAdvisory(finding);
+    switch (finding.kind) {
+      case 'vulnerability':
+        if (finding.applicability === 'affects_proposed')
+          apply(
+            finding.severity === 'critical' || finding.severity === 'high'
+              ? 'highOrCriticalVulnerability'
+              : 'moderateOrLowVulnerability',
+            identity,
+          );
+        break;
+      case 'malware':
+        if (finding.applicability === 'affects_proposed') apply('maliciousPackage', identity);
+        break;
+      case 'incompatibleMigration':
+      case 'applicableCodemod':
+      case 'compatibilityUncertainty':
+      case 'supplyChainChange':
+        apply(finding.kind, identity);
+        break;
+      case 'licenseChange':
+        // Collectors supply normalized license expressions, not registry formatting.
+        if (finding.currentLicense !== finding.proposedLicense) apply('licenseChange', identity);
+        break;
+      case 'releaseMetadata':
+        applyReleaseMetadata(finding);
+        break;
+      case 'informational':
+        break;
+      default:
+        throw new TypeError('Invalid finding kind');
+    }
+  }
+  for (const finding of unit.findings) applyFinding(finding);
+  return {
+    ...unit,
+    rules,
+    gaps,
+    uncheckedSignals,
+    releaseExemptions,
+    defaultCeiling: strictest(rules.map((trace) => trace.defaultVerdict)),
+    effectiveCeiling: strictest(rules.map((trace) => trace.effectiveVerdict)),
+  };
+}
+
 /** Inputs are caller-validated normalized facts. Times use UTC epoch milliseconds.
  * Invalid finding kind, advisory severity, or applicability throws; an unrecognized signal is a required gap.
  * Config failure returns its safe diagnostic without policy.
@@ -182,124 +316,7 @@ export function evaluatePolicy(
       : {}),
     origin: config.origin,
   };
-  const evaluatedUnits = units.map((input) => {
-    const unit = structuredClone(input);
-    const rules: RuleTrace[] = [];
-    const gaps: EvidenceGap[] = [];
-    const uncheckedSignals: UncheckedSignal[] = [];
-    const releaseExemptions: EvaluatedUnit['releaseExemptions'][number][] = [];
-    function apply(
-      rule: RuleTrace['rule'],
-      identity: Pick<RuleTrace, 'findingId' | 'sourceId' | 'recheckAt'>,
-    ) {
-      const fixed = rule === 'maliciousPackage';
-      const defaultVerdict = fixed ? 'do_not_merge' : DEFAULT_VERDICTS[rule];
-      rules.push({
-        unitId: unit.id,
-        ...identity,
-        rule,
-        defaultVerdict,
-        effectiveVerdict: fixed ? 'do_not_merge' : policy.verdicts[rule],
-        explicitlyConfigured: !fixed && Object.hasOwn(policy.overrides, rule),
-        ...(!fixed && Object.hasOwn(policy.overrides, rule)
-          ? { configField: `.github/dependabot-review.json#policy.verdicts.${rule}` }
-          : {}),
-        fixed,
-      });
-    }
-    for (const source of unit.sources) {
-      if (source.status === 'available' || source.status === 'group_backed') continue;
-      const gap: EvidenceGap = {
-        id: JSON.stringify([unit.id, source.id]),
-        unitId: unit.id,
-        sourceId: source.id,
-        status: source.status,
-        reason: source.reason,
-        coverageLimits: source.coverageLimits,
-      };
-      if (source.signal !== undefined && optionalSignals.includes(source.signal))
-        uncheckedSignals.push({ ...gap, signal: source.signal });
-      else {
-        gaps.push(gap);
-        apply('incompleteEvidence', { sourceId: source.id });
-      }
-    }
-    for (const finding of unit.findings) {
-      const identity = { findingId: finding.id };
-      if (
-        (finding.kind === 'vulnerability' || finding.kind === 'malware') &&
-        !applicabilities.includes(finding.applicability)
-      )
-        throw new TypeError('Invalid advisory applicability');
-      switch (finding.kind) {
-        case 'vulnerability':
-          if (
-            finding.severity !== undefined &&
-            !['critical', 'high', 'moderate', 'low'].includes(finding.severity)
-          )
-            throw new TypeError('Invalid advisory severity');
-          if (finding.applicability === 'affects_proposed')
-            apply(
-              finding.severity === 'critical' || finding.severity === 'high'
-                ? 'highOrCriticalVulnerability'
-                : 'moderateOrLowVulnerability',
-              identity,
-            );
-          break;
-        case 'malware':
-          if (finding.applicability === 'affects_proposed') apply('maliciousPackage', identity);
-          break;
-        case 'incompatibleMigration':
-        case 'applicableCodemod':
-        case 'compatibilityUncertainty':
-        case 'supplyChainChange':
-          apply(finding.kind, identity);
-          break;
-        case 'licenseChange':
-          // Collectors supply normalized license expressions, not registry formatting.
-          if (finding.currentLicense !== finding.proposedLicense) apply('licenseChange', identity);
-          break;
-        case 'releaseMetadata': {
-          const fixes = unit.findings.filter(
-            (advisory) =>
-              advisory.kind === 'vulnerability' &&
-              advisory.memberId === finding.memberId &&
-              advisory.applicability === 'resolved_by_proposed',
-          );
-          const recheckAt =
-            finding.publishedAt === undefined
-              ? undefined
-              : finding.publishedAt + policy.minimumReleaseAgeDays * 86_400_000;
-          // Only a release inside the window can be exempted from recentRelease.
-          if (recheckAt !== undefined && evaluatedAt < recheckAt) {
-            if (fixes.length)
-              releaseExemptions.push({
-                unitId: unit.id,
-                memberId: finding.memberId,
-                findingId: finding.id,
-                advisoryIds: fixes.map((advisory) => advisory.id),
-              });
-            else apply('recentRelease', { ...identity, recheckAt });
-          }
-          if (finding.deprecated) apply('deprecatedRelease', identity);
-          break;
-        }
-        case 'informational':
-          break;
-        default:
-          throw new TypeError('Invalid finding kind');
-      }
-    }
-    return {
-      ...unit,
-      rules,
-      gaps,
-      uncheckedSignals,
-      releaseExemptions,
-      defaultCeiling: strictest(rules.map((trace) => trace.defaultVerdict)),
-      effectiveCeiling: strictest(rules.map((trace) => trace.effectiveVerdict)),
-    };
-  });
+  const evaluatedUnits = units.map((unit) => evaluateUnit(unit, policy, evaluatedAt));
   return {
     ok: true,
     policy,

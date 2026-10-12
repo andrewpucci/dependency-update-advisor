@@ -45,7 +45,7 @@ export type ConfigResult =
     }
   | { ok: false; error: { file: string; category: ErrorCategory; field: string } };
 
-function failure(category: ErrorCategory, field = '$'): ConfigResult {
+function failure(category: ErrorCategory, field = '$'): Extract<ConfigResult, { ok: false }> {
   return { ok: false, error: { file: CONFIG_FILE, category, field } };
 }
 
@@ -82,50 +82,62 @@ function validPaths(value: unknown, limit: number, exactFile: boolean): value is
   );
 }
 
-function invalidField(document: Record<string, unknown>): string | undefined {
-  if (Object.hasOwn(document, 'analysis')) {
-    const analysis = document.analysis;
-    if (!objectWithKeys(analysis, ['provider', 'model'])) return 'analysis';
-    if (analysis.provider !== 'mistral') return 'analysis.provider';
-    if (
-      typeof analysis.model !== 'string' ||
-      analysis.model.length < 1 ||
-      analysis.model.length > 128 ||
-      !/^[A-Za-z0-9][A-Za-z0-9._-]*(?![\s\S])/u.test(analysis.model)
-    )
-      return 'analysis.model';
-  }
-  if (Object.hasOwn(document, 'context')) {
-    const context = document.context;
-    if (!objectWithKeys(context, ['sourceRoots', 'sendSourceExcerptsToModel', 'excerptFiles']))
-      return 'context';
-    if (Object.hasOwn(context, 'sourceRoots') && !validPaths(context.sourceRoots, 16, false))
-      return 'context.sourceRoots';
-    if (
-      Object.hasOwn(context, 'sendSourceExcerptsToModel') &&
-      typeof context.sendSourceExcerptsToModel !== 'boolean'
-    )
-      return 'context.sendSourceExcerptsToModel';
-    if (Object.hasOwn(context, 'excerptFiles') && !validPaths(context.excerptFiles, 128, true))
-      return 'context.excerptFiles';
-  }
-  if (Object.hasOwn(document, 'policy')) {
-    const policy = document.policy;
-    if (!objectWithKeys(policy, ['verdicts', 'minimumReleaseAgeDays'])) return 'policy';
-    if (
-      Object.hasOwn(policy, 'minimumReleaseAgeDays') &&
-      (typeof policy.minimumReleaseAgeDays !== 'number' ||
-        !Number.isInteger(policy.minimumReleaseAgeDays) ||
-        policy.minimumReleaseAgeDays < 1 ||
-        policy.minimumReleaseAgeDays > 30)
-    )
-      return 'policy.minimumReleaseAgeDays';
-    if (Object.hasOwn(policy, 'verdicts')) {
-      if (!objectWithKeys(policy.verdicts, Object.keys(DEFAULT_VERDICTS))) return 'policy.verdicts';
-      for (const [rule, value] of Object.entries(policy.verdicts)) {
-        if (!VERDICTS.some((verdict) => verdict === value)) return `policy.verdicts.${rule}`;
-      }
+function invalidAnalysis(analysis: unknown): string | undefined {
+  if (!objectWithKeys(analysis, ['provider', 'model'])) return 'analysis';
+  if (analysis.provider !== 'mistral') return 'analysis.provider';
+  if (
+    typeof analysis.model !== 'string' ||
+    analysis.model.length < 1 ||
+    analysis.model.length > 128 ||
+    !/^[A-Za-z0-9][A-Za-z0-9._-]*(?![\s\S])/u.test(analysis.model)
+  )
+    return 'analysis.model';
+  return undefined;
+}
+
+function invalidContext(context: unknown): string | undefined {
+  if (!objectWithKeys(context, ['sourceRoots', 'sendSourceExcerptsToModel', 'excerptFiles']))
+    return 'context';
+  if (Object.hasOwn(context, 'sourceRoots') && !validPaths(context.sourceRoots, 16, false))
+    return 'context.sourceRoots';
+  if (
+    Object.hasOwn(context, 'sendSourceExcerptsToModel') &&
+    typeof context.sendSourceExcerptsToModel !== 'boolean'
+  )
+    return 'context.sendSourceExcerptsToModel';
+  if (Object.hasOwn(context, 'excerptFiles') && !validPaths(context.excerptFiles, 128, true))
+    return 'context.excerptFiles';
+  return undefined;
+}
+
+function invalidPolicy(policy: unknown): string | undefined {
+  if (!objectWithKeys(policy, ['verdicts', 'minimumReleaseAgeDays'])) return 'policy';
+  if (
+    Object.hasOwn(policy, 'minimumReleaseAgeDays') &&
+    (typeof policy.minimumReleaseAgeDays !== 'number' ||
+      !Number.isInteger(policy.minimumReleaseAgeDays) ||
+      policy.minimumReleaseAgeDays < 1 ||
+      policy.minimumReleaseAgeDays > 30)
+  )
+    return 'policy.minimumReleaseAgeDays';
+  if (Object.hasOwn(policy, 'verdicts')) {
+    if (!objectWithKeys(policy.verdicts, Object.keys(DEFAULT_VERDICTS))) return 'policy.verdicts';
+    for (const [rule, value] of Object.entries(policy.verdicts)) {
+      if (!VERDICTS.some((verdict) => verdict === value)) return `policy.verdicts.${rule}`;
     }
+  }
+  return undefined;
+}
+
+function invalidField(document: Record<string, unknown>): string | undefined {
+  for (const [section, validate] of [
+    ['analysis', invalidAnalysis],
+    ['context', invalidContext],
+    ['policy', invalidPolicy],
+  ] as const) {
+    if (!Object.hasOwn(document, section)) continue;
+    const field = validate(document[section]);
+    if (field) return field;
   }
   return undefined;
 }
@@ -177,6 +189,32 @@ function contained(root: string, path: string): boolean {
   return difference !== '..' && !difference.startsWith(`..${sep}`) && !isAbsolute(difference);
 }
 
+async function resolveConfigEntry(
+  root: string,
+  path: string,
+  directory: boolean,
+): Promise<Extract<ConfigResult, { ok: false }> | { ok: true; path: string | null }> {
+  let entry;
+  try {
+    entry = await fs.lstat(path);
+  } catch (error) {
+    if (typeof error === 'object' && error !== null && 'code' in error && error.code === 'ENOENT') {
+      return { ok: true, path: null };
+    }
+    throw error;
+  }
+  try {
+    path = await fs.realpath(path);
+  } catch (error) {
+    if (entry.isSymbolicLink()) return failure('path');
+    throw error;
+  }
+  if (!contained(root, path)) return failure('path');
+  const stat = await fs.stat(path);
+  if (directory ? !stat.isDirectory() : !stat.isFile()) return failure('path');
+  return { ok: true, path };
+}
+
 /** The caller owns checkout trust and must keep it unchanged throughout loading. */
 export async function loadTrustedReviewConfig(checkoutRoot: string): Promise<ConfigResult> {
   try {
@@ -185,66 +223,53 @@ export async function loadTrustedReviewConfig(checkoutRoot: string): Promise<Con
     let path = root;
     for (const [index, component] of ['.github', 'dependabot-review.json'].entries()) {
       path = join(path, component);
-      let entry;
-      try {
-        entry = await fs.lstat(path);
-      } catch (error) {
-        if (
-          typeof error === 'object' &&
-          error !== null &&
-          'code' in error &&
-          error.code === 'ENOENT'
-        ) {
-          return {
-            ok: true,
-            config: defaultConfig(),
-            origin: 'missing',
-            overrides: {},
-            minimumReleaseAgeDaysExplicit: false,
-          };
-        }
-        throw error;
+      const resolved = await resolveConfigEntry(root, path, index === 0);
+      if (!resolved.ok) return resolved;
+      if (resolved.path === null) {
+        return {
+          ok: true,
+          config: defaultConfig(),
+          origin: 'missing',
+          overrides: {},
+          minimumReleaseAgeDaysExplicit: false,
+        };
       }
-      try {
-        path = await fs.realpath(path);
-      } catch (error) {
-        if (entry.isSymbolicLink()) return failure('path');
-        throw error;
-      }
-      if (!contained(root, path)) return failure('path');
-      const stat = await fs.stat(path);
-      if (index === 0 ? !stat.isDirectory() : !stat.isFile()) return failure('path');
+      path = resolved.path;
     }
 
-    const handle = await fs.open(path, 'r');
-    try {
-      if (!(await handle.stat()).isFile()) return failure('path');
-      const bytes = Buffer.alloc(MAX_CONFIG_BYTES + 1);
-      let count = 0;
-      while (count < bytes.length) {
-        const { bytesRead } = await handle.read({
-          buffer: bytes,
-          offset: count,
-          length: bytes.length - count,
-          position: null,
-        });
-        if (bytesRead === 0) break;
-        count += bytesRead;
-      }
-      if (count > MAX_CONFIG_BYTES) return failure('size');
-      let text: string;
-      try {
-        text = new TextDecoder('utf-8', { fatal: true, ignoreBOM: true }).decode(
-          bytes.subarray(0, count),
-        );
-      } catch {
-        return failure('encoding');
-      }
-      return parseReviewConfig(text);
-    } finally {
-      await handle.close();
-    }
+    return await readConfigFile(path);
   } catch {
     return failure('read');
+  }
+}
+
+async function readConfigFile(path: string): Promise<ConfigResult> {
+  const handle = await fs.open(path, 'r');
+  try {
+    if (!(await handle.stat()).isFile()) return failure('path');
+    const bytes = Buffer.alloc(MAX_CONFIG_BYTES + 1);
+    let count = 0;
+    while (count < bytes.length) {
+      const { bytesRead } = await handle.read({
+        buffer: bytes,
+        offset: count,
+        length: bytes.length - count,
+        position: null,
+      });
+      if (bytesRead === 0) break;
+      count += bytesRead;
+    }
+    if (count > MAX_CONFIG_BYTES) return failure('size');
+    let text: string;
+    try {
+      text = new TextDecoder('utf-8', { fatal: true, ignoreBOM: true }).decode(
+        bytes.subarray(0, count),
+      );
+    } catch {
+      return failure('encoding');
+    }
+    return parseReviewConfig(text);
+  } finally {
+    await handle.close();
   }
 }
