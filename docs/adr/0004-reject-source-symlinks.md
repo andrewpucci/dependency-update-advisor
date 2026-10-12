@@ -18,8 +18,9 @@ The source boundary must be easy to audit before any content is read.
 
 ## Decision Outcome
 
-Chosen option: reject every source-path symlink. The user selected this policy
-and approved the C2 implementation plan. Checking each component with link
+Chosen option: reject every source-path symlink, as required by the approved
+[C2 source-context contract](../specs/SPEC-source-context.md#filesystem-containment-and-shared-eligibility).
+Checking each component with link
 metadata gives the source boundary one rule and avoids target aliasing through
 otherwise eligible paths.
 
