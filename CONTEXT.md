@@ -4,8 +4,8 @@
 
 The [C1 config parser and schema](docs/specs/SPEC-config-parser.md),
 [C2 source-context boundary](docs/specs/SPEC-source-context.md), and
-[C3 advisory policy](docs/specs/SPEC-advisory-policy.md) are implemented on
-this branch. C3 includes ten configurable rules, a fixed malware hold,
+[C3 advisory policy](docs/specs/SPEC-advisory-policy.md) are merged into `main`.
+C3 includes ten configurable rules, a fixed malware hold,
 override provenance, unchecked signals, and an unresolved-decision guard.
 Its [verification issue](https://github.com/andrewpucci/dependency-update-advisor/issues/52)
 records exact-revision evidence. No shared reviewer workflow exists; the old
@@ -14,15 +14,15 @@ remains active. CI enforces lint, formatting, strict TypeScript, and finite test
 
 ## Next action
 
-Review the C3 PR stack in order: [#54](https://github.com/andrewpucci/dependency-update-advisor/pull/54),
-[#55](https://github.com/andrewpucci/dependency-update-advisor/pull/55), and
-[#56](https://github.com/andrewpucci/dependency-update-advisor/pull/56), then the
-verification PR linked from #52. Downstream integration remains open:
+Execute the approved T1 implementation plan in `tasks/plan.md` for
+[issue #8](https://github.com/andrewpucci/dependency-update-advisor/issues/8), under
+the [approved contract](docs/specs/SPEC-event-verification.md).
+B1–B3 and C1–C3 are complete. Open downstream work:
 [S3](https://github.com/andrewpucci/dependency-update-advisor/issues/53) supplies
 evidence, [T5](https://github.com/andrewpucci/dependency-update-advisor/issues/12)
 forms units, [M2](https://github.com/andrewpucci/dependency-update-advisor/issues/22)
 validates assessments, [O1](https://github.com/andrewpucci/dependency-update-advisor/issues/23)
-renders results, and T2/W2 own execution status. C2 handoffs remain gates;
+renders results, and T2/T3/W2 own publication. C2 handoffs remain gates;
 packaging remains A1. C3 unit tests do not certify these integrations or cutover.
 
 ## Where details live

@@ -7,6 +7,10 @@ Approval: the user approved this specification and the B1 plan in this session
 on 2026-10-03 ("approved"). The approved
 [parity and cutover contract](SPEC-parity-cutover.md) remains authoritative.
 
+Completion: B1 #2 is closed and the [baseline handoff](../../tests/parity/README.md)
+is merged into `main`. The recorded baseline is historical evidence, not a
+current deployment claim or completed shared-reviewer parity check.
+
 ## Objective
 
 Give extraction work a reproducible reference for the existing reviewer in

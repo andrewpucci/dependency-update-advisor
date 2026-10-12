@@ -8,6 +8,11 @@ C1 implementation plan was approved for execution on the same date, including
 draft-07 and test-only `ajv@8.20.0`. The approved
 [configuration module](SPEC-review-config.md) remains authoritative.
 
+Implementation: completed and merged into `main` for C1 #5, including the
+approved C3 amendment below. [C1 verification evidence](https://github.com/andrewpucci/dependency-update-advisor/issues/5#issuecomment-6116293460)
+and [C3 verification evidence](https://github.com/andrewpucci/dependency-update-advisor/issues/52)
+record their tested revisions and limits.
+
 Amendment approved 2026-10-11:
 
 - Accept the overridable `compatibilityUncertainty`, `supplyChainChange`,
@@ -62,10 +67,9 @@ Node built-ins, and source-adjacent tests importing from `vite-plus/test`.
 Preserve the installed toolchain pins and lockfile. Do not introduce a
 runtime parser dependency without explicit approval.
 
-Publish a JSON Schema for editor validation. Choose its dialect and a
-compatible test validator during planning, recording any proposed dependency
-for approval. Schema defaults describe runtime behavior; validation must not
-coerce values, delete unknown fields, or mutate input to make it valid.
+The published editor schema uses draft-07, with the approved test-only
+`ajv@8.20.0` validator. Schema defaults describe runtime behavior; validation
+must not coerce values, delete unknown fields, or mutate input to make it valid.
 
 ## Commands
 
@@ -229,8 +233,8 @@ test('retains secure defaults for a minimal present config', () => {
 });
 ```
 
-The snippet illustrates behavior and style; exact function signatures and
-error category names are selected during planning. Keep file loading separate
+The snippet illustrates behavior and style; [the implementation](../../src/config.ts)
+defines the function signatures and error categories. Keep file loading separate
 from pure document validation so parser cases need no GitHub or model services.
 
 ## Testing Strategy

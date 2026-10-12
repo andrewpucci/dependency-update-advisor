@@ -67,15 +67,18 @@ gaps and an introduced vulnerability before parity is claimed.
 ## Spec index
 
 - [Review configuration](SPEC-review-config.md) — approved for planning.
-- [Trusted config parser](SPEC-config-parser.md) — implemented for C1 #5,
-  with the approved C3 amendment in #49.
+- [Trusted config parser](SPEC-config-parser.md) — implemented on `main`
+  for C1 #5, with the approved C3 amendment in #49.
 - [Bounded source context](SPEC-source-context.md) — approved for C2 execution
-  in `review-config`, scoped to issue #6; implemented, with
+  in `review-config`, scoped to issue #6; implemented on `main`, with
   [verification evidence](https://github.com/andrewpucci/dependency-update-advisor/issues/47).
 - [Advisory policy rules and overrides](SPEC-advisory-policy.md) — implemented
-  in `review-config` for C3 #7; [verification and integration limits](https://github.com/andrewpucci/dependency-update-advisor/issues/52)
+  on `main` in `review-config` for C3 #7; [verification and integration limits](https://github.com/andrewpucci/dependency-update-advisor/issues/52)
   remain separate from downstream collector, provider, renderer, and workflow gates.
 - [Shared workflow](SPEC-shared-review.md) — approved for planning.
+- [CI event and current PR head verification](SPEC-event-verification.md) —
+  approved supporting contract for T1 #8 execution in `shared-review`;
+  implementation in progress.
 - [Analysis providers](SPEC-analysis-providers.md) — approved for planning.
 - [npm evidence](SPEC-npm-evidence.md) — approved for planning.
 - [GitHub Actions evidence](SPEC-actions-evidence.md) — approved for planning.
@@ -83,12 +86,12 @@ gaps and an introduced vulnerability before parity is claimed.
 - [Repository adoption](SPEC-repo-adoption.md) — approved for planning.
 - [Comment experience](SPEC-comment-experience.md) — approved supporting contract.
 - [Parity and cutover](SPEC-parity-cutover.md) — approved for planning.
-- [Extraction baseline](SPEC-extraction-baseline.md) — approved supporting
-  contract for `parity-cutover`, scoped to issue #2 (B1).
-- [Local tooling](SPEC-local-tooling.md) — approved supporting contract for
-  B2 execution in `shared-review`, scoped to issue #3.
-- [CI enforcement](SPEC-ci-enforcement.md) — approved supporting contract for
-  B3 execution in `shared-review`, scoped to issue #4.
+- [Extraction baseline](SPEC-extraction-baseline.md) — completed B1 #2
+  supporting contract for `parity-cutover`; [baseline handoff](../../tests/parity/README.md).
+- [Local tooling](SPEC-local-tooling.md) — implemented on `main` for B2 #3
+  in `shared-review`; [verification evidence](https://github.com/andrewpucci/dependency-update-advisor/issues/3).
+- [CI enforcement](SPEC-ci-enforcement.md) — implemented on `main` for B3 #4
+  in `shared-review`; [verification evidence](https://github.com/andrewpucci/dependency-update-advisor/issues/37).
 
 The source repository's existing Dependabot specs and reviewer code provide
 the fidelity baseline. Private consumer policy, exact excerpt allowlists,

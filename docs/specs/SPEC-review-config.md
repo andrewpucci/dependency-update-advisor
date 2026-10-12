@@ -3,6 +3,12 @@
 Status: approved for planning, 2026-09-23. Module: `review-config` in
 [the capability map](README.md).
 
+Implementation checkpoint: [C1](SPEC-config-parser.md),
+[C2](SPEC-source-context.md), and [C3](SPEC-advisory-policy.md) are complete
+and merged into `main`. Their evidence links and open integration gates live
+in those supporting contracts. Workflow, provider, and adoption integration
+remain separate; completion of C1–C3 does not certify the full review path.
+
 Amendment approved 2026-10-11:
 
 - Accept the overridable `compatibilityUncertainty`, `supplyChainChange`,

@@ -13,6 +13,10 @@ the whole file, and a missing config file skips configured-path checks. The
 approved
 [configuration module](SPEC-review-config.md) remains authoritative.
 
+Implementation: completed and merged into `main` for C2 #6. Tasks #44–#47
+are closed; [verification evidence](https://github.com/andrewpucci/dependency-update-advisor/issues/47)
+records the tested revision and remaining disclosure-integration gates.
+
 ## Objective
 
 Give reviewer contributors one filesystem and disclosure boundary between
@@ -417,8 +421,9 @@ test('preserves explicit opt-out before context collection', () => {
 
 This executable C1 example establishes style, not C2 verification. C2 tests
 must additionally assert zero content reads and an empty excerpt result.
-Choose C2 function signatures and result types during planning without adding
-raw source buffers to the public result.
+Use the [approved C2 interface](#approved-c2-interface-and-limits) and
+[implemented result types](../../src/context.ts); keep raw source buffers out
+of the public result.
 
 ## Testing Strategy
 
