@@ -21,6 +21,12 @@ type FindingFacts = Readonly<{
   remediation: readonly string[];
   validation: readonly string[];
 }>;
+const applicabilities: readonly string[] = [
+  'affects_proposed',
+  'resolved_by_proposed',
+  'unaffected',
+  'withdrawn',
+];
 type Applicability = 'affects_proposed' | 'resolved_by_proposed' | 'unaffected' | 'withdrawn';
 export type Finding = FindingFacts &
   (
@@ -152,7 +158,7 @@ function strictest(verdicts: readonly Verdict[]): Verdict {
 }
 
 /** Inputs are caller-validated normalized facts. Times use UTC epoch milliseconds.
- * Invalid advisory severity throws; config failure returns its safe diagnostic without policy.
+ * Invalid advisory severity or applicability throws; config failure returns its safe diagnostic without policy.
  * Snapshots inputs without reading files, the clock, or execution state.
  */
 export function evaluatePolicy(
@@ -208,6 +214,11 @@ export function evaluatePolicy(
     }
     for (const finding of unit.findings) {
       const identity = { findingId: finding.id };
+      if (
+        (finding.kind === 'vulnerability' || finding.kind === 'malware') &&
+        !applicabilities.includes(finding.applicability)
+      )
+        throw new TypeError('Invalid advisory applicability');
       switch (finding.kind) {
         case 'vulnerability':
           if (
