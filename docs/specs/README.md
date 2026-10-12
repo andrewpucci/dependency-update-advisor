@@ -67,13 +67,14 @@ gaps and an introduced vulnerability before parity is claimed.
 ## Spec index
 
 - [Review configuration](SPEC-review-config.md) — approved for planning.
-- [Trusted config parser](SPEC-config-parser.md) — approved for C1 execution
-  in `review-config`, scoped to issue #5.
+- [Trusted config parser](SPEC-config-parser.md) — implemented for C1 #5,
+  with the approved C3 amendment in #49.
 - [Bounded source context](SPEC-source-context.md) — approved for C2 execution
   in `review-config`, scoped to issue #6; implemented, with
   [verification evidence](https://github.com/andrewpucci/dependency-update-advisor/issues/47).
-- [Advisory policy rules and overrides](SPEC-advisory-policy.md) — approved
-  for C3 execution in `review-config`, scoped to issue #7.
+- [Advisory policy rules and overrides](SPEC-advisory-policy.md) — implemented
+  in `review-config` for C3 #7; [verification and integration limits](https://github.com/andrewpucci/dependency-update-advisor/issues/52)
+  remain separate from downstream collector, provider, renderer, and workflow gates.
 - [Shared workflow](SPEC-shared-review.md) — approved for planning.
 - [Analysis providers](SPEC-analysis-providers.md) — approved for planning.
 - [npm evidence](SPEC-npm-evidence.md) — approved for planning.

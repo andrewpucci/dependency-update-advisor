@@ -18,8 +18,8 @@ Amendment approved 2026-10-11:
 - Treat `maliciousPackage` as a fixed hold, not a configurable rule.
 
 The [C3 policy contract](SPEC-advisory-policy.md) defines applicability, and
-issue #7 tracks the parser and schema change. Until then, C1 accepts five
-rules and no release-age field.
+issue #49 implements the parser and schema amendment under parent #7.
+C1 now accepts all ten rules and the release-age field.
 
 ## Objective
 
