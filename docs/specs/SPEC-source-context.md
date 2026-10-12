@@ -5,7 +5,9 @@ Status: approved for C2 execution, 2026-10-11. Supporting contract for
 [issue #6: C2](https://github.com/andrewpucci/dependency-update-advisor/issues/6).
 Approval: this specification and the C2 implementation plan are approved for
 execution, 2026-10-11. Approved scope includes exact-file selection for both
-visibilities, the interface, predicates, and resource ceilings below. The approved
+visibilities, the interface, predicates, and resource ceilings below.
+Amendment approved 2026-10-11: whole-token dependency matching, trailing-word
+sensitive assignments, and skipped glob-character inventory paths. The approved
 [configuration module](SPEC-review-config.md) remains authoritative.
 
 ## Objective
