@@ -48,8 +48,10 @@ revision-specific results in the relevant issue or PR, with links to CI runs.
 Include the tested SHA, environment, commands, outcomes, warnings, and checks
 not run. Development history and temporary probe results belong there too.
 
-With Node.js 24 (`>=24.11.0 <25`), run the full local and CI sequence using
-the pinned repository toolchain:
+### Repository quality checks
+
+With Node.js 24 (`>=24.11.0 <25`), run the commands used by the
+`Repository quality` CI job:
 
 ```sh
 npm ci
@@ -63,8 +65,12 @@ npm test -- --run
 Markdown linting. `npm run format:check` checks formatting without changing
 files. `npm run check` invokes the strict TypeScript compiler with `noEmit`
 over source, tests, and tool configuration. `npm test -- --run` executes
-the Node test suite once through Vite+; `--run` avoids watch mode. These
+the TypeScript test suite once through Vite+; `--run` avoids watch mode. These
 four validation commands do not repair or rewrite tracked files.
+
+For changes to complexity tooling, also run `npm run test:complexity`.
+Those adapter tests run separately from the Vite+ suite, as described in
+[Complexity review](#complexity-review).
 
 The [CI workflow](.github/workflows/ci.yml) runs these checks on every pull
 request targeting `main` and every push to `main`. Its `Repository quality`
@@ -89,3 +95,37 @@ entry point exists, along with CI enforcement that a fresh build reproduces
 the committed JavaScript bundle without drift. Until then, run the focused
 tests and other checks named by the relevant approved spec, without invoking
 an unavailable build command.
+
+### Complexity review
+
+The separate [Complexity workflow](.github/workflows/complexity.yml) reports
+new or worsened functions above a SonarJS cognitive complexity score of 15.
+Findings are advisory; analyzer failures fail the job. Complexity is not a
+required merge check. Same-repository PRs receive a comment that is updated
+on each review; fork PRs receive only a job summary.
+
+To test the adapter and run the report locally, use the commands below.
+The report reads committed source at `HEAD`; uncommitted edits are not measured.
+
+```sh
+npm ci
+npm run test:complexity
+npm run complexity -- --base origin/main
+```
+
+The report measures tracked `.ts` and `.mjs` files in `src/` and `scripts/`.
+It excludes filenames ending in `.test.ts`, `.test.mjs`, `.d.ts`, or `.d.mjs`.
+Functions are matched by path and name, ranking duplicate names by descending
+score; moves and renames count as new. Zero-score functions count toward the
+headline totals, and inline lint suppressions do not hide complexity scores.
+
+On PRs, the workflow compares the PR head with the merge base of the event's
+base SHA; pushes to `main` compare with the previous push SHA. The summary
+identifies both measured revisions. Invalid source or missing base refs fail
+rather than producing a clean comparison. The report shows at most 100
+regression rows; comment publication rejects reports over 60,000 characters.
+
+SonarJS runs through the existing Vite+/Oxlint engine with the root lockfile.
+The comment job runs without source checkout and skips closed PRs or outdated
+heads. See the [complexity contract](docs/specs/SPEC-complexity-review.md) for
+workflow permissions, adapter maintenance, and verification requirements.

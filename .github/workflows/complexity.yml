@@ -1,0 +1,80 @@
+name: Complexity
+
+on:
+  pull_request:
+    branches: [main]
+  push:
+    branches: [main]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  report:
+    name: Cognitive complexity
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    outputs:
+      report: ${{ steps.analysis.outputs.report }}
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+        with:
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+          fetch-depth: 0
+          persist-credentials: false
+      - uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6
+        with:
+          node-version: '24'
+          package-manager-cache: false
+      - name: Install dependencies
+        run: npm ci
+      - name: Test analyzer
+        run: npm run test:complexity
+      - name: Complexity report
+        id: analysis
+        shell: bash
+        env:
+          BASE_SHA: ${{ github.event.pull_request.base.sha || github.event.before }}
+        run: npm run --silent complexity -- --base "$BASE_SHA" --github-output | tee -a "$GITHUB_STEP_SUMMARY"
+
+  comment:
+    name: Update complexity comment
+    needs: report
+    if: github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name == github.repository
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      pull-requests: write
+    steps:
+      - name: Sticky PR comment
+        uses: actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3 # v9
+        env:
+          REPORT_JSON: ${{ needs.report.outputs.report }}
+        with:
+          script: |
+            const body = JSON.parse(process.env.REPORT_JSON);
+            const marker = '<!-- complexity-report -->';
+            if (typeof body !== 'string' || !body.startsWith(marker) || body.length > 60000) {
+              throw new Error('Invalid complexity report');
+            }
+            const { owner, repo } = context.repo;
+            const issue_number = context.issue.number;
+            const { data: pr } = await github.rest.pulls.get({ owner, repo, pull_number: issue_number });
+            if (pr.state !== 'open' || pr.head.sha !== context.payload.pull_request.head.sha) {
+              core.info('Skipping a closed PR or superseded head');
+              return;
+            }
+            const comments = await github.paginate(github.rest.issues.listComments, {
+              owner, repo, issue_number, per_page: 100,
+            });
+            const existing = comments.find(comment =>
+              comment.user?.login === 'github-actions[bot]' && comment.body?.startsWith(marker));
+            if (existing) {
+              await github.rest.issues.updateComment({ owner, repo, comment_id: existing.id, body });
+            } else {
+              await github.rest.issues.createComment({ owner, repo, issue_number, body });
+            }
