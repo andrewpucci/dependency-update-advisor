@@ -1,3 +1,6 @@
+import fs from 'node:fs/promises';
+import { isAbsolute, join, relative, sep } from 'node:path';
+
 const CONFIG_FILE = '.github/dependabot-review.json';
 const MAX_CONFIG_BYTES = 16_384;
 const VERDICTS = ['merge', 'merge_with_followups', 'do_not_merge'] as const;
@@ -144,4 +147,74 @@ export function parseReviewConfig(text: string): ConfigResult {
   if (context?.excerptFiles) config.context.excerptFiles = [...context.excerptFiles];
   config.policy.verdicts = { ...config.policy.verdicts, ...overrides };
   return { ok: true, config, origin: 'file', overrides };
+}
+function contained(root: string, path: string): boolean {
+  const difference = relative(root, path);
+  return difference !== '..' && !difference.startsWith(`..${sep}`) && !isAbsolute(difference);
+}
+
+/** The caller owns checkout trust and must keep it unchanged throughout loading. */
+export async function loadTrustedReviewConfig(checkoutRoot: string): Promise<ConfigResult> {
+  try {
+    const root = await fs.realpath(checkoutRoot);
+    if (!(await fs.stat(root)).isDirectory()) return failure('path');
+    let path = root;
+    for (const [index, component] of ['.github', 'dependabot-review.json'].entries()) {
+      path = join(path, component);
+      let entry;
+      try {
+        entry = await fs.lstat(path);
+      } catch (error) {
+        if (
+          typeof error === 'object' &&
+          error !== null &&
+          'code' in error &&
+          error.code === 'ENOENT'
+        ) {
+          return { ok: true, config: defaultConfig(), origin: 'missing', overrides: {} };
+        }
+        throw error;
+      }
+      try {
+        path = await fs.realpath(path);
+      } catch (error) {
+        if (entry.isSymbolicLink()) return failure('path');
+        throw error;
+      }
+      if (!contained(root, path)) return failure('path');
+      const stat = await fs.stat(path);
+      if (index === 0 ? !stat.isDirectory() : !stat.isFile()) return failure('path');
+    }
+
+    const handle = await fs.open(path, 'r');
+    try {
+      if (!(await handle.stat()).isFile()) return failure('path');
+      const bytes = Buffer.alloc(MAX_CONFIG_BYTES + 1);
+      let count = 0;
+      while (count < bytes.length) {
+        const { bytesRead } = await handle.read({
+          buffer: bytes,
+          offset: count,
+          length: bytes.length - count,
+          position: null,
+        });
+        if (bytesRead === 0) break;
+        count += bytesRead;
+      }
+      if (count > MAX_CONFIG_BYTES) return failure('size');
+      let text: string;
+      try {
+        text = new TextDecoder('utf-8', { fatal: true, ignoreBOM: true }).decode(
+          bytes.subarray(0, count),
+        );
+      } catch {
+        return failure('encoding');
+      }
+      return parseReviewConfig(text);
+    } finally {
+      await handle.close();
+    }
+  } catch {
+    return failure('read');
+  }
 }

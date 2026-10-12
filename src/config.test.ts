@@ -1,7 +1,10 @@
 import { readFileSync } from 'node:fs';
+import fs from 'node:fs/promises';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 import { Ajv } from 'ajv';
-import { describe, expect, test } from 'vite-plus/test';
-import { parseReviewConfig } from './config.js';
+import { afterEach, describe, expect, test, vi } from 'vite-plus/test';
+import { loadTrustedReviewConfig, parseReviewConfig } from './config.js';
 
 const schema = JSON.parse(
   readFileSync(new URL('../schemas/review-config-v1.json', import.meta.url), 'utf8'),
@@ -140,4 +143,178 @@ describe('v1 document contract', () => {
       error: { category: 'size' },
     });
   });
+});
+
+const checkoutFixtures: string[] = [];
+async function checkout(text?: string | Uint8Array): Promise<string> {
+  const root = await fs.mkdtemp(join(tmpdir(), 'review-config-test-'));
+  checkoutFixtures.push(root);
+  if (text !== undefined) {
+    await fs.mkdir(join(root, '.github'));
+    await fs.writeFile(join(root, '.github/dependabot-review.json'), text);
+  }
+  return root;
+}
+
+afterEach(async () => {
+  vi.restoreAllMocks();
+  await Promise.all(
+    checkoutFixtures.splice(0).map((root) => fs.rm(root, { recursive: true, force: true })),
+  );
+});
+
+describe('trusted configuration loading', () => {
+  test('confirmed missing directory and file retain secure defaults', async () => {
+    const root = await checkout();
+    for (const createParent of [false, true]) {
+      if (createParent) await fs.mkdir(join(root, '.github'));
+      const result = await loadTrustedReviewConfig(root);
+      expect(result.ok).toBe(true);
+      if (!result.ok) throw new Error('expected missing defaults');
+      expect(result.origin).toBe('missing');
+      expect(result.config.analysis).toBeUndefined();
+      expect(result.config.context).toEqual({
+        sourceRoots: ['src'],
+        sendSourceExcerptsToModel: false,
+        excerptFiles: [],
+      });
+      expect(result.config.policy.verdicts).toEqual(defaults);
+      expect(result.overrides).toEqual({});
+    }
+  });
+
+  test('loads a present file and a contained file link', async () => {
+    const root = await checkout('{"version":1}');
+    expect(await loadTrustedReviewConfig(root)).toEqual(parseReviewConfig('{"version":1}'));
+    await fs.rename(join(root, '.github/dependabot-review.json'), join(root, 'config.json'));
+    await fs.symlink('../config.json', join(root, '.github/dependabot-review.json'));
+    expect(await loadTrustedReviewConfig(root)).toEqual(parseReviewConfig('{"version":1}'));
+  });
+
+  test.each(['parent', 'file'])('rejects an escaping %s link', async (kind) => {
+    const root = await checkout();
+    const outside = await checkout('{"version":1}');
+    if (kind === 'parent') {
+      await fs.symlink(join(outside, '.github'), join(root, '.github'));
+    } else {
+      await fs.mkdir(join(root, '.github'));
+      await fs.symlink(
+        join(outside, '.github/dependabot-review.json'),
+        join(root, '.github/dependabot-review.json'),
+      );
+    }
+    expect(await loadTrustedReviewConfig(root)).toMatchObject({
+      ok: false,
+      error: { category: 'path' },
+    });
+  });
+
+  test.each(['parent', 'file'])(
+    'rejects a dangling %s link instead of defaulting',
+    async (kind) => {
+      const root = await checkout();
+      if (kind === 'file') await fs.mkdir(join(root, '.github'));
+      await fs.symlink(
+        'absent',
+        join(root, kind === 'parent' ? '.github' : '.github/dependabot-review.json'),
+      );
+      expect(await loadTrustedReviewConfig(root)).toMatchObject({
+        ok: false,
+        error: { category: 'path' },
+      });
+    },
+  );
+
+  test('rejects missing checkout, invalid parent and config directories', async () => {
+    const root = await checkout();
+    expect(await loadTrustedReviewConfig(join(root, 'absent'))).toMatchObject({
+      ok: false,
+      error: { category: 'read' },
+    });
+    await fs.writeFile(join(root, '.github'), 'synthetic');
+    expect(await loadTrustedReviewConfig(root)).toMatchObject({
+      ok: false,
+      error: { category: 'path' },
+    });
+    await fs.unlink(join(root, '.github'));
+    await fs.mkdir(join(root, '.github/dependabot-review.json'), { recursive: true });
+    expect(await loadTrustedReviewConfig(root)).toMatchObject({
+      ok: false,
+      error: { category: 'path' },
+    });
+  });
+
+  test('read denial fails without echoing the OS error', async () => {
+    const root = await checkout('{"version":1}');
+    vi.spyOn(fs, 'open').mockRejectedValue(
+      Object.assign(new Error('synthetic-private-value'), { code: 'EACCES' }),
+    );
+    const result = await loadTrustedReviewConfig(root);
+    expect(result).toEqual({
+      ok: false,
+      error: { file: '.github/dependabot-review.json', category: 'read', field: '$' },
+    });
+  });
+
+  test('rejects malformed UTF-8 before parsing', async () => {
+    const root = await checkout(Buffer.from([0x7b, 0x80, 0x7d]));
+    expect(await loadTrustedReviewConfig(root)).toMatchObject({
+      ok: false,
+      error: { category: 'encoding' },
+    });
+  });
+
+  test('accepts the exact byte limit and rejects overflow', async () => {
+    const minimal = '{"version":1}';
+    const root = await checkout(minimal.padEnd(16_384));
+    expect(await loadTrustedReviewConfig(root)).toEqual(parseReviewConfig(minimal));
+    await fs.appendFile(join(root, '.github/dependabot-review.json'), ' ');
+    expect(await loadTrustedReviewConfig(root)).toMatchObject({
+      ok: false,
+      error: { category: 'size' },
+    });
+  });
+});
+
+describe('bounded descriptor lifecycle', () => {
+  test('continues after short reads and closes the handle', async () => {
+    const root = await checkout('{"version":1}');
+    const handle = await fs.open(join(root, '.github/dependabot-review.json'), 'r');
+    const read = handle.read.bind(handle);
+    const spy = vi
+      .spyOn(handle, 'read')
+      .mockImplementation(async (options) =>
+        read({ ...options, length: Math.min(options?.length ?? 0, 2) }),
+      );
+    const close = vi.spyOn(handle, 'close');
+    vi.spyOn(fs, 'open').mockResolvedValue(handle);
+    expect(await loadTrustedReviewConfig(root)).toEqual(parseReviewConfig('{"version":1}'));
+    expect(spy.mock.calls.length).toBeGreaterThan(2);
+    expect(close).toHaveBeenCalledOnce();
+  });
+
+  test.each(['read', 'stat', 'encoding', 'json', 'size'])(
+    'closes the handle after %s failure',
+    async (kind) => {
+      const content =
+        kind === 'size'
+          ? Buffer.alloc(16_385, 32)
+          : kind === 'encoding'
+            ? Buffer.from([0x80])
+            : Buffer.from('{');
+      const root = await checkout(content);
+      const handle = await fs.open(join(root, '.github/dependabot-review.json'), 'r');
+      const close = vi.spyOn(handle, 'close');
+      vi.spyOn(fs, 'open').mockResolvedValue(handle);
+      if (kind === 'read')
+        vi.spyOn(handle, 'read').mockRejectedValue(new Error('synthetic read error'));
+      if (kind === 'stat')
+        vi.spyOn(handle, 'stat').mockRejectedValue(new Error('synthetic stat error'));
+      expect(await loadTrustedReviewConfig(root)).toMatchObject({
+        ok: false,
+        error: { category: kind === 'stat' ? 'read' : kind },
+      });
+      expect(close).toHaveBeenCalledOnce();
+    },
+  );
 });
