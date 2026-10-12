@@ -67,6 +67,8 @@ gaps and an introduced vulnerability before parity is claimed.
 ## Spec index
 
 - [Review configuration](SPEC-review-config.md) — approved for planning.
+- [Trusted config parser](SPEC-config-parser.md) — approved for C1 execution
+  in `review-config`, scoped to issue #5.
 - [Shared workflow](SPEC-shared-review.md) — approved for planning.
 - [Analysis providers](SPEC-analysis-providers.md) — approved for planning.
 - [npm evidence](SPEC-npm-evidence.md) — approved for planning.

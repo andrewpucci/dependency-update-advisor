@@ -10,8 +10,8 @@ required shared behavior. No shared reviewer code or consumer workflow has
 been added; the old reviewer remains active. Repository CI now enforces lint,
 formatting, strict TypeScript checking, and finite Node tests.
 
-The [eight-module capability map](docs/specs/README.md)
-and all eight module specs are approved for planning. The
+The [capability map](docs/specs/README.md) and all eight module specs are
+approved for planning. The
 [comment-experience contract](docs/specs/SPEC-comment-experience.md) is also approved.
 The [B1 specification](docs/specs/SPEC-extraction-baseline.md) is approved.
 The [B2 local-tooling specification](docs/specs/SPEC-local-tooling.md) is approved
@@ -21,7 +21,8 @@ the implemented revision and clean-checkout results.
 ## Next action
 
 Review the [B3 verification](docs/verification/B3-ci-enforcement.md).
-Then select the next approved foundation task; action packaging remains A1.
+The [C1 parser spec](docs/specs/SPEC-config-parser.md) and working
+`tasks/plan.md` are approved for execution. Packaging remains A1.
 
 ## Where details live
 
@@ -36,5 +37,4 @@ Then select the next approved foundation task; action packaging remains A1.
   gitignored and transient per PR; durable contracts and evidence stay tracked.
 - Private consumer evidence and configuration stay in their own repositories.
 
-Update this checkpoint in place when the phase changes. Keep detailed decisions,
-task history, and session notes in their sources of truth rather than here.
+Update this checkpoint when phases change; keep session history in its source.
