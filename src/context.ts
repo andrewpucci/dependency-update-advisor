@@ -1,6 +1,6 @@
 import fs from 'node:fs/promises';
 import { isAbsolute, join, relative, sep } from 'node:path';
-import type { ConfigResult } from './config.js';
+import type { ConfigResult, ReviewConfig } from './config.js';
 
 const MAX_CONTEXT_DEPENDENCIES = 128;
 const MAX_CONTEXT_ID_CODE_UNITS = 256;
@@ -201,13 +201,7 @@ function fitsContextBudget(result: SourceContextSuccess): boolean {
   return Buffer.byteLength(JSON.stringify(reserved), 'utf8') <= MAX_SOURCE_CONTEXT_BYTES;
 }
 
-/** Caller owns checkout provenance and immutability; ready metadata is not model-ready context. */
-export async function validateSourceContextInput(
-  input: SourceContextInput,
-): Promise<SourceContextValidation> {
-  if (!input.config.ok) return failure('config');
-  if (input.visibility !== 'public' && input.visibility !== 'private') return failure('input');
-  const dependencies = input.dependencies;
+function validDependencies(dependencies: readonly DependencyIdentity[]): boolean {
   if (
     !Array.isArray(dependencies) ||
     dependencies.length > MAX_CONTEXT_DEPENDENCIES ||
@@ -225,9 +219,14 @@ export async function validateSourceContextInput(
     ) ||
     new Set(dependencies.map(({ id }) => id)).size !== dependencies.length
   )
-    return failure('input');
-  const identities = dependencies.map(({ id, name }) => ({ id, name }));
-  const context = input.config.config.context;
+    return false;
+  return true;
+}
+
+function validateContextConfig(
+  context: ReviewConfig['context'],
+  visibility: unknown,
+): SourceContextFailure | { ok: true; roots: string[]; files: string[] } {
   if (!Array.isArray(context.sourceRoots) || context.sourceRoots.length > MAX_SOURCE_ROOTS)
     return failure('config', 'context.sourceRoots');
   if (
@@ -243,17 +242,19 @@ export async function validateSourceContextInput(
   if (roots.some((path) => !canonicalPath(path) || credentialPath(path)))
     return failure('path', 'context.sourceRoots');
   if (files.some((path) => !canonicalPath(path))) return failure('path', 'context.excerptFiles');
-  if (context.sendSourceExcerptsToModel && input.visibility === 'private' && !files.length)
+  if (context.sendSourceExcerptsToModel && visibility === 'private' && !files.length)
     return failure('config', 'context.excerptFiles');
-  let checkoutRoot: string;
-  try {
-    checkoutRoot = await fs.realpath(input.checkoutRoot);
-    if (!(await fs.stat(checkoutRoot)).isDirectory()) return failure('path');
-  } catch {
-    return failure('read');
-  }
-  // Missing-file defaults configure no boundary, so only an existing file's paths are checked.
-  if (input.config.origin === 'missing') return { ok: true, state: 'disabled' };
+  return { ok: true, roots, files };
+}
+
+async function checkConfiguredPaths(
+  checkoutRoot: string,
+  roots: string[],
+  files: string[],
+): Promise<
+  | SourceContextFailure
+  | { ok: true; existingRoots: string[]; existingFiles: string[]; reasons: ContextReason[] }
+> {
   const existingRoots: string[] = [],
     existingFiles: string[] = [];
   const reasons: ContextReason[] = [];
@@ -268,6 +269,34 @@ export async function validateSourceContextInput(
       else if (!reasons.includes('missing-source')) reasons.push('missing-source');
     }
   }
+  return { ok: true, existingRoots, existingFiles, reasons };
+}
+
+/** Caller owns checkout provenance and immutability; ready metadata is not model-ready context. */
+export async function validateSourceContextInput(
+  input: SourceContextInput,
+): Promise<SourceContextValidation> {
+  if (!input.config.ok) return failure('config');
+  if (input.visibility !== 'public' && input.visibility !== 'private') return failure('input');
+  const dependencies = input.dependencies;
+  if (!validDependencies(dependencies)) return failure('input');
+  const identities = dependencies.map(({ id, name }) => ({ id, name }));
+  const context = input.config.config.context;
+  const validatedConfig = validateContextConfig(context, input.visibility);
+  if (!validatedConfig.ok) return validatedConfig;
+  const { roots, files } = validatedConfig;
+  let checkoutRoot: string;
+  try {
+    checkoutRoot = await fs.realpath(input.checkoutRoot);
+    if (!(await fs.stat(checkoutRoot)).isDirectory()) return failure('path');
+  } catch {
+    return failure('read');
+  }
+  // Missing-file defaults configure no boundary, so only an existing file's paths are checked.
+  if (input.config.origin === 'missing') return { ok: true, state: 'disabled' };
+  const checked = await checkConfiguredPaths(checkoutRoot, roots, files);
+  if (!checked.ok) return checked;
+  const { existingRoots, existingFiles, reasons } = checked;
   if (!context.sendSourceExcerptsToModel) return { ok: true, state: 'disabled' };
   if (!fitsContextBudget(emptyContext(identities))) return failure('budget');
   return {
@@ -507,6 +536,114 @@ function finishContext(result: SourceContextSuccess): SourceContextSuccess {
   return result;
 }
 
+function selectSourceFiles(
+  files: string[],
+  roots: string[],
+  result: SourceContextSuccess,
+): Set<string> {
+  const selected = new Set<string>();
+  for (const path of files) {
+    if (!roots.some((root) => path.startsWith(`${root}/`))) {
+      addReason(result, 'out-of-scope');
+      continue;
+    }
+    const exclusion = pathExclusion(path);
+    if (exclusion) addReason(result, exclusion);
+    else selected.add(path);
+  }
+  return selected;
+}
+
+async function trackedCandidates(
+  trackedFiles: AsyncIterable<string>,
+  selected: Set<string>,
+  result: SourceContextSuccess,
+): Promise<SourceContextFailure | { ok: true; paths: string[] }> {
+  const candidates = new Set<string>();
+  if (!selected.size) return { ok: true, paths: [] };
+  let entries = 0;
+  try {
+    for await (const path of trackedFiles) {
+      if (++entries > MAX_TRACKED_PATH_ENTRIES) {
+        addReason(result, 'inventory-limit');
+        break;
+      }
+      // Framework routes such as `app/[id]/page.tsx` are valid tracked paths that can
+      // never equal a configured literal path, so they are skipped rather than fatal.
+      if (!canonicalPath(path, true, true)) return failure('path');
+      if (!selected.has(path) || candidates.has(path)) continue;
+      if (candidates.size >= MAX_SOURCE_CANDIDATES) {
+        addReason(result, 'candidate-limit');
+        break;
+      }
+      candidates.add(path);
+      if (candidates.size === selected.size) break;
+    }
+  } catch {
+    return failure('read');
+  }
+  if (candidates.size < selected.size) addReason(result, 'missing-source');
+  return { ok: true, paths: [...candidates].sort() };
+}
+
+function sourceExcerpt(trimmed: string): string {
+  let excerpt = trimmed.slice(0, MAX_SOURCE_EXCERPT_CODE_UNITS);
+  const last = excerpt.charCodeAt(excerpt.length - 1);
+  if (last >= 0xd800 && last <= 0xdbff) excerpt = excerpt.slice(0, -1);
+  return excerpt;
+}
+
+function findSourceFact(
+  path: string,
+  lines: string[],
+  entry: DependencyContext,
+  result: SourceContextSuccess,
+): SourceFact | undefined {
+  const name = packageNamePattern(entry.name);
+  for (const line of lines) {
+    if (!line.includes(entry.name) || !name.test(line)) continue;
+    if (suspiciousLine(line)) {
+      addReason(result, 'suspicious-line', entry);
+      continue;
+    }
+    const trimmed = line.trimStart();
+    const excerpt = sourceExcerpt(trimmed);
+    // Judge the name against the whole line so a cut inside a longer name cannot pass.
+    const found = name.exec(trimmed);
+    if (!found || found.index + entry.name.length > excerpt.length) {
+      addReason(result, 'excerpt-limit', entry);
+      continue;
+    }
+    if (entry.facts.length >= MAX_SOURCE_FACTS_PER_DEPENDENCY) {
+      addReason(result, 'fact-limit', entry);
+      break;
+    }
+    return {
+      kind: 'package-usage',
+      path,
+      excerpt,
+      excerptTruncated: excerpt.length < trimmed.length,
+    };
+  }
+  return undefined;
+}
+
+// False stops collection immediately when the serialized context budget is exhausted.
+function collectFileFacts(path: string, lines: string[], result: SourceContextSuccess): boolean {
+  for (const entry of result.dependencies) {
+    const fact = findSourceFact(path, lines, entry, result);
+    if (!fact) continue;
+    entry.facts.push(fact);
+    if (!fitsContextBudget(result)) {
+      entry.facts.pop();
+      addReason(result, 'context-byte-limit');
+      return false;
+    }
+    if (fact.excerptTruncated) addReason(result, 'excerpt-limit', entry);
+  }
+  return true;
+}
+
 /** Returns only validated source facts. The caller owns trusted revision/inventory provenance. */
 export async function collectSourceContext(
   input: SourceContextInput,
@@ -517,43 +654,11 @@ export async function collectSourceContext(
     return { ok: true, status: 'disabled', dependencies: [], reasons: [] };
   const result = emptyContext(validated.dependencies, validated.reasons);
   if (validated.state === 'unavailable') return result;
-  const selected = new Set<string>();
-  for (const path of validated.files) {
-    if (!validated.roots.some((root) => path.startsWith(`${root}/`))) {
-      addReason(result, 'out-of-scope');
-      continue;
-    }
-    const exclusion = pathExclusion(path);
-    if (exclusion) addReason(result, exclusion);
-    else selected.add(path);
-  }
-  const candidates = new Set<string>();
-  if (selected.size) {
-    let entries = 0;
-    try {
-      for await (const path of input.trackedFiles) {
-        if (++entries > MAX_TRACKED_PATH_ENTRIES) {
-          addReason(result, 'inventory-limit');
-          break;
-        }
-        // Framework routes such as `app/[id]/page.tsx` are valid tracked paths that can
-        // never equal a configured literal path, so they are skipped rather than fatal.
-        if (!canonicalPath(path, true, true)) return failure('path');
-        if (!selected.has(path) || candidates.has(path)) continue;
-        if (candidates.size >= MAX_SOURCE_CANDIDATES) {
-          addReason(result, 'candidate-limit');
-          break;
-        }
-        candidates.add(path);
-        if (candidates.size === selected.size) break;
-      }
-    } catch {
-      return failure('read');
-    }
-    if (candidates.size < selected.size) addReason(result, 'missing-source');
-  }
+  const selected = selectSourceFiles(validated.files, validated.roots, result);
+  const candidates = await trackedCandidates(input.trackedFiles, selected, result);
+  if (!candidates.ok) return candidates;
   let bytesRead = 0;
-  for (const path of [...candidates].sort()) {
+  for (const path of candidates.paths) {
     const source = await readSource(
       validated.checkoutRoot,
       path,
@@ -572,39 +677,7 @@ export async function collectSourceContext(
       addReason(result, fileRejection);
       continue;
     }
-    for (const entry of result.dependencies) {
-      const name = packageNamePattern(entry.name);
-      for (const line of lines) {
-        if (!line.includes(entry.name) || !name.test(line)) continue;
-        if (suspiciousLine(line)) {
-          addReason(result, 'suspicious-line', entry);
-          continue;
-        }
-        const trimmed = line.trimStart();
-        let excerpt = trimmed.slice(0, MAX_SOURCE_EXCERPT_CODE_UNITS);
-        const last = excerpt.charCodeAt(excerpt.length - 1);
-        if (last >= 0xd800 && last <= 0xdbff) excerpt = excerpt.slice(0, -1);
-        // Judge the name against the whole line so a cut inside a longer name cannot pass.
-        const found = name.exec(trimmed);
-        if (!found || found.index + entry.name.length > excerpt.length) {
-          addReason(result, 'excerpt-limit', entry);
-          continue;
-        }
-        if (entry.facts.length >= MAX_SOURCE_FACTS_PER_DEPENDENCY) {
-          addReason(result, 'fact-limit', entry);
-          break;
-        }
-        const excerptTruncated = excerpt.length < trimmed.length;
-        entry.facts.push({ kind: 'package-usage', path, excerpt, excerptTruncated });
-        if (!fitsContextBudget(result)) {
-          entry.facts.pop();
-          addReason(result, 'context-byte-limit');
-          return finishContext(result);
-        }
-        if (excerptTruncated) addReason(result, 'excerpt-limit', entry);
-        break;
-      }
-    }
+    if (!collectFileFacts(path, lines, result)) return finishContext(result);
   }
   return finishContext(result);
 }
