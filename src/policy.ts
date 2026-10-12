@@ -308,3 +308,80 @@ export function evaluatePolicy(
     effectiveCeiling: strictest(evaluatedUnits.map((unit) => unit.effectiveCeiling)),
   };
 }
+
+export type AssessmentState =
+  | Readonly<{ state: 'assessed'; verdict?: Verdict }>
+  | Readonly<{
+      state: 'unavailable' | 'unattempted' | 'rejected';
+      reason: string;
+      nextAction: string;
+      coverageLimits: readonly string[];
+    }>;
+type MissingAssessment = Readonly<{
+  state: 'missing';
+  reason: string;
+  nextAction: string;
+  coverageLimits: readonly string[];
+}>;
+export type UnresolvedUnit = Readonly<{ unitId: string }> &
+  (Exclude<AssessmentState, { state: 'assessed' }> | MissingAssessment);
+export type PolicySummary = PolicyEvaluation &
+  Readonly<{
+    decision: Verdict | 'decision_incomplete';
+    assessments: readonly (Readonly<{ unitId: string }> & (AssessmentState | MissingAssessment))[];
+    unresolvedUnits: readonly UnresolvedUnit[];
+  }>;
+
+/** Uses only successful policy and caller-validated assessments keyed by unit ID.
+ * Missing assessments remain unresolved. Only verified finding holds outrank that queue;
+ * complete assessments are combined with their ceilings, never execution status.
+ * Returns fresh snapshots; ID/reference/model validation remains the provider's boundary.
+ */
+export function summarizePolicy(
+  policy: PolicyEvaluation,
+  states: Readonly<Partial<Record<string, AssessmentState>>>,
+): PolicySummary {
+  const snapshot = structuredClone(policy);
+  const assessments: PolicySummary['assessments'][number][] = [];
+  const unresolvedUnits: UnresolvedUnit[] = [];
+  const verdicts: Verdict[] = [];
+  for (const unit of snapshot.units) {
+    const state = Object.hasOwn(states, unit.id) ? states[unit.id] : undefined;
+    const assessment: AssessmentState | MissingAssessment = state
+      ? structuredClone(state)
+      : {
+          state: 'missing',
+          reason: 'No validated assessment was supplied.',
+          nextAction: 'Run analysis for this decision unit.',
+          coverageLimits: [],
+        };
+    assessments.push({ unitId: unit.id, ...assessment });
+    if (assessment.state === 'assessed') {
+      verdicts.push(
+        strictest([unit.effectiveCeiling, assessment.verdict ?? unit.effectiveCeiling]),
+      );
+    } else {
+      unresolvedUnits.push({
+        unitId: unit.id,
+        ...assessment,
+        coverageLimits: [
+          ...new Set([
+            ...unit.coverageLimits,
+            ...unit.gaps.flatMap((gap) => gap.coverageLimits),
+            ...assessment.coverageLimits,
+          ]),
+        ],
+      });
+    }
+  }
+  const verifiedHold = snapshot.units.some((unit) =>
+    unit.rules.some(
+      (trace) => trace.findingId !== undefined && trace.effectiveVerdict === 'do_not_merge',
+    ),
+  );
+  let decision: PolicySummary['decision'];
+  if (verifiedHold) decision = 'do_not_merge';
+  else if (unresolvedUnits.length) decision = 'decision_incomplete';
+  else decision = strictest(verdicts);
+  return { ...snapshot, decision, assessments, unresolvedUnits };
+}

@@ -5,7 +5,13 @@ import {
   type PolicyOverrides,
   type Verdict,
 } from './config.js';
-import { evaluatePolicy, type Finding, type PolicyUnit } from './policy.js';
+import {
+  evaluatePolicy,
+  summarizePolicy,
+  type AssessmentState,
+  type Finding,
+  type PolicyUnit,
+} from './policy.js';
 
 const day = 86_400_000;
 const now = Date.parse('2026-10-01T12:00:00Z');
@@ -460,6 +466,214 @@ describe('default policy evaluation', () => {
     const result = evaluatePolicy(config, [unit()], now);
     expect(result).toEqual(config);
     expect(result).not.toHaveProperty('policy');
+  });
+});
+
+describe('unresolved-decision handoff', () => {
+  const assessed: AssessmentState = { state: 'assessed' };
+  const unavailable: AssessmentState = {
+    state: 'unavailable',
+    reason: 'Analysis unavailable',
+    nextAction: 'Retry the analysis',
+    coverageLimits: ['Batch unavailable'],
+  };
+
+  test('an assessed relaxed gap preserves incomplete coverage and supplies no execution state', () => {
+    const policy = evaluate(
+      [exampleUnit(examples[0])],
+      configured({ incompleteEvidence: 'merge' }),
+    );
+    const result = summarizePolicy(policy, { 'unit-a': assessed });
+    expect(result.decision).toBe('merge');
+    expect(result.unresolvedUnits).toEqual([]);
+    expect(result.units).toEqual(policy.units);
+    expect(result.units[0].gaps).toHaveLength(1);
+    expect(result).not.toHaveProperty('executionStatus');
+    expect(result).not.toHaveProperty('success');
+  });
+
+  test('a tightened coverage gap supplies a ceiling but no verified finding or assessment', () => {
+    const policy = evaluate(
+      [exampleUnit(examples[0])],
+      configured({ incompleteEvidence: 'do_not_merge' }),
+    );
+    expect(policy.effectiveCeiling).toBe('do_not_merge');
+    expect(summarizePolicy(policy, {}).decision).toBe('decision_incomplete');
+    expect(summarizePolicy(policy, { 'unit-a': assessed }).decision).toBe('do_not_merge');
+    expect(summarizePolicy(policy, {}).units[0].findings).toEqual([]);
+  });
+
+  test('unchecked signals pass through without making an assessed unit unresolved', () => {
+    const policy = evaluate([
+      unit(
+        [],
+        [
+          {
+            id: 'publisher',
+            signal: 'publisher',
+            status: 'failed',
+            reason: 'Lookup unavailable',
+            coverageLimits: [],
+          },
+        ],
+      ),
+    ]);
+    const result = summarizePolicy(policy, { 'unit-a': assessed });
+    expect(result.decision).toBe('merge');
+    expect(result.unresolvedUnits).toEqual([]);
+    expect(result.units[0].uncheckedSignals).toEqual(policy.units[0].uncheckedSignals);
+  });
+
+  test.each(['unavailable', 'unattempted', 'rejected'] as const)(
+    'all named overrides relaxed cannot assess a %s unit',
+    (state) => {
+      const overrides = Object.fromEntries(
+        Object.keys(DEFAULT_VERDICTS).map((rule) => [rule, 'merge']),
+      ) as PolicyOverrides;
+      const policy = evaluate([exampleUnit(examples[1])], configured(overrides));
+      const assessment: AssessmentState = { ...unavailable, state };
+      const result = summarizePolicy(policy, { 'unit-a': assessment });
+      expect(result.decision).toBe('decision_incomplete');
+      expect(result.unresolvedUnits).toEqual([
+        {
+          unitId: 'unit-a',
+          state,
+          reason: unavailable.reason,
+          nextAction: unavailable.nextAction,
+          coverageLimits: ['Synthetic coverage limit', 'Batch unavailable'],
+        },
+      ]);
+      expect(result.units[0].findings).toEqual(policy.units[0].findings);
+    },
+  );
+
+  test('omitted assessment retains unit evidence limits and a concrete next action', () => {
+    const policy = evaluate([exampleUnit(examples[0])]);
+    const result = summarizePolicy(policy, {});
+    expect(result.decision).toBe('decision_incomplete');
+    expect(result.unresolvedUnits).toMatchObject([
+      {
+        unitId: 'unit-a',
+        state: 'missing',
+        coverageLimits: ['Synthetic coverage limit', 'Advisories unchecked'],
+      },
+    ]);
+    expect(result.unresolvedUnits[0].reason).not.toBe('');
+    expect(result.unresolvedUnits[0].nextAction).not.toBe('');
+    expect(result.units[0].gaps).toEqual(policy.units[0].gaps);
+  });
+
+  test.each(['vulnerability', 'malware'] as const)(
+    'effective %s hold retains every unresolved unit when all analysis is unavailable',
+    (kind) => {
+      const finding: Finding =
+        kind === 'vulnerability'
+          ? examples[1].finding!
+          : { ...fact, kind: 'malware', applicability: 'affects_proposed' };
+      const blocked = unit([finding]);
+      const second = {
+        ...exampleUnit(examples[0]),
+        id: 'unit-uv',
+        members: [{ ...member, ecosystem: 'uv' as const }],
+      };
+      const third = {
+        ...unit([{ ...fact, kind: 'informational', detail: 'Retained evidence' }]),
+        id: 'unit-actions',
+        members: [{ ...member, ecosystem: 'actions' as const }],
+      };
+      const policy = evaluate([blocked, second, third]);
+      const result = summarizePolicy(policy, {
+        'unit-a': unavailable,
+        'unit-uv': unavailable,
+        'unit-actions': unavailable,
+      });
+      expect(result.decision).toBe('do_not_merge');
+      expect(result.unresolvedUnits.map((value) => value.unitId)).toEqual([
+        'unit-a',
+        'unit-uv',
+        'unit-actions',
+      ]);
+      expect(result.units).toEqual(policy.units);
+      expect(result.units.flatMap((value) => value.findings)).toEqual([finding, third.findings[0]]);
+      expect(result.unresolvedUnits[1].coverageLimits).toContain('Advisories unchecked');
+      expect(result).not.toHaveProperty('analysis_unavailable');
+    },
+  );
+
+  test('relaxing the only blocker retains the finding and exposes another unresolved unit', () => {
+    const other = { ...unit(), id: 'other-unit' };
+    const policy = evaluate(
+      [exampleUnit(examples[1]), other],
+      configured({ highOrCriticalVulnerability: 'merge' }),
+    );
+    const result = summarizePolicy(policy, { 'unit-a': assessed, 'other-unit': unavailable });
+    expect(result.decision).toBe('decision_incomplete');
+    expect(result.units[0].findings).toEqual(policy.units[0].findings);
+    expect(result.unresolvedUnits.map((value) => value.unitId)).toEqual(['other-unit']);
+  });
+
+  test('complete validated assessments combine with unit ceilings and stricter advice', () => {
+    const policy = evaluate([unit(), { ...exampleUnit(examples[4]), id: 'followups' }]);
+    expect(summarizePolicy(policy, { 'unit-a': assessed, followups: assessed }).decision).toBe(
+      'merge_with_followups',
+    );
+    expect(
+      summarizePolicy(policy, {
+        'unit-a': { state: 'assessed', verdict: 'do_not_merge' },
+        followups: assessed,
+      }).decision,
+    ).toBe('do_not_merge');
+    expect(
+      summarizePolicy(evaluate([unit()]), {
+        'unit-a': { state: 'assessed', verdict: 'merge_with_followups' },
+      }).decision,
+    ).toBe('merge_with_followups');
+    expect(
+      summarizePolicy(policy, {
+        'unit-a': assessed,
+        followups: { state: 'assessed', verdict: 'merge' },
+      }).decision,
+    ).toBe('merge_with_followups');
+  });
+
+  test('a model hold cannot replace an unresolved decision when no policy hold exists', () => {
+    const policy = evaluate([unit(), { ...unit(), id: 'other' }]);
+    expect(
+      summarizePolicy(policy, {
+        'unit-a': { state: 'assessed', verdict: 'do_not_merge' },
+        other: unavailable,
+      }).decision,
+    ).toBe('decision_incomplete');
+  });
+
+  test('an unavailable unit is not made assessed by another ecosystem or inherited record key', () => {
+    const policy = evaluate([
+      { ...unit(), id: 'constructor' },
+      { ...unit(), id: 'unit-uv', members: [{ ...member, ecosystem: 'uv' as const }] },
+    ]);
+    const result = summarizePolicy(policy, { 'unit-uv': assessed });
+    expect(result.decision).toBe('decision_incomplete');
+    expect(result.unresolvedUnits.map((value) => value.unitId)).toEqual(['constructor']);
+  });
+
+  test('snapshots frozen inputs and assessments without cross-call output leakage', () => {
+    const policy = freeze(evaluate([exampleUnit(examples[1]), { ...unit(), id: 'other' }]));
+    const assessments = freeze({
+      'unit-a': unavailable,
+      other: { state: 'assessed' as const, verdict: 'merge' as const },
+    });
+    const before = JSON.stringify({ policy, assessments });
+    const first = summarizePolicy(policy, assessments);
+    const second = summarizePolicy(policy, assessments);
+    expect(first).toEqual(second);
+    Object.assign(first.units[0].findings[0].remediation, { 0: 'Changed output' });
+    Object.assign(first.unresolvedUnits[0].coverageLimits, { 0: 'Changed output' });
+    expect(summarizePolicy(policy, assessments)).toEqual(second);
+    expect(JSON.stringify({ policy, assessments })).toBe(before);
+    expect(first.assessments).toEqual([
+      { unitId: 'unit-a', ...unavailable },
+      { unitId: 'other', state: 'assessed', verdict: 'merge' },
+    ]);
   });
 });
 
