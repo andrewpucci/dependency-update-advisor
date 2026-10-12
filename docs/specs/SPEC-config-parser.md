@@ -3,11 +3,10 @@
 Status: approved for C1 execution, 2026-10-11. Supporting contract for `review-config`
 in [the capability map](README.md), scoped to
 [issue #5: C1](https://github.com/andrewpucci/dependency-update-advisor/issues/5).
-Approval for planning: the user invoked `as-plan` after the draft review prompt
-on 2026-10-11. The approved [configuration module](SPEC-review-config.md)
-remains authoritative. Execution approval: the user answered `yes` to the
-C1 plan, including draft-07 and test-only `ajv@8.20.0`, and invoked
-`as-build auto` on 2026-10-11.
+Approval: this specification was approved for planning on 2026-10-11. The
+C1 implementation plan was approved for execution on the same date, including
+draft-07 and test-only `ajv@8.20.0`. The approved
+[configuration module](SPEC-review-config.md) remains authoritative.
 
 ## Objective
 
@@ -40,8 +39,7 @@ complete review coverage.
   Default policy values come from the source reviewer's
   [approved policy contract](https://github.com/andrewpucci/andrewpucci.com/blob/main/SPEC-review-policy.md),
   inspected at file blob `fe7ef40642e667046efe55b1d33903ae8c6c5368`.
-- The model-ID bound and lexical path rules below are C1 refinements accepted
-  for planning through the user's request to advance from draft review.
+- The model-ID bound and lexical path rules below are approved C1 refinements.
 
 ## Tech Stack
 
@@ -282,11 +280,11 @@ Do not claim C2, C3, workflow integration, or reviewer parity from C1 tests.
 5. The required quality commands pass on the same exact implemented revision,
    with outcomes and test counts recorded without broader parity claims.
 
-## Approval and Remaining Planning Choice
+## Approved Scope
 
-The request to proceed with `as-plan` accepts the model-ID bound, canonical
-path rules, empty-array behavior, default verdict mapping, and C1/C2/C3 split
-for planning. C2 retains final filesystem and disclosure validation.
+Approved C1 scope includes the model-ID bound, canonical path rules, empty-array
+behavior, default verdict mapping, and C1/C2/C3 split. C2 retains final
+filesystem and disclosure validation.
 
 The C1 implementation plan's draft-07 dialect and test-only `ajv@8.20.0`
 dependency are approved for execution. No C1 implementation choice remains open.
