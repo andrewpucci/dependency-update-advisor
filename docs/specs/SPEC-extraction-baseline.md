@@ -98,7 +98,9 @@ npm run format:check
 git diff --check
 ```
 
-The shared repository does not yet provide `check`, `test`, or `build` scripts.
+At B1's drafting checkpoint, the shared repository did not provide `check`,
+`test`, or `build` scripts. See [the contributor checks](../../CONTRIBUTING.md#checks)
+for current commands; action packaging adds `npm run build` in A1.
 
 ## Project Structure
 

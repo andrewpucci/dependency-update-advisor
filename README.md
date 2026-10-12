@@ -11,6 +11,9 @@ for planning. This repository has no runnable shared reviewer or published
 reusable review workflow. Do not point consumer repositories at it until
 implementation, parity checks, and the staged cutover are complete.
 
+The [C1 config parser](src/config.ts) and [v1 schema](schemas/review-config-v1.json)
+are implemented and [locally verified](docs/verification/C1-config-parser.md).
+
 ## V1 scope
 
 - A SHA-pinned reusable GitHub Actions workflow and reviewer action.
