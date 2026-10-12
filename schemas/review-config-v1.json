@@ -1,0 +1,134 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "title": "Dependabot review configuration v1",
+  "description": "Trusted repository choices. Runtime loading, disclosure and credential checks remain required.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["version"],
+  "properties": {
+    "version": {
+      "type": "integer",
+      "const": 1,
+      "default": 1
+    },
+    "analysis": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["provider", "model"],
+      "properties": {
+        "provider": {
+          "type": "string",
+          "const": "mistral"
+        },
+        "model": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 128,
+          "pattern": "^[A-Za-z0-9][A-Za-z0-9._-]*(?![\\s\\S])"
+        }
+      }
+    },
+    "context": {
+      "type": "object",
+      "additionalProperties": false,
+      "default": {
+        "sourceRoots": ["src"],
+        "sendSourceExcerptsToModel": false,
+        "excerptFiles": []
+      },
+      "properties": {
+        "sourceRoots": {
+          "type": "array",
+          "maxItems": 16,
+          "items": {
+            "$ref": "#/definitions/relativePath"
+          },
+          "default": ["src"]
+        },
+        "sendSourceExcerptsToModel": {
+          "type": "boolean",
+          "default": false
+        },
+        "excerptFiles": {
+          "type": "array",
+          "maxItems": 128,
+          "uniqueItems": true,
+          "default": [],
+          "items": {
+            "type": "string",
+            "allOf": [
+              {
+                "$ref": "#/definitions/relativePath"
+              },
+              {
+                "not": {
+                  "pattern": "[*?\\[\\]{}]"
+                }
+              }
+            ]
+          }
+        }
+      }
+    },
+    "policy": {
+      "type": "object",
+      "additionalProperties": false,
+      "default": {
+        "verdicts": {
+          "incompleteEvidence": "merge_with_followups",
+          "highOrCriticalVulnerability": "do_not_merge",
+          "moderateOrLowVulnerability": "merge_with_followups",
+          "incompatibleMigration": "do_not_merge",
+          "applicableCodemod": "merge_with_followups"
+        }
+      },
+      "properties": {
+        "verdicts": {
+          "type": "object",
+          "additionalProperties": false,
+          "default": {
+            "incompleteEvidence": "merge_with_followups",
+            "highOrCriticalVulnerability": "do_not_merge",
+            "moderateOrLowVulnerability": "merge_with_followups",
+            "incompatibleMigration": "do_not_merge",
+            "applicableCodemod": "merge_with_followups"
+          },
+          "properties": {
+            "incompleteEvidence": {
+              "type": "string",
+              "enum": ["merge", "merge_with_followups", "do_not_merge"],
+              "default": "merge_with_followups"
+            },
+            "highOrCriticalVulnerability": {
+              "type": "string",
+              "enum": ["merge", "merge_with_followups", "do_not_merge"],
+              "default": "do_not_merge"
+            },
+            "moderateOrLowVulnerability": {
+              "type": "string",
+              "enum": ["merge", "merge_with_followups", "do_not_merge"],
+              "default": "merge_with_followups"
+            },
+            "incompatibleMigration": {
+              "type": "string",
+              "enum": ["merge", "merge_with_followups", "do_not_merge"],
+              "default": "do_not_merge"
+            },
+            "applicableCodemod": {
+              "type": "string",
+              "enum": ["merge", "merge_with_followups", "do_not_merge"],
+              "default": "merge_with_followups"
+            }
+          }
+        }
+      }
+    }
+  },
+  "definitions": {
+    "relativePath": {
+      "type": "string",
+      "minLength": 1,
+      "pattern": "^(?![A-Za-z]:)(?![\\s\\S]*[\\\\\\u0000-\\u001f\\u007f-\\u009f])[^./][^/]*(?:/[^./][^/]*)*(?![\\s\\S])"
+    }
+  }
+}
