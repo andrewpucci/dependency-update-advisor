@@ -152,3 +152,25 @@ C1's loader assumes the supplied trusted checkout stays unchanged during
 loading; it does not attest to that trust or protect a concurrently replaced
 checkout. These integration, disclosure, and policy behaviors were not tested
 or claimed by C1.
+
+## Review follow-up: nonempty context preservation
+
+Review of `7055d85ecb91cfba52e0a04d29c251e9b36582c3` found that replacing
+both returned context arrays with empty arrays still passed all 237 tests.
+Commit `e14c649c35e9c3e619902ac9363764c87f041e81` adds one assertion that
+nonempty, nondefault source roots and exact excerpt files survive parsing.
+Runtime code and dependencies are unchanged.
+
+The new test was copied into the isolated validation checkout. Discarding
+only `sourceRoots`, then only `excerptFiles`, each made
+`npm test -- --run src/config.test.ts` exit 1 with one failed and 232 passed
+tests. Both probes were restored; `git diff --exit-code` confirmed the
+isolated checkout was unchanged. The normal focused run passed all 233
+config tests.
+
+The precommit working tree based on `7055d85`, containing only the new test
+and committed unchanged as `e14c649`, passed `npm run lint`,
+`npm run format:check`, `npm run check`, `npm test -- --run` (three files,
+238 tests), and `git diff --check`. This follow-up closes the reported
+coverage gap; the original clean-checkout results above retain their original
+revision and counts. No new installation, build, or CI result is claimed.
