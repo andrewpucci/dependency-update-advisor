@@ -243,8 +243,12 @@ export function evaluatePolicy(
               advisory.memberId === finding.memberId &&
               advisory.applicability === 'resolved_by_proposed',
           );
-          if (finding.publishedAt !== undefined) {
-            const recheckAt = finding.publishedAt + policy.minimumReleaseAgeDays * 86_400_000;
+          const recheckAt =
+            finding.publishedAt === undefined
+              ? undefined
+              : finding.publishedAt + policy.minimumReleaseAgeDays * 86_400_000;
+          // Only a release inside the window can be exempted from recentRelease.
+          if (recheckAt !== undefined && evaluatedAt < recheckAt) {
             if (fixes.length)
               releaseExemptions.push({
                 unitId: unit.id,
@@ -252,7 +256,7 @@ export function evaluatePolicy(
                 findingId: finding.id,
                 advisoryIds: fixes.map((advisory) => advisory.id),
               });
-            else if (evaluatedAt < recheckAt) apply('recentRelease', { ...identity, recheckAt });
+            else apply('recentRelease', { ...identity, recheckAt });
           }
           if (finding.deprecated) apply('deprecatedRelease', identity);
           break;
