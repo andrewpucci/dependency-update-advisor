@@ -3,9 +3,9 @@
 Status: approved for B3 execution, 2026-10-04. Supporting contract for `shared-review`
 in [the capability map](README.md), scoped to
 [issue #4: B3](https://github.com/andrewpucci/dependency-update-advisor/issues/4).
-Approval: the user requested as-plan on 2026-10-04, then as-build auto on
-2026-10-04, approving this specification and its three-task implementation
-plan for autonomous execution, including observed CI verification.
+Approval: this specification and its three-task implementation plan were
+approved for autonomous execution on 2026-10-04, including observed CI
+verification.
 The approved [shared-review contract](SPEC-shared-review.md) and
 [local-tooling contract](SPEC-local-tooling.md) remain authoritative.
 
