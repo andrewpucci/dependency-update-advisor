@@ -5,6 +5,7 @@ import type { ConfigResult } from './config.js';
 const MAX_CONTEXT_DEPENDENCIES = 128;
 const MAX_CONTEXT_ID_CODE_UNITS = 256;
 const MAX_CONTEXT_PATH_BYTES = 1_024;
+const MAX_SOURCE_ROOTS = 16;
 const MAX_SOURCE_CONTEXT_BYTES = 65_536;
 const MAX_TRACKED_PATH_ENTRIES = 10_000;
 const MAX_SOURCE_CANDIDATES = 128;
@@ -210,20 +211,33 @@ export async function validateSourceContextInput(
   if (
     !Array.isArray(dependencies) ||
     dependencies.length > MAX_CONTEXT_DEPENDENCIES ||
-    dependencies.some(({ id, name }) =>
-      [id, name].some(
-        (value) =>
-          typeof value !== 'string' ||
-          !value.length ||
-          value.length > MAX_CONTEXT_ID_CODE_UNITS ||
-          Array.from(value).some(control),
-      ),
+    Array.from(dependencies).some(
+      (dependency) =>
+        !dependency ||
+        typeof dependency !== 'object' ||
+        [dependency.id, dependency.name].some(
+          (value) =>
+            typeof value !== 'string' ||
+            !value.length ||
+            value.length > MAX_CONTEXT_ID_CODE_UNITS ||
+            Array.from(value).some(control),
+        ),
     ) ||
     new Set(dependencies.map(({ id }) => id)).size !== dependencies.length
   )
     return failure('input');
   const identities = dependencies.map(({ id, name }) => ({ id, name }));
   const context = input.config.config.context;
+  if (!Array.isArray(context.sourceRoots) || context.sourceRoots.length > MAX_SOURCE_ROOTS)
+    return failure('config', 'context.sourceRoots');
+  if (
+    !Array.isArray(context.excerptFiles) ||
+    context.excerptFiles.length > MAX_SOURCE_CANDIDATES ||
+    new Set(context.excerptFiles).size !== context.excerptFiles.length
+  )
+    return failure('config', 'context.excerptFiles');
+  if (typeof context.sendSourceExcerptsToModel !== 'boolean')
+    return failure('config', 'context.sendSourceExcerptsToModel');
   const roots = [...context.sourceRoots];
   const files = [...context.excerptFiles];
   if (roots.some((path) => !canonicalPath(path) || credentialPath(path)))
@@ -402,9 +416,9 @@ async function readSource(
   | {
       ok: true;
       bytes: number;
-      text?: string;
-      reason?: ContextReason;
+      text: string;
     }
+  | { ok: true; bytes: number; reason: ContextReason }
 > {
   if (remaining === 0) return { ok: true, bytes: 0, reason: 'total-read-limit' };
   const checked = await checkPath(root, path, false, 'context.excerptFiles');
@@ -523,12 +537,12 @@ export async function collectSourceContext(
     );
     if (!source.ok) return source;
     bytesRead += source.bytes;
-    if (source.reason) {
+    if ('reason' in source) {
       addReason(result, source.reason);
       if (source.reason === 'total-read-limit') break;
       continue;
     }
-    const lines = source.text!.split(/\r\n|[\n\r\u2028\u2029]/u);
+    const lines = source.text.split(/\r\n|[\n\r\u2028\u2029]/u);
     const fileRejection = blockedFile(lines);
     if (fileRejection) {
       addReason(result, fileRejection);

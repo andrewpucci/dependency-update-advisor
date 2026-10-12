@@ -3,9 +3,9 @@
 Status: approved for C2 execution, 2026-10-11. Supporting contract for
 `review-config` in [the capability map](README.md), scoped to
 [issue #6: C2](https://github.com/andrewpucci/dependency-update-advisor/issues/6).
-Approval: the user approved this specification for planning on 2026-10-11,
-then approved autonomous execution of the C2 implementation plan on the same
-date. Approval includes exact-file selection for both visibilities, the
+Approval: this specification and the C2 implementation plan are approved for
+execution, 2026-10-11. Approved scope includes exact-file selection for both
+visibilities, the
 interface, predicates, and resource ceilings below. The approved
 [configuration module](SPEC-review-config.md) remains authoritative.
 
@@ -33,10 +33,10 @@ An empty context result is not evidence that a dependency has no usages.
   Workflow integration must establish their trust and keep the checkout
   unchanged throughout collection. C2 does not attest to checkout trust or
   protect a concurrently replaced checkout.
-- The user selected rejection of all source-path symlinks, including contained
-  links, on 2026-10-11. This applies to roots, intervening directories, and
-  excerpt files. C1's config-file link behavior stays unchanged. Approval of
-  the approved implementation plan preserves this choice.
+- Source-path symlinks, including contained links, are ineligible under
+  [ADR 0004](../adr/0004-reject-source-symlinks.md). This applies to roots,
+  intervening directories, and excerpt files. C1's config-file link behavior
+  stays unchanged.
 - The [selected B1 baseline](../../tests/parity/README.md) supplies the existing
   source suffix family, 500-character excerpt cap, and 20-fact cap per
   dependency. Its manifest and workflow context are not source-file opt-in;
@@ -72,7 +72,7 @@ npm run format:check
 git diff --check
 ```
 
-Focused context tests become executable only after the test file exists:
+Run the focused context tests with:
 
 ```sh
 npm test -- --run src/context.test.ts
@@ -323,6 +323,8 @@ limit. Preserve `excerptTruncated` and partial status for a shortened safe line.
 Measure `Buffer.byteLength(JSON.stringify(result), 'utf8')` before retaining
 each fact. Reserve mandatory identity/status metadata first; if that alone
 exceeds the output budget, return a small budget failure without source reads.
+Reservation includes every possible fixed reason and the widest status value
+for every identity, so final omission metadata cannot overflow the packet.
 Account for final reason/status changes and JSON escaping. Never remove an
 identity or an unavailable entry to make the serialized result fit.
 
