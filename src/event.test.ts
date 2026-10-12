@@ -154,6 +154,7 @@ test.each([
   'timed_out',
   'action_required',
   'stale',
+  'startup_failure',
 ])('accepts completed CI conclusion %s without changing it', async (conclusion) => {
   const f = fixture();
   f.run.conclusion = conclusion;
@@ -162,6 +163,7 @@ test.each([
   expect(result.kind).toBe('verified');
   if (result.kind !== 'verified') throw new Error('expected binding');
   expect(result.binding.conclusion).toBe(conclusion);
+  expect(await reverifyReviewBinding(result.binding, f.reads)).toEqual({ kind: 'fresh' });
 });
 
 test('accepts a new CI attempt initiated by a human', async () => {

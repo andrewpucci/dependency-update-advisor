@@ -7,6 +7,7 @@ const CONCLUSIONS = [
   'timed_out',
   'action_required',
   'stale',
+  'startup_failure',
 ] as const;
 const RUN_STATUSES = ['completed', 'queued', 'in_progress', 'requested', 'waiting', 'pending'];
 
