@@ -131,7 +131,11 @@ records remain in consumer repositories.
 6. Preserve C1's canonical relative-path rules. Treat roots as literal
    directories; reject glob syntax rather than interpreting root patterns.
    Never normalize an absolute path, traversal, hidden segment, or ambiguous
-   separator into an acceptable input.
+   separator into an acceptable input. Trusted inventory paths follow the same
+   rules except that glob characters (`*?[]{}`) are legal there, since
+   framework routes such as `app/[id]/page.tsx` are tracked files. Such a path
+   is skipped without a read because it cannot equal a configured literal
+   path; any other malformed inventory path fails with field `$`.
 7. Resolve the supplied checkout root, verify it is a directory, and enforce
    component-aware containment beneath it. A sibling with a common path
    prefix is outside. Inspect every component below the checkout with link
@@ -163,7 +167,12 @@ records remain in consumer repositories.
 
 12. Associate excerpts only with supplied dependency identities. For each
     dependency/file pair, select at most one eligible line containing the
-    dependency name. Emit its canonical relative path and at most 500 UTF-16
+    dependency name as a whole package token: not preceded by a package-name
+    character, `@`, `/`, or `.`, and not followed by a package-name character
+    or `.` plus one (`react` matches `react/jsx-runtime`, not `react-dom`,
+    `preact`, `@scope/react`, `./react`, or `lodash.merge` for `lodash`).
+    The token check uses the whole line, so truncation cannot hide a longer
+    name. Emit its canonical relative path and at most 500 UTF-16
     code units, preserving complete characters; never adjacent lines or a
     whole file. If shortening removes the dependency name, omit that excerpt.
     Use deterministic ordering and deduplicate overlapping roots and repeated
@@ -362,21 +371,22 @@ guarantee. Private adoption still requires exact-list and no-send inspection.
 All line checks are case-insensitive where meaningful and run before trimming
 or truncation. Rejection drops content; it never redacts then sends the rest.
 
-| Trigger                    | Approved rule                                                                                                                                                                                                                                                                                                                                                                                                              |
-| -------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| Sensitive assignments      | A field/identifier immediately followed by optional closing quote and `:` or `=`; normalize camelCase, `-`, and `_`, then match `password`, `passwd`, `pwd`, `secret`, `secrets`, `token`, `accessToken`, `refreshToken`, `idToken`, `apiKey`, `clientSecret`, `credential`, `credentials`, `authorization`, `privateKey`, `sessionKey`, `signingKey`, `cookie`, `connectionString`, `dsn`, `email`, `phone`, or `address` |
-| Authorization values       | `Bearer` or `Basic` followed by whitespace and a nonempty token, or an authorization header/assignment                                                                                                                                                                                                                                                                                                                     |
-| Recognizable key strings   | `gh[pousr]_` plus at least 20 alphanumeric characters; `github_pat_` plus at least 20 alphanumeric/underscore characters; `AKIA`/`ASIA` plus 16 uppercase alphanumeric characters; `sk-` plus at least 16 alphanumeric/underscore/hyphen characters                                                                                                                                                                        |
-| URL credentials            | A URI containing `://`, nonempty user-info, and `@` before the next slash/whitespace/quote                                                                                                                                                                                                                                                                                                                                 |
-| Private values             | A conventional email literal, or a literal local home path beginning `/Users/`, `/home/`, or a Windows drive plus `Users`                                                                                                                                                                                                                                                                                                  |
-| Private-key blocks         | Any `-----BEGIN ...PRIVATE KEY-----` marker disqualifies the whole file, including lines without markers                                                                                                                                                                                                                                                                                                                   |
-| Multiline sensitive values | A sensitive assignment with a value starting a brace, bracket, or template literal, or an unclosed quoted value, disqualifies the whole file rather than implementing language-specific block parsing                                                                                                                                                                                                                      |
+| Trigger                    | Approved rule                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                         |
+| -------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Sensitive assignments      | A field/identifier immediately followed by optional closing quote and `:` or `=`; normalize camelCase, `-`, and `_` into words, then match when the whole identifier or its trailing words spell `password`, `passwd`, `pwd`, `secret`, `secrets`, `token`, `accessToken`, `refreshToken`, `idToken`, `apiKey`, `clientSecret`, `credential`, `credentials`, `authorization`, `privateKey`, `sessionKey`, `signingKey`, `accessKey`, `secretKey`, `cookie`, `connectionString`, `dsn`, `email`, `phone`, or `address` |
+| Authorization values       | `Bearer` or `Basic` followed by whitespace and a nonempty token, or an authorization header/assignment                                                                                                                                                                                                                                                                                                                                                                                                                |
+| Recognizable key strings   | `gh[pousr]_` plus at least 20 alphanumeric characters; `github_pat_` plus at least 20 alphanumeric/underscore characters; `AKIA`/`ASIA` plus 16 uppercase alphanumeric characters; `sk-` plus at least 16 alphanumeric/underscore/hyphen characters                                                                                                                                                                                                                                                                   |
+| URL credentials            | A URI containing `://`, nonempty user-info, and `@` before the next slash/whitespace/quote                                                                                                                                                                                                                                                                                                                                                                                                                            |
+| Private values             | A conventional email literal, or a literal local home path beginning `/Users/`, `/home/`, or a Windows drive plus `Users`                                                                                                                                                                                                                                                                                                                                                                                             |
+| Private-key blocks         | Any `-----BEGIN ...PRIVATE KEY-----` marker disqualifies the whole file, including lines without markers                                                                                                                                                                                                                                                                                                                                                                                                              |
+| Multiline sensitive values | A sensitive assignment with a value starting a brace, bracket, or template literal, or an unclosed quoted value, disqualifies the whole file rather than implementing language-specific block parsing                                                                                                                                                                                                                                                                                                                 |
 
 Ordinary import statements and scoped package names must have safe negative
-fixtures; a function/variable merely named `tokenizer` is not a sensitive
-assignment. A suspicious inline line may be skipped in favor of a later safe
-matching line. Reject NUL/control-bearing source lines; permit tabs as source
-whitespace. Whole-file private-key/multiline rejection is intentionally stricter.
+fixtures; a function/variable merely named `tokenizer` or `maxTokens` is not a
+sensitive assignment, while `NPM_TOKEN` and `db_password` are. A suspicious
+inline line may be skipped in favor of a later safe matching line. Reject
+NUL/control-bearing source lines; permit tabs as source whitespace. Whole-file
+private-key/multiline rejection is intentionally stricter.
 Other unrecognized sensitive literals remain an acknowledged disclosure limit.
 Source comments or strings that instruct a model are data, never instructions.
 

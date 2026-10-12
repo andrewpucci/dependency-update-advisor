@@ -169,13 +169,13 @@ test.each(['TESTS/usage.ts', 'CONFig/client.ts', 'Assets/view.ts', 'id_rsa.ts', 
 
 test('exact 500-unit excerpts and multibyte file-byte boundaries are enforced', async () => {
   const root = await fixture();
-  await source(root, 'src/a.ts', `example-package${'x'.repeat(485)}`);
+  await source(root, 'src/a.ts', `example-package ${'x'.repeat(484)}`);
   let result = await collectSourceContext(enabled(root));
   if (!result.ok) throw new Error('expected context');
   expect(result.status).toBe('available');
   expect(result.dependencies[0].facts[0].excerpt).toHaveLength(500);
   expect(result.dependencies[0].facts[0].excerptTruncated).toBe(false);
-  const text = `example-package${'é'.repeat(32_760)}x`;
+  const text = `example-package ${'é'.repeat(32_759)}xx`;
   expect(Buffer.byteLength(text)).toBe(65_536);
   await source(root, 'src/a.ts', text);
   result = await collectSourceContext(enabled(root));
@@ -362,6 +362,11 @@ test('exact lists intersect roots and checked-in membership without discovering 
 test.each([
   'example-package; token = "synthetic"',
   'safe = "example-package"; api_key: "synthetic"',
+  'example-package; NPM_TOKEN = "synthetic"',
+  'example-package; db_password: "synthetic"',
+  'example-package; githubApiKey = "synthetic"',
+  'example-package; AWS_SECRET_ACCESS_KEY="synthetic"',
+  'example-package; "stripe-secret-key": "synthetic"',
   'example-package; Authorization: Bearer synthetic',
   'example-package; Basic c3ludGhldGlj',
   `example-package; ghp_${'a'.repeat(20)}`,
@@ -435,7 +440,7 @@ test.each(['\n', '\r\n', '\r', '\u2028', '\u2029'])(
 
 test('line and fact caps retain identity, complete characters, and visible limits', async () => {
   const root = await fixture();
-  await source(root, 'src/a.ts', `example-package${'x'.repeat(484)}😀`);
+  await source(root, 'src/a.ts', `example-package ${'x'.repeat(483)}😀`);
   let result = await collectSourceContext(enabled(root));
   expect(result).toMatchObject({
     ok: true,
@@ -444,7 +449,7 @@ test('line and fact caps retain identity, complete characters, and visible limit
   });
   if (!result.ok) throw new Error('expected source context');
   expect(result.dependencies[0].facts[0].excerpt).toHaveLength(499);
-  await source(root, 'src/a.ts', `${'x'.repeat(501)}example-package`);
+  await source(root, 'src/a.ts', `${'x'.repeat(500)} example-package`);
   expect(await collectSourceContext(enabled(root))).toMatchObject({
     ok: true,
     dependencies: [{ facts: [], reasons: ['excerpt-limit'] }],
@@ -460,12 +465,12 @@ test('line and fact caps retain identity, complete characters, and visible limit
 
 test('file cap distinguishes complete exact-boundary content from an overflow', async () => {
   const root = await fixture();
-  await source(root, 'src/a.ts', `example-package${'x'.repeat(65_536 - 15)}`);
+  await source(root, 'src/a.ts', `example-package ${'x'.repeat(65_536 - 16)}`);
   expect(await collectSourceContext(enabled(root))).toMatchObject({
     ok: true,
     dependencies: [{ facts: [{ excerptTruncated: true }] }],
   });
-  await source(root, 'src/a.ts', `example-package${'x'.repeat(65_537 - 15)}`);
+  await source(root, 'src/a.ts', `example-package ${'x'.repeat(65_537 - 16)}`);
   expect(await collectSourceContext(enabled(root))).toMatchObject({
     ok: true,
     dependencies: [{ facts: [], reasons: ['file-byte-limit'] }],
@@ -668,7 +673,7 @@ test('all 128 exact files remain bounded and no-match is unavailable evidence', 
 test('total returned bytes, including overflow probes, never exceed one MiB', async () => {
   const root = await fixture();
   const paths = Array.from({ length: 18 }, (_, i) => `src/usage-${String(i).padStart(2, '0')}.ts`);
-  for (const path of paths) await source(root, path, `example-package${'x'.repeat(65_537 - 15)}`);
+  for (const path of paths) await source(root, path, `example-package ${'x'.repeat(65_537 - 16)}`);
   const realOpen = fs.open;
   let bytes = 0,
     handles = 0,
@@ -773,8 +778,11 @@ test('serialization budget retains every identity and bounds UTF-8 plus JSON esc
 
 test.each([
   'import { tokenizer } from "example-package";',
-  'import token from "@scope/example-package";',
+  'import token from "@scope/pkg"; import "example-package";',
   '\texample-package',
+  'const maxTokens = 4; import "example-package";',
+  'const tokenizerName = "example-package";',
+  'import("example-package/subpath");',
 ])('ordinary names, scoped packages, and tabs are safe: %s', async (line) => {
   const root = await fixture();
   await source(root, 'src/a.ts', line);
@@ -782,6 +790,104 @@ test.each([
     ok: true,
     status: 'available',
     dependencies: [{ facts: [{ excerpt: line.trimStart() }] }],
+  });
+});
+
+test('a sensitive-suffix assignment opening a block rejects the whole file', async () => {
+  const root = await fixture();
+  await source(root, 'src/a.ts', 'import "example-package";\nconst NPM_TOKEN = `\nsynthetic\n`;');
+  expect(await collectSourceContext(enabled(root))).toMatchObject({
+    ok: true,
+    dependencies: [{ facts: [], reasons: ['suspicious-line'] }],
+  });
+});
+
+test.each([
+  ['react-dom', 'react'],
+  ['preact', 'react'],
+  ['@scope/react', 'react'],
+  ['./react', 'react'],
+  ['lodash.merge', 'lodash'],
+  ['reactive', 'react'],
+])('a longer name %s is not a use of %s', async (longer, name) => {
+  const root = await fixture();
+  await source(root, 'src/a.ts', `import x from "${longer}";`);
+  const request = enabled(root);
+  request.dependencies = [{ id: 'unit-1', name }];
+  expect(await collectSourceContext(request)).toMatchObject({
+    ok: true,
+    dependencies: [{ facts: [], reasons: ['no-match'] }],
+  });
+});
+
+test.each(['import x from "react";', 'import x from "react/jsx-runtime";', "require('react')"])(
+  'a whole-name occurrence is a use: %s',
+  async (line) => {
+    const root = await fixture();
+    await source(root, 'src/a.ts', line);
+    const request = enabled(root);
+    request.dependencies = [{ id: 'unit-1', name: 'react' }];
+    expect(await collectSourceContext(request)).toMatchObject({
+      ok: true,
+      status: 'available',
+      dependencies: [{ facts: [{ excerpt: line }] }],
+    });
+  },
+);
+
+test('unrelated near-name lines do not exhaust the fact cap', async () => {
+  const root = await fixture();
+  const noise = Array.from({ length: 25 }, () => 'import d from "react-dom";').join('\n');
+  await source(root, 'src/a.ts', `${noise}\nimport r from "react";`);
+  const request = enabled(root);
+  request.dependencies = [{ id: 'unit-1', name: 'react' }];
+  const result = await collectSourceContext(request);
+  expect(result).toMatchObject({
+    ok: true,
+    status: 'available',
+    dependencies: [{ facts: [{ excerpt: 'import r from "react";' }] }],
+  });
+});
+
+test('a truncated excerpt that ends inside a longer name does not count', async () => {
+  const root = await fixture();
+  await source(root, 'src/a.ts', `${'x'.repeat(494)} react-dom`);
+  const request = enabled(root);
+  request.dependencies = [{ id: 'unit-1', name: 'react' }];
+  expect(await collectSourceContext(request)).toMatchObject({
+    ok: true,
+    dependencies: [{ facts: [] }],
+  });
+});
+
+test.each(['app/[id]/page.tsx', 'src/routes/[...slug]/+page.svelte', 'src/{a}.ts', 'src/a*.ts'])(
+  'a tracked path with glob characters is skipped, not fatal: %s',
+  async (path) => {
+    const root = await fixture();
+    const request = enabled(root);
+    request.trackedFiles = (async function* () {
+      yield path;
+      yield 'src/a.ts';
+    })();
+    const open = vi.spyOn(fs, 'open');
+    expect(await collectSourceContext(request)).toMatchObject({
+      ok: true,
+      status: 'available',
+      dependencies: [{ facts: [{ path: 'src/a.ts' }] }],
+    });
+    expect(open).toHaveBeenCalledTimes(1);
+  },
+);
+
+test('a malformed inventory path reports the inventory, not the configured list', async () => {
+  const root = await fixture();
+  const request = enabled(root);
+  request.trackedFiles = (async function* () {
+    yield '/src/a.ts';
+  })();
+  expect(await collectSourceContext(request)).toMatchObject({
+    ok: false,
+    error: { category: 'path', field: '$' },
   });
 });
 
