@@ -7,7 +7,10 @@ Approval: this specification and the C2 implementation plan are approved for
 execution, 2026-10-11. Approved scope includes exact-file selection for both
 visibilities, the interface, predicates, and resource ceilings below.
 Amendment approved 2026-10-11: whole-token dependency matching, trailing-word
-sensitive assignments, and skipped glob-character inventory paths. The approved
+sensitive assignments, and skipped glob-character inventory paths.
+Amendment approved 2026-10-11: a sensitive assignment ending its line blocks
+the whole file, and a missing config file skips configured-path checks. The
+approved
 [configuration module](SPEC-review-config.md) remains authoritative.
 
 ## Objective
@@ -110,8 +113,9 @@ records remain in consumer repositories.
    return an explicit disabled result with zero excerpts. Do not enumerate
    source candidates or open their contents in this state. Path-validation
    metadata operations are permitted; opt-out is not permission to ignore
-   an invalid configured boundary. Dependency metadata and upstream evidence
-   remain available through their owning collectors.
+   an invalid configured boundary. A missing config file configures no
+   boundary, so its default roots are not checked. Dependency metadata and
+   upstream evidence remain available through their owning collectors.
 3. A private repository opting in requires a nonempty exact `excerptFiles`
    list. Missing or empty lists fail configuration validation before reading
    source contents, even when roots are empty. A nonempty list is permission
@@ -288,7 +292,8 @@ updated when a newly added file should contribute usage context.
 No automatic discovery or new C1 field is proposed. The inventory establishes
 checked-in membership only; it cannot nominate a file absent from the list.
 Validate configured path metadata first, so opt-out/empty selection cannot hide
-a source symlink or another invalid configured boundary.
+a source symlink or another invalid configured boundary. A present config file
+counts as configured even when it omits `context`.
 
 ### Resource Ceilings
 
@@ -381,7 +386,7 @@ or truncation. Rejection drops content; it never redacts then sends the rest.
 | URL credentials            | A URI containing `://`, nonempty user-info, and `@` before the next slash/whitespace/quote                                                                                                                                                                                                                                                                                                                                                                                                                            |
 | Private values             | A conventional email literal, or a literal local home path beginning `/Users/`, `/home/`, or a Windows drive plus `Users`                                                                                                                                                                                                                                                                                                                                                                                             |
 | Private-key blocks         | Any `-----BEGIN ...PRIVATE KEY-----` marker disqualifies the whole file, including lines without markers                                                                                                                                                                                                                                                                                                                                                                                                              |
-| Multiline sensitive values | A sensitive assignment with a value starting a brace, bracket, or template literal, or an unclosed quoted value, disqualifies the whole file rather than implementing language-specific block parsing                                                                                                                                                                                                                                                                                                                 |
+| Multiline sensitive values | A sensitive assignment with a value starting a brace, bracket, or template literal, an unclosed quoted value, or an `=` ending the line disqualifies the whole file rather than implementing language-specific block parsing; a sensitive key ending its line with `:` rejects only that line                                                                                                                                                                                                                         |
 
 Ordinary import statements and scoped package names must have safe negative
 fixtures; a function/variable merely named `tokenizer` or `maxTokens` is not a
