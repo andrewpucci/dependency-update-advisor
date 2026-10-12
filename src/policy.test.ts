@@ -356,6 +356,23 @@ describe('default policy evaluation', () => {
     expect(result.units[0].findings).toEqual(findings);
   });
 
+  test('security fix outside the release window records no exemption', () => {
+    const result = evaluate([
+      unit([
+        { ...fact, kind: 'releaseMetadata', publishedAt: now - day },
+        {
+          ...fact,
+          id: 'resolved',
+          kind: 'vulnerability',
+          applicability: 'resolved_by_proposed',
+          severity: 'high',
+        },
+      ]),
+    ]);
+    expect(result.units[0].releaseExemptions).toEqual([]);
+    expect(result.units[0].rules).toEqual([]);
+  });
+
   test.each(['deprecated', 'yanked'] as const)('retains registry %s reason', (marker) => {
     const finding: Finding = {
       ...fact,
