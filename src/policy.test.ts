@@ -250,6 +250,15 @@ describe('default policy evaluation', () => {
     },
   );
 
+  test.each([
+    ['vulnerability', 'affected'],
+    ['malware', 'affects-proposed'],
+    ['malware', undefined],
+  ])('rejects %s advisory with unrecognized applicability %j', (kind, applicability) => {
+    const advisory = { ...fact, kind, severity: 'high', applicability } as Finding;
+    expect(() => evaluate([unit([advisory])])).toThrow('Invalid advisory applicability');
+  });
+
   test.each(['resolved_by_proposed', 'unaffected', 'withdrawn'] as const)(
     'retains %s advisories without a vulnerability verdict',
     (applicability) => {
