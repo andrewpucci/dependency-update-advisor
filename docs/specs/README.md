@@ -70,7 +70,8 @@ gaps and an introduced vulnerability before parity is claimed.
 - [Trusted config parser](SPEC-config-parser.md) — approved for C1 execution
   in `review-config`, scoped to issue #5.
 - [Bounded source context](SPEC-source-context.md) — approved for C2 execution
-  in `review-config`, scoped to issue #6.
+  in `review-config`, scoped to issue #6; implemented, with
+  [verification evidence](https://github.com/andrewpucci/dependency-update-advisor/issues/47).
 - [Shared workflow](SPEC-shared-review.md) — approved for planning.
 - [Analysis providers](SPEC-analysis-providers.md) — approved for planning.
 - [npm evidence](SPEC-npm-evidence.md) — approved for planning.

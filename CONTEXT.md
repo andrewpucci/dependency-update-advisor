@@ -2,20 +2,22 @@
 
 ## Current checkpoint
 
-The [C1 config parser and schema](docs/specs/SPEC-config-parser.md) are implemented.
-[Local verification](https://github.com/andrewpucci/dependency-update-advisor/issues/5#issuecomment-6116293460)
-includes the nonempty-context test follow-up. C2 and C3 own the next context
-and policy work. No reviewer workflow exists; the old reviewer in
+The [C1 config parser and schema](docs/specs/SPEC-config-parser.md) and
+[C2 source-context boundary](docs/specs/SPEC-source-context.md) are implemented.
+[C1 evidence](https://github.com/andrewpucci/dependency-update-advisor/issues/5#issuecomment-6116293460)
+and [C2 evidence](https://github.com/andrewpucci/dependency-update-advisor/issues/47)
+record local verification. C3 owns the next policy work. No reviewer workflow
+exists; the old reviewer in
 [`andrewpucci.com`](https://github.com/andrewpucci/andrewpucci.com) remains active.
 Repository CI enforces lint, formatting, strict TypeScript checking, and
 finite Node tests.
 
 ## Next action
 
-Execute the [C2 planned tasks](https://github.com/andrewpucci/dependency-update-advisor/issues/6)
-after C1's linked evidence and [handoffs](docs/specs/SPEC-config-parser.md). The
-[C2 specification](docs/specs/SPEC-source-context.md) and plan are approved;
-C2 execution is in progress. C3 remains independent; packaging remains A1.
+Select [C3 policy evaluation](https://github.com/andrewpucci/dependency-update-advisor/issues/7)
+after reviewing the [configuration contract](docs/specs/SPEC-review-config.md).
+C2's checkout-trust, transport, workflow-write, and adoption handoffs remain
+integration gates. Action packaging remains A1.
 
 ## Where details live
 
