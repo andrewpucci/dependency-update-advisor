@@ -6,8 +6,8 @@ The [B1 extraction baseline](tests/parity/README.md) is established locally
 for the existing reviewer in
 [`andrewpucci.com`](https://github.com/andrewpucci/andrewpucci.com).
 The [scenario handoff](tests/parity/scenarios.md) records known gaps and
-required shared behavior. No shared reviewer code or consumer workflow has
-been added; the old reviewer remains active. Repository CI now enforces lint,
+required shared behavior. The C1 config parser and schema are implemented;
+no reviewer workflow exists and the old reviewer remains active. CI enforces lint,
 formatting, strict TypeScript checking, and finite Node tests.
 
 The [capability map](docs/specs/README.md) and all eight module specs are
@@ -20,9 +20,9 @@ the implemented revision and clean-checkout results.
 
 ## Next action
 
-Review the [B3 verification](docs/verification/B3-ci-enforcement.md).
-The [C1 parser spec](docs/specs/SPEC-config-parser.md) and working
-`tasks/plan.md` are approved for execution. Packaging remains A1.
+Review the [C1 verification](docs/verification/C1-config-parser.md), then
+select C2 or C3. The [C1 spec](docs/specs/SPEC-config-parser.md) defines their
+handoffs. Reviewer action packaging remains A1.
 
 ## Where details live
 

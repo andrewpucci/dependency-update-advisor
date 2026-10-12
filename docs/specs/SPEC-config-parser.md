@@ -290,3 +290,7 @@ for planning. C2 retains final filesystem and disclosure validation.
 
 The C1 implementation plan's draft-07 dialect and test-only `ajv@8.20.0`
 dependency are approved for execution. No C1 implementation choice remains open.
+
+The [C1 verification record](../verification/C1-config-parser.md) documents
+the implemented revision, clean-checkout command results, regression probes,
+and remaining C2/C3 and integration boundaries.
