@@ -127,6 +127,17 @@ describe('v1 document contract', () => {
     expect(result.config.analysis).toEqual({ provider: 'mistral', model: 'mistral-medium-latest' });
   });
 
+  test('preserves nonempty configured roots and exact excerpt paths', () => {
+    const context = { sourceRoots: ['lib'], excerptFiles: ['lib/a.ts'] };
+    const result = parseReviewConfig(JSON.stringify({ version: 1, context }));
+    expect(result.ok).toBe(true);
+    if (!result.ok) throw new Error('expected valid config');
+    expect(result.config.context).toEqual({
+      ...context,
+      sendSourceExcerptsToModel: false,
+    });
+  });
+
   test.each(['', '{', '{"version":1,}', '// comment\n{"version":1}'])(
     'rejects malformed JSON %j',
     (text) => {
