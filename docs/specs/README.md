@@ -93,6 +93,8 @@ gaps and an introduced vulnerability before parity is claimed.
   in `shared-review`; [verification evidence](https://github.com/andrewpucci/dependency-update-advisor/issues/3).
 - [CI enforcement](SPEC-ci-enforcement.md) — implemented on `main` for B3 #4
   in `shared-review`; [verification evidence](https://github.com/andrewpucci/dependency-update-advisor/issues/37).
+- [Advisory complexity review](SPEC-complexity-review.md) — user-requested
+  supporting repository tooling contract; separate from dependency review.
 
 The source repository's existing Dependabot specs and reviewer code provide
 the fidelity baseline. Private consumer policy, exact excerpt allowlists,

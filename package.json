@@ -3,6 +3,8 @@
   "private": true,
   "type": "module",
   "scripts": {
+    "complexity": "node scripts/complexity/report.mjs",
+    "test:complexity": "node --test scripts/complexity/report.test.mjs",
     "check": "tsc --project tsconfig.json --noEmit",
     "test": "vp test",
     "lint": "npm run lint:code && npm run lint:md",
@@ -14,6 +16,7 @@
   "devDependencies": {
     "@types/node": "24.19.1",
     "ajv": "8.20.0",
+    "eslint-plugin-sonarjs": "4.2.2",
     "markdownlint-cli2": "0.23.3",
     "typescript": "7.0.2",
     "vite-plus": "1.0.0"
