@@ -78,7 +78,7 @@ export function render(head, base, headSha, baseSha) {
   const changes = regressions(head, base);
   const lines = [
     '<!-- complexity-report -->',
-    '### Cognitive complexity',
+    '### 🐙 Cognitive complexity',
     '',
     `Reviewed \`${headSha}\` against merge base \`${baseSha}\`.`,
     '',
@@ -87,7 +87,7 @@ export function render(head, base, headSha, baseSha) {
   ];
   if (changes.length) {
     lines.push(
-      `**${changes.length} new or worsened functions above ${threshold}:**`,
+      `⚠️ **${changes.length} new or worsened functions above ${threshold}:**`,
       '',
       '| Function | File | Now | Base |',
       '| --- | --- | ---: | ---: |',
@@ -101,7 +101,7 @@ export function render(head, base, headSha, baseSha) {
       lines.push('', `Showing the first 100 of ${changes.length} findings.`);
     lines.push('', 'Advisory: simplify where practical; these findings do not block merging.');
   } else {
-    lines.push(`No functions regressed past ${threshold} versus the base.`);
+    lines.push(`✅ No functions regressed past ${threshold} versus the base.`);
   }
   lines.push(
     '',
