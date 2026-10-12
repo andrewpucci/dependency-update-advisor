@@ -79,8 +79,14 @@
           "highOrCriticalVulnerability": "do_not_merge",
           "moderateOrLowVulnerability": "merge_with_followups",
           "incompatibleMigration": "do_not_merge",
-          "applicableCodemod": "merge_with_followups"
-        }
+          "applicableCodemod": "merge_with_followups",
+          "compatibilityUncertainty": "merge_with_followups",
+          "supplyChainChange": "merge_with_followups",
+          "licenseChange": "merge_with_followups",
+          "recentRelease": "merge_with_followups",
+          "deprecatedRelease": "merge_with_followups"
+        },
+        "minimumReleaseAgeDays": 1
       },
       "properties": {
         "verdicts": {
@@ -91,7 +97,12 @@
             "highOrCriticalVulnerability": "do_not_merge",
             "moderateOrLowVulnerability": "merge_with_followups",
             "incompatibleMigration": "do_not_merge",
-            "applicableCodemod": "merge_with_followups"
+            "applicableCodemod": "merge_with_followups",
+            "compatibilityUncertainty": "merge_with_followups",
+            "supplyChainChange": "merge_with_followups",
+            "licenseChange": "merge_with_followups",
+            "recentRelease": "merge_with_followups",
+            "deprecatedRelease": "merge_with_followups"
           },
           "properties": {
             "incompleteEvidence": {
@@ -118,8 +129,39 @@
               "type": "string",
               "enum": ["merge", "merge_with_followups", "do_not_merge"],
               "default": "merge_with_followups"
+            },
+            "compatibilityUncertainty": {
+              "type": "string",
+              "enum": ["merge", "merge_with_followups", "do_not_merge"],
+              "default": "merge_with_followups"
+            },
+            "supplyChainChange": {
+              "type": "string",
+              "enum": ["merge", "merge_with_followups", "do_not_merge"],
+              "default": "merge_with_followups"
+            },
+            "licenseChange": {
+              "type": "string",
+              "enum": ["merge", "merge_with_followups", "do_not_merge"],
+              "default": "merge_with_followups"
+            },
+            "recentRelease": {
+              "type": "string",
+              "enum": ["merge", "merge_with_followups", "do_not_merge"],
+              "default": "merge_with_followups"
+            },
+            "deprecatedRelease": {
+              "type": "string",
+              "enum": ["merge", "merge_with_followups", "do_not_merge"],
+              "default": "merge_with_followups"
             }
           }
+        },
+        "minimumReleaseAgeDays": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 30,
+          "default": 1
         }
       }
     }

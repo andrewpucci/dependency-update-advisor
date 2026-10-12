@@ -4,7 +4,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { Ajv } from 'ajv';
 import { afterEach, describe, expect, test, vi } from 'vite-plus/test';
-import { loadTrustedReviewConfig, parseReviewConfig } from './config.js';
+import { DEFAULT_VERDICTS, loadTrustedReviewConfig, parseReviewConfig } from './config.js';
 
 const schema = JSON.parse(
   readFileSync(new URL('../schemas/review-config-v1.json', import.meta.url), 'utf8'),
@@ -16,6 +16,11 @@ const defaults = {
   moderateOrLowVulnerability: 'merge_with_followups',
   incompatibleMigration: 'do_not_merge',
   applicableCodemod: 'merge_with_followups',
+  compatibilityUncertainty: 'merge_with_followups',
+  supplyChainChange: 'merge_with_followups',
+  licenseChange: 'merge_with_followups',
+  recentRelease: 'merge_with_followups',
+  deprecatedRelease: 'merge_with_followups',
 };
 
 const documents: { name: string; value: unknown; valid: boolean }[] = [
@@ -611,5 +616,51 @@ describe('loader refusal and read budgets', () => {
     );
     expect((await loadTrustedReviewConfig(other)).ok).toBe(true);
     expect(await loadTrustedReviewConfig(trusted)).toEqual(parseReviewConfig('{"version":1}'));
+  });
+});
+
+describe('C3 configuration amendment', () => {
+  test.each([0, 31, 1.5, '1', null, false, {}, []].map((value) => ({ value })))(
+    'rejects window $value in parser and schema',
+    ({ value: minimumReleaseAgeDays }) => {
+      const document = { version: 1, policy: { minimumReleaseAgeDays } };
+      expect(parseReviewConfig(JSON.stringify(document))).toMatchObject({
+        ok: false,
+        error: { field: 'policy.minimumReleaseAgeDays' },
+      });
+      expect(validateSchema(document)).toBe(false);
+    },
+  );
+
+  test.each([1, 30])('retains an explicit %i day window', (minimumReleaseAgeDays) => {
+    const document = { version: 1, policy: { minimumReleaseAgeDays } };
+    const result = parseReviewConfig(JSON.stringify(document));
+    if (!result.ok) throw new Error('expected valid configuration');
+    expect(validateSchema(document)).toBe(true);
+    expect(result.config.policy.minimumReleaseAgeDays).toBe(minimumReleaseAgeDays);
+    expect(result.minimumReleaseAgeDaysExplicit).toBe(true);
+  });
+
+  test('defaults the window without making it explicit and freezes shared defaults', () => {
+    const result = parseReviewConfig('{"version":1}');
+    if (!result.ok) throw new Error('expected valid configuration');
+    expect(result.config.policy.minimumReleaseAgeDays).toBe(1);
+    expect(result.minimumReleaseAgeDaysExplicit).toBe(false);
+    expect(DEFAULT_VERDICTS).toEqual(defaults);
+    expect(Object.isFrozen(DEFAULT_VERDICTS)).toBe(true);
+    expect(schema.properties.policy.properties.minimumReleaseAgeDays.default).toBe(1);
+  });
+
+  test('rejects a malware override without exposing unknown input', () => {
+    const document = { version: 1, policy: { verdicts: { maliciousPackage: 'merge' } } };
+    expect(parseReviewConfig(JSON.stringify(document))).toEqual({
+      ok: false,
+      error: {
+        file: '.github/dependabot-review.json',
+        category: 'validation',
+        field: 'policy.verdicts',
+      },
+    });
+    expect(validateSchema(document)).toBe(false);
   });
 });

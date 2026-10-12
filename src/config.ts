@@ -7,13 +7,18 @@ const VERDICTS = ['merge', 'merge_with_followups', 'do_not_merge'] as const;
 
 export type Verdict = (typeof VERDICTS)[number];
 
-const DEFAULT_VERDICTS = {
+export const DEFAULT_VERDICTS = Object.freeze({
   incompleteEvidence: 'merge_with_followups',
   highOrCriticalVulnerability: 'do_not_merge',
   moderateOrLowVulnerability: 'merge_with_followups',
   incompatibleMigration: 'do_not_merge',
   applicableCodemod: 'merge_with_followups',
-} as const satisfies Record<string, Verdict>;
+  compatibilityUncertainty: 'merge_with_followups',
+  supplyChainChange: 'merge_with_followups',
+  licenseChange: 'merge_with_followups',
+  recentRelease: 'merge_with_followups',
+  deprecatedRelease: 'merge_with_followups',
+} as const satisfies Record<string, Verdict>);
 
 export type PolicyRule = keyof typeof DEFAULT_VERDICTS;
 export type PolicyOverrides = Partial<Record<PolicyRule, Verdict>>;
@@ -26,12 +31,18 @@ export type ReviewConfig = {
     sendSourceExcerptsToModel: boolean;
     excerptFiles: string[];
   };
-  policy: { verdicts: Record<PolicyRule, Verdict> };
+  policy: { verdicts: Record<PolicyRule, Verdict>; minimumReleaseAgeDays: number };
 };
 
 type ErrorCategory = 'read' | 'path' | 'size' | 'encoding' | 'json' | 'version' | 'validation';
 export type ConfigResult =
-  | { ok: true; config: ReviewConfig; origin: 'file' | 'missing'; overrides: PolicyOverrides }
+  | {
+      ok: true;
+      config: ReviewConfig;
+      origin: 'file' | 'missing';
+      overrides: PolicyOverrides;
+      minimumReleaseAgeDaysExplicit: boolean;
+    }
   | { ok: false; error: { file: string; category: ErrorCategory; field: string } };
 
 function failure(category: ErrorCategory, field = '$'): ConfigResult {
@@ -100,7 +111,15 @@ function invalidField(document: Record<string, unknown>): string | undefined {
   }
   if (Object.hasOwn(document, 'policy')) {
     const policy = document.policy;
-    if (!objectWithKeys(policy, ['verdicts'])) return 'policy';
+    if (!objectWithKeys(policy, ['verdicts', 'minimumReleaseAgeDays'])) return 'policy';
+    if (
+      Object.hasOwn(policy, 'minimumReleaseAgeDays') &&
+      (typeof policy.minimumReleaseAgeDays !== 'number' ||
+        !Number.isInteger(policy.minimumReleaseAgeDays) ||
+        policy.minimumReleaseAgeDays < 1 ||
+        policy.minimumReleaseAgeDays > 30)
+    )
+      return 'policy.minimumReleaseAgeDays';
     if (Object.hasOwn(policy, 'verdicts')) {
       if (!objectWithKeys(policy.verdicts, Object.keys(DEFAULT_VERDICTS))) return 'policy.verdicts';
       for (const [rule, value] of Object.entries(policy.verdicts)) {
@@ -115,7 +134,7 @@ function defaultConfig(): ReviewConfig {
   return {
     version: 1,
     context: { sourceRoots: ['src'], sendSourceExcerptsToModel: false, excerptFiles: [] },
-    policy: { verdicts: { ...DEFAULT_VERDICTS } },
+    policy: { verdicts: { ...DEFAULT_VERDICTS }, minimumReleaseAgeDays: 1 },
   };
 }
 
@@ -137,7 +156,9 @@ export function parseReviewConfig(text: string): ConfigResult {
   // These sections have all passed the runtime boundary above.
   const analysis = document.analysis as ReviewConfig['analysis'];
   const context = document.context as Partial<ReviewConfig['context']> | undefined;
-  const policy = document.policy as { verdicts?: PolicyOverrides } | undefined;
+  const policy = document.policy as
+    | { verdicts?: PolicyOverrides; minimumReleaseAgeDays?: number }
+    | undefined;
   const overrides = { ...policy?.verdicts };
   const config = defaultConfig();
   if (analysis) config.analysis = { ...analysis };
@@ -146,7 +167,10 @@ export function parseReviewConfig(text: string): ConfigResult {
     config.context.sendSourceExcerptsToModel = context.sendSourceExcerptsToModel;
   if (context?.excerptFiles) config.context.excerptFiles = [...context.excerptFiles];
   config.policy.verdicts = { ...config.policy.verdicts, ...overrides };
-  return { ok: true, config, origin: 'file', overrides };
+  const minimumReleaseAgeDaysExplicit = policy?.minimumReleaseAgeDays !== undefined;
+  if (policy?.minimumReleaseAgeDays !== undefined)
+    config.policy.minimumReleaseAgeDays = policy.minimumReleaseAgeDays;
+  return { ok: true, config, origin: 'file', overrides, minimumReleaseAgeDaysExplicit };
 }
 function contained(root: string, path: string): boolean {
   const difference = relative(root, path);
@@ -171,7 +195,13 @@ export async function loadTrustedReviewConfig(checkoutRoot: string): Promise<Con
           'code' in error &&
           error.code === 'ENOENT'
         ) {
-          return { ok: true, config: defaultConfig(), origin: 'missing', overrides: {} };
+          return {
+            ok: true,
+            config: defaultConfig(),
+            origin: 'missing',
+            overrides: {},
+            minimumReleaseAgeDaysExplicit: false,
+          };
         }
         throw error;
       }
