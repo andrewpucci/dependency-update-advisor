@@ -2,21 +2,13 @@
 
 ## Current checkpoint
 
-The [B1 extraction baseline](tests/parity/README.md) is established locally
-for the existing reviewer in
-[`andrewpucci.com`](https://github.com/andrewpucci/andrewpucci.com).
-The [scenario handoff](tests/parity/scenarios.md) records known gaps and
-required shared behavior. The C1 config parser and schema are implemented;
-no reviewer workflow exists and the old reviewer remains active. CI enforces lint,
-formatting, strict TypeScript checking, and finite Node tests.
-
-The [capability map](docs/specs/README.md) and all eight module specs are
-approved for planning. The
-[comment-experience contract](docs/specs/SPEC-comment-experience.md) is also approved.
-The [B1 specification](docs/specs/SPEC-extraction-baseline.md) is approved.
-The [B2 local-tooling specification](docs/specs/SPEC-local-tooling.md) is approved
-for execution; [B2 verification](docs/verification/B2-local-tooling.md) records
-the implemented revision and clean-checkout results.
+The [C1 config parser and schema](docs/specs/SPEC-config-parser.md) are implemented
+and [locally verified](docs/verification/C1-config-parser.md), including the
+nonempty-context test follow-up. C2 and C3 own the next context and policy work.
+No reviewer workflow exists; the old reviewer in
+[`andrewpucci.com`](https://github.com/andrewpucci/andrewpucci.com) remains active.
+Repository CI enforces lint, formatting, strict TypeScript checking, and
+finite Node tests.
 
 ## Next action
 
@@ -26,8 +18,16 @@ handoffs. Reviewer action packaging remains A1.
 
 ## Where details live
 
-- The capability map indexes modules and approval state; `SPEC-*.md` files
-  define behavior and acceptance criteria.
+- The [capability map](docs/specs/README.md) indexes the eight module specs,
+  approved for planning, and supporting contracts. The
+  [comment-experience contract](docs/specs/SPEC-comment-experience.md) is approved.
+- The [B1 baseline](tests/parity/README.md) and [scenario handoff](tests/parity/scenarios.md)
+  record the selected source state and known gaps under the
+  [approved B1 contract](docs/specs/SPEC-extraction-baseline.md).
+- [B2 verification](docs/verification/B2-local-tooling.md) and
+  [B3 verification](docs/verification/B3-ci-enforcement.md) record tooling and CI
+  evidence under the approved [B2](docs/specs/SPEC-local-tooling.md) and
+  [B3](docs/specs/SPEC-ci-enforcement.md) execution contracts.
 - The [ADR guide](docs/adr/README.md) explains how to record durable choices.
   [ADR 0001](docs/adr/0001-typescript-source.md) records the TypeScript source
   and packaged JavaScript action choice. [ADR 0002](docs/adr/0002-privileged-review-boundary.md)

@@ -163,18 +163,24 @@ For a private consumer, this opt-in authorizes only dependency-relevant,
 bounded excerpts from checked-in default-branch source files under its
 configured roots. The reviewer may send the relative path and at most one
 500-character source line containing the dependency name;
-it does not send adjacent lines or whole files. It excludes tests, fixtures,
-generated assets, configuration and credential files, runtime media, user
-content, and any line that appears to contain a credential or private value.
+it does not send adjacent lines or whole files.
+
+It excludes tests, fixtures, generated assets, configuration and credential
+files, runtime media, user content, and any line that appears to contain a
+credential or private value.
 The private consumer must list each eligible file by exact relative path in
 `context.excerptFiles`; newly added files are ineligible until that trusted
 list is reviewed and updated. The list cannot override the exclusions.
+
 It sends dependency names, versions, and cited public upstream evidence as
 ordinary review metadata when analysis is enabled. The destination in v1 is
-the configured Mistral model. Before a private consumer enables excerpts, adoption
-review must inspect representative no-send payloads and the exact effective
-file allowlist. These bounds reduce disclosure; they do not prove that a
-source line contains no sensitive value, and GitHub log redaction must not be
+the configured Mistral model.
+
+Before a private consumer enables excerpts, adoption review must inspect
+representative no-send payloads and the exact effective file allowlist.
+
+These bounds reduce disclosure; they do not prove that a source line contains
+no sensitive value, and GitHub log redaction must not be
 used as the protection for payloads; [GitHub does not guarantee that redaction](https://docs.github.com/en/actions/concepts/security/secrets).
 
 ## Requirements

@@ -1,5 +1,20 @@
 # C1 trusted configuration parser verification
 
+## Latest validation
+
+The nonempty-context coverage gap is fixed. The working-tree snapshot committed
+as `e14c649c35e9c3e619902ac9363764c87f041e81` passed lint, formatting, strict
+checking, and 238 tests. The [review follow-up](#review-follow-up-nonempty-context-preservation)
+records the exact checks and independent regression probes.
+
+Fresh-install verification remains bound to
+`4971cec2d979fef0223391c619bd31356eda5add`, with 237 passing tests. See the
+[original clean-checkout results](#clean-checkout-command-results) and
+[recorded environment](#revision-and-environment). The later test follow-up
+does not establish a new clean-install or CI result.
+
+## Original verification scope
+
 C1's local implementation passes the required checks at
 `4971cec2d979fef0223391c619bd31356eda5add`, verified on 2026-10-11.
 The [C1 spec](../specs/SPEC-config-parser.md) and
