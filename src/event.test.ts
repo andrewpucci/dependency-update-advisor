@@ -1,5 +1,10 @@
 import { expect, test, vi } from 'vite-plus/test';
-import { verifyCiEvent, type EventReads, type ReviewIdentity } from './event.js';
+import {
+  verifyCiEvent,
+  reverifyReviewBinding,
+  type EventReads,
+  type ReviewIdentity,
+} from './event.js';
 
 const HEAD = 'a'.repeat(40);
 const NEXT_HEAD = 'c'.repeat(40);
@@ -177,4 +182,108 @@ test('treats a newer running attempt with null conclusion as obsolete', async ()
   });
   expect(await verifyCiEvent(f.input, f.reads)).toEqual({ kind: 'skip', reason: 'obsolete' });
   expect(f.readPullRequest).not.toHaveBeenCalled();
+});
+
+async function boundFixture() {
+  const f = fixture();
+  const result = await verifyCiEvent(f.input, f.reads);
+  if (result.kind !== 'verified') throw new Error('expected binding');
+  f.readReplay.mockClear();
+  return { ...f, binding: result.binding };
+}
+
+test('reverifies the same binding without demanding unseen replay state', async () => {
+  const f = await boundFixture();
+  f.readReplay.mockImplementation(async (identity) => ({ identity, state: 'claimed' }));
+  expect(await reverifyReviewBinding(f.binding, f.reads)).toEqual({ kind: 'fresh' });
+  expect(f.readReplay).not.toHaveBeenCalled();
+});
+
+test('freshness detects a newer running attempt without a terminal conclusion', async () => {
+  const f = await boundFixture();
+  Object.assign(f.run, { run_attempt: 2, status: 'queued', conclusion: null, pull_requests: [] });
+  expect(await reverifyReviewBinding(f.binding, f.reads)).toEqual({ kind: 'obsolete' });
+});
+
+test('freshness reads the bound PR when closure empties run associations', async () => {
+  const f = await boundFixture();
+  f.run.pull_requests = [];
+  f.pullRequest.state = 'closed';
+  expect(await reverifyReviewBinding(f.binding, f.reads)).toEqual({ kind: 'obsolete' });
+  expect(f.readPullRequest).toHaveBeenLastCalledWith(f.binding.repository, 42);
+});
+
+test('freshness detects a changed head even when its run association also advances', async () => {
+  const f = await boundFixture();
+  f.pullRequest.head.sha = NEXT_HEAD;
+  f.run.pull_requests[0]!.head.sha = NEXT_HEAD;
+  expect(await reverifyReviewBinding(f.binding, f.reads)).toEqual({ kind: 'obsolete' });
+});
+
+test('freshness rejects an unrelated associated PR even if the bound PR closes', async () => {
+  const f = await boundFixture();
+  f.run.pull_requests[0]!.number = 43;
+  f.pullRequest.state = 'closed';
+  expect(await reverifyReviewBinding(f.binding, f.reads)).toMatchObject({
+    kind: 'error',
+    category: 'mismatch',
+  });
+});
+
+test('freshness keeps read failures distinct from malformed decoded data', async () => {
+  const f = await boundFixture();
+  f.readRun.mockRejectedValueOnce(new Error('private synthetic failure'));
+  expect(await reverifyReviewBinding(f.binding, f.reads)).toEqual({
+    kind: 'error',
+    category: 'read',
+    field: 'run',
+  });
+  Object.assign(f.run, { run_attempt: '1' });
+  expect(await reverifyReviewBinding(f.binding, f.reads)).toMatchObject({
+    kind: 'error',
+    category: 'input',
+  });
+});
+
+test('freshness refuses a forged identity tuple before API reads', async () => {
+  const f = await boundFixture();
+  f.readRun.mockClear();
+  const forged = { ...f.binding, identity: [101, 301, 401, 1, 99, HEAD] };
+  expect(await reverifyReviewBinding(forged, f.reads)).toEqual({
+    kind: 'error',
+    category: 'input',
+    field: 'binding',
+  });
+  expect(f.readRun).not.toHaveBeenCalled();
+});
+
+test('freshness treats malformed multiple associations as invalid input', async () => {
+  const f = await boundFixture();
+  Object.assign(f.run, { pull_requests: [null, null] });
+  expect(await reverifyReviewBinding(f.binding, f.reads)).toMatchObject({
+    kind: 'error',
+    category: 'input',
+  });
+});
+
+test.each(['event', 'api'])(
+  'rejects malformed multiple associations in the %s run',
+  async (side) => {
+    const f = fixture();
+    const selected = side === 'event' ? f.input.payload.workflow_run : f.run;
+    Object.assign(selected, { pull_requests: [selected.pull_requests[0], null] });
+    expect(await verifyCiEvent(f.input, f.reads)).toMatchObject({
+      kind: 'error',
+      category: 'input',
+    });
+  },
+);
+
+test('classifies a recognized event status disagreeing with completion as a mismatch', async () => {
+  const f = fixture();
+  f.input.payload.workflow_run.status = 'in_progress';
+  expect(await verifyCiEvent(f.input, f.reads)).toMatchObject({
+    kind: 'error',
+    category: 'mismatch',
+  });
 });

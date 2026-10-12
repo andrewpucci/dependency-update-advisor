@@ -42,6 +42,8 @@ export type EventReads = {
   readPullRequest: (repository: RepositoryIdentity, pullNumber: number) => Promise<unknown>;
   readReplay: (identity: ReviewIdentity) => Promise<unknown>;
 };
+export type FreshnessReads = Pick<EventReads, 'readRun' | 'readPullRequest'>;
+export type FreshnessResult = { kind: 'fresh' } | { kind: 'obsolete' } | VerificationError;
 
 type Actor = { id: number; login: string; type: string };
 type Association = {
@@ -63,7 +65,7 @@ type Run = {
   actor: Actor;
   repository: RepositoryIdentity;
   headRepository: RepositoryIdentity;
-  associations: unknown[];
+  associations: Association[];
 };
 type PullRequest = {
   number: number;
@@ -227,7 +229,15 @@ function run(value: unknown): Run | null {
     repo = repository(value.repository);
   const headRepo = repository(value.head_repository),
     headSha = sha(value.head_sha);
-  if (!runActor || !repo || !headRepo || !headSha) return null;
+  const associations = Array.from(value.pull_requests, association);
+  if (
+    !runActor ||
+    !repo ||
+    !headRepo ||
+    !headSha ||
+    !associations.every((item): item is Association => item !== null)
+  )
+    return null;
   return {
     id: value.id,
     workflowId: value.workflow_id,
@@ -239,7 +249,7 @@ function run(value: unknown): Run | null {
     actor: runActor,
     repository: repo,
     headRepository: headRepo,
-    associations: value.pull_requests.slice(),
+    associations,
   };
 }
 
@@ -343,7 +353,8 @@ export async function verifyCiEvent(input: unknown, reads: EventReads): Promise<
     if (!eventRepo || !eventRun) return failure('event');
     if (eventRun.event !== 'pull_request' || !isDependabot(eventRun.actor))
       return { kind: 'skip', reason: 'ineligible' };
-    if (eventRun.status !== 'completed' || eventRun.conclusion === null) return failure('event');
+    if (eventRun.status !== 'completed') return failure('event', 'mismatch');
+    if (eventRun.conclusion === null) return failure('event');
     if (
       !sameRepository(eventRepo, expectedRepo) ||
       !sameRepository(eventRun.repository, expectedRepo) ||
@@ -351,8 +362,7 @@ export async function verifyCiEvent(input: unknown, reads: EventReads): Promise<
     )
       return failure('event', 'mismatch');
     if (eventRun.associations.length !== 1) return { kind: 'skip', reason: 'ineligible' };
-    const eventAssociation = association(eventRun.associations[0]);
-    if (!eventAssociation) return failure('event');
+    const eventAssociation = eventRun.associations[0]!;
     if (
       !associatedWith(
         eventAssociation,
@@ -391,8 +401,7 @@ export async function verifyCiEvent(input: unknown, reads: EventReads): Promise<
     if (currentRun.conclusion === null) return failure('run');
     if (currentRun.conclusion !== eventRun.conclusion) return failure('run', 'mismatch');
     if (currentRun.associations.length !== 1) return { kind: 'skip', reason: 'ineligible' };
-    const currentAssociation = association(currentRun.associations[0]);
-    if (!currentAssociation) return failure('run');
+    const currentAssociation = currentRun.associations[0]!;
     if (
       !associatedWith(
         currentAssociation,
@@ -451,5 +460,117 @@ export async function verifyCiEvent(input: unknown, reads: EventReads): Promise<
     };
   } catch {
     return failure('event');
+  }
+}
+
+function binding(value: unknown): ReviewBinding | null {
+  if (
+    !record(value, [
+      'repository',
+      'workflow',
+      'runId',
+      'runAttempt',
+      'pullNumber',
+      'headRepository',
+      'headSha',
+      'actorId',
+      'conclusion',
+      'identity',
+    ]) ||
+    !positiveId(value.runId) ||
+    !positiveId(value.runAttempt) ||
+    !positiveId(value.pullNumber) ||
+    !positiveId(value.actorId) ||
+    !conclusion(value.conclusion)
+  )
+    return null;
+  const repo = expectedRepository(value.repository),
+    expectedWorkflow = workflow(value.workflow);
+  const headRepo = expectedRepository(value.headRepository),
+    headSha = sha(value.headSha);
+  if (!repo || !expectedWorkflow || !headRepo || !headSha) return null;
+  const reviewIdentity = identity(
+    repo.id,
+    expectedWorkflow.id,
+    value.runId,
+    value.runAttempt,
+    value.pullNumber,
+    headSha,
+  );
+  if (!sameIdentity(value.identity, reviewIdentity)) return null;
+  return Object.freeze({
+    repository: repo,
+    workflow: expectedWorkflow,
+    runId: value.runId,
+    runAttempt: value.runAttempt,
+    pullNumber: value.pullNumber,
+    headRepository: headRepo,
+    headSha,
+    actorId: value.actorId,
+    conclusion: value.conclusion,
+    identity: reviewIdentity,
+  });
+}
+
+/** Recheck an owned attempt after claiming. W2 must separately verify exclusive ownership. */
+export async function reverifyReviewBinding(
+  value: unknown,
+  reads: FreshnessReads,
+): Promise<FreshnessResult> {
+  try {
+    const original = binding(value);
+    if (!original) return failure('binding');
+    const runRead = await read('run', () => reads.readRun(original.repository, original.runId));
+    if (!runRead.ok) return runRead.error;
+    const current = run(runRead.value);
+    if (!current) return failure('run');
+    if (
+      current.id !== original.runId ||
+      current.workflowId !== original.workflow.id ||
+      !sameRepository(current.repository, original.repository) ||
+      !sameRepository(current.headRepository, original.headRepository) ||
+      current.headSha !== original.headSha ||
+      current.event !== 'pull_request' ||
+      !isDependabot(current.actor) ||
+      current.actor.id !== original.actorId
+    )
+      return failure('run', 'mismatch');
+    if (current.attempt > original.runAttempt) return { kind: 'obsolete' };
+    if (current.attempt !== original.runAttempt || current.status !== 'completed')
+      return failure('run', 'mismatch');
+    if (current.conclusion === null) return failure('run');
+    if (current.conclusion !== original.conclusion) return failure('run', 'mismatch');
+    if (current.associations.length > 1) return failure('run', 'mismatch');
+    const currentAssociation = current.associations[0];
+    if (
+      currentAssociation &&
+      !associatedWith(
+        currentAssociation,
+        original.pullNumber,
+        original.repository,
+        original.headRepository,
+      )
+    )
+      return failure('run', 'mismatch');
+    const prRead = await read('pullRequest', () =>
+      reads.readPullRequest(original.repository, original.pullNumber),
+    );
+    if (!prRead.ok) return prRead.error;
+    const pr = pullRequest(prRead.value);
+    if (!pr) return failure('pullRequest');
+    if (
+      pr.number !== original.pullNumber ||
+      !sameRepository(pr.repository, original.repository) ||
+      !sameRepository(pr.headRepository, original.headRepository) ||
+      !isDependabot(pr.actor) ||
+      pr.actor.id !== original.actorId
+    )
+      return failure('pullRequest', 'mismatch');
+    if (pr.closed || pr.headSha !== original.headSha) return { kind: 'obsolete' };
+    if (!currentAssociation || currentAssociation.headSha !== original.headSha)
+      return failure('run', 'mismatch');
+    return { kind: 'fresh' };
+  } catch {
+    return failure('binding');
   }
 }
