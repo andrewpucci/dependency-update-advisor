@@ -8,6 +8,19 @@ C1 implementation plan was approved for execution on the same date, including
 draft-07 and test-only `ajv@8.20.0`. The approved
 [configuration module](SPEC-review-config.md) remains authoritative.
 
+Amendment approved 2026-10-11:
+
+- Accept the overridable `compatibilityUncertainty`, `supplyChainChange`,
+  `licenseChange`, `recentRelease`, and `deprecatedRelease` rules, each
+  defaulting to `merge_with_followups`.
+- Accept `policy.minimumReleaseAgeDays`, an integer from 1 through 30 that
+  defaults to 1.
+- Treat `maliciousPackage` as a fixed hold, not a configurable rule.
+
+The [C3 policy contract](SPEC-advisory-policy.md) defines applicability, and
+issue #7 tracks the parser and schema change. Until then, C1 accepts five
+rules and no release-age field.
+
 ## Objective
 
 Give reviewer contributors one bounded parser and a matching published JSON
@@ -115,18 +128,19 @@ configurations and exact file allowlists in their consumer repositories.
 All object sections and their fields are optional except where stated below.
 An optional field supplied as `null` is invalid, not equivalent to omission.
 
-| Field                               | Present-file contract                                     | Runtime default when omitted                                                    |
-| ----------------------------------- | --------------------------------------------------------- | ------------------------------------------------------------------------------- |
-| `version`                           | Required numeric value `1`; no string coercion            | Missing file uses internal v1 defaults; a present file still requires `version` |
-| `analysis`                          | Object containing both `provider` and `model`             | No selected provider or model                                                   |
-| `analysis.provider`                 | Exactly `mistral`                                         | No implicit provider                                                            |
-| `analysis.model`                    | Nonempty bounded provider model ID                        | No implicit model                                                               |
-| `context`                           | Object with only the three fields below                   | Secure context defaults                                                         |
-| `context.sourceRoots`               | Array of at most 16 relative path strings                 | `["src"]`                                                                       |
-| `context.sendSourceExcerptsToModel` | Boolean                                                   | `false`                                                                         |
-| `context.excerptFiles`              | Array of at most 128 distinct exact relative path strings | Empty allowlist                                                                 |
-| `policy`                            | Object containing only optional `verdicts`                | Shared policy defaults                                                          |
-| `policy.verdicts`                   | Object with only the five named rules below               | Shared default for each omitted rule                                            |
+| Field                               | Present-file contract                                                  | Runtime default when omitted                                                    |
+| ----------------------------------- | ---------------------------------------------------------------------- | ------------------------------------------------------------------------------- |
+| `version`                           | Required numeric value `1`; no string coercion                         | Missing file uses internal v1 defaults; a present file still requires `version` |
+| `analysis`                          | Object containing both `provider` and `model`                          | No selected provider or model                                                   |
+| `analysis.provider`                 | Exactly `mistral`                                                      | No implicit provider                                                            |
+| `analysis.model`                    | Nonempty bounded provider model ID                                     | No implicit model                                                               |
+| `context`                           | Object with only the three fields below                                | Secure context defaults                                                         |
+| `context.sourceRoots`               | Array of at most 16 relative path strings                              | `["src"]`                                                                       |
+| `context.sendSourceExcerptsToModel` | Boolean                                                                | `false`                                                                         |
+| `context.excerptFiles`              | Array of at most 128 distinct exact relative path strings              | Empty allowlist                                                                 |
+| `policy`                            | Object containing only optional `verdicts` and `minimumReleaseAgeDays` | Shared policy defaults                                                          |
+| `policy.verdicts`                   | Object with only the ten named rules below                             | Shared default for each omitted rule                                            |
+| `policy.minimumReleaseAgeDays`      | Integer from 1 through 30                                              | `1`                                                                             |
 
 An empty `analysis` object is invalid. Empty `context`, `policy`, and
 `policy.verdicts` objects retain their respective defaults. Empty source-root
@@ -145,9 +159,14 @@ default.
 | `moderateOrLowVulnerability`  | `merge_with_followups`                                    |
 | `incompatibleMigration`       | `do_not_merge` for proven trusted-context incompatibility |
 | `applicableCodemod`           | `merge_with_followups`                                    |
+| `compatibilityUncertainty`    | `merge_with_followups`                                    |
+| `supplyChainChange`           | `merge_with_followups`                                    |
+| `licenseChange`               | `merge_with_followups`                                    |
+| `recentRelease`               | `merge_with_followups`                                    |
+| `deprecatedRelease`           | `merge_with_followups`                                    |
 
-C1 does not decide when a rule applies. Compatibility uncertainty remains a
-follow-up in the source policy; it is not automatically proven incompatibility.
+C1 does not decide when a rule applies. Compatibility uncertainty is not
+automatically proven incompatibility.
 No configured value may alter findings, coverage, or execution status.
 
 ### Model and path syntax
