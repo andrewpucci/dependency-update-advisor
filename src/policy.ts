@@ -61,6 +61,7 @@ export type Finding = FindingFacts &
     | Readonly<{ kind: 'informational'; detail: string }>
   );
 type OptionalSignal = 'publishTime' | 'deprecation' | 'trust' | 'publisher';
+const optionalSignals: readonly string[] = ['publishTime', 'deprecation', 'trust', 'publisher'];
 export type EvidenceSource = Readonly<{
   id: string;
   status: string;
@@ -158,7 +159,8 @@ function strictest(verdicts: readonly Verdict[]): Verdict {
 }
 
 /** Inputs are caller-validated normalized facts. Times use UTC epoch milliseconds.
- * Invalid advisory severity or applicability throws; config failure returns its safe diagnostic without policy.
+ * Invalid finding kind, advisory severity, or applicability throws; an unrecognized signal is a required gap.
+ * Config failure returns its safe diagnostic without policy.
  * Snapshots inputs without reading files, the clock, or execution state.
  */
 export function evaluatePolicy(
@@ -206,7 +208,8 @@ export function evaluatePolicy(
         reason: source.reason,
         coverageLimits: source.coverageLimits,
       };
-      if (source.signal) uncheckedSignals.push({ ...gap, signal: source.signal });
+      if (source.signal !== undefined && optionalSignals.includes(source.signal))
+        uncheckedSignals.push({ ...gap, signal: source.signal });
       else {
         gaps.push(gap);
         apply('incompleteEvidence', { sourceId: source.id });
@@ -274,6 +277,8 @@ export function evaluatePolicy(
         }
         case 'informational':
           break;
+        default:
+          throw new TypeError('Invalid finding kind');
       }
     }
     return {
