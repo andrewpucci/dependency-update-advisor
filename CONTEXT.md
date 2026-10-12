@@ -12,8 +12,10 @@ finite Node tests.
 
 ## Next action
 
-Select C2 or C3 after reviewing C1's linked evidence and
-[handoffs](docs/specs/SPEC-config-parser.md). Action packaging remains A1.
+Execute the [C2 planned tasks](https://github.com/andrewpucci/dependency-update-advisor/issues/6)
+after C1's linked evidence and [handoffs](docs/specs/SPEC-config-parser.md). The
+[C2 specification](docs/specs/SPEC-source-context.md) and plan are approved;
+C2 execution is in progress. C3 remains independent; packaging remains A1.
 
 ## Where details live
 
