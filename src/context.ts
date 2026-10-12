@@ -91,7 +91,7 @@ function control(character: string): boolean {
   return code < 32 || (code >= 127 && code <= 159);
 }
 
-function canonicalPath(path: string, allowHidden = false): boolean {
+function canonicalPath(path: string, allowHidden = false, allowGlob = false): boolean {
   return (
     typeof path === 'string' &&
     path.length > 0 &&
@@ -99,7 +99,7 @@ function canonicalPath(path: string, allowHidden = false): boolean {
     Buffer.byteLength(path, 'utf8') <= MAX_CONTEXT_PATH_BYTES &&
     !/^[A-Za-z]:/.test(path) &&
     !path.includes('\\') &&
-    !/[*?[\]{}]/u.test(path) &&
+    (allowGlob || !/[*?[\]{}]/u.test(path)) &&
     !Array.from(path).some(control) &&
     path
       .split('/')
@@ -361,13 +361,32 @@ function sensitiveAssignments(line: string): string[] {
     'cookie',
     'connectionstring',
     'dsn',
+    'accesskey',
+    'secretkey',
     'email',
     'phone',
     'address',
   ];
   return Array.from(line.matchAll(/\b([A-Za-z][A-Za-z0-9_-]{0,255})["']?\s*[:=]\s*/g))
-    .filter((match) => fields.includes(match[1].replace(/[-_]/g, '').toLowerCase()))
+    .filter((match) => {
+      const words = match[1]
+        .replace(/([a-z0-9])([A-Z])/g, '$1 $2')
+        .replace(/([A-Z]+)([A-Z][a-z])/g, '$1 $2')
+        .split(/[\s_-]+/)
+        .map((word) => word.toLowerCase());
+      // A compound name ends in its head noun: NPM_TOKEN and db_password qualify,
+      // while tokenizer and maxTokens do not.
+      return words.some((_, start) => fields.includes(words.slice(start).join('')));
+    })
     .map((match) => line.slice(match.index + match[0].length));
+}
+
+function packageNamePattern(name: string): RegExp {
+  // Reject longer names (react-dom, preact, @scope/react, ./react, lodash.merge) but keep
+  // subpath imports such as react/jsx-runtime.
+  return new RegExp(
+    `(?<![A-Za-z0-9_$@/.-])${name.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}(?![A-Za-z0-9_$-]|\\.[A-Za-z0-9_$-])`,
+  );
 }
 
 function suspiciousLine(line: string): boolean {
@@ -514,7 +533,9 @@ export async function collectSourceContext(
           addReason(result, 'inventory-limit');
           break;
         }
-        if (!canonicalPath(path, true)) return failure('path', 'context.excerptFiles');
+        // Framework routes such as `app/[id]/page.tsx` are valid tracked paths that can
+        // never equal a configured literal path, so they are skipped rather than fatal.
+        if (!canonicalPath(path, true, true)) return failure('path');
         if (!selected.has(path) || candidates.has(path)) continue;
         if (candidates.size >= MAX_SOURCE_CANDIDATES) {
           addReason(result, 'candidate-limit');
@@ -549,8 +570,9 @@ export async function collectSourceContext(
       continue;
     }
     for (const entry of result.dependencies) {
+      const name = packageNamePattern(entry.name);
       for (const line of lines) {
-        if (!line.includes(entry.name)) continue;
+        if (!line.includes(entry.name) || !name.test(line)) continue;
         if (suspiciousLine(line)) {
           addReason(result, 'suspicious-line', entry);
           continue;
@@ -559,7 +581,9 @@ export async function collectSourceContext(
         let excerpt = trimmed.slice(0, MAX_SOURCE_EXCERPT_CODE_UNITS);
         const last = excerpt.charCodeAt(excerpt.length - 1);
         if (last >= 0xd800 && last <= 0xdbff) excerpt = excerpt.slice(0, -1);
-        if (!excerpt.includes(entry.name)) {
+        // Judge the name against the whole line so a cut inside a longer name cannot pass.
+        const found = name.exec(trimmed);
+        if (!found || found.index + entry.name.length > excerpt.length) {
           addReason(result, 'excerpt-limit', entry);
           continue;
         }
