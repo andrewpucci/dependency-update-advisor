@@ -25,6 +25,9 @@ commands in draft specs as executable until the corresponding tooling exists.
 - Approved architectural decisions belong in `docs/adr/` when they need a
   durable explanation of why. Follow the [ADR guide](docs/adr/README.md):
   create a record when a specific decision is ready, not as a placeholder.
+- Keep verification commands and behavioral limits in repository docs.
+  Record revision-specific results and development history in the relevant
+  issue or PR, with links to CI runs.
 - Use GitHub Issues for individual implementation tasks. If an approved plan
   needs an ordered working handoff, use `tasks/plan.md` on the working branch
   and link its issues. The plan need not remain after the work is complete.
@@ -41,7 +44,7 @@ commands in draft specs as executable until the corresponding tooling exists.
   the specs. Keep the old reviewer active until parity and cutover gates pass.
 - Do not copy personal machine instructions or the full upstream
   `agent-skills` package into this repository. Use installed skills as a
-  process; store project decisions and evidence here.
+  process; store project contracts and decisions here.
 - Do not invent quality thresholds, approval, or completed verification.
   Report exactly which commands ran and against which revision.
 

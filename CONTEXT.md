@@ -2,19 +2,18 @@
 
 ## Current checkpoint
 
-The [C1 config parser and schema](docs/specs/SPEC-config-parser.md) are implemented
-and [locally verified](docs/verification/C1-config-parser.md), including the
-nonempty-context test follow-up. C2 and C3 own the next context and policy work.
-No reviewer workflow exists; the old reviewer in
+The [C1 config parser and schema](docs/specs/SPEC-config-parser.md) are implemented.
+[Local verification](https://github.com/andrewpucci/dependency-update-advisor/issues/5#issuecomment-6116293460)
+includes the nonempty-context test follow-up. C2 and C3 own the next context
+and policy work. No reviewer workflow exists; the old reviewer in
 [`andrewpucci.com`](https://github.com/andrewpucci/andrewpucci.com) remains active.
 Repository CI enforces lint, formatting, strict TypeScript checking, and
 finite Node tests.
 
 ## Next action
 
-Review the [C1 verification](docs/verification/C1-config-parser.md), then
-select C2 or C3. The [C1 spec](docs/specs/SPEC-config-parser.md) defines their
-handoffs. Reviewer action packaging remains A1.
+Select C2 or C3 after reviewing C1's linked evidence and
+[handoffs](docs/specs/SPEC-config-parser.md). Action packaging remains A1.
 
 ## Where details live
 
@@ -22,19 +21,18 @@ handoffs. Reviewer action packaging remains A1.
   approved for planning, and supporting contracts. The
   [comment-experience contract](docs/specs/SPEC-comment-experience.md) is approved.
 - The [B1 baseline](tests/parity/README.md) and [scenario handoff](tests/parity/scenarios.md)
-  record the selected source state and known gaps under the
-  [approved B1 contract](docs/specs/SPEC-extraction-baseline.md).
-- [B2 verification](docs/verification/B2-local-tooling.md) and
-  [B3 verification](docs/verification/B3-ci-enforcement.md) record tooling and CI
-  evidence under the approved [B2](docs/specs/SPEC-local-tooling.md) and
-  [B3](docs/specs/SPEC-ci-enforcement.md) execution contracts.
+  record source state and gaps under the [B1 contract](docs/specs/SPEC-extraction-baseline.md).
+- [B2 evidence](https://github.com/andrewpucci/dependency-update-advisor/issues/3#issuecomment-6116292296)
+  and [B3 evidence](https://github.com/andrewpucci/dependency-update-advisor/issues/4#issuecomment-6116293290)
+  record tooling and CI results under the approved
+  [B2](docs/specs/SPEC-local-tooling.md) and [B3](docs/specs/SPEC-ci-enforcement.md).
 - The [ADR guide](docs/adr/README.md) explains how to record durable choices.
-  [ADR 0001](docs/adr/0001-typescript-source.md) records the TypeScript source
-  and packaged JavaScript action choice. [ADR 0002](docs/adr/0002-privileged-review-boundary.md)
-  and [ADR 0003](docs/adr/0003-immutable-files-for-dependency-inventory.md)
-  record the trusted review boundary and dependency inventory source.
+  [Source and action bundle](docs/adr/0001-typescript-source.md),
+  [trusted review boundary](docs/adr/0002-privileged-review-boundary.md), and
+  [immutable inventory](docs/adr/0003-immutable-files-for-dependency-inventory.md).
 - GitHub Issues track implementation work. The working `tasks/plan.md` is
-  gitignored and transient per PR; durable contracts and evidence stay tracked.
+  gitignored and transient per PR. Revision-specific results stay in issues,
+  PRs, and CI; specs and ADRs hold contracts and decisions.
 - Private consumer evidence and configuration stay in their own repositories.
 
 Update this checkpoint when phases change; keep session history in its source.

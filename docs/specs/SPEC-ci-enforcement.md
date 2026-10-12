@@ -25,8 +25,9 @@ once the action entry point exists. The old reviewer remains active.
 
 - The attachment and live issue #4 agree on scope and verification. GitHub
   marks [B2](https://github.com/andrewpucci/dependency-update-advisor/issues/3)
-  completed. Its [verification record](../verification/B2-local-tooling.md)
-  supplies the implemented command sequence and clean-checkout evidence.
+  completed. Its [issue evidence](https://github.com/andrewpucci/dependency-update-advisor/issues/3#issuecomment-6116292296)
+  records clean-checkout validation. [Contributor checks](../../CONTRIBUTING.md#checks)
+  supply the implemented command sequence.
 - At drafting revision `e18f848b95ef5355dce3d41b4c8d7e873119b88c`, CI already
   installs dependencies and checks lint and formatting. Type checking and
   tests exist locally but are absent from CI. `README.md` and
@@ -95,11 +96,10 @@ README.md                         → concise current contributor commands
 CONTRIBUTING.md                    → full checks and future A1 distinction
 docs/specs/SPEC-ci-enforcement.md  → this B3 supporting contract
 docs/specs/README.md               → spec index and approval state
-docs/verification/                → revision-specific B3 evidence
 CONTEXT.md                        → current checkpoint and next action
 ```
 
-Keep B1 parity documents and B2 verification intact. Update the checkpoint
+Keep B1 parity documents and B2 tooling intact. Update the checkpoint
 when B3's actual phase changes; planning does not establish execution results.
 
 ## Code Style and Workflow Contract
@@ -172,9 +172,11 @@ must be labeled separately. If another push or base update changes the tested
 revision, evidence for the old revision cannot validate the new one.
 Cancelled or skipped runs do not count as successful execution.
 
-Store sanitized evidence in `docs/verification/B3-ci-enforcement.md`, including
-warnings and any failures or unavailable checks. A missing observed CI run
-is an incomplete verification item, not an inferred pass. B2's existing audit
+Record sanitized revision-specific evidence in
+[issue #4](https://github.com/andrewpucci/dependency-update-advisor/issues/4#issuecomment-6116293290)
+or its PR,
+including warnings and any failures or unavailable checks. A missing observed
+CI run is an incomplete verification item, not an inferred pass. B2's existing audit
 deferral remains separate; B3 neither changes audit policy nor claims repair.
 
 ## Boundaries

@@ -28,8 +28,9 @@ complete review coverage.
 ## Known Inputs and Assumptions
 
 - The attached issue and live issue agree. B2 is closed as completed; its
-  [verification record](../verification/B2-local-tooling.md) documents the
-  available toolchain.
+  [issue evidence](https://github.com/andrewpucci/dependency-update-advisor/issues/3#issuecomment-6116292296)
+  records its validation.
+  [Contributor checks](../../CONTRIBUTING.md#checks) document the commands.
 - Drafting starts at `f81f2372894c9fe74a3ee2a7dd49d09a7f2cda05` on `issue-5`
   with a clean working tree. There is no `src/` or `schemas/` implementation.
 - The caller supplies an already trusted default-branch checkout. C1 does
@@ -84,7 +85,6 @@ src/config.ts                       → trusted file loading, validation, defaul
 src/config.test.ts                  → parser, loader, default, and schema agreement tests
 schemas/review-config-v1.json        → published declarative v1 JSON contract
 docs/specs/SPEC-config-parser.md     → this C1 supporting contract
-docs/verification/C1-config-parser.md → future revision and command evidence
 ```
 
 Use synthetic inline or temporary-checkout fixtures. Keep private consumer
@@ -289,6 +289,8 @@ filesystem and disclosure validation.
 The C1 implementation plan's draft-07 dialect and test-only `ajv@8.20.0`
 dependency are approved for execution. No C1 implementation choice remains open.
 
-The [C1 verification record](../verification/C1-config-parser.md) documents
-the implemented revision, clean-checkout command results, regression probes,
-and remaining C2/C3 and integration boundaries.
+Record revision-specific validation and regression probes in
+[issue #5](https://github.com/andrewpucci/dependency-update-advisor/issues/5#issuecomment-6116293460)
+or its PR.
+C1 validation covers the parser and schema; C2/C3 disclosure and policy
+behavior, workflow integration, and reviewer parity remain separate gates.

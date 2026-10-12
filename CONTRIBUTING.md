@@ -43,6 +43,11 @@ inspect the diff for private consumer details. Before publishing, inspect the
 staged diff as well. Report the exact commands and revision checked; do not
 claim tests that were not run.
 
+Keep verification commands and behavioral limits in repository docs. Record
+revision-specific results in the relevant issue or PR, with links to CI runs.
+Include the tested SHA, environment, commands, outcomes, warnings, and checks
+not run. Development history and temporary probe results belong there too.
+
 With Node.js 24 (`>=24.11.0 <25`), run the full local and CI sequence using
 the pinned repository toolchain:
 

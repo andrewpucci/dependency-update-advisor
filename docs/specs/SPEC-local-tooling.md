@@ -50,6 +50,11 @@ do not upgrade the existing toolchain as an incidental change. The compiler
 must be the repository-local `tsc`, not a global installation or a tool
 downloaded on demand. Record the actual Node.js and npm versions used.
 
+The compiler includes `DOM` declaration libraries because the installed
+Vite+/Vitest and tinybench declarations reference browser types. This keeps
+strict checking enabled without `skipLibCheck`. Tests run in Node; the DOM
+declarations do not add a browser runtime.
+
 ## Commands
 
 The implemented B2 toolchain provides these commands:
@@ -170,13 +175,14 @@ unchanged; the action build remains a later packaging scope.
    and tests produce nonzero exits, with no compiler output emitted.
 3. At least one TypeScript test executes in the Node environment; a failing
    assertion produces a nonzero exit. No no-tests bypass is enabled.
-4. The verification record gives B3 the exact local commands to enforce in
-   CI and document, without implementing B3 as part of B2.
+4. The documented commands give B3 the exact local sequence to enforce in
+   CI, without implementing B3 as part of B2.
 5. Validation evidence identifies the exact implemented revision, environment,
    tool versions, command results, and test counts. Reviewer code, consumer
    configuration, B1 evidence, and the active reviewer remain unchanged.
 
 ## Open Questions
 
-None. The [B2 verification record](../verification/B2-local-tooling.md) records
-the selected pins, compiler configuration adjustment, and command outcomes.
+None. Record revision-specific validation in
+[issue #3](https://github.com/andrewpucci/dependency-update-advisor/issues/3#issuecomment-6116292296)
+or its PR.
