@@ -55,6 +55,9 @@ their write obligations live in the [publication handoff](#publication-handoff).
   for identity verification, including failure and cancellation. Completion
   is not CI success and does not imply successful reviewer execution. A success-only
   trigger would be a policy refinement requiring explicit approval.
+- User-approved 2026-10-12: recognize `startup_failure` as a
+  completed conclusion and carry it forward like `cancelled`, so a CI run that
+  never started is verified rather than reported as malformed input.
 - User-selected on 2026-10-12: a newer CI attempt on the same head may refresh
   the review; repeated delivery of an already claimed attempt must not refresh it.
   The [B1 handoff](../../tests/parity/README.md#source-observation-and-selection)
@@ -131,7 +134,9 @@ returns a verification error, never an empty association or permissive default.
    event obsolete, even if the PR head is unchanged. An impossible future
    event attempt or another identity conflict is a mismatch.
 8. Recognized terminal conclusions are `success`, `failure`, `neutral`,
-   `cancelled`, `skipped`, `timed_out`, `action_required`, and `stale`.
+   `cancelled`, `skipped`, `timed_out`, `action_required`, `stale`, and
+   `startup_failure`. GitHub's REST description lists `startup_failure` for
+   completed workflow-run webhooks; some third-party schemas omit it.
    Missing, null, or unknown conclusions cannot establish completion.
    GitHub's [workflow-run trigger](https://docs.github.com/en/actions/reference/workflows-and-actions/events-that-trigger-workflows#workflow_run)
    fires regardless of the preceding workflow's conclusion. This contract
@@ -298,7 +303,7 @@ must omit a binding and authorize no write.
 | Scenario                                                                               | Expected result                                                              |
 | -------------------------------------------------------------------------------------- | ---------------------------------------------------------------------------- |
 | Intended completed Dependabot run, one open PR, matching current head, unseen identity | `verified` with the exact binding.                                           |
-| Recognized completed conclusion, including failure or cancellation                     | `verified`, retaining the conclusion without inferring CI or review success. |
+| Recognized completed conclusion, including failure, cancellation, or startup failure   | `verified`, retaining the conclusion without inferring CI or review success. |
 | New latest attempt on the same head, human rerun initiator, unseen identity            | `verified` with the new attempt; original actor remains Dependabot.          |
 | Claimed/completed identity, duplicate delivery, or duplicate reviewer rerun            | `skip: duplicate`.                                                           |
 | Old attempt after a newer attempt starts, even on the same head                        | `skip: obsolete`.                                                            |
