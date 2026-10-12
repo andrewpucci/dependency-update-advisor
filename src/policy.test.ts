@@ -1,5 +1,10 @@
 import { describe, expect, test } from 'vite-plus/test';
-import { DEFAULT_VERDICTS, parseReviewConfig } from './config.js';
+import {
+  DEFAULT_VERDICTS,
+  parseReviewConfig,
+  type PolicyOverrides,
+  type Verdict,
+} from './config.js';
 import { evaluatePolicy, type Finding, type PolicyUnit } from './policy.js';
 
 const day = 86_400_000;
@@ -455,5 +460,229 @@ describe('default policy evaluation', () => {
     const result = evaluatePolicy(config, [unit()], now);
     expect(result).toEqual(config);
     expect(result).not.toHaveProperty('policy');
+  });
+});
+
+function configured(overrides: PolicyOverrides = {}, minimumReleaseAgeDays?: number) {
+  return JSON.stringify({
+    version: 1,
+    policy: {
+      verdicts: overrides,
+      ...(minimumReleaseAgeDays === undefined ? {} : { minimumReleaseAgeDays }),
+    },
+  });
+}
+
+describe('local overrides and provenance', () => {
+  const combinations = examples.flatMap((example) =>
+    (['merge', 'merge_with_followups', 'do_not_merge'] as const).map((verdict) => ({
+      ...example,
+      verdict,
+    })),
+  );
+  test.each(combinations)('$rule → $verdict replaces only that rule', (example) => {
+    const input = exampleUnit(example);
+    const result = evaluate([input], configured({ [example.rule]: example.verdict }));
+    expect(result.defaultCeiling).toBe(DEFAULT_VERDICTS[example.rule]);
+    expect(result.effectiveCeiling).toBe(example.verdict);
+    expect(result.units[0].defaultCeiling).toBe(DEFAULT_VERDICTS[example.rule]);
+    expect(result.units[0].effectiveCeiling).toBe(example.verdict);
+    expect(result.policy.verdicts).toEqual({
+      ...DEFAULT_VERDICTS,
+      [example.rule]: example.verdict,
+    });
+    expect(result.policy.overrides).toEqual({ [example.rule]: example.verdict });
+    expect(result.units[0].rules[0]).toMatchObject({
+      unitId: input.id,
+      rule: example.rule,
+      defaultVerdict: DEFAULT_VERDICTS[example.rule],
+      effectiveVerdict: example.verdict,
+      explicitlyConfigured: true,
+      fixed: false,
+      configField: `.github/dependabot-review.json#policy.verdicts.${example.rule}`,
+    });
+    expect(result.units[0]).toMatchObject(input);
+  });
+
+  test('independent incompatibility still holds a relaxed high advisory', () => {
+    const vulnerability = examples[1].finding!;
+    const incompatible = examples[3].finding!;
+    const result = evaluate(
+      [unit([vulnerability, { ...incompatible, id: 'migration' }])],
+      configured({ highOrCriticalVulnerability: 'merge' }),
+    );
+    expect(result.defaultCeiling).toBe('do_not_merge');
+    expect(result.effectiveCeiling).toBe('do_not_merge');
+    expect(result.units[0].rules.map((trace) => trace.effectiveVerdict)).toEqual([
+      'merge',
+      'do_not_merge',
+    ]);
+    expect(result.units[0].findings[0]).toEqual(vulnerability);
+  });
+
+  test('tightened evidence wins over a relaxed vulnerability without changing coverage', () => {
+    const input = { ...exampleUnit(examples[0]), findings: [examples[1].finding!] };
+    const result = evaluate(
+      [input],
+      configured({ incompleteEvidence: 'do_not_merge', highOrCriticalVulnerability: 'merge' }),
+    );
+    expect(result.effectiveCeiling).toBe('do_not_merge');
+    expect(result.units[0].gaps).toHaveLength(1);
+    expect(result.units[0].sources).toEqual(input.sources);
+    expect(result.units[0].findings).toEqual(input.findings);
+  });
+
+  test('equal-to-default and non-applicable overrides remain explicit without invented applications', () => {
+    const result = evaluate(
+      [exampleUnit(examples[1])],
+      configured({ highOrCriticalVulnerability: 'do_not_merge', licenseChange: 'merge' }, 1),
+    );
+    expect(result.policy.overrides).toEqual({
+      highOrCriticalVulnerability: 'do_not_merge',
+      licenseChange: 'merge',
+    });
+    expect(result.units[0].rules).toHaveLength(1);
+    expect(result.units[0].rules[0].explicitlyConfigured).toBe(true);
+    expect(result.policy.minimumReleaseAgeDaysExplicit).toBe(true);
+    expect(result.policy.minimumReleaseAgeDaysField).toBe(
+      '.github/dependabot-review.json#policy.minimumReleaseAgeDays',
+    );
+    expect(evaluate([unit()]).policy.minimumReleaseAgeDaysExplicit).toBe(false);
+    expect(evaluate([unit()]).policy.minimumReleaseAgeDaysField).toBeUndefined();
+  });
+
+  test.each([
+    { age: 7 * day - 1, matches: true },
+    { age: 7 * day, matches: false },
+    { age: 7 * day + 1, matches: false },
+  ])('configured seven-day window has exclusive boundary $age', ({ age, matches }) => {
+    const result = evaluate(
+      [unit([{ ...fact, kind: 'releaseMetadata', publishedAt: now - age }])],
+      configured({}, 7),
+    );
+    expect(result.policy.minimumReleaseAgeDays).toBe(7);
+    expect(result.units[0].rules).toHaveLength(matches ? 1 : 0);
+    if (matches) expect(result.units[0].rules[0].recheckAt).toBe(now - age + 7 * day);
+  });
+
+  test('configured window and verdict keep the security-fix exemption and independent deprecation', () => {
+    const findings: Finding[] = [
+      {
+        ...fact,
+        kind: 'releaseMetadata',
+        publishedAt: now,
+        deprecated: { marker: 'yanked', reason: 'Registry removal' },
+      },
+      {
+        ...fact,
+        id: 'fix',
+        kind: 'vulnerability',
+        severity: 'high',
+        applicability: 'resolved_by_proposed',
+      },
+    ];
+    const result = evaluate([unit(findings)], configured({ recentRelease: 'do_not_merge' }, 30));
+    expect(result.effectiveCeiling).toBe('merge_with_followups');
+    expect(result.units[0].rules.map((trace) => trace.rule)).toEqual(['deprecatedRelease']);
+    expect(result.units[0].releaseExemptions[0].advisoryIds).toEqual(['fix']);
+  });
+
+  test('fixed malware hold survives all named rules relaxed and has no config source', () => {
+    const allMerge = Object.fromEntries(
+      Object.keys(DEFAULT_VERDICTS).map((rule) => [rule, 'merge']),
+    ) as PolicyOverrides;
+    const input = unit([
+      { ...fact, kind: 'malware', applicability: 'affects_proposed' },
+      examples[1].finding!,
+    ]);
+    const result = evaluate([input], configured(allMerge));
+    expect(result.effectiveCeiling).toBe('do_not_merge');
+    expect(result.units[0].rules[0]).toMatchObject({
+      rule: 'maliciousPackage',
+      defaultVerdict: 'do_not_merge',
+      effectiveVerdict: 'do_not_merge',
+      fixed: true,
+      explicitlyConfigured: false,
+    });
+    expect(result.units[0].rules[0].configField).toBeUndefined();
+    expect(result.units[0].rules[1].effectiveVerdict).toBe('merge');
+    expect(result.units[0].findings).toEqual(input.findings);
+  });
+
+  test('finding, source, and mixed-ecosystem unit permutations preserve all ceilings', () => {
+    const first = {
+      ...exampleUnit(examples[0]),
+      findings: [examples[1].finding!, examples[3].finding!],
+      sources: [
+        ...exampleUnit(examples[0]).sources,
+        {
+          id: 'inventory',
+          status: 'partial',
+          reason: 'Partial inventory',
+          coverageLimits: ['Inventory gap'],
+        },
+      ],
+    };
+    const second = {
+      ...exampleUnit(examples[7]),
+      id: 'unit-uv',
+      members: [{ ...member, ecosystem: 'uv' as const }],
+    };
+    const third = {
+      ...exampleUnit(examples[4]),
+      id: 'unit-actions',
+      members: [{ ...member, ecosystem: 'actions' as const }],
+    };
+    const text = configured({
+      highOrCriticalVulnerability: 'merge',
+      incompatibleMigration: 'merge_with_followups',
+      licenseChange: 'do_not_merge',
+    });
+    const reference = evaluate([first, second, third], text);
+    for (const inputs of [
+      [third, second, first],
+      [second, first, third],
+    ]) {
+      const result = evaluate(
+        inputs.map((input) => ({
+          ...input,
+          findings: [...input.findings].reverse(),
+          sources: [...input.sources].reverse(),
+        })),
+        text,
+      );
+      expect(result.effectiveCeiling).toBe(reference.effectiveCeiling);
+      expect(result.defaultCeiling).toBe(reference.defaultCeiling);
+      for (const value of result.units) {
+        const expected = reference.units.find((other) => other.id === value.id)!;
+        expect(value.defaultCeiling).toBe(expected.defaultCeiling);
+        expect(value.effectiveCeiling).toBe(expected.effectiveCeiling);
+        expect([...value.gaps].sort((a, b) => a.id.localeCompare(b.id))).toEqual(
+          [...expected.gaps].sort((a, b) => a.id.localeCompare(b.id)),
+        );
+      }
+    }
+  });
+
+  test('frozen config and evidence are retained and output changes cannot leak across calls', () => {
+    const inputs = freeze([exampleUnit(examples[1])]);
+    const config = freeze(
+      parseReviewConfig(configured({ highOrCriticalVulnerability: 'merge' }, 7)),
+    );
+    const before = JSON.stringify({ inputs, config });
+    const first = evaluatePolicy(config, inputs, now);
+    const second = evaluatePolicy(config, inputs, now);
+    if (!first.ok || !second.ok) throw new Error('expected policy');
+    expect(first).toEqual(second);
+    Object.assign(first.policy.verdicts, {
+      highOrCriticalVulnerability: 'do_not_merge' as Verdict,
+    });
+    Object.assign(first.policy.overrides, {
+      highOrCriticalVulnerability: 'do_not_merge' as Verdict,
+    });
+    Object.assign(first.units[0].findings[0].remediation, { 0: 'Modified output' });
+    expect(evaluatePolicy(config, inputs, now)).toEqual(second);
+    expect(evaluate([unit()]).policy.verdicts).toEqual(DEFAULT_VERDICTS);
+    expect(JSON.stringify({ inputs, config })).toBe(before);
   });
 });
