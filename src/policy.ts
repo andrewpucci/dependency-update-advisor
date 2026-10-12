@@ -120,6 +120,7 @@ export type PolicyEvaluation = Readonly<{
     overrides: Readonly<PolicyOverrides>;
     minimumReleaseAgeDays: number;
     minimumReleaseAgeDaysExplicit: boolean;
+    minimumReleaseAgeDaysField?: string;
     origin: 'file' | 'missing';
   }>;
   units: readonly EvaluatedUnit[];
@@ -170,10 +171,15 @@ export function evaluatePolicy(
 ): PolicyResult {
   if (!config.ok) return { ok: false, error: { ...config.error } };
   const policy: PolicyEvaluation['policy'] = {
-    verdicts: { ...DEFAULT_VERDICTS },
-    overrides: {},
-    minimumReleaseAgeDays: 1,
-    minimumReleaseAgeDaysExplicit: false,
+    verdicts: { ...config.config.policy.verdicts },
+    overrides: { ...config.overrides },
+    minimumReleaseAgeDays: config.config.policy.minimumReleaseAgeDays,
+    minimumReleaseAgeDaysExplicit: config.minimumReleaseAgeDaysExplicit,
+    ...(config.minimumReleaseAgeDaysExplicit
+      ? {
+          minimumReleaseAgeDaysField: '.github/dependabot-review.json#policy.minimumReleaseAgeDays',
+        }
+      : {}),
     origin: config.origin,
   };
   const evaluatedUnits = units.map((input) => {
@@ -193,8 +199,11 @@ export function evaluatePolicy(
         ...identity,
         rule,
         defaultVerdict,
-        effectiveVerdict: defaultVerdict,
-        explicitlyConfigured: false,
+        effectiveVerdict: fixed ? 'do_not_merge' : policy.verdicts[rule],
+        explicitlyConfigured: !fixed && Object.hasOwn(policy.overrides, rule),
+        ...(!fixed && Object.hasOwn(policy.overrides, rule)
+          ? { configField: `.github/dependabot-review.json#policy.verdicts.${rule}` }
+          : {}),
         fixed,
       });
     }
