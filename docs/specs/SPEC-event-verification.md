@@ -378,18 +378,44 @@ Use existing single-quote ESM TypeScript conventions, explicit unions, and
 small runtime validators. Accept external data as `unknown`; do not assert
 it into a trusted type or coerce malformed identities. Prefer owned copies
 for bindings so subsequent input mutation cannot alter their identities.
-The result fields and categories follow the contract above. This illustrative
-type name is finalized during planning:
+The result fields and categories follow the contract above. The exported
+`EventResult` uses this discriminated shape:
 
 ```ts
 type EventResult =
   | { kind: 'verified'; binding: Readonly<ReviewBinding> }
   | { kind: 'skip'; reason: 'ineligible' | 'obsolete' | 'duplicate' }
-  | { kind: 'error'; category: 'input' | 'mismatch' | 'read' | 'replay' };
+  | { kind: 'error'; category: 'input' | 'mismatch' | 'read' | 'replay'; field: ErrorField };
 ```
 
 No exported binding type or TypeScript brand can replace runtime freshness
 and replay checks at the publication boundary.
+
+### T1 interface
+
+The [source module](../../src/event.ts) owns the exact exported TypeScript
+types. `verifyCiEvent(input, reads)` accepts an unknown input with `eventName`,
+`payload`, and trusted `expected.repository` (`id`, `owner`, `name`) and
+`expected.workflow` (`id`, `path`). `payload` is the decoded workflow-run
+webhook object. Both input and read results receive runtime validation.
+
+`EventReads` exposes `readWorkflow(repository, workflowId)`,
+`readRun(repository, runId)`, `readPullRequest(repository, pullNumber)`, and
+`readReplay(identity)`, each returning `Promise<unknown>`. Replay results have
+an exact `identity` tuple and `state` of `unseen`, `claimed`, or `completed`.
+T1 does not create that trusted state or supply a transport implementation.
+
+`reverifyReviewBinding(binding, reads)` accepts an unknown binding plus
+`FreshnessReads`, which contains only run and PR reads. It returns
+`FreshnessResult` (`fresh`, `obsolete`, or the same structured error).
+It never reads replay eligibility or returns a replacement binding; W2 checks
+exclusive ownership separately. All rejection results omit a binding, and
+error fields are fixed labels rather than untrusted property names or values.
+
+`ReviewBinding` contains frozen repository/workflow/head-repository identities,
+run ID/attempt, PR number, full head, original actor ID, completed conclusion,
+and the frozen `ReviewIdentity` tuple. Normalization copies identities before
+awaiting another read, preserving the snapshot against caller mutation.
 
 ## Commands
 
