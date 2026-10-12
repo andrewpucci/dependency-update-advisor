@@ -8,7 +8,9 @@ and context configuration.
 
 **Status:** B1–B3 foundation work and C1–C3 configuration, source context,
 and advisory policy are complete and merged into `main`. T1 event verification
-is approved for execution and implementation is in progress.
+source is implemented on working branch `issue-8`, pending merge;
+[verification evidence](https://github.com/andrewpucci/dependency-update-advisor/issues/62)
+keeps transport, durable claims, and publication gates separate.
 The remaining module specs are approved for planning.
 This repository has no runnable shared reviewer or published
 reusable review workflow. Do not point consumer repositories at it until
