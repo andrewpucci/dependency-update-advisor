@@ -252,6 +252,8 @@ export async function validateSourceContextInput(
   } catch {
     return failure('read');
   }
+  // Missing-file defaults configure no boundary, so only an existing file's paths are checked.
+  if (input.config.origin === 'missing') return { ok: true, state: 'disabled' };
   const existingRoots: string[] = [],
     existingFiles: string[] = [];
   const reasons: ContextReason[] = [];
@@ -416,6 +418,7 @@ function blockedFile(lines: string[]): ContextReason | undefined {
         /-----BEGIN(?: [A-Z0-9]+)* PRIVATE KEY-----/i.test(line) ||
         sensitiveAssignments(line).some(
           (value) =>
+            (!value && line.trimEnd().endsWith('=')) ||
             ['{', '[', '`'].includes(value[0]) ||
             ((value.startsWith('"') || value.startsWith("'")) &&
               !new RegExp(`(?<!\\\\)${value[0]}`).test(value.slice(1))),

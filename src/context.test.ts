@@ -802,6 +802,29 @@ test('a sensitive-suffix assignment opening a block rejects the whole file', asy
   });
 });
 
+test('a sensitive assignment ending its line rejects the whole file', async () => {
+  const root = await fixture();
+  await source(
+    root,
+    'src/a.ts',
+    'import "example-package";\nconst NPM_TOKEN =\n  "synthetic example-package";',
+  );
+  expect(await collectSourceContext(enabled(root))).toMatchObject({
+    ok: true,
+    dependencies: [{ facts: [], reasons: ['suspicious-line'] }],
+  });
+});
+
+test('a sensitive switch label ending its line rejects only that line', async () => {
+  const root = await fixture();
+  await source(root, 'src/a.ts', "switch (field) {\n  case 'email':\n}\nimport 'example-package';");
+  expect(await collectSourceContext(enabled(root))).toMatchObject({
+    ok: true,
+    status: 'available',
+    dependencies: [{ facts: [{ excerpt: "import 'example-package';" }] }],
+  });
+});
+
 test.each([
   ['react-dom', 'react'],
   ['preact', 'react'],
@@ -996,6 +1019,20 @@ test.each(['root', 'parent', 'file', 'dangling', 'escaping'])(
     expect(result).not.toHaveProperty('files');
   },
 );
+
+test('a missing config file disables context without checking the default root', async () => {
+  const root = await fixture();
+  const other = await fixture();
+  await fs.rm(join(root, 'src'), { recursive: true });
+  await fs.symlink(join(other, 'src'), join(root, 'src'));
+  const request = input(root);
+  expect(await validateSourceContextInput(request)).toMatchObject({
+    ok: false,
+    error: { category: 'path' },
+  });
+  request.config = await loadTrustedReviewConfig(root);
+  expect(await validateSourceContextInput(request)).toEqual({ ok: true, state: 'disabled' });
+});
 
 test('missing ordinary paths remain availability limits and empty roots do not default', async () => {
   const root = await fixture();
