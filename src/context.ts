@@ -383,7 +383,7 @@ function blockedFile(lines: string[]): ContextReason | undefined {
         /-----BEGIN(?: [A-Z0-9]+)* PRIVATE KEY-----/i.test(line) ||
         sensitiveAssignments(line).some(
           (value) =>
-          ['{', '[', '`'].includes(value[0]) ||
+            ['{', '[', '`'].includes(value[0]) ||
             ((value.startsWith('"') || value.startsWith("'")) &&
               !new RegExp(`(?<!\\\\)${value[0]}`).test(value.slice(1))),
         ),
