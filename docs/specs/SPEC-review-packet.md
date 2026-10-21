@@ -16,6 +16,10 @@ Full-spec approval also covers the resource ceilings, finding links, and
 intentional parity difference recorded below. Resource ceilings bound work;
 they are not measured performance or test-coverage thresholds.
 
+Clarifications approved by the user on 2026-10-21 during PR #89 review:
+upstream excerpts may contain tabs, and relationship path instances must agree
+with the changes' recorded instances.
+
 ## Objective
 
 Give reviewer contributors one bounded, provider-neutral runtime boundary
@@ -243,7 +247,9 @@ evaluating policy or claiming independent verification of upstream content.
 proof names two distinct known change IDs in the same ecosystem/root, the
 immutable lock source and side, and a bounded path of exact package instances
 whose endpoints match those changes. Reject dangling, cross-root/ecosystem,
-self-referential, repeated, or internally conflicting proofs. An Actions
+self-referential, repeated, or conflicting proofs: a path instance must agree
+with other proofs and with the changes' recorded instances on that side,
+ignoring which source record cites the lock file. An Actions
 occurrence cannot masquerade as an npm/uv lock relationship. T5 must validate
 graph sufficiency and ambiguity before assigning a group; merely accepting
 the proof's structure does not establish a group.
@@ -299,7 +305,7 @@ backslashes, empty segments, traversal, and control characters. Hidden segments
 are allowed for evidence paths such as workflows; this does not relax C2's
 stricter excerpt eligibility. Preserve meaningful case and exact refs/versions.
 Opaque text and identifiers reject control characters; excerpt text may contain
-ordinary line breaks as data. Do not trim, coerce, or repair invalid values.
+ordinary line breaks and tabs as data. Do not trim, coerce, or repair invalid values.
 
 Accept only JSON-shaped input: plain records, dense arrays, and supported
 primitives. Reject accessors, symbols, prototype-like keys, cycles, exotic
@@ -355,7 +361,8 @@ validateReviewPacket(candidate: unknown, trusted: unknown): PacketResult
 
 `PacketExpected` describes the trusted argument: `binding`, `baseSha`,
 `contextRevision`, and a successful `context`. The operation also validates
-this argument at runtime. `PacketResult` is either the fixed safe failure
+this argument at runtime and reports any defect in it under field `expected`,
+before inspecting the candidate. `PacketResult` is either the fixed safe failure
 shape above or a detached deeply readonly `ReviewPacket`. `PACKET_LIMITS`
 exports frozen ceilings; callers cannot configure them. No input is mutated,
 no I/O occurs, and no caught inspection error or payload is logged.
