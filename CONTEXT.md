@@ -20,8 +20,8 @@ No shared reviewer workflow exists; the old reviewer remains active.
 
 ## Next action
 
-Review T3's one PR for #10 and #71–#75 under the
-[managed-comment contract](docs/specs/SPEC-managed-comments.md).
+[T3](docs/specs/SPEC-managed-comments.md) awaits review for #10 and #71–#75.
+[T4](docs/specs/SPEC-review-packet.md) is approved for execution in one PR.
 W1/W2 must supply bounded reads and exclusive claims before T2/T3 writes.
 B1–B3, C1–C3, T1, and T2 are merged. Downstream work:
 [S3](https://github.com/andrewpucci/dependency-update-advisor/issues/53) supplies
