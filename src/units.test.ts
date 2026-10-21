@@ -4,6 +4,8 @@ import {
   type PacketChange,
   type PacketExpected,
   type ReviewPacket,
+  type EvidenceReason,
+  PACKET_LIMITS,
 } from './schema.js';
 import { formDecisionUnits } from './units.js';
 import { evaluateUnitPolicy, summarizeDecisionCoverage } from './units.js';
@@ -716,4 +718,217 @@ test('assessed required gaps remain explicit even with relaxed advice; optional 
   if (!optional.ok) throw new Error('expected coverage');
   expect(optional.policyProvenance.assessments.units[0].gaps).toEqual([]);
   expect(optional.policyProvenance.assessments.units[0].uncheckedSignals).toHaveLength(1);
+});
+
+test('keeps the entire accepted 128-change inventory; T4 overflow has no usable packet', () => {
+  const f = fixture(Array.from({ length: PACKET_LIMITS.changes }, (_, i) => npm(`package-${i}`)));
+  const inventory = formDecisionUnits(accepted(f));
+  expect(inventory.units).toHaveLength(128);
+  const result = summarizeDecisionCoverage(inventory, parseReviewConfig('{"version":1}'), 0);
+  if (!result.ok) throw new Error('expected coverage');
+  expect(result.counts).toMatchObject({ units: 128, changedMembers: 128, unresolvedUnits: 128 });
+  const overflow = fixture([...f.packet.changes, npm('overflow')]);
+  const rejected = validateReviewPacket(overflow.packet, overflow.expected);
+  expect(rejected).toEqual({ ok: false, error: { category: 'budget', field: 'changes' } });
+  expect(rejected).not.toHaveProperty('packet');
+});
+
+test.each(['proof_count', 'path_length'])(
+  'retains maximum accepted %s without graph expansion',
+  (limit) => {
+    const f = groupFixture();
+    const template = f.packet.relationships[0];
+    if (template.ecosystem !== 'npm') throw new Error('expected npm proof');
+    f.packet.relationships = Array.from(
+      { length: limit === 'proof_count' ? PACKET_LIMITS.relationships : 1 },
+      (_, i) => {
+        const proof = structuredClone(template);
+        const intermediates = Array.from(
+          { length: limit === 'path_length' ? PACKET_LIMITS.pathInstances - 2 : 1 },
+          (_, j) => ({
+            ...proof.path[0],
+            name: `middle-${i}-${j}`,
+            lockPath: `node_modules/middle-${i}-${j}`,
+          }),
+        );
+        proof.path.splice(1, 0, ...intermediates);
+        return proof;
+      },
+    );
+    const inventory = formDecisionUnits(accepted(f));
+    expect(inventory.units).toHaveLength(1);
+    expect(inventory.units[0].memberCount).toBe(2);
+    expect(inventory.units[0].proofKeys).toHaveLength(limit === 'proof_count' ? 256 : 1);
+    const states = {
+      [inventory.units[0].id]: { state: 'assessed' as const, verdict: 'merge' as const },
+    };
+    const result = summarizeDecisionCoverage(
+      inventory,
+      parseReviewConfig('{"version":1}'),
+      0,
+      states,
+    );
+    if (!result.ok) throw new Error('expected coverage');
+    expect(result.counts).toMatchObject({
+      changedMembers: 2,
+      units: 1,
+      groupedUnits: 1,
+      assessedUnits: 1,
+    });
+    expect(inventory.packet.context).toEqual({
+      ok: true,
+      status: 'disabled',
+      dependencies: [],
+      reasons: [],
+    });
+  },
+);
+
+test('reason vocabulary, optional signals, and permuted evidence retain precise attribution', () => {
+  const reasons: EvidenceReason[] = [
+    'permission',
+    'rate_limit',
+    'timeout',
+    'missing',
+    'malformed',
+    'unsupported',
+    'truncated',
+    'budget',
+    'conflict',
+    'unknown',
+  ];
+  const f = fixture([npm('one')]);
+  f.packet.changes[0].evidence.upstream.reasons = [...reasons].reverse();
+  for (const signal of ['publishTime', 'deprecation', 'trust', 'publisher'])
+    f.packet.changes[0].evidence[signal] = {
+      status: 'unavailable',
+      reasons: ['missing'],
+      sourceIds: [],
+    };
+  const first = formDecisionUnits(accepted(f));
+  f.packet.changes[0].evidence.upstream.reasons.reverse();
+  f.packet.changes[0].evidence = Object.fromEntries(
+    Object.entries(f.packet.changes[0].evidence).reverse(),
+  );
+  expect(formDecisionUnits(accepted(f)).units).toEqual(first.units);
+  const result = evaluateUnitPolicy(first, parseReviewConfig('{"version":1}'), 0);
+  if (!result.ok) throw new Error('expected policy');
+  expect(first.units[0].evidenceLinks.find((l) => l.category === 'upstream')!.reasons).toEqual(
+    reasons,
+  );
+  expect(result.units[0].uncheckedSignals.map((s) => s.signal).sort()).toEqual([
+    'deprecation',
+    'publishTime',
+    'publisher',
+    'trust',
+  ]);
+  expect(result.units[0].gaps).toHaveLength(4);
+  expect(
+    result.units[0].gaps.find((g) => g.sourceId === JSON.stringify(['one', 'upstream']))!
+      .coverageLimits,
+  ).toHaveLength(10);
+});
+
+test('a direct change moving roots counts in both roots and prevents an unjustified group', () => {
+  const anchor = npm('anchor'),
+    child = npm('child'),
+    moved = npm('moved');
+  child.role = 'transitive';
+  moved.to!.root = 'other';
+  const f = fixture([anchor, child, moved]);
+  relate(f, 0, 1);
+  const inventory = formDecisionUnits(accepted(f));
+  expect(inventory.units).toHaveLength(3);
+  expect(inventory.units.find((u) => u.memberIds.includes('child'))!.relationship.reason).toBe(
+    'multiple_direct_changes',
+  );
+});
+
+test('a root-moving anchor cannot combine base-root removals and head-root updates into one cross-root group', () => {
+  const anchor = npm('anchor'),
+    removed = npm('removed'),
+    updated = npm('updated');
+  anchor.to!.root = 'other';
+  removed.role = 'transitive';
+  removed.kind = 'removal';
+  removed.to = null;
+  updated.role = 'transitive';
+  updated.from!.root = updated.to!.root = 'other';
+  const f = fixture([anchor, removed, updated]);
+  relate(f, 0, 1, 'base');
+  relate(f, 0, 2);
+  const result = formDecisionUnits(accepted(f));
+  expect(result.units).toHaveLength(3);
+  expect(result.units.every((unit) => unit.kind === 'standalone')).toBe(true);
+});
+
+test('changing group membership or only the head invalidates assessment identity', () => {
+  const f = groupFixture();
+  const original = formDecisionUnits(accepted(f)).units[0].id;
+  const extra = npm('extra');
+  extra.role = 'transitive';
+  const expanded = fixture([...f.packet.changes, extra]);
+  relate(expanded, 0, 1);
+  relate(expanded, 0, 2);
+  expect(formDecisionUnits(accepted(expanded)).units[0].id).not.toBe(original);
+  const old = f.packet.binding;
+  const binding: PacketExpected['binding'] = {
+    ...old,
+    headSha: 'e'.repeat(40),
+    identity: [
+      old.repository.id,
+      old.workflow.id,
+      old.runId,
+      old.runAttempt,
+      old.pullNumber,
+      'e'.repeat(40),
+    ],
+  };
+  f.packet.binding = binding;
+  f.expected.binding = structuredClone(binding);
+  for (const source of f.packet.sources) {
+    if (source.provenance.kind === 'inventory') source.provenance.headSha = 'e'.repeat(40);
+    if (source.provenance.kind === 'file' && source.provenance.revision === 'head')
+      source.provenance.sha = 'e'.repeat(40);
+  }
+  expect(formDecisionUnits(accepted(f)).units[0].id).not.toBe(original);
+});
+
+test('coverage snapshots do not mutate config, assessment states, or prior results', () => {
+  const inventory = formDecisionUnits(accepted(fixture([npm('one')])));
+  const config = parseReviewConfig('{"version":1}');
+  const state = {
+    state: 'unavailable' as const,
+    reason: 'Unavailable.',
+    nextAction: 'Re-run CI.',
+    coverageLimits: ['original'],
+  };
+  const states = { [inventory.units[0].id]: state };
+  const result = summarizeDecisionCoverage(inventory, config, 0, states);
+  if (!result.ok) throw new Error('expected coverage');
+  state.coverageLimits.push('later');
+  expect(result.policyProvenance.assessments.unresolvedUnits[0].coverageLimits).not.toContain(
+    'later',
+  );
+  expect(Object.isFrozen(result.inventoryGaps)).toBe(true);
+  expect(Object.isFrozen(config)).toBe(false);
+  expect(summarizeDecisionCoverage(inventory, parseReviewConfig('{}'), 0)).toMatchObject({
+    ok: false,
+  });
+  expect(summarizeDecisionCoverage(inventory, parseReviewConfig('{}'), 0)).not.toHaveProperty(
+    'outcome',
+  );
+});
+
+test('a model-only hold with another missing unit cannot become a verified blocker', () => {
+  const f = fixture([npm('one'), npm('two')]);
+  available(f, 'one');
+  available(f, 'two');
+  const inventory = formDecisionUnits(accepted(f));
+  const result = summarizeDecisionCoverage(inventory, parseReviewConfig('{"version":1}'), 0, {
+    [inventory.units[0].id]: { state: 'assessed', verdict: 'do_not_merge' },
+  });
+  if (!result.ok) throw new Error('expected coverage');
+  expect(result.outcome).toEqual({ kind: 'decision_incomplete' });
+  expect(result.counts).toMatchObject({ assessedUnits: 1, unresolvedUnits: 1 });
 });
