@@ -6,6 +6,7 @@ import {
   type CommentDependencies,
 } from './comments.js';
 import { record, type ReviewBinding } from './event.js';
+import { publishExecutionStatus, type StatusRequest } from './status.js';
 
 const HEAD = 'a'.repeat(40);
 const OLD_HEAD = 'b'.repeat(40);
@@ -582,4 +583,269 @@ test.each([
   });
   expect(f.updateComment).toHaveBeenCalledTimes(1);
   expect(f.createComment).not.toHaveBeenCalled();
+});
+
+test('copies inputs before awaits and exposes only frozen request/receipt identities', async () => {
+  const f = publicationFixture();
+  f.listComments.mockImplementation(async (target) => {
+    expect(Object.isFrozen(target)).toBe(true);
+    expect(Object.isFrozen(target.repository)).toBe(true);
+    f.input.result.body = 'private mutation';
+    Object.assign(f.binding.repository, { name: 'changed' });
+    Object.assign(f.binding.identity, { 5: OLD_HEAD });
+    return { status: 200, complete: true, data: [] };
+  });
+  f.createComment.mockImplementation(async (request) => {
+    expect(Object.isFrozen(request)).toBe(true);
+    expect(request.repository.name).toBe('consumer');
+    expect(request.body).toBe(body());
+    return { status: 201, data: owned(901, request.body) };
+  });
+  f.readOwnership.mockImplementation(async (identity) => {
+    expect(Object.isFrozen(identity)).toBe(true);
+    expect(identity[5]).toBe(HEAD);
+    return { identity, state: 'owned' };
+  });
+  const result = await publishManagedComment(f.input, f.dependencies);
+  expect(result.kind).toBe('recorded');
+  if (result.kind !== 'recorded') throw new Error('expected recording');
+  expect(Object.isFrozen(result.receipt)).toBe(true);
+  expect(Object.isFrozen(result.receipt.identity)).toBe(true);
+});
+
+test.each([
+  null,
+  4,
+  {
+    get binding() {
+      throw new Error('private');
+    },
+  },
+  { binding: () => 'private' },
+])('contains hostile or uncloneable inputs %#', async (input) => {
+  const f = publicationFixture();
+  const discovery = await discoverManagedComment(input, f.dependencies);
+  const publication = await publishManagedComment(input, f.dependencies);
+  expect(discovery).toMatchObject({ kind: 'error', category: 'input' });
+  expect(publication).toMatchObject({
+    kind: 'error',
+    category: 'input',
+    mutation: 'not-attempted',
+  });
+  expect(JSON.stringify([discovery, publication])).not.toContain('private');
+  expect(f.order).toEqual([]);
+});
+
+test.each(['create', 'update'])(
+  'contains hostile %s exceptions without inspecting raw messages or retrying',
+  async (operation) => {
+    const f = publicationFixture(operation === 'update' ? [owned()] : []);
+    const error = {
+      get kind() {
+        throw new Error('private');
+      },
+      message: 'private secret-like string',
+    };
+    const writer = operation === 'update' ? f.updateComment : f.createComment;
+    writer.mockRejectedValue(error);
+    expect(await publishManagedComment(f.input, f.dependencies)).toEqual({
+      kind: 'error',
+      category: 'write',
+      field: 'comments',
+      mutation: 'unknown',
+      diagnostic: 'transport',
+    });
+    expect(writer).toHaveBeenCalledTimes(1);
+  },
+);
+
+test('ambiguity cannot reach freshness, ownership, or any writer', async () => {
+  const f = publicationFixture([owned(901), owned(902)]);
+  expect(await publishManagedComment(f.input, f.dependencies)).toMatchObject({
+    kind: 'error',
+    category: 'discovery',
+    diagnostic: 'ambiguity',
+    commentIds: [901, 902],
+    mutation: 'not-attempted',
+  });
+  expect(f.order).toEqual(['list']);
+});
+
+test.each([
+  null,
+  {},
+  { identity: [], state: 'owned' },
+  { identity: [101, 301, 401, 1, 42, HEAD], state: 'unknown' },
+  {
+    get identity() {
+      throw new Error('private');
+    },
+  },
+])('rejects malformed ownership without mutation %#', async (claim) => {
+  const f = publicationFixture();
+  f.readOwnership.mockResolvedValue(claim);
+  expect(await publishManagedComment(f.input, f.dependencies)).toMatchObject({
+    category: 'ownership',
+    mutation: 'not-attempted',
+  });
+  expect(f.createComment).not.toHaveBeenCalled();
+});
+
+test('rejects hostile payload URLs and unreadable rereads without following or creating', async () => {
+  const f = publicationFixture([owned()]);
+  f.readComment.mockResolvedValue({
+    status: 200,
+    data: { ...owned(), issue_url: 'https://attacker.invalid/private' },
+  });
+  expect(await publishManagedComment(f.input, f.dependencies)).toMatchObject({
+    category: 'discovery',
+  });
+  f.readComment.mockRejectedValue(new Error('private'));
+  expect(await publishManagedComment(f.input, f.dependencies)).toMatchObject({
+    category: 'discovery',
+  });
+  expect(f.readComment).toHaveBeenLastCalledWith({
+    repository: f.binding.repository,
+    commentId: 901,
+  });
+  expect(f.createComment).not.toHaveBeenCalled();
+  expect(f.updateComment).not.toHaveBeenCalled();
+});
+
+// This coordinator exercises handoffs only; durable ownership and workflow recovery remain W2.
+async function coordinateFixture(
+  mode:
+    | 'complete'
+    | 'incomplete'
+    | 'pre-analysis'
+    | 'pending-fails'
+    | 'terminal-fails'
+    | 'unknown-write',
+) {
+  const previous = owned();
+  const f = publicationFixture([previous]);
+  const statusRequests: StatusRequest[] = [];
+  const createStatus = vi.fn(async (request: StatusRequest) => {
+    statusRequests.push(request);
+    f.order.push(request.state);
+    if (
+      (mode === 'pending-fails' && request.state === 'pending') ||
+      (mode === 'terminal-fails' && request.state !== 'pending')
+    )
+      return { status: 503 };
+    return {
+      status: 201,
+      data: {
+        id: statusRequests.length,
+        state: request.state,
+        context: request.context,
+        target_url: request.target_url,
+        description: request.description,
+      },
+    };
+  });
+  const statusDependencies = {
+    reads: f.dependencies.reads,
+    readOwnership: f.readOwnership,
+    createStatus,
+  };
+  const outcome = {
+    identity: f.binding.identity,
+    kind: 'running',
+    commentRecorded: false,
+    recommendation: 'do_not_merge',
+  };
+  const statusInput = {
+    binding: f.binding,
+    reviewer: { runId: 501, runAttempt: 1 },
+    outcome,
+    previousCommentIsStale: true,
+  };
+  const pending = await publishExecutionStatus(statusInput, statusDependencies);
+  if (pending.kind !== 'published')
+    return { f, previous, statusRequests, pending, comment: undefined, terminal: undefined };
+  if (mode === 'pre-analysis') {
+    const terminal = await publishExecutionStatus(
+      { ...statusInput, outcome: { ...outcome, kind: 'incomplete' } },
+      statusDependencies,
+    );
+    return { f, previous, statusRequests, pending, comment: undefined, terminal };
+  }
+  Object.assign(f.input.pending, pending.receipt);
+  f.input.result.kind = mode === 'incomplete' ? 'incomplete' : 'complete';
+  f.updateComment.mockImplementation(async (request) => {
+    f.order.push('update');
+    previous.body = request.body;
+    if (mode === 'unknown-write') throw { kind: 'timeout' };
+    return { status: 200, data: owned(901, request.body) };
+  });
+  const comment = await publishManagedComment(f.input, f.dependencies);
+  if (comment.kind === 'obsolete')
+    return { f, previous, statusRequests, pending, comment, terminal: undefined };
+  const complete = comment.kind === 'recorded' && f.input.result.kind === 'complete';
+  const omitStale =
+    comment.kind === 'recorded' ||
+    (comment.kind === 'error' && ['write', 'post-write'].includes(comment.category));
+  const terminal = await publishExecutionStatus(
+    {
+      ...statusInput,
+      previousCommentIsStale: omitStale ? undefined : true,
+      outcome: {
+        ...outcome,
+        kind: complete ? 'complete' : 'incomplete',
+        commentRecorded: complete,
+      },
+    },
+    statusDependencies,
+  );
+  return { f, previous, statusRequests, pending, comment, terminal };
+}
+
+test.each(['complete', 'incomplete'] as const)(
+  'real T2/T3 handoff records %s before selecting terminal status',
+  async (mode) => {
+    const r = await coordinateFixture(mode);
+    expect(r.comment?.kind).toBe('recorded');
+    expect(r.terminal).toMatchObject({
+      kind: 'published',
+      receipt: { state: mode === 'complete' ? 'success' : 'failure' },
+    });
+    expect(
+      r.f.order.filter((item) => ['pending', 'update', 'success', 'failure'].includes(item)),
+    ).toEqual(['pending', 'update', mode === 'complete' ? 'success' : 'failure']);
+    expect(r.statusRequests[0].description).toBe('Review in progress. Previous comment is stale');
+    expect(r.statusRequests[1].description).not.toContain('stale');
+  },
+);
+
+test.each(['pre-analysis', 'pending-fails'] as const)(
+  'real handoff preserves prior bodies on %s',
+  async (mode) => {
+    const r = await coordinateFixture(mode);
+    expect(r.comment).toBeUndefined();
+    expect(r.previous.body).toBe(body(OLD_HEAD));
+    expect(r.f.updateComment).not.toHaveBeenCalled();
+    expect(r.f.createComment).not.toHaveBeenCalled();
+    if (mode === 'pre-analysis')
+      expect(r.statusRequests[1].description).toBe(
+        'Review unavailable or incomplete. Previous comment is stale',
+      );
+    else expect(r.pending).toMatchObject({ category: 'write', publication: 'unknown' });
+  },
+);
+
+test('terminal status failure leaves the accurate recorded comment intact', async () => {
+  const r = await coordinateFixture('terminal-fails');
+  expect(r.previous.body).toBe(body());
+  expect(r.comment?.kind).toBe('recorded');
+  expect(r.terminal).toMatchObject({ category: 'write', publication: 'unknown' });
+  expect(r.f.updateComment).toHaveBeenCalledTimes(1);
+});
+
+test('an unknown comment write cannot select success or retain the previous stale suffix', async () => {
+  const r = await coordinateFixture('unknown-write');
+  expect(r.comment).toMatchObject({ category: 'write', mutation: 'unknown' });
+  expect(r.terminal).toMatchObject({ kind: 'published', receipt: { state: 'failure' } });
+  expect(r.statusRequests[1].description).toBe('Review unavailable or incomplete');
+  expect(r.f.updateComment).toHaveBeenCalledTimes(1);
 });

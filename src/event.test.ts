@@ -920,3 +920,18 @@ test('pure binding parsing copies canonical identities without network authority
     }),
   ).toBeNull();
 });
+
+test('pure binding parsing snapshots changing accessors before validating the tuple', async () => {
+  const f = fixture();
+  const verified = await verifyCiEvent(f.input, f.reads);
+  if (verified.kind !== 'verified') throw new Error('expected binding');
+  let reads = 0;
+  const input = {
+    ...verified.binding,
+    get runId() {
+      return ++reads < 3 ? 401 : 0;
+    },
+  };
+  expect(parseReviewBinding(input)?.runId).toBe(401);
+  expect(reads).toBe(1);
+});

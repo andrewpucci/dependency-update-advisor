@@ -551,7 +551,7 @@ function binding(value: unknown): ReviewBinding | null {
 /** Validate and copy a binding snapshot; this grants no freshness or ownership authority. */
 export function parseReviewBinding(value: unknown): ReviewBinding | null {
   try {
-    return binding(value);
+    return binding(structuredClone(value));
   } catch {
     return null;
   }
