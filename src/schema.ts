@@ -881,6 +881,93 @@ function scoped(s: PacketSource, c: PacketChange) {
     'reference',
   );
 }
+function linkChangeInventory(c: PacketChange, sources: PacketSource[]) {
+  for (const key of ['from', 'to'] as const) {
+    const side = c[key];
+    if (!side) continue;
+    const s = sources.find((s) => s.id === side.sourceId);
+    requireValue(s, 'changes', 'reference');
+    scoped(s, c);
+    const p = s.provenance;
+    requireValue(
+      s.kind === 'file' &&
+        s.status === 'available' &&
+        p.kind === 'file' &&
+        p.revision === (key === 'from' ? 'base' : 'head'),
+      'changes',
+      'reference',
+    );
+    requireValue(inventoryPaths(side).includes(p.path), 'changes', 'reference');
+  }
+}
+function linkChangeEvidence(c: PacketChange, sources: PacketSource[]) {
+  for (const [key, entry] of Object.entries(c.evidence)) {
+    for (const sourceId of entry.sourceIds) {
+      const s = sources.find((s) => s.id === sourceId);
+      requireValue(s && category(s) === key, 'changes', 'reference');
+      scoped(s, c);
+      requireValue(entry.status !== 'available' || s.status === 'available', 'changes', 'coverage');
+    }
+    if (entry.status === 'available') {
+      const needed =
+        key === 'installScript'
+          ? (['from', 'to'] as const).filter((k) => c[k] !== null)
+          : [c.to ? 'to' : 'from'];
+      for (const side of needed)
+        requireValue(
+          entry.sourceIds.some((ref) => {
+            const s = sources.find((s) => s.id === ref);
+            return (
+              s?.provenance.kind === 'upstream' &&
+              s.provenance.subjects.some(
+                (t) => t.memberId === c.id && t.side === (side === 'from' ? 'base' : 'head'),
+              )
+            );
+          }),
+          'changes',
+          'coverage',
+        );
+    }
+  }
+}
+function linkSourceAttribution(s: PacketSource, changes: PacketChange[]) {
+  for (const memberId of s.memberIds) {
+    const c = changes.find((c) => c.id === memberId);
+    requireValue(c, 'sources', 'reference');
+    requireValue(s.ecosystems.includes(c.ecosystem), 'sources', 'reference');
+  }
+  if (s.provenance.kind === 'inventory')
+    requireValue(
+      !changes.some(
+        (c) =>
+          s.provenance.kind === 'inventory' && s.provenance.absentEcosystems.includes(c.ecosystem),
+      ),
+      'sources',
+      'coverage',
+    );
+  if (s.provenance.kind !== 'upstream') return;
+  if (s.kind === 'compare' && s.provenance.range)
+    for (const memberId of s.memberIds) {
+      const c = changes.find((c) => c.id === memberId);
+      requireValue(c, 'sources', 'reference');
+      const range = s.provenance.range;
+      requireValue(
+        (range.from === null || (c.from && sideValue(c.from) === range.from)) &&
+          (range.to === null || (c.to && sideValue(c.to) === range.to)),
+        'sources',
+        'reference',
+      );
+    }
+  for (const t of s.provenance.subjects) {
+    const c = changes.find((c) => c.id === t.memberId);
+    requireValue(c, 'sources', 'reference');
+    const side = t.side === 'base' ? c.from : c.to;
+    requireValue(side && sideValue(side) === t.value, 'sources', 'reference');
+    const range = s.provenance.range;
+    if (range)
+      requireValue((t.side === 'base' ? range.from : range.to) === t.value, 'sources', 'reference');
+  }
+}
 function linkChanges(changes: PacketChange[], sources: PacketSource[]) {
   distinct(
     changes.map((c) => c.id),
@@ -892,99 +979,10 @@ function linkChanges(changes: PacketChange[], sources: PacketSource[]) {
       'changes',
     );
   for (const c of changes) {
-    for (const key of ['from', 'to'] as const) {
-      const side = c[key];
-      if (!side) continue;
-      const s = sources.find((s) => s.id === side.sourceId);
-      requireValue(s, 'changes', 'reference');
-      scoped(s, c);
-      const p = s.provenance;
-      requireValue(
-        s.kind === 'file' &&
-          s.status === 'available' &&
-          p.kind === 'file' &&
-          p.revision === (key === 'from' ? 'base' : 'head'),
-        'changes',
-        'reference',
-      );
-      requireValue(inventoryPaths(side).includes(p.path), 'changes', 'reference');
-    }
-    for (const [key, entry] of Object.entries(c.evidence)) {
-      for (const sourceId of entry.sourceIds) {
-        const s = sources.find((s) => s.id === sourceId);
-        requireValue(s && category(s) === key, 'changes', 'reference');
-        scoped(s, c);
-        requireValue(
-          entry.status !== 'available' || s.status === 'available',
-          'changes',
-          'coverage',
-        );
-      }
-      if (entry.status === 'available') {
-        const needed =
-          key === 'installScript'
-            ? (['from', 'to'] as const).filter((k) => c[k] !== null)
-            : [c.to ? 'to' : 'from'];
-        for (const side of needed)
-          requireValue(
-            entry.sourceIds.some((ref) => {
-              const s = sources.find((s) => s.id === ref);
-              return (
-                s?.provenance.kind === 'upstream' &&
-                s.provenance.subjects.some(
-                  (t) => t.memberId === c.id && t.side === (side === 'from' ? 'base' : 'head'),
-                )
-              );
-            }),
-            'changes',
-            'coverage',
-          );
-      }
-    }
+    linkChangeInventory(c, sources);
+    linkChangeEvidence(c, sources);
   }
-  for (const s of sources) {
-    for (const memberId of s.memberIds) {
-      const c = changes.find((c) => c.id === memberId);
-      requireValue(c, 'sources', 'reference');
-      requireValue(s.ecosystems.includes(c.ecosystem), 'sources', 'reference');
-    }
-    if (s.provenance.kind === 'inventory')
-      requireValue(
-        !changes.some(
-          (c) =>
-            s.provenance.kind === 'inventory' &&
-            s.provenance.absentEcosystems.includes(c.ecosystem),
-        ),
-        'sources',
-        'coverage',
-      );
-    if (s.provenance.kind !== 'upstream') continue;
-    if (s.kind === 'compare' && s.provenance.range)
-      for (const memberId of s.memberIds) {
-        const c = changes.find((c) => c.id === memberId);
-        requireValue(c, 'sources', 'reference');
-        const range = s.provenance.range;
-        requireValue(
-          (range.from === null || (c.from && sideValue(c.from) === range.from)) &&
-            (range.to === null || (c.to && sideValue(c.to) === range.to)),
-          'sources',
-          'reference',
-        );
-      }
-    for (const t of s.provenance.subjects) {
-      const c = changes.find((c) => c.id === t.memberId);
-      requireValue(c, 'sources', 'reference');
-      const side = t.side === 'base' ? c.from : c.to;
-      requireValue(side && sideValue(side) === t.value, 'sources', 'reference');
-      const range = s.provenance.range;
-      if (range)
-        requireValue(
-          (t.side === 'base' ? range.from : range.to) === t.value,
-          'sources',
-          'reference',
-        );
-    }
-  }
+  for (const source of sources) linkSourceAttribution(source, changes);
 }
 const FINDING_FIELDS = ['id', 'memberId', 'references', 'rationale', 'remediation', 'validation'];
 function finding(value: unknown): Finding {
