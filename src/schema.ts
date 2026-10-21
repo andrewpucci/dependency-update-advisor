@@ -147,6 +147,12 @@ export type PacketSource = {
   reasons: EvidenceReason[];
   provenance: SourceProvenance;
 };
+export type RelationshipProof = {
+  fromId: string;
+  toId: string;
+  side: 'base' | 'head';
+  sourceId: string;
+} & ({ ecosystem: 'npm'; path: NpmSide[] } | { ecosystem: 'uv'; path: UvSide[] });
 type DisabledContext = { ok: true; status: 'disabled'; dependencies: never[]; reasons: never[] };
 export type ReviewPacket = {
   version: 1;
@@ -157,7 +163,7 @@ export type ReviewPacket = {
   changes: PacketChange[];
   sources: PacketSource[];
   findings: Finding[];
-  relationships: never[];
+  relationships: RelationshipProof[];
   context: DisabledContext;
 };
 export type PacketExpected = {
@@ -1104,6 +1110,93 @@ function linkFindings(findings: Finding[], changes: PacketChange[], sources: Pac
     }
   }
 }
+function relationship(value: unknown): RelationshipProof {
+  const r = object(
+    value,
+    ['fromId', 'toId', 'ecosystem', 'side', 'sourceId', 'path'],
+    [],
+    'relationships',
+  );
+  const ecosystem = choice(r.ecosystem, ['npm', 'uv'], 'relationships');
+  const base = {
+    fromId: id(r.fromId, 'relationships'),
+    toId: id(r.toId, 'relationships'),
+    side: choice(r.side, ['base', 'head'], 'relationships'),
+    sourceId: id(r.sourceId, 'relationships'),
+  };
+  requireValue(base.fromId !== base.toId, 'relationships', 'reference');
+  const steps = array(r.path, PACKET_LIMITS.pathInstances, 'relationships');
+  requireValue(steps.length >= 2, 'relationships');
+  try {
+    return ecosystem === 'npm'
+      ? { ...base, ecosystem, path: steps.map(npmSide) }
+      : { ...base, ecosystem, path: steps.map(uvSide) };
+  } catch (error) {
+    if (error instanceof PacketError) throw new PacketError('relationships', error.category);
+    throw error;
+  }
+}
+function linkRelationships(
+  proofs: RelationshipProof[],
+  changes: PacketChange[],
+  sources: PacketSource[],
+) {
+  distinct(
+    proofs.map((p) => JSON.stringify(p)),
+    'relationships',
+  );
+  const instances = new Map<string, string>();
+  for (const p of proofs) {
+    const from = changes.find((c) => c.id === p.fromId),
+      to = changes.find((c) => c.id === p.toId);
+    requireValue(
+      from && to && from.ecosystem === p.ecosystem && to.ecosystem === p.ecosystem,
+      'relationships',
+      'reference',
+    );
+    const start = p.side === 'base' ? from.from : from.to,
+      end = p.side === 'base' ? to.from : to.to;
+    requireValue(
+      start && end && isDeepStrictEqual(p.path[0], start) && isDeepStrictEqual(p.path.at(-1), end),
+      'relationships',
+      'reference',
+    );
+    const source = sources.find((s) => s.id === p.sourceId);
+    requireValue(
+      source?.kind === 'file' &&
+        source.status === 'available' &&
+        source.ecosystems.includes(p.ecosystem) &&
+        source.provenance.kind === 'file' &&
+        source.provenance.revision === p.side,
+      'relationships',
+      'reference',
+    );
+    const root = p.path[0].root,
+      prefix = root === '.' ? '' : root + '/';
+    requireValue(
+      source.provenance.path === prefix + (p.ecosystem === 'npm' ? 'package-lock.json' : 'uv.lock'),
+      'relationships',
+      'reference',
+    );
+    const keys = p.path.map((step) => {
+      requireValue(
+        step.root === root && step.sourceId === p.sourceId,
+        'relationships',
+        'reference',
+      );
+      const key = JSON.stringify([p.side, instanceKey(from, step)]),
+        identity = JSON.stringify(step);
+      requireValue(
+        !instances.has(key) || instances.get(key) === identity,
+        'relationships',
+        'reference',
+      );
+      instances.set(key, identity);
+      return key;
+    });
+    distinct(keys, 'relationships');
+  }
+}
 function coverage(
   value: unknown,
   sources: PacketSource[],
@@ -1198,7 +1291,9 @@ export function validateReviewPacket(candidate: unknown, trusted: unknown): Pack
     requireValue(isDeepStrictEqual(ctx, e.context), 'context', 'identity');
     const changes = array(r.changes, PACKET_LIMITS.changes, 'changes').map(change);
     const findings = array(r.findings, PACKET_LIMITS.findings, 'findings').map(finding);
-    array(r.relationships, 0, 'relationships');
+    const relationships = array(r.relationships, PACKET_LIMITS.relationships, 'relationships').map(
+      relationship,
+    );
     const sources = array(r.sources, PACKET_LIMITS.sources, 'sources').map((v) => source(v, e));
     distinct(
       sources.map((s) => s.id),
@@ -1206,6 +1301,7 @@ export function validateReviewPacket(candidate: unknown, trusted: unknown): Pack
     );
     linkChanges(changes, sources);
     linkFindings(findings, changes, sources);
+    linkRelationships(relationships, changes, sources);
     const packet: ReviewPacket = {
       version: 1,
       binding: b,
@@ -1215,7 +1311,7 @@ export function validateReviewPacket(candidate: unknown, trusted: unknown): Pack
       changes,
       sources,
       findings,
-      relationships: [],
+      relationships,
       context: ctx,
     };
     requireValue(

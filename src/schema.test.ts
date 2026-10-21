@@ -517,3 +517,58 @@ test('requires trusted-context evidence for verified incompatibility', () => {
     }).findings,
   ).toHaveLength(1);
 });
+
+function relationshipFixture() {
+  const f = npmFixture(2);
+  const proof = {
+    fromId: f.changes[0].id,
+    toId: f.changes[1].id,
+    ecosystem: 'npm',
+    side: 'head',
+    sourceId: 'head-lock',
+    path: [f.changes[0].to, f.changes[1].to],
+  };
+  return { ...f, proof, packet: { ...f.packet, relationships: [proof] } };
+}
+
+test('retains a structural relationship proof without assigning a group', () => {
+  const f = relationshipFixture();
+  expect(accepted(f).relationships).toEqual([f.proof]);
+});
+
+test('retains a path through an unchanged intermediate instance', () => {
+  const f = relationshipFixture();
+  f.proof.path.splice(1, 0, {
+    ...f.proof.path[0],
+    name: 'intermediate',
+    lockPath: 'node_modules/intermediate',
+  });
+  expect(accepted(f).relationships[0].path).toHaveLength(3);
+});
+
+test.each(['dangling', 'self', 'wrong-side', 'cycle', 'wrong-source'])(
+  'rejects a %s relationship proof',
+  (mode) => {
+    const f = relationshipFixture();
+    if (mode === 'dangling') f.proof.toId = 'missing';
+    if (mode === 'self') f.proof.toId = f.proof.fromId;
+    if (mode === 'wrong-side') f.proof.side = 'base';
+    if (mode === 'cycle') f.proof.path.splice(1, 0, f.proof.path[0]);
+    if (mode === 'wrong-source') f.proof.sourceId = 'inventory';
+    expect(validateReviewPacket(f.packet, f.expected)).toMatchObject({
+      ok: false,
+      error: { field: 'relationships' },
+    });
+  },
+);
+
+test('rejects duplicated proofs and cross-root or cross-ecosystem grouping', () => {
+  const f = relationshipFixture();
+  expect(
+    validateReviewPacket({ ...f.packet, relationships: [f.proof, f.proof] }, f.expected),
+  ).toMatchObject({ ok: false, error: { category: 'duplicate', field: 'relationships' } });
+  const proof = { ...f.proof, ecosystem: 'actions' };
+  expect(validateReviewPacket({ ...f.packet, relationships: [proof] }, f.expected)).toMatchObject({
+    ok: false,
+  });
+});
