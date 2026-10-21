@@ -14,7 +14,7 @@ The approved [shared workflow contract](SPEC-shared-review.md) and
 remain authoritative.
 
 Implementation: the [status boundary](../../src/status.ts) and
-[tests](../../src/status.test.ts) are implemented on `issue-9`, pending merge.
+[tests](../../src/status.test.ts) are implemented and merged into `main`.
 [Verification issue #69](https://github.com/andrewpucci/dependency-update-advisor/issues/69)
 records exact-revision evidence and the remaining integration limits.
 
