@@ -548,6 +548,15 @@ function binding(value: unknown): ReviewBinding | null {
   });
 }
 
+/** Validate and copy a binding snapshot; this grants no freshness or ownership authority. */
+export function parseReviewBinding(value: unknown): ReviewBinding | null {
+  try {
+    return binding(value);
+  } catch {
+    return null;
+  }
+}
+
 function verifyBoundRun(
   current: Run,
   original: ReviewBinding,
@@ -601,7 +610,7 @@ export async function reverifyReviewBinding(
   reads: FreshnessReads,
 ): Promise<FreshnessResult> {
   try {
-    const original = binding(value);
+    const original = parseReviewBinding(value);
     if (!original) return failure('binding');
     const runRead = await read('run', () => reads.readRun(original.repository, original.runId));
     if (!runRead.ok) return runRead.error;
