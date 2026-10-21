@@ -87,7 +87,8 @@ gaps and an introduced vulnerability before parity is claimed.
   with exactly one direct change per root and complete ecosystem inventory.
   Interview decisions are confirmed; [#93](https://github.com/andrewpucci/dependency-update-advisor/issues/93)
   tracks broader reachability evidence. Implemented on this branch for #94–#99
-  and parent #12, pending merge. [Verification #99](https://github.com/andrewpucci/dependency-update-advisor/issues/99)
+  and parent #12 in [PR #100](https://github.com/andrewpucci/dependency-update-advisor/pull/100),
+  pending merge. [Verification #99](https://github.com/andrewpucci/dependency-update-advisor/issues/99)
   keeps collector/M2/O1/W2, publication, adoption, and cutover gates separate.
 - [Current-head execution status](SPEC-execution-status.md) — approved
   supporting contract for T2 #9 in `shared-review`; implemented and

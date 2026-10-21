@@ -30,8 +30,9 @@ parse lockfiles, call a model, validate raw model responses, render comments,
 publish status, or establish current-head write authority.
 
 Implementation: the isolated [unit handoff](../../src/units.ts) and its
-[fixtures](../../src/units.test.ts) are implemented on this branch, pending
-publication and merge. [Verification issue #99](https://github.com/andrewpucci/dependency-update-advisor/issues/99)
+[fixtures](../../src/units.test.ts) are implemented in
+[PR #100](https://github.com/andrewpucci/dependency-update-advisor/pull/100), pending
+merge. [Verification issue #99](https://github.com/andrewpucci/dependency-update-advisor/issues/99)
 records exact-revision evidence and remaining downstream integration gates.
 
 ## Inputs and Assumptions
