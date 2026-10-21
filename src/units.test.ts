@@ -6,8 +6,9 @@ import {
   type ReviewPacket,
 } from './schema.js';
 import { formDecisionUnits } from './units.js';
-import { evaluateUnitPolicy } from './units.js';
+import { evaluateUnitPolicy, summarizeDecisionCoverage } from './units.js';
 import { parseReviewConfig } from './config.js';
+import type { AssessmentState } from './policy.js';
 
 const repository = { id: 101, owner: 'example', name: 'consumer' };
 const BASE = 'b'.repeat(40),
@@ -522,4 +523,197 @@ test('failed config exposes no usable evaluation', () => {
   );
   expect(result).toMatchObject({ ok: false });
   expect(result).not.toHaveProperty('units');
+});
+
+test('initial states are unattempted, but omitted post-analysis states stay missing', () => {
+  const inventory = formDecisionUnits(accepted(fixture([npm('one')])));
+  const config = parseReviewConfig('{"version":1}');
+  const initial = summarizeDecisionCoverage(inventory, config, 0);
+  const omitted = summarizeDecisionCoverage(inventory, config, 0, {});
+  if (!initial.ok || !omitted.ok) throw new Error('expected coverage');
+  expect(initial.outcome).toEqual({ kind: 'decision_incomplete' });
+  expect(initial.policyProvenance.assessments.unresolvedUnits[0].state).toBe('unattempted');
+  expect(omitted.policyProvenance.assessments.unresolvedUnits[0].state).toBe('missing');
+  expect(initial.counts).toEqual({
+    changedMembers: 1,
+    units: 1,
+    assessedUnits: 0,
+    unresolvedUnits: 1,
+    groupedUnits: 0,
+    standaloneUnits: 1,
+  });
+});
+
+test.each(['unavailable', 'unattempted', 'rejected'] as const)(
+  'preserves assessed units alongside %s work',
+  (state) => {
+    const f = fixture([npm('one'), npm('two')]);
+    available(f, 'one');
+    available(f, 'two');
+    const inventory = formDecisionUnits(accepted(f));
+    const states: Record<string, AssessmentState> = {
+      [inventory.units[0].id]: { state: 'assessed', verdict: 'merge' },
+      [inventory.units[1].id]: {
+        state,
+        reason: 'Synthetic failure.',
+        nextAction: 'Re-run CI.',
+        coverageLimits: ['unit limit'],
+      },
+    };
+    const result = summarizeDecisionCoverage(
+      inventory,
+      parseReviewConfig('{"version":1}'),
+      0,
+      states,
+    );
+    if (!result.ok) throw new Error('expected coverage');
+    expect(result.outcome).toEqual({ kind: 'decision_incomplete' });
+    expect(result.counts).toMatchObject({ assessedUnits: 1, unresolvedUnits: 1 });
+    expect(result.policyProvenance.assessments.assessments[0].state).toBe('assessed');
+    expect(result.policyProvenance.assessments.unresolvedUnits[0]).toMatchObject({
+      state,
+      nextAction: 'Re-run CI.',
+      coverageLimits: ['unit limit'],
+    });
+  },
+);
+
+test('fully evidenced standalone units resolve missing grouping without inventing an evidence gap', () => {
+  const child = npm('child');
+  child.role = 'transitive';
+  const f = fixture([child]);
+  available(f, 'child');
+  const inventory = formDecisionUnits(accepted(f));
+  const result = summarizeDecisionCoverage(inventory, parseReviewConfig('{"version":1}'), 0, {
+    [inventory.units[0].id]: { state: 'assessed', verdict: 'merge' },
+  });
+  if (!result.ok) throw new Error('expected coverage');
+  expect(result.outcome).toEqual({ kind: 'advice', verdict: 'merge' });
+  expect(result.inventory.units[0].relationship.reason).toBe('no_direct_change');
+  expect(result.policyProvenance.assessments.units[0].gaps).toEqual([]);
+});
+
+test.each(['none', 'model', 'verified'] as const)(
+  'packet-wide gaps with %s hold have one authoritative outcome',
+  (hold) => {
+    const f = fixture([npm('one')]);
+    available(f, 'one');
+    f.packet.coverage.actions = { status: 'unavailable', reasons: ['permission'], sourceIds: [] };
+    if (hold === 'verified')
+      f.packet.findings.push({
+        id: 'high',
+        memberId: 'one',
+        kind: 'vulnerability',
+        severity: 'high',
+        applicability: 'affects_proposed',
+        references: [JSON.stringify(['one', 'vulnerability'])],
+        rationale: 'Synthetic advisory.',
+        remediation: ['Upgrade.'],
+        validation: ['Re-run CI.'],
+      });
+    const inventory = formDecisionUnits(accepted(f));
+    const result = summarizeDecisionCoverage(inventory, parseReviewConfig('{"version":1}'), 0, {
+      [inventory.units[0].id]: {
+        state: 'assessed',
+        verdict: hold === 'model' ? 'do_not_merge' : 'merge',
+      },
+    });
+    if (!result.ok) throw new Error('expected coverage');
+    expect(result.outcome).toEqual(
+      hold === 'verified'
+        ? { kind: 'advice', verdict: 'do_not_merge' }
+        : { kind: 'decision_incomplete' },
+    );
+    expect(result).not.toHaveProperty('decision');
+    expect(result.inventoryGaps).toMatchObject([{ ecosystem: 'actions', reasons: ['permission'] }]);
+    expect(result.inventoryGaps[0].nextActions[0]).toContain('permission');
+    expect(result.counts).toMatchObject({ assessedUnits: 1, unresolvedUnits: 0 });
+  },
+);
+
+test('verified hold survives all unavailable analysis; relaxing only that finding retains unresolved work', () => {
+  const f = fixture([npm('one'), npm('two')]);
+  available(f, 'one');
+  f.packet.findings.push({
+    id: 'high',
+    memberId: 'one',
+    kind: 'vulnerability',
+    severity: 'high',
+    applicability: 'affects_proposed',
+    references: [JSON.stringify(['one', 'vulnerability'])],
+    rationale: 'Synthetic advisory.',
+    remediation: ['Upgrade.'],
+    validation: ['Re-run CI.'],
+  });
+  const inventory = formDecisionUnits(accepted(f));
+  const states = Object.fromEntries(
+    inventory.units.map((unit) => [
+      unit.id,
+      {
+        state: 'unavailable' as const,
+        reason: 'No model result.',
+        nextAction: 'Re-run CI.',
+        coverageLimits: [],
+      },
+    ]),
+  );
+  const held = summarizeDecisionCoverage(inventory, parseReviewConfig('{"version":1}'), 0, states);
+  const relaxed = summarizeDecisionCoverage(
+    inventory,
+    parseReviewConfig(
+      '{"version":1,"policy":{"verdicts":{"highOrCriticalVulnerability":"merge"}}}',
+    ),
+    0,
+    states,
+  );
+  if (!held.ok || !relaxed.ok) throw new Error('expected coverage');
+  expect(held.outcome).toEqual({ kind: 'advice', verdict: 'do_not_merge' });
+  expect(held.counts.unresolvedUnits).toBe(2);
+  expect(relaxed.outcome).toEqual({ kind: 'decision_incomplete' });
+  expect(relaxed.policyProvenance.assessments.units.flatMap((unit) => unit.findings)).toEqual(
+    f.packet.findings,
+  );
+});
+
+test('proven empty inventory has no merge verdict; failed empty inventory is incomplete', () => {
+  const f = fixture();
+  const config = parseReviewConfig('{"version":1}');
+  const empty = summarizeDecisionCoverage(formDecisionUnits(accepted(f)), config, 0);
+  if (!empty.ok) throw new Error('expected coverage');
+  expect(empty.outcome).toEqual({ kind: 'empty_inventory' });
+  expect(empty.counts.units).toBe(0);
+  expect(empty.policyProvenance.assessments.assessments).toEqual([]);
+  f.packet.coverage.uv = { status: 'unavailable', reasons: ['timeout'], sourceIds: [] };
+  const unavailable = summarizeDecisionCoverage(formDecisionUnits(accepted(f)), config, 0);
+  if (!unavailable.ok) throw new Error('expected coverage');
+  expect(unavailable.outcome).toEqual({ kind: 'decision_incomplete' });
+  expect(unavailable.inventoryGaps[0].ecosystem).toBe('uv');
+});
+
+test('assessed required gaps remain explicit even with relaxed advice; optional signals alone do not create gaps', () => {
+  const f = fixture([npm('one')]);
+  const inventory = formDecisionUnits(accepted(f));
+  const config = parseReviewConfig(
+    '{"version":1,"policy":{"verdicts":{"incompleteEvidence":"merge"}}}',
+  );
+  const result = summarizeDecisionCoverage(inventory, config, 0, {
+    [inventory.units[0].id]: { state: 'assessed' },
+  });
+  if (!result.ok) throw new Error('expected coverage');
+  expect(result.outcome).toEqual({ kind: 'advice', verdict: 'merge' });
+  expect(result.policyProvenance.assessments.units[0].gaps).toHaveLength(4);
+  expect(result).not.toHaveProperty('executionSuccess');
+  available(f, 'one');
+  f.packet.changes[0].evidence.trust = {
+    status: 'unavailable',
+    reasons: ['timeout'],
+    sourceIds: [],
+  };
+  const complete = formDecisionUnits(accepted(f));
+  const optional = summarizeDecisionCoverage(complete, config, 0, {
+    [complete.units[0].id]: { state: 'assessed' },
+  });
+  if (!optional.ok) throw new Error('expected coverage');
+  expect(optional.policyProvenance.assessments.units[0].gaps).toEqual([]);
+  expect(optional.policyProvenance.assessments.units[0].uncheckedSignals).toHaveLength(1);
 });

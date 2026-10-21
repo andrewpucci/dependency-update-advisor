@@ -1,5 +1,12 @@
 import type { Ecosystem, EvidenceReason, PacketResult } from './schema.js';
-import { evaluatePolicy, type PolicyUnit } from './policy.js';
+import {
+  evaluatePolicy,
+  summarizePolicy,
+  type PolicyUnit,
+  type PolicySummary,
+  type AssessmentState,
+} from './policy.js';
+import type { Verdict } from './config.js';
 
 type Packet = Extract<PacketResult, { ok: true }>['packet'];
 type Change = Packet['changes'][number];
@@ -50,6 +57,32 @@ export type UnitInventory = Readonly<{
   packet: Packet;
   units: readonly DecisionUnit[];
 }>;
+export type DecisionOutcome =
+  | Readonly<{ kind: 'advice'; verdict: Verdict }>
+  | Readonly<{ kind: 'decision_incomplete' | 'empty_inventory' }>;
+export type InventoryGap = Readonly<{
+  ecosystem: Ecosystem;
+  status: 'partial' | 'unavailable';
+  reasons: readonly EvidenceReason[];
+  sourceIds: readonly string[];
+  nextActions: readonly string[];
+}>;
+export type DecisionCoverage = Readonly<{
+  ok: true;
+  outcome: DecisionOutcome;
+  inventory: UnitInventory;
+  inventoryGaps: readonly InventoryGap[];
+  counts: Readonly<{
+    changedMembers: number;
+    units: number;
+    assessedUnits: number;
+    unresolvedUnits: number;
+    groupedUnits: number;
+    standaloneUnits: number;
+  }>;
+  policyProvenance: Readonly<{ assessments: PolicySummary; withoutAssessments?: PolicySummary }>;
+}>;
+
 function freeze<T>(value: T): T {
   if (value && typeof value === 'object') {
     for (const child of Object.values(value)) freeze(child);
@@ -239,4 +272,89 @@ export function evaluateUnitPolicy(
   evaluatedAt: number,
 ) {
   return freeze(evaluatePolicy(config, inventory.units, evaluatedAt));
+}
+
+const recovery: Record<EvidenceReason, string> = {
+  permission: 'Restore inventory read permission and re-run CI.',
+  rate_limit: 'Re-run CI after the inventory request limit resets.',
+  timeout: 'Re-run CI to retry the timed-out inventory read.',
+  missing: 'Supply the missing immutable inventory input and re-run CI.',
+  malformed: 'Correct the malformed inventory input or collector and re-run CI.',
+  unsupported: 'Add reviewed support for the inventory format before re-running CI.',
+  truncated: 'Collect all inventory pages and bounded inputs before re-running CI.',
+  budget: 'Split the dependency PR or review the inventory budget before re-running CI.',
+  conflict: 'Reconcile conflicting inventory sources and re-run CI.',
+  unknown: 'Investigate the inventory failure and re-run CI.',
+};
+
+/** Accepts only M2/caller-validated states for this inventory and the same config/time used for analysis.
+ * Omitted states argument means pre-analysis; an explicit empty map means missing post-analysis results.
+ * The sole authoritative outcome is separate from nested C3 provenance and grants no execution success.
+ */
+export function summarizeDecisionCoverage(
+  inventory: UnitInventory,
+  config: Parameters<typeof evaluatePolicy>[0],
+  evaluatedAt: number,
+  states?: Readonly<Partial<Record<string, AssessmentState>>>,
+): DecisionCoverage | Extract<ReturnType<typeof evaluatePolicy>, { ok: false }> {
+  const evaluation = evaluateUnitPolicy(inventory, config, evaluatedAt);
+  if (!evaluation.ok) return evaluation;
+  const assessments = summarizePolicy(
+    evaluation,
+    states ??
+      Object.fromEntries(
+        inventory.units.map((unit) => [
+          unit.id,
+          {
+            state: 'unattempted',
+            reason: 'Analysis has not been attempted.',
+            nextAction: 'Run analysis for this decision unit.',
+            coverageLimits: [],
+          },
+        ]),
+      ),
+  );
+  const inventoryGaps: InventoryGap[] = (['npm', 'actions', 'uv'] as const).flatMap((ecosystem) => {
+    const coverage = inventory.packet.coverage[ecosystem];
+    if (coverage.status !== 'partial' && coverage.status !== 'unavailable') return [];
+    const reasons = [...coverage.reasons].sort((a, b) => reasonRanks[a] - reasonRanks[b]);
+    return [
+      {
+        ecosystem,
+        status: coverage.status,
+        reasons,
+        sourceIds: [...coverage.sourceIds].sort(),
+        nextActions: reasons.map((reason) => `${ecosystem}: ${recovery[reason]}`),
+      },
+    ];
+  });
+  const withoutAssessments = inventoryGaps.length ? summarizePolicy(evaluation, {}) : undefined;
+  const decision = withoutAssessments?.decision ?? assessments.decision;
+  let outcome: DecisionOutcome;
+  if (inventoryGaps.length)
+    outcome =
+      decision === 'do_not_merge'
+        ? { kind: 'advice', verdict: decision }
+        : { kind: 'decision_incomplete' };
+  else if (!inventory.units.length) outcome = { kind: 'empty_inventory' };
+  else
+    outcome =
+      decision === 'decision_incomplete'
+        ? { kind: 'decision_incomplete' }
+        : { kind: 'advice', verdict: decision };
+  return freeze({
+    ok: true,
+    outcome,
+    inventory: structuredClone(inventory),
+    inventoryGaps,
+    counts: {
+      changedMembers: inventory.packet.changes.length,
+      units: inventory.units.length,
+      assessedUnits: inventory.units.length - assessments.unresolvedUnits.length,
+      unresolvedUnits: assessments.unresolvedUnits.length,
+      groupedUnits: inventory.units.filter((unit) => unit.kind === 'direct_group').length,
+      standaloneUnits: inventory.units.filter((unit) => unit.kind === 'standalone').length,
+    },
+    policyProvenance: { assessments, ...(withoutAssessments ? { withoutAssessments } : {}) },
+  });
 }
