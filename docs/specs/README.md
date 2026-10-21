@@ -81,10 +81,11 @@ gaps and an introduced vulnerability before parity is claimed.
   merged into `main`. [Verification evidence](https://github.com/andrewpucci/dependency-update-advisor/issues/69)
   remains separate from W1/W2 transport, durable ownership, comment ordering,
   recovery, and consumer adoption.
-- [App-owned managed comments](SPEC-managed-comments.md) — approved for isolated
-  T3 #10 execution in `shared-review`, including tasks #71–#75 in one PR.
-  Specifies ownership, discovery, publication ordering, and uncertainty while
-  retaining separate W1/W2/O1 and adoption gates.
+- [App-owned managed comments](SPEC-managed-comments.md) — implemented for
+  T3 #10 in `shared-review` on `ndjamena/as-spec-issue-10`, pending merge.
+  [Verification evidence](https://github.com/andrewpucci/dependency-update-advisor/issues/75)
+  retains separate W1/W2 transport, ownership, ordering/recovery, O1 rendering,
+  exact-body round-trip, and adoption gates.
 - [CI event and current PR head verification](SPEC-event-verification.md) —
   approved supporting contract for T1 #8 in `shared-review`; implemented and
   merged into `main` in [PR #63](https://github.com/andrewpucci/dependency-update-advisor/pull/63).

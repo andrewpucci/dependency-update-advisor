@@ -14,6 +14,11 @@ The approved [shared workflow contract](SPEC-shared-review.md),
 [T1 publication handoff](SPEC-event-verification.md#publication-handoff), and
 [T2 execution-status contract](SPEC-execution-status.md) remain authoritative.
 
+Implementation: [comment discovery and publication](../../src/comments.ts)
+and [tests](../../src/comments.test.ts) are implemented on
+`ndjamena/as-spec-issue-10`, pending merge. [Verification issue #75](https://github.com/andrewpucci/dependency-update-advisor/issues/75)
+records exact-revision evidence and the separate W1/W2/O1/adoption gates.
+
 ## Objective and Scope
 
 Give a consumer maintainer one App-owned review comment attributable to the
@@ -60,8 +65,8 @@ This contract neither selects that mechanism nor authorizes live writes.
 
 ### Publication input
 
-The mutation operation accepts one input record. Field names are proposed;
-planning may rename them without changing the rules. T3 copies every field
+`publishManagedComment` accepts one input record with the fields below.
+T3 copies selected input fields, including nested records,
 before its first asynchronous read and rejects any violation as an input error.
 
 | Field                 | Required validation                                                                                                                                                              |
@@ -274,8 +279,8 @@ source-adjacent tests importing from `vite-plus/test`. No new dependency is
 needed for isolated T3. Preserve the lockfile and existing toolchain.
 
 ```text
-src/comments.ts                      → proposed discovery and publication boundary
-src/comments.test.ts                 → proposed synthetic ownership/write/race fixtures
+src/comments.ts                      → discovery and publication boundary
+src/comments.test.ts                 → synthetic ownership/write/race fixtures
 src/event.ts                         → existing T1 binding and freshness operation
 src/status.ts                        → existing T2 status boundary
 docs/specs/SPEC-managed-comments.md   → this supporting contract
@@ -297,10 +302,63 @@ type CommentReceipt = Readonly<{
 }>;
 ```
 
-This illustrates style, not an implemented export. The implementation must
-runtime-validate binding, result readiness, publisher, and pending evidence;
+The [source module](../../src/comments.ts) owns the exported TypeScript types.
+T3 runtime-validates binding, result readiness, publisher, and pending evidence;
 a TypeScript brand does not prove provenance. W2 owns the truth of completeness
 and pending attribution; T3's shape checks cannot independently prove them.
+
+## Implemented Interface
+
+`discoverManagedComment(input, dependencies)` accepts unknown input containing
+only the required `binding` and `publisher` records. Its dependencies expose
+only `listComments(target)`; no writer is required. It returns
+`kind: 'discovered'` with `comment: null`, or a bounded comment projection with
+`commentId` and optional `reviewedHeadSha`. It returns an explicit input or
+discovery error on failure. No raw comment body appears in that result.
+
+`publishManagedComment(input, dependencies)` accepts the publication input
+above and returns `Promise<CommentResult>`. Its `CommentDependencies` are:
+
+| Capability      | Request and required response                                                                                                               |
+| --------------- | ------------------------------------------------------------------------------------------------------------------------------------------- |
+| `listComments`  | Frozen `{ repository, pullNumber }`; unknown `{ status: 200, complete: true, data: [...] }` for the complete collection.                    |
+| `readComment`   | Frozen `{ repository, commentId }`; unknown `{ status: 200, data: comment }` for the selected ID.                                           |
+| `createComment` | Frozen `{ repository, pullNumber, body }`; unknown `{ status: 201, data: comment }`.                                                        |
+| `updateComment` | Frozen `{ repository, commentId, body }`; unknown `{ status: 200, data: comment }`.                                                         |
+| `reads`         | T1 `FreshnessReads` for the source run and bound PR; the real freshness operation remains authoritative.                                    |
+| `readOwnership` | Frozen exact review identity; unknown `{ identity, state: 'owned' }` or `{ identity, state: 'lost' }`. Anything else is an ownership error. |
+
+`repository` is the validated consumer `RepositoryIdentity`. The module
+supplies structured targets; W1 must encode path segments on GitHub's fixed
+API origin. The collection's completion flag is a transport assertion; T3
+does not perform or certify pagination. Each comment response is validated
+against the ownership, raw body, numeric ID, and membership rules above.
+Missing or null optional App attribution is allowed; conflicting attribution
+for the designated bot fails validation. A malformed response never supplies
+an empty-list fallback. No write is retried.
+
+The result's `mutation` is `not-attempted`, `confirmed`, or `unknown`.
+`recorded` carries a frozen receipt with the original frozen identity,
+canonical head, comment ID, and operation. An `identical` receipt accompanies
+`not-attempted`; `created` and `updated` receipts accompany `confirmed`.
+Obsolete no-write results have no receipt. Confirmed obsolete/post-write
+results retain the original receipt without claiming currentness.
+Every error fails the job; an obsolete result stops without job failure.
+
+Discovery ambiguity returns `diagnostic: 'ambiguity'` and frozen `commentIds`
+containing only the validated owned IDs. Other discovery errors expose stable
+field names without response data. Write errors have `mutation: 'unknown'`
+and the stable diagnostics in the uncertainty contract. Rejected promises
+with `{ kind: 'timeout' }` identify timeouts; other thrown values are transport
+errors. Invalid acknowledgements remain acknowledgement errors. Exception
+text and hostile accessors are never copied into diagnostics.
+
+T3 uses T1's additive `parseReviewBinding(unknown)` export for pure validation
+before listing. It snapshots input and returns an immutable canonical binding
+or null; it grants no currentness, replay, or ownership authority. T1 freshness
+uses that same parser. Changing-accessor tests preserve the checked snapshot
+through return; real network freshness is still checked after discovery and
+reread, immediately before dispatch, and again after a confirmed write.
 
 ## Testing Strategy and Success Criteria
 
@@ -361,7 +419,7 @@ npm run check
 npm test -- --run
 ```
 
-Focused tests after the proposed comment test file exists:
+Focused tests:
 
 ```sh
 npm test -- --run src/comments.test.ts src/status.test.ts src/event.test.ts
