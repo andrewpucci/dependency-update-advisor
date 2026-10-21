@@ -95,6 +95,45 @@ additions within the limit. They do not verify W2 writes or certify the full
 historical #307 inventory. Supporting larger packets requires a reviewed
 contract change; adoption and cutover gates remain in force.
 
+## T5 Conservative Grouping and Standalone Resolution
+
+The [T5 contract](../../docs/specs/SPEC-decision-units.md) consumes T4's positive
+relationship proofs rather than parsing the baseline's complete npm lockfile
+graph. Its approved initial scope requires complete ecosystem inventory and
+exactly one direct change per root, counting both revisions and all change
+kinds. Unknown roles prevent grouping. Root-moving records cannot anchor or
+enter a group; they remain standalone to preserve the single-root boundary.
+
+The baseline could distinguish uniquely related members in a root with several
+changed direct dependencies by walking its full graph. T5 leaves those members
+standalone, because an omitted positive proof cannot establish that another
+anchor is unreachable. This can increase decision-unit counts and provider
+work; M2 must preserve every unit or report it unresolved, never drop members
+to fit. [Follow-up #93](https://github.com/andrewpucci/dependency-update-advisor/issues/93)
+tracks a reviewed collector/T4 extension for broader grouping and is not a
+blocker of the initial T5 implementation.
+
+Sharing with unchanged direct dependencies alone does not prevent grouping
+with the one changed direct anchor. Grouping records a proven relationship,
+without claiming causation, exclusive reachability, individual research, or
+safety. Each member retains its own required evidence and findings; T5 does
+not manufacture `group_backed` evidence from the anchor's lookups.
+
+An ungroupable member remains unresolved until its own assessment is validated.
+A complete standalone assessment and required evidence can resolve that unit,
+with relationship uncertainty still visible. Concrete unanswered required
+questions remain evidence gaps under C3. This explicitly separates the
+baseline's standalone-unresolved grouping label from completed assessment.
+
+Synthetic fixtures cover stable base/head-bound identities, both proof sides,
+direct removals beside updates, root moves, duplicate names/variants,
+member-specific gaps, verified holds with unavailable analysis, and packet-wide
+gaps with zero known changes. A proven empty inventory has no merge verdict
+or model assessment. These isolated tests do not certify collector graph
+truth/completeness, M2 budgets/validation, O1 visibility, workflow publication,
+consumer adoption, or cutover. The final parity review must assess the intended
+differences above before retiring the old reviewer.
+
 ## Synthetic Unavailable Comparison
 
 No private PR or uv input is included. A direct-collector probe returned a

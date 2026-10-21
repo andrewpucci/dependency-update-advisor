@@ -29,6 +29,11 @@ accounting around C3's existing decision guard. It does not collect evidence,
 parse lockfiles, call a model, validate raw model responses, render comments,
 publish status, or establish current-head write authority.
 
+Implementation: the isolated [unit handoff](../../src/units.ts) and its
+[fixtures](../../src/units.test.ts) are implemented on this branch, pending
+publication and merge. [Verification issue #99](https://github.com/andrewpucci/dependency-update-advisor/issues/99)
+records exact-revision evidence and remaining downstream integration gates.
+
 ## Inputs and Assumptions
 
 - This is one capability within the approved `shared-review` module, not a new
@@ -122,6 +127,10 @@ standalone even when only one has a supplied positive path. Counting both
 sides keeps a direct removal that might explain a head-side transitive change
 from being ignored. Missing paths cannot establish that another candidate is
 unreachable.
+
+A change whose base and head name different roots counts in both inventories
+but remains standalone and cannot anchor a group. Otherwise one moving anchor
+could join base-root removals and head-root updates into a cross-root group.
 
 The [npm evidence contract](SPEC-npm-evidence.md) keeps shared, orphaned, or
 ambiguous members as separate unresolved units. The confirmed interpretation
@@ -285,8 +294,74 @@ docs/specs/SPEC-decision-units.md → this T5 supporting contract
 
 Keep operations pure and inputs readonly. Reuse T4/C3 types, return detached
 results, and do not mutate the packet or caller-supplied assessment states.
-The exact exported signatures and canonical encoding are planning choices
-within this contract. Do not introduce a generic graph engine or plugin layer.
+The exported signatures and encoding are described below. Do not introduce a
+generic graph engine or plugin layer.
+
+## Implemented Interface and Handoffs
+
+`src/units.ts` exports three pure operations:
+
+```ts
+formDecisionUnits(packet): UnitInventory
+evaluateUnitPolicy(inventory, config, evaluatedAt): PolicyResult
+summarizeDecisionCoverage(inventory, config, evaluatedAt, states?): DecisionCoverage | ConfigFailure
+```
+
+These signatures are abbreviated; the source defines their strict types.
+`packet` is the successful T4 `PacketResult` packet, and `config` uses C3's
+existing config argument. `evaluatedAt` is caller-supplied UTC epoch
+milliseconds. Formation and evaluation do no I/O or external validation.
+No operation grants execution success or publication authority.
+
+`UnitInventory` contains a detached frozen packet and frozen `DecisionUnit`s.
+Each unit extends C3's `PolicyUnit` with ecosystem, kind, nullable anchor,
+member IDs/count, proof keys, relationship reason/action, and `evidenceLinks`.
+These links map C3 source IDs to original packet member/category, status,
+sorted source IDs, and all fixed reasons. C3 sources use JSON tuples
+`[memberId, category]`; attributable coverage-limit strings use
+`[memberId, category, status, reason]`. Findings and packet citations remain
+unchanged. Source/context text stays in the packet rather than being copied
+into a separate provider projection.
+
+Unit IDs are JSON tuples containing repository ID, lowercased owner/name,
+PR number, base/head SHAs, ecosystem, unit kind, anchor ID, and sorted member
+IDs. Proof keys serialize the whole proof with recursively sorted object keys
+and unchanged array order. Strings are ordered by UTF-16 code units, without
+locale dependence. No hashing, graph traversal, or new packet cap is added.
+
+Standalone reasons are `independent_change`, `actions_occurrence`,
+`unknown_role`, `inventory_incomplete`, `multiple_direct_changes`,
+`no_direct_change`, `missing_relationship`, and `multiple_roots`.
+Groups use `proven_relationship`. Every reason carries a fixed next action.
+T4 has no separate unchanged-sharer list; T5 preserves asserted paths and the
+source table without inventing sharers, causation, or exclusive reachability.
+
+`evaluateUnitPolicy` delegates to C3 with this inventory's units. Failed
+configuration returns only C3's failure. `summarizeDecisionCoverage` evaluates
+that same inventory internally, so a caller cannot pair a separate policy
+evaluation with a different inventory. The caller must use the same trusted
+config/time throughout analysis and supply only M2-validated states for those
+units. An omitted states argument creates pre-analysis `unattempted` states;
+an explicit empty map preserves post-analysis `missing` states. T5 does not
+validate raw model results or accept stale/unknown unit IDs on M2's behalf.
+
+On success, `DecisionCoverage` exposes one authoritative `outcome`:
+
+- `{ kind: 'advice', verdict }` for C3 advice, including a verified hold with
+  unresolved work still retained;
+- `{ kind: 'decision_incomplete' }` for unresolved work or inventory gaps
+  without a verified hold;
+- `{ kind: 'empty_inventory' }` for a proven empty inventory, without a merge
+  verdict or fabricated model assessment.
+
+The result retains the inventory, exact member/unit/assessed/unresolved and
+grouped/standalone counts, and all packet-wide `inventoryGaps`. Each gap has
+ecosystem/status, ordered reasons, source IDs, and reason-specific recovery
+actions. Per-ecosystem coverage remains in `inventory.packet.coverage`.
+`policyProvenance.assessments` is C3's real-state summary; when inventory gaps
+exist, `policyProvenance.withoutAssessments` records the no-state guard used
+to identify verified holds. Neither nested summary is an alternative final
+outcome. All outputs are detached frozen snapshots.
 
 ## Commands
 

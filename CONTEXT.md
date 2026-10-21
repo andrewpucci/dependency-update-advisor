@@ -14,11 +14,14 @@ T3 merged in [PR #76](https://github.com/andrewpucci/dependency-update-advisor/p
 [T4 evidence](https://github.com/andrewpucci/dependency-update-advisor/issues/84)
 records exact-revision checks and remaining integration gates.
 [Advisory complexity review](docs/specs/SPEC-complexity-review.md) is merged.
-No shared reviewer workflow exists; the old reviewer remains active.
+[T5 decision units](docs/specs/SPEC-decision-units.md) are implemented on this
+branch for #12 and #94–#99, pending one PR and merge.
+[T5 evidence](https://github.com/andrewpucci/dependency-update-advisor/issues/99)
+retains integration gates. No shared workflow exists; the old reviewer stays active.
 
 ## Next action
 
-Implement the approved T5 plan for [#12](https://github.com/andrewpucci/dependency-update-advisor/issues/12)
+Review the T5 implementation for [#12](https://github.com/andrewpucci/dependency-update-advisor/issues/12)
 and #94–#99 in one PR. Reachability extension #93 remains deferred.
 W1/W2 must supply bounded reads and exclusive claims before T2/T3 writes.
 B1–B3 and C1–C3 are merged. Downstream work:
