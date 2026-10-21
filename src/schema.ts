@@ -1,4 +1,5 @@
 import { isDeepStrictEqual, types } from 'node:util';
+import type { Finding } from './policy.js';
 import { parseReviewBinding, type RepositoryIdentity, type ReviewBinding } from './event.js';
 
 export const PACKET_LIMITS = Object.freeze({
@@ -155,7 +156,7 @@ export type ReviewPacket = {
   coverage: Record<Ecosystem, InventoryCoverage>;
   changes: PacketChange[];
   sources: PacketSource[];
-  findings: never[];
+  findings: Finding[];
   relationships: never[];
   context: DisabledContext;
 };
@@ -844,6 +845,265 @@ function linkChanges(changes: PacketChange[], sources: PacketSource[]) {
     }
   }
 }
+const FINDING_FIELDS = ['id', 'memberId', 'references', 'rationale', 'remediation', 'validation'];
+function finding(value: unknown): Finding {
+  const tag = object(
+    value,
+    [...FINDING_FIELDS, 'kind'],
+    [
+      'severity',
+      'applicability',
+      'affectedRange',
+      'change',
+      'currentLicense',
+      'proposedLicense',
+      'publishedAt',
+      'deprecated',
+      'detail',
+    ],
+    'findings',
+  );
+  const kind = choice(
+    tag.kind,
+    [
+      'vulnerability',
+      'malware',
+      'incompatibleMigration',
+      'applicableCodemod',
+      'compatibilityUncertainty',
+      'supplyChainChange',
+      'licenseChange',
+      'releaseMetadata',
+      'informational',
+    ],
+    'findings',
+  );
+  const fields: Record<typeof kind, string[]> = {
+    vulnerability: ['severity', 'applicability', 'affectedRange'],
+    malware: ['applicability', 'affectedRange'],
+    incompatibleMigration: [],
+    applicableCodemod: [],
+    compatibilityUncertainty: ['change'],
+    supplyChainChange: ['change'],
+    licenseChange: ['currentLicense', 'proposedLicense'],
+    releaseMetadata: ['publishedAt', 'deprecated'],
+    informational: ['detail'],
+  };
+  const r = object(value, [...FINDING_FIELDS, 'kind'], fields[kind], 'findings');
+  const refs = ids(r.references, 'findings');
+  requireValue(refs.length > 0, 'findings', 'reference');
+  const actions = (v: unknown) =>
+    array(v, PACKET_LIMITS.listEntries, 'findings').map((t) =>
+      text(t, 'findings', PACKET_LIMITS.textBytes),
+    );
+  const base = {
+    id: id(r.id, 'findings'),
+    memberId: id(r.memberId, 'findings'),
+    references: refs,
+    rationale: text(r.rationale, 'findings', PACKET_LIMITS.textBytes),
+    remediation: actions(r.remediation),
+    validation: actions(r.validation),
+  };
+  switch (kind) {
+    case 'vulnerability':
+    case 'malware': {
+      const applicability = choice(
+        r.applicability,
+        ['affects_proposed', 'resolved_by_proposed', 'unaffected', 'withdrawn'],
+        'findings',
+      );
+      const range =
+        r.affectedRange !== undefined ? { affectedRange: text(r.affectedRange, 'findings') } : {};
+      if (kind === 'malware') return { ...base, kind, applicability, ...range };
+      return {
+        ...base,
+        kind,
+        applicability,
+        ...range,
+        ...(r.severity !== undefined
+          ? { severity: choice(r.severity, ['critical', 'high', 'moderate', 'low'], 'findings') }
+          : {}),
+      };
+    }
+    case 'incompatibleMigration':
+    case 'applicableCodemod':
+      return { ...base, kind };
+    case 'compatibilityUncertainty':
+      return {
+        ...base,
+        kind,
+        change: choice(
+          r.change,
+          ['raised_runtime_floor', 'tightened_peer_range', 'deprecated_workflow_input'],
+          'findings',
+        ),
+      };
+    case 'supplyChainChange':
+      return {
+        ...base,
+        kind,
+        change: choice(
+          r.change,
+          [
+            'install_script',
+            'package_source',
+            'publisher',
+            'trust_downgrade',
+            'action_identity',
+            'mutable_action_ref',
+          ],
+          'findings',
+        ),
+      };
+    case 'licenseChange':
+      return {
+        ...base,
+        kind,
+        currentLicense: text(r.currentLicense, 'findings'),
+        proposedLicense: text(r.proposedLicense, 'findings'),
+      };
+    case 'releaseMetadata': {
+      requireValue(Object.hasOwn(r, 'publishedAt') || Object.hasOwn(r, 'deprecated'), 'findings');
+      let publishedAt: number | undefined;
+      let deprecated: Extract<Finding, { kind: 'releaseMetadata' }>['deprecated'];
+      if (r.publishedAt !== undefined) {
+        requireValue(
+          typeof r.publishedAt === 'number' &&
+            Number.isSafeInteger(r.publishedAt) &&
+            r.publishedAt >= 0 &&
+            Number.isFinite(new Date(r.publishedAt).getTime()),
+          'findings',
+        );
+        publishedAt = r.publishedAt;
+      }
+      if (r.deprecated !== undefined) {
+        const d = object(r.deprecated, ['marker'], ['reason'], 'findings');
+        deprecated = {
+          marker: choice(d.marker, ['deprecated', 'yanked'], 'findings'),
+          ...(d.reason !== undefined
+            ? { reason: text(d.reason, 'findings', PACKET_LIMITS.textBytes) }
+            : {}),
+        };
+      }
+      return {
+        ...base,
+        kind,
+        ...(publishedAt !== undefined ? { publishedAt } : {}),
+        ...(deprecated !== undefined ? { deprecated } : {}),
+      };
+    }
+    case 'informational':
+      return { ...base, kind, detail: text(r.detail, 'findings', PACKET_LIMITS.textBytes) };
+  }
+}
+function findingSourceKinds(f: Finding): readonly PacketSource['kind'][] {
+  switch (f.kind) {
+    case 'vulnerability':
+      return ['advisory'];
+    case 'malware':
+      return ['malware'];
+    case 'incompatibleMigration':
+      return ['release', 'compare', 'metadata', 'file'];
+    case 'applicableCodemod':
+    case 'compatibilityUncertainty':
+      return ['release', 'compare', 'metadata'];
+    case 'licenseChange':
+      return ['metadata', 'release', 'compare'];
+    case 'releaseMetadata':
+      return ['publishTime', 'deprecation'];
+    case 'supplyChainChange': {
+      const kinds: Record<typeof f.change, readonly PacketSource['kind'][]> = {
+        install_script: ['install-script'],
+        package_source: ['file', 'metadata'],
+        publisher: ['publisher'],
+        trust_downgrade: ['trust'],
+        action_identity: ['file'],
+        mutable_action_ref: ['file'],
+      };
+      return kinds[f.change];
+    }
+    case 'informational':
+      return ['file', 'release', 'compare', 'metadata', 'advisory', 'malware', ...OPTIONAL_SIGNALS];
+  }
+}
+function linkFindings(findings: Finding[], changes: PacketChange[], sources: PacketSource[]) {
+  distinct(
+    findings.map((f) => f.id),
+    'findings',
+  );
+  const claims = new Map<string, string>();
+  for (const f of findings) {
+    const c = changes.find((c) => c.id === f.memberId);
+    requireValue(c, 'findings', 'reference');
+    const linked = f.references.map((ref) => {
+      const s = sources.find((s) => s.id === ref);
+      requireValue(
+        s &&
+          s.ecosystems.includes(c.ecosystem) &&
+          s.memberIds.includes(c.id) &&
+          findingSourceKinds(f).includes(s.kind) &&
+          s.status !== 'unavailable',
+        'findings',
+        'reference',
+      );
+      requireValue(
+        s.provenance.kind === 'file' ||
+          (s.provenance.kind === 'upstream' &&
+            s.provenance.range !== null &&
+            s.provenance.subjects.some((t) => t.memberId === c.id)),
+        'findings',
+        'reference',
+      );
+      if (
+        (f.kind === 'vulnerability' || f.kind === 'malware') &&
+        s.provenance.kind === 'upstream'
+      ) {
+        if (f.affectedRange !== undefined)
+          requireValue(f.affectedRange === s.provenance.affectedRange, 'findings', 'reference');
+        for (const t of s.provenance.subjects.filter((t) => t.memberId === c.id)) {
+          const claim = JSON.stringify([
+            f.kind,
+            s.provenance.advisoryId ?? s.provenance.url,
+            c.id,
+            t.side,
+          ]);
+          requireValue(
+            !claims.has(claim) || claims.get(claim) === f.applicability,
+            'findings',
+            'reference',
+          );
+          claims.set(claim, f.applicability);
+        }
+      }
+      return s;
+    });
+    if (f.kind === 'incompatibleMigration')
+      requireValue(
+        linked.some(
+          (s) =>
+            s.kind === 'file' &&
+            s.provenance.kind === 'file' &&
+            s.provenance.revision === 'context',
+        ) && linked.some((s) => category(s) === 'upstream'),
+        'findings',
+        'reference',
+      );
+    if (f.kind === 'releaseMetadata') {
+      if (f.publishedAt !== undefined)
+        requireValue(
+          linked.some((s) => s.kind === 'publishTime'),
+          'findings',
+          'reference',
+        );
+      if (f.deprecated !== undefined)
+        requireValue(
+          linked.some((s) => s.kind === 'deprecation'),
+          'findings',
+          'reference',
+        );
+    }
+  }
+}
 function coverage(
   value: unknown,
   sources: PacketSource[],
@@ -937,7 +1197,7 @@ export function validateReviewPacket(candidate: unknown, trusted: unknown): Pack
     const ctx = context(r.context);
     requireValue(isDeepStrictEqual(ctx, e.context), 'context', 'identity');
     const changes = array(r.changes, PACKET_LIMITS.changes, 'changes').map(change);
-    array(r.findings, 0, 'findings');
+    const findings = array(r.findings, PACKET_LIMITS.findings, 'findings').map(finding);
     array(r.relationships, 0, 'relationships');
     const sources = array(r.sources, PACKET_LIMITS.sources, 'sources').map((v) => source(v, e));
     distinct(
@@ -945,6 +1205,7 @@ export function validateReviewPacket(candidate: unknown, trusted: unknown): Pack
       'sources',
     );
     linkChanges(changes, sources);
+    linkFindings(findings, changes, sources);
     const packet: ReviewPacket = {
       version: 1,
       binding: b,
@@ -953,7 +1214,7 @@ export function validateReviewPacket(candidate: unknown, trusted: unknown): Pack
       coverage: coverage(r.coverage, sources, changes),
       changes,
       sources,
-      findings: [],
+      findings,
       relationships: [],
       context: ctx,
     };
