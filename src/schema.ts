@@ -1,5 +1,6 @@
 import { isDeepStrictEqual, types } from 'node:util';
 import type { Finding } from './policy.js';
+import type { SourceContextResult } from './context.js';
 import { parseReviewBinding, type RepositoryIdentity, type ReviewBinding } from './event.js';
 
 export const PACKET_LIMITS = Object.freeze({
@@ -153,7 +154,7 @@ export type RelationshipProof = {
   side: 'base' | 'head';
   sourceId: string;
 } & ({ ecosystem: 'npm'; path: NpmSide[] } | { ecosystem: 'uv'; path: UvSide[] });
-type DisabledContext = { ok: true; status: 'disabled'; dependencies: never[]; reasons: never[] };
+export type PacketContext = Extract<SourceContextResult, { ok: true }>;
 export type ReviewPacket = {
   version: 1;
   binding: ReviewBinding;
@@ -164,13 +165,13 @@ export type ReviewPacket = {
   sources: PacketSource[];
   findings: Finding[];
   relationships: RelationshipProof[];
-  context: DisabledContext;
+  context: PacketContext;
 };
 export type PacketExpected = {
   binding: ReviewBinding;
   baseSha: string;
   contextRevision: PacketRevision;
-  context: DisabledContext;
+  context: PacketContext;
 };
 type Field =
   | 'packet'
@@ -371,12 +372,98 @@ function revision(value: unknown): PacketRevision {
     sha: sha(r.sha, 'contextRevision'),
   };
 }
-function context(value: unknown): DisabledContext {
+const CONTEXT_REASONS = [
+  'no-match',
+  'missing-source',
+  'excluded-source',
+  'suspicious-line',
+  'unsupported-type',
+  'out-of-scope',
+  'inventory-limit',
+  'candidate-limit',
+  'file-byte-limit',
+  'total-read-limit',
+  'excerpt-limit',
+  'fact-limit',
+  'context-byte-limit',
+] as const;
+function context(value: unknown): PacketContext {
   const r = object(value, ['ok', 'status', 'dependencies', 'reasons'], [], 'context');
-  requireValue(r.ok === true && r.status === 'disabled', 'context');
-  array(r.dependencies, 0, 'context');
-  array(r.reasons, 0, 'context');
-  return { ok: true, status: 'disabled', dependencies: [], reasons: [] };
+  requireValue(r.ok === true, 'context');
+  const status = choice(r.status, ['available', 'partial', 'unavailable', 'disabled'], 'context');
+  const limits = (v: unknown) =>
+    distinct(
+      array(v, PACKET_LIMITS.listEntries, 'context').map((x) =>
+        choice(x, CONTEXT_REASONS, 'context'),
+      ),
+      'context',
+    );
+  const dependencies = array(r.dependencies, PACKET_LIMITS.changes, 'context').map((v) => {
+    const d = object(v, ['id', 'name', 'status', 'reasons', 'facts'], [], 'context');
+    const facts = array(d.facts, PACKET_LIMITS.facts, 'context').map((v) => {
+      const f = object(v, ['kind', 'path', 'excerpt', 'excerptTruncated'], [], 'context');
+      requireValue(f.kind === 'package-usage', 'context');
+      const file = path(f.path, 'context');
+      requireValue(
+        file.split('/').every((s) => !s.startsWith('.')) &&
+          /\.(?:[cm]?[jt]sx?|svelte)$/u.test(file),
+        'context',
+      );
+      return {
+        kind: 'package-usage' as const,
+        path: file,
+        excerpt: text(
+          f.excerpt,
+          'context',
+          PACKET_LIMITS.textBytes,
+          PACKET_LIMITS.excerptCodeUnits,
+        ),
+        excerptTruncated: bool(f.excerptTruncated, 'context'),
+      };
+    });
+    const entry = {
+      id: id(d.id, 'context'),
+      name: id(d.name, 'context'),
+      status: choice(d.status, ['available', 'partial', 'unavailable'], 'context'),
+      reasons: limits(d.reasons),
+      facts,
+    };
+    requireValue(
+      entry.status !== 'available' || (entry.facts.length > 0 && entry.reasons.length === 0),
+      'context',
+      'coverage',
+    );
+    requireValue(entry.status !== 'unavailable' || entry.facts.length === 0, 'context', 'coverage');
+    return entry;
+  });
+  distinct(
+    dependencies.map((d) => d.id),
+    'context',
+  );
+  const result: PacketContext = { ok: true, status, reasons: limits(r.reasons), dependencies };
+  requireValue(
+    status !== 'disabled' || (dependencies.length === 0 && result.reasons.length === 0),
+    'context',
+  );
+  requireValue(
+    Buffer.byteLength(JSON.stringify(result)) <= PACKET_LIMITS.contextBytes,
+    'context',
+    'budget',
+  );
+  return result;
+}
+function linkContext(ctx: PacketContext, changes: PacketChange[]) {
+  if (ctx.status === 'disabled') return;
+  requireValue(ctx.dependencies.length === changes.length, 'context', 'reference');
+  for (const d of ctx.dependencies) {
+    const c = changes.find((c) => c.id === d.id),
+      side = c?.to ?? c?.from;
+    requireValue(
+      side && d.name === ('name' in side ? side.name : side.action),
+      'context',
+      'reference',
+    );
+  }
 }
 function expected(value: unknown): PacketExpected {
   const r = object(value, ['binding', 'baseSha', 'contextRevision', 'context'], [], 'expected');
@@ -1300,6 +1387,7 @@ export function validateReviewPacket(candidate: unknown, trusted: unknown): Pack
       'sources',
     );
     linkChanges(changes, sources);
+    linkContext(ctx, changes);
     linkFindings(findings, changes, sources);
     linkRelationships(relationships, changes, sources);
     const packet: ReviewPacket = {
