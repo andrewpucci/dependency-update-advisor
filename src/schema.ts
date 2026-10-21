@@ -224,7 +224,13 @@ function object(
       field,
     );
     const descriptor = Object.getOwnPropertyDescriptor(value, key);
-    requireValue(descriptor && 'value' in descriptor && descriptor.enumerable, field);
+    requireValue(
+      descriptor &&
+        'value' in descriptor &&
+        descriptor.enumerable &&
+        descriptor.value !== undefined,
+      field,
+    );
     Object.defineProperty(result, key, { value: descriptor.value, enumerable: true });
   }
   requireValue(
@@ -246,7 +252,13 @@ function array(value: unknown, limit: number, field: Field): unknown[] {
   const result: unknown[] = [];
   for (let i = 0; i < length; i++) {
     const descriptor = Object.getOwnPropertyDescriptor(value, String(i));
-    requireValue(descriptor && 'value' in descriptor && descriptor.enumerable, field);
+    requireValue(
+      descriptor &&
+        'value' in descriptor &&
+        descriptor.enumerable &&
+        descriptor.value !== undefined,
+      field,
+    );
     result.push(descriptor.value);
   }
   return result;
@@ -257,13 +269,14 @@ function text(
   bytes: number = PACKET_LIMITS.identityBytes,
   units: number = bytes,
   multiline = false,
+  tabs = false,
 ): string {
   requireValue(typeof value === 'string' && value.length > 0, field);
   requireValue(value.length <= units && Buffer.byteLength(value) <= bytes, field, 'budget');
   for (const character of value) {
     const code = character.charCodeAt(0);
     requireValue(!(code >= 0xd800 && code <= 0xdfff && character.length === 1), field);
-    const lineBreak = multiline && (code === 10 || code === 13);
+    const lineBreak = (multiline && (code === 10 || code === 13)) || (tabs && code === 9);
     requireValue(lineBreak || (code >= 32 && (code < 127 || code > 159)), field);
   }
   return value;
@@ -417,6 +430,8 @@ function context(value: unknown): PacketContext {
           'context',
           PACKET_LIMITS.textBytes,
           PACKET_LIMITS.excerptCodeUnits,
+          false,
+          true,
         ),
         excerptTruncated: bool(f.excerptTruncated, 'context'),
       };
@@ -894,7 +909,7 @@ function linkChanges(changes: PacketChange[], sources: PacketSource[]) {
       );
       requireValue(inventoryPaths(side).includes(p.path), 'changes', 'reference');
     }
-    for (const [key, entry] of Object.entries(c.evidence))
+    for (const [key, entry] of Object.entries(c.evidence)) {
       for (const sourceId of entry.sourceIds) {
         const s = sources.find((s) => s.id === sourceId);
         requireValue(s && category(s) === key, 'changes', 'reference');
@@ -905,6 +920,27 @@ function linkChanges(changes: PacketChange[], sources: PacketSource[]) {
           'coverage',
         );
       }
+      if (entry.status === 'available') {
+        const needed =
+          key === 'installScript'
+            ? (['from', 'to'] as const).filter((k) => c[k] !== null)
+            : [c.to ? 'to' : 'from'];
+        for (const side of needed)
+          requireValue(
+            entry.sourceIds.some((ref) => {
+              const s = sources.find((s) => s.id === ref);
+              return (
+                s?.provenance.kind === 'upstream' &&
+                s.provenance.subjects.some(
+                  (t) => t.memberId === c.id && t.side === (side === 'from' ? 'base' : 'head'),
+                )
+              );
+            }),
+            'changes',
+            'coverage',
+          );
+      }
+    }
   }
   for (const s of sources) {
     for (const memberId of s.memberIds) {
@@ -923,6 +959,18 @@ function linkChanges(changes: PacketChange[], sources: PacketSource[]) {
         'coverage',
       );
     if (s.provenance.kind !== 'upstream') continue;
+    if (s.kind === 'compare' && s.provenance.range)
+      for (const memberId of s.memberIds) {
+        const c = changes.find((c) => c.id === memberId);
+        requireValue(c, 'sources', 'reference');
+        const range = s.provenance.range;
+        requireValue(
+          (range.from === null || (c.from && sideValue(c.from) === range.from)) &&
+            (range.to === null || (c.to && sideValue(c.to) === range.to)),
+          'sources',
+          'reference',
+        );
+      }
     for (const t of s.provenance.subjects) {
       const c = changes.find((c) => c.id === t.memberId);
       requireValue(c, 'sources', 'reference');
@@ -1119,7 +1167,53 @@ function findingSourceKinds(f: Finding): readonly PacketSource['kind'][] {
       return ['file', 'release', 'compare', 'metadata', 'advisory', 'malware', ...OPTIONAL_SIGNALS];
   }
 }
-function linkFindings(findings: Finding[], changes: PacketChange[], sources: PacketSource[]) {
+function validateSupplyChainFinding(
+  f: Extract<Finding, { kind: 'supplyChainChange' }>,
+  c: PacketChange,
+) {
+  if (f.change === 'install_script') requireValue(c.ecosystem === 'npm', 'findings', 'reference');
+  if (f.change === 'action_identity' || f.change === 'mutable_action_ref') {
+    requireValue(c.ecosystem === 'actions' && c.from && c.to, 'findings', 'reference');
+    if (f.change === 'action_identity')
+      requireValue(
+        c.from.action.split('/').slice(0, 2).join('/').toLowerCase() !==
+          c.to.action.split('/').slice(0, 2).join('/').toLowerCase(),
+        'findings',
+        'reference',
+      );
+    else requireValue(c.from.refKind === 'sha' && c.to.refKind !== 'sha', 'findings', 'reference');
+  }
+  if (f.change === 'package_source')
+    requireValue(
+      c.ecosystem !== 'actions' && c.from && c.to && !isDeepStrictEqual(c.from.source, c.to.source),
+      'findings',
+      'reference',
+    );
+}
+function supportsSide(s: PacketSource, memberId: string, side: 'base' | 'head') {
+  return s.provenance.kind === 'file'
+    ? s.provenance.revision === side
+    : s.provenance.kind === 'upstream' &&
+        s.provenance.subjects.some((t) => t.memberId === memberId && t.side === side);
+}
+function findingSides(f: Finding, c: PacketChange): ('base' | 'head')[] {
+  if (f.kind === 'informational') return [];
+  if (f.kind === 'vulnerability' || f.kind === 'malware') {
+    if (f.applicability === 'resolved_by_proposed') return ['base', 'head'];
+    if (f.applicability === 'affects_proposed' || c.to) return ['head'];
+    return ['base'];
+  }
+  if (f.kind === 'licenseChange') return ['base', 'head'];
+  if (f.kind === 'supplyChainChange')
+    return f.change === 'install_script' && !c.from ? ['head'] : ['base', 'head'];
+  return ['head'];
+}
+function linkFindings(
+  findings: Finding[],
+  changes: PacketChange[],
+  sources: PacketSource[],
+  ctx: PacketContext,
+) {
   distinct(
     findings.map((f) => f.id),
     'findings',
@@ -1128,6 +1222,7 @@ function linkFindings(findings: Finding[], changes: PacketChange[], sources: Pac
   for (const f of findings) {
     const c = changes.find((c) => c.id === f.memberId);
     requireValue(c, 'findings', 'reference');
+    if (f.kind === 'supplyChainChange') validateSupplyChainFinding(f, c);
     const linked = f.references.map((ref) => {
       const s = sources.find((s) => s.id === ref);
       requireValue(
@@ -1154,12 +1249,7 @@ function linkFindings(findings: Finding[], changes: PacketChange[], sources: Pac
         if (f.affectedRange !== undefined)
           requireValue(f.affectedRange === s.provenance.affectedRange, 'findings', 'reference');
         for (const t of s.provenance.subjects.filter((t) => t.memberId === c.id)) {
-          const claim = JSON.stringify([
-            f.kind,
-            s.provenance.advisoryId ?? s.provenance.url,
-            c.id,
-            t.side,
-          ]);
+          const claim = JSON.stringify([s.provenance.advisoryId ?? s.provenance.url, c.id, t.side]);
           requireValue(
             !claims.has(claim) || claims.get(claim) === f.applicability,
             'findings',
@@ -1170,27 +1260,48 @@ function linkFindings(findings: Finding[], changes: PacketChange[], sources: Pac
       }
       return s;
     });
+    for (const side of findingSides(f, c))
+      requireValue(
+        linked.some((s) => supportsSide(s, c.id, side)),
+        'findings',
+        'reference',
+      );
+    if (f.kind === 'vulnerability' || f.kind === 'malware') {
+      const advisoryIds = new Set(
+        linked.map((s) =>
+          s.provenance.kind === 'upstream' ? (s.provenance.advisoryId ?? s.provenance.url) : '',
+        ),
+      );
+      requireValue(advisoryIds.size === 1, 'findings', 'reference');
+    }
     if (f.kind === 'incompatibleMigration')
       requireValue(
         linked.some(
           (s) =>
             s.kind === 'file' &&
             s.provenance.kind === 'file' &&
-            s.provenance.revision === 'context',
-        ) && linked.some((s) => category(s) === 'upstream'),
+            s.provenance.revision === 'context' &&
+            ctx.dependencies.some(
+              (d) =>
+                d.id === c.id &&
+                d.facts.some(
+                  (fact) => s.provenance.kind === 'file' && fact.path === s.provenance.path,
+                ),
+            ),
+        ) && linked.some((s) => category(s) === 'upstream' && supportsSide(s, c.id, 'head')),
         'findings',
         'reference',
       );
     if (f.kind === 'releaseMetadata') {
       if (f.publishedAt !== undefined)
         requireValue(
-          linked.some((s) => s.kind === 'publishTime'),
+          linked.some((s) => s.kind === 'publishTime' && supportsSide(s, c.id, 'head')),
           'findings',
           'reference',
         );
       if (f.deprecated !== undefined)
         requireValue(
-          linked.some((s) => s.kind === 'deprecation'),
+          linked.some((s) => s.kind === 'deprecation' && supportsSide(s, c.id, 'head')),
           'findings',
           'reference',
         );
@@ -1305,8 +1416,23 @@ function coverage(
       return s;
     });
     if (status === 'complete' || status === 'not_applicable') {
+      const inventory = sources.filter(
+        (s) =>
+          s.ecosystems.includes(ecosystem) &&
+          (s.kind === 'file-list' ||
+            (s.kind === 'file' &&
+              !(s.provenance.kind === 'file' && s.provenance.revision === 'context'))),
+      );
       requireValue(
-        limits.length === 0 && linked.length > 0 && linked.every((s) => s.status === 'available'),
+        inventory.every((s) => s.status === 'available'),
+        'coverage',
+        'coverage',
+      );
+
+      requireValue(
+        limits.length === 0 &&
+          linked.some((s) => s.kind === 'file-list') &&
+          linked.every((s) => s.status === 'available'),
         'coverage',
         'coverage',
       );
@@ -1388,7 +1514,7 @@ export function validateReviewPacket(candidate: unknown, trusted: unknown): Pack
     );
     linkChanges(changes, sources);
     linkContext(ctx, changes);
-    linkFindings(findings, changes, sources);
+    linkFindings(findings, changes, sources, ctx);
     linkRelationships(relationships, changes, sources);
     const packet: ReviewPacket = {
       version: 1,
