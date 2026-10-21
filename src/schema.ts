@@ -56,16 +56,43 @@ export type ChangeEvidence = {
   reasons: EvidenceReason[];
   sourceIds: string[];
 };
-export type PacketChange = {
+export type ActionsSide = {
+  workflow: string;
+  jobId: string;
+  stepIndex: number | null;
+  action: string;
+  ref: string;
+  refKind: 'tag' | 'branch' | 'sha' | 'unknown';
+  sourceId: string;
+};
+export type UvSide = {
+  root: string;
+  name: string;
+  version: string;
+  source: PackageSource;
+  marker: string | null;
+  extras: string[];
+  groups: string[];
+  sourceId: string;
+};
+export type DependencySide = NpmSide | ActionsSide | UvSide;
+type ChangeFacts = {
   id: string;
-  ecosystem: 'npm';
   kind: 'update' | 'addition' | 'removal';
-  from: NpmSide | null;
-  to: NpmSide | null;
   role: 'direct' | 'transitive' | 'unknown';
-  directRoles?: ('production' | 'development' | 'peer' | 'optional')[];
   evidence: Record<string, ChangeEvidence>;
 };
+export type PacketChange = ChangeFacts &
+  (
+    | {
+        ecosystem: 'npm';
+        from: NpmSide | null;
+        to: NpmSide | null;
+        directRoles?: ('production' | 'development' | 'peer' | 'optional')[];
+      }
+    | { ecosystem: 'actions'; from: ActionsSide | null; to: ActionsSide | null }
+    | { ecosystem: 'uv'; from: UvSide | null; to: UvSide | null }
+  );
 export type SourceSubject = { memberId: string; side: 'base' | 'head'; value: string };
 export type SourceProvenance =
   | {
@@ -587,17 +614,68 @@ function evidence(value: unknown, ecosystem: Ecosystem): Record<string, ChangeEv
     }),
   );
 }
-function change(value: unknown): PacketChange {
+function actionsSide(value: unknown): ActionsSide {
   const r = object(
     value,
-    ['id', 'ecosystem', 'kind', 'from', 'to', 'role', 'evidence'],
-    ['directRoles'],
+    ['workflow', 'jobId', 'stepIndex', 'action', 'ref', 'refKind', 'sourceId'],
+    [],
     'changes',
   );
-  requireValue(r.ecosystem === 'npm', 'changes');
-  const kind = choice(r.kind, ['update', 'addition', 'removal'], 'changes');
-  const from = r.from === null ? null : npmSide(r.from),
-    to = r.to === null ? null : npmSide(r.to);
+  const workflow = path(r.workflow, 'changes');
+  requireValue(/^\.github\/workflows\/[^/]+\.ya?ml$/u.test(workflow), 'changes');
+  const action = path(r.action, 'changes');
+  requireValue(action.split('/').length >= 2 && !action.includes('@'), 'changes');
+  const stepIndex = r.stepIndex;
+  requireValue(
+    stepIndex === null ||
+      (typeof stepIndex === 'number' && Number.isSafeInteger(stepIndex) && stepIndex >= 0),
+    'changes',
+  );
+  const refKind = choice(r.refKind, ['tag', 'branch', 'sha', 'unknown'], 'changes');
+  const ref = text(r.ref, 'changes');
+  if (refKind === 'sha') sha(ref, 'changes');
+  return {
+    workflow,
+    jobId: id(r.jobId, 'changes'),
+    stepIndex,
+    action: id(action, 'changes'),
+    ref,
+    refKind,
+    sourceId: id(r.sourceId, 'changes'),
+  };
+}
+function sortedIds(value: unknown, field: Field) {
+  const result = ids(value, field);
+  requireValue(isDeepStrictEqual(result, [...result].sort()), field);
+  return result;
+}
+function uvSide(value: unknown): UvSide {
+  const r = object(
+    value,
+    ['root', 'name', 'version', 'source', 'marker', 'extras', 'groups', 'sourceId'],
+    [],
+    'changes',
+  );
+  const name = id(r.name, 'changes');
+  requireValue(/^[a-z0-9]+(?:-[a-z0-9]+)*$/u.test(name), 'changes');
+  return {
+    root: path(r.root, 'changes', true),
+    name,
+    version: text(r.version, 'changes'),
+    source: packageSource(r.source),
+    marker: nullableText(r.marker, 'changes'),
+    extras: sortedIds(r.extras, 'changes'),
+    groups: sortedIds(r.groups, 'changes'),
+    sourceId: id(r.sourceId, 'changes'),
+  };
+}
+function changeSides<T extends { sourceId: string }>(
+  r: Record<string, unknown>,
+  kind: ChangeFacts['kind'],
+  parse: (v: unknown) => T,
+) {
+  const from = r.from === null ? null : parse(r.from),
+    to = r.to === null ? null : parse(r.to);
   requireValue(
     (kind === 'addition' && from === null && to !== null) ||
       (kind === 'removal' && from !== null && to === null) ||
@@ -609,18 +687,33 @@ function change(value: unknown): PacketChange {
     const { sourceId: newSource, ...newIdentity } = to;
     requireValue(oldSource && newSource && !isDeepStrictEqual(oldIdentity, newIdentity), 'changes');
   }
-  const role = choice(r.role, ['direct', 'transitive', 'unknown'], 'changes');
-  const result: PacketChange = {
+  return { from, to };
+}
+function change(value: unknown): PacketChange {
+  const r = object(
+    value,
+    ['id', 'ecosystem', 'kind', 'from', 'to', 'role', 'evidence'],
+    ['directRoles'],
+    'changes',
+  );
+  const ecosystem = choice(r.ecosystem, ECOSYSTEMS, 'changes');
+  const facts: ChangeFacts = {
     id: id(r.id, 'changes'),
-    ecosystem: 'npm',
-    kind,
-    from,
-    to,
-    role,
-    evidence: evidence(r.evidence, 'npm'),
+    kind: choice(r.kind, ['update', 'addition', 'removal'], 'changes'),
+    role: choice(r.role, ['direct', 'transitive', 'unknown'], 'changes'),
+    evidence: evidence(r.evidence, ecosystem),
+  };
+  requireValue(ecosystem === 'npm' || !Object.hasOwn(r, 'directRoles'), 'changes');
+  if (ecosystem === 'actions')
+    return { ...facts, ecosystem, ...changeSides(r, facts.kind, actionsSide) };
+  if (ecosystem === 'uv') return { ...facts, ecosystem, ...changeSides(r, facts.kind, uvSide) };
+  const result: Extract<PacketChange, { ecosystem: 'npm' }> = {
+    ...facts,
+    ecosystem,
+    ...changeSides(r, facts.kind, npmSide),
   };
   if (r.directRoles !== undefined) {
-    requireValue(role === 'direct', 'changes');
+    requireValue(facts.role === 'direct', 'changes');
     result.directRoles = distinct(
       array(r.directRoles, 4, 'changes').map((v) =>
         choice(v, ['production', 'development', 'peer', 'optional'], 'changes'),
@@ -631,11 +724,31 @@ function change(value: unknown): PacketChange {
   }
   return result;
 }
-function sideValue(side: NpmSide) {
-  return side.version;
+function sideValue(side: DependencySide) {
+  return 'version' in side ? side.version : side.ref;
 }
-function instanceKey(c: PacketChange, side: NpmSide) {
-  return JSON.stringify([c.ecosystem, side.root, side.lockPath ?? side.name]);
+function instanceKey(c: PacketChange, side: DependencySide) {
+  if ('workflow' in side)
+    return JSON.stringify([c.ecosystem, side.workflow, side.jobId, side.stepIndex]);
+  if ('lockPath' in side)
+    return JSON.stringify([c.ecosystem, side.root, side.lockPath ?? side.name]);
+  return JSON.stringify([
+    c.ecosystem,
+    side.root,
+    side.name,
+    side.version,
+    side.source,
+    side.marker,
+    side.extras,
+    side.groups,
+  ]);
+}
+function inventoryPaths(side: DependencySide) {
+  if ('workflow' in side) return [side.workflow];
+  const prefix = side.root === '.' ? '' : side.root + '/';
+  if ('lockPath' in side)
+    return [prefix + (side.lockPath === null ? 'package.json' : 'package-lock.json')];
+  return [prefix + 'uv.lock', prefix + 'pyproject.toml'];
 }
 function category(s: PacketSource) {
   const categories: Partial<Record<PacketSource['kind'], string>> = {
@@ -685,12 +798,7 @@ function linkChanges(changes: PacketChange[], sources: PacketSource[]) {
         'changes',
         'reference',
       );
-      const prefix = side.root === '.' ? '' : side.root + '/';
-      requireValue(
-        p.path === prefix + (side.lockPath === null ? 'package.json' : 'package-lock.json'),
-        'changes',
-        'reference',
-      );
+      requireValue(inventoryPaths(side).includes(p.path), 'changes', 'reference');
     }
     for (const [key, entry] of Object.entries(c.evidence))
       for (const sourceId of entry.sourceIds) {

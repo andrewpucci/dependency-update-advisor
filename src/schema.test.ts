@@ -42,7 +42,7 @@ function fixture() {
         id: 'inventory',
         kind: 'file-list',
         ecosystems: [...ecosystems],
-        memberIds: [],
+        memberIds: [] as string[],
         status: 'available',
         reasons: [],
         provenance: {
@@ -274,4 +274,120 @@ test.each([
   expect(
     validateReviewPacket({ ...f.packet, sources: [...f.sources, source] }, f.expected),
   ).toMatchObject({ ok: false });
+});
+
+function ecosystemFixture(ecosystem: 'actions' | 'uv') {
+  const f = fixture();
+  f.packet.sources[0].provenance.absentEcosystems = ecosystems.filter((e) => e !== ecosystem);
+  f.packet.coverage[ecosystem].status = 'complete';
+  const actionSide = (ref: string, sourceId: string) => ({
+    workflow: '.github/workflows/ci.yml',
+    jobId: 'test',
+    stepIndex: 0,
+    action: 'example/setup/nested',
+    ref,
+    refKind: 'tag',
+    sourceId,
+  });
+  const uvSide = (version: string, sourceId: string) => ({
+    root: '.',
+    name: 'example-package',
+    version,
+    source: { kind: 'registry', identity: 'https://pypi.org/simple' },
+    marker: "python_version >= '3.12'",
+    extras: ['test'],
+    groups: [],
+    sourceId,
+  });
+  const from =
+    ecosystem === 'actions' ? actionSide('v1', 'base-lock') : uvSide('1.0.0', 'base-lock');
+  const to = ecosystem === 'actions' ? actionSide('v2', 'head-lock') : uvSide('2.0.0', 'head-lock');
+  const c = {
+    id: `${ecosystem}:0`,
+    ecosystem,
+    kind: 'update',
+    from,
+    to,
+    role: 'direct',
+    evidence: Object.fromEntries(
+      ['upstream', 'vulnerability', 'malware'].map((k) => [
+        k,
+        { status: 'unavailable', reasons: ['missing'], sourceIds: [] as string[] },
+      ]),
+    ),
+  };
+  const sources = ['base', 'head'].map((side) => ({
+    id: `${side}-lock`,
+    kind: 'file',
+    ecosystems: [ecosystem],
+    memberIds: [c.id],
+    status: 'available',
+    reasons: [],
+    provenance: {
+      kind: 'file',
+      revision: side,
+      repository: { ...repository },
+      sha: side === 'base' ? BASE : HEAD,
+      path: ecosystem === 'actions' ? '.github/workflows/ci.yml' : 'uv.lock',
+    },
+  }));
+  return {
+    packet: { ...f.packet, changes: [c], sources: [...f.packet.sources, ...sources] },
+    expected: f.expected,
+    c,
+  };
+}
+
+test.each(['actions', 'uv'] as const)('preserves distinct %s identities', (ecosystem) => {
+  const f = ecosystemFixture(ecosystem);
+  expect(accepted(f).changes[0]).toEqual(f.c);
+});
+
+test('preserves repeated Actions occurrences without collapsing refs', () => {
+  const f = ecosystemFixture('actions');
+  const c = {
+    ...f.c,
+    id: 'actions:1',
+    from: { ...f.c.from, stepIndex: 1 },
+    to: { ...f.c.to, stepIndex: 1 },
+  };
+  for (const source of f.packet.sources) source.memberIds.push(c.id);
+  f.packet.sources[0].memberIds = [];
+  expect(accepted({ ...f, packet: { ...f.packet, changes: [f.c, c] } }).changes).toHaveLength(2);
+});
+
+test('accepts job-level reusable workflows and rejects short SHA refs', () => {
+  const f = ecosystemFixture('actions');
+  const from = { ...f.c.from, stepIndex: null, ref: 'a'.repeat(40), refKind: 'sha' };
+  const to = { ...f.c.to, stepIndex: null, ref: 'b'.repeat(40), refKind: 'sha' };
+  expect(
+    accepted({ ...f, packet: { ...f.packet, changes: [{ ...f.c, from, to }] } }).changes,
+  ).toHaveLength(1);
+  to.ref = 'short';
+  expect(
+    validateReviewPacket({ ...f.packet, changes: [{ ...f.c, from, to }] }, f.expected),
+  ).toMatchObject({ ok: false });
+});
+
+test('preserves uv variants and rejects repeated extras', () => {
+  const f = ecosystemFixture('uv');
+  const c = {
+    ...f.c,
+    id: 'uv:1',
+    from: { ...f.c.from, marker: "python_version < '3.12'" },
+    to: { ...f.c.to, marker: "python_version < '3.12'" },
+  };
+  for (const source of f.packet.sources) source.memberIds.push(c.id);
+  f.packet.sources[0].memberIds = [];
+  expect(accepted({ ...f, packet: { ...f.packet, changes: [f.c, c] } }).changes).toHaveLength(2);
+  const bad = { ...f.c, to: { ...f.c.to, extras: ['test', 'test'] } };
+  expect(validateReviewPacket({ ...f.packet, changes: [bad, c] }, f.expected)).toMatchObject({
+    ok: false,
+  });
+});
+
+test('retains a mixed packet gap even with no retained Actions changes', () => {
+  const f = npmFixture();
+  f.packet.coverage.actions = { status: 'partial', reasons: ['truncated'], sourceIds: [] };
+  expect(accepted(f).coverage.actions).toEqual(f.packet.coverage.actions);
 });
