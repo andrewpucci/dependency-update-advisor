@@ -48,6 +48,7 @@ export type StatusResult =
       diagnostic: 'rejection' | 'transport' | 'timeout' | 'acknowledgement';
     }
   | ({ kind: 'error'; category: 'post-write'; field: ErrorField } & Confirmed);
+type WriteFailure = Extract<StatusResult, { category: 'write' }>;
 export type StatusDependencies = {
   reads: FreshnessReads;
   readOwnership: (identity: ReviewIdentity) => Promise<unknown>;
@@ -79,28 +80,34 @@ function sameIdentity(value: unknown, expected: ReviewIdentity): boolean {
 }
 
 function parseInput(value: unknown): Input | null {
+  if (!record(value)) return null;
+  const snapshot = structuredClone({
+    binding: value.binding,
+    reviewer: value.reviewer,
+    outcome: value.outcome,
+    previousCommentIsStale: value.previousCommentIsStale,
+  });
+  const { reviewer, outcome } = snapshot;
   if (
-    !record(value) ||
-    !Object.hasOwn(value, 'binding') ||
-    !record(value.reviewer) ||
-    !positiveId(value.reviewer.runId) ||
-    !positiveId(value.reviewer.runAttempt) ||
-    !record(value.outcome) ||
-    !['running', 'complete', 'incomplete'].includes(value.outcome.kind as string) ||
-    (value.outcome.kind === 'complete' && value.outcome.commentRecorded !== true) ||
-    (value.previousCommentIsStale !== undefined &&
-      typeof value.previousCommentIsStale !== 'boolean')
+    !record(reviewer) ||
+    !positiveId(reviewer.runId) ||
+    !positiveId(reviewer.runAttempt) ||
+    !record(outcome) ||
+    (outcome.kind !== 'running' && outcome.kind !== 'complete' && outcome.kind !== 'incomplete') ||
+    (outcome.kind === 'complete' && outcome.commentRecorded !== true) ||
+    (snapshot.previousCommentIsStale !== undefined &&
+      typeof snapshot.previousCommentIsStale !== 'boolean')
   )
     return null;
   return {
-    binding: structuredClone(value.binding),
-    reviewer: { runId: value.reviewer.runId, runAttempt: value.reviewer.runAttempt },
-    identity: structuredClone(value.outcome.identity),
-    stale: value.previousCommentIsStale === true,
+    binding: snapshot.binding,
+    reviewer: { runId: reviewer.runId, runAttempt: reviewer.runAttempt },
+    identity: outcome.identity,
+    stale: snapshot.previousCommentIsStale === true,
     state:
-      value.outcome.kind === 'complete'
+      outcome.kind === 'complete'
         ? 'success'
-        : value.outcome.kind === 'incomplete'
+        : outcome.kind === 'incomplete'
           ? 'failure'
           : 'pending',
   };
@@ -131,7 +138,11 @@ async function checkGate(value: unknown, deps: StatusDependencies): Promise<Gate
 }
 
 function requestFor(input: Input, binding: ReviewBinding): StatusRequest {
-  const repository = Object.freeze({ ...binding.repository });
+  const repository = Object.freeze({
+    id: binding.repository.id,
+    owner: binding.repository.owner,
+    name: binding.repository.name,
+  });
   return Object.freeze({
     repository,
     sha: binding.headSha,
@@ -169,8 +180,36 @@ function acknowledged(value: unknown, request: StatusRequest): StatusReceipt | n
 
 function writeError(
   diagnostic: 'rejection' | 'transport' | 'timeout' | 'acknowledgement',
-): StatusResult {
+): WriteFailure {
   return { kind: 'error', category: 'write', field: 'status', publication: 'unknown', diagnostic };
+}
+
+async function writeStatus(
+  request: StatusRequest,
+  createStatus: StatusDependencies['createStatus'],
+): Promise<StatusReceipt | WriteFailure> {
+  try {
+    const response = await createStatus(request);
+    if (
+      record(response) &&
+      typeof response.status === 'number' &&
+      Number.isInteger(response.status) &&
+      response.status >= 100 &&
+      response.status <= 599 &&
+      response.status !== 201
+    )
+      return writeError('rejection');
+    const receipt = acknowledged(response, request);
+    if (!receipt) return writeError('acknowledgement');
+    return receipt;
+  } catch (error) {
+    try {
+      if (record(error) && error.kind === 'timeout') return writeError('timeout');
+    } catch {
+      /* Exception objects are untrusted too. */
+    }
+    return writeError('transport');
+  }
 }
 
 /** One status attempt; W2 owns job failure, comment ordering, and any guarded recovery. */
@@ -196,16 +235,8 @@ export async function publishExecutionStatus(
       publication: 'not-attempted',
     };
   const request = requestFor(input, gate.binding);
-  let receipt: StatusReceipt | null;
-  try {
-    const response = await deps.createStatus(request);
-    if (record(response) && typeof response.status === 'number' && response.status !== 201)
-      return writeError('rejection');
-    receipt = acknowledged(response, request);
-    if (!receipt) return writeError('acknowledgement');
-  } catch (error) {
-    return writeError(record(error) && error.kind === 'timeout' ? 'timeout' : 'transport');
-  }
+  const receipt = await writeStatus(request, deps.createStatus);
+  if ('kind' in receipt) return receipt;
   const after = await checkGate(input.binding, deps);
   if (after.kind === 'error')
     return {
