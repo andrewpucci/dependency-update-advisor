@@ -6,6 +6,8 @@ import {
   type ReviewPacket,
 } from './schema.js';
 import { formDecisionUnits } from './units.js';
+import { evaluateUnitPolicy } from './units.js';
+import { parseReviewConfig } from './config.js';
 
 const repository = { id: 101, owner: 'example', name: 'consumer' };
 const BASE = 'b'.repeat(40),
@@ -362,4 +364,162 @@ test('multiple proofs to the same anchor preserve one group, not extra assessmen
   expect(first.units[0].proofKeys).toHaveLength(2);
   f.packet.relationships.reverse();
   expect(formDecisionUnits(accepted(f)).units).toEqual(first.units);
+});
+
+function available(f: ReturnType<typeof fixture>, id: string, categories?: string[]) {
+  const change = f.packet.changes.find((c) => c.id === id)!;
+  for (const category of categories ?? Object.keys(change.evidence)) {
+    const sourceId = JSON.stringify([id, category]);
+    const kinds = {
+      upstream: 'release',
+      vulnerability: 'advisory',
+      malware: 'malware',
+      installScript: 'install-script',
+      publishTime: 'publishTime',
+      deprecation: 'deprecation',
+      trust: 'trust',
+      publisher: 'publisher',
+    } as const;
+    const kind = kinds[category as keyof typeof kinds];
+    if (!kind) throw new Error('unsupported fixture category');
+    const sides =
+      category === 'installScript'
+        ? (['base', 'head'] as const)
+        : ([change.to ? 'head' : 'base'] as const);
+    f.packet.sources.push({
+      id: sourceId,
+      kind,
+      ecosystems: [change.ecosystem],
+      memberIds: [id],
+      status: 'available',
+      reasons: [],
+      provenance: {
+        kind: 'upstream',
+        url: `https://example.test/evidence/${encodeURIComponent(sourceId)}`,
+        title: 'Synthetic evidence',
+        excerpt: 'Bounded synthetic evidence.',
+        excerptTruncated: false,
+        range: {
+          from: change.from ? ('ref' in change.from ? change.from.ref : change.from.version) : null,
+          to: change.to ? ('ref' in change.to ? change.to.ref : change.to.version) : null,
+        },
+        ...(kind === 'advisory' || kind === 'malware'
+          ? { advisoryId: 'GHSA-synthetic', affectedRange: '>=2.0.0' }
+          : {}),
+        subjects: sides.flatMap((side) => {
+          const instance = side === 'base' ? change.from : change.to;
+          return instance
+            ? [{ memberId: id, side, value: 'ref' in instance ? instance.ref : instance.version }]
+            : [];
+        }),
+      },
+    });
+    change.evidence[category] = { status: 'available', reasons: [], sourceIds: [sourceId] };
+  }
+}
+
+test('projects member evidence without letting the anchor conceal required or optional failures', () => {
+  const f = groupFixture();
+  available(f, 'anchor');
+  f.packet.changes[1].evidence.upstream = {
+    status: 'partial',
+    reasons: ['timeout', 'permission'],
+    sourceIds: [],
+  };
+  f.packet.changes[1].evidence.publisher = {
+    status: 'unavailable',
+    reasons: ['missing'],
+    sourceIds: [],
+  };
+  const inventory = formDecisionUnits(accepted(f));
+  const policy = evaluateUnitPolicy(inventory, parseReviewConfig('{"version":1}'), 0);
+  expect(policy.ok).toBe(true);
+  if (!policy.ok) throw new Error('expected policy');
+  expect(policy.units).toHaveLength(1);
+  expect(policy.units[0].gaps).toHaveLength(4);
+  expect(policy.units[0].uncheckedSignals).toHaveLength(1);
+  const unit = inventory.units[0];
+  expect(
+    unit.evidenceLinks.find((link) => link.memberId === 'child' && link.category === 'upstream'),
+  ).toMatchObject({
+    reasons: ['permission', 'timeout'],
+    sourceIds: [],
+    status: 'partial',
+  });
+  expect(unit.sources.find((s) => s.id === JSON.stringify(['child', 'upstream']))!.reason).toBe(
+    'permission',
+  );
+  expect(unit.sources.some((s) => s.status === 'group_backed')).toBe(false);
+  expect(unit.sources.find((s) => s.id === JSON.stringify(['anchor', 'upstream']))!.reason).toBe(
+    '',
+  );
+});
+
+test('projects exact current/proposed identities for every ecosystem and null side', () => {
+  const removed = npm('removed');
+  removed.to = null;
+  removed.kind = 'removal';
+  const added = uv('added');
+  added.from = null;
+  added.kind = 'addition';
+  const inventory = formDecisionUnits(accepted(fixture([removed, added, action('use', 1)])));
+  const members = inventory.units.flatMap((u) => u.members);
+  expect(members.find((m) => m.id === 'removed')).toEqual({
+    id: 'removed',
+    ecosystem: 'npm',
+    name: 'removed',
+    currentVersion: '1.0.0',
+  });
+  expect(members.find((m) => m.id === 'added')).toEqual({
+    id: 'added',
+    ecosystem: 'uv',
+    name: 'added',
+    proposedVersion: '2.0.0',
+  });
+  expect(members.find((m) => m.id === 'use')).toMatchObject({
+    name: 'example/setup',
+    currentVersion: 'v1',
+    proposedVersion: 'v2',
+  });
+});
+
+test('preserves findings and fixed malware policy while named rules are relaxed', () => {
+  const f = groupFixture();
+  available(f, 'child', ['malware']);
+  f.packet.findings = [
+    {
+      id: 'malicious',
+      memberId: 'child',
+      kind: 'malware',
+      applicability: 'affects_proposed',
+      references: [JSON.stringify(['child', 'malware'])],
+      rationale: 'Synthetic verified malware.',
+      remediation: ['Remove the package.'],
+      validation: ['Re-run CI.'],
+    },
+  ];
+  const inventory = formDecisionUnits(accepted(f));
+  const policy = evaluateUnitPolicy(
+    inventory,
+    parseReviewConfig('{"version":1,"policy":{"verdicts":{"incompleteEvidence":"merge"}}}'),
+    0,
+  );
+  if (!policy.ok) throw new Error('expected policy');
+  expect(policy.effectiveCeiling).toBe('do_not_merge');
+  expect(inventory.units[0].findings).toEqual(f.packet.findings);
+  expect(
+    inventory.units[0].evidenceLinks.some((link) =>
+      link.sourceIds.includes(JSON.stringify(['child', 'malware'])),
+    ),
+  ).toBe(true);
+});
+
+test('failed config exposes no usable evaluation', () => {
+  const result = evaluateUnitPolicy(
+    formDecisionUnits(accepted(fixture([npm('one')]))),
+    parseReviewConfig('{}'),
+    0,
+  );
+  expect(result).toMatchObject({ ok: false });
+  expect(result).not.toHaveProperty('units');
 });

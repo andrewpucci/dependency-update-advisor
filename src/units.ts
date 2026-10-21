@@ -1,4 +1,5 @@
-import type { Ecosystem, PacketResult } from './schema.js';
+import type { Ecosystem, EvidenceReason, PacketResult } from './schema.js';
+import { evaluatePolicy, type PolicyUnit } from './policy.js';
 
 type Packet = Extract<PacketResult, { ok: true }>['packet'];
 type Change = Packet['changes'][number];
@@ -11,16 +12,40 @@ export type GroupingReason =
   | 'no_direct_change'
   | 'missing_relationship'
   | 'proven_relationship';
-export type DecisionUnit = Readonly<{
+const reasonRanks = {
+  permission: 0,
+  rate_limit: 1,
+  timeout: 2,
+  missing: 3,
+  malformed: 4,
+  unsupported: 5,
+  truncated: 6,
+  budget: 7,
+  conflict: 8,
+  unknown: 9,
+} satisfies Record<EvidenceReason, number>;
+type OptionalSignal = 'publishTime' | 'deprecation' | 'trust' | 'publisher';
+const optionalSignals: readonly string[] = ['publishTime', 'deprecation', 'trust', 'publisher'];
+export type EvidenceLink = Readonly<{
   id: string;
-  ecosystem: Ecosystem;
-  kind: 'standalone' | 'direct_group';
-  anchorId: string | null;
-  memberIds: readonly string[];
-  memberCount: number;
-  proofKeys: readonly string[];
-  relationship: Readonly<{ reason: GroupingReason; nextAction: string }>;
+  memberId: string;
+  category: string;
+  status: string;
+  sourceIds: readonly string[];
+  reasons: readonly EvidenceReason[];
 }>;
+export type DecisionUnit = PolicyUnit &
+  Readonly<{
+    id: string;
+    ecosystem: Ecosystem;
+    kind: 'standalone' | 'direct_group';
+    anchorId: string | null;
+    memberIds: readonly string[];
+    memberCount: number;
+    proofKeys: readonly string[];
+    relationship: Readonly<{ reason: GroupingReason; nextAction: string }>;
+    evidenceLinks: readonly EvidenceLink[];
+  }>;
 export type UnitInventory = Readonly<{
   packet: Packet;
   units: readonly DecisionUnit[];
@@ -84,6 +109,54 @@ const actions: Record<GroupingReason, string> = {
   proven_relationship:
     'Assess the group without substituting anchor evidence for any member lookup.',
 };
+function projectMembers(
+  packet: Packet,
+  memberIds: readonly string[],
+): Omit<PolicyUnit, 'id'> & { evidenceLinks: EvidenceLink[] } {
+  const changes = memberIds.map((id) => packet.changes.find((c) => c.id === id)!);
+  const evidenceLinks = changes.flatMap((c) =>
+    Object.keys(c.evidence)
+      .sort()
+      .map((category) => {
+        const entry = c.evidence[category];
+        return {
+          id: JSON.stringify([c.id, category]),
+          memberId: c.id,
+          category,
+          status: entry.status,
+          sourceIds: [...entry.sourceIds].sort(),
+          reasons: [...entry.reasons].sort((a, b) => reasonRanks[a] - reasonRanks[b]),
+        };
+      }),
+  );
+  const sources = evidenceLinks.map((link) => ({
+    id: link.id,
+    status: link.status,
+    reason: link.reasons[0] ?? '',
+    coverageLimits: link.reasons.map((reason) =>
+      JSON.stringify([link.memberId, link.category, link.status, reason]),
+    ),
+    ...(optionalSignals.includes(link.category) ? { signal: link.category as OptionalSignal } : {}),
+  }));
+  return {
+    evidenceLinks,
+    sources,
+    members: changes.map((c) => {
+      const side = c.to ?? c.from!;
+      return {
+        id: c.id,
+        ecosystem: c.ecosystem,
+        name: 'action' in side ? side.action : side.name,
+        ...(c.from ? { currentVersion: 'ref' in c.from ? c.from.ref : c.from.version } : {}),
+        ...(c.to ? { proposedVersion: 'ref' in c.to ? c.to.ref : c.to.version } : {}),
+      };
+    }),
+    findings: packet.findings
+      .filter((f) => memberIds.includes(f.memberId))
+      .sort((a, b) => (a.id < b.id ? -1 : a.id > b.id ? 1 : 0)),
+    coverageLimits: sources.flatMap((source) => source.coverageLimits),
+  };
+}
 function grouping(
   packet: Packet,
   change: Change,
@@ -141,6 +214,7 @@ export function formDecisionUnits(input: Packet): UnitInventory {
       reason = group ? 'proven_relationship' : assignment.reason;
     return [
       {
+        ...projectMembers(packet, memberIds),
         id: unitId(packet, c.ecosystem, kind, anchorId, memberIds),
         ecosystem: c.ecosystem,
         kind,
@@ -154,4 +228,15 @@ export function formDecisionUnits(input: Packet): UnitInventory {
   });
   units.sort((a, b) => (a.id < b.id ? -1 : a.id > b.id ? 1 : 0));
   return freeze({ packet, units });
+}
+
+/** Applies existing C3 rules using trusted config and caller-supplied epoch milliseconds.
+ * Failed configuration returns C3's failure without an evaluation or fallback policy.
+ */
+export function evaluateUnitPolicy(
+  inventory: UnitInventory,
+  config: Parameters<typeof evaluatePolicy>[0],
+  evaluatedAt: number,
+) {
+  return freeze(evaluatePolicy(config, inventory.units, evaluatedAt));
 }
