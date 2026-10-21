@@ -9,15 +9,17 @@
 [T2 status](docs/specs/SPEC-execution-status.md), and
 [T3 comments](docs/specs/SPEC-managed-comments.md) are merged into `main`.
 T3 merged in [PR #76](https://github.com/andrewpucci/dependency-update-advisor/pull/76).
-[T4 packet validation](docs/specs/SPEC-review-packet.md) is implemented on this
-branch, pending merge. [T4 evidence](https://github.com/andrewpucci/dependency-update-advisor/issues/84)
+[T4 packet validation](docs/specs/SPEC-review-packet.md) is merged in
+[PR #89](https://github.com/andrewpucci/dependency-update-advisor/pull/89).
+[T4 evidence](https://github.com/andrewpucci/dependency-update-advisor/issues/84)
 records exact-revision checks and remaining integration gates.
 [Advisory complexity review](docs/specs/SPEC-complexity-review.md) is merged.
 No shared reviewer workflow exists; the old reviewer remains active.
 
 ## Next action
 
-Review T4's one PR for #11 and #77–#84 under the packet contract.
+Implement the approved T5 plan for [#12](https://github.com/andrewpucci/dependency-update-advisor/issues/12)
+and #94–#99 in one PR. Reachability extension #93 remains deferred.
 W1/W2 must supply bounded reads and exclusive claims before T2/T3 writes.
 B1–B3 and C1–C3 are merged. Downstream work:
 [S3](https://github.com/andrewpucci/dependency-update-advisor/issues/53) supplies
