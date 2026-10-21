@@ -39,20 +39,85 @@ export type InventoryCoverage = {
   reasons: EvidenceReason[];
   sourceIds: string[];
 };
+export type PackageSource = {
+  kind: 'registry' | 'git' | 'url' | 'path' | 'workspace';
+  identity: string;
+};
+export type NpmSide = {
+  root: string;
+  name: string;
+  lockPath: string | null;
+  version: string;
+  source: PackageSource;
+  sourceId: string;
+};
+export type ChangeEvidence = {
+  status: EvidenceStatus;
+  reasons: EvidenceReason[];
+  sourceIds: string[];
+};
+export type PacketChange = {
+  id: string;
+  ecosystem: 'npm';
+  kind: 'update' | 'addition' | 'removal';
+  from: NpmSide | null;
+  to: NpmSide | null;
+  role: 'direct' | 'transitive' | 'unknown';
+  directRoles?: ('production' | 'development' | 'peer' | 'optional')[];
+  evidence: Record<string, ChangeEvidence>;
+};
+export type SourceSubject = { memberId: string; side: 'base' | 'head'; value: string };
+export type SourceProvenance =
+  | {
+      kind: 'inventory';
+      repository: RepositoryIdentity;
+      baseSha: string;
+      headSha: string;
+      absentEcosystems: Ecosystem[];
+    }
+  | {
+      kind: 'file';
+      revision: 'base' | 'head' | 'context';
+      repository: RepositoryIdentity;
+      sha: string;
+      path: string;
+    }
+  | { kind: 'unavailable' }
+  | {
+      kind: 'upstream';
+      url: string;
+      title: string;
+      excerpt: string;
+      excerptTruncated: boolean;
+      subjects: SourceSubject[];
+      range: { from: string | null; to: string | null } | null;
+      advisoryId?: string;
+      affectedRange?: string;
+    };
+const SOURCE_KINDS = [
+  'file-list',
+  'file',
+  'comparison',
+  'dependabot',
+  'release',
+  'compare',
+  'metadata',
+  'advisory',
+  'malware',
+  'install-script',
+  'publishTime',
+  'deprecation',
+  'trust',
+  'publisher',
+] as const;
 export type PacketSource = {
   id: string;
-  kind: 'file-list';
+  kind: (typeof SOURCE_KINDS)[number];
   ecosystems: Ecosystem[];
   memberIds: string[];
   status: EvidenceStatus;
   reasons: EvidenceReason[];
-  provenance: {
-    kind: 'inventory';
-    repository: RepositoryIdentity;
-    baseSha: string;
-    headSha: string;
-    absentEcosystems: Ecosystem[];
-  };
+  provenance: SourceProvenance;
 };
 type DisabledContext = { ok: true; status: 'disabled'; dependencies: never[]; reasons: never[] };
 export type ReviewPacket = {
@@ -61,7 +126,7 @@ export type ReviewPacket = {
   baseSha: string;
   contextRevision: PacketRevision;
   coverage: Record<Ecosystem, InventoryCoverage>;
-  changes: never[];
+  changes: PacketChange[];
   sources: PacketSource[];
   findings: never[];
   relationships: never[];
@@ -288,6 +353,150 @@ function expected(value: unknown): PacketExpected {
     context: context(r.context),
   };
 }
+function url(value: unknown, field: Field) {
+  const result = text(value, field),
+    parsed = new URL(result);
+  requireValue(
+    parsed.protocol === 'https:' && parsed.hostname && !parsed.username && !parsed.password,
+    field,
+  );
+  for (const key of parsed.searchParams.keys())
+    requireValue(!/token|secret|password|credential|api.?key|authorization/iu.test(key), field);
+  return result;
+}
+function bool(value: unknown, field: Field): boolean {
+  requireValue(typeof value === 'boolean', field);
+  return value;
+}
+function nullableText(value: unknown, field: Field) {
+  return value === null ? null : text(value, field);
+}
+function ecosystemList(value: unknown) {
+  const result = distinct(
+    array(value, 3, 'sources').map((v) => choice(v, ECOSYSTEMS, 'sources')),
+    'sources',
+  );
+  requireValue(result.length > 0, 'sources');
+  return result;
+}
+function provenance(value: unknown, e: PacketExpected): SourceProvenance {
+  const tag = object(
+    value,
+    ['kind'],
+    [
+      'repository',
+      'baseSha',
+      'headSha',
+      'absentEcosystems',
+      'revision',
+      'sha',
+      'path',
+      'url',
+      'title',
+      'excerpt',
+      'excerptTruncated',
+      'subjects',
+      'range',
+      'advisoryId',
+      'affectedRange',
+    ],
+    'sources',
+  );
+  if (tag.kind === 'unavailable') {
+    object(value, ['kind'], [], 'sources');
+    return { kind: 'unavailable' };
+  }
+  if (tag.kind === 'inventory') {
+    const r = object(
+      value,
+      ['kind', 'repository', 'baseSha', 'headSha', 'absentEcosystems'],
+      [],
+      'sources',
+    );
+    const repo = repository(r.repository, 'sources');
+    requireValue(
+      isDeepStrictEqual(repo, e.binding.repository) &&
+        sha(r.baseSha, 'sources') === e.baseSha &&
+        sha(r.headSha, 'sources') === e.binding.headSha,
+      'sources',
+      'identity',
+    );
+    const absent = distinct(
+      array(r.absentEcosystems, 3, 'sources').map((v) => choice(v, ECOSYSTEMS, 'sources')),
+      'sources',
+    );
+    return {
+      kind: 'inventory',
+      repository: repo,
+      baseSha: e.baseSha,
+      headSha: e.binding.headSha,
+      absentEcosystems: absent,
+    };
+  }
+  if (tag.kind === 'file') {
+    const r = object(value, ['kind', 'revision', 'repository', 'sha', 'path'], [], 'sources');
+    const side = choice(r.revision, ['base', 'head', 'context'], 'sources');
+    const repo = repository(r.repository, 'sources'),
+      commit = sha(r.sha, 'sources');
+    const expectedRepo =
+      side === 'head'
+        ? e.binding.headRepository
+        : side === 'base'
+          ? e.binding.repository
+          : e.contextRevision.repository;
+    const expectedSha =
+      side === 'head' ? e.binding.headSha : side === 'base' ? e.baseSha : e.contextRevision.sha;
+    requireValue(
+      isDeepStrictEqual(repo, expectedRepo) && commit === expectedSha,
+      'sources',
+      'identity',
+    );
+    return {
+      kind: 'file',
+      revision: side,
+      repository: repo,
+      sha: commit,
+      path: path(r.path, 'sources'),
+    };
+  }
+  requireValue(tag.kind === 'upstream', 'sources');
+  const r = object(
+    value,
+    ['kind', 'url', 'title', 'excerpt', 'excerptTruncated', 'subjects', 'range'],
+    ['advisoryId', 'affectedRange'],
+    'sources',
+  );
+  const subjects = array(r.subjects, PACKET_LIMITS.listEntries, 'sources').map((v) => {
+    const t = object(v, ['memberId', 'side', 'value'], [], 'sources');
+    return {
+      memberId: id(t.memberId, 'sources'),
+      side: choice(t.side, ['base', 'head'], 'sources'),
+      value: text(t.value, 'sources'),
+    };
+  });
+  requireValue(subjects.length > 0, 'sources');
+  distinct(
+    subjects.map((v) => JSON.stringify([v.memberId, v.side])),
+    'sources',
+  );
+  let range = null;
+  if (r.range !== null) {
+    const t = object(r.range, ['from', 'to'], [], 'sources');
+    range = { from: nullableText(t.from, 'sources'), to: nullableText(t.to, 'sources') };
+    requireValue(range.from !== null || range.to !== null, 'sources');
+  }
+  return {
+    kind: 'upstream',
+    url: url(r.url, 'sources'),
+    title: text(r.title, 'sources', PACKET_LIMITS.textBytes),
+    excerpt: text(r.excerpt, 'sources', PACKET_LIMITS.textBytes, PACKET_LIMITS.textBytes, true),
+    excerptTruncated: bool(r.excerptTruncated, 'sources'),
+    subjects,
+    range,
+    ...(r.advisoryId !== undefined ? { advisoryId: id(r.advisoryId, 'sources') } : {}),
+    ...(r.affectedRange !== undefined ? { affectedRange: text(r.affectedRange, 'sources') } : {}),
+  };
+}
 function source(value: unknown, e: PacketExpected): PacketSource {
   const r = object(
     value,
@@ -295,57 +504,243 @@ function source(value: unknown, e: PacketExpected): PacketSource {
     [],
     'sources',
   );
-  requireValue(r.kind === 'file-list', 'sources');
-  const p = object(
-    r.provenance,
-    ['kind', 'repository', 'baseSha', 'headSha', 'absentEcosystems'],
-    [],
-    'sources',
-  );
-  requireValue(p.kind === 'inventory', 'sources');
-  const repo = repository(p.repository, 'sources');
-  requireValue(
-    isDeepStrictEqual(repo, e.binding.repository) &&
-      sha(p.baseSha, 'sources') === e.baseSha &&
-      sha(p.headSha, 'sources') === e.binding.headSha,
-    'sources',
-    'identity',
-  );
+  const kind = choice(r.kind, SOURCE_KINDS, 'sources');
   const status = choice(r.status, ['available', 'partial', 'unavailable'], 'sources');
-  const limits = reasons(r.reasons, 'sources');
+  const limits = reasons(r.reasons, 'sources'),
+    scopes = ecosystemList(r.ecosystems),
+    p = provenance(r.provenance, e);
   requireValue((status === 'available') === (limits.length === 0), 'sources', 'coverage');
-  const scopes = distinct(
-    array(r.ecosystems, 3, 'sources').map((v) => choice(v, ECOSYSTEMS, 'sources')),
-    'sources',
-  );
-  requireValue(scopes.length > 0, 'sources');
-  const absent = distinct(
-    array(p.absentEcosystems, 3, 'sources').map((v) => choice(v, ECOSYSTEMS, 'sources')),
-    'sources',
-  );
-  requireValue(
-    absent.every((v) => scopes.includes(v)) && (status === 'available' || absent.length === 0),
-    'sources',
-    'coverage',
-  );
-  requireValue(ids(r.memberIds, 'sources').length === 0, 'sources', 'reference');
+  requireValue(p.kind !== 'unavailable' || status === 'unavailable', 'sources', 'coverage');
+  requireValue((kind === 'file-list') === (p.kind === 'inventory'), 'sources');
+  if (kind === 'file') requireValue(p.kind === 'file' || p.kind === 'unavailable', 'sources');
+  else if (kind !== 'file-list')
+    requireValue(p.kind === 'upstream' || p.kind === 'unavailable', 'sources');
+  if (p.kind === 'inventory')
+    requireValue(
+      p.absentEcosystems.every((v) => scopes.includes(v)) &&
+        (status === 'available' || p.absentEcosystems.length === 0),
+      'sources',
+      'coverage',
+    );
+  const members = ids(r.memberIds, 'sources');
+  if (p.kind === 'inventory') requireValue(members.length === 0, 'sources', 'reference');
+  if (p.kind === 'upstream') {
+    requireValue(
+      members.length > 0 &&
+        p.subjects.every((v) => members.includes(v.memberId)) &&
+        members.every((v) => p.subjects.some((t) => t.memberId === v)),
+      'sources',
+      'reference',
+    );
+    if (kind === 'advisory') requireValue(p.advisoryId, 'sources', 'reference');
+  }
   return {
     id: id(r.id, 'sources'),
-    kind: 'file-list',
+    kind,
     ecosystems: scopes,
-    memberIds: [],
+    memberIds: members,
     status,
     reasons: limits,
-    provenance: {
-      kind: 'inventory',
-      repository: repo,
-      baseSha: e.baseSha,
-      headSha: e.binding.headSha,
-      absentEcosystems: absent,
-    },
+    provenance: p,
   };
 }
-function coverage(value: unknown, sources: PacketSource[]): Record<Ecosystem, InventoryCoverage> {
+function packageSource(value: unknown): PackageSource {
+  const r = object(value, ['kind', 'identity'], [], 'changes');
+  const kind = choice(r.kind, ['registry', 'git', 'url', 'path', 'workspace'], 'changes');
+  const identity =
+    kind === 'registry' || kind === 'url' || kind === 'git'
+      ? url(r.identity, 'changes')
+      : path(r.identity, 'changes', true);
+  return { kind, identity };
+}
+function npmSide(value: unknown): NpmSide {
+  const r = object(
+    value,
+    ['root', 'name', 'lockPath', 'version', 'source', 'sourceId'],
+    [],
+    'changes',
+  );
+  return {
+    root: path(r.root, 'changes', true),
+    name: id(r.name, 'changes'),
+    lockPath: r.lockPath === null ? null : path(r.lockPath, 'changes'),
+    version: text(r.version, 'changes'),
+    source: packageSource(r.source),
+    sourceId: id(r.sourceId, 'changes'),
+  };
+}
+const REQUIRED_EVIDENCE = ['upstream', 'vulnerability', 'malware'] as const;
+const OPTIONAL_SIGNALS = ['publishTime', 'deprecation', 'trust', 'publisher'] as const;
+function evidence(value: unknown, ecosystem: Ecosystem): Record<string, ChangeEvidence> {
+  const required =
+    ecosystem === 'npm' ? [...REQUIRED_EVIDENCE, 'installScript'] : [...REQUIRED_EVIDENCE];
+  const r = object(value, required, OPTIONAL_SIGNALS, 'changes');
+  return Object.fromEntries(
+    Object.entries(r).map(([key, value]) => {
+      const v = object(value, ['status', 'reasons', 'sourceIds'], [], 'changes');
+      const status = choice(v.status, ['available', 'partial', 'unavailable'], 'changes');
+      const limits = reasons(v.reasons, 'changes'),
+        sourceIds = ids(v.sourceIds, 'changes');
+      requireValue((status === 'available') === (limits.length === 0), 'changes', 'coverage');
+      requireValue(status !== 'available' || sourceIds.length > 0, 'changes', 'coverage');
+      return [key, { status, reasons: limits, sourceIds }];
+    }),
+  );
+}
+function change(value: unknown): PacketChange {
+  const r = object(
+    value,
+    ['id', 'ecosystem', 'kind', 'from', 'to', 'role', 'evidence'],
+    ['directRoles'],
+    'changes',
+  );
+  requireValue(r.ecosystem === 'npm', 'changes');
+  const kind = choice(r.kind, ['update', 'addition', 'removal'], 'changes');
+  const from = r.from === null ? null : npmSide(r.from),
+    to = r.to === null ? null : npmSide(r.to);
+  requireValue(
+    (kind === 'addition' && from === null && to !== null) ||
+      (kind === 'removal' && from !== null && to === null) ||
+      (kind === 'update' && from !== null && to !== null),
+    'changes',
+  );
+  if (from && to) {
+    const { sourceId: oldSource, ...oldIdentity } = from;
+    const { sourceId: newSource, ...newIdentity } = to;
+    requireValue(oldSource && newSource && !isDeepStrictEqual(oldIdentity, newIdentity), 'changes');
+  }
+  const role = choice(r.role, ['direct', 'transitive', 'unknown'], 'changes');
+  const result: PacketChange = {
+    id: id(r.id, 'changes'),
+    ecosystem: 'npm',
+    kind,
+    from,
+    to,
+    role,
+    evidence: evidence(r.evidence, 'npm'),
+  };
+  if (r.directRoles !== undefined) {
+    requireValue(role === 'direct', 'changes');
+    result.directRoles = distinct(
+      array(r.directRoles, 4, 'changes').map((v) =>
+        choice(v, ['production', 'development', 'peer', 'optional'], 'changes'),
+      ),
+      'changes',
+    );
+    requireValue(result.directRoles.length > 0, 'changes');
+  }
+  return result;
+}
+function sideValue(side: NpmSide) {
+  return side.version;
+}
+function instanceKey(c: PacketChange, side: NpmSide) {
+  return JSON.stringify([c.ecosystem, side.root, side.lockPath ?? side.name]);
+}
+function category(s: PacketSource) {
+  const categories: Partial<Record<PacketSource['kind'], string>> = {
+    release: 'upstream',
+    compare: 'upstream',
+    metadata: 'upstream',
+    advisory: 'vulnerability',
+    malware: 'malware',
+    'install-script': 'installScript',
+    publishTime: 'publishTime',
+    deprecation: 'deprecation',
+    trust: 'trust',
+    publisher: 'publisher',
+  };
+  return categories[s.kind];
+}
+function scoped(s: PacketSource, c: PacketChange) {
+  requireValue(
+    s.ecosystems.includes(c.ecosystem) && s.memberIds.includes(c.id),
+    'changes',
+    'reference',
+  );
+}
+function linkChanges(changes: PacketChange[], sources: PacketSource[]) {
+  distinct(
+    changes.map((c) => c.id),
+    'changes',
+  );
+  for (const side of ['from', 'to'] as const)
+    distinct(
+      changes.flatMap((c) => (c[side] ? [instanceKey(c, c[side])] : [])),
+      'changes',
+    );
+  for (const c of changes) {
+    for (const key of ['from', 'to'] as const) {
+      const side = c[key];
+      if (!side) continue;
+      const s = sources.find((s) => s.id === side.sourceId);
+      requireValue(s, 'changes', 'reference');
+      scoped(s, c);
+      const p = s.provenance;
+      requireValue(
+        s.kind === 'file' &&
+          s.status === 'available' &&
+          p.kind === 'file' &&
+          p.revision === (key === 'from' ? 'base' : 'head'),
+        'changes',
+        'reference',
+      );
+      const prefix = side.root === '.' ? '' : side.root + '/';
+      requireValue(
+        p.path === prefix + (side.lockPath === null ? 'package.json' : 'package-lock.json'),
+        'changes',
+        'reference',
+      );
+    }
+    for (const [key, entry] of Object.entries(c.evidence))
+      for (const sourceId of entry.sourceIds) {
+        const s = sources.find((s) => s.id === sourceId);
+        requireValue(s && category(s) === key, 'changes', 'reference');
+        scoped(s, c);
+        requireValue(
+          entry.status !== 'available' || s.status === 'available',
+          'changes',
+          'coverage',
+        );
+      }
+  }
+  for (const s of sources) {
+    for (const memberId of s.memberIds) {
+      const c = changes.find((c) => c.id === memberId);
+      requireValue(c, 'sources', 'reference');
+      requireValue(s.ecosystems.includes(c.ecosystem), 'sources', 'reference');
+    }
+    if (s.provenance.kind === 'inventory')
+      requireValue(
+        !changes.some(
+          (c) =>
+            s.provenance.kind === 'inventory' &&
+            s.provenance.absentEcosystems.includes(c.ecosystem),
+        ),
+        'sources',
+        'coverage',
+      );
+    if (s.provenance.kind !== 'upstream') continue;
+    for (const t of s.provenance.subjects) {
+      const c = changes.find((c) => c.id === t.memberId);
+      requireValue(c, 'sources', 'reference');
+      const side = t.side === 'base' ? c.from : c.to;
+      requireValue(side && sideValue(side) === t.value, 'sources', 'reference');
+      const range = s.provenance.range;
+      if (range)
+        requireValue(
+          (t.side === 'base' ? range.from : range.to) === t.value,
+          'sources',
+          'reference',
+        );
+    }
+  }
+}
+function coverage(
+  value: unknown,
+  sources: PacketSource[],
+  changes: PacketChange[],
+): Record<Ecosystem, InventoryCoverage> {
   const c = object(value, ECOSYSTEMS, [], 'coverage');
   const entries = ECOSYSTEMS.map((ecosystem) => {
     const r = object(c[ecosystem], ['status', 'reasons', 'sourceIds'], [], 'coverage');
@@ -369,10 +764,27 @@ function coverage(value: unknown, sources: PacketSource[]): Record<Ecosystem, In
       );
       if (status === 'not_applicable')
         requireValue(
-          linked.some((s) => s.provenance.absentEcosystems.includes(ecosystem)),
+          linked.some(
+            (s) =>
+              s.provenance.kind === 'inventory' &&
+              s.provenance.absentEcosystems.includes(ecosystem),
+          ),
           'coverage',
           'coverage',
         );
+      requireValue(
+        linked.every(
+          (s) =>
+            s.kind === 'file-list' ||
+            (s.kind === 'file' &&
+              s.provenance.kind === 'file' &&
+              s.provenance.revision !== 'context'),
+        ),
+        'coverage',
+        'coverage',
+      );
+      if (status === 'not_applicable')
+        requireValue(!changes.some((c) => c.ecosystem === ecosystem), 'coverage', 'coverage');
     } else requireValue(limits.length > 0, 'coverage', 'coverage');
     return [ecosystem, { status, reasons: limits, sourceIds }] as const;
   });
@@ -416,7 +828,7 @@ export function validateReviewPacket(candidate: unknown, trusted: unknown): Pack
     requireValue(isDeepStrictEqual(ctxRevision, e.contextRevision), 'contextRevision', 'identity');
     const ctx = context(r.context);
     requireValue(isDeepStrictEqual(ctx, e.context), 'context', 'identity');
-    array(r.changes, 0, 'changes');
+    const changes = array(r.changes, PACKET_LIMITS.changes, 'changes').map(change);
     array(r.findings, 0, 'findings');
     array(r.relationships, 0, 'relationships');
     const sources = array(r.sources, PACKET_LIMITS.sources, 'sources').map((v) => source(v, e));
@@ -424,13 +836,14 @@ export function validateReviewPacket(candidate: unknown, trusted: unknown): Pack
       sources.map((s) => s.id),
       'sources',
     );
+    linkChanges(changes, sources);
     const packet: ReviewPacket = {
       version: 1,
       binding: b,
       baseSha,
       contextRevision: ctxRevision,
-      coverage: coverage(r.coverage, sources),
-      changes: [],
+      coverage: coverage(r.coverage, sources, changes),
+      changes,
       sources,
       findings: [],
       relationships: [],
