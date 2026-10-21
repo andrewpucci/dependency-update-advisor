@@ -86,9 +86,12 @@ default merge-commit checkout; it tests integration with `main`. Record that
 tested merge SHA separately from the PR head when reporting verification.
 
 Use `npm run format` to apply formatting locally. Oxfmt formats Markdown
-syntax and preserves prose line breaks. markdownlint-cli2 checks structure,
+syntax and preserves prose line breaks. Markdown linting checks structure,
 links, and prose length without fixing files; its line-length rule excludes
 tables and code blocks.
+
+Markdown linting includes hidden directories and scans `**/*.md`, excluding
+`.context/**` and `node_modules/**`. Keep these checks non-mutating.
 
 No build command is available yet. A1 adds `npm run build` once the action
 entry point exists, along with CI enforcement that a fresh build reproduces

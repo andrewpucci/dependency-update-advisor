@@ -49,7 +49,9 @@ once the action entry point exists. The old reviewer remains active.
 
 Use the existing GitHub Actions workflow and Node.js 24 within the declared
 range `>=24.11.0 <25`. Keep the exact local development pins and lockfile:
-Vite+ 1.0.0, TypeScript 7.0.2, Node types 24.19.1, and markdownlint-cli2 0.23.3.
+Vite+ 1.0.0, TypeScript 7.0.2, Node types 24.19.1, and markdownlint-cli 0.49.0
+with its `run-con` override at 1.3.2 (replacing markdownlint-cli2 0.23.3 under
+[issue #33](https://github.com/andrewpucci/dependency-update-advisor/issues/33)).
 Vite+ supplies the Node test runner. No new runtime or test dependency is
 required by this scope.
 

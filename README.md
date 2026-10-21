@@ -79,5 +79,5 @@ The action build and committed-bundle integrity gate arrive with A1 once an
 action entry point exists. No build command is available yet.
 
 Oxfmt formats Markdown syntax while preserving prose line breaks.
-markdownlint-cli2 checks document structure, links, image alt text, code-fence
+Markdown linting checks document structure, links, image alt text, code-fence
 labels, and prose length without changing files.

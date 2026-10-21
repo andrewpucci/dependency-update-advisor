@@ -41,10 +41,13 @@ their existing scopes. No action build is required for B2.
 ## Tech Stack
 
 Preserve ESM and the declared Node.js range `>=24.11.0 <25`. Keep the existing
-exact pins: `vite-plus` 1.0.0 and `markdownlint-cli2` 0.23.3. The installed
-Vite+ package supplies Vitest 5.0.1 and exposes its APIs through
-`vite-plus/test`; no separate Vitest dependency is needed. This matches the
-[Vite+ test documentation](https://viteplus.dev/guide/test).
+exact pins: `vite-plus` 1.0.0 and `markdownlint-cli` 0.49.0, with its `run-con`
+dependency overridden to 1.3.2. `markdownlint-cli` replaced `markdownlint-cli2`
+0.23.3 under [issue #33](https://github.com/andrewpucci/dependency-update-advisor/issues/33)
+in [PR #88](https://github.com/andrewpucci/dependency-update-advisor/pull/88).
+The installed Vite+ package supplies Vitest 5.0.1 and exposes its APIs
+through `vite-plus/test`; no separate Vitest dependency is needed. This
+matches the [Vite+ test documentation](https://viteplus.dev/guide/test).
 
 The implemented development dependencies pin TypeScript to 7.0.2 and
 Node.js 24 type declarations to 24.19.1, with the npm lockfile committed.
