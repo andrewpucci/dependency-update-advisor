@@ -82,12 +82,13 @@ gaps and an introduced vulnerability before parity is claimed.
   [Verification evidence](https://github.com/andrewpucci/dependency-update-advisor/issues/84)
   keeps collector/T5/M2/O1/W2, disclosure, adoption, and cutover gates separate.
   The 128-change rejection remains an approved intentional parity difference.
-- [Deterministic decision units](SPEC-decision-units.md) — approved supporting
+- [Deterministic decision units](SPEC-decision-units.md) — implemented supporting
   contract for T5 #12 in `shared-review`; initial scope uses proven grouping
   with exactly one direct change per root and complete ecosystem inventory.
   Interview decisions are confirmed; [#93](https://github.com/andrewpucci/dependency-update-advisor/issues/93)
-  tracks broader reachability evidence. Approved for T5 execution on 2026-10-21
-  through #94–#99 and one PR for parent #12.
+  tracks broader reachability evidence. Implemented on this branch for #94–#99
+  and parent #12, pending merge. [Verification #99](https://github.com/andrewpucci/dependency-update-advisor/issues/99)
+  keeps collector/M2/O1/W2, publication, adoption, and cutover gates separate.
 - [Current-head execution status](SPEC-execution-status.md) — approved
   supporting contract for T2 #9 in `shared-review`; implemented and
   merged into `main`. [Verification evidence](https://github.com/andrewpucci/dependency-update-advisor/issues/69)
