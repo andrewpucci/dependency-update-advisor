@@ -451,6 +451,53 @@ test.each([0, 1, 2, 3, 4, 5])(
   },
 );
 
+test('reports an outcome identity mismatch even when the binding is obsolete', async () => {
+  const f = fixture('complete');
+  f.input.outcome.identity = [...f.binding.identity] as ReviewIdentity;
+  Reflect.set(f.input.outcome.identity, 5, NEXT_HEAD);
+  f.pr.head.sha = NEXT_HEAD;
+  expect(await publishExecutionStatus(f.input, f.dependencies)).toMatchObject({
+    kind: 'error',
+    category: 'input',
+    field: 'outcome',
+  });
+  expect(f.readRun).not.toHaveBeenCalled();
+  expect(f.createStatus).not.toHaveBeenCalled();
+});
+
+test('rejects a reviewer run that reuses the source CI run ID', async () => {
+  const f = fixture();
+  f.input.reviewer.runId = f.binding.runId;
+  expect(await publishExecutionStatus(f.input, f.dependencies)).toMatchObject({
+    kind: 'error',
+    category: 'input',
+    field: 'reviewer',
+  });
+  expect(f.createStatus).not.toHaveBeenCalled();
+});
+
+test('dispatches and attributes the canonical lowercase head SHA', async () => {
+  const f = fixture();
+  Object.assign(f.binding, { headSha: HEAD.toUpperCase() });
+  const result = await publishExecutionStatus(f.input, f.dependencies);
+  expect(result).toMatchObject({ kind: 'published', receipt: { headSha: HEAD } });
+  expect(f.createStatus.mock.calls[0]![0].sha).toBe(HEAD);
+});
+
+test.each([200, 202])(
+  'treats unexpected success status %i as an unconfirmed acknowledgement',
+  async (status) => {
+    const f = fixture();
+    f.createStatus.mockImplementation(async (request) => ({ ...acknowledgement(request), status }));
+    expect(await publishExecutionStatus(f.input, f.dependencies)).toMatchObject({
+      kind: 'error',
+      category: 'write',
+      diagnostic: 'acknowledgement',
+      publication: 'unknown',
+    });
+  },
+);
+
 test('owns binding, reviewer, outcome, and stale metadata before the first read', async () => {
   const f = fixture('complete');
   f.readRun.mockImplementationOnce(async () => {
