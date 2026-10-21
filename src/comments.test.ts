@@ -107,6 +107,15 @@ test.each([
   });
 });
 
+test('fails discovery instead of reporting ambiguity for a repeated owned ID', async () => {
+  const f = discoveryFixture([owned(901), owned(901)]);
+  expect(await discoverManagedComment(f.input, f.dependencies)).toEqual({
+    kind: 'error',
+    category: 'discovery',
+    field: 'comments',
+  });
+});
+
 test('reports all ambiguous owned IDs without choosing a winner or returning old-head metadata', async () => {
   const f = discoveryFixture([owned(901), owned(902)]);
   expect(await discoverManagedComment(f.input, f.dependencies)).toEqual({
@@ -320,6 +329,8 @@ test.each([
   `${body()}${MARKER}`,
   `${body()}<!-- reviewed-head: ${HEAD} -->`,
   `${body()}<!-- review-digest: ${'a'.repeat(64)} -->`,
+  `${body()}<!-- Reviewed-Head: ${OLD_HEAD} -->`,
+  `${body()}<!-- REVIEW-DIGEST: ${'a'.repeat(64)} -->`,
   body().replace(HEAD, HEAD.toUpperCase()),
 ])('rejects unsafe rendered metadata before reads %#', async (invalidBody) => {
   const f = publicationFixture();

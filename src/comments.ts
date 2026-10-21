@@ -1,7 +1,9 @@
 import {
+  dispatchFailure,
   parseReviewBinding,
   positiveId,
   record,
+  rejectedStatus,
   reverifyReviewBinding,
   sameIdentity,
   type FreshnessReads,
@@ -54,10 +56,10 @@ function parseBase(value: unknown): BaseInput | DiscoveryError {
 function metadata(body: string): { headSha: string; reviewDigest?: string } | null {
   const lines = body.split('\n');
   if (lines[0] !== MARKER || body.split(MARKER).length !== 2) return null;
-  if ((body.match(/<!--\s*reviewed-head\b/gu) ?? []).length !== 1) return null;
+  if ((body.match(/<!--\s*reviewed-head\b/giu) ?? []).length !== 1) return null;
   const head = /^<!-- reviewed-head: ([a-f\d]{40}) -->$/u.exec(lines[1] ?? '');
   if (!head) return null;
-  const digests = (body.match(/<!--\s*review-digest\b/gu) ?? []).length;
+  const digests = (body.match(/<!--\s*review-digest\b/giu) ?? []).length;
   if (digests === 0) return { headSha: head[1] };
   const digest = /^<!-- review-digest: ([a-f\d]{64}) -->$/u.exec(lines[2] ?? '');
   return digests === 1 && digest ? { headSha: head[1], reviewDigest: digest[1] } : null;
@@ -111,7 +113,9 @@ async function selectComment(
     const comments: OwnedComment[] = [];
     for (const value of snapshot.data) {
       const comment = ownedComment(value, input);
-      if (comment) comments.push(comment);
+      if (!comment) continue;
+      if (comments.some((other) => other.id === comment.id)) throw new Error('comments');
+      comments.push(comment);
     }
     if (comments.length > 1)
       return {
@@ -274,27 +278,14 @@ async function writeComment(
           Object.freeze({ ...fields, pullNumber: input.binding.pullNumber }),
         );
   } catch (error) {
-    try {
-      if (record(error) && error.kind === 'timeout') return writeError('timeout');
-    } catch {
-      /* Exception properties are untrusted. */
-    }
-    return writeError('transport');
+    return writeError(dispatchFailure(error));
   }
   try {
     if (!record(response)) return writeError('acknowledgement');
     const ack = structuredClone({ status: response.status, data: response.data });
-    if (
-      typeof ack.status === 'number' &&
-      Number.isInteger(ack.status) &&
-      ack.status >= 100 &&
-      ack.status <= 599 &&
-      (ack.status < 200 || ack.status > 299)
-    )
-      return writeError('rejection');
+    if (rejectedStatus(ack.status)) return writeError('rejection');
     const comment = ack.status === (selected ? 200 : 201) ? ownedComment(ack.data, input) : null;
-    const expectedCommentId = selected?.id ?? comment?.id;
-    if (!comment || comment.body !== input.body || comment.id !== expectedCommentId)
+    if (!comment || comment.body !== input.body || (selected && comment.id !== selected.id))
       return writeError('acknowledgement');
     return Object.freeze({
       identity: input.binding.identity,
