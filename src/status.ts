@@ -58,6 +58,7 @@ type Input = {
   reviewer: { runId: number; runAttempt: number };
   identity: unknown;
   stale: boolean;
+  state: ExecutionState;
 };
 type Gate = { kind: 'fresh'; binding: ReviewBinding } | { kind: 'obsolete' } | GateError;
 
@@ -85,7 +86,8 @@ function parseInput(value: unknown): Input | null {
     !positiveId(value.reviewer.runId) ||
     !positiveId(value.reviewer.runAttempt) ||
     !record(value.outcome) ||
-    value.outcome.kind !== 'running' ||
+    !['running', 'complete', 'incomplete'].includes(value.outcome.kind as string) ||
+    (value.outcome.kind === 'complete' && value.outcome.commentRecorded !== true) ||
     (value.previousCommentIsStale !== undefined &&
       typeof value.previousCommentIsStale !== 'boolean')
   )
@@ -95,6 +97,12 @@ function parseInput(value: unknown): Input | null {
     reviewer: { runId: value.reviewer.runId, runAttempt: value.reviewer.runAttempt },
     identity: structuredClone(value.outcome.identity),
     stale: value.previousCommentIsStale === true,
+    state:
+      value.outcome.kind === 'complete'
+        ? 'success'
+        : value.outcome.kind === 'incomplete'
+          ? 'failure'
+          : 'pending',
   };
 }
 
@@ -127,10 +135,16 @@ function requestFor(input: Input, binding: ReviewBinding): StatusRequest {
   return Object.freeze({
     repository,
     sha: binding.headSha,
-    state: 'pending',
+    state: input.state,
     context: 'dependabot-review',
     target_url: `https://github.com/${encodeURIComponent(repository.owner)}/${encodeURIComponent(repository.name)}/actions/runs/${input.reviewer.runId}/attempts/${input.reviewer.runAttempt}`,
-    description: 'Review in progress' + (input.stale ? '. Previous comment is stale' : ''),
+    description:
+      {
+        pending: 'Review in progress',
+        success: 'Review completed',
+        failure: 'Review unavailable or incomplete',
+      }[input.state] +
+      (input.stale && input.state !== 'success' ? '. Previous comment is stale' : ''),
   });
 }
 

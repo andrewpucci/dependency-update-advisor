@@ -139,3 +139,87 @@ test('retains the original receipt when the head changes during pending', async 
   });
   expect(f.createStatus).toHaveBeenCalledTimes(1);
 });
+
+test.each([
+  ['running', 'pending', 'Review in progress'],
+  ['complete', 'success', 'Review completed'],
+  ['incomplete', 'failure', 'Review unavailable or incomplete'],
+] as const)('publishes the recorded %s outcome as %s', async (kind, state, description) => {
+  const f = fixture();
+  Object.assign(f.input.outcome, { kind, commentRecorded: true, recommendation: 'do_not_merge' });
+  f.input.previousCommentIsStale = true;
+  const result = await publishExecutionStatus(f.input, f.dependencies);
+  expect(result).toMatchObject({ kind: 'published', publication: 'confirmed', receipt: { state } });
+  expect(f.createStatus.mock.calls[0]![0]).toMatchObject({
+    state,
+    description: description + (state === 'success' ? '' : '. Previous comment is stale'),
+  });
+});
+
+test.each([undefined, false, 'true', null])(
+  'rejects complete outcomes with commentRecorded %j',
+  async (commentRecorded) => {
+    const f = fixture();
+    Object.assign(f.input.outcome, { kind: 'complete', commentRecorded });
+    expect(await publishExecutionStatus(f.input, f.dependencies)).toMatchObject({
+      kind: 'error',
+      category: 'input',
+      publication: 'not-attempted',
+    });
+    expect(f.createStatus).not.toHaveBeenCalled();
+  },
+);
+
+test('CI success and a local merge override cannot complete an incomplete review', async () => {
+  const f = fixture();
+  Object.assign(f.input.outcome, {
+    kind: 'incomplete',
+    recommendation: 'merge',
+    commentRecorded: true,
+  });
+  expect(await publishExecutionStatus(f.input, f.dependencies)).toMatchObject({
+    kind: 'published',
+    receipt: { state: 'failure' },
+  });
+});
+
+test.each([401, 403, 404, 422, 429, 500, 503])(
+  'returns an unknown write outcome for HTTP %i',
+  async (status) => {
+    const f = fixture();
+    f.createStatus.mockResolvedValue({
+      status,
+      data: {
+        id: 601,
+        state: 'success',
+        context: 'dependabot-review',
+        target_url: 'https://github.com/',
+        description: 'rejected',
+      },
+    });
+    expect(await publishExecutionStatus(f.input, f.dependencies)).toEqual({
+      kind: 'error',
+      category: 'write',
+      field: 'status',
+      publication: 'unknown',
+      diagnostic: 'rejection',
+    });
+    expect(f.createStatus).toHaveBeenCalledTimes(1);
+  },
+);
+
+test.each([
+  [new Error('synthetic private exception'), 'transport'],
+  [{ kind: 'timeout', message: 'synthetic private exception' }, 'timeout'],
+] as const)('sanitizes a %j write failure', async (error, diagnostic) => {
+  const f = fixture();
+  f.createStatus.mockRejectedValue(error);
+  expect(await publishExecutionStatus(f.input, f.dependencies)).toEqual({
+    kind: 'error',
+    category: 'write',
+    field: 'status',
+    publication: 'unknown',
+    diagnostic,
+  });
+  expect(f.createStatus).toHaveBeenCalledTimes(1);
+});
