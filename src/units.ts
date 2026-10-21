@@ -18,6 +18,7 @@ export type GroupingReason =
   | 'multiple_direct_changes'
   | 'no_direct_change'
   | 'missing_relationship'
+  | 'multiple_roots'
   | 'proven_relationship';
 const reasonRanks = {
   permission: 0,
@@ -139,6 +140,8 @@ const actions: Record<GroupingReason, string> = {
   no_direct_change: 'Assess this change independently; no changed direct anchor is established.',
   missing_relationship:
     'Obtain an applicable immutable lockfile path or assess this change independently.',
+  multiple_roots:
+    'Assess this root-moving change and related members independently; groups must stay within one root.',
   proven_relationship:
     'Assess the group without substituting anchor evidence for any member lookup.',
 };
@@ -204,6 +207,7 @@ function grouping(
   const side = change.kind === 'removal' ? 'base' : 'head';
   const instance = side === 'base' ? change.from : change.to;
   if (!instance) return standalone('missing_relationship');
+  if (roots(change).length !== 1) return standalone('multiple_roots');
   const candidates = packet.changes.filter(
     (c) => c.ecosystem === change.ecosystem && roots(c).includes(instance.root),
   );
@@ -211,6 +215,7 @@ function grouping(
   const anchors = candidates.filter((c) => c.role === 'direct');
   if (anchors.length !== 1)
     return standalone(anchors.length ? 'multiple_direct_changes' : 'no_direct_change');
+  if (roots(anchors[0]).length !== 1) return standalone('multiple_roots');
   const proofs = packet.relationships.filter(
     (p) => p.fromId === anchors[0].id && p.toId === change.id && p.side === side,
   );
