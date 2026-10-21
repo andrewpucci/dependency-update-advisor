@@ -14,8 +14,8 @@ T3 merged in [PR #76](https://github.com/andrewpucci/dependency-update-advisor/p
 [T4 evidence](https://github.com/andrewpucci/dependency-update-advisor/issues/84)
 records exact-revision checks and remaining integration gates.
 [Advisory complexity review](docs/specs/SPEC-complexity-review.md) is merged.
-[T5 decision units](docs/specs/SPEC-decision-units.md) are implemented on this
-branch for #12 and #94–#99, pending one PR and merge.
+[T5 decision units](docs/specs/SPEC-decision-units.md) await merge in
+[PR #100](https://github.com/andrewpucci/dependency-update-advisor/pull/100).
 [T5 evidence](https://github.com/andrewpucci/dependency-update-advisor/issues/99)
 retains integration gates. No shared workflow exists; the old reviewer stays active.
 
