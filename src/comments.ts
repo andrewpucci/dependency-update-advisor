@@ -2,8 +2,13 @@ import {
   parseReviewBinding,
   positiveId,
   record,
+  reverifyReviewBinding,
+  sameIdentity,
+  type FreshnessReads,
   type RepositoryIdentity,
   type ReviewBinding,
+  type ReviewIdentity,
+  type VerificationError,
 } from './event.js';
 
 const MARKER = '<!-- dependabot-intelligent-review -->';
@@ -145,4 +150,178 @@ export async function discoverManagedComment(
       ? Object.freeze({ commentId: comment.id, ...(old ? { reviewedHeadSha: old.headSha } : {}) })
       : null,
   };
+}
+
+export type CommentCreateRequest = CommentTarget & Readonly<{ body: string }>;
+export type CommentDependencies = CommentDiscoveryDependencies & {
+  reads: FreshnessReads;
+  readOwnership: (identity: ReviewIdentity) => Promise<unknown>;
+  createComment: (request: CommentCreateRequest) => Promise<unknown>;
+};
+export type CommentReceipt = Readonly<{
+  identity: ReviewIdentity;
+  headSha: string;
+  commentId: number;
+  operation: 'created';
+}>;
+type ConfirmedMutation = { mutation: 'confirmed'; receipt: CommentReceipt };
+type Unwritten = { mutation: 'not-attempted' };
+type GateError = {
+  kind: 'error';
+  category: 'verification' | 'ownership';
+  field: VerificationError['field'] | 'ownership';
+};
+type PublicationInputError = { kind: 'error'; category: 'input'; field: 'result' | 'pending' };
+type WriteError = {
+  kind: 'error';
+  category: 'write';
+  field: 'comments';
+  mutation: 'unknown';
+  diagnostic: 'rejection' | 'transport' | 'timeout' | 'acknowledgement';
+};
+export type CommentResult =
+  | ({ kind: 'recorded' } & ConfirmedMutation)
+  | ({ kind: 'obsolete' } & (ConfirmedMutation | Unwritten))
+  | ((DiscoveryError | PublicationInputError | GateError) & Unwritten)
+  | WriteError
+  | ({ kind: 'error'; category: 'post-write'; field: GateError['field'] } & ConfirmedMutation);
+type PublicationInput = BaseInput & { body: string };
+
+function parsePublication(
+  value: unknown,
+): PublicationInput | DiscoveryError | PublicationInputError {
+  if (!record(value)) return inputError('input');
+  const snapshot = structuredClone({
+    binding: value.binding,
+    publisher: value.publisher,
+    result: value.result,
+    pending: value.pending,
+  });
+  const base = parseBase(snapshot);
+  if ('kind' in base) return base;
+  const result = snapshot.result;
+  if (
+    !record(result) ||
+    !sameIdentity(result.identity, base.binding.identity) ||
+    (result.kind !== 'complete' && result.kind !== 'incomplete') ||
+    typeof result.body !== 'string' ||
+    result.body.length > 50000
+  )
+    return { kind: 'error', category: 'input', field: 'result' };
+  const meta = metadata(result.body);
+  if (!meta || meta.headSha !== base.binding.headSha || meta.reviewDigest !== result.reviewDigest)
+    return { kind: 'error', category: 'input', field: 'result' };
+  const pending = snapshot.pending;
+  if (
+    !record(pending) ||
+    pending.state !== 'pending' ||
+    pending.context !== 'dependabot-review' ||
+    pending.headSha !== base.binding.headSha ||
+    !positiveId(pending.statusId)
+  )
+    return { kind: 'error', category: 'input', field: 'pending' };
+  return { ...base, body: result.body };
+}
+
+async function publicationGate(
+  binding: ReviewBinding,
+  deps: CommentDependencies,
+): Promise<{ kind: 'fresh' } | { kind: 'obsolete' } | GateError> {
+  const freshness = await reverifyReviewBinding(binding, deps.reads);
+  if (freshness.kind === 'obsolete') return freshness;
+  if (freshness.kind === 'error')
+    return { kind: 'error', category: 'verification', field: freshness.field };
+  try {
+    const value = await deps.readOwnership(binding.identity);
+    if (record(value)) {
+      const claim = structuredClone({ identity: value.identity, state: value.state });
+      if (sameIdentity(claim.identity, binding.identity)) {
+        if (claim.state === 'owned') return { kind: 'fresh' };
+        if (claim.state === 'lost') return { kind: 'obsolete' };
+      }
+    }
+  } catch {
+    /* Raw ownership errors never enter diagnostics. */
+  }
+  return { kind: 'error', category: 'ownership', field: 'ownership' };
+}
+
+function writeError(diagnostic: WriteError['diagnostic']): WriteError {
+  return { kind: 'error', category: 'write', field: 'comments', mutation: 'unknown', diagnostic };
+}
+
+async function createComment(
+  input: PublicationInput,
+  deps: CommentDependencies,
+): Promise<CommentReceipt | WriteError> {
+  const request = Object.freeze({
+    repository: input.binding.repository,
+    pullNumber: input.binding.pullNumber,
+    body: input.body,
+  });
+  let response: unknown;
+  try {
+    response = await deps.createComment(request);
+  } catch (error) {
+    try {
+      if (record(error) && error.kind === 'timeout') return writeError('timeout');
+    } catch {
+      /* Exception properties are untrusted. */
+    }
+    return writeError('transport');
+  }
+  try {
+    if (!record(response)) return writeError('acknowledgement');
+    const ack = structuredClone({ status: response.status, data: response.data });
+    if (
+      typeof ack.status === 'number' &&
+      Number.isInteger(ack.status) &&
+      ack.status >= 100 &&
+      ack.status <= 599 &&
+      (ack.status < 200 || ack.status > 299)
+    )
+      return writeError('rejection');
+    const comment = ack.status === 201 ? ownedComment(ack.data, input) : null;
+    if (!comment || comment.body !== input.body) return writeError('acknowledgement');
+    return Object.freeze({
+      identity: input.binding.identity,
+      headSha: input.binding.headSha,
+      commentId: comment.id,
+      operation: 'created',
+    });
+  } catch {
+    return writeError('acknowledgement');
+  }
+}
+
+/** One mutation attempt; W2 owns pending provenance, job failure, and status ordering. */
+export async function publishManagedComment(
+  value: unknown,
+  deps: CommentDependencies,
+): Promise<CommentResult> {
+  let input: PublicationInput | DiscoveryError | PublicationInputError;
+  try {
+    input = parsePublication(value);
+  } catch {
+    input = inputError('input');
+  }
+  if ('kind' in input) return { ...input, mutation: 'not-attempted' };
+  const selection = await selectComment(input, deps);
+  if (selection.kind === 'error') return { ...selection, mutation: 'not-attempted' };
+  if (selection.comment)
+    return { kind: 'error', category: 'discovery', field: 'comments', mutation: 'not-attempted' };
+  const before = await publicationGate(input.binding, deps);
+  if (before.kind !== 'fresh') return { ...before, mutation: 'not-attempted' };
+  const receipt = await createComment(input, deps);
+  if ('kind' in receipt) return receipt;
+  const after = await publicationGate(input.binding, deps);
+  if (after.kind === 'error')
+    return {
+      kind: 'error',
+      category: 'post-write',
+      field: after.field,
+      mutation: 'confirmed',
+      receipt,
+    };
+  return { kind: after.kind === 'fresh' ? 'recorded' : 'obsolete', mutation: 'confirmed', receipt };
 }
