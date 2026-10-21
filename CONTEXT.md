@@ -11,7 +11,7 @@ are merged into `main` in [PR #63](https://github.com/andrewpucci/dependency-upd
 [T1 evidence](https://github.com/andrewpucci/dependency-update-advisor/issues/62)
 records checks and their limits. [Advisory complexity review](docs/specs/SPEC-complexity-review.md)
 is merged in [PR #65](https://github.com/andrewpucci/dependency-update-advisor/pull/65).
-[T2 status publication](src/status.ts) is implemented on `issue-9`, pending merge;
+[T2 status publication](src/status.ts) is merged into `main`;
 [T2 evidence](https://github.com/andrewpucci/dependency-update-advisor/issues/69)
 keeps W1/W2/T3 and adoption gates separate.
 No shared reviewer workflow exists; the old reviewer in
@@ -20,10 +20,10 @@ remains active. CI enforces lint, formatting, strict TypeScript, and finite test
 
 ## Next action
 
-Review T2's implementation for [issue #9](https://github.com/andrewpucci/dependency-update-advisor/issues/9)
-under the approved [execution-status contract](docs/specs/SPEC-execution-status.md).
+Execute T3's approved `tasks/plan.md` under the
+[managed-comment contract](docs/specs/SPEC-managed-comments.md).
 W1/W2 must supply bounded reads and exclusive claims before T2/T3 writes.
-B1–B3, C1–C3, and T1 are merged. Open downstream work:
+B1–B3, C1–C3, T1, and T2 are merged. Open downstream work:
 [S3](https://github.com/andrewpucci/dependency-update-advisor/issues/53) supplies
 evidence, [T5](https://github.com/andrewpucci/dependency-update-advisor/issues/12)
 forms units, [M2](https://github.com/andrewpucci/dependency-update-advisor/issues/22)
