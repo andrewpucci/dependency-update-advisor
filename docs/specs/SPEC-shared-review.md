@@ -4,8 +4,9 @@ Status: approved for planning, 2026-09-23. Module: `shared-review` in
 [the capability map](README.md).
 
 Implementation checkpoint: [T1 event verification](SPEC-event-verification.md)
-is merged into `main`; [T2 execution status](SPEC-execution-status.md) is
-approved for planning. Publication, managed comments, action packaging,
+is merged into `main`; [T2 execution status](SPEC-execution-status.md) source
+is implemented on `issue-9`, pending merge. Live publication, managed comments,
+action packaging,
 the reusable workflow, and end-to-end orchestration remain open. No runnable
 shared reviewer exists; the old reviewer remains active until cutover gates pass.
 

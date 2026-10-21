@@ -77,8 +77,10 @@ gaps and an introduced vulnerability before parity is claimed.
   remain separate from downstream collector, provider, renderer, and workflow gates.
 - [Shared workflow](SPEC-shared-review.md) — approved for planning.
 - [Current-head execution status](SPEC-execution-status.md) — approved
-  supporting contract for T2 #9 in `shared-review`. Live publication
-  retains the W1/W2 transport, ownership, and comment-coordination gates.
+  supporting contract for T2 #9 in `shared-review`; source implemented on
+  `issue-9`, pending merge. [Verification evidence](https://github.com/andrewpucci/dependency-update-advisor/issues/69)
+  remains separate from W1/W2 transport, durable ownership, comment ordering,
+  recovery, and consumer adoption.
 - [CI event and current PR head verification](SPEC-event-verification.md) —
   approved supporting contract for T1 #8 in `shared-review`; implemented and
   merged into `main` in [PR #63](https://github.com/andrewpucci/dependency-update-advisor/pull/63).

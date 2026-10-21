@@ -13,7 +13,8 @@ into `main` ([T1 PR #63](https://github.com/andrewpucci/dependency-update-adviso
 keeps transport, durable claims, and publication gates separate.
 The remaining module specs are approved for planning.
 The [T2 execution-status supporting contract](docs/specs/SPEC-execution-status.md)
-is approved for planning. [Advisory complexity review](docs/specs/SPEC-complexity-review.md)
+has source implemented on `issue-9`, pending merge; [T2 verification](https://github.com/andrewpucci/dependency-update-advisor/issues/69)
+records its limits. [Advisory complexity review](docs/specs/SPEC-complexity-review.md)
 is merged separately in [PR #65](https://github.com/andrewpucci/dependency-update-advisor/pull/65).
 This repository has no runnable shared reviewer or published
 reusable review workflow. Do not point consumer repositories at it until
