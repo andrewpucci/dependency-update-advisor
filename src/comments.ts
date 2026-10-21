@@ -293,7 +293,8 @@ async function writeComment(
     )
       return writeError('rejection');
     const comment = ack.status === (selected ? 200 : 201) ? ownedComment(ack.data, input) : null;
-    if (!comment || comment.body !== input.body || (selected && comment.id !== selected.id))
+    const expectedCommentId = selected?.id ?? comment?.id;
+    if (!comment || comment.body !== input.body || comment.id !== expectedCommentId)
       return writeError('acknowledgement');
     return Object.freeze({
       identity: input.binding.identity,
