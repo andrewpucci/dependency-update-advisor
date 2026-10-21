@@ -572,3 +572,90 @@ test('rejects duplicated proofs and cross-root or cross-ecosystem grouping', () 
     ok: false,
   });
 });
+
+function contextFixture() {
+  const f = npmFixture();
+  const context = {
+    ok: true,
+    status: 'available',
+    reasons: [] as string[],
+    dependencies: [
+      {
+        id: f.changes[0].id,
+        name: f.changes[0].to.name,
+        status: 'available',
+        reasons: [] as string[],
+        facts: [
+          {
+            kind: 'package-usage',
+            path: 'src/example.ts',
+            excerpt: "import 'example-0';",
+            excerptTruncated: false,
+          },
+        ],
+      },
+    ],
+  };
+  return {
+    ...f,
+    context,
+    packet: { ...f.packet, context },
+    expected: { ...f.expected, context: structuredClone(context) },
+  };
+}
+
+test('preserves only the separately supplied successful C2 result', () => {
+  const f = contextFixture();
+  expect(accepted(f).context).toEqual(f.context);
+  f.context.dependencies[0].facts[0].excerpt = 'forged context';
+  expect(validateReviewPacket(f.packet, f.expected)).toMatchObject({
+    ok: false,
+    error: { category: 'identity', field: 'context' },
+  });
+});
+
+test.each(['unavailable', 'partial'])(
+  'retains %s context without claiming source coverage',
+  (status) => {
+    const f = contextFixture();
+    f.context.status = status;
+    f.context.reasons = ['missing-source'];
+    f.context.dependencies[0].status = status;
+    f.context.dependencies[0].reasons = ['missing-source'];
+    if (status === 'unavailable') f.context.dependencies[0].facts = [];
+    f.expected.context = structuredClone(f.context);
+    expect(accepted(f).context.status).toBe(status);
+  },
+);
+
+test('rejects missing or unknown C2 dependencies and unsuccessful C2 results', () => {
+  const f = contextFixture();
+  f.context.dependencies = [];
+  f.expected.context = structuredClone(f.context);
+  expect(validateReviewPacket(f.packet, f.expected)).toMatchObject({ ok: false });
+  const g = contextFixture();
+  g.context.dependencies[0].id = 'another-change';
+  g.expected.context = structuredClone(g.context);
+  expect(validateReviewPacket(g.packet, g.expected)).toMatchObject({ ok: false });
+  const h = contextFixture();
+  expect(
+    validateReviewPacket(
+      { ...h.packet, context: { ok: false, error: { category: 'read' } } },
+      h.expected,
+    ),
+  ).toMatchObject({ ok: false });
+});
+
+test('enforces C2 excerpt code-unit bounds without losing immutable facts', () => {
+  const f = contextFixture();
+  f.context.dependencies[0].facts[0].excerpt = 'é'.repeat(500);
+  f.expected.context = structuredClone(f.context);
+  const result = accepted(f);
+  f.context.dependencies[0].facts[0].excerpt += 'é';
+  f.expected.context = structuredClone(f.context);
+  expect(validateReviewPacket(f.packet, f.expected)).toMatchObject({
+    ok: false,
+    error: { category: 'budget', field: 'context' },
+  });
+  expect(result.context.dependencies[0].facts[0].excerpt).toHaveLength(500);
+});
