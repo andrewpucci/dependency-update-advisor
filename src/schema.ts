@@ -596,6 +596,9 @@ function provenance(value: unknown, e: PacketExpected): SourceProvenance {
     };
   }
   requireValue(tag.kind === 'upstream', 'sources');
+  return upstreamProvenance(value);
+}
+function upstreamProvenance(value: unknown): Extract<SourceProvenance, { kind: 'upstream' }> {
   const r = object(
     value,
     ['kind', 'url', 'title', 'excerpt', 'excerptTruncated', 'subjects', 'range'],
@@ -908,26 +911,39 @@ function linkChangeEvidence(c: PacketChange, sources: PacketSource[]) {
       scoped(s, c);
       requireValue(entry.status !== 'available' || s.status === 'available', 'changes', 'coverage');
     }
-    if (entry.status === 'available') {
-      const needed =
-        key === 'installScript'
-          ? (['from', 'to'] as const).filter((k) => c[k] !== null)
-          : [c.to ? 'to' : 'from'];
-      for (const side of needed)
-        requireValue(
-          entry.sourceIds.some((ref) => {
-            const s = sources.find((s) => s.id === ref);
-            return (
-              s?.provenance.kind === 'upstream' &&
-              s.provenance.subjects.some(
-                (t) => t.memberId === c.id && t.side === (side === 'from' ? 'base' : 'head'),
-              )
-            );
-          }),
-          'changes',
-          'coverage',
-        );
-    }
+    if (entry.status !== 'available') continue;
+    const needed =
+      key === 'installScript'
+        ? (['from', 'to'] as const).filter((k) => c[k] !== null)
+        : [c.to ? 'to' : 'from'];
+    for (const side of needed)
+      requireValue(
+        entry.sourceIds.some((ref) => {
+          const s = sources.find((s) => s.id === ref);
+          return (
+            s?.provenance.kind === 'upstream' &&
+            supportsSide(s, c.id, side === 'from' ? 'base' : 'head')
+          );
+        }),
+        'changes',
+        'coverage',
+      );
+  }
+}
+function linkComparisonRange(
+  memberIds: string[],
+  range: NonNullable<Extract<SourceProvenance, { kind: 'upstream' }>['range']>,
+  changes: PacketChange[],
+) {
+  for (const memberId of memberIds) {
+    const c = changes.find((c) => c.id === memberId);
+    requireValue(c, 'sources', 'reference');
+    requireValue(
+      (range.from === null || (c.from && sideValue(c.from) === range.from)) &&
+        (range.to === null || (c.to && sideValue(c.to) === range.to)),
+      'sources',
+      'reference',
+    );
   }
 }
 function linkSourceAttribution(s: PacketSource, changes: PacketChange[]) {
@@ -947,17 +963,7 @@ function linkSourceAttribution(s: PacketSource, changes: PacketChange[]) {
     );
   if (s.provenance.kind !== 'upstream') return;
   if (s.kind === 'compare' && s.provenance.range)
-    for (const memberId of s.memberIds) {
-      const c = changes.find((c) => c.id === memberId);
-      requireValue(c, 'sources', 'reference');
-      const range = s.provenance.range;
-      requireValue(
-        (range.from === null || (c.from && sideValue(c.from) === range.from)) &&
-          (range.to === null || (c.to && sideValue(c.to) === range.to)),
-        'sources',
-        'reference',
-      );
-    }
+    linkComparisonRange(s.memberIds, s.provenance.range, changes);
   for (const t of s.provenance.subjects) {
     const c = changes.find((c) => c.id === t.memberId);
     requireValue(c, 'sources', 'reference');
@@ -1101,39 +1107,42 @@ function finding(value: unknown): Finding {
         currentLicense: text(r.currentLicense, 'findings'),
         proposedLicense: text(r.proposedLicense, 'findings'),
       };
-    case 'releaseMetadata': {
-      requireValue(Object.hasOwn(r, 'publishedAt') || Object.hasOwn(r, 'deprecated'), 'findings');
-      let publishedAt: number | undefined;
-      let deprecated: Extract<Finding, { kind: 'releaseMetadata' }>['deprecated'];
-      if (r.publishedAt !== undefined) {
-        requireValue(
-          typeof r.publishedAt === 'number' &&
-            Number.isSafeInteger(r.publishedAt) &&
-            r.publishedAt >= 0 &&
-            Number.isFinite(new Date(r.publishedAt).getTime()),
-          'findings',
-        );
-        publishedAt = r.publishedAt;
-      }
-      if (r.deprecated !== undefined) {
-        const d = object(r.deprecated, ['marker'], ['reason'], 'findings');
-        deprecated = {
-          marker: choice(d.marker, ['deprecated', 'yanked'], 'findings'),
-          ...(d.reason !== undefined
-            ? { reason: text(d.reason, 'findings', PACKET_LIMITS.textBytes) }
-            : {}),
-        };
-      }
-      return {
-        ...base,
-        kind,
-        ...(publishedAt !== undefined ? { publishedAt } : {}),
-        ...(deprecated !== undefined ? { deprecated } : {}),
-      };
-    }
+    case 'releaseMetadata':
+      return { ...base, ...releaseMetadata(r) };
     case 'informational':
       return { ...base, kind, detail: text(r.detail, 'findings', PACKET_LIMITS.textBytes) };
   }
+}
+function releaseMetadata(
+  r: Record<string, unknown>,
+): Pick<Extract<Finding, { kind: 'releaseMetadata' }>, 'kind' | 'publishedAt' | 'deprecated'> {
+  requireValue(Object.hasOwn(r, 'publishedAt') || Object.hasOwn(r, 'deprecated'), 'findings');
+  let publishedAt: number | undefined;
+  let deprecated: Extract<Finding, { kind: 'releaseMetadata' }>['deprecated'];
+  if (r.publishedAt !== undefined) {
+    requireValue(
+      typeof r.publishedAt === 'number' &&
+        Number.isSafeInteger(r.publishedAt) &&
+        r.publishedAt >= 0 &&
+        Number.isFinite(new Date(r.publishedAt).getTime()),
+      'findings',
+    );
+    publishedAt = r.publishedAt;
+  }
+  if (r.deprecated !== undefined) {
+    const d = object(r.deprecated, ['marker'], ['reason'], 'findings');
+    deprecated = {
+      marker: choice(d.marker, ['deprecated', 'yanked'], 'findings'),
+      ...(d.reason !== undefined
+        ? { reason: text(d.reason, 'findings', PACKET_LIMITS.textBytes) }
+        : {}),
+    };
+  }
+  return {
+    kind: 'releaseMetadata',
+    ...(publishedAt !== undefined ? { publishedAt } : {}),
+    ...(deprecated !== undefined ? { deprecated } : {}),
+  };
 }
 function findingSourceKinds(f: Finding): readonly PacketSource['kind'][] {
   switch (f.kind) {
@@ -1206,6 +1215,73 @@ function findingSides(f: Finding, c: PacketChange): ('base' | 'head')[] {
     return f.change === 'install_script' && !c.from ? ['head'] : ['base', 'head'];
   return ['head'];
 }
+function linkFindingReference(
+  ref: string,
+  f: Finding,
+  c: PacketChange,
+  sources: PacketSource[],
+  claims: Map<string, string>,
+): PacketSource {
+  const s = sources.find((s) => s.id === ref);
+  requireValue(
+    s &&
+      s.ecosystems.includes(c.ecosystem) &&
+      s.memberIds.includes(c.id) &&
+      findingSourceKinds(f).includes(s.kind) &&
+      s.status !== 'unavailable',
+    'findings',
+    'reference',
+  );
+  requireValue(
+    s.provenance.kind === 'file' ||
+      (s.provenance.kind === 'upstream' &&
+        s.provenance.range !== null &&
+        s.provenance.subjects.some((t) => t.memberId === c.id)),
+    'findings',
+    'reference',
+  );
+  if ((f.kind === 'vulnerability' || f.kind === 'malware') && s.provenance.kind === 'upstream') {
+    if (f.affectedRange !== undefined)
+      requireValue(f.affectedRange === s.provenance.affectedRange, 'findings', 'reference');
+    for (const t of s.provenance.subjects.filter((t) => t.memberId === c.id)) {
+      const claim = JSON.stringify([s.provenance.advisoryId ?? s.provenance.url, c.id, t.side]);
+      requireValue(
+        !claims.has(claim) || claims.get(claim) === f.applicability,
+        'findings',
+        'reference',
+      );
+      claims.set(claim, f.applicability);
+    }
+  }
+  return s;
+}
+function supportsContextFact(s: PacketSource, memberId: string, ctx: PacketContext) {
+  const p = s.provenance;
+  return (
+    s.kind === 'file' &&
+    p.kind === 'file' &&
+    p.revision === 'context' &&
+    ctx.dependencies.some((d) => d.id === memberId && d.facts.some((fact) => fact.path === p.path))
+  );
+}
+function linkReleaseMetadata(
+  f: Extract<Finding, { kind: 'releaseMetadata' }>,
+  c: PacketChange,
+  linked: PacketSource[],
+) {
+  if (f.publishedAt !== undefined)
+    requireValue(
+      linked.some((s) => s.kind === 'publishTime' && supportsSide(s, c.id, 'head')),
+      'findings',
+      'reference',
+    );
+  if (f.deprecated !== undefined)
+    requireValue(
+      linked.some((s) => s.kind === 'deprecation' && supportsSide(s, c.id, 'head')),
+      'findings',
+      'reference',
+    );
+}
 function linkFindings(
   findings: Finding[],
   changes: PacketChange[],
@@ -1221,43 +1297,7 @@ function linkFindings(
     const c = changes.find((c) => c.id === f.memberId);
     requireValue(c, 'findings', 'reference');
     if (f.kind === 'supplyChainChange') validateSupplyChainFinding(f, c);
-    const linked = f.references.map((ref) => {
-      const s = sources.find((s) => s.id === ref);
-      requireValue(
-        s &&
-          s.ecosystems.includes(c.ecosystem) &&
-          s.memberIds.includes(c.id) &&
-          findingSourceKinds(f).includes(s.kind) &&
-          s.status !== 'unavailable',
-        'findings',
-        'reference',
-      );
-      requireValue(
-        s.provenance.kind === 'file' ||
-          (s.provenance.kind === 'upstream' &&
-            s.provenance.range !== null &&
-            s.provenance.subjects.some((t) => t.memberId === c.id)),
-        'findings',
-        'reference',
-      );
-      if (
-        (f.kind === 'vulnerability' || f.kind === 'malware') &&
-        s.provenance.kind === 'upstream'
-      ) {
-        if (f.affectedRange !== undefined)
-          requireValue(f.affectedRange === s.provenance.affectedRange, 'findings', 'reference');
-        for (const t of s.provenance.subjects.filter((t) => t.memberId === c.id)) {
-          const claim = JSON.stringify([s.provenance.advisoryId ?? s.provenance.url, c.id, t.side]);
-          requireValue(
-            !claims.has(claim) || claims.get(claim) === f.applicability,
-            'findings',
-            'reference',
-          );
-          claims.set(claim, f.applicability);
-        }
-      }
-      return s;
-    });
+    const linked = f.references.map((ref) => linkFindingReference(ref, f, c, sources, claims));
     for (const side of findingSides(f, c))
       requireValue(
         linked.some((s) => supportsSide(s, c.id, side)),
@@ -1274,36 +1314,12 @@ function linkFindings(
     }
     if (f.kind === 'incompatibleMigration')
       requireValue(
-        linked.some(
-          (s) =>
-            s.kind === 'file' &&
-            s.provenance.kind === 'file' &&
-            s.provenance.revision === 'context' &&
-            ctx.dependencies.some(
-              (d) =>
-                d.id === c.id &&
-                d.facts.some(
-                  (fact) => s.provenance.kind === 'file' && fact.path === s.provenance.path,
-                ),
-            ),
-        ) && linked.some((s) => category(s) === 'upstream' && supportsSide(s, c.id, 'head')),
+        linked.some((s) => supportsContextFact(s, c.id, ctx)) &&
+          linked.some((s) => category(s) === 'upstream' && supportsSide(s, c.id, 'head')),
         'findings',
         'reference',
       );
-    if (f.kind === 'releaseMetadata') {
-      if (f.publishedAt !== undefined)
-        requireValue(
-          linked.some((s) => s.kind === 'publishTime' && supportsSide(s, c.id, 'head')),
-          'findings',
-          'reference',
-        );
-      if (f.deprecated !== undefined)
-        requireValue(
-          linked.some((s) => s.kind === 'deprecation' && supportsSide(s, c.id, 'head')),
-          'findings',
-          'reference',
-        );
-    }
+    if (f.kind === 'releaseMetadata') linkReleaseMetadata(f, c, linked);
   }
 }
 function relationship(value: unknown): RelationshipProof {
