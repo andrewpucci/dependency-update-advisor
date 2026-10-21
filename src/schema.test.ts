@@ -59,7 +59,7 @@ function fixture() {
   return { packet, expected };
 }
 
-function accepted(input = fixture()) {
+function accepted(input: { packet: unknown; expected: unknown } = fixture()) {
   const result = validateReviewPacket(input.packet, input.expected);
   expect(result.ok).toBe(true);
   if (!result.ok) throw new Error('expected valid packet');
@@ -132,4 +132,146 @@ test('rejects unknown fields, hooks, and malformed trusted expectations', () => 
   });
   expect(validateReviewPacket(f.packet, {})).toMatchObject({ ok: false });
   expect(hook).not.toHaveBeenCalled();
+});
+
+function npmFixture(count = 1) {
+  const f = fixture();
+  f.packet.sources[0].provenance.absentEcosystems = ['actions', 'uv'];
+  f.packet.coverage.npm.status = 'complete';
+  const changes = Array.from({ length: count }, (_, index) => {
+    const name = `example-${index}`;
+    const memberId = `npm:${index}`;
+    const side = (version: string, sourceId: string) => ({
+      root: '.',
+      name,
+      lockPath: `node_modules/${name}`,
+      version,
+      source: { kind: 'registry', identity: 'https://registry.npmjs.org' },
+      sourceId,
+    });
+    return {
+      id: memberId,
+      ecosystem: 'npm',
+      kind: 'update',
+      from: side('1.0.0', 'base-lock'),
+      to: side('2.0.0', 'head-lock'),
+      role: 'direct',
+      evidence: Object.fromEntries(
+        ['upstream', 'vulnerability', 'malware', 'installScript'].map((category) => [
+          category,
+          { status: 'unavailable', reasons: ['missing'], sourceIds: [] as string[] },
+        ]),
+      ),
+    };
+  });
+  const fileSource = (side: 'base' | 'head') => ({
+    id: `${side}-lock`,
+    kind: 'file',
+    ecosystems: ['npm'],
+    memberIds: changes.map((c) => c.id),
+    status: 'available',
+    reasons: [],
+    provenance: {
+      kind: 'file',
+      revision: side,
+      repository: { ...repository },
+      sha: side === 'base' ? BASE : HEAD,
+      path: 'package-lock.json',
+    },
+  });
+  const sources = [...f.packet.sources, fileSource('base'), fileSource('head')];
+  const packet = { ...f.packet, changes, sources };
+  return { ...f, packet, changes, sources };
+}
+
+test('preserves npm inventory and explicit required gaps', () => {
+  const f = npmFixture();
+  const result = accepted(f);
+  expect(result.changes).toEqual(f.changes);
+  expect(result.changes[0].evidence.malware.status).toBe('unavailable');
+});
+
+test('retains twenty unpaired additions without fabricating updates', () => {
+  const f = npmFixture(20);
+  const changes = f.changes.map((c) => ({ ...c, kind: 'addition', from: null }));
+  const result = accepted({ ...f, packet: { ...f.packet, changes } });
+  expect(result.changes).toHaveLength(20);
+  expect(result.changes.every((c) => c.kind === 'addition' && c.from === null)).toBe(true);
+});
+
+test('rejects duplicate npm instances even with different change IDs', () => {
+  const f = npmFixture();
+  const duplicate = { ...f.changes[0], id: 'different-id' };
+  expect(
+    validateReviewPacket({ ...f.packet, changes: [...f.changes, duplicate] }, f.expected),
+  ).toMatchObject({ ok: false, error: { category: 'duplicate', field: 'changes' } });
+});
+
+test('accepts identical npm names in different roots and lock locations', () => {
+  const f = npmFixture(2);
+  f.changes[1].from.name = f.changes[0].from.name;
+  f.changes[1].to.name = f.changes[0].to.name;
+  expect(accepted(f).changes).toHaveLength(2);
+});
+
+test('rejects a wrong-side inventory source', () => {
+  const f = npmFixture();
+  f.changes[0].to.sourceId = 'base-lock';
+  expect(validateReviewPacket(f.packet, f.expected)).toMatchObject({
+    ok: false,
+    error: { category: 'reference', field: 'changes' },
+  });
+});
+
+test('rejects omitted evidence categories and inconsistent change sides', () => {
+  const f = npmFixture();
+  delete f.changes[0].evidence.malware;
+  expect(validateReviewPacket(f.packet, f.expected)).toMatchObject({ ok: false });
+  const g = npmFixture();
+  g.changes[0].kind = 'addition';
+  expect(validateReviewPacket(g.packet, g.expected)).toMatchObject({ ok: false });
+});
+
+function upstreamSource(memberId = 'npm:0') {
+  return {
+    id: 'upstream',
+    kind: 'release',
+    ecosystems: ['npm'],
+    memberIds: [memberId],
+    status: 'available',
+    reasons: [],
+    provenance: {
+      kind: 'upstream',
+      url: 'https://example.com/releases/2.0.0',
+      title: 'Version two',
+      excerpt: 'Changes.',
+      excerptTruncated: false,
+      subjects: [{ memberId, side: 'head', value: '2.0.0' }],
+      range: { from: null, to: '2.0.0' },
+    },
+  };
+}
+
+test('validates source IDs, upstream range and exact member-version scope', () => {
+  const f = npmFixture();
+  const source = upstreamSource();
+  f.changes[0].evidence.upstream = { status: 'available', reasons: [], sourceIds: ['upstream'] };
+  const packet = { ...f.packet, sources: [...f.sources, source] };
+  expect(accepted({ ...f, packet }).sources).toHaveLength(4);
+  source.provenance.subjects[0].value = '3.0.0';
+  expect(validateReviewPacket(packet, f.expected)).toMatchObject({ ok: false });
+});
+
+test.each([
+  'http://example.com/release',
+  'https://user:password@example.com/release',
+  'file:///private/release',
+  'https://example.com/?token=synthetic',
+])('rejects unsafe source URL %s', (url) => {
+  const f = npmFixture();
+  const source = upstreamSource();
+  source.provenance.url = url;
+  expect(
+    validateReviewPacket({ ...f.packet, sources: [...f.sources, source] }, f.expected),
+  ).toMatchObject({ ok: false });
 });
