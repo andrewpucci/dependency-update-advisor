@@ -3,6 +3,17 @@
 Status: approved for planning, 2026-09-23. Module: `shared-review` in
 [the capability map](README.md).
 
+Implementation checkpoint: [T1 event verification](SPEC-event-verification.md)
+is merged into `main`; [T2 execution status](SPEC-execution-status.md) is
+approved for planning. Publication, managed comments, action packaging,
+the reusable workflow, and end-to-end orchestration remain open. No runnable
+shared reviewer exists; the old reviewer remains active until cutover gates pass.
+
+Amendment: on 2026-10-12 the user approved the clarified status-write failure
+behavior in requirement 7, which resolves its conflict with requiring a
+recorded result before success. T3 and W2 own the write ordering and the
+always-run failure step.
+
 ## Objective
 
 Run one reusable, advisory Dependabot reviewer from the initial consumers
@@ -135,8 +146,15 @@ Never load the action from a moving branch or from a PR checkout.
    needs a separate review.
 7. Invalid config and other pre-analysis failures leave the prior managed
    comment unchanged but publish the failed current-head status. If status
-   publication itself fails, fail the privileged job, do not mutate the
-   managed comment, and do not report a current successful review. Adoption
+   publication itself fails, fail the privileged job and do not report a
+   current successful review. No comment may claim more than its status
+   supports: a failed pending write stops the run before any comment
+   mutation, while a failed terminal write after an accurate current-head
+   comment leaves that comment, a `pending` status, and a failed job. When a
+   job that attempted pending fails without a confirmed terminal status, it
+   makes one `failure` attempt from an always-run step, with a fresh binding
+   and exclusive ownership. If that attempt also fails, a remaining
+   `pending` status is an accepted v1 limit of the advisory status. Adoption
    tests must prove that status publishing works in each consumer before
    cutover.
 8. Keep the managed comment owned by the designated App and include the

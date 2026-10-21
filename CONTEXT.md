@@ -5,20 +5,22 @@
 The [C1 config parser and schema](docs/specs/SPEC-config-parser.md),
 [C2 source-context boundary](docs/specs/SPEC-source-context.md), and
 [C3 advisory policy](docs/specs/SPEC-advisory-policy.md) are merged into `main`.
-C3 preserves override provenance, unchecked signals, and unresolved decisions.
-Its [verification issue](https://github.com/andrewpucci/dependency-update-advisor/issues/52)
-records exact-revision evidence. [T1 verification and freshness](src/event.ts)
-are implemented on `issue-8`, pending merge; [T1 evidence](https://github.com/andrewpucci/dependency-update-advisor/issues/62)
-records local checks and their limits. No shared reviewer workflow exists; the old
-reviewer in [`andrewpucci.com`](https://github.com/andrewpucci/andrewpucci.com)
+[C3 evidence](https://github.com/andrewpucci/dependency-update-advisor/issues/52)
+records verification limits. [T1 verification and freshness](src/event.ts)
+are merged into `main` in [PR #63](https://github.com/andrewpucci/dependency-update-advisor/pull/63);
+[T1 evidence](https://github.com/andrewpucci/dependency-update-advisor/issues/62)
+records checks and their limits. [Advisory complexity review](docs/specs/SPEC-complexity-review.md)
+is merged in [PR #65](https://github.com/andrewpucci/dependency-update-advisor/pull/65).
+No shared reviewer workflow exists; the old reviewer in
+[`andrewpucci.com`](https://github.com/andrewpucci/andrewpucci.com)
 remains active. CI enforces lint, formatting, strict TypeScript, and finite tests.
 
 ## Next action
 
-Review the T1 implementation for [issue #8](https://github.com/andrewpucci/dependency-update-advisor/issues/8)
-under the [approved contract](docs/specs/SPEC-event-verification.md).
+Review the proposed task order in [issue #9](https://github.com/andrewpucci/dependency-update-advisor/issues/9)
+under the approved [T2 execution-status contract](docs/specs/SPEC-execution-status.md).
 W1/W2 must supply bounded reads and exclusive claims before T2/T3 writes.
-B1–B3 and C1–C3 are complete. Open downstream work:
+B1–B3, C1–C3, and T1 are merged. Open downstream work:
 [S3](https://github.com/andrewpucci/dependency-update-advisor/issues/53) supplies
 evidence, [T5](https://github.com/andrewpucci/dependency-update-advisor/issues/12)
 forms units, [M2](https://github.com/andrewpucci/dependency-update-advisor/issues/22)
@@ -31,11 +33,7 @@ packaging remains A1. Unit tests do not certify these integrations or cutover.
 - The [capability map](docs/specs/README.md) indexes modules and supporting
   contracts. The [comment contract](docs/specs/SPEC-comment-experience.md) is approved.
 - [B1 baseline](tests/parity/README.md) and [scenarios](tests/parity/scenarios.md)
-  record source state and parity gaps; [C1 evidence](https://github.com/andrewpucci/dependency-update-advisor/issues/5#issuecomment-6116293460)
-  and [C2 evidence](https://github.com/andrewpucci/dependency-update-advisor/issues/47)
-  record their verification.
-- [B2 tooling](docs/specs/SPEC-local-tooling.md) and [B3 CI](docs/specs/SPEC-ci-enforcement.md)
-  hold contracts; their issues record revision-specific results.
+  record source state and parity gaps. Supporting specs link verification evidence.
 - The [ADR guide](docs/adr/README.md) indexes durable architecture decisions.
 - GitHub Issues and PRs hold implementation tasks and verification evidence.
   The gitignored `tasks/plan.md` is transient; private consumer records stay local.

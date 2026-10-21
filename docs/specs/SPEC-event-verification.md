@@ -1,7 +1,8 @@
 # Spec: T1 CI Event and Current PR Head Verification
 
-Status: approved for T1 execution, 2026-10-12; source implemented on working
-branch `issue-8`, pending merge. Supporting contract for `shared-review`
+Status: approved for T1 execution, 2026-10-12; implemented and merged into
+`main` in [PR #63](https://github.com/andrewpucci/dependency-update-advisor/pull/63).
+Supporting contract for `shared-review`
 in [the capability map](README.md), scoped to
 [issue #8: T1](https://github.com/andrewpucci/dependency-update-advisor/issues/8).
 Approval: the user invoked `as-build auto` on 2026-10-12 to execute the complete
@@ -42,12 +43,13 @@ their write obligations live in the [publication handoff](#publication-handoff).
 ## Inputs and Decisions
 
 - The [event verifier and freshness operation](../../src/event.ts) are
-  implemented on `issue-8`. The [verification issue](https://github.com/andrewpucci/dependency-update-advisor/issues/62)
+  implemented and merged into `main`. T1 #8 and tasks #59–#62 are closed.
+  The [verification issue](https://github.com/andrewpucci/dependency-update-advisor/issues/62)
   records revision-specific checks; no shared reviewer workflow exists.
 - The existing capability map already places this responsibility in
   `shared-review`; no new module or capability-map approval is needed.
 - Current prerequisites: B1–B3 and C1–C3 are complete and merged into `main`.
-  T1 #8 remains open; its listed B2 dependency is satisfied. T2 #9, T3 #10,
+  T1 #8 is complete; its listed B2 dependency is satisfied. T2 #9, T3 #10,
   action packaging ([A1 #24](https://github.com/andrewpucci/dependency-update-advisor/issues/24)),
   the reusable workflow ([W1 #25](https://github.com/andrewpucci/dependency-update-advisor/issues/25)),
   and W2 #26 remain open.
