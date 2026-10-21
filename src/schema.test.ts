@@ -391,3 +391,129 @@ test('retains a mixed packet gap even with no retained Actions changes', () => {
   f.packet.coverage.actions = { status: 'partial', reasons: ['truncated'], sourceIds: [] };
   expect(accepted(f).coverage.actions).toEqual(f.packet.coverage.actions);
 });
+
+function findingFixture() {
+  const f = npmFixture();
+  const source = {
+    ...upstreamSource(),
+    id: 'advisory',
+    kind: 'advisory',
+    provenance: {
+      ...upstreamSource().provenance,
+      advisoryId: 'GHSA-synthetic',
+      affectedRange: '>=2.0.0',
+    },
+  };
+  const finding = {
+    id: 'finding',
+    memberId: 'npm:0',
+    references: ['advisory'],
+    rationale: 'Synthetic advisory affects the proposed version.',
+    remediation: ['Use a fixed release.'],
+    validation: ['Check the resolved version.'],
+    kind: 'vulnerability',
+    severity: 'high',
+    applicability: 'affects_proposed',
+    affectedRange: '>=2.0.0',
+  };
+  f.changes[0].evidence.vulnerability = {
+    status: 'available',
+    reasons: [],
+    sourceIds: ['advisory'],
+  };
+  return {
+    ...f,
+    finding,
+    source,
+    packet: { ...f.packet, sources: [...f.sources, source], findings: [finding] },
+  };
+}
+
+test('retains a deterministic finding with change-ID and source-ID links', () => {
+  const f = findingFixture();
+  expect(accepted(f).findings).toEqual([f.finding]);
+});
+
+test.each(['https://example.com/advisory', 'head-lock', 'unknown'])(
+  'rejects invalid finding reference %s',
+  (reference) => {
+    const f = findingFixture();
+    f.finding.references = [reference];
+    expect(validateReviewPacket(f.packet, f.expected)).toMatchObject({
+      ok: false,
+      error: { category: 'reference', field: 'findings' },
+    });
+  },
+);
+
+test.each(['medium', 'critical-ish', 'HIGH'])('rejects unsupported severity %s', (severity) => {
+  const f = findingFixture();
+  f.finding.severity = severity;
+  expect(validateReviewPacket(f.packet, f.expected)).toMatchObject({ ok: false });
+});
+
+test('accepts an unscored advisory without weakening applicability', () => {
+  const f = findingFixture();
+  const { severity, ...unscored } = f.finding;
+  expect(severity).toBe('high');
+  expect(
+    accepted({ ...f, packet: { ...f.packet, findings: [unscored] } }).findings[0],
+  ).not.toHaveProperty('severity');
+});
+
+test('rejects conflicting advisory applicability for the same member and side', () => {
+  const f = findingFixture();
+  const other = { ...f.finding, id: 'other', applicability: 'unaffected' };
+  expect(
+    validateReviewPacket({ ...f.packet, findings: [f.finding, other] }, f.expected),
+  ).toMatchObject({ ok: false });
+});
+
+test('rejects finding/member/range mismatches', () => {
+  const f = findingFixture();
+  f.finding.memberId = 'another-change';
+  expect(validateReviewPacket(f.packet, f.expected)).toMatchObject({ ok: false });
+  const g = findingFixture();
+  g.finding.affectedRange = '<1.0.0';
+  expect(validateReviewPacket(g.packet, g.expected)).toMatchObject({ ok: false });
+});
+
+test('requires trusted-context evidence for verified incompatibility', () => {
+  const f = npmFixture();
+  const upstream = upstreamSource();
+  const finding = {
+    id: 'migration',
+    memberId: 'npm:0',
+    kind: 'incompatibleMigration',
+    references: ['upstream'],
+    rationale: 'Verified conflict.',
+    remediation: [],
+    validation: [],
+  };
+  const sources = [...f.sources, upstream];
+  expect(
+    validateReviewPacket({ ...f.packet, sources, findings: [finding] }, f.expected),
+  ).toMatchObject({ ok: false });
+  const contextSource = {
+    id: 'trusted-file',
+    kind: 'file',
+    ecosystems: ['npm'],
+    memberIds: ['npm:0'],
+    status: 'available',
+    reasons: [],
+    provenance: {
+      kind: 'file',
+      revision: 'context',
+      repository: { ...repository },
+      sha: TRUSTED,
+      path: 'src/example.ts',
+    },
+  };
+  finding.references.push('trusted-file');
+  expect(
+    accepted({
+      ...f,
+      packet: { ...f.packet, sources: [...sources, contextSource], findings: [finding] },
+    }).findings,
+  ).toHaveLength(1);
+});
