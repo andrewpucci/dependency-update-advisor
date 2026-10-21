@@ -100,6 +100,26 @@ export function positiveId(value: unknown): value is number {
   return typeof value === 'number' && Number.isSafeInteger(value) && value > 0;
 }
 
+/** An HTTP status that GitHub definitively rejected; other non-2xx values stay unknown. */
+export function rejectedStatus(status: unknown): boolean {
+  return (
+    typeof status === 'number' &&
+    Number.isInteger(status) &&
+    status >= 100 &&
+    status <= 599 &&
+    (status < 200 || status > 299)
+  );
+}
+
+export function dispatchFailure(error: unknown): 'timeout' | 'transport' {
+  try {
+    if (record(error) && error.kind === 'timeout') return 'timeout';
+  } catch {
+    /* Exception properties are untrusted. */
+  }
+  return 'transport';
+}
+
 function text(value: unknown): value is string {
   return (
     typeof value === 'string' &&

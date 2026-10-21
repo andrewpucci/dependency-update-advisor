@@ -1,6 +1,8 @@
 import {
+  dispatchFailure,
   positiveId,
   record,
+  rejectedStatus,
   reverifyReviewBinding,
   sameIdentity,
   type FreshnessReads,
@@ -178,25 +180,12 @@ async function writeStatus(
 ): Promise<StatusReceipt | WriteFailure> {
   try {
     const response = await createStatus(request);
-    if (
-      record(response) &&
-      typeof response.status === 'number' &&
-      Number.isInteger(response.status) &&
-      response.status >= 100 &&
-      response.status <= 599 &&
-      (response.status < 200 || response.status > 299)
-    )
-      return writeError('rejection');
+    if (record(response) && rejectedStatus(response.status)) return writeError('rejection');
     const receipt = acknowledged(response, request);
     if (!receipt) return writeError('acknowledgement');
     return receipt;
   } catch (error) {
-    try {
-      if (record(error) && error.kind === 'timeout') return writeError('timeout');
-    } catch {
-      /* Exception objects are untrusted too. */
-    }
-    return writeError('transport');
+    return writeError(dispatchFailure(error));
   }
 }
 
