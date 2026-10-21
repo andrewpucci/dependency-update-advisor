@@ -168,7 +168,7 @@ function fixture(changes: PacketChange[] = []) {
 }
 function accepted(f: ReturnType<typeof fixture>) {
   const result = validateReviewPacket(f.packet, f.expected);
-  expect(result).toMatchObject({ ok: true });
+  expect(result.ok, JSON.stringify(result.ok ? 'accepted' : result.error)).toBe(true);
   if (!result.ok) throw new Error('expected valid synthetic packet');
   return result.packet;
 }
@@ -234,4 +234,132 @@ test('formation detaches and freezes output without mutating a validated packet'
     (result.units as unknown[]).pop();
   }).toThrow();
   expect(formDecisionUnits(packet)).toEqual(result);
+});
+
+function relate(
+  f: ReturnType<typeof fixture>,
+  fromIndex: number,
+  toIndex: number,
+  side: 'base' | 'head' = 'head',
+) {
+  const from = f.packet.changes[fromIndex],
+    to = f.packet.changes[toIndex];
+  const start = side === 'head' ? from.to : from.from,
+    end = side === 'head' ? to.to : to.from;
+  if (from.ecosystem === 'npm' && start && end && 'lockPath' in start && 'lockPath' in end)
+    f.packet.relationships.push({
+      ecosystem: 'npm',
+      fromId: from.id,
+      toId: to.id,
+      side,
+      sourceId: start.sourceId,
+      path: [start, end],
+    });
+  else if (from.ecosystem === 'uv' && start && end && 'marker' in start && 'marker' in end)
+    f.packet.relationships.push({
+      ecosystem: 'uv',
+      fromId: from.id,
+      toId: to.id,
+      side,
+      sourceId: start.sourceId,
+      path: [start, end],
+    });
+  else throw new Error('expected same-ecosystem lock instances');
+}
+function groupFixture(ecosystem: 'npm' | 'uv' = 'npm') {
+  const changes = ecosystem === 'npm' ? [npm('anchor'), npm('child')] : [uv('anchor'), uv('child')];
+  changes[0].role = 'direct';
+  changes[1].role = 'transitive';
+  const f = fixture(changes);
+  relate(f, 0, 1);
+  return f;
+}
+
+test.each(['npm', 'uv'] as const)(
+  'groups a proven %s relationship exactly once with stable proof keys',
+  (ecosystem) => {
+    const f = groupFixture(ecosystem);
+    const first = formDecisionUnits(accepted(f));
+    expect(first.units).toHaveLength(1);
+    expect(first.units[0]).toMatchObject({
+      kind: 'direct_group',
+      anchorId: 'anchor',
+      memberIds: ['anchor', 'child'],
+      memberCount: 2,
+    });
+    expect(first.units[0].proofKeys).toHaveLength(1);
+    f.packet.changes.reverse();
+    f.packet.sources.reverse();
+    expect(formDecisionUnits(accepted(f)).units).toEqual(first.units);
+  },
+);
+
+test.each(['second_direct', 'removed_direct', 'unknown', 'partial', 'no_proof', 'wrong_side'])(
+  'keeps members standalone for %s without losing a change',
+  (mode) => {
+    const f = groupFixture();
+    if (mode === 'second_direct') f.packet.changes[1].role = 'direct';
+    if (mode === 'removed_direct' || mode === 'unknown') {
+      const extra = npm('extra');
+      extra.role = mode === 'unknown' ? 'unknown' : 'direct';
+      if (mode === 'removed_direct') {
+        extra.to = null;
+        extra.kind = 'removal';
+      }
+      const replacement = fixture([...f.packet.changes, extra]);
+      f.packet = replacement.packet;
+      f.expected = replacement.expected;
+      relate(f, 0, 1);
+    }
+    if (mode === 'partial')
+      f.packet.coverage.npm = { status: 'partial', reasons: ['truncated'], sourceIds: [] };
+    if (mode === 'no_proof') f.packet.relationships = [];
+    if (mode === 'wrong_side') {
+      f.packet.relationships = [];
+      relate(f, 0, 1, 'base');
+    }
+    const result = formDecisionUnits(accepted(f));
+    expect(result.units.every((u) => u.kind === 'standalone')).toBe(true);
+    expect(result.units.flatMap((u) => u.memberIds).sort()).toEqual(
+      f.packet.changes.map((c) => c.id).sort(),
+    );
+    expect(
+      result.units.find((u) => u.memberIds.includes('child'))!.relationship.nextAction,
+    ).toBeTruthy();
+  },
+);
+
+test('groups a removed member through the base while leaving unrelated roots separate', () => {
+  const anchor = npm('anchor'),
+    removed = npm('removed'),
+    other = npm('other');
+  removed.role = 'transitive';
+  removed.kind = 'removal';
+  removed.to = null;
+  other.from!.root = other.to!.root = 'packages/other';
+  const f = fixture([anchor, removed, other]);
+  relate(f, 0, 1, 'base');
+  const result = formDecisionUnits(accepted(f));
+  expect(result.units).toHaveLength(2);
+  expect(result.units.find((u) => u.kind === 'direct_group')!.memberIds).toEqual([
+    'anchor',
+    'removed',
+  ]);
+});
+
+test('multiple proofs to the same anchor preserve one group, not extra assessments', () => {
+  const f = groupFixture();
+  const proof = structuredClone(f.packet.relationships[0]);
+  if (proof.ecosystem !== 'npm') throw new Error('expected npm proof');
+  proof.path.splice(1, 0, {
+    ...proof.path[0],
+    name: 'unchanged',
+    lockPath: 'node_modules/unchanged',
+  });
+  f.packet.relationships.push(proof);
+  const first = formDecisionUnits(accepted(f));
+  expect(first.units).toHaveLength(1);
+  expect(first.units[0].proofKeys).toHaveLength(2);
+  f.packet.relationships.reverse();
+  expect(formDecisionUnits(accepted(f)).units).toEqual(first.units);
 });
