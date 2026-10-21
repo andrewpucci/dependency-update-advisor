@@ -457,6 +457,42 @@ test.each(['https://example.com/advisory', 'head-lock', 'unknown'])(
   },
 );
 
+test('accepts a clean vulnerability lookup but requires advisory identity for findings', () => {
+  const f = findingFixture();
+  const { advisoryId, ...withoutId } = f.source.provenance;
+  expect(advisoryId).toBe('GHSA-synthetic');
+  const source = { ...f.source, provenance: withoutId };
+  const clean = { ...f.packet, sources: [...f.sources, source], findings: [] };
+  expect(accepted({ ...f, packet: clean }).changes[0].evidence.vulnerability.status).toBe(
+    'available',
+  );
+  expect(validateReviewPacket({ ...clean, findings: [f.finding] }, f.expected)).toEqual({
+    ok: false,
+    error: { category: 'reference', field: 'findings' },
+  });
+});
+
+test('reports an unparsable source URL against its section', () => {
+  const f = npmFixture();
+  const source = upstreamSource();
+  source.provenance.url = 'https://exa mple.com/release';
+  expect(
+    validateReviewPacket({ ...f.packet, sources: [...f.sources, source] }, f.expected),
+  ).toEqual({ ok: false, error: { category: 'input', field: 'sources' } });
+});
+
+test('normalizes Actions SHA refs so a case-only change is not an update', () => {
+  const f = ecosystemFixture('actions');
+  const from = { ...f.c.from, ref: 'A'.repeat(40), refKind: 'sha' };
+  const to = { ...f.c.to, ref: 'a'.repeat(40), refKind: 'sha' };
+  expect(
+    validateReviewPacket({ ...f.packet, changes: [{ ...f.c, from, to }] }, f.expected),
+  ).toMatchObject({ ok: false, error: { field: 'changes' } });
+  const head = { ...to, ref: 'B'.repeat(40) };
+  const result = accepted({ ...f, packet: { ...f.packet, changes: [{ ...f.c, from, to: head }] } });
+  expect(result.changes[0].to).toMatchObject({ ref: 'b'.repeat(40) });
+});
+
 test.each(['medium', 'critical-ish', 'HIGH'])('rejects unsupported severity %s', (severity) => {
   const f = findingFixture();
   f.finding.severity = severity;
@@ -573,6 +609,26 @@ test.each(['dangling', 'self', 'wrong-side', 'cycle', 'wrong-source'])(
   },
 );
 
+test('rejects a proof step that contradicts a recorded change instance', () => {
+  const f = npmFixture(3);
+  const proof = {
+    fromId: f.changes[0].id,
+    toId: f.changes[1].id,
+    ecosystem: 'npm',
+    side: 'head',
+    sourceId: 'head-lock',
+    path: [f.changes[0].to, f.changes[2].to, f.changes[1].to],
+  };
+  expect(accepted({ ...f, packet: { ...f.packet, relationships: [proof] } }).relationships).toEqual(
+    [proof],
+  );
+  proof.path[1] = { ...f.changes[2].to, version: '0.0.1' };
+  expect(validateReviewPacket({ ...f.packet, relationships: [proof] }, f.expected)).toEqual({
+    ok: false,
+    error: { category: 'reference', field: 'relationships' },
+  });
+});
+
 test('rejects duplicated proofs and cross-root or cross-ecosystem grouping', () => {
   const f = relationshipFixture();
   expect(
@@ -663,7 +719,6 @@ test('enforces C2 excerpt code-unit bounds without losing immutable facts', () =
   f.expected.context = structuredClone(f.context);
   const result = accepted(f);
   f.context.dependencies[0].facts[0].excerpt += 'é';
-  f.expected.context = structuredClone(f.context);
   expect(validateReviewPacket(f.packet, f.expected)).toMatchObject({
     ok: false,
     error: { category: 'budget', field: 'context' },
@@ -760,6 +815,31 @@ test('preserves C2 excerpts containing legitimate internal tabs', () => {
   f.context.dependencies[0].facts[0].excerpt = "import\tthing from 'example-0';";
   f.expected.context = structuredClone(f.context);
   expect(accepted(f).context).toEqual(f.context);
+});
+
+test('preserves tabs in upstream excerpts', () => {
+  const f = npmFixture();
+  const source = upstreamSource();
+  source.provenance.excerpt = 'Example:\n\tconst value = 1;';
+  const result = accepted({ ...f, packet: { ...f.packet, sources: [...f.sources, source] } });
+  expect(result.sources.at(-1)).toEqual(source);
+});
+
+test('labels a malformed trusted argument as expected, not as packet data', () => {
+  const f = npmFixture();
+  for (const expected of [
+    null,
+    { ...f.expected, context: { ...f.expected.context, ok: false } },
+    { ...f.expected, baseSha: 'raw' },
+  ])
+    expect(validateReviewPacket(f.packet, expected)).toEqual({
+      ok: false,
+      error: { category: 'input', field: 'expected' },
+    });
+  expect(validateReviewPacket(null, null)).toEqual({
+    ok: false,
+    error: { category: 'input', field: 'expected' },
+  });
 });
 
 test('rejects explicit undefined optional properties rather than dropping them', () => {
@@ -1166,7 +1246,6 @@ test('enforces the context fact count independently of excerpt and packet bounds
   f.expected.context = structuredClone(f.context);
   expect(accepted(f).context.dependencies[0].facts).toHaveLength(20);
   f.context.dependencies[0].facts.push({ ...fact, path: 'src/overflow.ts' });
-  f.expected.context = structuredClone(f.context);
   expect(validateReviewPacket(f.packet, f.expected)).toEqual({
     ok: false,
     error: { category: 'budget', field: 'context' },
@@ -1202,7 +1281,6 @@ test('enforces exactly 65536 serialized context bytes across 128 dependencies', 
   const last = context.dependencies.find((d) => d.facts[0].excerpt.length < 500);
   if (!last) throw new Error('expected one field with room');
   last.facts[0].excerpt += 'a';
-  expected.context = structuredClone(context);
   expect(validateReviewPacket(packet, expected)).toEqual({
     ok: false,
     error: { category: 'budget', field: 'context' },

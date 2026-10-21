@@ -1,7 +1,12 @@
 import { isDeepStrictEqual, types } from 'node:util';
 import type { Finding } from './policy.js';
 import type { SourceContextResult } from './context.js';
-import { parseReviewBinding, type RepositoryIdentity, type ReviewBinding } from './event.js';
+import {
+  parseReviewBinding,
+  positiveId,
+  type RepositoryIdentity,
+  type ReviewBinding,
+} from './event.js';
 
 export const PACKET_LIMITS = Object.freeze({
   bytes: 1_048_576,
@@ -189,6 +194,8 @@ type Category = 'input' | 'identity' | 'duplicate' | 'reference' | 'coverage' | 
 export type PacketResult =
   | { ok: true; packet: DeepReadonly<ReviewPacket> }
   | { ok: false; error: { category: Category; field: Field } };
+type SourceIndex = ReadonlyMap<string, PacketSource>;
+type ChangeIndex = ReadonlyMap<string, PacketChange>;
 class PacketError extends Error {
   constructor(
     readonly field: Field,
@@ -309,11 +316,7 @@ function reasons(value: unknown, field: Field) {
   );
 }
 function positive(value: unknown, field: Field): number {
-  requireValue(
-    typeof value === 'number' && Number.isSafeInteger(value) && value > 0,
-    field,
-    'identity',
-  );
+  requireValue(positiveId(value), field, 'identity');
   return value;
 }
 function sha(value: unknown, field: Field) {
@@ -467,11 +470,11 @@ function context(value: unknown): PacketContext {
   );
   return result;
 }
-function linkContext(ctx: PacketContext, changes: PacketChange[]) {
+function linkContext(ctx: PacketContext, changes: ChangeIndex) {
   if (ctx.status === 'disabled') return;
-  requireValue(ctx.dependencies.length === changes.length, 'context', 'reference');
+  requireValue(ctx.dependencies.length === changes.size, 'context', 'reference');
   for (const d of ctx.dependencies) {
-    const c = changes.find((c) => c.id === d.id),
+    const c = changes.get(d.id),
       side = c?.to ?? c?.from;
     requireValue(
       side && d.name === ('name' in side ? side.name : side.action),
@@ -481,19 +484,28 @@ function linkContext(ctx: PacketContext, changes: PacketChange[]) {
   }
 }
 function expected(value: unknown): PacketExpected {
-  const r = object(value, ['binding', 'baseSha', 'contextRevision', 'context'], [], 'expected');
-  return {
-    binding: binding(r.binding),
-    baseSha: sha(r.baseSha, 'baseSha'),
-    contextRevision: revision(r.contextRevision),
-    context: context(r.context),
-  };
+  // Section helpers label failures for the packet; a bad trusted argument is W2's own bug.
+  try {
+    const r = object(value, ['binding', 'baseSha', 'contextRevision', 'context'], [], 'expected');
+    return {
+      binding: binding(r.binding),
+      baseSha: sha(r.baseSha, 'baseSha'),
+      contextRevision: revision(r.contextRevision),
+      context: context(r.context),
+    };
+  } catch {
+    throw new PacketError('expected');
+  }
 }
 function url(value: unknown, field: Field) {
   const result = text(value, field),
-    parsed = new URL(result);
+    parsed = URL.parse(result);
   requireValue(
-    parsed.protocol === 'https:' && parsed.hostname && !parsed.username && !parsed.password,
+    parsed &&
+      parsed.protocol === 'https:' &&
+      parsed.hostname &&
+      !parsed.username &&
+      !parsed.password,
     field,
   );
   for (const key of parsed.searchParams.keys())
@@ -628,7 +640,14 @@ function upstreamProvenance(value: unknown): Extract<SourceProvenance, { kind: '
     kind: 'upstream',
     url: url(r.url, 'sources'),
     title: text(r.title, 'sources', PACKET_LIMITS.textBytes),
-    excerpt: text(r.excerpt, 'sources', PACKET_LIMITS.textBytes, PACKET_LIMITS.textBytes, true),
+    excerpt: text(
+      r.excerpt,
+      'sources',
+      PACKET_LIMITS.textBytes,
+      PACKET_LIMITS.textBytes,
+      true,
+      true,
+    ),
     excerptTruncated: bool(r.excerptTruncated, 'sources'),
     subjects,
     range,
@@ -671,7 +690,6 @@ function source(value: unknown, e: PacketExpected): PacketSource {
       'sources',
       'reference',
     );
-    if (kind === 'advisory') requireValue(p.advisoryId, 'sources', 'reference');
   }
   return {
     id: id(r.id, 'sources'),
@@ -683,29 +701,24 @@ function source(value: unknown, e: PacketExpected): PacketSource {
     provenance: p,
   };
 }
-function packageSource(value: unknown): PackageSource {
-  const r = object(value, ['kind', 'identity'], [], 'changes');
-  const kind = choice(r.kind, ['registry', 'git', 'url', 'path', 'workspace'], 'changes');
+function packageSource(value: unknown, field: Field): PackageSource {
+  const r = object(value, ['kind', 'identity'], [], field);
+  const kind = choice(r.kind, ['registry', 'git', 'url', 'path', 'workspace'], field);
   const identity =
     kind === 'registry' || kind === 'url' || kind === 'git'
-      ? url(r.identity, 'changes')
-      : path(r.identity, 'changes', true);
+      ? url(r.identity, field)
+      : path(r.identity, field, true);
   return { kind, identity };
 }
-function npmSide(value: unknown): NpmSide {
-  const r = object(
-    value,
-    ['root', 'name', 'lockPath', 'version', 'source', 'sourceId'],
-    [],
-    'changes',
-  );
+function npmSide(value: unknown, field: Field = 'changes'): NpmSide {
+  const r = object(value, ['root', 'name', 'lockPath', 'version', 'source', 'sourceId'], [], field);
   return {
-    root: path(r.root, 'changes', true),
-    name: id(r.name, 'changes'),
-    lockPath: r.lockPath === null ? null : path(r.lockPath, 'changes'),
-    version: text(r.version, 'changes'),
-    source: packageSource(r.source),
-    sourceId: id(r.sourceId, 'changes'),
+    root: path(r.root, field, true),
+    name: id(r.name, field),
+    lockPath: r.lockPath === null ? null : path(r.lockPath, field),
+    version: text(r.version, field),
+    source: packageSource(r.source, field),
+    sourceId: id(r.sourceId, field),
   };
 }
 const REQUIRED_EVIDENCE = ['upstream', 'vulnerability', 'malware'] as const;
@@ -744,8 +757,7 @@ function actionsSide(value: unknown): ActionsSide {
     'changes',
   );
   const refKind = choice(r.refKind, ['tag', 'branch', 'sha', 'unknown'], 'changes');
-  const ref = text(r.ref, 'changes');
-  if (refKind === 'sha') sha(ref, 'changes');
+  const ref = refKind === 'sha' ? sha(r.ref, 'changes') : text(r.ref, 'changes');
   return {
     workflow,
     jobId: id(r.jobId, 'changes'),
@@ -761,24 +773,24 @@ function sortedIds(value: unknown, field: Field) {
   requireValue(isDeepStrictEqual(result, [...result].sort()), field);
   return result;
 }
-function uvSide(value: unknown): UvSide {
+function uvSide(value: unknown, field: Field = 'changes'): UvSide {
   const r = object(
     value,
     ['root', 'name', 'version', 'source', 'marker', 'extras', 'groups', 'sourceId'],
     [],
-    'changes',
+    field,
   );
-  const name = id(r.name, 'changes');
-  requireValue(/^[a-z0-9]+(?:-[a-z0-9]+)*$/u.test(name), 'changes');
+  const name = id(r.name, field);
+  requireValue(/^[a-z0-9]+(?:-[a-z0-9]+)*$/u.test(name), field);
   return {
-    root: path(r.root, 'changes', true),
+    root: path(r.root, field, true),
     name,
-    version: text(r.version, 'changes'),
-    source: packageSource(r.source),
-    marker: nullableText(r.marker, 'changes'),
-    extras: sortedIds(r.extras, 'changes'),
-    groups: sortedIds(r.groups, 'changes'),
-    sourceId: id(r.sourceId, 'changes'),
+    version: text(r.version, field),
+    source: packageSource(r.source, field),
+    marker: nullableText(r.marker, field),
+    extras: sortedIds(r.extras, field),
+    groups: sortedIds(r.groups, field),
+    sourceId: id(r.sourceId, field),
   };
 }
 function changeSides<T extends { sourceId: string }>(
@@ -795,9 +807,9 @@ function changeSides<T extends { sourceId: string }>(
     'changes',
   );
   if (from && to) {
-    const { sourceId: oldSource, ...oldIdentity } = from;
-    const { sourceId: newSource, ...newIdentity } = to;
-    requireValue(oldSource && newSource && !isDeepStrictEqual(oldIdentity, newIdentity), 'changes');
+    const { sourceId: _oldSource, ...oldIdentity } = from;
+    const { sourceId: _newSource, ...newIdentity } = to;
+    requireValue(!isDeepStrictEqual(oldIdentity, newIdentity), 'changes');
   }
   return { from, to };
 }
@@ -884,11 +896,11 @@ function scoped(s: PacketSource, c: PacketChange) {
     'reference',
   );
 }
-function linkChangeInventory(c: PacketChange, sources: PacketSource[]) {
+function linkChangeInventory(c: PacketChange, sources: SourceIndex) {
   for (const key of ['from', 'to'] as const) {
     const side = c[key];
     if (!side) continue;
-    const s = sources.find((s) => s.id === side.sourceId);
+    const s = sources.get(side.sourceId);
     requireValue(s, 'changes', 'reference');
     scoped(s, c);
     const p = s.provenance;
@@ -903,10 +915,10 @@ function linkChangeInventory(c: PacketChange, sources: PacketSource[]) {
     requireValue(inventoryPaths(side).includes(p.path), 'changes', 'reference');
   }
 }
-function linkChangeEvidence(c: PacketChange, sources: PacketSource[]) {
+function linkChangeEvidence(c: PacketChange, sources: SourceIndex) {
   for (const [key, entry] of Object.entries(c.evidence)) {
     for (const sourceId of entry.sourceIds) {
-      const s = sources.find((s) => s.id === sourceId);
+      const s = sources.get(sourceId);
       requireValue(s && category(s) === key, 'changes', 'reference');
       scoped(s, c);
       requireValue(entry.status !== 'available' || s.status === 'available', 'changes', 'coverage');
@@ -919,7 +931,7 @@ function linkChangeEvidence(c: PacketChange, sources: PacketSource[]) {
     for (const side of needed)
       requireValue(
         entry.sourceIds.some((ref) => {
-          const s = sources.find((s) => s.id === ref);
+          const s = sources.get(ref);
           return (
             s?.provenance.kind === 'upstream' &&
             supportsSide(s, c.id, side === 'from' ? 'base' : 'head')
@@ -933,10 +945,10 @@ function linkChangeEvidence(c: PacketChange, sources: PacketSource[]) {
 function linkComparisonRange(
   memberIds: string[],
   range: NonNullable<Extract<SourceProvenance, { kind: 'upstream' }>['range']>,
-  changes: PacketChange[],
+  changes: ChangeIndex,
 ) {
   for (const memberId of memberIds) {
-    const c = changes.find((c) => c.id === memberId);
+    const c = changes.get(memberId);
     requireValue(c, 'sources', 'reference');
     requireValue(
       (range.from === null || (c.from && sideValue(c.from) === range.from)) &&
@@ -946,15 +958,15 @@ function linkComparisonRange(
     );
   }
 }
-function linkSourceAttribution(s: PacketSource, changes: PacketChange[]) {
+function linkSourceAttribution(s: PacketSource, changes: ChangeIndex) {
   for (const memberId of s.memberIds) {
-    const c = changes.find((c) => c.id === memberId);
+    const c = changes.get(memberId);
     requireValue(c, 'sources', 'reference');
     requireValue(s.ecosystems.includes(c.ecosystem), 'sources', 'reference');
   }
   if (s.provenance.kind === 'inventory')
     requireValue(
-      !changes.some(
+      ![...changes.values()].some(
         (c) =>
           s.provenance.kind === 'inventory' && s.provenance.absentEcosystems.includes(c.ecosystem),
       ),
@@ -965,7 +977,7 @@ function linkSourceAttribution(s: PacketSource, changes: PacketChange[]) {
   if (s.kind === 'compare' && s.provenance.range)
     linkComparisonRange(s.memberIds, s.provenance.range, changes);
   for (const t of s.provenance.subjects) {
-    const c = changes.find((c) => c.id === t.memberId);
+    const c = changes.get(t.memberId);
     requireValue(c, 'sources', 'reference');
     const side = t.side === 'base' ? c.from : c.to;
     requireValue(side && sideValue(side) === t.value, 'sources', 'reference');
@@ -974,11 +986,12 @@ function linkSourceAttribution(s: PacketSource, changes: PacketChange[]) {
       requireValue((t.side === 'base' ? range.from : range.to) === t.value, 'sources', 'reference');
   }
 }
-function linkChanges(changes: PacketChange[], sources: PacketSource[]) {
+function linkChanges(changes: PacketChange[], sources: SourceIndex): ChangeIndex {
   distinct(
     changes.map((c) => c.id),
     'changes',
   );
+  const byId = new Map(changes.map((c) => [c.id, c]));
   for (const side of ['from', 'to'] as const)
     distinct(
       changes.flatMap((c) => (c[side] ? [instanceKey(c, c[side])] : [])),
@@ -988,7 +1001,8 @@ function linkChanges(changes: PacketChange[], sources: PacketSource[]) {
     linkChangeInventory(c, sources);
     linkChangeEvidence(c, sources);
   }
-  for (const source of sources) linkSourceAttribution(source, changes);
+  for (const source of sources.values()) linkSourceAttribution(source, byId);
+  return byId;
 }
 const FINDING_FIELDS = ['id', 'memberId', 'references', 'rationale', 'remediation', 'validation'];
 function finding(value: unknown): Finding {
@@ -1219,10 +1233,10 @@ function linkFindingReference(
   ref: string,
   f: Finding,
   c: PacketChange,
-  sources: PacketSource[],
+  sources: SourceIndex,
   claims: Map<string, string>,
 ): PacketSource {
-  const s = sources.find((s) => s.id === ref);
+  const s = sources.get(ref);
   requireValue(
     s &&
       s.ecosystems.includes(c.ecosystem) &&
@@ -1241,6 +1255,7 @@ function linkFindingReference(
     'reference',
   );
   if ((f.kind === 'vulnerability' || f.kind === 'malware') && s.provenance.kind === 'upstream') {
+    if (f.kind === 'vulnerability') requireValue(s.provenance.advisoryId, 'findings', 'reference');
     if (f.affectedRange !== undefined)
       requireValue(f.affectedRange === s.provenance.affectedRange, 'findings', 'reference');
     for (const t of s.provenance.subjects.filter((t) => t.memberId === c.id)) {
@@ -1284,8 +1299,8 @@ function linkReleaseMetadata(
 }
 function linkFindings(
   findings: Finding[],
-  changes: PacketChange[],
-  sources: PacketSource[],
+  changes: ChangeIndex,
+  sources: SourceIndex,
   ctx: PacketContext,
 ) {
   distinct(
@@ -1294,7 +1309,7 @@ function linkFindings(
   );
   const claims = new Map<string, string>();
   for (const f of findings) {
-    const c = changes.find((c) => c.id === f.memberId);
+    const c = changes.get(f.memberId);
     requireValue(c, 'findings', 'reference');
     if (f.kind === 'supplyChainChange') validateSupplyChainFinding(f, c);
     const linked = f.references.map((ref) => linkFindingReference(ref, f, c, sources, claims));
@@ -1339,28 +1354,31 @@ function relationship(value: unknown): RelationshipProof {
   requireValue(base.fromId !== base.toId, 'relationships', 'reference');
   const steps = array(r.path, PACKET_LIMITS.pathInstances, 'relationships');
   requireValue(steps.length >= 2, 'relationships');
-  try {
-    return ecosystem === 'npm'
-      ? { ...base, ecosystem, path: steps.map(npmSide) }
-      : { ...base, ecosystem, path: steps.map(uvSide) };
-  } catch (error) {
-    if (error instanceof PacketError) throw new PacketError('relationships', error.category);
-    throw error;
-  }
+  return ecosystem === 'npm'
+    ? { ...base, ecosystem, path: steps.map((v) => npmSide(v, 'relationships')) }
+    : { ...base, ecosystem, path: steps.map((v) => uvSide(v, 'relationships')) };
 }
 function linkRelationships(
   proofs: RelationshipProof[],
-  changes: PacketChange[],
-  sources: PacketSource[],
+  changes: ChangeIndex,
+  sources: SourceIndex,
 ) {
   distinct(
     proofs.map((p) => JSON.stringify(p)),
     'relationships',
   );
+  // Source IDs are dropped so a proof may cite a different record of the same lock file.
+  const identity = (step: DependencySide) => JSON.stringify({ ...step, sourceId: undefined });
   const instances = new Map<string, string>();
+  for (const c of changes.values())
+    for (const [side, step] of [
+      ['base', c.from],
+      ['head', c.to],
+    ] as const)
+      if (step) instances.set(JSON.stringify([side, instanceKey(c, step)]), identity(step));
   for (const p of proofs) {
-    const from = changes.find((c) => c.id === p.fromId),
-      to = changes.find((c) => c.id === p.toId);
+    const from = changes.get(p.fromId),
+      to = changes.get(p.toId);
     requireValue(
       from && to && from.ecosystem === p.ecosystem && to.ecosystem === p.ecosystem,
       'relationships',
@@ -1373,7 +1391,7 @@ function linkRelationships(
       'relationships',
       'reference',
     );
-    const source = sources.find((s) => s.id === p.sourceId);
+    const source = sources.get(p.sourceId);
     requireValue(
       source?.kind === 'file' &&
         source.status === 'available' &&
@@ -1397,13 +1415,9 @@ function linkRelationships(
         'reference',
       );
       const key = JSON.stringify([p.side, instanceKey(from, step)]),
-        identity = JSON.stringify(step);
-      requireValue(
-        !instances.has(key) || instances.get(key) === identity,
-        'relationships',
-        'reference',
-      );
-      instances.set(key, identity);
+        known = instances.get(key);
+      requireValue(known === undefined || known === identity(step), 'relationships', 'reference');
+      instances.set(key, identity(step));
       return key;
     });
     distinct(keys, 'relationships');
@@ -1411,8 +1425,8 @@ function linkRelationships(
 }
 function coverage(
   value: unknown,
-  sources: PacketSource[],
-  changes: PacketChange[],
+  sources: SourceIndex,
+  changes: ChangeIndex,
 ): Record<Ecosystem, InventoryCoverage> {
   const c = object(value, ECOSYSTEMS, [], 'coverage');
   const entries = ECOSYSTEMS.map((ecosystem) => {
@@ -1425,12 +1439,12 @@ function coverage(
     const limits = reasons(r.reasons, 'coverage'),
       sourceIds = ids(r.sourceIds, 'coverage');
     const linked = sourceIds.map((sourceId) => {
-      const s = sources.find((s) => s.id === sourceId);
+      const s = sources.get(sourceId);
       requireValue(s && s.ecosystems.includes(ecosystem), 'coverage', 'reference');
       return s;
     });
     if (status === 'complete' || status === 'not_applicable') {
-      const inventory = sources.filter(
+      const inventory = [...sources.values()].filter(
         (s) =>
           s.ecosystems.includes(ecosystem) &&
           (s.kind === 'file-list' ||
@@ -1472,7 +1486,11 @@ function coverage(
         'coverage',
       );
       if (status === 'not_applicable')
-        requireValue(!changes.some((c) => c.ecosystem === ecosystem), 'coverage', 'coverage');
+        requireValue(
+          ![...changes.values()].some((c) => c.ecosystem === ecosystem),
+          'coverage',
+          'coverage',
+        );
     } else requireValue(limits.length > 0, 'coverage', 'coverage');
     return [ecosystem, { status, reasons: limits, sourceIds }] as const;
   });
@@ -1489,6 +1507,7 @@ function freeze<T>(value: T): DeepReadonly<T> {
 /** Pure validation; expected snapshots come from trusted T1/C2 orchestration, never the packet. */
 export function validateReviewPacket(candidate: unknown, trusted: unknown): PacketResult {
   try {
+    const e = expected(trusted);
     const r = object(
       candidate,
       [
@@ -1507,7 +1526,6 @@ export function validateReviewPacket(candidate: unknown, trusted: unknown): Pack
       'packet',
     );
     requireValue(r.version === 1, 'packet');
-    const e = expected(trusted);
     const b = binding(r.binding),
       baseSha = sha(r.baseSha, 'baseSha'),
       ctxRevision = revision(r.contextRevision);
@@ -1526,16 +1544,17 @@ export function validateReviewPacket(candidate: unknown, trusted: unknown): Pack
       sources.map((s) => s.id),
       'sources',
     );
-    linkChanges(changes, sources);
-    linkContext(ctx, changes);
-    linkFindings(findings, changes, sources, ctx);
-    linkRelationships(relationships, changes, sources);
+    const sourceById = new Map(sources.map((s) => [s.id, s]));
+    const changeById = linkChanges(changes, sourceById);
+    linkContext(ctx, changeById);
+    linkFindings(findings, changeById, sourceById, ctx);
+    linkRelationships(relationships, changeById, sourceById);
     const packet: ReviewPacket = {
       version: 1,
       binding: b,
       baseSha,
       contextRevision: ctxRevision,
-      coverage: coverage(r.coverage, sources, changes),
+      coverage: coverage(r.coverage, sourceById, changeById),
       changes,
       sources,
       findings,
