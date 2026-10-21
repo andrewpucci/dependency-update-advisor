@@ -80,6 +80,21 @@ assess it or mark its coverage incomplete, and preserve change counts.
 Use a clearly labeled synthetic 20-addition scenario during extraction;
 the original historical API response is unavailable in this baseline record.
 
+## Approved T4 Large-PR Limit
+
+The [T4 packet contract](../../docs/specs/SPEC-review-packet.md) caps the complete
+inventory at 128 changes across all ecosystems. The user approved hard rejection
+above that bound, including a grouped PR like #307, as an intentional parity
+difference. The isolated packet validator returns a `budget` failure with no
+usable partial packet; it never trims the inventory to fit.
+
+W2 must turn that failure into the existing failed current-head status while
+leaving the prior managed comment unchanged. T4 tests cover exact 128-change
+acceptance, 129-change rejection, and preservation of the synthetic 20 unpaired
+additions within the limit. They do not verify W2 writes or certify the full
+historical #307 inventory. Supporting larger packets requires a reviewed
+contract change; adoption and cutover gates remain in force.
+
 ## Synthetic Unavailable Comparison
 
 No private PR or uv input is included. A direct-collector probe returned a

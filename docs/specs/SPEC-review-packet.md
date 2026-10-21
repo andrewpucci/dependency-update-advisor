@@ -31,6 +31,11 @@ policy; [M2 #22](https://github.com/andrewpucci/dependency-update-advisor/issues
 validates assessments. Provider selection, credentials, effective configuration,
 verdicts, model responses, rendering, and GitHub writes are outside this packet.
 
+Implementation: the isolated [packet validator](../../src/schema.ts) and its
+[fixtures](../../src/schema.test.ts) are implemented on this branch, pending
+merge. [Verification issue #84](https://github.com/andrewpucci/dependency-update-advisor/issues/84)
+records exact revisions and remaining integration gates.
+
 ## Inputs and Assumptions
 
 - Issue #11's C1 #5 and T1 #8 prerequisites are closed. Existing
@@ -335,11 +340,84 @@ test('rejects a packet for another run attempt', () => {
 });
 ```
 
-This is an illustrative future interface, not executable code today.
-`packetFixture` constructs synthetic valid data; `expected` holds the binding,
-base SHA, context revision, and C2 success supplied by trusted orchestration.
-Final helper names are a planning choice; observable rejection and trust
-boundaries are not.
+The validator and focused test command now exist. The abbreviated
+`packetFixture` above stands for the synthetic constructors in the test file;
+`expected` holds the binding, base SHA, context revision, and successful C2
+result supplied by trusted orchestration.
+
+## Implemented Interface and Handoffs
+
+`src/schema.ts` exports one pure operation:
+
+```ts
+validateReviewPacket(candidate: unknown, trusted: unknown): PacketResult
+```
+
+`PacketExpected` describes the trusted argument: `binding`, `baseSha`,
+`contextRevision`, and a successful `context`. The operation also validates
+this argument at runtime. `PacketResult` is either the fixed safe failure
+shape above or a detached deeply readonly `ReviewPacket`. `PACKET_LIMITS`
+exports frozen ceilings; callers cannot configure them. No input is mutated,
+no I/O occurs, and no caught inspection error or payload is logged.
+
+The exported `PacketChange` union preserves npm, Actions, and uv side shapes.
+Each side carries a `sourceId` naming its immutable inventory file. npm uses
+an explicit nullable `lockPath`; Actions uses `workflow`, `jobId`, nullable
+`stepIndex` for job-level workflows, `action`, `ref`, and `refKind`; uv uses
+nullable `marker` and sorted distinct `extras`/`groups`. `PackageSource`
+distinguishes registry/Git/URL identities (credential-free HTTPS) from
+canonical relative path/workspace identities. A Git URL can retain a revision
+fragment; no Git or package resolution occurs here.
+
+`PacketSource` contains `id`, `kind`, `ecosystems`, `memberIds`, `status`,
+`reasons`, and `provenance`. `SourceProvenance` has these variants:
+
+| Provenance kind | Required information                                                                                                                                                          |
+| --------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `inventory`     | Consumer repository, verified base/head SHAs, and `absentEcosystems`; paired with `file-list` sources. Available means completed scoped inventory.                            |
+| `file`          | Repository, SHA, canonical path, and revision `base`, `head`, or `context`; paired with file sources.                                                                         |
+| `upstream`      | HTTPS URL, title, bounded excerpt/truncation flag, exact member/side/value `subjects`, and nullable `range`; advisory identity and affected range are retained when supplied. |
+| `unavailable`   | Explicit failed lookup with no invented URL, used only with unavailable source status and fixed reasons.                                                                      |
+
+Upstream `subjects` bind each source to exact current/proposed versions or
+refs, not a display name. A non-null range's declared endpoint must match its
+subject; a comparison additionally validates every declared endpoint against
+its attributed change, including a side omitted from `subjects`. T4 checks
+these exact opaque values without interpreting semver or marker expressions.
+Collectors retain responsibility for authentic source content, normalization,
+and applicability before constructing a packet.
+
+A successful category lookup covers the reviewed side; npm install-script
+coverage spans both sides when both exist. Inventory completeness accounts
+for every scoped inventory source, including failures not listed in a slot's
+`sourceIds`. Unavailable corroborating comparisons do not themselves become
+inventory failures. `not_applicable` requires affirmative absence evidence
+and zero changes for that ecosystem.
+
+A finding's references resolve through this source table. Proposed-version
+claims require appropriately attributed head evidence; resolved advisories,
+license changes, and two-version supply-chain claims also need base evidence.
+One advisory finding cannot combine unrelated advisory identities. Conflicting
+applicability for the same advisory/member/side is rejected across finding
+kinds. Proven incompatibility requires proposed-side upstream support and a
+trusted-context citation matching that member's supplied C2 fact path; a head
+inventory file cannot substitute for the upstream proof. These are attribution
+checks, not a claim that package usage alone proves incompatibility.
+
+C2's successful context shape and bounds remain unchanged, including valid
+internal tabs in source excerpts. T4 does not repeat filesystem collection,
+prove checkout trust, or inspect the outbound provider request.
+`RelationshipProof` retains known endpoint change IDs, ecosystem, revision
+side, lock-source ID, and a bounded path of exact instances. Its acceptance
+proves structural consistency only, leaving grouping ambiguity to T5.
+
+T5 must preserve all inventory gaps, including ecosystems with zero retained
+changes, and map category records to C3's `EvidenceSource`. M2/O1 must resolve
+source-ID citations against this exact packet. W2 must obtain authentic
+collector/C2 inputs and stop on rejection before assessment or publication,
+then apply the existing current-head failed-status/old-comment contract.
+These handoffs, observed disclosure, adoption, and cutover remain separate
+verification gates.
 
 ## Testing Strategy and Success Criteria
 
@@ -388,7 +466,7 @@ npm run check
 npm test -- --run
 ```
 
-After `src/schema.test.ts` exists, the focused command is:
+The focused packet test command is:
 
 ```sh
 npm test -- --run src/schema.test.ts
