@@ -1,5 +1,6 @@
 import { expect, test, vi } from 'vite-plus/test';
 import {
+  parseReviewBinding,
   verifyCiEvent,
   reverifyReviewBinding,
   type EventReads,
@@ -897,4 +898,25 @@ test('rejects inherited required identities', async () => {
     category: 'input',
     field: 'event',
   });
+});
+
+test('pure binding parsing copies canonical identities without network authority', async () => {
+  const f = fixture();
+  const verified = await verifyCiEvent(f.input, f.reads);
+  if (verified.kind !== 'verified') throw new Error('expected binding');
+  const input = structuredClone(verified.binding);
+  const parsed = parseReviewBinding(input);
+  expect(parsed).toEqual(input);
+  expect(parsed).not.toBe(input);
+  expect(Object.isFrozen(parsed?.identity)).toBe(true);
+  Object.assign(input.repository, { name: 'changed' });
+  expect(parsed?.repository.name).toBe('consumer');
+  expect(parseReviewBinding({ ...input, identity: [] })).toBeNull();
+  expect(
+    parseReviewBinding({
+      get repository() {
+        throw new Error('private');
+      },
+    }),
+  ).toBeNull();
 });
