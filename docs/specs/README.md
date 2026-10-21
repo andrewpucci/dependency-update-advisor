@@ -76,6 +76,10 @@ gaps and an introduced vulnerability before parity is claimed.
   on `main` in `review-config` for C3 #7; [verification and integration limits](https://github.com/andrewpucci/dependency-update-advisor/issues/52)
   remain separate from downstream collector, provider, renderer, and workflow gates.
 - [Shared workflow](SPEC-shared-review.md) — approved for planning.
+- [Common review packet validation](SPEC-review-packet.md) — approved for
+  T4 execution for #11 in `shared-review`, including all resource ceilings,
+  source-ID finding references, and the intentional large-PR parity difference.
+  The eight-task plan is approved for execution in one PR.
 - [Current-head execution status](SPEC-execution-status.md) — approved
   supporting contract for T2 #9 in `shared-review`; implemented and
   merged into `main`. [Verification evidence](https://github.com/andrewpucci/dependency-update-advisor/issues/69)
