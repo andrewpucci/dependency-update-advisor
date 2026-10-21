@@ -8,6 +8,12 @@ comment described below; it does not authorize a new required merge gate.
 Analyzer choice: on 2026-10-12 the user selected SonarJS through the existing
 Vite+/Oxlint engine after comparing alternatives.
 
+Implementation: completed and merged into `main` in
+[PR #65](https://github.com/andrewpucci/dependency-update-advisor/pull/65);
+issue #64 is closed. The PR records local and CI verification and its limits,
+including fork comment-skipping not being observed live. This tooling remains
+separate from dependency-review publication and cutover.
+
 ## Objective
 
 Adapt the existing complexity review to TypeScript: compare functions against

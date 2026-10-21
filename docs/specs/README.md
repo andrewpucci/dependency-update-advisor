@@ -76,9 +76,13 @@ gaps and an introduced vulnerability before parity is claimed.
   on `main` in `review-config` for C3 #7; [verification and integration limits](https://github.com/andrewpucci/dependency-update-advisor/issues/52)
   remain separate from downstream collector, provider, renderer, and workflow gates.
 - [Shared workflow](SPEC-shared-review.md) — approved for planning.
+- [Current-head execution status](SPEC-execution-status.md) — approved
+  supporting contract for T2 #9 in `shared-review`. Live publication
+  retains the W1/W2 transport, ownership, and comment-coordination gates.
 - [CI event and current PR head verification](SPEC-event-verification.md) —
-  approved supporting contract for T1 #8 in `shared-review`; source implemented
-  on working branch `issue-8`, pending merge. [Verification evidence](https://github.com/andrewpucci/dependency-update-advisor/issues/62)
+  approved supporting contract for T1 #8 in `shared-review`; implemented and
+  merged into `main` in [PR #63](https://github.com/andrewpucci/dependency-update-advisor/pull/63).
+  [Verification evidence](https://github.com/andrewpucci/dependency-update-advisor/issues/62)
   remains separate from W1/W2 transport/claims and T2/T3 publication gates.
 - [Analysis providers](SPEC-analysis-providers.md) — approved for planning.
 - [npm evidence](SPEC-npm-evidence.md) — approved for planning.
@@ -94,7 +98,9 @@ gaps and an introduced vulnerability before parity is claimed.
 - [CI enforcement](SPEC-ci-enforcement.md) — implemented on `main` for B3 #4
   in `shared-review`; [verification evidence](https://github.com/andrewpucci/dependency-update-advisor/issues/37).
 - [Advisory complexity review](SPEC-complexity-review.md) — user-requested
-  supporting repository tooling contract; separate from dependency review.
+  supporting repository tooling contract; implemented and merged into `main`
+  in [PR #65](https://github.com/andrewpucci/dependency-update-advisor/pull/65).
+  Separate from dependency review.
 
 The source repository's existing Dependabot specs and reviewer code provide
 the fidelity baseline. Private consumer policy, exact excerpt allowlists,
