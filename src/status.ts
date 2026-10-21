@@ -1,5 +1,8 @@
 import {
+  positiveId,
+  record,
   reverifyReviewBinding,
+  sameIdentity,
   type FreshnessReads,
   type RepositoryIdentity,
   type ReviewBinding,
@@ -62,22 +65,6 @@ type Input = {
   state: ExecutionState;
 };
 type Gate = { kind: 'fresh'; binding: ReviewBinding } | { kind: 'obsolete' } | GateError;
-
-function record(value: unknown): value is Record<string, unknown> {
-  return typeof value === 'object' && value !== null && !Array.isArray(value);
-}
-
-function positiveId(value: unknown): value is number {
-  return typeof value === 'number' && Number.isSafeInteger(value) && value > 0;
-}
-
-function sameIdentity(value: unknown, expected: ReviewIdentity): boolean {
-  return (
-    Array.isArray(value) &&
-    value.length === expected.length &&
-    expected.every((part, index) => part === value[index])
-  );
-}
 
 function parseInput(value: unknown): Input | null {
   if (!record(value)) return null;
@@ -145,7 +132,8 @@ function requestFor(input: Input, binding: ReviewBinding): StatusRequest {
   });
   return Object.freeze({
     repository,
-    sha: binding.headSha,
+    // T1 compares SHAs case-insensitively; dispatch and attribute the canonical form.
+    sha: binding.headSha.toLowerCase(),
     state: input.state,
     context: 'dependabot-review',
     target_url: `https://github.com/${encodeURIComponent(repository.owner)}/${encodeURIComponent(repository.name)}/actions/runs/${input.reviewer.runId}/attempts/${input.reviewer.runAttempt}`,
@@ -196,7 +184,7 @@ async function writeStatus(
       Number.isInteger(response.status) &&
       response.status >= 100 &&
       response.status <= 599 &&
-      response.status !== 201
+      (response.status < 200 || response.status > 299)
     )
       return writeError('rejection');
     const receipt = acknowledged(response, request);
@@ -225,15 +213,16 @@ export async function publishExecutionStatus(
   }
   if (!input)
     return { kind: 'error', category: 'input', field: 'input', publication: 'not-attempted' };
+  // Reject inconsistent W2 input before reads so an obsolete or unowned binding cannot mask it.
+  if (record(input.binding)) {
+    const expected = input.binding.identity;
+    if (!Array.isArray(expected) || !sameIdentity(input.identity, expected))
+      return { kind: 'error', category: 'input', field: 'outcome', publication: 'not-attempted' };
+    if (input.reviewer.runId === input.binding.runId)
+      return { kind: 'error', category: 'input', field: 'reviewer', publication: 'not-attempted' };
+  }
   const gate = await checkGate(input.binding, deps);
   if (gate.kind !== 'fresh') return { ...gate, publication: 'not-attempted' };
-  if (!sameIdentity(input.identity, gate.binding.identity))
-    return {
-      kind: 'error',
-      category: 'input',
-      field: 'outcome',
-      publication: 'not-attempted',
-    };
   const request = requestFor(input, gate.binding);
   const receipt = await writeStatus(request, deps.createStatus);
   if ('kind' in receipt) return receipt;

@@ -84,7 +84,10 @@ function failure(
   return { kind: 'error', category, field };
 }
 
-function record(value: unknown, keys: readonly string[]): value is Record<string, unknown> {
+export function record(
+  value: unknown,
+  keys: readonly string[] = [],
+): value is Record<string, unknown> {
   return (
     typeof value === 'object' &&
     value !== null &&
@@ -93,7 +96,7 @@ function record(value: unknown, keys: readonly string[]): value is Record<string
   );
 }
 
-function positiveId(value: unknown): value is number {
+export function positiveId(value: unknown): value is number {
   return typeof value === 'number' && Number.isSafeInteger(value) && value > 0;
 }
 
@@ -313,7 +316,7 @@ function identity(
   return Object.freeze([repoId, workflowId, runId, attempt, number, headSha] as const);
 }
 
-function sameIdentity(value: unknown, expected: ReviewIdentity): boolean {
+export function sameIdentity(value: unknown, expected: readonly unknown[]): boolean {
   return (
     Array.isArray(value) &&
     value.length === expected.length &&
