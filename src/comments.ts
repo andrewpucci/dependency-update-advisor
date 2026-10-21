@@ -153,18 +153,23 @@ export async function discoverManagedComment(
 }
 
 export type CommentCreateRequest = CommentTarget & Readonly<{ body: string }>;
+export type CommentReadRequest = Readonly<{ repository: RepositoryIdentity; commentId: number }>;
+export type CommentUpdateRequest = CommentReadRequest & Readonly<{ body: string }>;
 export type CommentDependencies = CommentDiscoveryDependencies & {
   reads: FreshnessReads;
   readOwnership: (identity: ReviewIdentity) => Promise<unknown>;
   createComment: (request: CommentCreateRequest) => Promise<unknown>;
+  readComment: (request: CommentReadRequest) => Promise<unknown>;
+  updateComment: (request: CommentUpdateRequest) => Promise<unknown>;
 };
 export type CommentReceipt = Readonly<{
   identity: ReviewIdentity;
   headSha: string;
   commentId: number;
-  operation: 'created';
+  operation: 'created' | 'updated' | 'identical';
 }>;
-type ConfirmedMutation = { mutation: 'confirmed'; receipt: CommentReceipt };
+type WrittenReceipt = CommentReceipt & Readonly<{ operation: 'created' | 'updated' }>;
+type ConfirmedMutation = { mutation: 'confirmed'; receipt: WrittenReceipt };
 type Unwritten = { mutation: 'not-attempted' };
 type GateError = {
   kind: 'error';
@@ -181,6 +186,11 @@ type WriteError = {
 };
 export type CommentResult =
   | ({ kind: 'recorded' } & ConfirmedMutation)
+  | {
+      kind: 'recorded';
+      mutation: 'not-attempted';
+      receipt: CommentReceipt & Readonly<{ operation: 'identical' }>;
+    }
   | ({ kind: 'obsolete' } & (ConfirmedMutation | Unwritten))
   | ((DiscoveryError | PublicationInputError | GateError) & Unwritten)
   | WriteError
@@ -250,18 +260,19 @@ function writeError(diagnostic: WriteError['diagnostic']): WriteError {
   return { kind: 'error', category: 'write', field: 'comments', mutation: 'unknown', diagnostic };
 }
 
-async function createComment(
+async function writeComment(
   input: PublicationInput,
   deps: CommentDependencies,
-): Promise<CommentReceipt | WriteError> {
-  const request = Object.freeze({
-    repository: input.binding.repository,
-    pullNumber: input.binding.pullNumber,
-    body: input.body,
-  });
+  selected: OwnedComment | null,
+): Promise<WrittenReceipt | WriteError> {
+  const fields = { repository: input.binding.repository, body: input.body };
   let response: unknown;
   try {
-    response = await deps.createComment(request);
+    response = selected
+      ? await deps.updateComment(Object.freeze({ ...fields, commentId: selected.id }))
+      : await deps.createComment(
+          Object.freeze({ ...fields, pullNumber: input.binding.pullNumber }),
+        );
   } catch (error) {
     try {
       if (record(error) && error.kind === 'timeout') return writeError('timeout');
@@ -281,16 +292,35 @@ async function createComment(
       (ack.status < 200 || ack.status > 299)
     )
       return writeError('rejection');
-    const comment = ack.status === 201 ? ownedComment(ack.data, input) : null;
-    if (!comment || comment.body !== input.body) return writeError('acknowledgement');
+    const comment = ack.status === (selected ? 200 : 201) ? ownedComment(ack.data, input) : null;
+    if (!comment || comment.body !== input.body || (selected && comment.id !== selected.id))
+      return writeError('acknowledgement');
     return Object.freeze({
       identity: input.binding.identity,
       headSha: input.binding.headSha,
       commentId: comment.id,
-      operation: 'created',
+      operation: selected ? 'updated' : 'created',
     });
   } catch {
     return writeError('acknowledgement');
+  }
+}
+
+async function rereadComment(
+  input: PublicationInput,
+  selected: OwnedComment,
+  deps: CommentDependencies,
+): Promise<boolean> {
+  try {
+    const response = await deps.readComment(
+      Object.freeze({ repository: input.binding.repository, commentId: selected.id }),
+    );
+    if (!record(response)) return false;
+    const snapshot = structuredClone({ status: response.status, data: response.data });
+    const comment = snapshot.status === 200 ? ownedComment(snapshot.data, input) : null;
+    return comment !== null && comment.id === selected.id && comment.body === selected.body;
+  } catch {
+    return false;
   }
 }
 
@@ -308,11 +338,23 @@ export async function publishManagedComment(
   if ('kind' in input) return { ...input, mutation: 'not-attempted' };
   const selection = await selectComment(input, deps);
   if (selection.kind === 'error') return { ...selection, mutation: 'not-attempted' };
-  if (selection.comment)
+  const selected = selection.comment;
+  if (selected && !(await rereadComment(input, selected, deps)))
     return { kind: 'error', category: 'discovery', field: 'comments', mutation: 'not-attempted' };
   const before = await publicationGate(input.binding, deps);
   if (before.kind !== 'fresh') return { ...before, mutation: 'not-attempted' };
-  const receipt = await createComment(input, deps);
+  if (selected?.body === input.body)
+    return {
+      kind: 'recorded',
+      mutation: 'not-attempted',
+      receipt: Object.freeze({
+        identity: input.binding.identity,
+        headSha: input.binding.headSha,
+        commentId: selected.id,
+        operation: 'identical',
+      }),
+    };
+  const receipt = await writeComment(input, deps, selected);
   if ('kind' in receipt) return receipt;
   const after = await publicationGate(input.binding, deps);
   if (after.kind === 'error')

@@ -5,7 +5,7 @@ import {
   type CommentDiscoveryDependencies,
   type CommentDependencies,
 } from './comments.js';
-import type { ReviewBinding } from './event.js';
+import { record, type ReviewBinding } from './event.js';
 
 const HEAD = 'a'.repeat(40);
 const OLD_HEAD = 'b'.repeat(40);
@@ -233,11 +233,24 @@ function publicationFixture(comments: unknown[] = []) {
     order.push('create');
     return { status: 201, data: owned(901, request.body) };
   });
+  const readComment = vi.fn<CommentDependencies['readComment']>(async (request) => {
+    order.push('read');
+    return {
+      status: 200,
+      data: comments.find((value) => record(value) && value.id === request.commentId),
+    };
+  });
+  const updateComment = vi.fn<CommentDependencies['updateComment']>(async (request) => {
+    order.push('update');
+    return { status: 200, data: owned(request.commentId, request.body) };
+  });
   const dependencies: CommentDependencies = {
     ...f.dependencies,
     reads: { readRun, readPullRequest },
     readOwnership,
     createComment,
+    readComment,
+    updateComment,
   };
   return {
     ...f,
@@ -249,6 +262,8 @@ function publicationFixture(comments: unknown[] = []) {
     readPullRequest,
     readOwnership,
     createComment,
+    readComment,
+    updateComment,
     dependencies,
   };
 }
@@ -425,3 +440,146 @@ test.each(['head', 'attempt', 'lost', 'verification', 'ownership'])(
     expect(f.createComment).toHaveBeenCalledTimes(1);
   },
 );
+
+test('updates only the owned target after rereading it, including legacy metadata repair', async () => {
+  const f = publicationFixture([owned(901, MARKER)]);
+  expect(await publishManagedComment(f.input, f.dependencies)).toEqual({
+    kind: 'recorded',
+    mutation: 'confirmed',
+    receipt: receipt('updated'),
+  });
+  expect(f.readComment).toHaveBeenCalledExactlyOnceWith({
+    repository: f.binding.repository,
+    commentId: 901,
+  });
+  expect(f.updateComment).toHaveBeenCalledExactlyOnceWith({
+    repository: f.binding.repository,
+    commentId: 901,
+    body: body(),
+  });
+  expect(f.createComment).not.toHaveBeenCalled();
+  expect(f.order).toEqual([
+    'list',
+    'read',
+    'run',
+    'pr',
+    'ownership',
+    'update',
+    'run',
+    'pr',
+    'ownership',
+  ]);
+});
+
+test('confirms an exactly identical owned body without mutation after the final gates', async () => {
+  const f = publicationFixture([owned(901, body())]);
+  expect(await publishManagedComment(f.input, f.dependencies)).toEqual({
+    kind: 'recorded',
+    mutation: 'not-attempted',
+    receipt: receipt('identical'),
+  });
+  expect(f.order).toEqual(['list', 'read', 'run', 'pr', 'ownership']);
+  expect(f.createComment).not.toHaveBeenCalled();
+  expect(f.updateComment).not.toHaveBeenCalled();
+});
+
+test('same head and digest do not suppress a newer eligible attempt or changed body', async () => {
+  const digest = 'd'.repeat(64);
+  const brief = `${MARKER}\n<!-- reviewed-head: ${HEAD} -->\n<!-- review-digest: ${digest} -->\n`;
+  const f = publicationFixture([owned(901, brief + 'old')]);
+  Object.assign(f.binding, { runAttempt: 2, identity: [101, 301, 401, 2, 42, HEAD] });
+  f.run.run_attempt = 2;
+  f.input.result.identity = f.binding.identity;
+  f.input.result.body = brief + 'new';
+  f.input.result.reviewDigest = digest;
+  expect(await publishManagedComment(f.input, f.dependencies)).toMatchObject({
+    kind: 'recorded',
+    receipt: { operation: 'updated', identity: [101, 301, 401, 2, 42, HEAD] },
+  });
+  expect(f.updateComment).toHaveBeenCalledTimes(1);
+});
+
+test.each([
+  { status: 404 },
+  { status: 200, data: owned(902) },
+  { status: 200, data: owned(901, 'marker removed') },
+  { status: 200, data: owned(901, body(OLD_HEAD) + 'edited') },
+  { status: 200, data: { ...owned(), user: { id: 999, type: 'Bot' } } },
+  { status: 200, data: { ...owned(), issue_url: issueUrl.replace('/42', '/43') } },
+])('rejects a changed or missing reread without create fallback %#', async (response) => {
+  const f = publicationFixture([owned()]);
+  f.readComment.mockResolvedValue(response);
+  expect(await publishManagedComment(f.input, f.dependencies)).toMatchObject({
+    category: 'discovery',
+    mutation: 'not-attempted',
+  });
+  expect(f.order).toEqual(['list']);
+  expect(f.createComment).not.toHaveBeenCalled();
+  expect(f.updateComment).not.toHaveBeenCalled();
+});
+
+test.each(['head', 'closed', 'attempt', 'lost', 'verification', 'ownership'])(
+  'rejects an identical-body %s change without a receipt or post-write error',
+  async (change) => {
+    const f = publicationFixture([owned(901, body())]);
+    if (change === 'head') f.pr.head.sha = OLD_HEAD;
+    if (change === 'closed') f.pr.state = 'closed';
+    if (change === 'attempt') f.run.run_attempt = 2;
+    if (change === 'lost')
+      f.readOwnership.mockResolvedValue({ identity: f.binding.identity, state: 'lost' });
+    if (change === 'verification') f.readRun.mockRejectedValue(new Error('private'));
+    if (change === 'ownership') f.readOwnership.mockResolvedValue(null);
+    const result = await publishManagedComment(f.input, f.dependencies);
+    expect(result).toMatchObject({
+      kind: ['verification', 'ownership'].includes(change) ? 'error' : 'obsolete',
+      mutation: 'not-attempted',
+    });
+    expect(result).not.toHaveProperty('receipt');
+    if (result.kind === 'error') expect(result.category).not.toBe('post-write');
+    expect(f.updateComment).not.toHaveBeenCalled();
+    expect(f.createComment).not.toHaveBeenCalled();
+  },
+);
+
+test.each(['head', 'merged', 'attempt', 'lost', 'verification', 'ownership'])(
+  'retains original receipts after an update with post-write %s',
+  async (change) => {
+    const f = publicationFixture([owned()]);
+    f.updateComment.mockImplementation(async (request) => {
+      if (change === 'head') f.pr.head.sha = OLD_HEAD;
+      if (change === 'merged') f.pr.merged = true;
+      if (change === 'attempt') f.run.run_attempt = 2;
+      if (change === 'lost')
+        f.readOwnership.mockResolvedValue({ identity: f.binding.identity, state: 'lost' });
+      if (change === 'verification') f.readRun.mockRejectedValue(new Error('private'));
+      if (change === 'ownership') f.readOwnership.mockResolvedValue(null);
+      return { status: 200, data: owned(request.commentId, request.body) };
+    });
+    const result = await publishManagedComment(f.input, f.dependencies);
+    expect(result).toMatchObject({
+      kind: ['verification', 'ownership'].includes(change) ? 'error' : 'obsolete',
+      mutation: 'confirmed',
+      receipt: receipt('updated'),
+    });
+    if (result.kind === 'error') expect(result.category).toBe('post-write');
+    expect(f.createComment).not.toHaveBeenCalled();
+    expect(f.updateComment).toHaveBeenCalledTimes(1);
+  },
+);
+
+test.each([
+  { status: 404 },
+  { status: 201, data: owned(901, body()) },
+  { status: 200, data: owned(902, body()) },
+  { status: 200, data: owned(901, body(OLD_HEAD)) },
+  { status: 200, data: { ...owned(901, body()), performed_via_github_app: { id: 999 } } },
+])('contains failed update acknowledgements without retry %#', async (response) => {
+  const f = publicationFixture([owned()]);
+  f.updateComment.mockResolvedValue(response);
+  expect(await publishManagedComment(f.input, f.dependencies)).toMatchObject({
+    category: 'write',
+    mutation: 'unknown',
+  });
+  expect(f.updateComment).toHaveBeenCalledTimes(1);
+  expect(f.createComment).not.toHaveBeenCalled();
+});
