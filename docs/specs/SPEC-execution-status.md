@@ -13,6 +13,11 @@ The approved [shared workflow contract](SPEC-shared-review.md) and
 [T1 publication handoff](SPEC-event-verification.md#publication-handoff)
 remain authoritative.
 
+Implementation: the [status boundary](../../src/status.ts) and
+[tests](../../src/status.test.ts) are implemented on `issue-9`, pending merge.
+[Verification issue #69](https://github.com/andrewpucci/dependency-update-advisor/issues/69)
+records exact-revision evidence and the remaining integration limits.
+
 ## Review Decision
 
 The isolated T2 contract is approved with these rules:
@@ -247,8 +252,8 @@ docs/specs/SPEC-execution-status.md    → this T2 supporting contract
 docs/specs/README.md                   → index and approval state
 ```
 
-These status source files are proposed; this specification does not create
-them. Preserve existing configuration, evidence, provider, and policy modules.
+The source and tests implement the isolated publication boundary. Preserve
+existing configuration, evidence, provider, and policy modules.
 Action entry points, bundles, workflows, and replay backends remain separate.
 
 ## Code Style
@@ -268,9 +273,56 @@ type StatusReceipt = Readonly<{
 }>;
 ```
 
-The snippet illustrates naming and attribution, not a finalized exported API.
-Planning chooses the smallest interface that preserves the result semantics
-above. A TypeScript brand or caller boolean cannot replace runtime checks.
+The [source module](../../src/status.ts) owns the exported TypeScript types.
+A TypeScript brand or caller boolean cannot replace runtime freshness and
+ownership checks.
+
+## T2 Interface
+
+`publishExecutionStatus(input, dependencies)` accepts unknown input and returns
+`Promise<StatusResult>`. It copies input before validation or asynchronous reads
+so caller mutation or changing accessors cannot alter the validated intent.
+
+| Input field                             | Required meaning                                                                                                              |
+| --------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------- |
+| `binding`                               | T1 `ReviewBinding`; revalidated by the real freshness operation.                                                              |
+| `reviewer.runId`, `reviewer.runAttempt` | Positive safe integers for the privileged reviewer in the consumer repository, distinct from the source CI run.               |
+| `outcome.identity`                      | Exact bound `ReviewIdentity` tuple.                                                                                           |
+| `outcome.kind`                          | `running` → pending; `complete` → success; `incomplete` → failure. W2 owns the underlying evidence and analysis facts.        |
+| `outcome.commentRecorded`               | Must be exactly `true` for `complete`, confirming W2 recorded the current-head managed comment.                               |
+| `previousCommentIsStale`                | Optional boolean from W2's trusted read. Missing or `false` omits the suffix; failed/unfinished reads must not supply `true`. |
+
+W2 must supply outcome and comment facts from trusted orchestration; the shape
+check does not independently prove their truth. CI conclusion and advisory
+recommendation do not select the status. Unknown input fields do not become
+request fields or diagnostics. Invalid or uncloneable input returns an error.
+
+`StatusDependencies` has only three capabilities:
+
+- `reads`: T1 `FreshnessReads`, with run and PR reads returning unknown data.
+- `readOwnership(identity)`: returns unknown data with the exact `identity`
+  tuple and `state` of `owned` or `lost`. Other responses or read failures are
+  ownership errors. T2 provides a frozen copy of the identity; W2 implements
+  real cross-job exclusion behind the injected check.
+- `createStatus(request)`: performs one authenticated create through W1's
+  bounded transport and returns unknown `{ status, data }`. `status` is the
+  HTTP response code; `data` is the decoded commit-status body. Rejecting with
+  `{ kind: 'timeout' }` identifies a known timeout; other exceptions are
+  transport errors. Exception properties and text remain untrusted.
+
+`StatusRequest` contains only the consumer `repository` (`id`, `owner`, `name`),
+full `sha`, `state`, `context`, `target_url`, and `description`. T2 freezes the
+request and repository, encodes URL path segments on GitHub's fixed origin,
+and copies acknowledgement fields into a frozen `StatusReceipt`. The transport
+must use those exact targets; it must not follow payload URLs or retry creates.
+
+`StatusResult` encodes the allowed result/write-outcome combinations in
+[the result table](#status-write-results-and-errors). W2 must fail its job for
+any `kind: 'error'`; `obsolete` stops publication without job failure.
+`published` confirms the requested state, so a published `failure` receipt does
+not mean reviewer success. W2 retains responsibility for the guarded always-run
+failure operation and must not infer a confirmed terminal status from a write
+error with an unknown outcome.
 
 ## Testing Strategy
 
@@ -354,10 +406,10 @@ npm run check
 npm test -- --run
 ```
 
-Focused tests become executable only after `src/status.test.ts` exists:
+Focused status and freshness tests:
 
 ```sh
-npm test -- --run src/status.test.ts
+npm test -- --run src/status.test.ts src/event.test.ts
 ```
 
 No build command exists yet; packaging remains A1. Record the exact revision,

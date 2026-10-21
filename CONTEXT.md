@@ -11,14 +11,17 @@ are merged into `main` in [PR #63](https://github.com/andrewpucci/dependency-upd
 [T1 evidence](https://github.com/andrewpucci/dependency-update-advisor/issues/62)
 records checks and their limits. [Advisory complexity review](docs/specs/SPEC-complexity-review.md)
 is merged in [PR #65](https://github.com/andrewpucci/dependency-update-advisor/pull/65).
+[T2 status publication](src/status.ts) is implemented on `issue-9`, pending merge;
+[T2 evidence](https://github.com/andrewpucci/dependency-update-advisor/issues/69)
+keeps W1/W2/T3 and adoption gates separate.
 No shared reviewer workflow exists; the old reviewer in
 [`andrewpucci.com`](https://github.com/andrewpucci/andrewpucci.com)
 remains active. CI enforces lint, formatting, strict TypeScript, and finite tests.
 
 ## Next action
 
-Review the proposed task order in [issue #9](https://github.com/andrewpucci/dependency-update-advisor/issues/9)
-under the approved [T2 execution-status contract](docs/specs/SPEC-execution-status.md).
+Review T2's implementation for [issue #9](https://github.com/andrewpucci/dependency-update-advisor/issues/9)
+under the approved [execution-status contract](docs/specs/SPEC-execution-status.md).
 W1/W2 must supply bounded reads and exclusive claims before T2/T3 writes.
 B1–B3, C1–C3, and T1 are merged. Open downstream work:
 [S3](https://github.com/andrewpucci/dependency-update-advisor/issues/53) supplies
@@ -32,8 +35,6 @@ packaging remains A1. Unit tests do not certify these integrations or cutover.
 
 - The [capability map](docs/specs/README.md) indexes modules and supporting
   contracts. The [comment contract](docs/specs/SPEC-comment-experience.md) is approved.
-- [B1 baseline](tests/parity/README.md) and [scenarios](tests/parity/scenarios.md)
-  record source state and parity gaps. Supporting specs link verification evidence.
 - The [ADR guide](docs/adr/README.md) indexes durable architecture decisions.
 - GitHub Issues and PRs hold implementation tasks and verification evidence.
   The gitignored `tasks/plan.md` is transient; private consumer records stay local.
