@@ -160,6 +160,25 @@ function httpReason(response: Response, body: unknown): EvidenceReason {
   return 'unknown';
 }
 
+/** Undecodable or absent bodies keep the reason their HTTP status supports. */
+function statusFailure(response: Response): EvidenceReason {
+  return response.status === 200 ? 'malformed' : httpReason(response, null);
+}
+/** Node clamps oversized delays to 1 ms; chain platform-sized intervals instead. */
+function startTimer(duration: number, expire: () => void): () => void {
+  let remaining = duration;
+  let timer: ReturnType<typeof setTimeout>;
+  const schedule = () => {
+    const interval = Math.min(remaining, 2 ** 31 - 1);
+    timer = setTimeout(() => {
+      remaining -= interval;
+      if (remaining > 0) schedule();
+      else expire();
+    }, interval);
+  };
+  schedule();
+  return () => clearTimeout(timer);
+}
 function canonicalPath(value: unknown): value is string {
   return (
     typeof value === 'string' &&
@@ -192,6 +211,37 @@ function fileChange(value: unknown): GithubFileChange {
     status: value.status as GithubFileChange['status'],
     blobSha,
   });
+}
+function fileRequest(value: unknown): GithubFileRequest | null {
+  try {
+    if (!record(value, ['side', 'path'])) return null;
+    const side = value.side,
+      path = value.path;
+    return (side === 'base' || side === 'head') && canonicalPath(path) ? { side, path } : null;
+  } catch {
+    return null;
+  }
+}
+function base64Size(content: string): number {
+  requireRead(/^(?:[A-Za-z\d+/]{4})*(?:[A-Za-z\d+/]{2}==|[A-Za-z\d+/]{3}=)?$/u.test(content));
+  return (content.length / 4) * 3 - (content.endsWith('==') ? 2 : content.endsWith('=') ? 1 : 0);
+}
+/** Collectors receive deep-frozen records; unserializable structures stay unsupported. */
+function frozenRecord(item: Record<string, unknown>): Readonly<Record<string, JsonValue>> {
+  try {
+    JSON.stringify(item);
+  } catch {
+    throw new ReadFailure('unsupported');
+  }
+  const pending: unknown[] = [item];
+  while (pending.length) {
+    const value = pending.pop();
+    if (typeof value === 'object' && value !== null) {
+      Object.freeze(value);
+      for (const child of Object.values(value)) pending.push(child);
+    }
+  }
+  return item as Readonly<Record<string, JsonValue>>;
 }
 function nextPage(headers: Headers, paths: readonly string[], page: number): boolean {
   const link = headers.get('link');
@@ -322,19 +372,58 @@ class ReadSession implements GithubReadSession {
     if (size <= remaining) this.retained += size;
     return output;
   }
-  private async get(path: string): Promise<{ value: unknown; headers: Headers }> {
+  private reserveRequest(): number {
     this.check();
     const remaining = this.limits.totalTimeoutMs - this.elapsed();
     if (remaining <= 0) {
       this.stopped ??= 'timeout';
       throw new ReadFailure('timeout');
     }
-    const duration = Math.min(this.limits.requestTimeoutMs, remaining);
     if (this.requests >= this.limits.maxRequests) {
       this.stopped ??= 'budget';
       throw new ReadFailure('budget');
     }
     this.requests++;
+    return Math.min(this.limits.requestTimeoutMs, remaining);
+  }
+  private async readBody(
+    reader: ReadableStreamDefaultReader<Uint8Array>,
+    aborted: Promise<never>,
+    controller: AbortController,
+  ): Promise<Buffer> {
+    const chunks: Uint8Array[] = [];
+    let length = 0;
+    while (true) {
+      const chunk = await Promise.race([reader.read(), aborted]);
+      if (chunk.done) return Buffer.concat(chunks, length);
+      this.bytes += chunk.value.byteLength;
+      length += chunk.value.byteLength;
+      if (length > this.limits.maxResponseBytes || this.bytes > this.limits.maxTotalBytes) {
+        this.stopped ??= 'budget';
+        controller.abort();
+        throw new ReadFailure('budget');
+      }
+      this.check();
+      chunks.push(chunk.value);
+    }
+  }
+  private parseBody(response: Response, body: Buffer): unknown {
+    this.check();
+    let value: unknown;
+    try {
+      value = JSON.parse(new TextDecoder('utf-8', { fatal: true }).decode(body));
+    } catch {
+      throw new ReadFailure(statusFailure(response));
+    }
+    if (response.status !== 200) {
+      this.consumeEntries(value);
+      throw new ReadFailure(httpReason(response, value));
+    }
+    this.check();
+    return value;
+  }
+  private async get(path: string): Promise<{ value: unknown; headers: Headers }> {
+    const duration = this.reserveRequest();
     const controller = new AbortController();
     this.active = controller;
     let reader: ReadableStreamDefaultReader<Uint8Array> | undefined;
@@ -352,22 +441,11 @@ class ReadSession implements GithubReadSession {
         { once: true },
       );
     });
-    let remainingMs = duration;
-    let timer: ReturnType<typeof setTimeout>;
-    const schedule = () => {
-      // Node clamps oversized delays to 1 ms; chain platform-sized intervals instead.
-      const interval = Math.min(remainingMs, 2 ** 31 - 1);
-      timer = setTimeout(() => {
-        remainingMs -= interval;
-        if (remainingMs > 0) schedule();
-        else {
-          expired = true;
-          this.stopped ??= 'timeout';
-          controller.abort();
-        }
-      }, interval);
-    };
-    schedule();
+    const stopTimer = startTimer(duration, () => {
+      expired = true;
+      this.stopped ??= 'timeout';
+      controller.abort();
+    });
     try {
       const response = await Promise.race([
         this.dependencies
@@ -389,45 +467,16 @@ class ReadSession implements GithubReadSession {
           }),
         aborted,
       ]);
-      if (response.body === null)
-        throw new ReadFailure(response.status === 200 ? 'malformed' : httpReason(response, null));
+      if (response.body === null) throw new ReadFailure(statusFailure(response));
       reader = response.body.getReader();
       requireRead(!response.redirected, 'unknown');
-      const chunks: Uint8Array[] = [];
-      let length = 0;
-      while (true) {
-        const chunk = await Promise.race([reader.read(), aborted]);
-        if (chunk.done) break;
-        this.bytes += chunk.value.byteLength;
-        length += chunk.value.byteLength;
-        if (length > this.limits.maxResponseBytes || this.bytes > this.limits.maxTotalBytes) {
-          this.stopped ??= 'budget';
-          controller.abort();
-          throw new ReadFailure('budget');
-        }
-        this.check();
-        chunks.push(chunk.value);
-      }
-      this.check();
-      let value: unknown;
-      try {
-        value = JSON.parse(
-          new TextDecoder('utf-8', { fatal: true }).decode(Buffer.concat(chunks, length)),
-        );
-      } catch {
-        throw new ReadFailure(response.status === 200 ? 'malformed' : httpReason(response, null));
-      }
-      if (response.status !== 200) {
-        this.consumeEntries(value);
-        throw new ReadFailure(httpReason(response, value));
-      }
-      this.check();
-      return { value, headers: response.headers };
+      const body = await this.readBody(reader, aborted, controller);
+      return { value: this.parseBody(response, body), headers: response.headers };
     } catch (error) {
       if (error instanceof ReadFailure) throw error;
       throw new ReadFailure(reader ? 'truncated' : 'unknown');
     } finally {
-      clearTimeout(timer!);
+      stopTimer();
       cancel();
       if (this.active === controller) this.active = null;
     }
@@ -476,47 +525,8 @@ class ReadSession implements GithubReadSession {
       this.check();
       const count = await this.metadata();
       if (this.binding.baseSha !== this.binding.mergeBaseSha) reasons.add('conflict');
-      const paths = new Set<string>(),
-        previous = new Set<string>();
       try {
-        const path = `${repoPath(this.binding.repository)}/pulls/${this.binding.pullNumber}/files`;
-        // GitHub's pagination links address the same endpoint by repository ID.
-        const linkPaths = [
-          path,
-          `/repositories/${this.binding.repository.id}/pulls/${this.binding.pullNumber}/files`,
-        ];
-        for (let page = 1; ; page++) {
-          requireRead(this.pages < this.limits.maxPages, 'budget');
-          this.pages++;
-          const response = await this.get(`${path}?per_page=100&page=${page}`);
-          requireRead(Array.isArray(response.value) && response.value.length <= 100);
-          for (const value of response.value) {
-            requireRead(this.files < this.limits.maxFiles, 'budget');
-            this.files++;
-            this.consumeEntries([value]);
-            const change = fileChange(value);
-            requireRead(
-              !paths.has(change.path) &&
-                (!change.previousPath || !previous.has(change.previousPath)),
-              'conflict',
-            );
-            paths.add(change.path);
-            if (change.previousPath) previous.add(change.previousPath);
-            files.push(change);
-            if (!['added', 'removed', 'modified', 'renamed'].includes(change.status))
-              reasons.add('unsupported');
-          }
-          const hasNext = nextPage(response.headers, linkPaths, page);
-          if (files.length >= 3000) {
-            reasons.add('truncated');
-            break;
-          }
-          if (response.value.length < 100) {
-            requireRead(!hasNext, 'conflict');
-            requireRead(files.length === count, 'conflict');
-            break;
-          }
-        }
+        await this.listFiles(count, files, reasons);
       } catch (error) {
         const reason = fixedFailure(error).reason;
         reasons.add(reason);
@@ -536,19 +546,61 @@ class ReadSession implements GithubReadSession {
       reasons.add('budget');
     });
   }
-  async readFile(request: unknown): Promise<GithubFileResult> {
-    let side: 'base' | 'head', path: string;
-    try {
-      requireRead(record(request, ['side', 'path']));
-      const inputSide = request.side,
-        inputPath = request.path;
-      requireRead(inputSide === 'base' || inputSide === 'head');
-      requireRead(canonicalPath(inputPath));
-      side = inputSide;
-      path = inputPath;
-    } catch {
-      return { kind: 'invalid' };
+  private async listFiles(
+    count: number,
+    files: GithubFileChange[],
+    reasons: Set<EvidenceReason>,
+  ): Promise<void> {
+    const seen = { paths: new Set<string>(), previous: new Set<string>() };
+    const path = `${repoPath(this.binding.repository)}/pulls/${this.binding.pullNumber}/files`;
+    // GitHub's pagination links address the same endpoint by repository ID.
+    const linkPaths = [
+      path,
+      `/repositories/${this.binding.repository.id}/pulls/${this.binding.pullNumber}/files`,
+    ];
+    for (let page = 1; ; page++) {
+      requireRead(this.pages < this.limits.maxPages, 'budget');
+      this.pages++;
+      const response = await this.get(`${path}?per_page=100&page=${page}`);
+      requireRead(Array.isArray(response.value) && response.value.length <= 100);
+      for (const value of response.value) this.addFile(value, files, reasons, seen);
+      const hasNext = nextPage(response.headers, linkPaths, page);
+      if (files.length >= 3000) {
+        reasons.add('truncated');
+        return;
+      }
+      if (response.value.length < 100) {
+        requireRead(!hasNext, 'conflict');
+        requireRead(files.length === count, 'conflict');
+        return;
+      }
     }
+  }
+  private addFile(
+    value: unknown,
+    files: GithubFileChange[],
+    reasons: Set<EvidenceReason>,
+    seen: { paths: Set<string>; previous: Set<string> },
+  ): void {
+    requireRead(this.files < this.limits.maxFiles, 'budget');
+    this.files++;
+    this.consumeEntries([value]);
+    const change = fileChange(value);
+    requireRead(
+      !seen.paths.has(change.path) &&
+        (!change.previousPath || !seen.previous.has(change.previousPath)),
+      'conflict',
+    );
+    seen.paths.add(change.path);
+    if (change.previousPath) seen.previous.add(change.previousPath);
+    files.push(change);
+    if (!['added', 'removed', 'modified', 'renamed'].includes(change.status))
+      reasons.add('unsupported');
+  }
+  async readFile(request: unknown): Promise<GithubFileResult> {
+    const input = fileRequest(request);
+    if (!input) return { kind: 'invalid' };
+    const { side, path } = input;
     const repository = side === 'base' ? this.binding.repository : this.binding.headRepository;
     const commitSha = side === 'base' ? this.binding.baseSha : this.binding.headSha;
     const provenance: FileProvenance = { side, repository, commitSha, path };
@@ -557,45 +609,10 @@ class ReadSession implements GithubReadSession {
     try {
       this.check();
       const prefix = repoPath(repository);
-      const commit = await this.get(`${prefix}/git/commits/${commitSha}`);
-      this.consumeEntries(commit.value);
-      requireRead(
-        record(commit.value) &&
-          fullSha(commit.value.sha) === commitSha &&
-          record(commit.value.tree),
-      );
-      const root = fullSha(commit.value.tree.sha);
-      requireRead(root);
-      let treeSha = root;
+      let treeSha = await this.rootTree(prefix, commitSha);
       const segments = path.split('/');
-      for (let index = 0; index < segments.length; index++) {
-        const lookup = await this.get(`${prefix}/git/trees/${treeSha}`);
-        this.consumeEntries(lookup.value);
-        const tree = lookup.value;
-        requireRead(
-          record(tree) &&
-            fullSha(tree.sha) === treeSha &&
-            typeof tree.truncated === 'boolean' &&
-            Array.isArray(tree.tree),
-        );
-        requireRead(!tree.truncated, 'truncated');
-        let found: { mode: string; type: string; sha: string } | null = null;
-        for (const item of tree.tree) {
-          requireRead(
-            record(item) &&
-              typeof item.path === 'string' &&
-              typeof item.mode === 'string' &&
-              typeof item.type === 'string',
-          );
-          const sha = fullSha(item.sha);
-          requireRead(sha);
-          // Unrequested siblings may carry names or modes D1 never reads.
-          if (item.path !== segments[index]) continue;
-          requireRead(!found, 'conflict');
-          requireRead(Object.hasOwn(TYPE_FOR_MODE, item.mode), 'unsupported');
-          requireRead(TYPE_FOR_MODE[item.mode] === item.type);
-          found = { mode: item.mode, type: item.type, sha };
-        }
+      for (const [index, name] of segments.entries()) {
+        const found = await this.treeEntry(prefix, treeSha, name);
         if (!found) {
           const absent = { ...provenance, kind: 'absent' as const, treeSha };
           this.retain(absent);
@@ -604,38 +621,13 @@ class ReadSession implements GithubReadSession {
         if (index < segments.length - 1) {
           requireRead(found.mode === '040000', 'unsupported');
           treeSha = found.sha;
-        } else {
-          requireRead(found.mode === '100644' || found.mode === '100755', 'unsupported');
-          const response = await this.get(`${prefix}/git/blobs/${found.sha}`);
-          this.consumeEntries(response.value);
-          const blob = response.value;
-          requireRead(
-            record(blob) &&
-              fullSha(blob.sha) === found.sha &&
-              typeof blob.size === 'number' &&
-              Number.isSafeInteger(blob.size) &&
-              blob.size >= 0 &&
-              typeof blob.content === 'string',
-          );
-          requireRead(blob.encoding === 'base64', 'unsupported');
-          const content = blob.content.replace(/[\r\n]/gu, '');
-          requireRead(
-            /^(?:[A-Za-z\d+/]{4})*(?:[A-Za-z\d+/]{2}==|[A-Za-z\d+/]{3}=)?$/u.test(content),
-          );
-          const size =
-            (content.length / 4) * 3 - (content.endsWith('==') ? 2 : content.endsWith('=') ? 1 : 0);
-          requireRead(size === blob.size);
-          if (size > this.limits.maxFileBytes || size > this.limits.maxTotalBytes - this.bytes) {
-            this.stopped ??= 'budget';
-            throw new ReadFailure('budget');
-          }
-          this.bytes += size;
-          const bytes = Buffer.from(content, 'base64');
-          requireRead(bytes.length === size && bytes.toString('base64') === content);
-          const metadata = { ...provenance, kind: 'available' as const, blobSha: found.sha };
-          this.retain(metadata, size);
-          return { ...metadata, bytes: new Uint8Array(bytes) };
+          continue;
         }
+        requireRead(found.mode === '100644' || found.mode === '100755', 'unsupported');
+        const bytes = await this.blobBytes(prefix, found.sha);
+        const metadata = { ...provenance, kind: 'available' as const, blobSha: found.sha };
+        this.retain(metadata, bytes.length);
+        return { ...metadata, bytes: new Uint8Array(bytes) };
       }
       throw new ReadFailure('unknown');
     } catch (error) {
@@ -645,6 +637,71 @@ class ReadSession implements GithubReadSession {
     } finally {
       this.busy = false;
     }
+  }
+  private async rootTree(prefix: string, commitSha: string): Promise<string> {
+    const { value: commit } = await this.get(`${prefix}/git/commits/${commitSha}`);
+    this.consumeEntries(commit);
+    requireRead(record(commit) && fullSha(commit.sha) === commitSha && record(commit.tree));
+    const root = fullSha(commit.tree.sha);
+    requireRead(root);
+    return root;
+  }
+  private async treeEntry(
+    prefix: string,
+    treeSha: string,
+    name: string,
+  ): Promise<{ mode: string; sha: string } | null> {
+    const { value: tree } = await this.get(`${prefix}/git/trees/${treeSha}`);
+    this.consumeEntries(tree);
+    requireRead(
+      record(tree) &&
+        fullSha(tree.sha) === treeSha &&
+        typeof tree.truncated === 'boolean' &&
+        Array.isArray(tree.tree),
+    );
+    requireRead(!tree.truncated, 'truncated');
+    let found: { mode: string; sha: string } | null = null;
+    for (const item of tree.tree) {
+      requireRead(
+        record(item) &&
+          typeof item.path === 'string' &&
+          typeof item.mode === 'string' &&
+          typeof item.type === 'string',
+      );
+      const sha = fullSha(item.sha);
+      requireRead(sha);
+      // Unrequested siblings may carry names or modes D1 never reads.
+      if (item.path !== name) continue;
+      requireRead(!found, 'conflict');
+      requireRead(Object.hasOwn(TYPE_FOR_MODE, item.mode), 'unsupported');
+      requireRead(TYPE_FOR_MODE[item.mode] === item.type);
+      found = { mode: item.mode, sha };
+    }
+    return found;
+  }
+  private async blobBytes(prefix: string, sha: string): Promise<Buffer> {
+    const { value: blob } = await this.get(`${prefix}/git/blobs/${sha}`);
+    this.consumeEntries(blob);
+    requireRead(
+      record(blob) &&
+        fullSha(blob.sha) === sha &&
+        typeof blob.size === 'number' &&
+        Number.isSafeInteger(blob.size) &&
+        blob.size >= 0 &&
+        typeof blob.content === 'string',
+    );
+    requireRead(blob.encoding === 'base64', 'unsupported');
+    const content = blob.content.replace(/[\r\n]/gu, '');
+    const size = base64Size(content);
+    requireRead(size === blob.size);
+    if (size > this.limits.maxFileBytes || size > this.limits.maxTotalBytes - this.bytes) {
+      this.stopped ??= 'budget';
+      throw new ReadFailure('budget');
+    }
+    this.bytes += size;
+    const bytes = Buffer.from(content, 'base64');
+    requireRead(bytes.length === size && bytes.toString('base64') === content);
+    return bytes;
   }
   async readComparison(): Promise<GithubComparison> {
     const records: Readonly<Record<string, JsonValue>>[] = [];
@@ -676,20 +733,7 @@ class ReadSession implements GithubReadSession {
       for (const item of response.value) {
         requireRead(record(item));
         this.consumeEntries([item]);
-        try {
-          JSON.stringify(item);
-        } catch {
-          throw new ReadFailure('unsupported');
-        }
-        const pending: unknown[] = [item];
-        while (pending.length) {
-          const value = pending.pop();
-          if (typeof value === 'object' && value !== null) {
-            Object.freeze(value);
-            for (const child of Object.values(value)) pending.push(child);
-          }
-        }
-        records.push(item as Readonly<Record<string, JsonValue>>);
+        records.push(frozenRecord(item));
       }
     } catch (error) {
       const reason = fixedFailure(error).reason;
