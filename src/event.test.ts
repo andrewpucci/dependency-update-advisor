@@ -1110,7 +1110,7 @@ test('the classifier validates and owns its binding without granting freshness',
   expect(classifier.classify(f.pullRequest)).toEqual({ kind: 'current' });
 });
 
-test('comparison completion validates its response and preserves exception diagnostics', async () => {
+test('comparison completion reports invalid and throwing responses as comparison input', async () => {
   const f = await boundFixture();
   f.pullRequest.base.sha = NEXT_HEAD;
   const state = createPullRequestClassifier(f.binding)!.classify(f.pullRequest);
@@ -1130,7 +1130,7 @@ test('comparison completion validates its response and preserves exception diagn
   expect(state.complete(hostile)).toEqual({
     kind: 'error',
     category: 'input',
-    field: 'pullRequest',
+    field: 'comparison',
   });
 });
 

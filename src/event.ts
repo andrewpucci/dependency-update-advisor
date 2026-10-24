@@ -716,7 +716,7 @@ function completeComparison(
     if (!mergeBaseSha) return failure('comparison');
     return { kind: mergeBaseSha === originalMergeBaseSha ? 'current' : 'obsolete' };
   } catch {
-    return failure('pullRequest');
+    return failure('comparison');
   }
 }
 
