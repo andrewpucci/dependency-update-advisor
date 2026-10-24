@@ -55,7 +55,13 @@ complete or `not_applicable` merely because its HTTP calls succeeded.
 
 1. Accept a runtime-validated T1 `ReviewBinding`, trusted budgets, and a
    read-only transport. Reuse T1 validation rather than accepting a TypeScript
-   cast as proof of identity. The binding's `repository`, `baseRef`,
+   cast as proof of identity. Under the
+   [approved snapshot amendment](SPEC-pr-freshness-snapshot.md) for #110,
+   create T1's `createPullRequestClassifier(binding)` once at session entry.
+   Reuse its owned binding and classifier for later metadata reads; parse each
+   new PR response once, then use its comparison completion without reparsing.
+   This reuses parsed identities, not freshness across different PR reads.
+   The binding's `repository`, `baseRef`,
    `baseSha`, and `mergeBaseSha` are the authenticated base identity; D1
    accepts no separate base input.
 2. Fetch PR metadata by the binding's repository and PR number before file

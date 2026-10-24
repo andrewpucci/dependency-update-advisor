@@ -750,21 +750,6 @@ export function createPullRequestClassifier(value: unknown): PullRequestClassifi
   });
 }
 
-export function classifyPullRequest(
-  bindingValue: unknown,
-  value: unknown,
-  comparison?: { value: unknown },
-): PullRequestState {
-  try {
-    const classifier = createPullRequestClassifier(bindingValue);
-    if (!classifier) return failure('binding');
-    const state = classifier.classify(value);
-    return state.kind === 'compare' && comparison ? state.complete(comparison.value) : state;
-  } catch {
-    return failure('pullRequest');
-  }
-}
-
 /** Recheck an owned attempt after claiming. W2 must separately verify exclusive ownership. */
 export async function reverifyReviewBinding(
   value: unknown,
