@@ -580,22 +580,21 @@ class ReadSession implements GithubReadSession {
         );
         requireRead(!tree.truncated, 'truncated');
         let found: { mode: string; type: string; sha: string } | null = null;
-        const names = new Set<string>();
         for (const item of tree.tree) {
           requireRead(
             record(item) &&
-              canonicalPath(item.path) &&
-              !item.path.includes('/') &&
+              typeof item.path === 'string' &&
               typeof item.mode === 'string' &&
               typeof item.type === 'string',
           );
           const sha = fullSha(item.sha);
           requireRead(sha);
-          requireRead(!names.has(item.path), 'conflict');
-          names.add(item.path);
+          // Unrequested siblings may carry names or modes D1 never reads.
+          if (item.path !== segments[index]) continue;
+          requireRead(!found, 'conflict');
           requireRead(Object.hasOwn(TYPE_FOR_MODE, item.mode), 'unsupported');
           requireRead(TYPE_FOR_MODE[item.mode] === item.type);
-          if (item.path === segments[index]) found = { mode: item.mode, type: item.type, sha };
+          found = { mode: item.mode, type: item.type, sha };
         }
         if (!found) {
           const absent = { ...provenance, kind: 'absent' as const, treeSha };
