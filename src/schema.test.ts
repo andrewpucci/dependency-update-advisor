@@ -21,6 +21,9 @@ function fixture() {
     pullNumber: 42,
     headRepository: { ...repository },
     headSha: HEAD,
+    baseRef: 'main',
+    baseSha: BASE,
+    mergeBaseSha: BASE,
     actorId: 201,
     conclusion: 'success',
     identity: [101, 301, 401, 1, 42, HEAD],
@@ -1547,4 +1550,27 @@ test('rejects contradictory applicability across vulnerability and malware findi
       f.expected,
     ),
   ).toMatchObject({ ok: false });
+});
+
+test.each(['baseRef', 'baseSha', 'mergeBaseSha'] as const)(
+  'rejects conflicting packet binding %s',
+  (field) => {
+    const f = fixture();
+    f.packet.binding[field] = field === 'baseRef' ? 'other' : HEAD;
+    expect(validateReviewPacket(f.packet, f.expected)).toMatchObject({
+      ok: false,
+      error: { category: 'identity' },
+    });
+  },
+);
+
+test('rejects a trusted base that disagrees with its own binding', () => {
+  const f = fixture();
+  f.packet.baseSha = HEAD;
+  f.expected.baseSha = HEAD;
+  f.packet.sources[0].provenance.baseSha = HEAD;
+  expect(validateReviewPacket(f.packet, f.expected)).toMatchObject({
+    ok: false,
+    error: { category: 'identity' },
+  });
 });

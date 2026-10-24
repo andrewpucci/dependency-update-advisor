@@ -98,6 +98,9 @@ function fixture(changes: PacketChange[] = []) {
     pullNumber: 42,
     headRepository: repository,
     headSha: HEAD,
+    baseRef: 'main',
+    baseSha: BASE,
+    mergeBaseSha: BASE,
     actorId: 201,
     conclusion: 'success',
     identity: [101, 301, 401, 1, 42, HEAD],
@@ -219,6 +222,8 @@ test('identity/order are stable under permutations and bound to both revisions',
   f.packet.sources.reverse();
   expect(formDecisionUnits(accepted(f)).units).toEqual(original.units);
   f.packet.baseSha = f.expected.baseSha = 'd'.repeat(40);
+  f.packet.binding = { ...f.packet.binding, baseSha: f.packet.baseSha };
+  f.expected.binding = structuredClone(f.packet.binding);
   for (const source of f.packet.sources) {
     if (source.provenance.kind === 'inventory') source.provenance.baseSha = f.packet.baseSha;
     if (source.provenance.kind === 'file' && source.provenance.revision === 'base')

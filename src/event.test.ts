@@ -8,6 +8,7 @@ import {
 } from './event.js';
 
 const HEAD = 'a'.repeat(40);
+const BASE = 'b'.repeat(40);
 const NEXT_HEAD = 'c'.repeat(40);
 
 function fixture() {
@@ -48,7 +49,7 @@ function fixture() {
     state: 'open',
     merged: false,
     user: structuredClone(actor),
-    base: { repo: structuredClone(repository) },
+    base: { ref: 'main', sha: BASE, repo: structuredClone(repository) },
     head: { sha: HEAD, repo: structuredClone(repository) },
   };
   const workflow = { id: 301, path: '.github/workflows/ci.yml' };
@@ -56,7 +57,9 @@ function fixture() {
   const readRun = vi.fn(async () => run);
   const readPullRequest = vi.fn(async () => pullRequest);
   const readReplay = vi.fn(async (identity: ReviewIdentity) => ({ identity, state: 'unseen' }));
-  const reads: EventReads = { readWorkflow, readRun, readPullRequest, readReplay };
+  const comparison = { base_commit: { sha: BASE }, merge_base_commit: { sha: BASE } };
+  const readComparison = vi.fn(async () => comparison);
+  const reads: EventReads = { readWorkflow, readRun, readPullRequest, readReplay, readComparison };
   return {
     input,
     run,
@@ -67,6 +70,8 @@ function fixture() {
     readRun,
     readPullRequest,
     readReplay,
+    readComparison,
+    comparison,
   };
 }
 
@@ -82,6 +87,9 @@ test('binds one completed source attempt to the current open Dependabot PR', asy
     runAttempt: 1,
     pullNumber: 42,
     headSha: HEAD,
+    baseRef: 'main',
+    baseSha: BASE,
+    mergeBaseSha: BASE,
     actorId: 201,
     conclusion: 'success',
     identity: [101, 301, 401, 1, 42, HEAD],
@@ -328,6 +336,8 @@ const runFields = [
   'pull_requests.0.head.sha',
 ];
 const prFields = [
+  'base.ref',
+  'base.sha',
   'number',
   'state',
   'merged',
@@ -934,4 +944,66 @@ test('pure binding parsing snapshots changing accessors before validating the tu
   };
   expect(parseReviewBinding(input)?.runId).toBe(401);
   expect(reads).toBe(1);
+});
+
+test('authenticates base identity after replay without changing the six-part identity', async () => {
+  const f = fixture();
+  const result = await verifyCiEvent(f.input, f.reads);
+  expect(result).toMatchObject({
+    kind: 'verified',
+    binding: {
+      baseRef: 'main',
+      baseSha: BASE,
+      mergeBaseSha: BASE,
+      identity: [101, 301, 401, 1, 42, HEAD],
+    },
+  });
+  expect(f.readComparison).toHaveBeenCalledExactlyOnceWith(f.input.expected.repository, BASE, HEAD);
+  expect(f.readComparison.mock.invocationCallOrder[0]).toBeGreaterThan(
+    f.readReplay.mock.invocationCallOrder[0]!,
+  );
+});
+
+test.each(['claimed', 'completed'])('duplicate %s dispatches no comparison', async (state) => {
+  const f = fixture();
+  f.readReplay.mockImplementation(async (identity) => ({ identity, state }));
+  expect(await verifyCiEvent(f.input, f.reads)).toEqual({ kind: 'skip', reason: 'duplicate' });
+  expect(f.readComparison).not.toHaveBeenCalled();
+});
+
+test.each(['', 'short', 'g'.repeat(40), undefined])(
+  'rejects malformed comparison identity %j',
+  async (sha) => {
+    const f = fixture();
+    Object.assign(f.comparison.merge_base_commit, { sha });
+    expect(await verifyCiEvent(f.input, f.reads)).toEqual({
+      kind: 'error',
+      category: 'input',
+      field: 'comparison',
+    });
+  },
+);
+
+test('rejects a comparison echo conflict or failed comparison without leaking payload', async () => {
+  const f = fixture();
+  f.comparison.base_commit.sha = NEXT_HEAD;
+  expect(await verifyCiEvent(f.input, f.reads)).toEqual({
+    kind: 'error',
+    category: 'input',
+    field: 'comparison',
+  });
+  f.readComparison.mockRejectedValue(new Error('synthetic-private'));
+  expect(await verifyCiEvent(f.input, f.reads)).toEqual({
+    kind: 'error',
+    category: 'read',
+    field: 'comparison',
+  });
+});
+
+test.each(['baseRef', 'baseSha', 'mergeBaseSha'])('binding parser requires %s', async (field) => {
+  const f = fixture();
+  const result = await verifyCiEvent(f.input, f.reads);
+  if (result.kind !== 'verified') throw new Error('expected binding');
+  const value = { ...result.binding, [field]: undefined };
+  expect(parseReviewBinding(value)).toBeNull();
 });

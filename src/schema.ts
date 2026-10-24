@@ -355,6 +355,9 @@ function binding(value: unknown): ReviewBinding {
       'pullNumber',
       'headRepository',
       'headSha',
+      'baseRef',
+      'baseSha',
+      'mergeBaseSha',
       'actorId',
       'conclusion',
       'identity',
@@ -374,6 +377,9 @@ function binding(value: unknown): ReviewBinding {
     actorId: positive(r.actorId, 'binding'),
     headRepository: repository(r.headRepository, 'binding'),
     headSha: sha(r.headSha, 'binding'),
+    baseRef: text(r.baseRef, 'binding'),
+    baseSha: sha(r.baseSha, 'binding'),
+    mergeBaseSha: sha(r.mergeBaseSha, 'binding'),
     conclusion: text(r.conclusion, 'binding'),
     identity: [...tuple.slice(0, 5).map((v) => positive(v, 'binding')), sha(tuple[5], 'binding')],
   };
@@ -1530,6 +1536,7 @@ export function validateReviewPacket(candidate: unknown, trusted: unknown): Pack
       baseSha = sha(r.baseSha, 'baseSha'),
       ctxRevision = revision(r.contextRevision);
     requireValue(isDeepStrictEqual(b, e.binding), 'binding', 'identity');
+    requireValue(e.baseSha === e.binding.baseSha, 'expected', 'identity');
     requireValue(baseSha === e.baseSha, 'baseSha', 'identity');
     requireValue(isDeepStrictEqual(ctxRevision, e.contextRevision), 'contextRevision', 'identity');
     const ctx = context(r.context);
