@@ -48,6 +48,21 @@ commands in draft specs as executable until the corresponding tooling exists.
 - Do not invent quality thresholds, approval, or completed verification.
   Report exactly which commands ran and against which revision.
 
+## Review findings
+
+A finding blocks merge when realistic input (an ordinary Dependabot PR or a
+real GitHub response shape) gets a wrong or needlessly failed result, or when
+code and an approved spec disagree. Fix blocking findings in the PR under
+review, whatever their size.
+
+- When a fix requires amending an approved spec, amend it in the same PR and
+  record the maintainer's approval in the spec.
+- A fix that makes a result less wrong still preserves the fail-secure
+  coverage and trusted-workflow boundary above.
+- Build regression fixtures from real GitHub response shapes, sanitized
+  under the boundaries above.
+- Rate a non-blocking fix that amends an approved spec as large (L) effort.
+
 ## Verification
 
 For documentation changes, run `npm run lint:md`, `npm run format:check`, and
