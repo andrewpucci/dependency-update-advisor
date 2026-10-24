@@ -19,12 +19,12 @@ No shared workflow exists; the old reviewer stays active.
 
 ## Next action
 
-The revised D1 plan for [#13](https://github.com/andrewpucci/dependency-update-advisor/issues/13)
-is approved; execution remains a separate gate.
-The [T1 base-identity amendment](docs/specs/SPEC-event-verification.md#base-identity-amendment)
-and revised [D1 contract](docs/specs/SPEC-github-read.md) are approved for
-planning; [#107](https://github.com/andrewpucci/dependency-update-advisor/issues/107)
-is first, before #101–#106. Deferred reachability #93 remains separate.
+[D1 reads](docs/specs/SPEC-github-read.md) and the
+[T1 base identity](docs/specs/SPEC-event-verification.md#base-identity-amendment)
+are implemented for #13 and #101–#107 on the working branch, pending merge.
+[Verification #106](https://github.com/andrewpucci/dependency-update-advisor/issues/106)
+records exact-revision checks and remaining gates. Deferred reachability #93
+remains separate.
 W1/W2 must supply bounded reads and exclusive claims before T2/T3 writes.
 Downstream work: [S3](https://github.com/andrewpucci/dependency-update-advisor/issues/53)
 supplies evidence, [M2](https://github.com/andrewpucci/dependency-update-advisor/issues/22)
