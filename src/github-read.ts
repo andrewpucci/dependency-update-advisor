@@ -52,9 +52,27 @@ export type GithubFileResult =
         | { kind: 'absent'; treeSha: string }
         | Failure
       ));
+export type JsonValue =
+  | null
+  | boolean
+  | number
+  | string
+  | readonly JsonValue[]
+  | { readonly [key: string]: JsonValue };
+export type GithubComparison = Readonly<{
+  kind: 'available' | 'partial' | 'unavailable';
+  repository: RepositoryIdentity;
+  baseSha: string;
+  headRepository: RepositoryIdentity;
+  headSha: string;
+  mergeBaseSha: string;
+  records: readonly Readonly<Record<string, JsonValue>>[];
+  reasons: readonly EvidenceReason[];
+}>;
 export type GithubReadSession = Readonly<{
   discoverFiles: () => Promise<GithubDiscovery>;
   readFile: (request: unknown) => Promise<GithubFileResult>;
+  readComparison: () => Promise<GithubComparison>;
   close: () => void;
 }>;
 export type GithubReadCreation =
@@ -110,16 +128,27 @@ function parseLimits(value: unknown): GithubReadLimits | null {
 function repoPath(repo: RepositoryIdentity): string {
   return `/repos/${encodeURIComponent(repo.owner)}/${encodeURIComponent(repo.name)}`;
 }
-function httpReason(response: Response): EvidenceReason {
+function httpReason(response: Response, body: unknown): EvidenceReason {
   const remaining = response.headers.get('x-ratelimit-remaining');
   const retry = response.headers.get('retry-after');
   if (
     response.status === 429 ||
-    (response.status === 403 && (remaining === '0' || (retry !== null && /^\d+$/u.test(retry))))
+    (response.status === 403 &&
+      (remaining === '0' ||
+        (retry !== null && /^\d+$/u.test(retry) && Number.isSafeInteger(Number(retry)))))
   )
     return 'rate_limit';
   if (response.status === 404) return 'missing';
-  if (response.status === 401) return 'permission';
+  if (
+    response.status === 401 ||
+    (response.status === 403 &&
+      record(body) &&
+      [
+        'Resource not accessible by integration',
+        'Resource not accessible by personal access token',
+      ].includes(String(body.message)))
+  )
+    return 'permission';
   return 'unknown';
 }
 
@@ -239,6 +268,7 @@ class ReadSession implements GithubReadSession {
     const pending = [value];
     while (pending.length) {
       const item = pending.pop();
+      if (typeof item === 'number') requireRead(Number.isFinite(item));
       if (typeof item !== 'object' || item === null) continue;
       const children = Object.values(item);
       this.entries += children.length;
@@ -327,15 +357,15 @@ class ReadSession implements GithubReadSession {
         chunks.push(chunk.value);
       }
       this.check();
-      if (response.status !== 200) throw new ReadFailure(httpReason(response));
       let value: unknown;
       try {
         value = JSON.parse(
           new TextDecoder('utf-8', { fatal: true }).decode(Buffer.concat(chunks, length)),
         );
       } catch {
-        throw new ReadFailure('malformed');
+        throw new ReadFailure(response.status === 200 ? 'malformed' : httpReason(response, null));
       }
+      if (response.status !== 200) throw new ReadFailure(httpReason(response, value));
       return { value, headers: response.headers };
     } finally {
       clearTimeout(timer);
@@ -575,6 +605,74 @@ class ReadSession implements GithubReadSession {
       this.busy = false;
     }
   }
+  async readComparison(): Promise<GithubComparison> {
+    const records: Readonly<Record<string, JsonValue>>[] = [];
+    const reasons: EvidenceReason[] = [];
+    const provenance = {
+      repository: this.binding.repository,
+      baseSha: this.binding.baseSha,
+      headRepository: this.binding.headRepository,
+      headSha: this.binding.headSha,
+      mergeBaseSha: this.binding.mergeBaseSha,
+    };
+    const result = (): GithubComparison => ({
+      ...provenance,
+      kind: reasons.length === 0 ? 'available' : records.length ? 'partial' : 'unavailable',
+      records: [...records],
+      reasons: [...reasons],
+    });
+    if (this.busy) {
+      reasons.push('conflict');
+      return result();
+    }
+    this.busy = true;
+    try {
+      this.check();
+      const response = await this.get(
+        `${repoPath(this.binding.repository)}/dependency-graph/compare/${this.binding.baseSha}...${this.binding.headSha}`,
+      );
+      requireRead(Array.isArray(response.value));
+      for (const item of response.value) {
+        requireRead(record(item));
+        this.consumeEntries([item]);
+        const pending: unknown[] = [item];
+        while (pending.length) {
+          const value = pending.pop();
+          if (typeof value === 'object' && value !== null) {
+            Object.freeze(value);
+            for (const child of Object.values(value)) pending.push(child);
+          }
+        }
+        records.push(item as Readonly<Record<string, JsonValue>>);
+      }
+    } catch (error) {
+      reasons.push(fixedFailure(error).reason);
+    } finally {
+      this.busy = false;
+    }
+    let output = result();
+    if (
+      Buffer.byteLength(JSON.stringify(output), 'utf8') >
+      this.limits.maxRetainedBytes - this.retained
+    ) {
+      if (!reasons.includes('budget')) reasons.push('budget');
+      this.stopped = 'budget';
+      do {
+        records.pop();
+        output = result();
+      } while (
+        records.length &&
+        Buffer.byteLength(JSON.stringify(output), 'utf8') >
+          this.limits.maxRetainedBytes - this.retained
+      );
+    }
+    if (
+      Buffer.byteLength(JSON.stringify(output), 'utf8') <=
+      this.limits.maxRetainedBytes - this.retained
+    )
+      this.retain(output);
+    return output;
+  }
   async initialize(): Promise<void> {
     await this.metadata();
     this.retain({ binding: this.binding });
@@ -615,6 +713,7 @@ export async function createGithubReadSession(
       session: Object.freeze({
         discoverFiles: () => session.discoverFiles(),
         readFile: (request: unknown) => session.readFile(request),
+        readComparison: () => session.readComparison(),
         close: () => session.close(),
       }),
     };
