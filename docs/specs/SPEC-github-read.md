@@ -65,9 +65,10 @@ complete or `not_applicable` merely because its HTTP calls succeeded.
    T1's base-identity freshness table. A head change, closure, retarget, or
    changed merge base makes this attempt obsolete. A moved `base.sha` with an
    unchanged merge base does not, because the three-dot diff is unchanged.
-   Only an observed `base.sha` move triggers a commit comparison, counted in
-   this session's budgets. Never combine pages or evidence from different
-   snapshots or silently retarget a run.
+   Only an observed `base.sha` move triggers a commit comparison, using T1's
+   bounded comparison request and counted in this session's budgets. Never
+   combine pages or evidence from different snapshots or silently retarget a
+   run.
 3. Validate full 40-character hexadecimal commit/object SHAs and normalize
    their case consistently with T1. Reject branch/tag names, abbreviated SHAs,
    merge refs, missing IDs, and conflicting identities before dependent reads.
@@ -309,8 +310,9 @@ file contents count as decoded bytes rather than JSON-expanded byte arrays.
 On a collection overflow, D1 retains the prefix that fits and reports
 `budget`. If even the fixed unavailable/provenance envelope cannot fit, that
 failure notification remains deliverable without variable evidence. Budget
-or deadline exhaustion stops future I/O. A failed comparison alone does not
-stop an otherwise usable session or change earlier results.
+or deadline exhaustion, including a single request's timeout, stops future
+I/O. A comparison failure for any other reason does not stop an otherwise
+usable session or change earlier results. User-selected on 2026-10-24.
 
 A 403 with validated rate-limit headers is `rate_limit`; exact documented
 [insufficient-permission messages](https://docs.github.com/en/rest/using-the-rest-api/troubleshooting-the-rest-api#resource-not-accessible)

@@ -490,8 +490,9 @@ class ReadSession implements GithubReadSession {
     if (state.kind === 'error')
       throw new ReadFailure(state.category === 'mismatch' ? 'conflict' : 'malformed');
     if (state.kind === 'compare') {
+      // Page 2 of one-commit pages omits GitHub's first-page file list and patches.
       const comparison = await this.get(
-        `${repoPath(this.binding.repository)}/compare/${state.baseSha}...${this.binding.headSha}`,
+        `${repoPath(this.binding.repository)}/compare/${state.baseSha}...${this.binding.headSha}?per_page=1&page=2`,
       );
       this.consumeEntries(comparison.value);
       const checked = classifyPullRequest(this.binding, value, { value: comparison.value });
