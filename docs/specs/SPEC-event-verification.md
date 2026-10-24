@@ -91,12 +91,12 @@ Reads use a fixed GitHub API origin and trusted owner/name with validated
 numeric identifiers. Do not follow URLs supplied by a payload. The required
 read operations are:
 
-| Read                                                        | Purpose                                                                  |
-| ----------------------------------------------------------- | ------------------------------------------------------------------------ |
-| `GET /repos/{owner}/{repo}/actions/workflows/{workflow_id}` | Confirm intended workflow ID and path in the consumer repository.        |
-| `GET /repos/{owner}/{repo}/actions/runs/{run_id}`           | Verify the source run and its latest attempt, retaining PR associations. |
-| `GET /repos/{owner}/{repo}/pulls/{pull_number}`             | Verify author, repositories, state, head, base ref, and base SHA.        |
-| `GET /repos/{owner}/{repo}/compare/{base}...{head}`         | Authenticate merge base after PR/head/replay gates pass.                 |
+| Read                                                                  | Purpose                                                                  |
+| --------------------------------------------------------------------- | ------------------------------------------------------------------------ |
+| `GET /repos/{owner}/{repo}/actions/workflows/{workflow_id}`           | Confirm intended workflow ID and path in the consumer repository.        |
+| `GET /repos/{owner}/{repo}/actions/runs/{run_id}`                     | Verify the source run and its latest attempt, retaining PR associations. |
+| `GET /repos/{owner}/{repo}/pulls/{pull_number}`                       | Verify author, repositories, state, head, base ref, and base SHA.        |
+| `GET /repos/{owner}/{repo}/compare/{base}...{head}?per_page=1&page=2` | Authenticate merge base after PR/head/replay gates pass.                 |
 
 GitHub documents [workflow reads](https://docs.github.com/en/rest/actions/workflows#get-a-workflow),
 [run reads](https://docs.github.com/en/rest/actions/workflow-runs#get-a-workflow-run),
@@ -312,11 +312,14 @@ or retarget can change the diff without a head change.
    as bounded control-free text and compare it exactly; unlike repository
    names, branch names are case-sensitive.
 3. After the PR read, add an `EventReads` comparison read of
-   `GET /repos/{owner}/{repo}/compare/{baseSha}...{headSha}` in the base
-   repository. GitHub documents the
-   [commit comparison](https://docs.github.com/en/rest/commits/commits#compare-two-commits).
-   Require the echoed `base_commit.sha` to equal the requested base and
-   `merge_base_commit.sha` to be a full SHA. Ignore `files` and `commits`.
+   `GET /repos/{owner}/{repo}/compare/{baseSha}...{headSha}?per_page=1&page=2`
+   in the base repository. GitHub lists changed files only on the first page
+   of a [commit comparison](https://docs.github.com/en/rest/commits/commits#compare-two-commits),
+   so this page carries `base_commit` and `merge_base_commit` with at most one
+   commit and no file patches. Require the echoed `base_commit.sha` to equal
+   the requested base and `merge_base_commit.sha` to be a full SHA. Ignore
+   `commits`. User-selected on 2026-10-24: request the second one-commit page
+   so the merge-base read stays small on large lockfile diffs.
 4. The six-part `ReviewIdentity` tuple is unchanged. Base fields do not alter
    replay, duplicate, or same-head refresh semantics.
 5. A failed comparison read is `error: read`; invalid fields are

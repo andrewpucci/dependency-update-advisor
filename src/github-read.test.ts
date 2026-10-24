@@ -172,9 +172,28 @@ test('requires a comparison only for observed base movement', async () => {
   const session = await ready(f);
   expect(f.fetch.mock.calls.map(([url]) => url)).toEqual([
     'https://api.github.com/repos/example/consumer/pulls/42',
-    `https://api.github.com/repos/example/consumer/compare/${current.base.sha}...${HEAD}`,
+    `https://api.github.com/repos/example/consumer/compare/${current.base.sha}...${HEAD}?per_page=1&page=2`,
   ]);
   session.close();
+});
+
+test('reads the merge base from the comparison page without file patches', async () => {
+  const current = pr();
+  current.base.sha = 'c'.repeat(40);
+  const shas = { base_commit: { sha: current.base.sha }, merge_base_commit: { sha: BASE } };
+  // GitHub lists changed files, with patches, only on the first comparison page.
+  const files = Array.from({ length: 50 }, (_, i) => ({
+    filename: `f${i}`,
+    patch: 'x'.repeat(200),
+  }));
+  const f = fixture([], { maxResponseBytes: 2000 });
+  f.fetch.mockImplementation(async (url: string) =>
+    url.includes('/compare/')
+      ? json(url.endsWith('?per_page=1&page=2') ? shas : { ...shas, files })
+      : json(current),
+  );
+  const result = await createGithubReadSession(f.input, f.dependencies);
+  expect(result.kind).toBe('ready');
 });
 
 test.each(['head', 'closed', 'retarget', 'repo', 'author', 'count'])(
