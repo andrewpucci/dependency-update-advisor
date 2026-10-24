@@ -2,6 +2,7 @@ import type { Ecosystem, EvidenceReason, PacketResult } from './schema.js';
 import {
   evaluatePolicy,
   summarizePolicy,
+  type EvidenceSource,
   type PolicyUnit,
   type PolicySummary,
   type AssessmentState,
@@ -32,7 +33,7 @@ const reasonRanks = {
   conflict: 8,
   unknown: 9,
 } satisfies Record<EvidenceReason, number>;
-type OptionalSignal = 'publishTime' | 'deprecation' | 'trust' | 'publisher';
+type OptionalSignal = NonNullable<EvidenceSource['signal']>;
 const optionalSignals: readonly string[] = ['publishTime', 'deprecation', 'trust', 'publisher'];
 export type EvidenceLink = Readonly<{
   id: string;
@@ -84,6 +85,10 @@ export type DecisionCoverage = Readonly<{
   policyProvenance: Readonly<{ assessments: PolicySummary; withoutAssessments?: PolicySummary }>;
 }>;
 
+/** UTF-16 code-unit order, independent of locale. */
+function byCodeUnit(a: string, b: string) {
+  return a < b ? -1 : a > b ? 1 : 0;
+}
 function freeze<T>(value: T): T {
   if (value && typeof value === 'object') {
     for (const child of Object.values(value)) freeze(child);
@@ -125,7 +130,7 @@ function canonical(value: unknown): unknown {
   if (value && typeof value === 'object')
     return Object.fromEntries(
       Object.entries(value)
-        .sort(([a], [b]) => (a < b ? -1 : a > b ? 1 : 0))
+        .sort(([a], [b]) => byCodeUnit(a, b))
         .map(([key, child]) => [key, canonical(child)]),
     );
   return value;
@@ -189,7 +194,7 @@ function projectMembers(
     }),
     findings: packet.findings
       .filter((f) => memberIds.includes(f.memberId))
-      .sort((a, b) => (a.id < b.id ? -1 : a.id > b.id ? 1 : 0)),
+      .sort((a, b) => byCodeUnit(a.id, b.id)),
     coverageLimits: sources.flatMap((source) => source.coverageLimits),
   };
 }
@@ -264,7 +269,7 @@ export function formDecisionUnits(input: Packet): UnitInventory {
       },
     ];
   });
-  units.sort((a, b) => (a.id < b.id ? -1 : a.id > b.id ? 1 : 0));
+  units.sort((a, b) => byCodeUnit(a.id, b.id));
   return freeze({ packet, units });
 }
 
