@@ -222,3 +222,165 @@ test('validates cross-field limits and binding before dispatch', async () => {
   expect(await createGithubReadSession(f.input, f.dependencies)).toEqual({ kind: 'invalid' });
   expect(f.fetch).not.toHaveBeenCalled();
 });
+
+function row(index: number, status = 'modified', filename = `file-${index}.json`) {
+  return { filename, status, sha: 'd'.repeat(40) };
+}
+
+test.each([0, 1, 100, 101])(
+  'discovers %s files with terminal confirmation and bracketing',
+  async (count) => {
+    const rows = Array.from({ length: count }, (_, i) => row(i));
+    const pages = [];
+    for (let start = 0; start <= count; start += 100)
+      pages.push(json(rows.slice(start, start + 100)));
+    const f = fixture([json(pr(count)), json(pr(count)), ...pages, json(pr(count))]);
+    const session = await ready(f);
+    expect(await session.discoverFiles()).toMatchObject({
+      kind: 'available',
+      complete: true,
+      files: rows.map((r) => ({
+        path: r.filename,
+        status: 'modified',
+        previousPath: null,
+        blobSha: r.sha,
+      })),
+      reasons: [],
+    });
+    const urls = f.fetch.mock.calls.map(([url]) => url);
+    expect(urls[1]).toBe(urls[0]);
+    expect(urls.at(-1)).toBe(urls[0]);
+    expect(urls.filter((url) => url.includes('/files?'))).toHaveLength(Math.floor(count / 100) + 1);
+    session.close();
+  },
+);
+
+test('keeps rename paths across roots and ignores hostile content URLs and patches', async () => {
+  const change = {
+    ...row(1, 'renamed', '.github/workflows/build.yml'),
+    previous_filename: 'nested/uv.lock',
+    raw_url: 'https://attacker.invalid/private',
+    patch: 'private',
+  };
+  const f = fixture([json(pr(1)), json(pr(1)), json([change]), json(pr(1))]);
+  const result = await (await ready(f)).discoverFiles();
+  expect(result).toMatchObject({
+    kind: 'available',
+    files: [{ path: '.github/workflows/build.yml', previousPath: 'nested/uv.lock' }],
+  });
+  expect(JSON.stringify(result)).not.toContain('private');
+  expect(
+    f.fetch.mock.calls.every(([url]) =>
+      url.startsWith('https://api.github.com/repos/example/consumer/'),
+    ),
+  ).toBe(true);
+});
+
+test.each(['duplicate', 'malformed', 'count', 'link', 'missing'])(
+  'retains known rows after %s discovery failure',
+  async (problem) => {
+    const first = row(1);
+    const page =
+      problem === 'duplicate'
+        ? [first, first]
+        : problem === 'malformed'
+          ? [first, { filename: '../bad', status: 'modified' }]
+          : [first];
+    const headers: HeadersInit =
+      problem === 'link' ? { link: '<https://attacker.invalid/files?page=2>; rel="next"' } : {};
+    const f = fixture([
+      json(pr(2)),
+      json(pr(2)),
+      problem === 'missing' ? json({}, 404) : json(page, 200, headers),
+      json(pr(2)),
+    ]);
+    const result = await (await ready(f)).discoverFiles();
+    expect(result.kind).not.toBe('available');
+    expect(result.complete).toBe(false);
+    expect(result.files).toHaveLength(problem === 'missing' ? 0 : 1);
+    expect(result.reasons.length).toBeGreaterThan(0);
+  },
+);
+
+test('exactly 3000 files remains partial at the endpoint cap', async () => {
+  const responses = [json(pr(3000)), json(pr(3000))];
+  for (let page = 0; page < 30; page++)
+    responses.push(json(Array.from({ length: 100 }, (_, i) => row(page * 100 + i))));
+  responses.push(json(pr(3000)));
+  const result = await (await ready(fixture(responses))).discoverFiles();
+  expect(result).toMatchObject({ kind: 'partial', complete: false, reasons: ['truncated'] });
+  expect(result.files).toHaveLength(3000);
+});
+
+test('base and merge-base divergence limits discovery without an ancestry request', async () => {
+  const f = fixture([json(pr(1)), json(pr(1)), json([row(1)]), json(pr(1))]);
+  f.input.binding.mergeBaseSha = 'c'.repeat(40);
+  const result = await (await ready(f)).discoverFiles();
+  expect(result).toMatchObject({ kind: 'partial', reasons: ['conflict'], complete: false });
+  expect(f.fetch).toHaveBeenCalledTimes(4);
+});
+
+test('observed head movement discards usable discovery', async () => {
+  const moved = pr(1);
+  moved.head.sha = 'c'.repeat(40);
+  const f = fixture([json(pr(1)), json(pr(1)), json([row(1)]), json(moved)]);
+  expect(await (await ready(f)).discoverFiles()).toMatchObject({
+    kind: 'obsolete',
+    files: [],
+    complete: false,
+  });
+});
+
+test.each(['same', 'changed', 'failed'])(
+  'classifies a base move after pagination: %s',
+  async (change) => {
+    const moved = pr(1);
+    moved.base.sha = 'c'.repeat(40);
+    const comparison =
+      change === 'failed'
+        ? json({}, 403)
+        : json({
+            base_commit: { sha: moved.base.sha },
+            merge_base_commit: { sha: change === 'same' ? BASE : HEAD },
+          });
+    const f = fixture([json(pr(1)), json(pr(1)), json([row(1)]), json(moved), comparison]);
+    const result = await (await ready(f)).discoverFiles();
+    expect(result.kind).toBe(
+      change === 'same' ? 'available' : change === 'changed' ? 'obsolete' : 'partial',
+    );
+    expect(result.files).toHaveLength(change === 'changed' ? 0 : 1);
+    expect(result.binding.baseSha).toBe(BASE);
+  },
+);
+
+test.each(['maxPages', 'maxFiles', 'maxRequests'] as const)(
+  'retains evidence on shared %s exhaustion',
+  async (key) => {
+    const rows = Array.from({ length: 100 }, (_, i) => row(i));
+    const f = fixture([json(pr(101)), json(pr(101)), json(rows), json([row(101)]), json(pr(101))], {
+      [key]: key === 'maxRequests' ? 3 : 1,
+    });
+    const result = await (await ready(f)).discoverFiles();
+    expect(result).toMatchObject({ kind: 'partial', complete: false });
+    expect(result.reasons).toContain('budget');
+    expect(result.files.length).toBe(key === 'maxFiles' ? 1 : 100);
+  },
+);
+
+test('accepts a same-endpoint next-page hint but rejects a loop without following it', async () => {
+  const path = 'https://api.github.com/repos/example/consumer/pulls/42/files';
+  const rows = Array.from({ length: 100 }, (_, i) => row(i));
+  for (const next of [2, 1]) {
+    const f = fixture([
+      json(pr(100)),
+      json(pr(100)),
+      json(rows, 200, { link: `<${path}?per_page=100&page=${next}>; rel="next"` }),
+      ...(next === 2 ? [json([])] : []),
+      json(pr(100)),
+    ]);
+    expect((await (await ready(f)).discoverFiles()).kind).toBe(
+      next === 2 ? 'available' : 'partial',
+    );
+    expect(f.fetch.mock.calls.some(([url]) => url.endsWith('page=2'))).toBe(next === 2);
+  }
+});
