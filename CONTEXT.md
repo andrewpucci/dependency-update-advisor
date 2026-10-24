@@ -8,8 +8,9 @@
 [T1 verification](docs/specs/SPEC-event-verification.md),
 [T2 status](docs/specs/SPEC-execution-status.md),
 [T3 comments](docs/specs/SPEC-managed-comments.md),
-[T4 packet validation](docs/specs/SPEC-review-packet.md), and
-[T5 decision units](docs/specs/SPEC-decision-units.md) are merged into `main`.
+[T4 packet validation](docs/specs/SPEC-review-packet.md),
+[T5 decision units](docs/specs/SPEC-decision-units.md), and
+[D1 reads](docs/specs/SPEC-github-read.md) are merged into `main`.
 T5 merged in [PR #100](https://github.com/andrewpucci/dependency-update-advisor/pull/100);
 [T4 evidence](https://github.com/andrewpucci/dependency-update-advisor/issues/84)
 and [T5 evidence](https://github.com/andrewpucci/dependency-update-advisor/issues/99)
@@ -19,10 +20,9 @@ No shared workflow exists; the old reviewer stays active.
 
 ## Next action
 
-[D1 reads](docs/specs/SPEC-github-read.md) and the
-[T1 base identity](docs/specs/SPEC-event-verification.md#base-identity-amendment)
-are implemented for #13 and #101–#107 on the working branch, pending merge.
-[Verification #106](https://github.com/andrewpucci/dependency-update-advisor/issues/106)
+[#110 snapshot reuse](docs/specs/SPEC-pr-freshness-snapshot.md) is implemented
+for #111–#113 on `issue-110`, pending review and merge.
+[Verification #113](https://github.com/andrewpucci/dependency-update-advisor/issues/113)
 records exact-revision checks and remaining gates. Deferred reachability #93
 remains separate.
 W1/W2 must supply bounded reads and exclusive claims before T2/T3 writes.

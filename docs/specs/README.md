@@ -106,21 +106,22 @@ gaps and an introduced vulnerability before parity is claimed.
   [Verification evidence](https://github.com/andrewpucci/dependency-update-advisor/issues/62)
   remains separate from W1/W2 transport/claims and T2/T3 publication gates.
   A [base-identity amendment](SPEC-event-verification.md#base-identity-amendment)
-  for T1 and the T4 binding check is implemented, pending merge;
+  for T1 and the T4 binding check is implemented and merged into `main`;
   [#107](https://github.com/andrewpucci/dependency-update-advisor/issues/107)
   tracks it.
 - [Analysis providers](SPEC-analysis-providers.md) — approved for planning.
 - [Immutable GitHub evidence reads](SPEC-github-read.md) — implemented for
-  D1 #13 and #101–#107 in `shared-review`, pending merge. Caller-supplied
+  D1 #13 and #101–#107 in `shared-review`, merged into `main`. Caller-supplied
   budgets cover discovery, immutable file bytes, and independent comparison
   availability; base/merge-base divergence remains incomplete discovery.
   [Verification #106](https://github.com/andrewpucci/dependency-update-advisor/issues/106)
   retains transport/collector/publication, adoption, and cutover gates.
 - [Reuse validated PR freshness snapshots](SPEC-pr-freshness-snapshot.md) —
-  supporting T1/D1 interface amendment, approved for execution, for
+  supporting T1/D1 interface amendment, implemented on `issue-110`, for
   [#110](https://github.com/andrewpucci/dependency-update-advisor/issues/110)
   in `shared-review`; preserves the base-identity decision table and comparison
-  request. The user authorized one PR for #111–#113 on 2026-10-24.
+  request. Pending review and merge; [verification #113](https://github.com/andrewpucci/dependency-update-advisor/issues/113)
+  records exact-revision checks and remaining gates.
 - [npm evidence](SPEC-npm-evidence.md) — approved for planning.
 - [GitHub Actions evidence](SPEC-actions-evidence.md) — approved for planning.
 - [uv evidence](SPEC-uv-evidence.md) — approved for planning.

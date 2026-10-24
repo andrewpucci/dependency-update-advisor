@@ -1,6 +1,9 @@
 # Spec: D1 Immutable GitHub Evidence Reads
 
-Status: implemented on the D1 working branch, pending merge.
+Status: D1 #13 and #101–#107 are implemented and merged into `main`.
+The #110 snapshot amendment is implemented on `issue-110`, pending review
+and merge; its [verification issue](https://github.com/andrewpucci/dependency-update-advisor/issues/113)
+records exact-revision evidence.
 Approved for execution, 2026-10-24. Supporting contract for `shared-review`
 in [the capability map](README.md), scoped to
 [issue #13: D1](https://github.com/andrewpucci/dependency-update-advisor/issues/13).

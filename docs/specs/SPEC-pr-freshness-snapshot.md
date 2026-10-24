@@ -1,6 +1,7 @@
 # Spec: Reuse Validated PR Freshness Snapshots
 
-Status: approved for execution, 2026-10-24.
+Status: implemented on `issue-110`, pending review and merge.
+Approved for execution, 2026-10-24.
 Approval: the user invoked `as-plan` on 2026-10-24 after receiving the draft.
 This approves the specification for planning; plan and execution approval
 remain separate gates. The user approved the three-task plan and invoked
@@ -21,11 +22,11 @@ using one validated binding and one parsed PR snapshot. Reuse those values
 when the comparison arrives, preserving all freshness outcomes, read ordering,
 and failure mappings. The users are contributors maintaining these two callers.
 
-Today `classifyPullRequest(binding, response, comparison?)` reparses both
-inputs each time. Both callers invoke it before and after the comparison;
-`reverifyReviewBinding` also parses its binding before its run read. The
-refactor removes this repeated validation without weakening either external
-input boundary.
+Before this refactor, `classifyPullRequest(binding, response, comparison?)`
+reparsed both inputs each time. Both callers invoked it before and after the
+comparison; `reverifyReviewBinding` also parsed its binding before its run
+read. The shared context removes repeated validation without weakening either
+external input boundary.
 
 ## Snapshot and Interface Contract
 
@@ -53,12 +54,13 @@ input boundary.
    callers use it; D1 retains responsibility for `changed_files` validation,
    HTTP transport, budgets, and mapping verification outcomes to D1 results.
    Existing before/after pagination checks remain independent checks.
-6. The exported classifier interface may change to carry this validated
-   context through the comparison stage. Choose its exact names and shape
-   during planning. Provide a runtime-validated construction path usable by
-   both callers; do not expose an unchecked parsed-input shortcut. Migrate all
-   repository callers and their fixtures together. Compatibility with the
-   old optional-comparison signature is not a requirement.
+6. `createPullRequestClassifier(binding)` provides the runtime-validated
+   context for both callers. It returns `null` or a frozen context exposing
+   its owned `binding` and `classify(response)` operation. The `compare`
+   branch carries `baseSha` and `complete(comparisonResponse)`; completion
+   returns a terminal classification. Keep parsed-input helpers private.
+   All repository callers and their fixtures use this interface; the old
+   optional-comparison signature is removed.
 
 The [T1 freshness decision table](SPEC-event-verification.md#freshness-decision-table)
 remains the source of truth. Preserve malformed-input and identity-mismatch
@@ -141,7 +143,7 @@ npm run format:check
 git diff --check
 ```
 
-After separately approved implementation, run the existing repository checks
+For implementation changes, run the existing repository checks
 and focused suites on the same revision:
 
 ```sh
@@ -173,7 +175,15 @@ issue #110 or its PR. Documentation checks do not establish implementation verif
   PR reads, execute PR code, authorize writes from this context, or publish
   private consumer details or raw payloads.
 
+## Implementation Handoff
+
+T1 and D1 implement this contract for #110 and #111–#113 on `issue-110`.
+[Verification #113](https://github.com/andrewpucci/dependency-update-advisor/issues/113)
+records revision-specific checks and review evidence. Live transport,
+publication, adoption, and cutover remain separate gates; the old reviewer
+stays active.
+
 ## Open Questions
 
-None required to review this scope. The exact shared interface is a planning
-choice constrained by the validation and ownership requirements above.
+None. T1 documents the shared interface; this contract defines its ownership
+and reuse requirements.
