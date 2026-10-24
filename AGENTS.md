@@ -28,6 +28,9 @@ commands in draft specs as executable until the corresponding tooling exists.
 - Keep verification commands and behavioral limits in repository docs.
   Record revision-specific results and development history in the relevant
   issue or PR, with links to CI runs.
+- The [PR review guide](docs/pr-review.md) defines which review findings block
+  merge and how to rate non-blocking effort; apply it when reviewing changes or
+  fixing review findings.
 - Use GitHub Issues for individual implementation tasks. If an approved plan
   needs an ordered working handoff, use `tasks/plan.md` on the working branch
   and link its issues. The plan need not remain after the work is complete.
@@ -47,21 +50,6 @@ commands in draft specs as executable until the corresponding tooling exists.
   process; store project contracts and decisions here.
 - Do not invent quality thresholds, approval, or completed verification.
   Report exactly which commands ran and against which revision.
-
-## Review findings
-
-A finding blocks merge when realistic input (an ordinary Dependabot PR or a
-real GitHub response shape) gets a wrong or needlessly failed result, or when
-code and an approved spec disagree. Fix blocking findings in the PR under
-review, whatever their size.
-
-- When a fix requires amending an approved spec, amend it in the same PR and
-  record the maintainer's approval in the spec.
-- A fix that makes a result less wrong still preserves the fail-secure
-  coverage and trusted-workflow boundary above.
-- Build regression fixtures from real GitHub response shapes, sanitized
-  under the boundaries above.
-- Rate a non-blocking fix that amends an approved spec as large (L) effort.
 
 ## Verification
 
