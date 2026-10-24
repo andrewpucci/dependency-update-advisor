@@ -299,40 +299,44 @@ test.each(['npm', 'uv'] as const)(
   },
 );
 
-test.each(['second_direct', 'removed_direct', 'unknown', 'partial', 'no_proof', 'wrong_side'])(
-  'keeps members standalone for %s without losing a change',
-  (mode) => {
-    const f = groupFixture();
-    if (mode === 'second_direct') f.packet.changes[1].role = 'direct';
-    if (mode === 'removed_direct' || mode === 'unknown') {
-      const extra = npm('extra');
-      extra.role = mode === 'unknown' ? 'unknown' : 'direct';
-      if (mode === 'removed_direct') {
-        extra.to = null;
-        extra.kind = 'removal';
-      }
-      const replacement = fixture([...f.packet.changes, extra]);
-      f.packet = replacement.packet;
-      f.expected = replacement.expected;
-      relate(f, 0, 1);
+test.each([
+  ['second_direct', 'independent_change'],
+  ['removed_direct', 'multiple_direct_changes'],
+  ['unknown', 'unknown_role'],
+  ['partial', 'inventory_incomplete'],
+  ['no_proof', 'missing_relationship'],
+  ['wrong_side', 'missing_relationship'],
+] as const)('keeps members standalone for %s without losing a change', (mode, reason) => {
+  const f = groupFixture();
+  if (mode === 'second_direct') f.packet.changes[1].role = 'direct';
+  if (mode === 'removed_direct' || mode === 'unknown') {
+    const extra = npm('extra');
+    extra.role = mode === 'unknown' ? 'unknown' : 'direct';
+    if (mode === 'removed_direct') {
+      extra.to = null;
+      extra.kind = 'removal';
     }
-    if (mode === 'partial')
-      f.packet.coverage.npm = { status: 'partial', reasons: ['truncated'], sourceIds: [] };
-    if (mode === 'no_proof') f.packet.relationships = [];
-    if (mode === 'wrong_side') {
-      f.packet.relationships = [];
-      relate(f, 0, 1, 'base');
-    }
-    const result = formDecisionUnits(accepted(f));
-    expect(result.units.every((u) => u.kind === 'standalone')).toBe(true);
-    expect(result.units.flatMap((u) => u.memberIds).sort()).toEqual(
-      f.packet.changes.map((c) => c.id).sort(),
-    );
-    expect(
-      result.units.find((u) => u.memberIds.includes('child'))!.relationship.nextAction,
-    ).toBeTruthy();
-  },
-);
+    const replacement = fixture([...f.packet.changes, extra]);
+    f.packet = replacement.packet;
+    f.expected = replacement.expected;
+    relate(f, 0, 1);
+  }
+  if (mode === 'partial')
+    f.packet.coverage.npm = { status: 'partial', reasons: ['truncated'], sourceIds: [] };
+  if (mode === 'no_proof') f.packet.relationships = [];
+  if (mode === 'wrong_side') {
+    f.packet.relationships = [];
+    relate(f, 0, 1, 'base');
+  }
+  const result = formDecisionUnits(accepted(f));
+  expect(result.units.every((u) => u.kind === 'standalone')).toBe(true);
+  expect(result.units.flatMap((u) => u.memberIds).sort()).toEqual(
+    f.packet.changes.map((c) => c.id).sort(),
+  );
+  const child = result.units.find((u) => u.memberIds.includes('child'))!;
+  expect(child.relationship.reason).toBe(reason);
+  expect(child.relationship.nextAction).toBeTruthy();
+});
 
 test('groups a removed member through the base while leaving unrelated roots separate', () => {
   const anchor = npm('anchor'),
