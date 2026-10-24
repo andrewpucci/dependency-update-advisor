@@ -97,6 +97,18 @@ test.each([302, 404, 403, 429, 500])('maps status %s to safe fixed provenance', 
   });
 });
 
+test.each([
+  [404, {}, 'missing'],
+  [403, { 'x-ratelimit-remaining': '0' }, 'rate_limit'],
+  [200, {}, 'malformed'],
+])('classifies a bodiless %s response by its status', async (status, headers, reason) => {
+  const f = fixture([new Response(null, { status, headers })]);
+  expect(await createGithubReadSession(f.input, f.dependencies)).toEqual({
+    kind: 'unavailable',
+    reason,
+  });
+});
+
 test('enforces streamed bytes even with a false Content-Length and cancels the stream', async () => {
   let cancelled = false;
   const stream = new ReadableStream<Uint8Array>({
