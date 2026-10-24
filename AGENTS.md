@@ -30,6 +30,9 @@ commands in draft specs as executable until the corresponding tooling exists.
 - Keep verification commands and behavioral limits in repository docs.
   Record revision-specific results and development history in the relevant
   issue or PR, with links to CI runs.
+- The [PR review guide](docs/pr-review.md) defines which review findings block
+  merge and how to rate non-blocking effort; apply it when reviewing changes or
+  fixing review findings.
 - Use GitHub Issues for individual implementation tasks. If an approved plan
   needs an ordered working handoff, use `tasks/plan.md` on the working branch
   and link its issues. The plan need not remain after the work is complete.

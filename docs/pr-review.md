@@ -44,8 +44,8 @@ Scope: <files/modules and spec sections reviewed; exclusions or gaps>
 
 ## Non-blocking feedback
 
-- <Suggestion or Nit: location, reason, and optional improvement.
-  Omit this section if empty.>
+- <Suggestion or Nit: location, reason, effort (S/M/L), and optional
+  improvement. Omit this section if empty.>
 ```
 
 Recheck changes to the reviewed head before carrying an approval forward.
@@ -53,6 +53,38 @@ Put line-specific findings on the diff and reference them in the summary.
 State the concrete failure and its impact before proposing a fix. Separate
 verified defects from questions and optional preferences; avoid duplicating
 formatter output. An unverified area remains a review gap.
+
+## What blocks merge
+
+Gather evidence before raising a finding whenever it can be had: a
+reproduction, a captured response, or a failing test. A finding blocks merge
+when realistic input (an ordinary Dependabot PR or a real GitHub response
+shape) gets a wrong or needlessly failed result, when code and an approved spec
+disagree, or when a test cannot fail on the defect it covers or is flaky. Fix
+blocking findings in the PR under review, whatever their size.
+
+- When a fix requires amending an approved spec, amend it in the same PR and
+  record the maintainer's approval in the spec.
+- A fix that changes behavior adds a regression check that fails without it,
+  built from real GitHub response shapes where the input comes from GitHub.
+- A fix that makes a result less wrong still preserves fail-secure coverage
+  and the trusted-workflow boundary.
+
+Every other finding is non-blocking. This includes each function the
+[complexity report](../CONTRIBUTING.md#complexity-review) lists as new or
+worsened above its advisory threshold. Rate non-blocking effort by scope; the
+highest matching tier wins:
+
+- **S:** one source file, plus its existing test file at most; no observable
+  behavior change, new tests, or doc changes.
+- **M:** one module with no exported-interface change; may add or rewrite
+  tests or fixtures, or touch docs other than approved specs.
+- **L:** crosses modules or changes an exported interface, amends an approved
+  spec, needs fixtures captured from live GitHub responses, or changes
+  verification tooling or CI.
+
+The maintainer decides whether each non-blocking finding is fixed in the PR or
+deferred to an issue.
 
 ## Checks for every change
 
