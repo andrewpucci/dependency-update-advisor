@@ -385,6 +385,26 @@ test('accepts a same-endpoint next-page hint but rejects a loop without followin
   }
 });
 
+test('accepts GitHub repository-ID pagination links only for the bound repository', async () => {
+  const rows = Array.from({ length: 100 }, (_, i) => row(i));
+  for (const id of [101, 999]) {
+    const path = `https://api.github.com/repositories/${id}/pulls/42/files`;
+    const f = fixture([
+      json(pr(100)),
+      json(pr(100)),
+      json(rows, 200, { link: `<${path}?per_page=100&page=2>; rel="next"` }),
+      ...(id === 101 ? [json([])] : []),
+      json(pr(100)),
+    ]);
+    expect(await (await ready(f)).discoverFiles()).toMatchObject(
+      id === 101
+        ? { kind: 'available', complete: true }
+        : { kind: 'partial', reasons: ['conflict'] },
+    );
+    expect(f.fetch.mock.calls.some(([url]) => url.includes('/repositories/'))).toBe(false);
+  }
+});
+
 const TREE = 'd'.repeat(40);
 const BLOB = 'e'.repeat(40);
 function commit(sha = BASE, tree = TREE) {
