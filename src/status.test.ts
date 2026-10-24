@@ -3,6 +3,7 @@ import { publishExecutionStatus, type StatusRequest, type StatusDependencies } f
 import type { ReviewBinding, ReviewIdentity } from './event.js';
 
 const HEAD = 'a'.repeat(40);
+const BASE = 'b'.repeat(40);
 const NEXT_HEAD = 'c'.repeat(40);
 
 function acknowledgement(request: StatusRequest) {
@@ -29,6 +30,9 @@ function fixture(kind = 'running') {
     pullNumber: 42,
     headRepository: repository,
     headSha: HEAD,
+    baseRef: 'main',
+    baseSha: BASE,
+    mergeBaseSha: BASE,
     actorId: 201,
     conclusion: 'success',
     identity,
@@ -59,7 +63,7 @@ function fixture(kind = 'running') {
     state: 'open',
     merged: false,
     user: actor,
-    base: { repo },
+    base: { ref: 'main', sha: BASE, repo },
     head: { sha: HEAD, repo },
   };
   const input = {

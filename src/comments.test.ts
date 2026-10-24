@@ -9,6 +9,7 @@ import { record, type ReviewBinding } from './event.js';
 import { publishExecutionStatus, type StatusRequest } from './status.js';
 
 const HEAD = 'a'.repeat(40);
+const BASE = 'b'.repeat(40);
 const OLD_HEAD = 'b'.repeat(40);
 const MARKER = '<!-- dependabot-intelligent-review -->';
 const publisher = { appId: 801, botUserId: 802 };
@@ -35,6 +36,9 @@ function discoveryFixture(comments: unknown[] = []) {
     pullNumber: 42,
     headRepository: repository,
     headSha: HEAD,
+    baseRef: 'main',
+    baseSha: BASE,
+    mergeBaseSha: BASE,
     actorId: 201,
     conclusion: 'success',
     identity: [101, 301, 401, 1, 42, HEAD],
@@ -209,7 +213,7 @@ function publicationFixture(comments: unknown[] = []) {
     state: 'open',
     merged: false,
     user: actor,
-    base: { repo },
+    base: { ref: 'main', sha: BASE, repo },
     head: { sha: HEAD, repo },
   };
   const input = {

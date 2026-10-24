@@ -23,11 +23,22 @@ export type ReviewBinding = Readonly<{
   pullNumber: number;
   headRepository: RepositoryIdentity;
   headSha: string;
+  baseRef: string;
+  baseSha: string;
+  mergeBaseSha: string;
   actorId: number;
   conclusion: CiConclusion;
   identity: ReviewIdentity;
 }>;
-type ErrorField = 'event' | 'expected' | 'workflow' | 'run' | 'pullRequest' | 'replay' | 'binding';
+type ErrorField =
+  | 'event'
+  | 'expected'
+  | 'workflow'
+  | 'run'
+  | 'pullRequest'
+  | 'replay'
+  | 'binding'
+  | 'comparison';
 export type VerificationError = {
   kind: 'error';
   category: 'input' | 'mismatch' | 'read' | 'replay';
@@ -41,6 +52,7 @@ export type EventReads = {
   readWorkflow: (repository: RepositoryIdentity, workflowId: number) => Promise<unknown>;
   readRun: (repository: RepositoryIdentity, runId: number) => Promise<unknown>;
   readPullRequest: (repository: RepositoryIdentity, pullNumber: number) => Promise<unknown>;
+  readComparison: (repository: RepositoryIdentity, base: string, head: string) => Promise<unknown>;
   readReplay: (identity: ReviewIdentity) => Promise<unknown>;
 };
 export type FreshnessReads = Pick<EventReads, 'readRun' | 'readPullRequest'>;
@@ -75,6 +87,8 @@ type PullRequest = {
   repository: RepositoryIdentity;
   headRepository: RepositoryIdentity;
   headSha: string;
+  baseRef: string;
+  baseSha: string;
 };
 
 function failure(
@@ -283,7 +297,9 @@ function pullRequest(value: unknown): PullRequest | null {
     !positiveId(value.number) ||
     (value.state !== 'open' && value.state !== 'closed') ||
     typeof value.merged !== 'boolean' ||
-    !record(value.base, ['repo']) ||
+    !record(value.base, ['repo', 'ref', 'sha']) ||
+    !text(value.base.ref) ||
+    Buffer.byteLength(value.base.ref, 'utf8') > 1024 ||
     !record(value.head, ['repo', 'sha'])
   )
     return null;
@@ -291,7 +307,8 @@ function pullRequest(value: unknown): PullRequest | null {
     repo = repository(value.base.repo);
   const headRepo = repository(value.head.repo),
     headSha = sha(value.head.sha);
-  if (!prActor || !repo || !headRepo || !headSha) return null;
+  const baseSha = sha(value.base.sha);
+  if (!prActor || !repo || !headRepo || !headSha || !baseSha) return null;
   return {
     number: value.number,
     closed: value.state === 'closed' || value.merged,
@@ -299,7 +316,20 @@ function pullRequest(value: unknown): PullRequest | null {
     repository: repo,
     headRepository: headRepo,
     headSha,
+    baseRef: value.base.ref,
+    baseSha,
   };
+}
+
+function comparisonMergeBase(value: unknown, baseSha: string): string | null {
+  if (
+    !record(value, ['base_commit', 'merge_base_commit']) ||
+    !record(value.base_commit, ['sha']) ||
+    !record(value.merge_base_commit, ['sha']) ||
+    sha(value.base_commit.sha) !== baseSha
+  )
+    return null;
+  return sha(value.merge_base_commit.sha);
 }
 
 function sameRepository(a: RepositoryIdentity, b: RepositoryIdentity): boolean {
@@ -499,6 +529,12 @@ export async function verifyCiEvent(input: unknown, reads: EventReads): Promise<
     if (!replayRead.ok) return replayRead.error;
     const replayError = verifyReplay(replayRead.value, reviewIdentity);
     if (replayError) return replayError;
+    const comparisonRead = await read('comparison', () =>
+      reads.readComparison(expectedRepo, pr.baseSha, pr.headSha),
+    );
+    if (!comparisonRead.ok) return comparisonRead.error;
+    const mergeBaseSha = comparisonMergeBase(comparisonRead.value, pr.baseSha);
+    if (!mergeBaseSha) return failure('comparison');
     return {
       kind: 'verified',
       binding: Object.freeze({
@@ -509,6 +545,9 @@ export async function verifyCiEvent(input: unknown, reads: EventReads): Promise<
         pullNumber: pr.number,
         headRepository: eventRun.headRepository,
         headSha: pr.headSha,
+        baseRef: pr.baseRef,
+        baseSha: pr.baseSha,
+        mergeBaseSha,
         actorId: pr.actor.id,
         conclusion: checkedRun.conclusion,
         identity: reviewIdentity,
@@ -529,6 +568,9 @@ function binding(value: unknown): ReviewBinding | null {
       'pullNumber',
       'headRepository',
       'headSha',
+      'baseRef',
+      'baseSha',
+      'mergeBaseSha',
       'actorId',
       'conclusion',
       'identity',
@@ -544,7 +586,19 @@ function binding(value: unknown): ReviewBinding | null {
     expectedWorkflow = workflow(value.workflow);
   const headRepo = expectedRepository(value.headRepository),
     headSha = sha(value.headSha);
-  if (!repo || !expectedWorkflow || !headRepo || !headSha) return null;
+  const baseSha = sha(value.baseSha),
+    mergeBaseSha = sha(value.mergeBaseSha);
+  if (
+    !repo ||
+    !expectedWorkflow ||
+    !headRepo ||
+    !headSha ||
+    !baseSha ||
+    !mergeBaseSha ||
+    !text(value.baseRef) ||
+    Buffer.byteLength(value.baseRef, 'utf8') > 1024
+  )
+    return null;
   const reviewIdentity = identity(
     repo.id,
     expectedWorkflow.id,
@@ -562,6 +616,9 @@ function binding(value: unknown): ReviewBinding | null {
     pullNumber: value.pullNumber,
     headRepository: headRepo,
     headSha,
+    baseRef: value.baseRef,
+    baseSha,
+    mergeBaseSha,
     actorId: value.actorId,
     conclusion: value.conclusion,
     identity: reviewIdentity,
