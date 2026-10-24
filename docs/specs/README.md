@@ -116,6 +116,11 @@ gaps and an introduced vulnerability before parity is claimed.
   availability; base/merge-base divergence remains incomplete discovery.
   [Verification #106](https://github.com/andrewpucci/dependency-update-advisor/issues/106)
   retains transport/collector/publication, adoption, and cutover gates.
+- [Reuse validated PR freshness snapshots](SPEC-pr-freshness-snapshot.md) —
+  supporting T1/D1 interface amendment, approved for execution, for
+  [#110](https://github.com/andrewpucci/dependency-update-advisor/issues/110)
+  in `shared-review`; preserves the base-identity decision table and comparison
+  request. The user authorized one PR for #111–#113 on 2026-10-24.
 - [npm evidence](SPEC-npm-evidence.md) — approved for planning.
 - [GitHub Actions evidence](SPEC-actions-evidence.md) — approved for planning.
 - [uv evidence](SPEC-uv-evidence.md) — approved for planning.
