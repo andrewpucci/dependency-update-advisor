@@ -4,7 +4,9 @@ This file is project-specific and applies to work in
 `dependency-update-advisor`. Read [CONTEXT.md](CONTEXT.md), the
 [capability map](docs/specs/README.md), the relevant module spec, and
 `git status` before changing files. Treat a draft as a draft;
-conversation history alone is not approval.
+conversation history alone is not approval. The user invoking `as-plan` on a
+reviewed draft spec is explicit approval of that spec for planning; record it
+in the spec. Plan and execution approval remain separate gates.
 
 ## Current phase
 
@@ -34,6 +36,10 @@ commands in draft specs as executable until the corresponding tooling exists.
 - Use GitHub Issues for individual implementation tasks. If an approved plan
   needs an ordered working handoff, use `tasks/plan.md` on the working branch
   and link its issues. The plan need not remain after the work is complete.
+- When creating a task issue, link it as a sub-issue of its parent in plan
+  order and add it to the
+  [implementation project](https://github.com/users/andrewpucci/projects/2)
+  with Status `Todo`.
 
 ## Boundaries
 

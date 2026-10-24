@@ -11,6 +11,10 @@ verifier, freshness interface, tests, verification, and PR; it does not
 authorize workflow credentials, reviewer publication, adoption, or cutover.
 The approved [shared workflow contract](SPEC-shared-review.md) and
 [ADR 0002](../adr/0002-privileged-review-boundary.md) remain authoritative.
+The [base-identity amendment](#base-identity-amendment) is approved for
+planning. The implemented behavior described outside that section governs
+until [#107](https://github.com/andrewpucci/dependency-update-advisor/issues/107)
+lands and folds the amendment in.
 
 ## Execution Scope
 
@@ -259,6 +263,105 @@ be reported as a review of a newer head.
 T1 tests establish classification with supplied replay state and mocked API
 reads. T2/T3/W2 tests must establish cross-job replay protection and publication
 behavior; the old reviewer stays active until parity and cutover gates pass.
+
+## Base-Identity Amendment
+
+Status: approved for planning, 2026-10-24, for
+[D1 #13](https://github.com/andrewpucci/dependency-update-advisor/issues/13).
+Approval: the user invoked `as-plan` on 2026-10-24 after reviewing the draft.
+Implementation is tracked in
+[#107](https://github.com/andrewpucci/dependency-update-advisor/issues/107)
+within the revised D1 plan, approved by the user on 2026-10-24. Execution
+was given via `as-build auto` on 2026-10-24 for one PR covering all steps.
+This section amends T1 and the T4 binding check;
+#107 folds it into the sections above.
+
+### Problem and evidence
+
+T1 reads the PR but discards its base commit. T4 requires a `baseSha` equal
+to "the caller's authenticated PR-base snapshot," and no module produces it.
+D1 would otherwise mint review identity inside an evidence reader, and the
+freshness check would remain blind to base changes.
+
+GitHub's PR `base.sha` is neither the live base tip nor reliably fixed per
+head push. A read-only public API survey on 2026-10-24 found:
+
+- 3 of 92 open `nodejs/node` PRs and 5 of 100 open `home-assistant/core` PRs
+  had a `base.sha` equal to the current base-branch tip.
+- Every recently pushed PR sampled recorded the tip at push time, equal to
+  the merge base.
+- 39 `nodejs/node` PRs shared one ordinary 2026-10-21 base commit, including
+  a head committed in 2024. The base branch was not rewritten. These bases
+  moved without a head push; GitHub exposed no trigger.
+
+GitHub's [base-branch documentation](https://docs.github.com/en/pull-requests/how-tos/create-pull-requests/changing-the-base-branch-of-a-pull-request)
+says the base commit does not follow later branch updates. Contracts must
+handle the observed silent move anyway. A forward base move usually leaves
+the merge base, and therefore the PR's three-dot diff, unchanged. A rewrite
+or retarget can change the diff without a head change.
+
+### Binding additions
+
+1. Add flat `baseRef`, `baseSha`, and `mergeBaseSha` fields to
+   `ReviewBinding`. The base repository remains `repository`.
+2. Read `baseRef` and `baseSha` from the same authenticated PR read that
+   confirms the head. Do not use the event's PR snapshot. Validate `baseRef`
+   as bounded control-free text and compare it exactly; unlike repository
+   names, branch names are case-sensitive.
+3. After the PR read, add an `EventReads` comparison read of
+   `GET /repos/{owner}/{repo}/compare/{baseSha}...{headSha}` in the base
+   repository. GitHub documents the
+   [commit comparison](https://docs.github.com/en/rest/commits/commits#compare-two-commits).
+   Require the echoed `base_commit.sha` to equal the requested base and
+   `merge_base_commit.sha` to be a full SHA. Ignore `files` and `commits`.
+4. The six-part `ReviewIdentity` tuple is unchanged. Base fields do not alter
+   replay, duplicate, or same-head refresh semantics.
+5. A failed comparison read is `error: read`; invalid fields are
+   `error: input`. Both use a new fixed `comparison` error field.
+6. `FreshnessReads` gains the comparison read. T2 and T3 pass `FreshnessReads`
+   through and need fixture updates, not behavior changes.
+
+### Freshness decision table
+
+Checks run in this order after the existing run, actor, and association
+checks. Freshness never returns a replacement binding or a new base.
+
+| Current PR observation                    | Result                                  |
+| ----------------------------------------- | --------------------------------------- |
+| Head advanced, PR closed, or PR merged    | `obsolete`, unchanged.                  |
+| `baseRef` differs from the binding        | `obsolete`; the PR was retargeted.      |
+| `base.sha` equals the binding             | `fresh`; no comparison read.            |
+| `base.sha` moved; merge base unchanged    | `fresh`; the reviewed diff still holds. |
+| `base.sha` moved; merge base differs      | `obsolete`; the reviewed diff changed.  |
+| Comparison read fails or returns bad data | `error: read` or `error: input`.        |
+
+An ambiguous criss-cross history can yield a different but equally valid
+merge base. That case reports `obsolete`, which fails securely.
+
+### T4 binding check
+
+T4's `binding()` copies a closed field list before calling T1's parser.
+Extend that list with the three base fields; the packet's "compare every
+binding field" rule covers them. Require the trusted `expected.baseSha` to
+equal `expected.binding.baseSha`. The existing packet `baseSha` equality
+check then follows. The T4 envelope shape and coverage semantics are
+otherwise unchanged.
+
+### Amendment fixtures and limits
+
+| Scenario                                                               | Expected result                        |
+| ---------------------------------------------------------------------- | -------------------------------------- |
+| Verified event                                                         | Binding carries all three base fields. |
+| Base ref, base SHA, or merge base missing, short, or invalid           | `error: input`.                        |
+| Comparison echoes a different base, or the read fails                  | `error: input` or `error: read`.       |
+| Freshness: each decision-table row                                     | The row's result.                      |
+| Freshness with unchanged `base.sha`                                    | No comparison read dispatched.         |
+| Packet binding or `expected.baseSha` disagrees with binding base field | T4 `identity` failure.                 |
+
+Unverified: whether a base-repository comparison resolves a fork head SHA.
+Dependabot heads normally share the base repository; until verified, a fork
+comparison failure stays `error: read`. The comparison response is T1's
+largest read and falls under W1's transport bounds.
 
 ## Boundaries
 

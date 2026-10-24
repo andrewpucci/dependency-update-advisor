@@ -86,9 +86,9 @@ gaps and an introduced vulnerability before parity is claimed.
   contract for T5 #12 in `shared-review`; initial scope uses proven grouping
   with exactly one direct change per root and complete ecosystem inventory.
   Interview decisions are confirmed; [#93](https://github.com/andrewpucci/dependency-update-advisor/issues/93)
-  tracks broader reachability evidence. Implemented on this branch for #94–#99
-  and parent #12 in [PR #100](https://github.com/andrewpucci/dependency-update-advisor/pull/100),
-  pending merge. [Verification #99](https://github.com/andrewpucci/dependency-update-advisor/issues/99)
+  tracks broader reachability evidence. Implemented for #94–#99 and parent #12
+  and merged into `main` in [PR #100](https://github.com/andrewpucci/dependency-update-advisor/pull/100).
+  [Verification #99](https://github.com/andrewpucci/dependency-update-advisor/issues/99)
   keeps collector/M2/O1/W2, publication, adoption, and cutover gates separate.
 - [Current-head execution status](SPEC-execution-status.md) — approved
   supporting contract for T2 #9 in `shared-review`; implemented and
@@ -105,7 +105,17 @@ gaps and an introduced vulnerability before parity is claimed.
   merged into `main` in [PR #63](https://github.com/andrewpucci/dependency-update-advisor/pull/63).
   [Verification evidence](https://github.com/andrewpucci/dependency-update-advisor/issues/62)
   remains separate from W1/W2 transport/claims and T2/T3 publication gates.
+  A [base-identity amendment](SPEC-event-verification.md#base-identity-amendment)
+  for T1 and the T4 binding check is approved for planning;
+  [#107](https://github.com/andrewpucci/dependency-update-advisor/issues/107)
+  tracks it.
 - [Analysis providers](SPEC-analysis-providers.md) — approved for planning.
+- [Immutable GitHub evidence reads](SPEC-github-read.md) — approved supporting
+  contract for D1 #13 planning in `shared-review`; caller-supplied budgets and
+  conservative base/merge-base coverage selected. Its revision taking base
+  identity from the T1 amendment is approved for planning. The revised plan
+  is approved under parent #13, with #107 preceding #101–#106; execution
+  remains a separate gate.
 - [npm evidence](SPEC-npm-evidence.md) — approved for planning.
 - [GitHub Actions evidence](SPEC-actions-evidence.md) — approved for planning.
 - [uv evidence](SPEC-uv-evidence.md) — approved for planning.

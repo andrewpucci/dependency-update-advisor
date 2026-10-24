@@ -108,7 +108,10 @@ trusted inputs. The caller's values remain the authority.
 2. Require positive safe-integer IDs and attempts without coercion. Full Git
    SHAs are exactly 40 hexadecimal characters, normalized consistently with
    T1; reject shortened SHAs, branch names, tags, and synthetic placeholders.
-3. `baseSha` must equal the caller's authenticated PR-base snapshot.
+3. `baseSha` must equal the caller's authenticated PR-base snapshot. The
+   approved [T1 base-identity amendment](SPEC-event-verification.md#base-identity-amendment),
+   implemented by #107, adds base fields to the binding check and requires
+   `expected.baseSha` to equal the binding's `baseSha`.
    `contextRevision` contains repository identity and a full commit SHA equal
    to the caller's trusted default-branch context snapshot. Never substitute
    the PR head for trusted context. T4 does not resolve Git refs or read GitHub.

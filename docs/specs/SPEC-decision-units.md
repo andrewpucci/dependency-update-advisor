@@ -31,8 +31,8 @@ publish status, or establish current-head write authority.
 
 Implementation: the isolated [unit handoff](../../src/units.ts) and its
 [fixtures](../../src/units.test.ts) are implemented in
-[PR #100](https://github.com/andrewpucci/dependency-update-advisor/pull/100), pending
-merge. [Verification issue #99](https://github.com/andrewpucci/dependency-update-advisor/issues/99)
+[PR #100](https://github.com/andrewpucci/dependency-update-advisor/pull/100), merged
+into `main`. [Verification issue #99](https://github.com/andrewpucci/dependency-update-advisor/issues/99)
 records exact-revision evidence and remaining downstream integration gates.
 
 ## Inputs and Assumptions
@@ -82,9 +82,13 @@ records exact-revision evidence and remaining downstream integration gates.
    canonical identity. Permuting changes, proofs, sources, or findings cannot
    change membership, IDs, or output order. A new base or reviewed head changes
    unit identity; adding or removing a member changes that group's identity.
-   Even when the PR head is unchanged, a different base invalidates prior
-   assessments and requires a new review. Stable member IDs cannot make an
-   assessment reusable across different base/head revisions.
+   Even when the PR head is unchanged, a different packet base prevents prior
+   assessments from attaching, so a later review assesses those units afresh.
+   Stable member IDs cannot make an assessment reusable across different
+   base/head revisions. Unit identity does not decide whether a published
+   review is obsolete. T1 freshness decides that; under the approved
+   [base-identity amendment](SPEC-event-verification.md#base-identity-amendment),
+   a moved base SHA with an unchanged merge base stays fresh.
 5. Unit records retain member IDs, anchor, exact count, grouping reasons and
    proof keys, member evidence links, findings, and coverage limits. A proof
    key is the canonical serialization of the entire validated
