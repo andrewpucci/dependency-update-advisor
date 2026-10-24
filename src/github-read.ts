@@ -94,6 +94,13 @@ const LIMIT_KEYS = [
   'requestTimeoutMs',
   'totalTimeoutMs',
 ] as const;
+const TYPE_FOR_MODE: Readonly<Record<string, string>> = {
+  '040000': 'tree',
+  '100644': 'blob',
+  '100755': 'blob',
+  '120000': 'blob',
+  '160000': 'commit',
+};
 class ReadFailure extends Error {
   constructor(
     readonly reason: EvidenceReason,
@@ -186,7 +193,7 @@ function fileChange(value: unknown): GithubFileChange {
     blobSha,
   });
 }
-function nextPage(headers: Headers, path: string, page: number): boolean {
+function nextPage(headers: Headers, paths: readonly string[], page: number): boolean {
   const link = headers.get('link');
   if (link === null) return false;
   let next = false;
@@ -202,7 +209,7 @@ function nextPage(headers: Headers, path: string, page: number): boolean {
     requireRead(
       url &&
         url.origin === ORIGIN &&
-        url.pathname === path &&
+        paths.includes(url.pathname) &&
         !url.hash &&
         !url.username &&
         !url.password,
@@ -472,6 +479,11 @@ class ReadSession implements GithubReadSession {
         previous = new Set<string>();
       try {
         const path = `${repoPath(this.binding.repository)}/pulls/${this.binding.pullNumber}/files`;
+        // GitHub's pagination links address the same endpoint by repository ID.
+        const linkPaths = [
+          path,
+          `/repositories/${this.binding.repository.id}/pulls/${this.binding.pullNumber}/files`,
+        ];
         for (let page = 1; ; page++) {
           requireRead(this.pages < this.limits.maxPages, 'budget');
           this.pages++;
@@ -493,7 +505,7 @@ class ReadSession implements GithubReadSession {
             if (!['added', 'removed', 'modified', 'renamed'].includes(change.status))
               reasons.add('unsupported');
           }
-          const hasNext = nextPage(response.headers, path, page);
+          const hasNext = nextPage(response.headers, linkPaths, page);
           if (files.length >= 3000) {
             reasons.add('truncated');
             break;
@@ -580,15 +592,8 @@ class ReadSession implements GithubReadSession {
           requireRead(sha);
           requireRead(!names.has(item.path), 'conflict');
           names.add(item.path);
-          const typeForMode: Record<string, string> = {
-            '040000': 'tree',
-            '100644': 'blob',
-            '100755': 'blob',
-            '120000': 'blob',
-            '160000': 'commit',
-          };
-          requireRead(Object.hasOwn(typeForMode, item.mode), 'unsupported');
-          requireRead(typeForMode[item.mode] === item.type);
+          requireRead(Object.hasOwn(TYPE_FOR_MODE, item.mode), 'unsupported');
+          requireRead(TYPE_FOR_MODE[item.mode] === item.type);
           if (item.path === segments[index]) found = { mode: item.mode, type: item.type, sha };
         }
         if (!found) {
@@ -720,7 +725,6 @@ export async function createGithubReadSession(
       binding.repository.name,
       binding.headRepository.owner,
       binding.headRepository.name,
-      binding.baseRef,
     ]) {
       if (Buffer.byteLength(value, 'utf8') > PACKET_LIMITS.identityBytes)
         return { kind: 'invalid' };
