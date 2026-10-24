@@ -665,6 +665,8 @@ class ReadSession implements GithubReadSession {
       requireRead(
         record(item) &&
           typeof item.path === 'string' &&
+          item.path !== '' &&
+          !item.path.includes('/') &&
           typeof item.mode === 'string' &&
           typeof item.type === 'string',
       );
