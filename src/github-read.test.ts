@@ -691,3 +691,338 @@ test('comparison failure does not downgrade complete immutable discovery or eras
   expect(comparison).toMatchObject({ kind: 'unavailable', reasons: ['unknown'] });
   expect(discovery.complete).toBe(true);
 });
+
+test('a broken streamed transfer is truncated evidence, never a successful empty comparison', async () => {
+  let step = 0;
+  const f = fixture([
+    json(pr()),
+    new Response(
+      new ReadableStream({
+        pull(controller) {
+          if (step++ === 0) controller.enqueue(new TextEncoder().encode('[{"name":"prefix"}'));
+          else controller.error(new Error('synthetic-private-transfer'));
+        },
+      }),
+    ),
+  ]);
+  const result = await (await ready(f)).readComparison();
+  expect(result).toMatchObject({ kind: 'unavailable', records: [], reasons: ['truncated'] });
+});
+
+test('page exhaustion stops the entire session without resetting for file reads', async () => {
+  const f = fixture(
+    [json(pr(101)), json(pr(101)), json(Array.from({ length: 100 }, (_, i) => row(i)))],
+    { maxPages: 1 },
+  );
+  const session = await ready(f);
+  expect(await session.discoverFiles()).toMatchObject({ kind: 'partial', reasons: ['budget'] });
+  const dispatches = f.fetch.mock.calls.length;
+  expect(await session.readFile({ side: 'base', path: 'uv.lock' })).toMatchObject({
+    kind: 'unavailable',
+    reason: 'budget',
+  });
+  expect(f.fetch).toHaveBeenCalledTimes(dispatches);
+});
+
+test('session deadline rejects idle expiry and a backwards clock without dispatch', async () => {
+  for (const now of [limits.totalTimeoutMs, -1]) {
+    let time = 0;
+    const f = fixture();
+    const session = await ready({ ...f, dependencies: { ...f.dependencies, now: () => time } });
+    time = now;
+    expect(await session.readComparison()).toMatchObject({
+      kind: 'unavailable',
+      reasons: [now === -1 ? 'unknown' : 'timeout'],
+    });
+    expect(f.fetch).toHaveBeenCalledTimes(1);
+  }
+});
+
+test.each(['maxResponseBytes', 'maxTotalBytes'] as const)(
+  'counts UTF-8 streamed bytes at exact %s boundary',
+  async (key) => {
+    const value = { ...pr(), ignored: 'é😀' };
+    const bytes = Buffer.byteLength(JSON.stringify(value), 'utf8');
+    for (const delta of [0, -1]) {
+      const patch = {
+        [key]: bytes + delta,
+        ...(key === 'maxTotalBytes' ? { maxResponseBytes: bytes + delta, maxFileBytes: 1 } : {}),
+      };
+      const f = fixture([json(value)], patch);
+      const result = await createGithubReadSession(f.input, f.dependencies);
+      expect(result.kind).toBe(delta === 0 ? 'ready' : 'unavailable');
+      if (result.kind === 'ready') result.session.close();
+      else expect(result).toEqual({ kind: 'unavailable', reason: 'budget' });
+    }
+  },
+);
+
+test.each([3, 4])(
+  'requires final metadata to complete discovery within %s requests',
+  async (maxRequests) => {
+    const f = fixture([json(pr(1)), json(pr(1)), json([row(1)]), json(pr(1))], { maxRequests });
+    const result = await (await ready(f)).discoverFiles();
+    expect(result.kind).toBe(maxRequests === 4 ? 'available' : 'partial');
+    expect(f.fetch).toHaveBeenCalledTimes(maxRequests);
+  },
+);
+
+test.each([1, 2])('accepts exact file entry count and rejects one beyond %s', async (maxFiles) => {
+  const f = fixture([json(pr(2)), json(pr(2)), json([row(1), row(2)]), json(pr(2))], { maxFiles });
+  const result = await (await ready(f)).discoverFiles();
+  expect(result.kind).toBe(maxFiles === 2 ? 'available' : 'partial');
+  expect(result.files).toHaveLength(maxFiles);
+});
+
+test('retained results share a cumulative byte budget with exact UTF-8 accounting', async () => {
+  const sample = fixture([json(pr()), json([dependency('é😀')])]);
+  const output = await (await ready(sample)).readComparison();
+  const exact =
+    Buffer.byteLength(JSON.stringify({ binding }), 'utf8') +
+    Buffer.byteLength(JSON.stringify(output), 'utf8');
+  for (const delta of [0, -1]) {
+    const f = fixture([json(pr()), json([dependency('é😀')]), json([])], {
+      maxRetainedBytes: exact + delta,
+    });
+    const session = await ready(f);
+    const first = await session.readComparison();
+    expect(first.kind).toBe(delta === 0 ? 'available' : 'unavailable');
+    const second = await session.readComparison();
+    expect(second).toMatchObject({ kind: 'unavailable', reasons: ['budget'] });
+    expect(first.records).toHaveLength(delta === 0 ? 1 : 0);
+  }
+});
+
+test('HTTP error-body bytes consume the same total budget as later file reads', async () => {
+  const metadataBytes = Buffer.byteLength(JSON.stringify(pr()), 'utf8');
+  const errorBytes = 500;
+  const f = fixture(
+    [json(pr()), new Response('x'.repeat(errorBytes), { status: 403 }), json(commit())],
+    { maxResponseBytes: 500, maxFileBytes: 1, maxTotalBytes: metadataBytes + errorBytes },
+  );
+  const session = await ready(f);
+  expect(await session.readComparison()).toMatchObject({ reasons: ['unknown'] });
+  expect(await session.readFile({ side: 'base', path: 'uv.lock' })).toMatchObject({
+    kind: 'unavailable',
+    reason: 'budget',
+  });
+  expect(await session.readComparison()).toMatchObject({ reasons: ['budget'] });
+  expect(f.fetch).toHaveBeenCalledTimes(3);
+});
+
+test('overlapping operations fail promptly and close aborts an active body', async () => {
+  let cancelled = false;
+  const f = fixture([
+    json(pr()),
+    new Response(
+      new ReadableStream({
+        cancel() {
+          cancelled = true;
+        },
+      }),
+    ),
+  ]);
+  const session = await ready(f);
+  const pending = session.readComparison();
+  await Promise.resolve();
+  await Promise.resolve();
+  expect(await session.readFile({ side: 'base', path: 'uv.lock' })).toMatchObject({
+    kind: 'unavailable',
+    reason: 'conflict',
+  });
+  session.close();
+  expect(await pending).toMatchObject({ kind: 'unavailable', reasons: ['budget'] });
+  expect(cancelled).toBe(true);
+  expect(await session.discoverFiles()).toMatchObject({ kind: 'unavailable', reasons: ['budget'] });
+  expect(f.fetch).toHaveBeenCalledTimes(2);
+});
+
+test('partial file inventory retains mixed ecosystem paths without authorizing absence', async () => {
+  const paths = ['package-lock.json', '.github/workflows/ci.yml', 'nested/uv.lock'];
+  const f = fixture([
+    json(pr(4)),
+    json(pr(4)),
+    json([...paths.map((p, i) => row(i, 'modified', p)), null]),
+    json(pr(4)),
+  ]);
+  const result = await (await ready(f)).discoverFiles();
+  expect(result).toMatchObject({ kind: 'partial', complete: false, reasons: ['malformed'] });
+  expect(result.files.map((file) => file.path)).toEqual(paths);
+  expect(result).not.toHaveProperty('absentEcosystems');
+});
+
+test.each([25, 26])(
+  'accepts exact cumulative JSON-entry boundary at %s',
+  async (maxJsonEntries) => {
+    const f = fixture([json(pr()), json([dependency()])], { maxJsonEntries });
+    const result = await (await ready(f)).readComparison();
+    expect(result.kind).toBe(maxJsonEntries === 26 ? 'available' : 'unavailable');
+    if (maxJsonEntries === 25) expect(result.reasons).toEqual(['budget']);
+  },
+);
+
+test('retention overflow preserves only the prefix that fits and stops later dispatch', async () => {
+  const first = { path: 'file-1.json', previousPath: null, status: 'modified', blobSha: TREE };
+  const expected = {
+    kind: 'partial',
+    binding,
+    files: [first],
+    complete: false,
+    reasons: ['budget'],
+  };
+  const maxRetainedBytes =
+    Buffer.byteLength(JSON.stringify({ binding }), 'utf8') +
+    Buffer.byteLength(JSON.stringify(expected), 'utf8');
+  const f = fixture([json(pr(2)), json(pr(2)), json([row(1), row(2)]), json(pr(2))], {
+    maxRetainedBytes,
+  });
+  const session = await ready(f);
+  expect(await session.discoverFiles()).toEqual(expected);
+  expect(await session.readComparison()).toMatchObject({
+    kind: 'unavailable',
+    reasons: ['budget'],
+  });
+  expect(f.fetch).toHaveBeenCalledTimes(4);
+});
+
+test('decoded bytes and metadata both count against cumulative retention', async () => {
+  const sample = fixture([json(pr()), json(commit()), json(tree([entry()])), json(blob())]);
+  const result = await (await ready(sample)).readFile({ side: 'base', path: 'uv.lock' });
+  if (result.kind !== 'available') throw new Error('expected bytes');
+  const { bytes, ...metadata } = result;
+  const exact =
+    Buffer.byteLength(JSON.stringify({ binding }), 'utf8') +
+    Buffer.byteLength(JSON.stringify(metadata), 'utf8') +
+    bytes.byteLength;
+  for (const delta of [0, -1]) {
+    const f = fixture([json(pr()), json(commit()), json(tree([entry()])), json(blob())], {
+      maxRetainedBytes: exact + delta,
+    });
+    const output = await (await ready(f)).readFile({ side: 'base', path: 'uv.lock' });
+    expect(output.kind).toBe(delta === 0 ? 'available' : 'unavailable');
+    if (delta === -1) expect(output).toMatchObject({ reason: 'budget' });
+  }
+});
+
+test('total deadline shortens the last request and does not wait for its full timeout', async () => {
+  vi.useFakeTimers();
+  try {
+    let time = 0;
+    const f = fixture([json(pr()), new Response(new ReadableStream())]);
+    const session = await ready({ ...f, dependencies: { ...f.dependencies, now: () => time } });
+    time = limits.totalTimeoutMs - 100;
+    const pending = session.readComparison();
+    await vi.advanceTimersByTimeAsync(99);
+    expect(f.fetch.mock.calls[1][1].signal?.aborted).toBe(false);
+    await vi.advanceTimersByTimeAsync(1);
+    expect(await pending).toMatchObject({ kind: 'unavailable', reasons: ['timeout'] });
+    expect(f.fetch.mock.calls[1][1].signal?.aborted).toBe(true);
+  } finally {
+    vi.useRealTimers();
+  }
+});
+
+test('rejects contradictory last/next pagination hints in either header order', async () => {
+  const path = 'https://api.github.com/repos/example/consumer/pulls/42/files?per_page=100&page=';
+  const hints = [`<${path}1>; rel="last"`, `<${path}2>; rel="next"`];
+  for (const values of [hints, [...hints].reverse()]) {
+    const f = fixture([
+      json(pr(100)),
+      json(pr(100)),
+      json(
+        Array.from({ length: 100 }, (_, i) => row(i)),
+        200,
+        { link: values.join(', ') },
+      ),
+      json(pr(100)),
+    ]);
+    expect(await (await ready(f)).discoverFiles()).toMatchObject({
+      kind: 'partial',
+      reasons: ['conflict'],
+    });
+    expect(f.fetch).toHaveBeenCalledTimes(4);
+  }
+});
+
+test('large valid caller durations use bounded platform timer intervals', async () => {
+  vi.useFakeTimers();
+  const timeout = vi.spyOn(globalThis, 'setTimeout');
+  try {
+    const f = fixture([json(pr())], {
+      requestTimeoutMs: 2 ** 31 + 10,
+      totalTimeoutMs: 2 ** 31 + 20,
+    });
+    const session = await ready(f);
+    expect(
+      timeout.mock.calls.every((call) => typeof call[1] === 'number' && call[1] <= 2 ** 31 - 1),
+    ).toBe(true);
+    session.close();
+  } finally {
+    timeout.mockRestore();
+    vi.useRealTimers();
+  }
+});
+
+test('rejects a full-length-looking object SHA with a trailing newline before dependent reads', async () => {
+  const f = fixture([json(pr()), json(commit(BASE, `${TREE}\n`))]);
+  expect(await (await ready(f)).readFile({ side: 'base', path: 'uv.lock' })).toMatchObject({
+    kind: 'unavailable',
+    reason: 'malformed',
+  });
+  expect(f.fetch).toHaveBeenCalledTimes(2);
+});
+
+test('decoded error responses also consume the cumulative JSON-entry budget', async () => {
+  const f = fixture(
+    [json(pr()), json({ message: 'Resource not accessible by integration', ignored: [1] }, 403)],
+    { maxJsonEntries: 20 },
+  );
+  expect(await (await ready(f)).readComparison()).toMatchObject({
+    kind: 'unavailable',
+    reasons: ['budget'],
+  });
+});
+
+test('cancels an unexpected redirected response body without reading or following it', async () => {
+  let cancelled = false;
+  const response = new Response(
+    new ReadableStream({
+      cancel() {
+        cancelled = true;
+      },
+    }),
+  );
+  Object.defineProperty(response, 'redirected', { value: true });
+  const f = fixture([response]);
+  expect(await createGithubReadSession(f.input, f.dependencies)).toEqual({
+    kind: 'unavailable',
+    reason: 'unknown',
+  });
+  expect(cancelled).toBe(true);
+});
+
+test('an observed clock deadline aborts the transport before its scheduled timer fires', async () => {
+  let time = 0;
+  const f = fixture([json(pr()), json([])]);
+  const session = await ready({ ...f, dependencies: { ...f.dependencies, now: () => time } });
+  const original = f.fetch.getMockImplementation()!;
+  f.fetch.mockImplementation(async (url, init) => {
+    time = limits.totalTimeoutMs;
+    return original(url, init);
+  });
+  expect(await session.readComparison()).toMatchObject({
+    kind: 'unavailable',
+    reasons: ['timeout'],
+  });
+  expect(f.fetch.mock.calls[1][1].signal?.aborted).toBe(true);
+});
+
+test('deep JSON that cannot be serialized stays an explicit comparison limit', async () => {
+  const text = `[${JSON.stringify(dependency())},{"nested":${'['.repeat(12000)}0${']'.repeat(12000)}}]`;
+  const f = fixture([json(pr()), new Response(text)]);
+  expect(await (await ready(f)).readComparison()).toMatchObject({
+    kind: 'partial',
+    records: [dependency()],
+    reasons: ['unsupported'],
+  });
+});

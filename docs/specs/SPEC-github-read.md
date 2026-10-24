@@ -1,6 +1,7 @@
 # Spec: D1 Immutable GitHub Evidence Reads
 
-Status: approved for execution, 2026-10-24. Supporting contract for `shared-review`
+Status: implemented on the D1 working branch, pending merge.
+Approved for execution, 2026-10-24. Supporting contract for `shared-review`
 in [the capability map](README.md), scoped to
 [issue #13: D1](https://github.com/andrewpucci/dependency-update-advisor/issues/13).
 Approval: the user invoked `as-plan` on 2026-10-24 after reviewing the draft.
@@ -45,7 +46,7 @@ complete or `not_applicable` merely because its HTTP calls succeeded.
 - User-selected on 2026-10-24: report incomplete discovery when the PR base
   differs from the merge base. Do not add immutable tree comparison recovery
   in v1 or change T4's authenticated PR-base identity.
-- Proposed: no automatic retries, alternate credentials, or full-tree inventory
+- No automatic retries, alternate credentials, or full-tree inventory
   fallback in D1 v1. Preserve bounded evidence already read after a later failure.
 
 ## Read Contract
@@ -214,9 +215,9 @@ complete or `not_applicable` merely because its HTTP calls succeeded.
 
 ## Outputs and Integration
 
-The planned interface separates discovery, individual immutable file reads,
-and comparison results within one budgeted session. Exact exported names are
-chosen during planning; the observable result distinctions are required:
+The implemented interface separates discovery, individual immutable file reads,
+and comparison results within one budgeted session. The exported results
+preserve these distinctions:
 
 | Result                                   | Required meaning                                                                |
 | ---------------------------------------- | ------------------------------------------------------------------------------- |
@@ -240,23 +241,100 @@ No new runtime dependency is selected. Inject a bounded streaming read
 transport and clock/cancellation boundary so tests need no live GitHub calls.
 
 ```text
-src/github-read.ts       → proposed D1 validation, read session, evidence results
-src/github-read.test.ts  → proposed mocked transport and boundary fixtures
-src/event.ts             → existing T1 binding validation; preserve its contract
+src/github-read.ts       → D1 validation, read session, evidence results
+src/github-read.test.ts  → mocked transport and boundary fixtures
+src/event.ts             → T1 base identity and shared PR freshness classifier
 src/schema.ts            → existing T4 identity/reason vocabulary and packet gate
 src/evidence/            → future ecosystem parsing and reconciliation owners
 ```
 
 Use `unknown` at external boundaries, named discriminated unions, single
 quotes, explicit units, and small validators consistent with adjacent modules.
-Illustrative result style, not a promised exported API:
 
-```ts
-type FileFailure = Readonly<{
-  kind: 'unavailable';
-  reason: 'permission' | 'rate_limit' | 'timeout' | 'budget' | 'unknown';
-}>;
-```
+### Session API and units
+
+`createGithubReadSession({ binding, limits }, { fetch, now })` accepts unknown
+external input and returns `GithubReadCreation`: `ready` with a detached T1
+binding and `GithubReadSession`, `invalid`, `obsolete`, or `unavailable` with a
+fixed reason. The binding includes T1's authenticated base and merge base.
+Creation reads current metadata; it does not issue an ancestry read unless
+GitHub exposes a moved base SHA.
+
+The session exposes these operations:
+
+- `discoverFiles(): Promise<GithubDiscovery>` brackets consecutive PR-file
+  pages with metadata checks. Results include the binding, canonical rows,
+  reasons, and `complete`. An obsolete attempt exposes no file rows.
+- `readFile({ side, path }): Promise<GithubFileResult>` selects `base` or
+  `head` from the binding, resolves commit/tree/blob identities, and returns
+  complete detached `Uint8Array` bytes, proven absence with tree identity,
+  or unavailability. Invalid path/side input returns `invalid` without I/O.
+- `readComparison(): Promise<GithubComparison>` returns detached, bounded
+  JSON records with requested repository/base/head and merge-base identity.
+  Availability describes this response; there is no inventory-complete flag.
+- `close(): void` stops further dispatch and aborts active work. Operations
+  overlap only to reject the second call with `conflict`; there is no queue,
+  cache, retry, alternate credential, or response-URL fallback.
+
+`GithubReadDependencies.fetch` is an authenticated, read-only Fetch-compatible
+transport returning a streaming `Response`. It must honor `AbortSignal` and
+body cancellation. `now` is a trusted monotonic millisecond clock aligned
+with the runtime timers. D1 sets fixed-origin GET, manual redirects, and API
+headers itself. It never receives or supplies a publication token.
+
+All `GithubReadLimits` fields are required positive safe integers. Counts
+and bytes accumulate across operations and never reset inside a session.
+
+| Field              | Unit and accounting                                                  |
+| ------------------ | -------------------------------------------------------------------- |
+| `maxRequests`      | Dispatched requests, including failed/aborted reads.                 |
+| `maxPages`         | Attempted PR-file listing pages.                                     |
+| `maxFiles`         | Examined PR-file rows, including a row that fails validation.        |
+| `maxJsonEntries`   | JSON object properties and array elements across examined responses. |
+| `maxResponseBytes` | Actual streamed bytes in one response, including error bodies.       |
+| `maxFileBytes`     | Complete decoded bytes in one immutable file.                        |
+| `maxTotalBytes`    | Streamed response bytes plus decoded file bytes across the session.  |
+| `maxRetainedBytes` | Cumulative UTF-8 JSON result metadata plus returned file bytes.      |
+| `requestTimeoutMs` | Maximum active duration of one request and its body.                 |
+| `totalTimeoutMs`   | Session lifetime, including idle time between operations.            |
+
+Per-response and per-file byte limits cannot exceed the total byte limit;
+the request timeout cannot exceed the session lifetime. The transport's
+exposed decompressed chunks are counted before JSON parsing. Comparison
+records consume entry budget individually, permitting a validated prefix
+when a later record exceeds it. Unexamined trailing records are not returned.
+
+Retention counts the binding at creation and each normal result's metadata;
+file contents count as decoded bytes rather than JSON-expanded byte arrays.
+On a collection overflow, D1 retains the prefix that fits and reports
+`budget`. If even the fixed unavailable/provenance envelope cannot fit, that
+failure notification remains deliverable without variable evidence. Budget
+or deadline exhaustion stops future I/O. A failed comparison alone does not
+stop an otherwise usable session or change earlier results.
+
+A 403 with validated rate-limit headers is `rate_limit`; exact documented
+[insufficient-permission messages](https://docs.github.com/en/rest/using-the-rest-api/troubleshooting-the-rest-api#resource-not-accessible)
+are `permission`. A 403 lacking reliable context is `unknown`. Broken JSON
+is `malformed`; a stream that errors before completion is `truncated`.
+No body or exception text is copied into diagnostics.
+
+### Collector handoff
+
+Collectors map discovery to T4 inventory sources, requested files to file
+sources, and comparison responses to independent corroborating sources. They
+must select roots and required companions, parse package identities and
+advisories, and retain D1 reasons in the affected per-ecosystem coverage.
+`complete: false` never supports an absent-ecosystem proof. A proven absent
+file is not permission to ignore a required companion. Available empty
+comparison records establish neither zero changes nor vulnerability coverage.
+The D1 outputs are untrusted evidence inputs, not validated T4 packets or
+provider-ready content.
+
+Mocked cancellation tests prove signal/body cancellation and rejection of
+late results. An abort-ignoring transport cannot prove its underlying I/O
+stopped; D1 disables the session and cancels any eventual response body.
+W1/W2 must verify the real adapter's credentials, decompression, cancellation,
+and numeric limits before live execution.
 
 ## Commands and Testing Strategy
 
@@ -268,7 +346,7 @@ npm run format:check
 git diff --check
 ```
 
-After D1 implementation, use the repository's installed tooling:
+Use the repository's installed tooling:
 
 ```sh
 npm ci
@@ -322,10 +400,16 @@ honest coverage for caps, truncation, 403s, rate limits, and revision conflicts;
 the four implementation checks pass on one exact shared revision; and the
 collector/transport/publication integration gates remain explicit.
 
-## Open Questions
+## Implementation Status and Remaining Gates
 
-No unresolved product choice remains for D1 planning. Numeric orchestration
-budgets are not selected here and must be supplied by trusted integration code
-before live execution; this is a W1/W2 integration gate. The approved plan
-places #107 before #101–#106 under parent #13. Its pre-#101/#104 clarifications
-remain recorded in the plan; execution has not started.
+D1 and the T1/T4 base-identity prerequisite are implemented for #107 and
+#101–#106 under parent #13. The user authorized one PR for all steps.
+[Verification #106](https://github.com/andrewpucci/dependency-update-advisor/issues/106)
+records exact-revision commands and remaining integration gates.
+
+The interview selected retained comparison prefixes, ambiguous 403s as
+`unknown`, and a required separate `maxRetainedBytes` budget. Numeric live
+budgets and read-only credentials remain trusted W1/W2 integration choices.
+Collector reconciliation and packet construction, live transport, M2/O1,
+publication, adoption, parity, and cutover remain separate. The old reviewer
+stays active.
