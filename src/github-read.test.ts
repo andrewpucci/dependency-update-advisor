@@ -586,3 +586,108 @@ test('accepts GitHub newline-wrapped base64 without trimming arbitrary character
     kind: 'available',
   });
 });
+
+function dependency(name = 'example-package') {
+  return {
+    change_type: 'added',
+    manifest: 'package-lock.json',
+    ecosystem: 'npm',
+    name,
+    version: '1.0.0',
+    vulnerabilities: [],
+  };
+}
+
+test.each([{ records: [] }, { records: [dependency()] }])(
+  'preserves bounded comparison records without an inventory claim: %j',
+  async ({ records }) => {
+    const f = fixture([json(pr()), json(records)]);
+    const result = await (await ready(f)).readComparison();
+    expect(result).toEqual({
+      kind: 'available',
+      repository,
+      baseSha: BASE,
+      headRepository: repository,
+      headSha: HEAD,
+      mergeBaseSha: BASE,
+      records,
+      reasons: [],
+    });
+    expect(f.fetch.mock.calls[1][0]).toBe(
+      `https://api.github.com/repos/example/consumer/dependency-graph/compare/${BASE}...${HEAD}`,
+    );
+    expect(result).not.toHaveProperty('complete');
+  },
+);
+
+test.each(['malformed', 'entries'])(
+  'retains validated comparison prefix on %s',
+  async (problem) => {
+    const f = fixture([
+      json(pr()),
+      json([dependency(), problem === 'malformed' ? null : dependency('second')]),
+    ]);
+    if (problem === 'entries') f.input.limits.maxJsonEntries = 30;
+    const result = await (await ready(f)).readComparison();
+    expect(result).toMatchObject({
+      kind: 'partial',
+      records: [dependency()],
+      reasons: [problem === 'malformed' ? 'malformed' : 'budget'],
+    });
+  },
+);
+
+test('broken JSON and omitted comparison stay unavailable without records', async () => {
+  for (const response of [new Response('[{"name":"valid"},'), json({}), json(null)]) {
+    const result = await (await ready(fixture([json(pr()), response]))).readComparison();
+    expect(result).toMatchObject({ kind: 'unavailable', records: [], reasons: ['malformed'] });
+  }
+});
+
+test.each([
+  [403, {}, 'unknown'],
+  [403, { 'x-ratelimit-remaining': '0' }, 'rate_limit'],
+  [403, { 'retry-after': '60' }, 'rate_limit'],
+  [403, { 'retry-after': 'nonsense', 'x-ratelimit-remaining': '-1' }, 'unknown'],
+  [429, {}, 'rate_limit'],
+  [401, {}, 'permission'],
+  [404, {}, 'missing'],
+] as const)(
+  'classifies comparison HTTP %s with validated context %j',
+  async (status, headers, reason) => {
+    const f = fixture([json(pr()), json({ message: 'untrusted-private-text' }, status, headers)]);
+    const result = await (await ready(f)).readComparison();
+    expect(result).toMatchObject({ kind: 'unavailable', records: [], reasons: [reason] });
+    expect(JSON.stringify(result)).not.toContain('untrusted-private-text');
+    expect(f.fetch).toHaveBeenCalledTimes(2);
+  },
+);
+
+test('recognizes documented permission context without copying its message into results', async () => {
+  const f = fixture([json(pr()), json({ message: 'Resource not accessible by integration' }, 403)]);
+  expect(await (await ready(f)).readComparison()).toMatchObject({
+    kind: 'unavailable',
+    reasons: ['permission'],
+  });
+});
+
+test('comparison failure does not downgrade complete immutable discovery or erase file bytes', async () => {
+  const f = fixture([
+    json(pr(1)),
+    json(pr(1)),
+    json([row(1)]),
+    json(pr(1)),
+    json(commit()),
+    json(tree([entry()])),
+    json(blob()),
+    json({}, 403),
+  ]);
+  const session = await ready(f);
+  const discovery = await session.discoverFiles();
+  const file = await session.readFile({ side: 'base', path: 'uv.lock' });
+  const comparison = await session.readComparison();
+  expect(discovery).toMatchObject({ kind: 'available', complete: true });
+  expect(file.kind).toBe('available');
+  expect(comparison).toMatchObject({ kind: 'unavailable', reasons: ['unknown'] });
+  expect(discovery.complete).toBe(true);
+});
