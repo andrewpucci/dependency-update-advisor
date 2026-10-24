@@ -24,7 +24,23 @@ export type GithubReadDependencies = Readonly<{
   now: () => number;
 }>;
 type Failure = Readonly<{ kind: 'unavailable'; reason: EvidenceReason }>;
-export type GithubReadSession = Readonly<{ close: () => void }>;
+export type GithubFileChange = Readonly<{
+  path: string;
+  previousPath: string | null;
+  status: 'added' | 'removed' | 'modified' | 'renamed' | 'copied' | 'changed' | 'unchanged';
+  blobSha: string | null;
+}>;
+export type GithubDiscovery = Readonly<{
+  kind: 'available' | 'partial' | 'unavailable' | 'obsolete';
+  binding: ReviewBinding;
+  files: readonly GithubFileChange[];
+  complete: boolean;
+  reasons: readonly EvidenceReason[];
+}>;
+export type GithubReadSession = Readonly<{
+  discoverFiles: () => Promise<GithubDiscovery>;
+  close: () => void;
+}>;
 export type GithubReadCreation =
   | { kind: 'invalid' }
   | { kind: 'obsolete' }
@@ -91,8 +107,86 @@ function httpReason(response: Response): EvidenceReason {
   return 'unknown';
 }
 
+function canonicalPath(value: unknown): value is string {
+  return (
+    typeof value === 'string' &&
+    value.length > 0 &&
+    Buffer.byteLength(value, 'utf8') <= PACKET_LIMITS.identityBytes &&
+    !value.includes('\\') &&
+    !Array.from(value).some((c) => c.charCodeAt(0) < 32 || c.charCodeAt(0) === 127) &&
+    !/^[a-z][a-z\d+.-]*:/iu.test(value) &&
+    value.split('/').every((part) => part !== '' && part !== '.' && part !== '..')
+  );
+}
+function fullSha(value: unknown): string | null {
+  return typeof value === 'string' && /^[a-f\d]{40}$/iu.test(value) ? value.toLowerCase() : null;
+}
+function fileChange(value: unknown): GithubFileChange {
+  requireRead(record(value));
+  requireRead(canonicalPath(value.filename));
+  const statuses = ['added', 'removed', 'modified', 'renamed', 'copied', 'changed', 'unchanged'];
+  requireRead(typeof value.status === 'string' && statuses.includes(value.status), 'unsupported');
+  const previousPath = value.previous_filename ?? null;
+  requireRead(previousPath === null || canonicalPath(previousPath));
+  requireRead(
+    value.status !== 'renamed' || (previousPath !== null && previousPath !== value.filename),
+  );
+  const blobSha = value.sha === undefined ? null : fullSha(value.sha);
+  requireRead(value.sha === undefined || blobSha !== null);
+  return Object.freeze({
+    path: value.filename,
+    previousPath,
+    status: value.status as GithubFileChange['status'],
+    blobSha,
+  });
+}
+function nextPage(headers: Headers, path: string, page: number): boolean {
+  const link = headers.get('link');
+  if (link === null) return false;
+  let next = false;
+  const seen = new Set<string>();
+  for (const item of link.split(',')) {
+    const match = /^\s*<([^>]+)>;\s*rel="(next|prev|first|last)"\s*$/u.exec(item);
+    requireRead(match, 'conflict');
+    const [, target, rel] = match;
+    requireRead(!seen.has(rel!), 'conflict');
+    seen.add(rel!);
+    const url = URL.parse(target!);
+    requireRead(
+      url &&
+        url.origin === ORIGIN &&
+        url.pathname === path &&
+        !url.hash &&
+        !url.username &&
+        !url.password,
+      'conflict',
+    );
+    requireRead(
+      url.searchParams.size === 2 && url.searchParams.get('per_page') === '100',
+      'conflict',
+    );
+    const number = url.searchParams.get('page');
+    requireRead(
+      number && /^[1-9]\d*$/u.test(number) && Number.isSafeInteger(Number(number)),
+      'conflict',
+    );
+    const n = Number(number);
+    if (rel === 'next') {
+      requireRead(n === page + 1, 'conflict');
+      next = true;
+    }
+    if (rel === 'prev') requireRead(n === page - 1, 'conflict');
+    if (rel === 'first') requireRead(n === 1, 'conflict');
+    if (rel === 'last') requireRead(n >= page && (!next || n > page), 'conflict');
+  }
+  return next;
+}
+
 class ReadSession implements GithubReadSession {
   private requests = 0;
+  private pages = 0;
+  private files = 0;
+  private busy = false;
   private bytes = 0;
   private entries = 0;
   private retained = 0;
@@ -136,7 +230,7 @@ class ReadSession implements GithubReadSession {
         this.stopped = 'budget';
         throw new ReadFailure('budget');
       }
-      pending.push(...children);
+      for (const child of children) pending.push(child);
     }
   }
   private retain(value: unknown, bytes = 0): void {
@@ -258,6 +352,97 @@ class ReadSession implements GithubReadSession {
     );
     return value.changed_files;
   }
+  async discoverFiles(): Promise<GithubDiscovery> {
+    const files: GithubFileChange[] = [];
+    const reasons = new Set<EvidenceReason>();
+    const result = (kind?: 'obsolete'): GithubDiscovery => ({
+      kind: kind ?? (reasons.size === 0 ? 'available' : files.length ? 'partial' : 'unavailable'),
+      binding: this.binding,
+      files: kind === 'obsolete' ? [] : [...files],
+      complete: kind !== 'obsolete' && reasons.size === 0,
+      reasons: [...reasons],
+    });
+    if (this.busy) {
+      reasons.add('conflict');
+      return result();
+    }
+    this.busy = true;
+    try {
+      this.check();
+      const count = await this.metadata();
+      if (this.binding.baseSha !== this.binding.mergeBaseSha) reasons.add('conflict');
+      const paths = new Set<string>(),
+        previous = new Set<string>();
+      try {
+        const path = `${repoPath(this.binding.repository)}/pulls/${this.binding.pullNumber}/files`;
+        for (let page = 1; ; page++) {
+          requireRead(this.pages < this.limits.maxPages, 'budget');
+          this.pages++;
+          const response = await this.get(`${path}?per_page=100&page=${page}`);
+          requireRead(Array.isArray(response.value) && response.value.length <= 100);
+          for (const value of response.value) {
+            requireRead(this.files < this.limits.maxFiles, 'budget');
+            this.files++;
+            this.consumeEntries(value);
+            const change = fileChange(value);
+            requireRead(
+              !paths.has(change.path) &&
+                (!change.previousPath || !previous.has(change.previousPath)),
+              'conflict',
+            );
+            paths.add(change.path);
+            if (change.previousPath) previous.add(change.previousPath);
+            files.push(change);
+            if (!['added', 'removed', 'modified', 'renamed'].includes(change.status))
+              reasons.add('unsupported');
+          }
+          const hasNext = nextPage(response.headers, path, page);
+          if (files.length >= 3000) {
+            reasons.add('truncated');
+            break;
+          }
+          if (response.value.length < 100) {
+            requireRead(!hasNext, 'conflict');
+            requireRead(files.length === count, 'conflict');
+            break;
+          }
+        }
+      } catch (error) {
+        reasons.add(fixedFailure(error).reason);
+      }
+      requireRead((await this.metadata()) === count, 'conflict');
+    } catch (error) {
+      reasons.add(fixedFailure(error).reason);
+      if (error instanceof ReadFailure && error.obsolete) {
+        this.stopped = 'conflict';
+        return result('obsolete');
+      }
+    } finally {
+      this.busy = false;
+    }
+    let output = result();
+    if (
+      Buffer.byteLength(JSON.stringify(output), 'utf8') >
+      this.limits.maxRetainedBytes - this.retained
+    ) {
+      reasons.add('budget');
+      this.stopped = 'budget';
+      do {
+        files.pop();
+        output = result();
+      } while (
+        files.length &&
+        Buffer.byteLength(JSON.stringify(output), 'utf8') >
+          this.limits.maxRetainedBytes - this.retained
+      );
+    }
+    if (
+      Buffer.byteLength(JSON.stringify(output), 'utf8') <=
+      this.limits.maxRetainedBytes - this.retained
+    )
+      this.retain(output);
+    return output;
+  }
   async initialize(): Promise<void> {
     await this.metadata();
     this.retain({ binding: this.binding });
@@ -292,7 +477,14 @@ export async function createGithubReadSession(
   try {
     const session = new ReadSession(binding, limits, dependencies);
     await session.initialize();
-    return { kind: 'ready', binding, session };
+    return {
+      kind: 'ready',
+      binding,
+      session: Object.freeze({
+        discoverFiles: () => session.discoverFiles(),
+        close: () => session.close(),
+      }),
+    };
   } catch (error) {
     return error instanceof ReadFailure && error.obsolete
       ? { kind: 'obsolete' }
