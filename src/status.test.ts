@@ -98,7 +98,18 @@ function fixture(kind = 'running') {
       },
     };
   });
-  const dependencies = { reads: { readRun, readPullRequest }, readOwnership, createStatus };
+  const dependencies = {
+    reads: {
+      readRun,
+      readPullRequest,
+      readComparison: vi.fn(async () => ({
+        base_commit: { sha: BASE },
+        merge_base_commit: { sha: BASE },
+      })),
+    },
+    readOwnership,
+    createStatus,
+  };
   return {
     input,
     binding,

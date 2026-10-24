@@ -1,6 +1,7 @@
 import { expect, test, vi } from 'vite-plus/test';
 import {
   parseReviewBinding,
+  classifyPullRequest,
   verifyCiEvent,
   reverifyReviewBinding,
   type EventReads,
@@ -1006,4 +1007,62 @@ test.each(['baseRef', 'baseSha', 'mergeBaseSha'])('binding parser requires %s', 
   if (result.kind !== 'verified') throw new Error('expected binding');
   const value = { ...result.binding, [field]: undefined };
   expect(parseReviewBinding(value)).toBeNull();
+});
+
+test.each([
+  ['unchanged', 'main', BASE, BASE, 'current', 'fresh', 0],
+  ['retarget', 'Main', BASE, BASE, 'obsolete', 'obsolete', 0],
+  ['forward base', 'main', NEXT_HEAD, BASE, 'current', 'fresh', 1],
+  ['changed merge base', 'main', NEXT_HEAD, NEXT_HEAD, 'obsolete', 'obsolete', 1],
+] as const)(
+  'classifies %s through the pure helper and freshness',
+  async (_, ref, base, merge, helperKind, kind, calls) => {
+    const f = await boundFixture();
+    f.readComparison.mockClear();
+    f.pullRequest.base.ref = ref;
+    f.pullRequest.base.sha = base;
+    f.comparison.base_commit.sha = base;
+    f.comparison.merge_base_commit.sha = merge;
+    const initial = classifyPullRequest(f.binding, f.pullRequest);
+    if (base !== BASE && ref === 'main')
+      expect(initial).toEqual({ kind: 'compare', baseSha: base });
+    expect(classifyPullRequest(f.binding, f.pullRequest, { value: f.comparison })).toEqual({
+      kind: helperKind,
+    });
+    expect(await reverifyReviewBinding(f.binding, f.reads)).toEqual({ kind });
+    expect(f.readComparison).toHaveBeenCalledTimes(calls);
+  },
+);
+
+test.each(['head', 'closed', 'merged'])(
+  'pure helper and freshness mark %s obsolete',
+  async (change) => {
+    const f = await boundFixture();
+    if (change === 'head') f.pullRequest.head.sha = NEXT_HEAD;
+    if (change === 'closed') f.pullRequest.state = 'closed';
+    if (change === 'merged') f.pullRequest.merged = true;
+    expect(classifyPullRequest(f.binding, f.pullRequest)).toEqual({ kind: 'obsolete' });
+    expect(await reverifyReviewBinding(f.binding, f.reads)).toEqual({ kind: 'obsolete' });
+  },
+);
+
+test('freshness reports bad or failed moved-base comparisons under the fixed field', async () => {
+  const f = await boundFixture();
+  f.pullRequest.base.sha = NEXT_HEAD;
+  expect(classifyPullRequest(f.binding, f.pullRequest, { value: null })).toEqual({
+    kind: 'error',
+    category: 'input',
+    field: 'comparison',
+  });
+  expect(await reverifyReviewBinding(f.binding, f.reads)).toEqual({
+    kind: 'error',
+    category: 'input',
+    field: 'comparison',
+  });
+  f.readComparison.mockRejectedValue(new Error('private'));
+  expect(await reverifyReviewBinding(f.binding, f.reads)).toEqual({
+    kind: 'error',
+    category: 'read',
+    field: 'comparison',
+  });
 });

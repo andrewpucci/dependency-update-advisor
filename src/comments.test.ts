@@ -260,7 +260,14 @@ function publicationFixture(comments: unknown[] = []) {
   });
   const dependencies: CommentDependencies = {
     ...f.dependencies,
-    reads: { readRun, readPullRequest },
+    reads: {
+      readRun,
+      readPullRequest,
+      readComparison: vi.fn(async () => ({
+        base_commit: { sha: BASE },
+        merge_base_commit: { sha: BASE },
+      })),
+    },
     readOwnership,
     createComment,
     readComment,

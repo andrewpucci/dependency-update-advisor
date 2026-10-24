@@ -55,7 +55,7 @@ export type EventReads = {
   readComparison: (repository: RepositoryIdentity, base: string, head: string) => Promise<unknown>;
   readReplay: (identity: ReviewIdentity) => Promise<unknown>;
 };
-export type FreshnessReads = Pick<EventReads, 'readRun' | 'readPullRequest'>;
+export type FreshnessReads = Pick<EventReads, 'readRun' | 'readPullRequest' | 'readComparison'>;
 export type FreshnessResult = { kind: 'fresh' } | { kind: 'obsolete' } | VerificationError;
 
 type Actor = { id: number; login: string; type: string };
@@ -681,6 +681,36 @@ function pullRequestMatchesBinding(pr: PullRequest, original: ReviewBinding): bo
   );
 }
 
+export type PullRequestState =
+  | { kind: 'current' }
+  | { kind: 'obsolete' }
+  | { kind: 'compare'; baseSha: string }
+  | VerificationError;
+
+/** Classify an observed PR without rebinding; a moved base needs its own comparison. */
+export function classifyPullRequest(
+  bindingValue: unknown,
+  value: unknown,
+  comparison?: { value: unknown },
+): PullRequestState {
+  try {
+    const original = parseReviewBinding(bindingValue);
+    if (!original) return failure('binding');
+    const pr = pullRequest(value);
+    if (!pr) return failure('pullRequest');
+    if (!pullRequestMatchesBinding(pr, original)) return failure('pullRequest', 'mismatch');
+    if (pr.closed || pr.headSha !== original.headSha || pr.baseRef !== original.baseRef)
+      return { kind: 'obsolete' };
+    if (pr.baseSha === original.baseSha) return { kind: 'current' };
+    if (!comparison) return { kind: 'compare', baseSha: pr.baseSha };
+    const mergeBaseSha = comparisonMergeBase(comparison.value, pr.baseSha);
+    if (!mergeBaseSha) return failure('comparison');
+    return { kind: mergeBaseSha === original.mergeBaseSha ? 'current' : 'obsolete' };
+  } catch {
+    return failure('pullRequest');
+  }
+}
+
 /** Recheck an owned attempt after claiming. W2 must separately verify exclusive ownership. */
 export async function reverifyReviewBinding(
   value: unknown,
@@ -700,12 +730,18 @@ export async function reverifyReviewBinding(
       reads.readPullRequest(original.repository, original.pullNumber),
     );
     if (!prRead.ok) return prRead.error;
-    const pr = pullRequest(prRead.value);
-    if (!pr) return failure('pullRequest');
-    if (!pullRequestMatchesBinding(pr, original)) return failure('pullRequest', 'mismatch');
-    if (pr.closed || pr.headSha !== original.headSha) return { kind: 'obsolete' };
+    const state = classifyPullRequest(original, prRead.value);
+    if (state.kind === 'obsolete' || state.kind === 'error') return state;
     if (!currentAssociation || currentAssociation.headSha !== original.headSha)
       return failure('run', 'mismatch');
+    if (state.kind === 'compare') {
+      const comparison = await read('comparison', () =>
+        reads.readComparison(original.repository, state.baseSha, original.headSha),
+      );
+      if (!comparison.ok) return comparison.error;
+      const checked = classifyPullRequest(original, prRead.value, { value: comparison.value });
+      if (checked.kind === 'obsolete' || checked.kind === 'error') return checked;
+    }
     return { kind: 'fresh' };
   } catch {
     return failure('binding');
