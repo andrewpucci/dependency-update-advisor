@@ -389,7 +389,8 @@ class ReadSession implements GithubReadSession {
           }),
         aborted,
       ]);
-      requireRead(response.body !== null);
+      if (response.body === null)
+        throw new ReadFailure(response.status === 200 ? 'malformed' : httpReason(response, null));
       reader = response.body.getReader();
       requireRead(!response.redirected, 'unknown');
       const chunks: Uint8Array[] = [];
