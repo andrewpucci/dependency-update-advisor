@@ -384,3 +384,205 @@ test('accepts a same-endpoint next-page hint but rejects a loop without followin
     expect(f.fetch.mock.calls.some(([url]) => url.endsWith('page=2'))).toBe(next === 2);
   }
 });
+
+const TREE = 'd'.repeat(40);
+const BLOB = 'e'.repeat(40);
+function commit(sha = BASE, tree = TREE) {
+  return { sha, tree: { sha: tree } };
+}
+function tree(entries: unknown[], sha = TREE, truncated = false) {
+  return { sha, truncated, tree: entries };
+}
+function entry(path = 'uv.lock', mode = '100644', type = 'blob', sha = BLOB) {
+  return { path, mode, type, sha };
+}
+function blob(bytes: Uint8Array = new TextEncoder().encode('complete lockfile'), sha = BLOB) {
+  return {
+    sha,
+    encoding: 'base64',
+    size: bytes.length,
+    content: Buffer.from(bytes).toString('base64'),
+  };
+}
+
+test.each(['base', 'head'] as const)(
+  'reads a complete immutable %s blob with full provenance',
+  async (side) => {
+    const sha = side === 'base' ? BASE : HEAD;
+    const f = fixture([json(pr()), json(commit(sha)), json(tree([entry()])), json(blob())]);
+    const result = await (await ready(f)).readFile({ side, path: 'uv.lock' });
+    expect(result).toMatchObject({
+      kind: 'available',
+      side,
+      repository,
+      commitSha: sha,
+      path: 'uv.lock',
+      blobSha: BLOB,
+    });
+    if (result.kind !== 'available') throw new Error('expected bytes');
+    expect(new TextDecoder().decode(result.bytes)).toBe('complete lockfile');
+    expect(f.fetch.mock.calls.slice(1).map(([url]) => url)).toEqual([
+      `https://api.github.com/repos/example/consumer/git/commits/${sha}`,
+      `https://api.github.com/repos/example/consumer/git/trees/${TREE}`,
+      `https://api.github.com/repos/example/consumer/git/blobs/${BLOB}`,
+    ]);
+  },
+);
+
+test('resolves nested hidden companions and literal percent names through nonrecursive trees', async () => {
+  const subtree = 'f'.repeat(40);
+  const f = fixture([
+    json(pr()),
+    json(commit()),
+    json(tree([entry('.github', '040000', 'tree', subtree)])),
+    json(tree([entry('100%20.yml')], subtree)),
+    json(blob()),
+  ]);
+  expect(
+    await (await ready(f)).readFile({ side: 'base', path: '.github/100%20.yml' }),
+  ).toMatchObject({ kind: 'available', path: '.github/100%20.yml' });
+  expect(
+    f.fetch.mock.calls.every(([url]) => !url.includes('recursive') && !url.includes('100%')),
+  ).toBe(true);
+});
+
+test('keeps zero bytes, proven absence, and failed tree lookup distinct', async () => {
+  const empty = fixture([
+    json(pr()),
+    json(commit()),
+    json(tree([entry()])),
+    json(blob(new Uint8Array())),
+  ]);
+  const result = await (await ready(empty)).readFile({ side: 'base', path: 'uv.lock' });
+  expect(result).toMatchObject({ kind: 'available', bytes: new Uint8Array() });
+  const absent = fixture([json(pr()), json(commit()), json(tree([]))]);
+  expect(await (await ready(absent)).readFile({ side: 'base', path: 'uv.lock' })).toMatchObject({
+    kind: 'absent',
+    treeSha: TREE,
+  });
+  const failed = fixture([json(pr()), json(commit()), json({}, 404)]);
+  expect(await (await ready(failed)).readFile({ side: 'base', path: 'uv.lock' })).toMatchObject({
+    kind: 'unavailable',
+    reason: 'missing',
+  });
+});
+
+test.each([
+  '/absolute',
+  '../up',
+  'a/../up',
+  'a//b',
+  'a\\b',
+  'a/./b',
+  'https://attacker.invalid',
+  'bad\nname',
+  'a'.repeat(1025),
+  '',
+])('rejects unsafe file path %j without a file request', async (path) => {
+  const f = fixture();
+  const session = await ready(f);
+  expect(await session.readFile({ side: 'base', path })).toEqual({ kind: 'invalid' });
+  expect(f.fetch).toHaveBeenCalledTimes(1);
+});
+
+test.each([
+  ['120000', 'blob'],
+  ['160000', 'commit'],
+  ['040000', 'tree'],
+  ['100600', 'blob'],
+])('refuses a nonregular file %s %s', async (mode, type) => {
+  const f = fixture([json(pr()), json(commit()), json(tree([entry('uv.lock', mode, type)]))]);
+  expect(await (await ready(f)).readFile({ side: 'base', path: 'uv.lock' })).toMatchObject({
+    kind: 'unavailable',
+    reason: 'unsupported',
+  });
+  expect(f.fetch).toHaveBeenCalledTimes(3);
+});
+
+test.each([
+  'truncated',
+  'wrongTree',
+  'wrongCommit',
+  'duplicate',
+  'wrongBlob',
+  'wrongSize',
+  'encoding',
+  'base64',
+  'padBits',
+])('rejects contradictory or incomplete immutable input: %s', async (problem) => {
+  const c = commit();
+  const t = tree([entry()]);
+  const b = blob();
+  if (problem === 'truncated') t.truncated = true;
+  if (problem === 'wrongTree') t.sha = HEAD;
+  if (problem === 'wrongCommit') c.sha = HEAD;
+  if (problem === 'duplicate') t.tree.push(entry());
+  if (problem === 'wrongBlob') b.sha = HEAD;
+  if (problem === 'wrongSize') b.size++;
+  if (problem === 'encoding') b.encoding = 'utf-8';
+  if (problem === 'base64') b.content = '@@@@';
+  if (problem === 'padBits') {
+    b.size = 1;
+    b.content = 'Zh==';
+  }
+  const f = fixture([json(pr()), json(c), json(t), json(b)]);
+  const result = await (await ready(f)).readFile({ side: 'base', path: 'uv.lock' });
+  expect(result.kind).toBe('unavailable');
+  expect(result).not.toHaveProperty('bytes');
+});
+
+test('uses fork head identity and never reuses base bytes or buffers for a head read', async () => {
+  const fork = { id: 102, owner: 'example', name: 'fork' };
+  const current = pr();
+  current.head.repo = { id: 102, full_name: 'example/fork' };
+  const first = new TextEncoder().encode('base');
+  const second = new TextEncoder().encode('head');
+  const f = fixture([
+    json(current),
+    json(commit()),
+    json(tree([entry()])),
+    json(blob(first)),
+    json(commit(HEAD)),
+    json(tree([entry()])),
+    json(blob(second)),
+  ]);
+  f.input.binding.headRepository = fork;
+  const session = await ready(f);
+  const base = await session.readFile({ side: 'base', path: 'uv.lock' });
+  const head = await session.readFile({ side: 'head', path: 'uv.lock' });
+  expect(head).toMatchObject({ kind: 'available', repository: fork, commitSha: HEAD });
+  if (base.kind !== 'available' || head.kind !== 'available')
+    throw new Error('expected file bytes');
+  base.bytes.fill(0);
+  expect(new TextDecoder().decode(head.bytes)).toBe('head');
+  expect(f.fetch.mock.calls[4][0]).toBe(
+    `https://api.github.com/repos/example/fork/git/commits/${HEAD}`,
+  );
+});
+
+test.each([3, 4])(
+  'accepts exact decoded file budget and rejects overflow at %s bytes',
+  async (maxFileBytes) => {
+    const f = fixture(
+      [
+        json(pr()),
+        json(commit()),
+        json(tree([entry()])),
+        json(blob(new TextEncoder().encode('four'))),
+      ],
+      { maxFileBytes },
+    );
+    const result = await (await ready(f)).readFile({ side: 'base', path: 'uv.lock' });
+    expect(result.kind).toBe(maxFileBytes === 4 ? 'available' : 'unavailable');
+    if (maxFileBytes === 3) expect(result).toMatchObject({ reason: 'budget' });
+  },
+);
+
+test('accepts GitHub newline-wrapped base64 without trimming arbitrary characters', async () => {
+  const value = blob(new TextEncoder().encode('four'));
+  value.content = `Zm91\ncg==\n`;
+  const f = fixture([json(pr()), json(commit()), json(tree([entry()])), json(value)]);
+  expect(await (await ready(f)).readFile({ side: 'base', path: 'uv.lock' })).toMatchObject({
+    kind: 'available',
+  });
+});

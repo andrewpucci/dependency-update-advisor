@@ -37,8 +37,24 @@ export type GithubDiscovery = Readonly<{
   complete: boolean;
   reasons: readonly EvidenceReason[];
 }>;
+export type GithubFileRequest = Readonly<{ side: 'base' | 'head'; path: string }>;
+type FileProvenance = Readonly<{
+  side: 'base' | 'head';
+  repository: RepositoryIdentity;
+  commitSha: string;
+  path: string;
+}>;
+export type GithubFileResult =
+  | { kind: 'invalid' }
+  | (FileProvenance &
+      (
+        | { kind: 'available'; blobSha: string; bytes: Uint8Array }
+        | { kind: 'absent'; treeSha: string }
+        | Failure
+      ));
 export type GithubReadSession = Readonly<{
   discoverFiles: () => Promise<GithubDiscovery>;
+  readFile: (request: unknown) => Promise<GithubFileResult>;
   close: () => void;
 }>;
 export type GithubReadCreation =
@@ -443,6 +459,122 @@ class ReadSession implements GithubReadSession {
       this.retain(output);
     return output;
   }
+  async readFile(request: unknown): Promise<GithubFileResult> {
+    let side: 'base' | 'head', path: string;
+    try {
+      requireRead(record(request, ['side', 'path']));
+      const inputSide = request.side,
+        inputPath = request.path;
+      requireRead(inputSide === 'base' || inputSide === 'head');
+      requireRead(canonicalPath(inputPath));
+      side = inputSide;
+      path = inputPath;
+    } catch {
+      return { kind: 'invalid' };
+    }
+    const repository = side === 'base' ? this.binding.repository : this.binding.headRepository;
+    const commitSha = side === 'base' ? this.binding.baseSha : this.binding.headSha;
+    const provenance: FileProvenance = { side, repository, commitSha, path };
+    if (this.busy) return { ...provenance, kind: 'unavailable', reason: 'conflict' };
+    this.busy = true;
+    try {
+      this.check();
+      const prefix = repoPath(repository);
+      const commit = await this.get(`${prefix}/git/commits/${commitSha}`);
+      this.consumeEntries(commit.value);
+      requireRead(
+        record(commit.value) &&
+          fullSha(commit.value.sha) === commitSha &&
+          record(commit.value.tree),
+      );
+      const root = fullSha(commit.value.tree.sha);
+      requireRead(root);
+      let treeSha = root;
+      const segments = path.split('/');
+      for (let index = 0; index < segments.length; index++) {
+        const lookup = await this.get(`${prefix}/git/trees/${treeSha}`);
+        this.consumeEntries(lookup.value);
+        const tree = lookup.value;
+        requireRead(
+          record(tree) &&
+            fullSha(tree.sha) === treeSha &&
+            typeof tree.truncated === 'boolean' &&
+            Array.isArray(tree.tree),
+        );
+        requireRead(!tree.truncated, 'truncated');
+        let found: { mode: string; type: string; sha: string } | null = null;
+        const names = new Set<string>();
+        for (const item of tree.tree) {
+          requireRead(
+            record(item) &&
+              canonicalPath(item.path) &&
+              !item.path.includes('/') &&
+              typeof item.mode === 'string' &&
+              typeof item.type === 'string',
+          );
+          const sha = fullSha(item.sha);
+          requireRead(sha);
+          requireRead(!names.has(item.path), 'conflict');
+          names.add(item.path);
+          const typeForMode: Record<string, string> = {
+            '040000': 'tree',
+            '100644': 'blob',
+            '100755': 'blob',
+            '120000': 'blob',
+            '160000': 'commit',
+          };
+          requireRead(Object.hasOwn(typeForMode, item.mode), 'unsupported');
+          requireRead(typeForMode[item.mode] === item.type);
+          if (item.path === segments[index]) found = { mode: item.mode, type: item.type, sha };
+        }
+        if (!found) {
+          const absent = { ...provenance, kind: 'absent' as const, treeSha };
+          this.retain(absent);
+          return absent;
+        }
+        if (index < segments.length - 1) {
+          requireRead(found.mode === '040000', 'unsupported');
+          treeSha = found.sha;
+        } else {
+          requireRead(found.mode === '100644' || found.mode === '100755', 'unsupported');
+          const response = await this.get(`${prefix}/git/blobs/${found.sha}`);
+          this.consumeEntries(response.value);
+          const blob = response.value;
+          requireRead(
+            record(blob) &&
+              fullSha(blob.sha) === found.sha &&
+              typeof blob.size === 'number' &&
+              Number.isSafeInteger(blob.size) &&
+              blob.size >= 0 &&
+              typeof blob.content === 'string',
+          );
+          requireRead(blob.encoding === 'base64', 'unsupported');
+          const content = blob.content.replace(/[\r\n]/gu, '');
+          requireRead(
+            /^(?:[A-Za-z\d+/]{4})*(?:[A-Za-z\d+/]{2}==|[A-Za-z\d+/]{3}=)?$/u.test(content),
+          );
+          const size =
+            (content.length / 4) * 3 - (content.endsWith('==') ? 2 : content.endsWith('=') ? 1 : 0);
+          requireRead(size === blob.size);
+          if (size > this.limits.maxFileBytes || size > this.limits.maxTotalBytes - this.bytes) {
+            this.stopped = 'budget';
+            throw new ReadFailure('budget');
+          }
+          this.bytes += size;
+          const bytes = Buffer.from(content, 'base64');
+          requireRead(bytes.length === size && bytes.toString('base64') === content);
+          const metadata = { ...provenance, kind: 'available' as const, blobSha: found.sha };
+          this.retain(metadata, size);
+          return { ...metadata, bytes: new Uint8Array(bytes) };
+        }
+      }
+      throw new ReadFailure('unknown');
+    } catch (error) {
+      return { ...provenance, ...fixedFailure(error) };
+    } finally {
+      this.busy = false;
+    }
+  }
   async initialize(): Promise<void> {
     await this.metadata();
     this.retain({ binding: this.binding });
@@ -482,6 +614,7 @@ export async function createGithubReadSession(
       binding,
       session: Object.freeze({
         discoverFiles: () => session.discoverFiles(),
+        readFile: (request: unknown) => session.readFile(request),
         close: () => session.close(),
       }),
     };
