@@ -693,7 +693,7 @@ function pullRequestMatchesBinding(pr: PullRequest, original: ReviewBinding): bo
   );
 }
 
-type PullRequestDecision = { kind: 'current' } | { kind: 'obsolete' } | VerificationError;
+export type PullRequestDecision = { kind: 'current' } | { kind: 'obsolete' } | VerificationError;
 export type PullRequestState =
   | PullRequestDecision
   | Readonly<{
