@@ -196,19 +196,20 @@ test('reads the merge base from the comparison page without file patches', async
   expect(result.kind).toBe('ready');
 });
 
-test.each(['head', 'closed', 'retarget', 'repo', 'author', 'count'])(
+test.each(['head', 'closed', 'merged', 'retarget', 'repo', 'author', 'count'])(
   'rejects conflicting or malformed metadata: %s',
   async (change) => {
     const value = pr();
     if (change === 'head') value.head.sha = 'c'.repeat(40);
     if (change === 'closed') value.state = 'closed';
+    if (change === 'merged') value.merged = true;
     if (change === 'retarget') value.base.ref = 'other';
     if (change === 'repo') value.base.repo = { ...repo, id: 999 };
     if (change === 'author') value.user.id = 999;
     if (change === 'count') value.changed_files = -1;
     const f = fixture([json(value)]);
     expect(await createGithubReadSession(f.input, f.dependencies)).toEqual(
-      ['head', 'closed', 'retarget'].includes(change)
+      ['head', 'closed', 'merged', 'retarget'].includes(change)
         ? { kind: 'obsolete' }
         : { kind: 'unavailable', reason: change === 'count' ? 'malformed' : 'conflict' },
     );
@@ -381,6 +382,70 @@ test.each(['same', 'changed', 'failed'])(
     );
     expect(result.files).toHaveLength(change === 'changed' ? 0 : 1);
     expect(result.binding.baseSha).toBe(BASE);
+  },
+);
+
+test.each([false, true])('D1 parses each snapshot once with moved base %s', async (moved) => {
+  const value = pr();
+  if (moved) value.base.sha = 'c'.repeat(40);
+  const metadata = () => [
+    json(value),
+    ...(moved
+      ? [json({ base_commit: { sha: value.base.sha }, merge_base_commit: { sha: BASE } })]
+      : []),
+  ];
+  const f = fixture([...metadata(), ...metadata(), json([]), ...metadata()]);
+  const parse = JSON.parse;
+  const userReads: ReturnType<typeof vi.fn>[] = [];
+  const parseSpy = vi.spyOn(JSON, 'parse').mockImplementation((...args) => {
+    const decoded: unknown = parse(...args);
+    if (typeof decoded === 'object' && decoded !== null && 'user' in decoded) {
+      const user = decoded.user;
+      const userRead = vi.fn(() => user);
+      Object.defineProperty(decoded, 'user', { get: userRead });
+      userReads.push(userRead);
+    }
+    return decoded;
+  });
+  const clone = vi.spyOn(globalThis, 'structuredClone');
+  try {
+    const session = await ready(f);
+    expect(await session.discoverFiles()).toMatchObject({ kind: 'available', complete: true });
+    expect({
+      bindingParses: clone.mock.calls.length,
+      // Each budget traversal also reads the user once.
+      prReads: userReads.map((read) => read.mock.calls.length),
+    }).toEqual({ bindingParses: 1, prReads: [2, 2, 2] });
+    const comparisons = f.fetch.mock.calls.filter(([url]) => url.includes('/compare/'));
+    expect(comparisons).toHaveLength(moved ? 3 : 0);
+    for (const [url] of comparisons)
+      expect(url).toBe(
+        `https://api.github.com/repos/example/consumer/compare/${value.base.sha}...${HEAD}?per_page=1&page=2`,
+      );
+    expect(f.fetch).toHaveBeenCalledTimes(moved ? 7 : 4);
+  } finally {
+    clone.mockRestore();
+    parseSpy.mockRestore();
+  }
+});
+
+test.each(['changed', 'malformed', 'echo', 'failed'])(
+  'D1 preserves creation-time moved-base failure %s',
+  async (change) => {
+    const value = pr();
+    value.base.sha = 'c'.repeat(40);
+    const comparison = {
+      base_commit: { sha: change === 'echo' ? BASE : value.base.sha },
+      merge_base_commit: { sha: change === 'changed' ? HEAD : BASE },
+    };
+    if (change === 'malformed') comparison.merge_base_commit.sha = 'short';
+    const f = fixture([json(value), json(comparison, change === 'failed' ? 403 : 200)]);
+    expect(await createGithubReadSession(f.input, f.dependencies)).toEqual(
+      change === 'changed'
+        ? { kind: 'obsolete' }
+        : { kind: 'unavailable', reason: change === 'failed' ? 'unknown' : 'malformed' },
+    );
+    expect(f.fetch).toHaveBeenCalledTimes(2);
   },
 );
 

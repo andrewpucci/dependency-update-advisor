@@ -1,7 +1,7 @@
 import {
-  classifyPullRequest,
-  parseReviewBinding,
+  createPullRequestClassifier,
   record,
+  type PullRequestClassifier,
   type ReviewBinding,
   type RepositoryIdentity,
 } from './event.js';
@@ -302,11 +302,13 @@ class ReadSession implements GithubReadSession {
   private active: AbortController | null = null;
   private readonly started: number;
   private lastTime: number;
+  readonly binding: ReviewBinding;
   constructor(
-    readonly binding: ReviewBinding,
+    private readonly classifier: PullRequestClassifier,
     private readonly limits: GithubReadLimits,
     private readonly dependencies: GithubReadDependencies,
   ) {
+    this.binding = classifier.binding;
     this.started = this.lastTime = dependencies.now();
     requireRead(Number.isFinite(this.started), 'unknown');
   }
@@ -485,7 +487,7 @@ class ReadSession implements GithubReadSession {
     const path = `${repoPath(this.binding.repository)}/pulls/${this.binding.pullNumber}`;
     const { value } = await this.get(path);
     this.consumeEntries(value);
-    const state = classifyPullRequest(this.binding, value);
+    const state = this.classifier.classify(value);
     if (state.kind === 'obsolete') throw new ReadFailure('conflict', true);
     if (state.kind === 'error')
       throw new ReadFailure(state.category === 'mismatch' ? 'conflict' : 'malformed');
@@ -495,7 +497,7 @@ class ReadSession implements GithubReadSession {
         `${repoPath(this.binding.repository)}/compare/${state.baseSha}...${this.binding.headSha}?per_page=1&page=2`,
       );
       this.consumeEntries(comparison.value);
-      const checked = classifyPullRequest(this.binding, value, { value: comparison.value });
+      const checked = state.complete(comparison.value);
       if (checked.kind === 'obsolete') throw new ReadFailure('conflict', true);
       requireRead(checked.kind === 'current');
     }
@@ -760,13 +762,15 @@ export async function createGithubReadSession(
   input: unknown,
   dependencies: GithubReadDependencies,
 ): Promise<GithubReadCreation> {
-  let binding: ReviewBinding | null;
+  let classifier: PullRequestClassifier | null;
+  let binding: ReviewBinding;
   let limits: GithubReadLimits | null;
   try {
     if (!record(input, ['binding', 'limits'])) return { kind: 'invalid' };
-    binding = parseReviewBinding(input.binding);
+    classifier = createPullRequestClassifier(input.binding);
     limits = parseLimits(input.limits);
-    if (!binding || !limits) return { kind: 'invalid' };
+    if (!classifier || !limits) return { kind: 'invalid' };
+    binding = classifier.binding;
     for (const value of [
       binding.repository.owner,
       binding.repository.name,
@@ -780,7 +784,7 @@ export async function createGithubReadSession(
     return { kind: 'invalid' };
   }
   try {
-    const session = new ReadSession(binding, limits, dependencies);
+    const session = new ReadSession(classifier, limits, dependencies);
     await session.initialize();
     return {
       kind: 'ready',
