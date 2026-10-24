@@ -532,6 +532,30 @@ test.each([
 });
 
 test.each([
+  ['backslash name', entry('foo\\bar')],
+  ['unlisted mode', entry('legacy.txt', '100664')],
+  ['duplicate sibling', entry('other.txt')],
+])('resolves a requested path beside an unusual sibling: %s', async (_name, sibling) => {
+  const siblings = [sibling, sibling];
+  const f = fixture([json(pr()), json(commit()), json(tree([...siblings, entry()])), json(blob())]);
+  expect(await (await ready(f)).readFile({ side: 'base', path: 'uv.lock' })).toMatchObject({
+    kind: 'available',
+    blobSha: BLOB,
+  });
+});
+
+test.each([
+  ['missing sha', { path: 'other.txt', mode: '100644', type: 'blob' }],
+  ['non-record', 'other.txt'],
+])('still requires a well-formed sibling listing: %s', async (_name, sibling) => {
+  const f = fixture([json(pr()), json(commit()), json(tree([sibling, entry()]))]);
+  expect(await (await ready(f)).readFile({ side: 'base', path: 'uv.lock' })).toMatchObject({
+    kind: 'unavailable',
+    reason: 'malformed',
+  });
+});
+
+test.each([
   'truncated',
   'wrongTree',
   'wrongCommit',
