@@ -325,7 +325,7 @@ above and returns `Promise<CommentResult>`. Its `CommentDependencies` are:
 | `readComment`   | Frozen `{ repository, commentId }`; unknown `{ status: 200, data: comment }` for the selected ID.                                           |
 | `createComment` | Frozen `{ repository, pullNumber, body }`; unknown `{ status: 201, data: comment }`.                                                        |
 | `updateComment` | Frozen `{ repository, commentId, body }`; unknown `{ status: 200, data: comment }`.                                                         |
-| `reads`         | T1 `FreshnessReads` for the source run and bound PR; the real freshness operation remains authoritative.                                    |
+| `reads`         | T1 `FreshnessReads` for the source run, bound PR, and moved-base comparison; the real freshness operation remains authoritative.            |
 | `readOwnership` | Frozen exact review identity; unknown `{ identity, state: 'owned' }` or `{ identity, state: 'lost' }`. Anything else is an ownership error. |
 
 `repository` is the validated consumer `RepositoryIdentity`. The module

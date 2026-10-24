@@ -11,10 +11,9 @@ verifier, freshness interface, tests, verification, and PR; it does not
 authorize workflow credentials, reviewer publication, adoption, or cutover.
 The approved [shared workflow contract](SPEC-shared-review.md) and
 [ADR 0002](../adr/0002-privileged-review-boundary.md) remain authoritative.
-The [base-identity amendment](#base-identity-amendment) is approved for
-planning. The implemented behavior described outside that section governs
-until [#107](https://github.com/andrewpucci/dependency-update-advisor/issues/107)
-lands and folds the amendment in.
+The [base-identity decision](#base-identity-amendment) is implemented by
+[#107](https://github.com/andrewpucci/dependency-update-advisor/issues/107),
+as part of the user-authorized D1 execution on 2026-10-24.
 
 ## Execution Scope
 
@@ -96,7 +95,8 @@ read operations are:
 | ----------------------------------------------------------- | ------------------------------------------------------------------------ |
 | `GET /repos/{owner}/{repo}/actions/workflows/{workflow_id}` | Confirm intended workflow ID and path in the consumer repository.        |
 | `GET /repos/{owner}/{repo}/actions/runs/{run_id}`           | Verify the source run and its latest attempt, retaining PR associations. |
-| `GET /repos/{owner}/{repo}/pulls/{pull_number}`             | Verify the current PR author, repository, state, and head.               |
+| `GET /repos/{owner}/{repo}/pulls/{pull_number}`             | Verify author, repositories, state, head, base ref, and base SHA.        |
+| `GET /repos/{owner}/{repo}/compare/{base}...{head}`         | Authenticate merge base after PR/head/replay gates pass.                 |
 
 GitHub documents [workflow reads](https://docs.github.com/en/rest/actions/workflows#get-a-workflow),
 [run reads](https://docs.github.com/en/rest/actions/workflow-runs#get-a-workflow-run),
@@ -204,7 +204,8 @@ Return one explicit result: `verified` with a bounded immutable binding;
 or `error` for malformed/conflicting data or unavailable verification.
 Only `verified` exposes a binding. Do not return a partially usable PR number
 or new-head binding on rejection. Include repository/workflow identity, run
-ID/attempt, PR number, full head SHA, conclusion, and review identity; exclude
+ID/attempt, PR number, full head SHA, `baseRef`, `baseSha`, `mergeBaseSha`,
+conclusion, and review identity; exclude
 raw payloads, PR text, artifact URLs, and credentials.
 
 The result categories below govern the fixtures. For an eligible event type,
@@ -222,7 +223,13 @@ Provide a freshness operation that rereads the latest run and PR using the
 binding, then compares repository, actor, association, open state, latest
 attempt, and full head. It returns `fresh`, `obsolete`, or `error` using the
 same error categories; it must never update a binding to another head or
-attempt. Publication uses it under the [handoff contract](#publication-handoff).
+attempt. `FreshnessReads` includes `readComparison(repository, base, head)`.
+The exported pure `classifyPullRequest(binding, response, comparison?)` parses
+the PR and returns `current`, `obsolete`, `compare` with the observed base
+SHA, or a fixed verification error. A supplied comparison wrapper validates
+its echoed base and merge base. `reverifyReviewBinding` and D1 reuse this
+classifier. The [decision table](#freshness-decision-table) also governs
+retargets and base movement. Publication uses it under the [handoff contract](#publication-handoff).
 
 Check stable run/repository/actor identities and attempt before same-attempt
 completion/conclusion: a newer running attempt with a null conclusion is
@@ -266,15 +273,11 @@ behavior; the old reviewer stays active until parity and cutover gates pass.
 
 ## Base-Identity Amendment
 
-Status: approved for planning, 2026-10-24, for
-[D1 #13](https://github.com/andrewpucci/dependency-update-advisor/issues/13).
-Approval: the user invoked `as-plan` on 2026-10-24 after reviewing the draft.
-Implementation is tracked in
-[#107](https://github.com/andrewpucci/dependency-update-advisor/issues/107)
-within the revised D1 plan, approved by the user on 2026-10-24. Execution
-was given via `as-build auto` on 2026-10-24 for one PR covering all steps.
-This section amends T1 and the T4 binding check;
-#107 folds it into the sections above.
+Status: implemented for [#107](https://github.com/andrewpucci/dependency-update-advisor/issues/107)
+within the D1 plan. The user approved planning and execution on 2026-10-24,
+selecting one PR for all seven tasks. This section records the base-identity
+contract and its rationale; the read, result, and freshness interfaces above
+include it.
 
 ### Problem and evidence
 
