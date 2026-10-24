@@ -6,28 +6,28 @@
 [C2 context](docs/specs/SPEC-source-context.md),
 [C3 policy](docs/specs/SPEC-advisory-policy.md),
 [T1 verification](docs/specs/SPEC-event-verification.md),
-[T2 status](docs/specs/SPEC-execution-status.md), and
-[T3 comments](docs/specs/SPEC-managed-comments.md) are merged into `main`.
-T3 merged in [PR #76](https://github.com/andrewpucci/dependency-update-advisor/pull/76).
-[T4 packet validation](docs/specs/SPEC-review-packet.md) is merged in
-[PR #89](https://github.com/andrewpucci/dependency-update-advisor/pull/89).
+[T2 status](docs/specs/SPEC-execution-status.md),
+[T3 comments](docs/specs/SPEC-managed-comments.md),
+[T4 packet validation](docs/specs/SPEC-review-packet.md), and
+[T5 decision units](docs/specs/SPEC-decision-units.md) are merged into `main`.
+T5 merged in [PR #100](https://github.com/andrewpucci/dependency-update-advisor/pull/100);
 [T4 evidence](https://github.com/andrewpucci/dependency-update-advisor/issues/84)
-records exact-revision checks and remaining integration gates.
+and [T5 evidence](https://github.com/andrewpucci/dependency-update-advisor/issues/99)
+record exact-revision checks and remaining integration gates.
 [Advisory complexity review](docs/specs/SPEC-complexity-review.md) is merged.
-[T5 decision units](docs/specs/SPEC-decision-units.md) await merge in
-[PR #100](https://github.com/andrewpucci/dependency-update-advisor/pull/100).
-[T5 evidence](https://github.com/andrewpucci/dependency-update-advisor/issues/99)
-retains integration gates. No shared workflow exists; the old reviewer stays active.
+No shared workflow exists; the old reviewer stays active.
 
 ## Next action
 
-Review the T5 implementation for [#12](https://github.com/andrewpucci/dependency-update-advisor/issues/12)
-and #94–#99 in one PR. Reachability extension #93 remains deferred.
+The revised D1 plan for [#13](https://github.com/andrewpucci/dependency-update-advisor/issues/13)
+is approved; execution remains a separate gate.
+The [T1 base-identity amendment](docs/specs/SPEC-event-verification.md#base-identity-amendment)
+and revised [D1 contract](docs/specs/SPEC-github-read.md) are approved for
+planning; [#107](https://github.com/andrewpucci/dependency-update-advisor/issues/107)
+is first, before #101–#106. Deferred reachability #93 remains separate.
 W1/W2 must supply bounded reads and exclusive claims before T2/T3 writes.
-B1–B3 and C1–C3 are merged. Downstream work:
-[S3](https://github.com/andrewpucci/dependency-update-advisor/issues/53) supplies
-evidence, [T5](https://github.com/andrewpucci/dependency-update-advisor/issues/12)
-forms units, [M2](https://github.com/andrewpucci/dependency-update-advisor/issues/22)
+Downstream work: [S3](https://github.com/andrewpucci/dependency-update-advisor/issues/53)
+supplies evidence, [M2](https://github.com/andrewpucci/dependency-update-advisor/issues/22)
 validates assessments, [O1](https://github.com/andrewpucci/dependency-update-advisor/issues/23)
 renders results, and T2/T3/W2 own publication. C2 handoffs remain gates;
 packaging remains A1. Unit tests do not certify these integrations or cutover.
