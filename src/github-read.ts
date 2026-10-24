@@ -273,7 +273,7 @@ class ReadSession implements GithubReadSession {
   private check(): void {
     if (this.stopped) throw new ReadFailure(this.stopped);
     if (this.elapsed() >= this.limits.totalTimeoutMs) {
-      this.stopped = 'timeout';
+      this.stopped ??= 'timeout';
       this.active?.abort();
       throw new ReadFailure('timeout');
     }
@@ -288,7 +288,7 @@ class ReadSession implements GithubReadSession {
       const children = Object.values(item);
       this.entries += children.length;
       if (this.entries > this.limits.maxJsonEntries) {
-        this.stopped = 'budget';
+        this.stopped ??= 'budget';
         throw new ReadFailure('budget');
       }
       for (const child of children) pending.push(child);
@@ -297,7 +297,7 @@ class ReadSession implements GithubReadSession {
   private retain(value: unknown, bytes = 0): void {
     const size = Buffer.byteLength(JSON.stringify(value), 'utf8') + bytes;
     if (size > this.limits.maxRetainedBytes - this.retained) {
-      this.stopped = 'budget';
+      this.stopped ??= 'budget';
       throw new ReadFailure('budget');
     }
     this.retained += size;
@@ -308,7 +308,7 @@ class ReadSession implements GithubReadSession {
     const remaining = this.limits.maxRetainedBytes - this.retained;
     if (size > remaining) {
       noteBudget();
-      this.stopped = 'budget';
+      this.stopped ??= 'budget';
       output = result();
       size = Buffer.byteLength(JSON.stringify(output), 'utf8');
       // Charge each removed row once; large prefix overflows must remain linear.
@@ -326,12 +326,12 @@ class ReadSession implements GithubReadSession {
     this.check();
     const remaining = this.limits.totalTimeoutMs - this.elapsed();
     if (remaining <= 0) {
-      this.stopped = 'timeout';
+      this.stopped ??= 'timeout';
       throw new ReadFailure('timeout');
     }
     const duration = Math.min(this.limits.requestTimeoutMs, remaining);
     if (this.requests >= this.limits.maxRequests) {
-      this.stopped = 'budget';
+      this.stopped ??= 'budget';
       throw new ReadFailure('budget');
     }
     this.requests++;
@@ -362,7 +362,7 @@ class ReadSession implements GithubReadSession {
         if (remainingMs > 0) schedule();
         else {
           expired = true;
-          this.stopped = 'timeout';
+          this.stopped ??= 'timeout';
           controller.abort();
         }
       }, interval);
@@ -401,7 +401,7 @@ class ReadSession implements GithubReadSession {
         this.bytes += chunk.value.byteLength;
         length += chunk.value.byteLength;
         if (length > this.limits.maxResponseBytes || this.bytes > this.limits.maxTotalBytes) {
-          this.stopped = 'budget';
+          this.stopped ??= 'budget';
           controller.abort();
           throw new ReadFailure('budget');
         }
@@ -520,13 +520,13 @@ class ReadSession implements GithubReadSession {
       } catch (error) {
         const reason = fixedFailure(error).reason;
         reasons.add(reason);
-        if (reason === 'budget') this.stopped = 'budget';
+        if (reason === 'budget') this.stopped ??= 'budget';
       }
       requireRead((await this.metadata()) === count, 'conflict');
     } catch (error) {
       reasons.add(fixedFailure(error).reason);
       if (error instanceof ReadFailure && error.obsolete) {
-        this.stopped = 'conflict';
+        this.stopped ??= 'conflict';
         return result('obsolete');
       }
     } finally {
@@ -626,7 +626,7 @@ class ReadSession implements GithubReadSession {
             (content.length / 4) * 3 - (content.endsWith('==') ? 2 : content.endsWith('=') ? 1 : 0);
           requireRead(size === blob.size);
           if (size > this.limits.maxFileBytes || size > this.limits.maxTotalBytes - this.bytes) {
-            this.stopped = 'budget';
+            this.stopped ??= 'budget';
             throw new ReadFailure('budget');
           }
           this.bytes += size;
@@ -640,7 +640,7 @@ class ReadSession implements GithubReadSession {
       throw new ReadFailure('unknown');
     } catch (error) {
       const failure = fixedFailure(error);
-      if (failure.reason === 'budget') this.stopped = 'budget';
+      if (failure.reason === 'budget') this.stopped ??= 'budget';
       return { ...provenance, ...failure };
     } finally {
       this.busy = false;
@@ -693,7 +693,7 @@ class ReadSession implements GithubReadSession {
       }
     } catch (error) {
       const reason = fixedFailure(error).reason;
-      if (reason === 'budget') this.stopped = 'budget';
+      if (reason === 'budget') this.stopped ??= 'budget';
       reasons.push(reason);
     } finally {
       this.busy = false;
