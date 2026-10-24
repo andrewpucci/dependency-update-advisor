@@ -471,6 +471,27 @@ function verifyCurrentRun(
   return { kind: 'current', association: currentAssociation, conclusion: currentRun.conclusion };
 }
 
+function verifyEventPullRequest(
+  value: unknown,
+  event: EligibleEvent,
+  currentAssociation: Association,
+): EventStop | { kind: 'current'; pr: PullRequest } {
+  const { expectedRepo, eventRun, eventAssociation } = event;
+  const pr = pullRequest(value);
+  if (!pr) return failure('pullRequest');
+  if (
+    pr.number !== eventAssociation.number ||
+    !sameRepository(pr.repository, expectedRepo) ||
+    !sameRepository(pr.headRepository, eventRun.headRepository)
+  )
+    return failure('pullRequest', 'mismatch');
+  if (!isDependabot(pr.actor)) return { kind: 'skip', reason: 'ineligible' };
+  if (!sameActor(pr.actor, eventRun.actor)) return failure('pullRequest', 'mismatch');
+  if (pr.closed || pr.headSha !== eventRun.headSha) return { kind: 'skip', reason: 'obsolete' };
+  if (currentAssociation.headSha !== eventRun.headSha) return failure('run', 'mismatch');
+  return { kind: 'current', pr };
+}
+
 function verifyReplay(replay: unknown, reviewIdentity: ReviewIdentity): EventStop | undefined {
   if (!record(replay, ['identity', 'state']) || !sameIdentity(replay.identity, reviewIdentity))
     return failure('replay', 'replay');
@@ -505,18 +526,9 @@ export async function verifyCiEvent(input: unknown, reads: EventReads): Promise<
       reads.readPullRequest(expectedRepo, eventAssociation.number),
     );
     if (!prRead.ok) return prRead.error;
-    const pr = pullRequest(prRead.value);
-    if (!pr) return failure('pullRequest');
-    if (
-      pr.number !== eventAssociation.number ||
-      !sameRepository(pr.repository, expectedRepo) ||
-      !sameRepository(pr.headRepository, eventRun.headRepository)
-    )
-      return failure('pullRequest', 'mismatch');
-    if (!isDependabot(pr.actor)) return { kind: 'skip', reason: 'ineligible' };
-    if (!sameActor(pr.actor, eventRun.actor)) return failure('pullRequest', 'mismatch');
-    if (pr.closed || pr.headSha !== eventRun.headSha) return { kind: 'skip', reason: 'obsolete' };
-    if (currentAssociation.headSha !== eventRun.headSha) return failure('run', 'mismatch');
+    const checkedPr = verifyEventPullRequest(prRead.value, event, currentAssociation);
+    if (checkedPr.kind !== 'current') return checkedPr;
+    const { pr } = checkedPr;
     const reviewIdentity = identity(
       expectedRepo.id,
       expectedWorkflow.id,
