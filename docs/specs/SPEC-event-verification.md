@@ -224,11 +224,18 @@ binding, then compares repository, actor, association, open state, latest
 attempt, and full head. It returns `fresh`, `obsolete`, or `error` using the
 same error categories; it must never update a binding to another head or
 attempt. `FreshnessReads` includes `readComparison(repository, base, head)`.
-The exported pure `classifyPullRequest(binding, response, comparison?)` parses
-the PR and returns `current`, `obsolete`, `compare` with the observed base
-SHA, or a fixed verification error. A supplied comparison wrapper validates
-its echoed base and merge base. `reverifyReviewBinding` and D1 reuse this
-classifier. The [decision table](#freshness-decision-table) also governs
+The exported `createPullRequestClassifier(binding)` runtime-validates and
+detaches the binding once, returning `null` on invalid input or a frozen
+context with that `binding` and a pure `classify(response)` operation.
+Each new PR read is parsed once and returns `current`, `obsolete`, a fixed
+verification error, or `compare` with the observed `baseSha` and
+`complete(comparisonResponse)`. Completion validates the echoed base and
+merge base against captured normalized identities, without rereading the
+binding or PR response, and returns a terminal classification.
+`reverifyReviewBinding` and D1 reuse this classifier under the
+[approved snapshot amendment](SPEC-pr-freshness-snapshot.md), authorized for
+execution on 2026-10-24 in #110 and #111–#113.
+The [decision table](#freshness-decision-table) also governs
 retargets and base movement. Publication uses it under the [handoff contract](#publication-handoff).
 
 Check stable run/repository/actor identities and attempt before same-attempt
@@ -523,7 +530,7 @@ an exact `identity` tuple and `state` of `unseen`, `claimed`, or `completed`.
 T1 does not create that trusted state or supply a transport implementation.
 
 `reverifyReviewBinding(binding, reads)` accepts an unknown binding plus
-`FreshnessReads`, which contains only run and PR reads. It returns
+`FreshnessReads`, which contains run, PR, and comparison reads. It returns
 `FreshnessResult` (`fresh`, `obsolete`, or the same structured error).
 It never reads replay eligibility or returns a replacement binding; W2 checks
 exclusive ownership separately. All rejection results omit a binding, and
