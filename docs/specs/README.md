@@ -106,16 +106,16 @@ gaps and an introduced vulnerability before parity is claimed.
   [Verification evidence](https://github.com/andrewpucci/dependency-update-advisor/issues/62)
   remains separate from W1/W2 transport/claims and T2/T3 publication gates.
   A [base-identity amendment](SPEC-event-verification.md#base-identity-amendment)
-  for T1 and the T4 binding check is implemented;
+  for T1 and the T4 binding check is implemented, pending merge;
   [#107](https://github.com/andrewpucci/dependency-update-advisor/issues/107)
   tracks it.
 - [Analysis providers](SPEC-analysis-providers.md) — approved for planning.
-- [Immutable GitHub evidence reads](SPEC-github-read.md) — approved supporting
-  contract for D1 #13 planning in `shared-review`; caller-supplied budgets and
-  conservative base/merge-base coverage selected. Its revision taking base
-  identity from the T1 amendment is approved for planning. The revised plan
-  is approved under parent #13, with #107 preceding #101–#106; execution
-  remains a separate gate.
+- [Immutable GitHub evidence reads](SPEC-github-read.md) — implemented for
+  D1 #13 and #101–#107 in `shared-review`, pending merge. Caller-supplied
+  budgets cover discovery, immutable file bytes, and independent comparison
+  availability; base/merge-base divergence remains incomplete discovery.
+  [Verification #106](https://github.com/andrewpucci/dependency-update-advisor/issues/106)
+  retains transport/collector/publication, adoption, and cutover gates.
 - [npm evidence](SPEC-npm-evidence.md) — approved for planning.
 - [GitHub Actions evidence](SPEC-actions-evidence.md) — approved for planning.
 - [uv evidence](SPEC-uv-evidence.md) — approved for planning.
