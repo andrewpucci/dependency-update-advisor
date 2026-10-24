@@ -302,15 +302,16 @@ class ReadSession implements GithubReadSession {
   private active: AbortController | null = null;
   private readonly started: number;
   private lastTime: number;
-  readonly binding: ReviewBinding;
   constructor(
     private readonly classifier: PullRequestClassifier,
     private readonly limits: GithubReadLimits,
     private readonly dependencies: GithubReadDependencies,
   ) {
-    this.binding = classifier.binding;
     this.started = this.lastTime = dependencies.now();
     requireRead(Number.isFinite(this.started), 'unknown');
+  }
+  private get binding(): ReviewBinding {
+    return this.classifier.binding;
   }
   close(): void {
     this.stopped ??= 'budget';
