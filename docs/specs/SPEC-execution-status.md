@@ -299,7 +299,8 @@ request fields or diagnostics. Invalid or uncloneable input returns an error.
 
 `StatusDependencies` has only three capabilities:
 
-- `reads`: T1 `FreshnessReads`, with run and PR reads returning unknown data.
+- `reads`: T1 `FreshnessReads`, with run, PR, and moved-base comparison
+  reads returning unknown data.
 - `readOwnership(identity)`: returns unknown data with the exact `identity`
   tuple and `state` of `owned` or `lost`. Other responses or read failures are
   ownership errors. T2 provides a frozen copy of the identity; W2 implements

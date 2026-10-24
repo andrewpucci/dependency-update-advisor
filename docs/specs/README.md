@@ -106,7 +106,7 @@ gaps and an introduced vulnerability before parity is claimed.
   [Verification evidence](https://github.com/andrewpucci/dependency-update-advisor/issues/62)
   remains separate from W1/W2 transport/claims and T2/T3 publication gates.
   A [base-identity amendment](SPEC-event-verification.md#base-identity-amendment)
-  for T1 and the T4 binding check is approved for planning;
+  for T1 and the T4 binding check is implemented;
   [#107](https://github.com/andrewpucci/dependency-update-advisor/issues/107)
   tracks it.
 - [Analysis providers](SPEC-analysis-providers.md) — approved for planning.

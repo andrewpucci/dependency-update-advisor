@@ -161,7 +161,9 @@ complete or `not_applicable` merely because its HTTP calls succeeded.
    changes or zero vulnerabilities.
 2. Return bounded validated JSON records and explicit availability. D1 validates
    transport, response shape, and bounds; collectors validate package/version,
-   manifest, and advisory applicability before building T4 sources. A complete
+   manifest, and advisory applicability before building T4 sources. Preserve
+   a validated record prefix as `partial` when a later record is malformed or
+   an entry ceiling is reached; broken JSON is `unavailable`. A complete
    HTTP response is not a completeness claim for the dependency graph.
 3. Distinguish endpoint/permission 403 from rate-limit 403/429 using validated
    response headers and GitHub's documented response context. GitHub documents
@@ -188,6 +190,9 @@ complete or `not_applicable` merely because its HTTP calls succeeded.
    Validate cross-field consistency and reject missing/invalid limits before
    dispatch. Durations are milliseconds; bytes are byte counts, not code units.
    Budgets are supplied by trusted code, never PR content or model output.
+   Require a separate `maxRetainedBytes` for cumulative result bytes. Count
+   serialized JSON metadata as UTF-8 and file contents as decoded bytes;
+   returning another result consumes this budget again, even without caching.
 2. Share accounting across metadata, ancestry, pages, path resolution, blobs,
    and comparison within one bound review session. Collectors cannot reset
    the budget by asking for another file. Bound in-memory retained results as

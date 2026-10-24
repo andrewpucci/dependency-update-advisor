@@ -99,7 +99,8 @@ trusted inputs. The caller's values remain the authority.
 
 1. Inspect closed fields and bounds before passing either binding to T1.
    Validate both the separately supplied binding and the packet binding using
-   T1's `parseReviewBinding` semantics. Compare every binding field, including
+   T1's `parseReviewBinding` semantics. The closed binding includes `baseRef`,
+   `baseSha`, and `mergeBaseSha`. Compare every binding field, including
    repository and head-repository IDs/names, workflow ID/path, run ID/attempt,
    PR number, actor ID, conclusion, head SHA, and the six-part identity tuple.
    Repository name casing follows T1. Reject contradictions rather than
