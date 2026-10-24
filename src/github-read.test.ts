@@ -941,6 +941,23 @@ test('retention overflow preserves only the prefix that fits and stops later dis
   expect(f.fetch).toHaveBeenCalledTimes(4);
 });
 
+test('a later retention overflow keeps the earlier timeout as the stop reason', async () => {
+  const rows = Array.from({ length: 100 }, (_, i) => row(i));
+  const link = '<https://api.github.com/repos/example/consumer/pulls/42/files?per_page=100&page=2>';
+  const pages = [json(rows, 200, { link: `${link}; rel="next"` }), json([])];
+  const f = fixture([json(pr(101)), json(pr(101)), ...pages], {
+    maxRetainedBytes: Buffer.byteLength(JSON.stringify({ binding }), 'utf8') + 2000,
+  });
+  // The deadline passes during page 2, after page 1 is held for retention.
+  const now = () => (f.fetch.mock.calls.length > 3 ? limits.totalTimeoutMs : 0);
+  const session = await ready({ ...f, dependencies: { ...f.dependencies, now } });
+  expect(await session.discoverFiles()).toMatchObject({ reasons: ['timeout', 'budget'] });
+  expect(await session.readFile({ side: 'base', path: 'uv.lock' })).toMatchObject({
+    kind: 'unavailable',
+    reason: 'timeout',
+  });
+});
+
 test('decoded bytes and metadata both count against cumulative retention', async () => {
   const sample = fixture([json(pr()), json(commit()), json(tree([entry()])), json(blob())]);
   const result = await (await ready(sample)).readFile({ side: 'base', path: 'uv.lock' });
