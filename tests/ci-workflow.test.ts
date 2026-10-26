@@ -49,11 +49,11 @@ test('preserves eligible events and the required check identity', () => {
 test('uses pinned setup with read-only access and default event checkout', () => {
   expect(workflow).toMatch(/^permissions:\n {2}contents: read\n\n/m);
   expect(steps[0]?.trim()).toBe(
-    '- uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6\n' +
+    '- uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1\n' +
       '        with:\n          persist-credentials: false',
   );
   expect(steps[1]?.trim()).toBe(
-    '- uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6\n' +
+    '- uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0\n' +
       "        with:\n          node-version: '24'\n          package-manager-cache: false",
   );
   expect(steps).toHaveLength(8);
