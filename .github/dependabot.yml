@@ -5,7 +5,7 @@ updates:
     schedule:
       interval: weekly
       day: tuesday
-      time: "09:00"
+      time: '09:00'
       timezone: America/Los_Angeles
     open-pull-requests-limit: 3
     labels:
@@ -23,7 +23,7 @@ updates:
       npm-development-minor-patch:
         dependency-type: development
         patterns:
-          - "*"
+          - '*'
         update-types:
           - minor
           - patch
@@ -31,14 +31,14 @@ updates:
         applies-to: security-updates
         dependency-type: development
         patterns:
-          - "*"
+          - '*'
 
   - package-ecosystem: github-actions
     directory: /
     schedule:
       interval: weekly
       day: tuesday
-      time: "09:00"
+      time: '09:00'
       timezone: America/Los_Angeles
     open-pull-requests-limit: 5
     labels:
@@ -52,8 +52,8 @@ updates:
     groups:
       github-actions:
         patterns:
-          - "*"
+          - '*'
       github-actions-security:
         applies-to: security-updates
         patterns:
-          - "*"
+          - '*'
