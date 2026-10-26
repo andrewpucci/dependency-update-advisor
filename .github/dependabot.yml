@@ -15,6 +15,13 @@ updates:
     # Keep manifest ranges stable when they already admit the new release;
     # Dependabot still updates the lockfile/resolved version.
     versioning-strategy: increase-if-necessary
+    # @types/node majors track the Node runtime, which stays on 24 while
+    # engines.node is pinned to >=24.11.0 <25. Block new major PRs until the
+    # runtime is upgraded and this ignore is removed.
+    ignore:
+      - dependency-name: '@types/node'
+        update-types:
+          - version-update:semver-major
     commit-message:
       prefix: chore
       prefix-development: chore
