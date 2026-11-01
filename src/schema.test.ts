@@ -205,6 +205,94 @@ test('preserves npm inventory and explicit required gaps', () => {
   expect(result.changes[0].evidence.malware.status).toBe('unavailable');
 });
 
+function declarationFixture() {
+  const f = npmFixture();
+  const side = (specifier: string, sourceId: string) => ({
+    root: '.',
+    name: 'package-0',
+    specifiers: { dependencies: specifier },
+    sourceId,
+  });
+  const declaration = {
+    id: 'declaration:0',
+    ecosystem: 'npm',
+    basis: 'declaration',
+    kind: 'update',
+    role: 'direct',
+    evidence: {},
+    from: side('^1.0.0', 'base-lock'),
+    to: side('^1.2.0', 'head-lock'),
+  };
+  const packet = {
+    ...f.packet,
+    changes: [declaration],
+    sources: f.sources.map((s) =>
+      s.kind === 'file'
+        ? {
+            ...s,
+            memberIds: [declaration.id],
+            provenance: { ...s.provenance, path: 'package.json' },
+          }
+        : s,
+    ),
+  };
+  return { ...f, packet, declaration };
+}
+
+test('preserves declaration-only inventory without exact versions or research gaps', () => {
+  const f = declarationFixture();
+  const packet = accepted(f);
+  expect(packet.changes[0]).toEqual(f.declaration);
+  expect(packet.coverage.npm.status).toBe('complete');
+});
+
+test.each(['', 'npm:other@^2', 'file:packages/local'])(
+  'retains exact declaration specifier %j',
+  (value) => {
+    const f = declarationFixture();
+    f.declaration.to.specifiers.dependencies = value;
+    expect(accepted(f).changes[0].to).toMatchObject({ specifiers: { dependencies: value } });
+  },
+);
+
+test.each([
+  (c: ReturnType<typeof declarationFixture>['declaration']) => {
+    c.evidence = { upstream: {} };
+  },
+  (c: ReturnType<typeof declarationFixture>['declaration']) => {
+    Object.assign(c.to, { specifiers: {} });
+  },
+  (c: ReturnType<typeof declarationFixture>['declaration']) => {
+    c.to.name = 'other';
+  },
+  (c: ReturnType<typeof declarationFixture>['declaration']) => {
+    c.to.specifiers.dependencies = 'https://user:pass@example.test/a';
+  },
+])('rejects invalid declaration facts', (edit) => {
+  const f = declarationFixture();
+  edit(f.declaration);
+  expect(validateReviewPacket(f.packet, f.expected).ok).toBe(false);
+});
+
+test('rejects manifest-backed resolved npm sides', () => {
+  const f = npmFixture();
+  const candidate = structuredClone(f.packet);
+  Object.assign(candidate.changes[0].from, { lockPath: null });
+  expect(validateReviewPacket(candidate, f.expected).ok).toBe(false);
+});
+
+test('rejects wrong-side, duplicate and unchanged declaration instances', () => {
+  const f = declarationFixture();
+  f.declaration.to.sourceId = 'base-lock';
+  expect(validateReviewPacket(f.packet, f.expected).ok).toBe(false);
+  const g = declarationFixture();
+  g.declaration.to.specifiers.dependencies = '^1.0.0';
+  expect(validateReviewPacket(g.packet, g.expected).ok).toBe(false);
+  const h = declarationFixture();
+  h.packet.changes.push({ ...h.declaration, id: 'duplicate' });
+  expect(validateReviewPacket(h.packet, h.expected).ok).toBe(false);
+});
+
 test('retains twenty unpaired additions without fabricating updates', () => {
   const f = npmFixture(20);
   const changes = f.changes.map((c) => ({ ...c, kind: 'addition', from: null }));

@@ -188,8 +188,18 @@ function projectMembers(
         id: c.id,
         ecosystem: c.ecosystem,
         name: 'action' in side ? side.action : side.name,
-        ...(c.from ? { currentVersion: 'ref' in c.from ? c.from.ref : c.from.version } : {}),
-        ...(c.to ? { proposedVersion: 'ref' in c.to ? c.to.ref : c.to.version } : {}),
+        ...(c.from && !('basis' in c)
+          ? {
+              currentVersion:
+                'ref' in c.from ? c.from.ref : 'version' in c.from ? c.from.version : undefined,
+            }
+          : {}),
+        ...(c.to && !('basis' in c)
+          ? {
+              proposedVersion:
+                'ref' in c.to ? c.to.ref : 'version' in c.to ? c.to.version : undefined,
+            }
+          : {}),
       };
     }),
     findings: packet.findings
@@ -205,6 +215,7 @@ function grouping(
   // ponytail: scans stay bounded by 128 changes and 256 proofs; index only if those packet caps grow.
   const standalone = (reason: GroupingReason) => ({ anchorId: null, reason, proofKeys: [] });
   if (change.ecosystem === 'actions') return standalone('actions_occurrence');
+  if ('basis' in change) return standalone('independent_change');
   if (change.role === 'unknown') return standalone('unknown_role');
   if (change.role === 'direct') return standalone('independent_change');
   if (packet.coverage[change.ecosystem].status !== 'complete')
@@ -214,7 +225,7 @@ function grouping(
   if (!instance) return standalone('missing_relationship');
   if (roots(change).length !== 1) return standalone('multiple_roots');
   const candidates = packet.changes.filter(
-    (c) => c.ecosystem === change.ecosystem && roots(c).includes(instance.root),
+    (c) => !('basis' in c) && c.ecosystem === change.ecosystem && roots(c).includes(instance.root),
   );
   if (candidates.some((c) => c.role === 'unknown')) return standalone('unknown_role');
   const anchors = candidates.filter((c) => c.role === 'direct');
