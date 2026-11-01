@@ -20,8 +20,8 @@ No shared workflow exists; the old reviewer stays active.
 
 ## Next action
 
-[N1 #14 inventory](docs/specs/SPEC-npm-inventory.md) and its eight-task plan
-for #124–#131 are approved for autonomous execution in one PR.
+[N1 #14 inventory](docs/specs/SPEC-npm-inventory.md) is implemented on `issue-14`,
+pending review/merge; #131 records verification and remaining gates.
 [#110 snapshot reuse](docs/specs/SPEC-pr-freshness-snapshot.md) awaits review/merge;
 [verification #113](https://github.com/andrewpucci/dependency-update-advisor/issues/113)
 retains remaining gates. Deferred reachability #93 remains separate.

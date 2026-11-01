@@ -24,9 +24,8 @@ with the changes' recorded instances.
 is approved for planning, 2026-10-26. It amends this contract with an npm
 declaration variant, matching validation rules, and combined 128-record
 accounting. Declarations carry an empty `evidence` object, and resolved npm
-sides require a non-null `lockPath`. The amendment remains unimplemented;
-the resolved-side rules below continue to apply to resolved records. Plan and
-execution approval remain separate.
+sides require a non-null `lockPath`. The amendment is implemented on `issue-14`,
+pending review and merge; resolved-side rules apply to resolved records.
 
 ## Objective
 
@@ -205,7 +204,8 @@ Fixed failure reasons include `permission`, `rate_limit`, `timeout`, `missing`,
 `malformed`, `unsupported`, `truncated`, `budget`, `conflict`, and `unknown`.
 Never use a raw HTTP error or arbitrary exception as a reason code.
 
-Every change explicitly accounts for required upstream, vulnerability, and
+Every resolved change explicitly accounts for required upstream,
+vulnerability, and
 malware evidence, plus install-script metadata for npm, under the
 [C3 evidence rules](SPEC-advisory-policy.md#1-classify-evidence-before-matching-rules).
 Each category has status `available`, `partial`, or `unavailable`, source IDs,
@@ -381,7 +381,9 @@ no I/O occurs, and no caught inspection error or payload is logged.
 
 The exported `PacketChange` union preserves npm, Actions, and uv side shapes.
 Each side carries a `sourceId` naming its immutable inventory file. npm uses
-an explicit nullable `lockPath`; Actions uses `workflow`, `jobId`, nullable
+a non-null `lockPath`; declaration variants carry manifest `specifiers` maps
+and an empty `evidence` object, with no resolved version. Actions uses
+`workflow`, `jobId`, nullable
 `stepIndex` for job-level workflows, `action`, `ref`, and `refKind`; uv uses
 nullable `marker` and sorted distinct `extras`/`groups`. `PackageSource`
 distinguishes registry/Git/URL identities (credential-free HTTPS) from

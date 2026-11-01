@@ -18,8 +18,9 @@ The deferred reachability extension #93 remains outside this execution scope.
 
 [N1 inventory](SPEC-npm-inventory.md#declaration-amendment-to-t4-and-t5)
 is approved for planning, 2026-10-26. It amends this contract with standalone
-declaration units while preserving resolved grouping. The amendment remains
-unimplemented; plan and execution approval remain separate.
+declaration units while preserving resolved grouping. It is implemented on
+`issue-14`, pending review and merge. Declarations project no versions or
+research gaps and cannot participate in resolved grouping.
 
 ## Objective
 
@@ -127,7 +128,7 @@ that no other path exists. Grouping therefore trusts the authenticated
 collector's asserted paths, as the T4 contract does.
 
 Initial restriction: the ecosystem's inventory slot must be `complete`, and
-the applicable root must contain exactly one direct change, counted across
+the applicable root must contain exactly one direct resolved change, counted across
 both sides and all change kinds. A change counts toward every root that its
 base or head side names. T4 records inventory coverage per ecosystem, not per
 root, so the ecosystem slot gates every root in it. Partial/unavailable
