@@ -1,7 +1,7 @@
 import { createHash } from 'node:crypto';
 import { isDeepStrictEqual, types } from 'node:util';
 import { parseReviewBinding, type ReviewBinding } from '../event.js';
-import type { GithubReadSession } from '../github-read.js';
+import type { GithubReadSession, GithubComparison } from '../github-read.js';
 import type {
   EvidenceReason,
   InventoryCoverage,
@@ -49,6 +49,12 @@ export type NpmRootSide = Readonly<{
   declarations: Record<string, Record<string, string>> | null;
 }>;
 export type NpmRoot = Readonly<{ root: string; base: NpmRootSide; head: NpmRootSide }>;
+export type NpmComparison = Readonly<{
+  status: 'available' | 'partial' | 'unavailable';
+  reasons: readonly EvidenceReason[];
+  recordCount: number;
+  sourceIds: readonly string[];
+}>;
 export type NpmInventoryResult =
   | { readonly kind: 'invalid' | 'obsolete' }
   | { readonly kind: 'unavailable'; readonly reason: EvidenceReason }
@@ -60,6 +66,7 @@ export type NpmInventoryResult =
       readonly roots: readonly NpmRoot[];
       readonly gaps: readonly NpmGap[];
       readonly coverage: Readonly<InventoryCoverage>;
+      readonly comparison: NpmComparison;
     };
 type State = {
   input: Input;
@@ -69,6 +76,7 @@ type State = {
   changes: PacketChange[];
   roots: NpmRoot[];
   entries: number;
+  comparison: NpmComparison;
 };
 const sections = [
   'dependencies',
@@ -247,7 +255,11 @@ function declarations(value: Record<string, unknown>) {
   return result;
 }
 function reason(error: unknown): EvidenceReason {
-  return error instanceof InventoryError ? error.reason : 'malformed';
+  return error instanceof InventoryError
+    ? error.reason
+    : error instanceof SyntaxError || error instanceof TypeError
+      ? 'malformed'
+      : 'unknown';
 }
 function fileId(state: State, side: 'base' | 'head', file: string) {
   return (
@@ -580,9 +592,124 @@ function citesManifest(state: State, c: PacketChange, id: string) {
     ).some(([revision, side]) => side?.root === root.root && root[revision].manifestId === id),
   );
 }
+function comparisonIdentity(state: State, result: GithubComparison) {
+  const b = state.input.binding;
+  need(
+    isDeepStrictEqual(result.repository, b.repository) &&
+      isDeepStrictEqual(result.headRepository, b.headRepository) &&
+      result.baseSha === b.baseSha &&
+      result.headSha === b.headSha &&
+      result.mergeBaseSha === b.mergeBaseSha,
+    'conflict',
+  );
+}
+function comparisonMatch(state: State, row: Readonly<Record<string, unknown>>) {
+  need(safeText(row.manifest) && path(row.manifest) && safeText(row.name) && safeText(row.version));
+  need(row.change_type === 'added' || row.change_type === 'removed', 'unsupported');
+  need(/(?:^|\/)(?:package-lock.json|package.json)$/u.test(row.manifest), 'unsupported');
+  const root = row.manifest.includes('/')
+    ? row.manifest.slice(0, row.manifest.lastIndexOf('/'))
+    : '.';
+  const revision = row.change_type === 'added' ? 'head' : 'base';
+  const side = revision === 'head' ? 'to' : 'from';
+  const matches = state.changes.filter(
+    (c) =>
+      c.ecosystem === 'npm' &&
+      !('basis' in c) &&
+      c[side]?.root === root &&
+      c[side]?.name === row.name &&
+      c[side]?.version === row.version,
+  );
+  need(matches.length === 1, 'conflict');
+  const c = matches[0],
+    instance = c[side]!;
+  need('source' in instance && instance.source.kind === 'registry', 'unsupported');
+  if (row.package_url !== undefined) {
+    need(safeText(row.package_url));
+    need(decodeURIComponent(row.package_url) === `pkg:npm/${row.name}@${row.version}`, 'conflict');
+  }
+  const id = 'npm:comparison:' + hash([c.id, revision]);
+  if (!state.sources.some((s) => s.id === id))
+    state.sources.push({
+      id,
+      kind: 'comparison',
+      ecosystems: ['npm'],
+      memberIds: [c.id],
+      status: 'available',
+      reasons: [],
+      provenance: {
+        kind: 'upstream',
+        url: `https://api.github.com/repos/${encodeURIComponent(state.input.binding.repository.owner)}/${encodeURIComponent(state.input.binding.repository.name)}/dependency-graph/compare/${state.input.binding.baseSha}...${state.input.binding.headSha}`,
+        title: 'GitHub npm dependency comparison',
+        excerpt: 'The comparison lists this exact package version.',
+        excerptTruncated: false,
+        subjects: [{ memberId: c.id, side: revision, value: row.version }],
+        range: null,
+      },
+    });
+  return id;
+}
+async function reconcileComparison(state: State) {
+  try {
+    const result = await state.session.readComparison();
+    comparisonIdentity(state, result);
+    const reasons = new Set<EvidenceReason>(result.reasons),
+      sourceIds: string[] = [];
+    const rows = result.records.filter((r) => r.ecosystem === 'npm');
+    for (const row of rows) {
+      try {
+        sourceIds.push(comparisonMatch(state, row));
+      } catch (error) {
+        const why = reason(error);
+        reasons.add(why);
+        gap(state, '.', null, null, why);
+      }
+    }
+    state.comparison = {
+      status: result.kind === 'available' && reasons.size ? 'partial' : result.kind,
+      reasons: [...reasons].sort(),
+      recordCount: rows.length,
+      sourceIds: [...new Set(sourceIds)].sort(),
+    };
+  } catch (error) {
+    state.comparison = {
+      status: 'unavailable',
+      reasons: [reason(error)],
+      recordCount: 0,
+      sourceIds: [],
+    };
+  }
+  if (state.comparison.status === 'unavailable')
+    state.sources.push({
+      id: 'npm:comparison:unavailable',
+      kind: 'comparison',
+      ecosystems: ['npm'],
+      memberIds: [],
+      status: 'unavailable',
+      reasons: [...state.comparison.reasons],
+      provenance: { kind: 'unavailable' },
+    });
+}
 function sourceMembers(state: State) {
   const sources: PacketSource[] = [];
   for (const s of state.sources) {
+    if (s.kind !== 'file') {
+      if (s.provenance.kind === 'unavailable') {
+        sources.push(s);
+        continue;
+      }
+      const memberIds = s.memberIds.filter((id) => state.changes.some((c) => c.id === id));
+      if (memberIds.length && s.provenance.kind === 'upstream')
+        sources.push({
+          ...s,
+          memberIds,
+          provenance: {
+            ...s.provenance,
+            subjects: s.provenance.subjects.filter((t) => memberIds.includes(t.memberId)),
+          },
+        });
+      continue;
+    }
     const members = state.changes
       .filter(
         (c) => [c.from?.sourceId, c.to?.sourceId].includes(s.id) || citesManifest(state, c, s.id),
@@ -641,6 +768,10 @@ function assemble(state: State, complete: boolean, applicable: boolean, snapshot
     sources: [source, ...sources.filter((s) => snapshots || s.memberIds.length > 0)],
     roots: snapshots ? state.roots : [],
     gaps: state.gaps,
+    comparison: {
+      ...state.comparison,
+      sourceIds: state.comparison.sourceIds.filter((id) => sources.some((s) => s.id === id)),
+    },
     coverage: { status, reasons, sourceIds: ['npm:inventory'] },
   };
   return result;
@@ -708,6 +839,7 @@ export async function collectNpmInventory(
     changes: [],
     roots: [],
     entries: 0,
+    comparison: { status: 'unavailable', reasons: ['missing'], recordCount: 0, sourceIds: [] },
   };
   try {
     const discovery = await session.discoverFiles();
@@ -719,6 +851,7 @@ export async function collectNpmInventory(
     const roots = candidateRoots(state, discovery.files);
     for (const root of roots.slice(0, parsed.limits.maxRoots)) await collectRoot(state, root);
     if (roots.length > parsed.limits.maxRoots) gap(state, '.', null, null, 'budget');
+    await reconcileComparison(state);
     return finish(state, discovery.complete, roots.length > 0);
   } catch (error) {
     return { kind: 'unavailable', reason: reason(error) };
