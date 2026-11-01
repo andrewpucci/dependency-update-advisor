@@ -1,0 +1,222 @@
+import { expect, test } from 'vite-plus/test';
+import { collectNpmInventory } from './npm.js';
+import type { GithubReadSession, GithubDiscovery } from '../github-read.js';
+import type { ReviewBinding } from '../event.js';
+import { validateReviewPacket } from '../schema.js';
+
+const repository = { id: 101, owner: 'example', name: 'consumer' };
+const BASE = 'b'.repeat(40),
+  HEAD = 'a'.repeat(40);
+const binding: ReviewBinding = {
+  repository,
+  workflow: { id: 301, path: '.github/workflows/ci.yml' },
+  runId: 401,
+  runAttempt: 1,
+  pullNumber: 42,
+  headRepository: repository,
+  headSha: HEAD,
+  baseRef: 'main',
+  baseSha: BASE,
+  mergeBaseSha: BASE,
+  actorId: 201,
+  conclusion: 'success',
+  identity: [101, 301, 401, 1, 42, HEAD],
+};
+function pkg(version: string, name = 'widget') {
+  return { version, resolved: `https://registry.npmjs.org/${name}/-/${name}-${version}.tgz` };
+}
+function fixture() {
+  const input = {
+    binding: structuredClone(binding),
+    roots: ['.'],
+    configRevision: { repository, sha: 'c'.repeat(40) },
+    limits: {
+      maxFileBytes: 100_000,
+      maxJsonEntries: 10_000,
+      maxJsonDepth: 32,
+      maxRoots: 10,
+      maxRetainedBytes: 1_000_000,
+    },
+  };
+  const manifest = { dependencies: { widget: '^1' } };
+  const files: Record<string, unknown> = {};
+  for (const side of ['base', 'head']) {
+    files[`${side}:package.json`] = structuredClone(manifest);
+    files[`${side}:package-lock.json`] = {
+      lockfileVersion: 3,
+      packages: {
+        '': structuredClone(manifest),
+        'node_modules/widget': pkg(side === 'base' ? '1.0.0' : '1.5.0'),
+      },
+    };
+  }
+  const discovery: GithubDiscovery = {
+    kind: 'available',
+    binding,
+    complete: true,
+    reasons: [],
+    files: [{ path: 'package-lock.json', previousPath: null, status: 'modified', blobSha: null }],
+  };
+  const calls: string[] = [];
+  const session: GithubReadSession = {
+    discoverFiles: async () => {
+      calls.push('discover');
+      return discovery;
+    },
+    readFile: async (request) => {
+      const { side, path } = request as { side: 'base' | 'head'; path: string };
+      calls.push(`${side}:${path}`);
+      const provenance = { side, repository, commitSha: side === 'base' ? BASE : HEAD, path };
+      const value = files[`${side}:${path}`];
+      if (value === undefined) return { ...provenance, kind: 'absent', treeSha: 'd'.repeat(40) };
+      if (value instanceof Uint8Array)
+        return { ...provenance, kind: 'available', blobSha: 'e'.repeat(40), bytes: value };
+      return {
+        ...provenance,
+        kind: 'available',
+        blobSha: 'e'.repeat(40),
+        bytes: new TextEncoder().encode(JSON.stringify(value)),
+      };
+    },
+    readComparison: async () => {
+      calls.push('comparison');
+      return {
+        kind: 'available',
+        repository,
+        baseSha: BASE,
+        headRepository: repository,
+        headSha: HEAD,
+        mergeBaseSha: BASE,
+        records: [],
+        reasons: [],
+      };
+    },
+    close: () => {},
+  };
+  return { input, session, files, discovery, calls };
+}
+type Inventory = Extract<Awaited<ReturnType<typeof collectNpmInventory>>, { kind: 'inventory' }>;
+function inventory(result: Awaited<ReturnType<typeof collectNpmInventory>>): Inventory {
+  expect(result.kind).toBe('inventory');
+  if (result.kind !== 'inventory') throw new Error('expected inventory');
+  return result;
+}
+function accepted(result: Inventory) {
+  const context = { ok: true, status: 'disabled', dependencies: [], reasons: [] };
+  const expected = {
+    binding,
+    baseSha: BASE,
+    contextRevision: { repository, sha: 'c'.repeat(40) },
+    context,
+  };
+  const absent = {
+    id: 'other',
+    kind: 'file-list',
+    ecosystems: ['actions', 'uv'],
+    memberIds: [],
+    status: 'available',
+    reasons: [],
+    provenance: {
+      kind: 'inventory',
+      repository,
+      baseSha: BASE,
+      headSha: HEAD,
+      absentEcosystems: ['actions', 'uv'],
+    },
+  };
+  const candidate = {
+    version: 1,
+    ...expected,
+    changes: result.changes,
+    sources: [...result.sources, absent],
+    coverage: {
+      npm: result.coverage,
+      actions: { status: 'not_applicable', reasons: [], sourceIds: ['other'] },
+      uv: { status: 'not_applicable', reasons: [], sourceIds: ['other'] },
+    },
+    findings: [],
+    relationships: [],
+  };
+  const validated = validateReviewPacket(candidate, expected);
+  expect(validated.ok, JSON.stringify(validated)).toBe(true);
+  return validated;
+}
+
+test('inventories one immutable v3 root and produces a valid npm packet contribution', async () => {
+  const f = fixture();
+  const result = inventory(await collectNpmInventory(f.input, { session: f.session }));
+  expect(result.coverage.status).toBe('complete');
+  expect(result.changes).toHaveLength(1);
+  expect(result.changes[0]).toMatchObject({
+    kind: 'update',
+    role: 'direct',
+    directRoles: ['production'],
+    from: { version: '1.0.0', lockPath: 'node_modules/widget' },
+    to: { version: '1.5.0' },
+  });
+  accepted(result);
+  expect(Object.isFrozen(result.changes[0].to)).toBe(true);
+});
+
+test('retains known data with explicit unsupported or malformed root gaps', async () => {
+  for (const value of [{ lockfileVersion: 2, packages: {} }, new TextEncoder().encode('{')]) {
+    const f = fixture();
+    f.files['head:package-lock.json'] = value;
+    const result = inventory(await collectNpmInventory(f.input, { session: f.session }));
+    expect(result.coverage.status).not.toBe('complete');
+    expect(result.changes).toEqual([]);
+    expect(result.gaps.length).toBeGreaterThan(0);
+    accepted(result);
+  }
+});
+
+test('invalid bounds and bindings dispatch no reads', async () => {
+  const f = fixture();
+  f.input.limits.maxRoots = 0;
+  expect(await collectNpmInventory(f.input, { session: f.session })).toEqual({ kind: 'invalid' });
+  expect(f.calls).toEqual([]);
+});
+
+function lock(f: ReturnType<typeof fixture>, side: 'base' | 'head') {
+  return f.files[`${side}:package-lock.json`] as {
+    lockfileVersion: number;
+    packages: Record<string, unknown>;
+  };
+}
+test('retains additions and removals without pairing names or inventing failed sides', async () => {
+  const f = fixture();
+  lock(f, 'base').packages['node_modules/old'] = pkg('1.0.0', 'old');
+  lock(f, 'head').packages['node_modules/child'] = pkg('1.0.0', 'child');
+  const result = inventory(await collectNpmInventory(f.input, { session: f.session }));
+  expect(result.changes.map((c) => c.kind).sort()).toEqual(['addition', 'removal', 'update']);
+  expect(result.changes.find((c) => c.kind === 'addition')?.from).toBeNull();
+  accepted(result);
+  const g = fixture();
+  lock(g, 'base').packages['node_modules/widget'] = { version: 123 };
+  const partial = inventory(await collectNpmInventory(g.input, { session: g.session }));
+  expect(partial.changes).toEqual([]);
+  expect(partial.coverage.status).toBe('partial');
+});
+
+test.each(['maxFileBytes', 'maxJsonEntries', 'maxJsonDepth'] as const)(
+  'enforces %s before claiming inventory completeness',
+  async (field) => {
+    const f = fixture();
+    f.input.limits[field] = field === 'maxJsonDepth' ? 2 : 10;
+    const result = await collectNpmInventory(f.input, { session: f.session });
+    expect(result).not.toMatchObject({ coverage: { status: 'complete' } });
+  },
+);
+
+test('does not execute getters in the unknown binding', async () => {
+  const f = fixture();
+  let invoked = false;
+  Object.defineProperty(f.input.binding, 'repository', {
+    get() {
+      invoked = true;
+      throw new Error('sensitive');
+    },
+  });
+  expect(await collectNpmInventory(f.input, { session: f.session })).toEqual({ kind: 'invalid' });
+  expect(invoked).toBe(false);
+});
