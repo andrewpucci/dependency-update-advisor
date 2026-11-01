@@ -538,6 +538,36 @@ function finish(state: State, complete: boolean, applicable: boolean): NpmInvent
     return { kind: 'unavailable', reason: 'budget' };
   return freeze(result);
 }
+function candidateRoots(
+  state: State,
+  files: readonly { path: string; previousPath: string | null }[],
+) {
+  const candidates = new Set<string>();
+  for (const f of files)
+    for (const value of [f.path, f.previousPath]) {
+      if (!value || !/(?:^|\/)(?:package.json|package-lock.json|npm-shrinkwrap.json)$/u.test(value))
+        continue;
+      if (!path(value)) {
+        gap(state, '.', null, null, 'malformed');
+        continue;
+      }
+      const root = value.includes('/') ? value.slice(0, value.lastIndexOf('/')) : '.';
+      if (value.endsWith('npm-shrinkwrap.json')) gap(state, root, null, value, 'unsupported');
+      candidates.add(root);
+    }
+  return [...candidates].sort();
+}
+async function collectRoot(state: State, root: string) {
+  if (!state.input.roots.includes(root)) gap(state, root, null, null, 'conflict');
+  const snapshot = {
+    root,
+    base: await rootSide(state, root, 'base'),
+    head: await rootSide(state, root, 'head'),
+  };
+  state.roots.push(snapshot);
+  resolved(state, snapshot);
+  declared(state, snapshot);
+}
 /** Reads only through the bound D1 session. No filesystem, install, research, or writes occur. */
 export async function collectNpmInventory(
   value: unknown,
@@ -565,24 +595,10 @@ export async function collectNpmInventory(
     if (!discovery.complete)
       for (const why of discovery.reasons.length ? discovery.reasons : ['unknown' as const])
         gap(state, '.', null, null, why);
-    const relevant = discovery.files.filter((f) =>
-      /^(?:package.json|package-lock.json)$/u.test(f.path),
-    );
-    if (relevant.length) {
-      const root = {
-        root: '.',
-        base: await rootSide(state, '.', 'base'),
-        head: await rootSide(state, '.', 'head'),
-      };
-      state.roots.push(root);
-      resolved(state, root);
-      declared(state, root);
-      if (!parsed.roots.includes('.')) gap(state, '.', null, null, 'conflict');
-    }
-    for (const f of discovery.files)
-      if (/\/(?:package.json|package-lock.json)$/u.test(f.path))
-        gap(state, '.', null, f.path, 'unsupported');
-    return finish(state, discovery.complete, relevant.length > 0);
+    const roots = candidateRoots(state, discovery.files);
+    for (const root of roots.slice(0, parsed.limits.maxRoots)) await collectRoot(state, root);
+    if (roots.length > parsed.limits.maxRoots) gap(state, '.', null, null, 'budget');
+    return finish(state, discovery.complete, roots.length > 0);
   } catch (error) {
     return { kind: 'unavailable', reason: reason(error) };
   }

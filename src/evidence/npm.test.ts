@@ -50,7 +50,7 @@ function fixture() {
       },
     };
   }
-  const discovery: GithubDiscovery = {
+  const discovery: { -readonly [K in keyof GithubDiscovery]: GithubDiscovery[K] } = {
     kind: 'available',
     binding,
     complete: true,
@@ -275,4 +275,79 @@ test('retains declaration additions despite an unavailable lock and flags stale 
   expect(result.coverage).toMatchObject({ status: 'partial', reasons: ['conflict'] });
   expect(result.changes.filter((c) => 'basis' in c)).toHaveLength(2);
   accepted(result);
+});
+
+test('keeps equal names in independent nested roots distinct and deterministic', async () => {
+  const f = fixture();
+  f.input.roots = ['.', 'packages/api'];
+  for (const [key, value] of Object.entries({ ...f.files })) {
+    const [side, file] = key.split(':');
+    f.files[`${side}:packages/api/${file}`] = structuredClone(value);
+  }
+  f.discovery.files = [
+    ...f.discovery.files,
+    {
+      path: 'packages/api/package-lock.json',
+      previousPath: null,
+      status: 'modified',
+      blobSha: null,
+    },
+  ];
+  const result = inventory(await collectNpmInventory(f.input, { session: f.session }));
+  expect(result.coverage.status).toBe('complete');
+  expect(result.changes).toHaveLength(2);
+  expect(result.changes.map((c) => (c.to && 'root' in c.to ? c.to.root : null)).sort()).toEqual([
+    '.',
+    'packages/api',
+  ]);
+  accepted(result);
+  f.discovery.files = [...f.discovery.files].reverse();
+  f.input.roots.reverse();
+  expect(await collectNpmInventory(f.input, { session: f.session })).toEqual(result);
+});
+
+test('directory moves remain proven removals and additions at distinct roots', async () => {
+  const f = fixture();
+  f.input.roots = ['old', 'new'];
+  for (const [key, value] of Object.entries({ ...f.files })) {
+    const [side, file] = key.split(':');
+    delete f.files[key];
+    f.files[`${side}:${side === 'base' ? 'old' : 'new'}/${file}`] = value;
+  }
+  f.discovery.files = [
+    {
+      path: 'new/package-lock.json',
+      previousPath: 'old/package-lock.json',
+      status: 'renamed',
+      blobSha: null,
+    },
+  ];
+  const result = inventory(await collectNpmInventory(f.input, { session: f.session }));
+  expect(result.coverage.status).toBe('complete');
+  expect(
+    result.changes
+      .filter((c) => !('basis' in c))
+      .map((c) => c.kind)
+      .sort(),
+  ).toEqual(['addition', 'removal']);
+  expect(result.changes.filter((c) => 'basis' in c)).toHaveLength(2);
+  accepted(result);
+});
+
+test('configuration cannot hide a changed root and partial discovery cannot prove npm absent', async () => {
+  const f = fixture();
+  f.input.roots = [];
+  const result = inventory(await collectNpmInventory(f.input, { session: f.session }));
+  expect(result.changes).toHaveLength(1);
+  expect(result.coverage.reasons).toContain('conflict');
+  accepted(result);
+  const g = fixture();
+  g.discovery.files = [];
+  expect(
+    inventory(await collectNpmInventory(g.input, { session: g.session })).coverage.status,
+  ).toBe('not_applicable');
+  Object.assign(g.discovery, { complete: false, kind: 'partial', reasons: ['budget'] });
+  expect(
+    inventory(await collectNpmInventory(g.input, { session: g.session })).coverage,
+  ).toMatchObject({ status: 'partial', reasons: ['budget'] });
 });
