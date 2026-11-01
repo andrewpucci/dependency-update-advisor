@@ -20,11 +20,11 @@ No shared workflow exists; the old reviewer stays active.
 
 ## Next action
 
-[#110 snapshot reuse](docs/specs/SPEC-pr-freshness-snapshot.md) is implemented
-for #111–#113 on `issue-110`, pending review and merge.
-[Verification #113](https://github.com/andrewpucci/dependency-update-advisor/issues/113)
-records exact-revision checks and remaining gates. Deferred reachability #93
-remains separate.
+[N1 #14 inventory](docs/specs/SPEC-npm-inventory.md) and its eight-task plan
+for #124–#131 are approved for autonomous execution in one PR.
+[#110 snapshot reuse](docs/specs/SPEC-pr-freshness-snapshot.md) awaits review/merge;
+[verification #113](https://github.com/andrewpucci/dependency-update-advisor/issues/113)
+retains remaining gates. Deferred reachability #93 remains separate.
 W1/W2 must supply bounded reads and exclusive claims before T2/T3 writes.
 Downstream work: [S3](https://github.com/andrewpucci/dependency-update-advisor/issues/53)
 supplies evidence, [M2](https://github.com/andrewpucci/dependency-update-advisor/issues/22)

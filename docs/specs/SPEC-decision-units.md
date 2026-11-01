@@ -16,6 +16,11 @@ organization. The user subsequently invoked `as-build auto`, approving the
 six-task plan for #94–#99 and one PR closing those tasks and parent #12.
 The deferred reachability extension #93 remains outside this execution scope.
 
+[N1 inventory](SPEC-npm-inventory.md#declaration-amendment-to-t4-and-t5)
+is approved for planning, 2026-10-26. It amends this contract with standalone
+declaration units while preserving resolved grouping. The amendment remains
+unimplemented; plan and execution approval remain separate.
+
 ## Objective
 
 Give reviewer contributors a deterministic partition of every detected change

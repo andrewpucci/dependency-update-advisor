@@ -20,6 +20,14 @@ Clarifications approved by the user on 2026-10-21 during PR #89 review:
 upstream excerpts may contain tabs, and relationship path instances must agree
 with the changes' recorded instances.
 
+[N1 inventory](SPEC-npm-inventory.md#declaration-amendment-to-t4-and-t5)
+is approved for planning, 2026-10-26. It amends this contract with an npm
+declaration variant, matching validation rules, and combined 128-record
+accounting. Declarations carry an empty `evidence` object, and resolved npm
+sides require a non-null `lockPath`. The amendment remains unimplemented;
+the resolved-side rules below continue to apply to resolved records. Plan and
+execution approval remain separate.
+
 ## Objective
 
 Give reviewer contributors one bounded, provider-neutral runtime boundary
