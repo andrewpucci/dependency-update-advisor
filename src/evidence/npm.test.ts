@@ -441,3 +441,75 @@ test('unsupported workspace links and ranged locked versions stay explicit witho
   });
   accepted(result);
 });
+
+test.each(['permission', 'rate_limit', 'unknown', 'timeout', 'budget'] as const)(
+  'comparison failure %s preserves complete file inventory',
+  async (why) => {
+    const f = fixture();
+    const read = f.session.readComparison;
+    Object.assign(f.session, {
+      readComparison: async () => ({ ...(await read()), kind: 'unavailable', reasons: [why] }),
+    });
+    const result = inventory(await collectNpmInventory(f.input, { session: f.session }));
+    expect(result.coverage.status).toBe('complete');
+    expect(result.changes).toHaveLength(1);
+    expect(result).toMatchObject({ comparison: { status: 'unavailable', reasons: [why] } });
+    expect(
+      result.sources.some(
+        (s) => s.kind === 'comparison' && s.status === 'unavailable' && s.reasons.includes(why),
+      ),
+    ).toBe(true);
+    expect(f.calls.at(-1)).toBe('comparison');
+    accepted(result);
+  },
+);
+
+test('a comparison discrepancy stays a gap without fabricating an unbacked version', async () => {
+  const f = fixture();
+  const read = f.session.readComparison;
+  Object.assign(f.session, {
+    readComparison: async () => ({
+      ...(await read()),
+      records: [
+        {
+          change_type: 'added',
+          manifest: 'package-lock.json',
+          ecosystem: 'npm',
+          name: 'omitted',
+          version: '2.0.0',
+          package_url: 'pkg:npm/omitted@2.0.0',
+        },
+      ],
+    }),
+  });
+  const result = inventory(await collectNpmInventory(f.input, { session: f.session }));
+  expect(result.changes).toHaveLength(1);
+  expect(result.coverage.reasons).toContain('conflict');
+  expect(result).toMatchObject({ comparison: { status: 'partial', reasons: ['conflict'] } });
+  accepted(result);
+});
+
+test('known empty and exactly attributable comparison records are independent corroboration', async () => {
+  const f = fixture();
+  const read = f.session.readComparison;
+  Object.assign(f.session, {
+    readComparison: async () => ({
+      ...(await read()),
+      records: [
+        {
+          change_type: 'added',
+          manifest: 'package-lock.json',
+          ecosystem: 'npm',
+          name: 'widget',
+          version: '1.5.0',
+          package_url: 'pkg:npm/widget@1.5.0',
+        },
+      ],
+    }),
+  });
+  const result = inventory(await collectNpmInventory(f.input, { session: f.session }));
+  expect(result.coverage.status).toBe('complete');
+  expect(result).toMatchObject({ comparison: { status: 'available', recordCount: 1 } });
+  expect(result.changes).toHaveLength(1);
+  accepted(result);
+});
