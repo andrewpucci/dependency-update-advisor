@@ -220,3 +220,59 @@ test('does not execute getters in the unknown binding', async () => {
   expect(await collectNpmInventory(f.input, { session: f.session })).toEqual({ kind: 'invalid' });
   expect(invoked).toBe(false);
 });
+
+test.each(['^1.2.0', ''])(
+  'retains a declaration-only edit %j with complete inventory',
+  async (specifier) => {
+    const f = fixture();
+    lock(f, 'head').packages['node_modules/widget'] = pkg('1.0.0');
+    const manifest = { dependencies: { widget: specifier } };
+    f.files['head:package.json'] = manifest;
+    lock(f, 'head').packages[''] = manifest;
+    const result = inventory(await collectNpmInventory(f.input, { session: f.session }));
+    expect(result.coverage.status).toBe('complete');
+    expect(result.changes).toHaveLength(1);
+    expect(result.changes[0]).toMatchObject({
+      basis: 'declaration',
+      evidence: {},
+      from: { specifiers: { dependencies: '^1' } },
+      to: { specifiers: { dependencies: specifier } },
+    });
+    accepted(result);
+  },
+);
+
+test('preserves role changes independently from a resolved version update', async () => {
+  const f = fixture();
+  const manifest = { devDependencies: { widget: '^1.2' } };
+  f.files['head:package.json'] = manifest;
+  lock(f, 'head').packages[''] = manifest;
+  const result = inventory(await collectNpmInventory(f.input, { session: f.session }));
+  expect(result.changes).toHaveLength(2);
+  expect(result.changes.find((c) => !('basis' in c))).toMatchObject({
+    role: 'direct',
+    directRoles: ['development'],
+  });
+  expect(result.changes.find((c) => 'basis' in c)).toMatchObject({
+    from: { specifiers: { dependencies: '^1' } },
+    to: { specifiers: { devDependencies: '^1.2' } },
+  });
+  expect(
+    result.sources
+      .filter(
+        (s) =>
+          s.kind === 'file' && s.provenance.kind === 'file' && s.provenance.path === 'package.json',
+      )
+      .every((s) => s.memberIds.length === 2),
+  ).toBe(true);
+  accepted(result);
+});
+
+test('retains declaration additions despite an unavailable lock and flags stale lock declarations', async () => {
+  const f = fixture();
+  f.files['head:package.json'] = { dependencies: { widget: '^2', added: '^1' } };
+  const result = inventory(await collectNpmInventory(f.input, { session: f.session }));
+  expect(result.coverage).toMatchObject({ status: 'partial', reasons: ['conflict'] });
+  expect(result.changes.filter((c) => 'basis' in c)).toHaveLength(2);
+  accepted(result);
+});
