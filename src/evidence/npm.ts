@@ -437,11 +437,49 @@ function resolved(state: State, root: NpmRoot) {
     state.changes.push(c);
   }
 }
+function declared(state: State, root: NpmRoot) {
+  const before = root.base.declarations,
+    after = root.head.declarations;
+  if (before === null || after === null) return;
+  const names = [...new Set([...Object.keys(before), ...Object.keys(after)])].sort();
+  for (const name of names) {
+    if (isDeepStrictEqual(before[name], after[name])) continue;
+    const from = before[name]
+      ? { root: root.root, name, specifiers: before[name], sourceId: root.base.manifestId! }
+      : null;
+    const to = after[name]
+      ? { root: root.root, name, specifiers: after[name], sourceId: root.head.manifestId! }
+      : null;
+    state.changes.push({
+      id: changeId(state, 'declaration', from, to),
+      ecosystem: 'npm',
+      basis: 'declaration',
+      kind: from ? (to ? 'update' : 'removal') : 'addition',
+      from,
+      to,
+      role: 'direct',
+      evidence: {},
+    });
+  }
+}
+function citesManifest(state: State, c: PacketChange, id: string) {
+  if (c.ecosystem !== 'npm' || 'basis' in c || c.role !== 'direct') return false;
+  return state.roots.some((root) =>
+    (
+      [
+        ['base', c.from],
+        ['head', c.to],
+      ] as const
+    ).some(([revision, side]) => side?.root === root.root && root[revision].manifestId === id),
+  );
+}
 function sourceMembers(state: State) {
   const sources: PacketSource[] = [];
   for (const s of state.sources) {
     const members = state.changes
-      .filter((c) => [c.from?.sourceId, c.to?.sourceId].includes(s.id))
+      .filter(
+        (c) => [c.from?.sourceId, c.to?.sourceId].includes(s.id) || citesManifest(state, c, s.id),
+      )
       .map((c) => c.id)
       .sort();
     if (!members.length) {
@@ -538,6 +576,7 @@ export async function collectNpmInventory(
       };
       state.roots.push(root);
       resolved(state, root);
+      declared(state, root);
       if (!parsed.roots.includes('.')) gap(state, '.', null, null, 'conflict');
     }
     for (const f of discovery.files)
