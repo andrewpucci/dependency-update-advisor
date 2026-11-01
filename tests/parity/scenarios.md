@@ -80,6 +80,23 @@ assess it or mark its coverage incomplete, and preserve change counts.
 Use a clearly labeled synthetic 20-addition scenario during extraction;
 the original historical API response is unavailable in this baseline record.
 
+### N1 Synthetic Inventory Fixture
+
+[The synthetic npm fixture](npm-inventory.ts) models 20 distinct transitive
+additions alongside one paired anchor update, with unchanged direct manifest
+declarations. Its package names and immutable API-shaped objects are synthetic;
+it does not recreate the historical pilot response or its missing identities.
+[The integration suite](../../src/evidence/npm.integration.test.ts) passes the
+fixture through the real D1 session using mocked transport, then N1 inventory,
+T4 validation, and T5 units. Every addition retains a null base side and its
+own identity, including when the comparison is empty, omits additions, or
+returns a permission, rate-limit, or unknown 403.
+
+Additional variants cover declaration-only edits, mixed-ecosystem gaps, and
+the combined 128/129-record boundary. They exercise inventory and unit handoff,
+without claiming live transport, completed assessments, publication, or parity
+with the full historical PR.
+
 ## Approved T4 Large-PR Limit
 
 The [T4 packet contract](../../docs/specs/SPEC-review-packet.md) caps the complete
