@@ -53,7 +53,7 @@ export type PackageSource = {
 export type NpmSide = {
   root: string;
   name: string;
-  lockPath: string | null;
+  lockPath: string;
   version: string;
   source: PackageSource;
   sourceId: string;
@@ -82,7 +82,15 @@ export type UvSide = {
   groups: string[];
   sourceId: string;
 };
-export type DependencySide = NpmSide | ActionsSide | UvSide;
+export type NpmDeclarationSide = {
+  root: string;
+  name: string;
+  specifiers: Partial<
+    Record<'dependencies' | 'devDependencies' | 'peerDependencies' | 'optionalDependencies', string>
+  >;
+  sourceId: string;
+};
+export type DependencySide = NpmSide | ActionsSide | UvSide | NpmDeclarationSide;
 type ChangeFacts = {
   id: string;
   kind: 'update' | 'addition' | 'removal';
@@ -96,6 +104,13 @@ export type PacketChange = ChangeFacts &
         from: NpmSide | null;
         to: NpmSide | null;
         directRoles?: ('production' | 'development' | 'peer' | 'optional')[];
+      }
+    | {
+        ecosystem: 'npm';
+        basis: 'declaration';
+        role: 'direct';
+        from: NpmDeclarationSide | null;
+        to: NpmDeclarationSide | null;
       }
     | { ecosystem: 'actions'; from: ActionsSide | null; to: ActionsSide | null }
     | { ecosystem: 'uv'; from: UvSide | null; to: UvSide | null }
@@ -721,7 +736,7 @@ function npmSide(value: unknown, field: Field = 'changes'): NpmSide {
   return {
     root: path(r.root, field, true),
     name: id(r.name, field),
-    lockPath: r.lockPath === null ? null : path(r.lockPath, field),
+    lockPath: path(r.lockPath, field),
     version: text(r.version, field),
     source: packageSource(r.source, field),
     sourceId: id(r.sourceId, field),
@@ -819,14 +834,65 @@ function changeSides<T extends { sourceId: string }>(
   }
   return { from, to };
 }
+const DECLARATION_SECTIONS = [
+  'dependencies',
+  'devDependencies',
+  'peerDependencies',
+  'optionalDependencies',
+] as const;
+function declarationSide(value: unknown): NpmDeclarationSide {
+  const r = object(value, ['root', 'name', 'specifiers', 'sourceId'], [], 'changes');
+  const entries = object(r.specifiers, [], DECLARATION_SECTIONS, 'changes');
+  requireValue(Object.keys(entries).length > 0, 'changes');
+  const specifiers: NpmDeclarationSide['specifiers'] = {};
+  for (const section of DECLARATION_SECTIONS) {
+    if (!Object.hasOwn(entries, section)) continue;
+    const value = entries[section];
+    requireValue(typeof value === 'string', 'changes');
+    if (value !== '') text(value, 'changes');
+    requireValue(!/\/\/[^/\s]*@|[?&](?:token|key|password|secret|auth)=/iu.test(value), 'changes');
+    specifiers[section] = value;
+  }
+  return {
+    root: path(r.root, 'changes', true),
+    name: id(r.name, 'changes'),
+    specifiers,
+    sourceId: id(r.sourceId, 'changes'),
+  };
+}
+function declaration(r: Record<string, unknown>): PacketChange {
+  requireValue(r.role === 'direct' && !Object.hasOwn(r, 'directRoles'), 'changes');
+  object(r.evidence, [], [], 'changes');
+  const kind = choice(r.kind, ['update', 'addition', 'removal'], 'changes');
+  const sides = changeSides(r, kind, declarationSide);
+  if (sides.from && sides.to)
+    requireValue(
+      sides.from.root === sides.to.root && sides.from.name === sides.to.name,
+      'changes',
+      'identity',
+    );
+  return {
+    id: id(r.id, 'changes'),
+    ecosystem: 'npm',
+    basis: 'declaration',
+    kind,
+    role: 'direct',
+    evidence: {},
+    ...sides,
+  };
+}
 function change(value: unknown): PacketChange {
   const r = object(
     value,
     ['id', 'ecosystem', 'kind', 'from', 'to', 'role', 'evidence'],
-    ['directRoles'],
+    ['directRoles', 'basis'],
     'changes',
   );
   const ecosystem = choice(r.ecosystem, ECOSYSTEMS, 'changes');
+  if (Object.hasOwn(r, 'basis')) {
+    requireValue(ecosystem === 'npm' && r.basis === 'declaration', 'changes');
+    return declaration(r);
+  }
   const facts: ChangeFacts = {
     id: id(r.id, 'changes'),
     kind: choice(r.kind, ['update', 'addition', 'removal'], 'changes'),
@@ -855,9 +921,10 @@ function change(value: unknown): PacketChange {
   return result;
 }
 function sideValue(side: DependencySide) {
-  return 'version' in side ? side.version : side.ref;
+  return 'version' in side ? side.version : 'ref' in side ? side.ref : undefined;
 }
 function instanceKey(c: PacketChange, side: DependencySide) {
+  if ('specifiers' in side) return JSON.stringify(['npm', 'declaration', side.root, side.name]);
   if ('workflow' in side)
     return JSON.stringify([c.ecosystem, side.workflow, side.jobId, side.stepIndex]);
   if ('lockPath' in side)
@@ -876,8 +943,8 @@ function instanceKey(c: PacketChange, side: DependencySide) {
 function inventoryPaths(side: DependencySide) {
   if ('workflow' in side) return [side.workflow];
   const prefix = side.root === '.' ? '' : side.root + '/';
-  if ('lockPath' in side)
-    return [prefix + (side.lockPath === null ? 'package.json' : 'package-lock.json')];
+  if ('specifiers' in side) return [prefix + 'package.json'];
+  if ('lockPath' in side) return [prefix + 'package-lock.json'];
   return [prefix + 'uv.lock', prefix + 'pyproject.toml'];
 }
 function category(s: PacketSource) {
@@ -1212,7 +1279,12 @@ function validateSupplyChainFinding(
   }
   if (f.change === 'package_source')
     requireValue(
-      c.ecosystem !== 'actions' && c.from && c.to && !isDeepStrictEqual(c.from.source, c.to.source),
+      c.ecosystem !== 'actions' &&
+        c.from &&
+        c.to &&
+        'source' in c.from &&
+        'source' in c.to &&
+        !isDeepStrictEqual(c.from.source, c.to.source),
       'findings',
       'reference',
     );
@@ -1317,6 +1389,7 @@ function linkFindings(
   for (const f of findings) {
     const c = changes.get(f.memberId);
     requireValue(c, 'findings', 'reference');
+    requireValue(!('basis' in c) || f.kind === 'informational', 'findings', 'reference');
     if (f.kind === 'supplyChainChange') validateSupplyChainFinding(f, c);
     const linked = f.references.map((ref) => linkFindingReference(ref, f, c, sources, claims));
     for (const side of findingSides(f, c))
@@ -1386,7 +1459,12 @@ function linkRelationships(
     const from = changes.get(p.fromId),
       to = changes.get(p.toId);
     requireValue(
-      from && to && from.ecosystem === p.ecosystem && to.ecosystem === p.ecosystem,
+      from &&
+        to &&
+        !('basis' in from) &&
+        !('basis' in to) &&
+        from.ecosystem === p.ecosystem &&
+        to.ecosystem === p.ecosystem,
       'relationships',
       'reference',
     );

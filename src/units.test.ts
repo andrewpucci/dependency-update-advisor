@@ -16,7 +16,7 @@ const repository = { id: 101, owner: 'example', name: 'consumer' };
 const BASE = 'b'.repeat(40),
   HEAD = 'a'.repeat(40);
 const ecosystems = ['npm', 'actions', 'uv'] as const;
-type NpmChange = Extract<PacketChange, { ecosystem: 'npm' }>;
+type NpmChange = Exclude<Extract<PacketChange, { ecosystem: 'npm' }>, { basis: 'declaration' }>;
 type UvChange = Extract<PacketChange, { ecosystem: 'uv' }>;
 type ActionChange = Extract<PacketChange, { ecosystem: 'actions' }>;
 function evidence(ecosystem: PacketChange['ecosystem']) {
@@ -149,7 +149,11 @@ function fixture(changes: PacketChange[] = []) {
         'workflow' in side
           ? side.workflow
           : (side.root === '.' ? '' : side.root + '/') +
-            (c.ecosystem === 'npm' ? 'package-lock.json' : 'uv.lock');
+            (c.ecosystem === 'npm'
+              ? 'basis' in c
+                ? 'package.json'
+                : 'package-lock.json'
+              : 'uv.lock');
       side.sourceId = JSON.stringify([c.ecosystem, path, revision, Math.floor(index / 32)]);
       let source = packet.sources.find((s) => s.id === side.sourceId);
       if (!source) {
@@ -180,6 +184,51 @@ function accepted(f: ReturnType<typeof fixture>) {
   if (!result.ok) throw new Error('expected valid synthetic packet');
   return result.packet;
 }
+
+function declarationChange(): Extract<PacketChange, { basis: 'declaration' }> {
+  const side = (specifier: string) => ({
+    root: '.',
+    name: 'range-only',
+    specifiers: { dependencies: specifier },
+    sourceId: '',
+  });
+  return {
+    id: 'declaration',
+    ecosystem: 'npm',
+    basis: 'declaration',
+    kind: 'update',
+    role: 'direct',
+    evidence: {},
+    from: side('^1'),
+    to: side('^2'),
+  };
+}
+
+test('declarations are standalone unassessed work without version research gaps', () => {
+  const f = fixture([declarationChange()]);
+  const units = formDecisionUnits(accepted(f));
+  expect(units.units).toHaveLength(1);
+  expect(units.units[0].members).toEqual([
+    { id: 'declaration', ecosystem: 'npm', name: 'range-only' },
+  ]);
+  expect(units.units[0].evidenceLinks).toEqual([]);
+  expect(units.units[0].sources).toEqual([]);
+  const coverage = summarizeDecisionCoverage(units, parseReviewConfig('{"version":1}'), 0);
+  if (!coverage.ok) throw new Error('expected coverage');
+  expect(coverage.outcome).toEqual({ kind: 'decision_incomplete' });
+  expect(coverage.policyProvenance.assessments.unresolvedUnits[0].state).toBe('unattempted');
+  expect(coverage.policyProvenance.assessments.units[0].gaps).toEqual([]);
+});
+
+test('declaration units cannot suppress or change a resolved direct group', () => {
+  const original = groupFixture();
+  const baseline = formDecisionUnits(accepted(original));
+  const f = fixture([...original.packet.changes, declarationChange()]);
+  relate(f, 0, 1);
+  const result = formDecisionUnits(accepted(f));
+  expect(result.units.filter((u) => u.kind === 'direct_group')).toEqual(baseline.units);
+  expect(result.units.find((u) => u.memberIds.includes('declaration'))?.kind).toBe('standalone');
+});
 
 test('partitions mixed exact changes without merging repeated names, occurrences, or variants', () => {
   const a = npm('a'),
@@ -380,6 +429,7 @@ test('multiple proofs to the same anchor preserve one group, not extra assessmen
 
 function available(f: ReturnType<typeof fixture>, id: string, categories?: string[]) {
   const change = f.packet.changes.find((c) => c.id === id)!;
+  if ('basis' in change) throw new Error('resolved fixture required');
   for (const category of categories ?? Object.keys(change.evidence)) {
     const sourceId = JSON.stringify([id, category]);
     const kinds = {
