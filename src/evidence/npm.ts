@@ -701,45 +701,45 @@ async function reconcileComparison(state: State) {
       provenance: { kind: 'unavailable' },
     });
 }
-function sourceMembers(state: State) {
+function corroboratingSource(state: State, source: PacketSource): PacketSource[] {
+  if (source.provenance.kind === 'unavailable') return [source];
+  const memberIds = source.memberIds.filter((id) => state.changes.some((c) => c.id === id));
+  if (!memberIds.length || source.provenance.kind !== 'upstream') return [];
+  return [
+    {
+      ...source,
+      memberIds,
+      provenance: {
+        ...source.provenance,
+        subjects: source.provenance.subjects.filter((t) => memberIds.includes(t.memberId)),
+      },
+    },
+  ];
+}
+function fileScopes(state: State, source: PacketSource): PacketSource[] {
+  const members = state.changes
+    .filter(
+      (c) =>
+        [c.from?.sourceId, c.to?.sourceId].includes(source.id) ||
+        citesManifest(state, c, source.id),
+    )
+    .map((c) => c.id)
+    .sort();
+  if (!members.length) return [source];
   const sources: PacketSource[] = [];
-  for (const s of state.sources) {
-    if (s.kind !== 'file') {
-      if (s.provenance.kind === 'unavailable') {
-        sources.push(s);
-        continue;
-      }
-      const memberIds = s.memberIds.filter((id) => state.changes.some((c) => c.id === id));
-      if (memberIds.length && s.provenance.kind === 'upstream')
-        sources.push({
-          ...s,
-          memberIds,
-          provenance: {
-            ...s.provenance,
-            subjects: s.provenance.subjects.filter((t) => memberIds.includes(t.memberId)),
-          },
-        });
-      continue;
-    }
-    const members = state.changes
-      .filter(
-        (c) => [c.from?.sourceId, c.to?.sourceId].includes(s.id) || citesManifest(state, c, s.id),
-      )
-      .map((c) => c.id)
-      .sort();
-    if (!members.length) {
-      sources.push(s);
-      continue;
-    }
-    for (let i = 0; i < members.length; i += 32) {
-      const group = members.slice(i, i + 32),
-        id = i === 0 ? s.id : s.id + ':' + i / 32;
-      sources.push({ ...s, id, memberIds: group });
-      for (const c of state.changes.filter((c) => group.includes(c.id)))
-        for (const side of [c.from, c.to]) if (side?.sourceId === s.id) side.sourceId = id;
-    }
+  for (let i = 0; i < members.length; i += 32) {
+    const group = members.slice(i, i + 32),
+      id = i === 0 ? source.id : source.id + ':' + i / 32;
+    sources.push({ ...source, id, memberIds: group });
+    for (const c of state.changes.filter((c) => group.includes(c.id)))
+      for (const side of [c.from, c.to]) if (side?.sourceId === source.id) side.sourceId = id;
   }
   return sources;
+}
+function sourceMembers(state: State) {
+  return state.sources.flatMap((source) =>
+    source.kind === 'file' ? fileScopes(state, source) : corroboratingSource(state, source),
+  );
 }
 function freeze<T>(value: T): T {
   if (value && typeof value === 'object') {
