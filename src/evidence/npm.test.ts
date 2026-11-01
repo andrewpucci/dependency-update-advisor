@@ -513,3 +513,39 @@ test('known empty and exactly attributable comparison records are independent co
   expect(result.changes).toHaveLength(1);
   accepted(result);
 });
+
+test('rejects sparse arrays with overridden methods without executing them', async () => {
+  const f = fixture();
+  let invoked = false;
+  const roots: string[] = [];
+  roots.length = 1;
+  Object.defineProperty(roots, 'map', {
+    value: () => {
+      invoked = true;
+      return [];
+    },
+  });
+  f.input.roots = roots;
+  expect(await collectNpmInventory(f.input, { session: f.session })).toEqual({ kind: 'invalid' });
+  expect(invoked).toBe(false);
+  expect(f.calls).toEqual([]);
+});
+
+test('does not retain invalid lockfile keys as diagnostic values', async () => {
+  const f = fixture();
+  lock(f, 'head').packages['https://user:should-not-escape@example.test/path'] = pkg('1.0.0');
+  const result = inventory(await collectNpmInventory(f.input, { session: f.session }));
+  expect(result.coverage.status).toBe('partial');
+  expect(JSON.stringify(result)).not.toContain('should-not-escape');
+  accepted(result);
+});
+
+test('manifest and lock-root project identity mismatches retain readable changes with a conflict', async () => {
+  const f = fixture();
+  f.files['head:package.json'] = { name: 'expected', dependencies: { widget: '^1' } };
+  lock(f, 'head').packages[''] = { name: 'other', dependencies: { widget: '^1' } };
+  const result = inventory(await collectNpmInventory(f.input, { session: f.session }));
+  expect(result.changes).toHaveLength(1);
+  expect(result.coverage.reasons).toContain('conflict');
+  accepted(result);
+});

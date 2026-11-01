@@ -123,10 +123,10 @@ gaps and an introduced vulnerability before parity is claimed.
   request. Pending review and merge; [verification #113](https://github.com/andrewpucci/dependency-update-advisor/issues/113)
   records exact-revision checks and remaining gates.
 - [npm evidence](SPEC-npm-evidence.md) — approved for planning.
-- [npm change inventory](SPEC-npm-inventory.md) — approved for planning
-  for N1 #14 in `npm-evidence`, including T4/T5 declaration records and combined
-  128-record accounting. The eight-task plan for #124–#131 is approved;
-  autonomous execution in one PR is authorized, not yet implemented.
+- [npm change inventory](SPEC-npm-inventory.md) — implemented for N1 #14 and
+  #124–#131 on `issue-14`, pending review and merge. Includes T4/T5 declaration
+  records and combined 128-record accounting; [verification #131](https://github.com/andrewpucci/dependency-update-advisor/issues/131)
+  retains separate N2, research, workflow, assessment/rendering, and cutover gates.
 - [GitHub Actions evidence](SPEC-actions-evidence.md) — approved for planning.
 - [uv evidence](SPEC-uv-evidence.md) — approved for planning.
 - [Repository adoption](SPEC-repo-adoption.md) — approved for planning.

@@ -12,7 +12,8 @@ explicitly and allow complete inventory coverage when fully accounted for.
 Approval: after reviewing the saved draft, the user explicitly answered `yes`
 to approval for planning on 2026-10-26. This approves the full specification,
 including the declaration variant, combined 128-record accounting, and minimal
-T4/T5 amendments. The amendments remain unimplemented.
+T4/T5 amendments. The collector and amendments are implemented on `issue-14`,
+pending review and merge.
 
 Plan approval, 2026-10-26: after reviewing the eight-task plan, the user
 explicitly answered `approve`. The approved order is N1.1–N1.8,
@@ -167,7 +168,7 @@ and old resolved-only packet shapes remain accepted except a resolved side
 with `lockPath: null`. T4 currently accepts that manifest-backed side with any
 `version` text, including a range; declaration records now own manifest facts,
 so the amended validator rejects it rather than allowing two representations.
-Current validators reject the new variant until amended; never strip its
+The amended validator accepts the declaration variant; never strip its
 fields to make it pass.
 
 Each declaration record carries `id`, `ecosystem: 'npm'`, `basis`, `kind`,
@@ -300,7 +301,7 @@ parsers consistent with `src/github-read.ts` and `src/schema.ts`.
 | `tests/parity/`                       | Sanitized scenario provenance and limits.                             |
 | `docs/specs/`                         | This spec, affected contracts, and approval index.                    |
 
-The type example above describes approved data, not an implemented export.
+The declaration type above is exported from `src/schema.ts`.
 Planning selects helper boundaries and fixture storage within this scope.
 
 ## Testing Strategy and Success Criteria
@@ -340,6 +341,45 @@ or the full PR. Keep the approved large-PR rejection as an intentional parity
 difference. Tests here do not certify registry research, live transport,
 outbound disclosure, publication, consumer adoption, or cutover.
 
+## Implemented Handoff
+
+`src/evidence/npm.ts` exports the read-only collector:
+
+```ts
+collectNpmInventory(input: unknown, { session }: { session: GithubReadSession }): Promise<NpmInventoryResult>
+```
+
+Input contains a verified `binding`, canonical exact `roots`, trusted
+`configRevision` (`repository`, full `sha`), and required positive safe-integer
+`limits`: `maxFileBytes`, `maxJsonEntries`, `maxJsonDepth`, `maxRoots`, and
+`maxRetainedBytes`. File/retention limits count UTF-8 bytes; entry limits count
+object properties and array elements across parsed files; depth counts nested
+JSON containers. The input envelope is also bounded before binding parsing.
+The caller owns the D1 session's lifecycle and credentials.
+
+Results distinguish `invalid`, `obsolete`, fixed `unavailable` reasons, and
+`inventory`. An inventory carries the binding, changes, source table, normalized
+roots, scoped gaps, independent comparison availability/counts/source IDs, and
+npm coverage. Inventory results are detached and deeply frozen. Retention exhaustion
+omits snapshots and retains a fitting deterministic change prefix with explicit
+`budget` coverage; if no bounded envelope fits, no usable inventory is returned.
+This is independent of T4's hard 128-record rejection, which never trims a packet.
+
+Each normalized root side identifies its manifest and lock sources, declaration
+maps, installed-path nodes, and unresolved canonical paths. Nodes preserve exact
+instances when representable, dependency/optional/peer maps, integrity,
+install-script signals, and safe link targets. Missing or unsupported instances
+cannot become proof of absence. Snapshots supply N2 with evidence, not proven
+relationships. Comparison sources corroborate exact attributable versions and
+never substitute for required package research.
+
+Trusted orchestration must assemble other ecosystem slots and C2's separately
+trusted result before calling T4, then pass only accepted packets to T5. N1 does
+not create provider requests or publication authority. Verification evidence
+belongs to [task #131](https://github.com/andrewpucci/dependency-update-advisor/issues/131)
+and the PR. N2, research, M2/O1, W1/W2, disclosure, adoption, and cutover remain
+separate; the old reviewer stays active.
+
 ## Commands
 
 For documentation-only changes:
@@ -350,7 +390,7 @@ npm run format:check
 git diff --check
 ```
 
-For later implementation, after approval:
+For implementation verification:
 
 ```sh
 npm ci
@@ -361,10 +401,10 @@ npm test -- --run
 git diff --check
 ```
 
-The focused implementation command is proposed until the npm suite exists:
+Run the focused collector, packet, unit, and mocked integration suites:
 
 ```sh
-npm test -- --run src/evidence/npm.test.ts src/schema.test.ts src/units.test.ts
+npm test -- --run src/evidence/npm.test.ts src/evidence/npm.integration.test.ts src/schema.test.ts src/units.test.ts
 ```
 
 No build script exists; packaging remains A1. Record the exact shared revision,

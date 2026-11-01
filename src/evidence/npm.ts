@@ -147,7 +147,14 @@ function inspect(value: unknown, limits: Limits, depth = 0, counter = { entries:
   const keys = Reflect.ownKeys(descriptors).filter((k) => k !== 'length' || !array);
   counter.entries += keys.length;
   need(counter.entries <= limits.maxJsonEntries, 'budget');
-  if (array) need(keys.length === value.length);
+  if (array)
+    need(
+      Object.getPrototypeOf(value) === Array.prototype &&
+        keys.length === value.length &&
+        keys.every(
+          (k) => typeof k === 'string' && /^(?:0|[1-9]\d*)$/u.test(k) && Number(k) < value.length,
+        ),
+    );
   for (const key of keys) {
     const d = descriptors[key as string];
     need(typeof key === 'string' && 'value' in d);
@@ -387,6 +394,7 @@ function lockPackages(
   side: 'base' | 'head',
   data: Record<string, unknown>,
   id: string,
+  manifest: Record<string, unknown> | null,
   result: {
     packages: Record<string, NpmNode>;
     unresolvedPaths: string[];
@@ -398,6 +406,9 @@ function lockPackages(
     file = (root === '.' ? '' : root + '/') + 'package-lock.json';
   try {
     const own = object(packages['']);
+    for (const key of ['name', 'version'])
+      if (manifest && manifest[key] !== undefined && own[key] !== undefined)
+        need(manifest[key] === own[key], 'conflict');
     if (result.declarations && !isDeepStrictEqual(result.declarations, declarations(own)))
       gap(state, root, side, file, 'conflict');
   } catch (error) {
@@ -410,7 +421,7 @@ function lockPackages(
       result.packages[key] = node;
       need(node.instance, 'unsupported');
     } catch (error) {
-      result.unresolvedPaths.push(key);
+      if (path(key)) result.unresolvedPaths.push(key);
       gap(state, root, side, file, reason(error));
     }
   }
@@ -463,7 +474,7 @@ async function rootSide(state: State, root: string, side: 'base' | 'head'): Prom
   }
   if (!lock.data) return result;
   try {
-    lockPackages(state, root, side, lock.data, lock.id, result);
+    lockPackages(state, root, side, lock.data, lock.id, manifest.data, result);
     result.state = 'present';
   } catch (error) {
     gap(state, root, side, prefix + 'package-lock.json', reason(error));
