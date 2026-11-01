@@ -3,6 +3,12 @@
 Status: approved for planning, 2026-09-23. Module: `npm-evidence` in
 [the capability map](README.md).
 
+[N1 inventory](SPEC-npm-inventory.md) is approved for planning, 2026-10-26,
+for issue #14, including a T4/T5 amendment for declaration-only changes.
+It supplements this contract: fully accounted declaration edits may retain
+complete inventory coverage. The amendment remains unimplemented; plan and
+execution approval remain separate.
+
 ## Objective
 
 Account for every npm dependency changed by a Dependabot PR, including

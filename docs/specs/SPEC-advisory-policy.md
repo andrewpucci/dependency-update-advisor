@@ -13,6 +13,12 @@ Implementation: completed and merged into `main`. C3 #7 and tasks #49–#52
 are closed; [verification evidence](https://github.com/andrewpucci/dependency-update-advisor/issues/52)
 records the tested revisions and remaining integration gates.
 
+Clarification approved by the user on 2026-10-26 during
+[N1 inventory](SPEC-npm-inventory.md#declaration-amendment-to-t4-and-t5)
+review: required research applies to resolved dependency records. An npm
+declaration record carries no research categories, so it creates no evidence
+gap or `incompleteEvidence`; C3's evaluator is unchanged.
+
 ## Objective
 
 Let repository maintainers change the ten named advisory rules in either
