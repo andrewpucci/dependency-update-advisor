@@ -351,3 +351,93 @@ test('configuration cannot hide a changed root and partial discovery cannot prov
     inventory(await collectNpmInventory(g.input, { session: g.session })).coverage,
   ).toMatchObject({ status: 'partial', reasons: ['budget'] });
 });
+
+test('uses installed alias slots for direct attribution without collapsing actual package identities', async () => {
+  const f = fixture();
+  for (const side of ['base', 'head'] as const) {
+    const manifest = { dependencies: { alias: 'npm:actual@^1' } };
+    f.files[`${side}:package.json`] = manifest;
+    lock(f, side).packages = {
+      '': manifest,
+      'node_modules/alias': {
+        ...pkg(side === 'base' ? '1.0.0' : '1.5.0', 'actual'),
+        name: 'actual',
+      },
+    };
+  }
+  const result = inventory(await collectNpmInventory(f.input, { session: f.session }));
+  expect(result.coverage.status).toBe('complete');
+  expect(result.changes[0]).toMatchObject({
+    role: 'direct',
+    directRoles: ['production'],
+    to: { name: 'actual', lockPath: 'node_modules/alias' },
+  });
+  accepted(result);
+});
+
+test('different packages occupying a slot are removal/addition records', async () => {
+  const f = fixture();
+  Object.assign(lock(f, 'head').packages['node_modules/widget'] as object, { name: 'replacement' });
+  const result = inventory(await collectNpmInventory(f.input, { session: f.session }));
+  expect(result.changes.map((c) => c.kind).sort()).toEqual(['addition', 'removal']);
+  expect(result.coverage.reasons).toContain('conflict');
+  accepted(result);
+});
+
+test.each([
+  ['git+https://example.test/repo.git#' + 'd'.repeat(40), 'git'],
+  ['file:packages/local', 'path'],
+  ['https://example.test/archive.tgz', 'url'],
+])('preserves package source %s', async (resolved, kind) => {
+  const f = fixture();
+  Object.assign(lock(f, 'head').packages['node_modules/widget'] as object, { resolved });
+  const result = inventory(await collectNpmInventory(f.input, { session: f.session }));
+  expect(result.changes[0].to).toMatchObject({ source: { kind } });
+  accepted(result);
+});
+
+test('retains N2 metadata and reports unsupported same-version metadata changes', async () => {
+  const f = fixture();
+  lock(f, 'head').packages['node_modules/widget'] = {
+    ...pkg('1.0.0'),
+    integrity: 'sha512-new',
+    hasInstallScript: true,
+    optionalDependencies: { extra: '^1' },
+  };
+  const result = inventory(await collectNpmInventory(f.input, { session: f.session }));
+  expect(result.changes).toEqual([]);
+  expect(result.coverage.reasons).toContain('unsupported');
+  expect(result.roots[0].head.packages['node_modules/widget']).toMatchObject({
+    integrity: 'sha512-new',
+    hasInstallScript: true,
+    optionalDependencies: { extra: '^1' },
+  });
+  accepted(result);
+});
+
+test('retention overflow preserves a bounded known prefix with explicit budget coverage', async () => {
+  const f = fixture();
+  for (let i = 0; i < 25; i++)
+    lock(f, 'head').packages[`node_modules/child-${i}`] = pkg('1.0.0', `child-${i}`);
+  f.input.limits.maxRetainedBytes = 12_000;
+  const result = inventory(await collectNpmInventory(f.input, { session: f.session }));
+  expect(result.changes.length).toBeGreaterThan(0);
+  expect(result.changes.length).toBeLessThan(26);
+  expect(result.coverage.reasons).toContain('budget');
+  expect(Buffer.byteLength(JSON.stringify(result))).toBeLessThanOrEqual(12_000);
+  accepted(result);
+});
+
+test('unsupported workspace links and ranged locked versions stay explicit without inventing instances', async () => {
+  const f = fixture();
+  lock(f, 'head').packages['node_modules/widget'] = { link: true, resolved: 'packages/widget' };
+  lock(f, 'head').packages['node_modules/ranged'] = { ...pkg('^1.0.0', 'ranged') };
+  const result = inventory(await collectNpmInventory(f.input, { session: f.session }));
+  expect(result.changes).toEqual([]);
+  expect(result.coverage.reasons).toContain('unsupported');
+  expect(result.roots[0].head.packages['node_modules/widget']).toMatchObject({
+    instance: null,
+    link: 'packages/widget',
+  });
+  accepted(result);
+});

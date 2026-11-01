@@ -9,12 +9,9 @@ import type {
   PacketSource,
   PacketRevision,
   NpmSide,
+  PackageSource,
 } from '../schema.js';
 
-type ResolvedChange = Exclude<
-  Extract<PacketChange, { ecosystem: 'npm' }>,
-  { basis: 'declaration' }
->;
 type Limits = Readonly<{
   maxFileBytes: number;
   maxJsonEntries: number;
@@ -34,7 +31,15 @@ export type NpmGap = Readonly<{
   path: string | null;
   reason: EvidenceReason;
 }>;
-export type NpmNode = Readonly<{ instance: NpmSide; dependencies: Record<string, string> }>;
+export type NpmNode = Readonly<{
+  instance: NpmSide | null;
+  dependencies: Record<string, string>;
+  optionalDependencies: Record<string, string>;
+  peerDependencies: Record<string, string>;
+  integrity: string | null;
+  hasInstallScript: boolean | null;
+  link: string | null;
+}>;
 export type NpmRootSide = Readonly<{
   state: 'present' | 'absent' | 'unavailable';
   manifestId: string | null;
@@ -297,33 +302,106 @@ async function read(state: State, root: string, side: 'base' | 'head', file: str
     return { kind: 'unavailable' as const, id, data: null };
   }
 }
+function packageSource(value: unknown): PackageSource {
+  need(safeText(value), 'unsupported');
+  for (const [prefix, kind] of [
+    ['file:', 'path'],
+    ['workspace:', 'workspace'],
+  ] as const) {
+    if (!value.startsWith(prefix)) continue;
+    const identity = value.slice(prefix.length);
+    need(path(identity, true), 'unsupported');
+    return { kind, identity };
+  }
+  const git = value.startsWith('git+https:');
+  const url = new URL(git ? value.slice(4) : value);
+  need(url.protocol === 'https:' && !url.username && !url.password, 'unsupported');
+  return {
+    kind: git ? 'git' : url.hostname === 'registry.npmjs.org' ? 'registry' : 'url',
+    identity: url.href,
+  };
+}
+function slotName(lockPath: string) {
+  return /(?:^|\/)node_modules\/((?:@[^/]+\/)?[^/]+)$/u.exec(lockPath)?.[1] ?? null;
+}
+function metadata(r: Record<string, unknown>) {
+  need(r.integrity === undefined || safeText(r.integrity));
+  need(r.hasInstallScript === undefined || typeof r.hasInstallScript === 'boolean');
+  need(r.link === undefined || typeof r.link === 'boolean');
+  const link = r.link === true ? r.resolved : null;
+  need(link === null || path(link, true), 'unsupported');
+  return {
+    dependencies: r.dependencies === undefined ? {} : stringMap(r.dependencies),
+    optionalDependencies:
+      r.optionalDependencies === undefined ? {} : stringMap(r.optionalDependencies),
+    peerDependencies: r.peerDependencies === undefined ? {} : stringMap(r.peerDependencies),
+    integrity: r.integrity === undefined ? null : (r.integrity as string),
+    hasInstallScript: r.hasInstallScript === undefined ? null : (r.hasInstallScript as boolean),
+    link,
+  };
+}
 function packageNode(root: string, lockPath: string, value: unknown, sourceId: string): NpmNode {
   need(path(lockPath));
-  const r = object(value);
-  need(!r.link, 'unsupported');
-  const match = /(?:^|\/)node_modules\/((?:@[^/]+\/)?[^/]+)$/u.exec(lockPath);
-  need(match, 'unsupported');
-  const name = r.name ?? match[1];
+  const r = object(value),
+    facts = metadata(r);
+  if (facts.link) return { instance: null, ...facts };
+  const slot = slotName(lockPath);
+  need(slot, 'unsupported');
+  const name = r.name ?? slot;
   need(
-    safeText(name) && name.length <= 256 && safeText(r.version) && safeText(r.resolved),
+    safeText(name) &&
+      name.length <= 256 &&
+      safeText(r.version) &&
+      /^(?:0|[1-9]\d*)\.(?:0|[1-9]\d*)\.(?:0|[1-9]\d*)(?:-[\da-z-]+(?:\.[\da-z-]+)*)?(?:\+[\da-z-]+(?:\.[\da-z-]+)*)?$/iu.test(
+        r.version,
+      ),
     'unsupported',
   );
-  const source = new URL(r.resolved);
-  need(source.protocol === 'https:' && !source.username && !source.password, 'unsupported');
   return {
     instance: {
       root,
       name,
       lockPath,
       version: r.version,
-      source: {
-        kind: source.hostname === 'registry.npmjs.org' ? 'registry' : 'url',
-        identity: source.href,
-      },
+      source: packageSource(r.resolved),
       sourceId,
     },
-    dependencies: r.dependencies === undefined ? {} : stringMap(r.dependencies),
+    ...facts,
   };
+}
+function lockPackages(
+  state: State,
+  root: string,
+  side: 'base' | 'head',
+  data: Record<string, unknown>,
+  id: string,
+  result: {
+    packages: Record<string, NpmNode>;
+    unresolvedPaths: string[];
+    declarations: NpmRootSide['declarations'];
+  },
+) {
+  need(data.lockfileVersion === 3, 'unsupported');
+  const packages = object(data.packages),
+    file = (root === '.' ? '' : root + '/') + 'package-lock.json';
+  try {
+    const own = object(packages['']);
+    if (result.declarations && !isDeepStrictEqual(result.declarations, declarations(own)))
+      gap(state, root, side, file, 'conflict');
+  } catch (error) {
+    gap(state, root, side, file, reason(error));
+  }
+  for (const key of Object.keys(packages).sort()) {
+    if (!key) continue;
+    try {
+      const node = packageNode(root, key, packages[key], id);
+      result.packages[key] = node;
+      need(node.instance, 'unsupported');
+    } catch (error) {
+      result.unresolvedPaths.push(key);
+      gap(state, root, side, file, reason(error));
+    }
+  }
 }
 async function rootSide(state: State, root: string, side: 'base' | 'head'): Promise<NpmRootSide> {
   const prefix = root === '.' ? '' : root + '/';
@@ -355,28 +433,25 @@ async function rootSide(state: State, root: string, side: 'base' | 'head'): Prom
       'missing',
     );
   try {
-    if (manifest.data) result.declarations = declarations(manifest.data);
+    if (manifest.data) {
+      result.declarations = declarations(manifest.data);
+      if (
+        [
+          'workspaces',
+          'overrides',
+          'peerDependenciesMeta',
+          'bundleDependencies',
+          'bundledDependencies',
+        ].some((k) => manifest.data![k] !== undefined)
+      )
+        gap(state, root, side, prefix + 'package.json', 'unsupported');
+    }
   } catch (error) {
     gap(state, root, side, prefix + 'package.json', reason(error));
   }
   if (!lock.data) return result;
   try {
-    need(lock.data.lockfileVersion === 3, 'unsupported');
-    const packages = object(lock.data.packages),
-      own = object(packages['']);
-    if (result.declarations && !isDeepStrictEqual(result.declarations, declarations(own)))
-      gap(state, root, side, prefix + 'package-lock.json', 'conflict');
-    for (const [key, value] of Object.entries(packages).sort(([a], [b]) =>
-      a < b ? -1 : a > b ? 1 : 0,
-    )) {
-      if (!key) continue;
-      try {
-        result.packages[key] = packageNode(root, key, value, lock.id);
-      } catch (error) {
-        result.unresolvedPaths.push(key);
-        gap(state, root, side, prefix + 'package-lock.json', reason(error));
-      }
-    }
+    lockPackages(state, root, side, lock.data, lock.id, result);
     result.state = 'present';
   } catch (error) {
     gap(state, root, side, prefix + 'package-lock.json', reason(error));
@@ -405,6 +480,47 @@ function research() {
     ]),
   );
 }
+function classify(state: State, root: NpmRoot, instance: NpmSide, side: 'base' | 'head') {
+  const manifest = root[side].declarations;
+  if (!manifest) return { role: 'unknown' as const };
+  const slot = slotName(instance.lockPath),
+    membership = slot ? manifest[slot] : undefined;
+  if (!slot || !membership || instance.lockPath !== `node_modules/${slot}`)
+    return { role: 'transitive' as const };
+  const effective =
+    membership.optionalDependencies ??
+    membership.dependencies ??
+    membership.devDependencies ??
+    membership.peerDependencies;
+  const actual = effective?.startsWith('npm:')
+    ? /^npm:((?:@[^/]+\/)?[^@/]+)(?:@.*)?$/u.exec(effective)?.[1]
+    : slot;
+  if (actual !== instance.name) {
+    gap(state, root.root, side, null, 'conflict');
+    return { role: 'unknown' as const };
+  }
+  return {
+    role: 'direct' as const,
+    directRoles: sections.flatMap((section, i) =>
+      membership[section] === undefined ? [] : [roles[i]],
+    ),
+  };
+}
+function emitResolved(state: State, root: NpmRoot, from: NpmSide | null, to: NpmSide | null) {
+  const instance = to ?? from!;
+  state.changes.push({
+    id: changeId(state, 'resolved', from, to),
+    ecosystem: 'npm',
+    kind: from ? (to ? 'update' : 'removal') : 'addition',
+    from,
+    to,
+    ...classify(state, root, instance, to ? 'head' : 'base'),
+    evidence: research(),
+  });
+}
+function sameInstance(from: NpmSide | null, to: NpmSide | null) {
+  return from && to && isDeepStrictEqual({ ...from, sourceId: '' }, { ...to, sourceId: '' });
+}
 function resolved(state: State, root: NpmRoot) {
   if (root.base.state === 'unavailable' || root.head.state === 'unavailable') return;
   const keys = [
@@ -413,28 +529,19 @@ function resolved(state: State, root: NpmRoot) {
   for (const key of keys) {
     if (root.base.unresolvedPaths.includes(key) || root.head.unresolvedPaths.includes(key))
       continue;
-    const from = root.base.packages[key]?.instance ?? null,
-      to = root.head.packages[key]?.instance ?? null;
-    if (from && to && isDeepStrictEqual({ ...from, sourceId: '' }, { ...to, sourceId: '' }))
+    const before = root.base.packages[key],
+      after = root.head.packages[key];
+    const from = before?.instance ?? null,
+      to = after?.instance ?? null;
+    if (sameInstance(from, to)) {
+      if (!isDeepStrictEqual({ ...before, instance: null }, { ...after, instance: null }))
+        gap(state, root.root, null, null, 'unsupported');
       continue;
-    const instance = to ?? from!;
-    const manifest = (to ? root.head : root.base).declarations;
-    const membership = manifest?.[instance.name];
-    const direct = key === `node_modules/${instance.name}` && membership;
-    const c: ResolvedChange = {
-      id: changeId(state, 'resolved', from, to),
-      ecosystem: 'npm',
-      kind: from ? (to ? 'update' : 'removal') : 'addition',
-      from,
-      to,
-      role: direct ? 'direct' : manifest ? 'transitive' : 'unknown',
-      evidence: research(),
-    };
-    if (direct)
-      c.directRoles = sections.flatMap((section, i) =>
-        membership[section] === undefined ? [] : [roles[i]],
-      );
-    state.changes.push(c);
+    }
+    if (from && to && from.name !== to.name) {
+      emitResolved(state, root, from, null);
+      emitResolved(state, root, null, to);
+    } else if (from || to) emitResolved(state, root, from, to);
   }
 }
 function declared(state: State, root: NpmRoot) {
@@ -503,7 +610,7 @@ function freeze<T>(value: T): T {
   }
   return value;
 }
-function finish(state: State, complete: boolean, applicable: boolean): NpmInventoryResult {
+function assemble(state: State, complete: boolean, applicable: boolean, snapshots = true) {
   const reasons = [...new Set(state.gaps.map((g) => g.reason))].sort();
   const status: InventoryCoverage['status'] = reasons.length
     ? 'partial'
@@ -525,18 +632,32 @@ function finish(state: State, complete: boolean, applicable: boolean): NpmInvent
       absentEcosystems: status === 'not_applicable' ? ['npm'] : [],
     },
   };
+  const owned = { ...state, changes: structuredClone(state.changes) };
+  const sources = sourceMembers(owned);
   const result = {
     kind: 'inventory' as const,
     binding: state.input.binding,
-    changes: state.changes.sort((a, b) => (a.id < b.id ? -1 : 1)),
-    sources: [source, ...sourceMembers(state)],
-    roots: state.roots,
+    changes: owned.changes.sort((a, b) => (a.id < b.id ? -1 : 1)),
+    sources: [source, ...sources.filter((s) => snapshots || s.memberIds.length > 0)],
+    roots: snapshots ? state.roots : [],
     gaps: state.gaps,
     coverage: { status, reasons, sourceIds: ['npm:inventory'] },
   };
-  if (Buffer.byteLength(JSON.stringify(result)) > state.input.limits.maxRetainedBytes)
-    return { kind: 'unavailable', reason: 'budget' };
-  return freeze(result);
+  return result;
+}
+function finish(state: State, complete: boolean, applicable: boolean): NpmInventoryResult {
+  let result = assemble(state, complete, applicable);
+  const fits = () =>
+    Buffer.byteLength(JSON.stringify(result)) <= state.input.limits.maxRetainedBytes;
+  if (fits()) return freeze(result);
+  gap(state, '.', null, null, 'budget');
+  state.changes.sort((a, b) => (a.id < b.id ? -1 : 1));
+  result = assemble(state, false, applicable, false);
+  while (!fits() && state.changes.length) {
+    state.changes.pop();
+    result = assemble(state, false, applicable, false);
+  }
+  return fits() ? freeze(result) : { kind: 'unavailable', reason: 'budget' };
 }
 function candidateRoots(
   state: State,
