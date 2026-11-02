@@ -732,6 +732,54 @@ test.each(['empty', 'omission'] as const)(
     opened.session.close();
     expect(result.coverage.status).toBe('complete');
     expect(result.changes).toHaveLength(8);
+    const setup = 'voidzero-dev/setup-vp',
+      codeql = 'github/codeql-action/upload-sarif',
+      chromaui = 'chromaui/action';
+    const expectedLocations = [
+      ['build.yml', 0, setup, '1', '2'],
+      ['build.yml', 1, setup, '1', '2'],
+      ['quality.yml', 0, setup, '1', '2'],
+      ['quality.yml', 1, codeql, '3', '4'],
+      ['preview.yml', 0, setup, '1', '2'],
+      ['preview.yml', 1, chromaui, '5', '6'],
+      ['test.yml', 0, setup, '1', '2'],
+      ['security.yml', 0, codeql, '3', '4'],
+    ]
+      .map(([name, index, action, before, after]) => {
+        const path = `.github/workflows/${name}`;
+        return JSON.stringify([
+          path,
+          'review',
+          index,
+          action,
+          String(before).repeat(40),
+          path,
+          'review',
+          index,
+          action,
+          String(after).repeat(40),
+        ]);
+      })
+      .sort();
+    const actualLocations = result.changes
+      .map((c) => {
+        if (c.ecosystem !== 'actions' || !c.from || !c.to)
+          throw new Error('expected paired action');
+        return JSON.stringify([
+          c.from.workflow,
+          c.from.jobId,
+          c.from.stepIndex,
+          c.from.action,
+          c.from.ref,
+          c.to.workflow,
+          c.to.jobId,
+          c.to.stepIndex,
+          c.to.action,
+          c.to.ref,
+        ]);
+      })
+      .sort();
+    expect(actualLocations).toEqual(expectedLocations);
     expect(
       result.changes.every(
         (c) =>
