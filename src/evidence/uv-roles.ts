@@ -331,10 +331,35 @@ export function uvDeclarationChanges(
   for (const key of [...keys].sort(byCodeUnit)) {
     const a = removed.filter((x) => declarationKey(x, false) === key),
       b = added.filter((x) => declarationKey(x, false) === key);
-    const members =
+    let members =
       a.length === 1 && b.length === 1 && base.complete && head.complete
         ? corresponding(a[0], b[0], changes, root)
         : [];
+    if ((a.length === 1) !== (b.length === 1)) {
+      const declaration = a[0] ?? b[0],
+        side = a.length ? 'from' : 'to';
+      const complete =
+        (base.complete || root.base.state === 'absent') &&
+        (head.complete || root.head.state === 'absent');
+      if (complete)
+        members = changes.filter((c) => {
+          const instance = c[side];
+          if (c.role !== 'direct' || !instance || instance.root !== root.root) return false;
+          const represented =
+            c.kind === (side === 'from' ? 'removal' : 'addition') ||
+            (c.from && c.to && !isDeepStrictEqual(c.from.extras, c.to.extras));
+          return (
+            represented &&
+            declaration.targets.includes(
+              JSON.stringify([
+                instance.name,
+                instance.version,
+                { kind: 'registry', url: instance.source.identity },
+              ]),
+            )
+          );
+        });
+    }
     const explained = members.length === 1;
     observations.push({
       kind: 'declaration',
@@ -342,7 +367,11 @@ export function uvDeclarationChanges(
       side: null,
       path: root.head.manifest.path,
       entry: key,
-      reason: explained ? 'range_rewrite' : 'unrepresented_declaration',
+      reason: explained
+        ? a.length && b.length
+          ? 'range_rewrite'
+          : 'resolved_declaration'
+        : 'unrepresented_declaration',
       sourceIds: [root.base.manifest.sourceId, root.head.manifest.sourceId].filter(
         (id): id is string => !!id,
       ),

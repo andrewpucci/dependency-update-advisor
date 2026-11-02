@@ -65,6 +65,26 @@ test('ordinary transitive reachability terminates on a cycle and excludes direct
   expect(r.coverage.status).toBe('complete');
   expect(r.changes.find((c) => c.to?.name === 'child')?.role).toBe('transitive');
 });
+test('a core-to-extra membership shift is an equal-version update, not a vanished package', async () => {
+  const r = reconcileUvGraph(
+    await uvGraphFixture({
+      'base:pyproject.toml': extrasManifest(true),
+      'head:pyproject.toml': extrasManifest(false),
+      'base:uv.lock': extrasLock('1', true),
+      'head:uv.lock': extrasLock('1', false),
+    }),
+  );
+  expect(r.kind).toBe('inventory');
+  if (r.kind !== 'inventory') throw new Error('inventory');
+  expect(r.coverage.status).toBe('complete');
+  expect(r.changes).toHaveLength(2);
+  for (const c of r.changes)
+    expect(c).toMatchObject({
+      kind: 'update',
+      from: { version: '1', extras: [] },
+      to: { version: '1', extras: ['docs'] },
+    });
+});
 test('unresolved selectors leave extra membership incomplete rather than hiding an ordinary path', async () => {
   const r = reconcileUvGraph(
     await uvGraphFixture({

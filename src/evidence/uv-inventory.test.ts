@@ -1,0 +1,113 @@
+import { expect, test } from 'vite-plus/test';
+import { reconcileUvGraph } from './uv-graph.js';
+import { validateReviewPacket } from '../schema.js';
+import {
+  uvGraphFixture,
+  uvLock,
+  uvPackage,
+  uvPacket,
+  uvManifest,
+} from '../../tests/parity/uv-graph.js';
+
+test('unchanged variants are removed before uniquely pairing remaining exact families', async () => {
+  const r = reconcileUvGraph(
+    await uvGraphFixture({
+      'base:uv.lock': uvLock('1') + uvPackage('orbit', '9'),
+      'head:uv.lock': uvLock('2') + uvPackage('orbit', '9'),
+    }),
+  );
+  expect(r.kind).toBe('inventory');
+  if (r.kind !== 'inventory') throw new Error('inventory');
+  expect(r.changes).toHaveLength(1);
+  expect(r.changes[0]).toMatchObject({
+    kind: 'update',
+    from: { version: '1' },
+    to: { version: '2' },
+  });
+});
+test('ambiguous versions remain four exact unmatched records rather than invented pairs', async () => {
+  const r = reconcileUvGraph(
+    await uvGraphFixture({
+      'base:uv.lock': uvLock('1') + uvPackage('orbit', '3'),
+      'head:uv.lock': uvLock('2') + uvPackage('orbit', '4'),
+    }),
+  );
+  expect(r.kind).toBe('inventory');
+  if (r.kind !== 'inventory') throw new Error('inventory');
+  expect(r.changes.filter((c) => c.kind === 'removal')).toHaveLength(2);
+  expect(r.changes.filter((c) => c.kind === 'addition')).toHaveLength(2);
+  expect(r.observations.some((o) => o.reason === 'ambiguous_pairing')).toBe(true);
+});
+test('same-version source changes remain separate attributable sides', async () => {
+  const r = reconcileUvGraph(
+    await uvGraphFixture({
+      'head:uv.lock': uvLock('1').replace(
+        'https://pypi.org/simple',
+        'https://index.example.test/simple',
+      ),
+    }),
+  );
+  expect(r.kind).toBe('inventory');
+  if (r.kind !== 'inventory') throw new Error('inventory');
+  expect(r.changes.map((c) => c.kind).sort()).toEqual(['addition', 'removal']);
+  expect(r.coverage.status).toBe('complete');
+});
+test('a marker-context transition is not collapsed into a same-name migration', async () => {
+  const r = reconcileUvGraph(
+    await uvGraphFixture({
+      'base:uv.lock': uvLock('1', `resolution-markers=["python_version < '3.13'"]\n`),
+      'head:uv.lock': uvLock('1', `resolution-markers=["python_version >= '3.13'"]\n`),
+    }),
+  );
+  expect(r.kind).toBe('inventory');
+  if (r.kind !== 'inventory') throw new Error('inventory');
+  expect(r.changes.map((c) => c.kind).sort()).toEqual(['addition', 'removal']);
+  expect(
+    r.changes
+      .flatMap((c) => [c.from?.marker, c.to?.marker])
+      .filter(Boolean)
+      .sort(),
+  ).toEqual([
+    JSON.stringify(["python_version < '3.13'"]),
+    JSON.stringify(["python_version >= '3.13'"]),
+  ]);
+});
+test.each(['base', 'head'] as const)(
+  'a proven absent %s root permits exact one-sided changes',
+  async (side) => {
+    const r = reconcileUvGraph(
+      await uvGraphFixture({ [`${side}:pyproject.toml`]: null, [`${side}:uv.lock`]: null }),
+    );
+    expect(r.kind).toBe('inventory');
+    if (r.kind !== 'inventory') throw new Error('inventory');
+    expect(r.changes).toHaveLength(1);
+    expect(r.changes[0].kind).toBe(side === 'base' ? 'addition' : 'removal');
+    expect(r.coverage.status).toBe('complete');
+    const { packet, expected } = uvPacket(r);
+    expect(validateReviewPacket(packet, expected).ok).toBe(true);
+  },
+);
+test('missing opposing lock data preserves known observations without fabricated removals', async () => {
+  const r = reconcileUvGraph(await uvGraphFixture({ 'head:uv.lock': null }));
+  expect(r.kind).toBe('inventory');
+  if (r.kind !== 'inventory') throw new Error('inventory');
+  expect(r.changes).toEqual([]);
+  expect(r.coverage.status).toBe('partial');
+  expect(r.observations.some((o) => o.kind === 'package' && o.side === 'base')).toBe(true);
+});
+test('an edge-only rewrite and a new declared empty extra cannot become complete zero changes', async () => {
+  const r = reconcileUvGraph(
+    await uvGraphFixture({ 'head:uv.lock': uvLock('1', 'dependencies=[{name="unknown"}]\n') }),
+  );
+  expect(r).toMatchObject({ kind: 'inventory', coverage: { status: 'partial' } });
+  const extra = reconcileUvGraph(
+    await uvGraphFixture({
+      'head:pyproject.toml': uvManifest + '[project.optional-dependencies]\nempty=[]\n',
+      'head:uv.lock': uvLock('1').replace(
+        '[package.metadata]',
+        '[package.metadata]\nprovides-extras=["empty"]',
+      ),
+    }),
+  );
+  expect(extra).toMatchObject({ kind: 'inventory', changes: [], coverage: { status: 'partial' } });
+});
