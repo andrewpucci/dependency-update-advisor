@@ -301,33 +301,60 @@ function proofFor(
     path: path.map((step) => ({ ...step, sourceId: start.sourceId })),
   };
 }
-function knownSharing(inventory: Inventory, proof: NpmProof, spend: () => void) {
-  const end = proof.path.at(-1)!;
-  const snapshot = inventory.roots.find((r) => r.root === end.root)![proof.side];
+/** Instances reachable from unchanged direct slots of one root/side, computed once per attempt. */
+function unchangedReach(
+  inventory: Inventory,
+  root: string,
+  side: 'base' | 'head',
+  spend: () => void,
+) {
+  const snapshot = inventory.roots.find((r) => r.root === root)![side];
   const changedSlots = new Set(
-    inventory.changes.filter(resolved).flatMap((c) => [c.from?.lockPath, c.to?.lockPath]),
+    inventory.changes
+      .filter(resolved)
+      .map((c) => (side === 'head' ? c.to : c.from))
+      .filter((s) => s?.root === root)
+      .map((s) => s!.lockPath),
   );
+  const queue: NpmSide[] = [];
   for (const key of Object.keys(snapshot.declarations ?? {}).sort()) {
     spend();
     const slot = 'node_modules/' + key;
-    if (changedSlots.has(slot)) continue;
-    const start = own(snapshot.packages, slot)?.instance;
-    if (start && start.lockPath !== end.lockPath && pathTo(snapshot, start, end, spend))
-      return true;
+    const start = changedSlots.has(slot) ? undefined : own(snapshot.packages, slot)?.instance;
+    if (start) queue.push(start);
   }
-  return false;
+  const seen = new Set(queue.map((s) => s.lockPath));
+  for (let i = 0; i < queue.length; i++) {
+    spend();
+    const node = own(snapshot.packages, queue[i].lockPath);
+    if (!node) continue;
+    for (const target of edges(snapshot, node, spend)) {
+      if (!seen.has(target.lockPath)) {
+        seen.add(target.lockPath);
+        queue.push(target);
+      }
+    }
+  }
+  return seen;
 }
 function collectProofs(inventory: Inventory, spend: () => void) {
   const relationships: NpmProof[] = [],
-    findings: Finding[] = [];
-  for (const member of [...inventory.changes].sort((a, b) => (a.id < b.id ? -1 : 1))) {
+    findings: Finding[] = [],
+    reach = new Map<string, Set<string>>();
+  const shared = (proof: NpmProof) => {
+    const end = proof.path.at(-1)!,
+      key = JSON.stringify([end.root, proof.side]);
+    if (!reach.has(key)) reach.set(key, unchangedReach(inventory, end.root, proof.side, spend));
+    return reach.get(key)!.has(end.lockPath);
+  };
+  for (const member of [...inventory.changes].sort(byId)) {
     if (!resolved(member) || member.role === 'direct') continue;
     try {
       const result = proofFor(inventory, member, spend);
       if (typeof result === 'string') findings.push(note(member, result));
       else {
         relationships.push(result);
-        if (knownSharing(inventory, result, spend)) findings.push(note(member, 'shared'));
+        if (shared(result)) findings.push(note(member, 'shared'));
       }
     } catch (error) {
       if (!(error instanceof GraphFailure)) throw error;
@@ -338,10 +365,21 @@ function collectProofs(inventory: Inventory, spend: () => void) {
 }
 function graphResult({ inventory, limits, spend }: ReturnType<typeof parse>): NpmGraphResult {
   if (inventory.kind !== 'inventory') return freeze(structuredClone(inventory));
-  const result = { ...inventory, ...collectProofs(inventory, spend) };
+  const { relationships, findings } = collectProofs(inventory, spend);
+  const result = {
+    ...inventory,
+    changes: [...inventory.changes].sort(byId),
+    roots: [...inventory.roots].sort((a, b) => (a.root < b.root ? -1 : 1)),
+    sources: [...inventory.sources].sort(byId),
+    relationships,
+    findings: findings.sort(byId),
+  };
   if (Buffer.byteLength(JSON.stringify(result)) > limits.maxRetainedBytes)
     throw new GraphFailure('budget');
   return freeze(structuredClone(result));
+}
+function byId(a: { id: string }, b: { id: string }) {
+  return a.id < b.id ? -1 : 1;
 }
 function failure(error: unknown): NpmGraphResult {
   return error instanceof GraphFailure
@@ -417,7 +455,7 @@ export async function enrichNpmEvidence(
     const changes: PacketChange[] = [],
       sources = [...graph.sources],
       findings = [...graph.findings];
-    for (const change of [...graph.changes].sort((a, b) => (a.id < b.id ? -1 : 1))) {
+    for (const change of graph.changes) {
       if (!resolved(change)) {
         changes.push(change);
         continue;
@@ -431,9 +469,8 @@ export async function enrichNpmEvidence(
     const result = {
       ...graph,
       changes,
-      roots: [...graph.roots].sort((a, b) => (a.root < b.root ? -1 : 1)),
-      sources: sources.sort((a, b) => (a.id < b.id ? -1 : 1)),
-      findings: findings.sort((a, b) => (a.id < b.id ? -1 : 1)),
+      sources: sources.sort(byId),
+      findings: findings.sort(byId),
     };
     need(
       new Set(sources.map((s) => s.id)).size === sources.length &&
