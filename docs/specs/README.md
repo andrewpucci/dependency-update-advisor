@@ -142,12 +142,14 @@ gaps and an introduced vulnerability before parity is claimed.
   [Verification #149](https://github.com/andrewpucci/dependency-update-advisor/issues/149)
   records resolved complexity findings and downstream integration/cutover gates.
 - [uv evidence](SPEC-uv-evidence.md) — approved for planning.
-- [Tested uv metadata](SPEC-uv-metadata.md) — approved for implementation for
-  U1 #17 in `uv-evidence` by the user's plan approval and `as-build auto`,
-  2026-11-01.
-  Covers schema 1 revisions 3 and 5, bounded parsing, and the U2 snapshot
-  handoff. Sub-issues #152–#159 implement the approved plan in one PR;
-  exact `smol-toml@1.9.1` is approved. Graph reconciliation remains U2 #18.
+- [Tested uv metadata](SPEC-uv-metadata.md) — U1 #17 and #152–#159
+  implemented on `issue-17`, pending review and merge. The user approved the
+  revised spec/plan and authorized `as-build auto` in one PR on 2026-11-01.
+  Supports schema 1 revisions 3 and 5 with exact `smol-toml@1.9.1`, bounded
+  immutable snapshots, and independent comparison availability.
+  [Verification #159](https://github.com/andrewpucci/dependency-update-advisor/issues/159)
+  keeps U2 #18 reconciliation, mixed T4/T5 integration, research, live transport,
+  workflow/publication, adoption, and cutover separate.
 - [Repository adoption](SPEC-repo-adoption.md) — approved for planning.
 - [Comment experience](SPEC-comment-experience.md) — approved supporting contract.
 - [Parity and cutover](SPEC-parity-cutover.md) — approved for planning.
