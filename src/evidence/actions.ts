@@ -150,18 +150,8 @@ async function readSideResult(
   side: 'base' | 'head',
   path: string,
 ): Promise<ActionsSnapshot> {
-  const repository = side === 'base' ? state.binding.repository : state.binding.headRepository;
-  const commitSha = side === 'base' ? state.binding.baseSha : state.binding.headSha;
-  const snapshot: ActionsSnapshot = {
-    state: 'unavailable',
-    side,
-    path,
-    repository,
-    commitSha,
-    blobSha: null,
-    sourceId: null,
-    jobs: [],
-  };
+  const snapshot: ActionsSnapshot = { ...absent(state, side, path), state: 'unavailable' };
+  const { repository, commitSha } = snapshot;
   const result = await state.session.readFile({ side, path });
   if (
     result.kind === 'invalid' ||
@@ -295,11 +285,10 @@ async function collectFile(state: State, file: GithubFileChange) {
   diff(state, base, head);
 }
 function occurrences(snapshot: ActionsSnapshot) {
-  const entries: { key: string; side: ActionsSide }[] = [];
+  const entries: { side: ActionsSide }[] = [];
   const add = (jobId: string, stepIndex: number | null, use: WorkflowUse | null) => {
     if (use?.kind !== 'external' || !snapshot.sourceId) return;
     entries.push({
-      key: JSON.stringify([jobId, stepIndex]),
       side: {
         workflow: snapshot.path,
         jobId,
@@ -340,7 +329,7 @@ function emit(state: State, from: ActionsSide | null, to: ActionsSide | null) {
 }
 function signature(use: WorkflowUse | null) {
   if (use?.kind === 'external') return use.action;
-  if (use?.kind === 'local') return `./${use.path}`;
+  if (use?.kind === 'local') return use.path;
   return use?.kind ?? null;
 }
 function uniqueIds(steps: WorkflowStep[]) {
@@ -386,17 +375,24 @@ function emitPair(state: State, from: ActionsSide | null, to: ActionsSide | null
     if (to) emit(state, null, to);
   }
 }
-function diffJob(state: State, base: ActionsSnapshot, head: ActionsSnapshot, jobId: string) {
-  const before = new Map(
-    occurrences(base)
-      .filter((o) => o.side.jobId === jobId)
-      .map((o) => [o.side.stepIndex, o.side]),
-  );
-  const after = new Map(
-    occurrences(head)
-      .filter((o) => o.side.jobId === jobId)
-      .map((o) => [o.side.stepIndex, o.side]),
-  );
+type JobOccurrences = Map<string, Map<number | null, ActionsSide>>;
+function byJob(snapshot: ActionsSnapshot): JobOccurrences {
+  const jobs: JobOccurrences = new Map();
+  for (const { side } of occurrences(snapshot)) {
+    const job = jobs.get(side.jobId) ?? new Map<number | null, ActionsSide>();
+    jobs.set(side.jobId, job.set(side.stepIndex, side));
+  }
+  return jobs;
+}
+function diffJob(
+  state: State,
+  base: ActionsSnapshot,
+  head: ActionsSnapshot,
+  jobId: string,
+  occurrence: { base: JobOccurrences; head: JobOccurrences },
+) {
+  const before = new Map(occurrence.base.get(jobId));
+  const after = new Map(occurrence.head.get(jobId));
   if (!uncertain(state, base, jobId, null) && !uncertain(state, head, jobId, null)) {
     emitPair(state, before.get(null) ?? null, after.get(null) ?? null);
   }
@@ -420,7 +416,8 @@ function diffJob(state: State, base: ActionsSnapshot, head: ActionsSnapshot, job
 function diff(state: State, base: ActionsSnapshot, head: ActionsSnapshot) {
   if (base.state === 'unavailable' || head.state === 'unavailable') return;
   const jobs = new Set([...base.jobs, ...head.jobs].map((j) => j.jobId));
-  for (const jobId of jobs) diffJob(state, base, head, jobId);
+  const occurrence = { base: byJob(base), head: byJob(head) };
+  for (const jobId of jobs) diffJob(state, base, head, jobId, occurrence);
 }
 
 function comparisonIdentity(state: State, result: GithubComparison) {
@@ -543,10 +540,6 @@ async function reconcileComparison(state: State) {
       provenance: { kind: 'unavailable' },
     });
   }
-  state.comparison.sourceIds = state.sources
-    .filter((s) => s.kind === 'comparison')
-    .map((s) => s.id)
-    .sort();
   state.comparison.discrepancies.sort((a, b) => byCodeUnit(JSON.stringify(a), JSON.stringify(b)));
 }
 function retargetFileSource(changes: PacketChange[], from: string, to: string) {
