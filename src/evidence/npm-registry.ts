@@ -308,6 +308,11 @@ class RegistryReader {
       if (response?.body && !response.body.locked) void response.body.cancel().catch(() => {});
     }
   }
+  private cacheFailure(key: string, error: unknown): void {
+    // Re-fetching a failed identity would be an implicit retry; attempt-wide stops recur anyway.
+    if (!this.stopped)
+      this.cache.set(key, error instanceof RegistryFailure ? error.reason : 'unknown');
+  }
   async read(value: unknown): Promise<NpmMetadataResult> {
     if (this.busy) return { kind: 'unavailable', reason: 'conflict' };
     this.busy = true;
@@ -325,9 +330,7 @@ class RegistryReader {
         try {
           document = await this.fetchDocument(r);
         } catch (error) {
-          // Re-fetching a failed identity would be an implicit retry; attempt-wide stops recur anyway.
-          if (!this.stopped)
-            this.cache.set(key, error instanceof RegistryFailure ? error.reason : 'unknown');
+          this.cacheFailure(key, error);
           throw error;
         }
         this.cache.set(key, document);
