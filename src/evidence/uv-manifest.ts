@@ -208,13 +208,18 @@ function declarations(
   need(Array.isArray(raw));
   const out: UvDeclaration[] = [];
   for (let position = 0; position < raw.length; position++) {
+    const entry = `${list}:${position}`;
+    // Only the cumulative counter ends the list; per-requirement limits skip one entry.
     try {
       debit(budget, 'declarations', limits.maxDeclarations);
+    } catch (error) {
+      gaps.push({ entry, reason: reason(error) });
+      break;
+    }
+    try {
       out.push({ ...parseRequirement(raw[position], limits), list, position });
     } catch (error) {
-      const why = reason(error);
-      gaps.push({ entry: `${list}:${position}`, reason: why });
-      if (why === 'budget') break;
+      gaps.push({ entry, reason: reason(error) });
     }
   }
   return out;
@@ -290,6 +295,12 @@ function readManifestField(
           : 'present';
   value.fields[key] = state;
   if (project[field] === undefined) return;
+  // PyPA forbids listing a field in `dynamic` while also giving it statically.
+  if (state === 'dynamic') {
+    value.fields[key] = 'invalid';
+    gaps.push({ entry: field, reason: 'conflict' });
+    return;
+  }
   try {
     if (key === 'dependencies') value.dependencies = read(project[field], field);
     else value.optionalDependencies = optionalTable(project[field], gaps, read);
