@@ -129,10 +129,10 @@ gaps and an introduced vulnerability before parity is claimed.
   [verification #131](https://github.com/andrewpucci/dependency-update-advisor/issues/131)
   retains separate N2, research, workflow, assessment/rendering, and cutover gates.
 - [Proven npm relationships and lifecycle evidence](SPEC-npm-relationships.md) —
-  approved for execution for N2 #15 by the user's `as-build auto` invocation.
-  Preserves T5 single-anchor grouping; broader reachability remains #93.
-  [Tasks #133–#140](https://github.com/andrewpucci/dependency-update-advisor/issues/15)
-  are approved for autonomous execution in one PR; merge remains separate.
+  implemented for N2 #15 and #133–#139 on `issue-15`, pending review and merge.
+  Preserves T5 single-anchor grouping and exact per-member lifecycle evidence;
+  broader reachability remains #93. [Verification #140](https://github.com/andrewpucci/dependency-update-advisor/issues/140)
+  retains downstream research, workflow, publication, adoption, and cutover gates.
 - [GitHub Actions evidence](SPEC-actions-evidence.md) — approved for planning.
 - [uv evidence](SPEC-uv-evidence.md) — approved for planning.
 - [Repository adoption](SPEC-repo-adoption.md) — approved for planning.

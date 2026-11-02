@@ -1,8 +1,8 @@
 # Spec: N2 Proven npm Relationships and Lifecycle Evidence
 
-Status: approved for execution, 2026-11-01. Supporting contract for
-`npm-evidence` in
-[the capability map](README.md), scoped to
+Status: implemented on `issue-15`, pending review and merge.
+Supporting contract for `npm-evidence` in [the capability map](README.md),
+scoped to
 [issue #15: N2](https://github.com/andrewpucci/dependency-update-advisor/issues/15).
 This supplements [npm evidence](SPEC-npm-evidence.md), consumes
 [N1 inventory](SPEC-npm-inventory.md), and preserves the existing
@@ -346,6 +346,10 @@ for a different instance can erase them. Existing N1, T4, T5, and C3 checks
 must continue to pass. No new numeric quality threshold is proposed.
 
 ## Implemented N2 Handoff
+
+N2.1–N2.7 are implemented; [verification #140](https://github.com/andrewpucci/dependency-update-advisor/issues/140)
+records exact-revision checks, review evidence, and remaining gates. This
+is an isolated collector handoff, not a runnable shared workflow or cutover.
 
 `src/evidence/npm-graph.ts` exports `proveNpmRelationships(input)` for pure
 relationship collection and `enrichNpmEvidence(input, dependencies)` as the
