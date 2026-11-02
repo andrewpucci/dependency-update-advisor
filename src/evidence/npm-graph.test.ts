@@ -639,6 +639,59 @@ test('independent nested roots can never produce a cross-root proof', async () =
   expect(units.units).toHaveLength(2);
 });
 
+async function sharedNestedRoots() {
+  const unchanged = { 'node_modules/anchor': pkg('1.0.0', { dependencies: { child: '^1' } }) };
+  const nested = await graphFixture(
+    { ...unchanged, 'node_modules/a2': pkg('1.1.0', { dependencies: { child: '^1' } }) },
+    { ...unchanged, 'node_modules/a2': pkg('1.0.0', { dependencies: { child: '^1' } }) },
+    { anchor: '^1', a2: '^1' },
+    { anchor: '^1', a2: '^1' },
+    'nested',
+  );
+  const first = await graphFixture();
+  const inventory = {
+    ...first.inventory,
+    changes: [...first.inventory.changes, ...nested.inventory.changes],
+    roots: [...first.inventory.roots, ...nested.inventory.roots],
+    sources: [
+      ...first.inventory.sources,
+      ...nested.inventory.sources.filter((s) => s.id !== 'npm:inventory'),
+    ],
+  };
+  return { input: { ...first, inventory }, nested };
+}
+
+test('a changed slot in another root never hides unchanged-direct sharing', async () => {
+  const { input, nested } = await sharedNestedRoots();
+  const graph = proveNpmRelationships(input);
+  expect(graph.kind).toBe('inventory');
+  if (graph.kind !== 'inventory') throw new Error('expected graph');
+  const child = nested.inventory.changes.find((c) => c.role === 'transitive')!;
+  expect(graph.relationships).toHaveLength(2);
+  expect(graph.findings).toEqual([
+    expect.objectContaining({
+      memberId: child.id,
+      detail: expect.stringContaining('unchanged direct'),
+    }),
+  ]);
+});
+
+test('relationship output survives root, source, and change order changes', async () => {
+  const { input } = await sharedNestedRoots();
+  const reversed = {
+    ...input,
+    inventory: {
+      ...input.inventory,
+      changes: [...input.inventory.changes].reverse(),
+      sources: [...input.inventory.sources].reverse(),
+      roots: [...input.inventory.roots].reverse(),
+    },
+  };
+  const first = proveNpmRelationships(input);
+  expect(first.kind).toBe('inventory');
+  expect(proveNpmRelationships(reversed)).toEqual(first);
+});
+
 test('handoff identities and attempted requests survive input order changes and later input mutation', async () => {
   const input = await graphFixture();
   const reversed = {

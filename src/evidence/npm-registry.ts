@@ -165,7 +165,7 @@ function statusReason(status: number): EvidenceReason {
   return 'unknown';
 }
 class RegistryReader {
-  private readonly cache = new Map<string, NpmMetadataDocument>();
+  private readonly cache = new Map<string, NpmMetadataDocument | EvidenceReason>();
   private requests = 0;
   private bytes = 0;
   private entries = 0;
@@ -246,10 +246,8 @@ class RegistryReader {
         if (chunk.done) return Buffer.concat(chunks, size);
         size += chunk.value.byteLength;
         this.consume(chunk.value.byteLength, 'bytes', this.limits.maxTotalBytes);
-        if (size > this.limits.maxResponseBytes) {
-          this.stopped = 'budget';
-          throw new RegistryFailure('budget');
-        }
+        // A per-response cap fails only this read; cumulative budgets stop the attempt.
+        requireMetadata(size <= this.limits.maxResponseBytes, 'budget');
         this.remaining();
         chunks.push(chunk.value);
       }
@@ -293,6 +291,8 @@ class RegistryReader {
         !response.redirected && (!response.url || response.url === url),
         'unsupported',
       );
+      // A throttling registry will refuse later reads too; stop rather than spend requests.
+      if (response.status === 429) this.stopped = 'rate_limit';
       requireMetadata(response.status === 200, statusReason(response.status));
       requireMetadata(
         /^application\/json(?:\s*;|$)/iu.test(response.headers.get('content-type') ?? ''),
@@ -322,9 +322,17 @@ class RegistryReader {
           throw new RegistryFailure('budget');
         }
         this.requests++;
-        document = await this.fetchDocument(r);
+        try {
+          document = await this.fetchDocument(r);
+        } catch (error) {
+          // Re-fetching a failed identity would be an implicit retry; attempt-wide stops recur anyway.
+          if (!this.stopped)
+            this.cache.set(key, error instanceof RegistryFailure ? error.reason : 'unknown');
+          throw error;
+        }
         this.cache.set(key, document);
       }
+      if (typeof document === 'string') throw new RegistryFailure(document);
       return freeze(bind(document, r));
     } catch (error) {
       return {

@@ -221,6 +221,55 @@ test('total deadlines and byte exhaustion stop later requests', async () => {
   expect(f.calls).toHaveLength(2);
 });
 
+function routed(respond: (url: string) => Response, overrides = {}) {
+  const urls: string[] = [];
+  const created = createNpmRegistryReader(
+    { ...limits, ...overrides },
+    {
+      now: () => 0,
+      fetch: async (url) => {
+        urls.push(url);
+        return respond(url);
+      },
+    },
+  );
+  if (created.kind !== 'ready') throw new Error('expected reader');
+  return { ...created, urls };
+}
+function json(value: unknown) {
+  return new Response(JSON.stringify(value), { headers: { 'content-type': 'application/json' } });
+}
+
+test('an oversized response fails only its own read', async () => {
+  const small = document({ _id: '@fixture/widget@1.2.4', version: '1.2.4' });
+  const f = routed(
+    (url) => (url.endsWith('/1.2.3') ? json(document({ padding: 'x'.repeat(1000) })) : json(small)),
+    { maxResponseBytes: Buffer.byteLength(JSON.stringify(small)) + 1 },
+  );
+  expect(await f.read(request)).toMatchObject({ kind: 'unavailable', reason: 'budget' });
+  expect((await f.read({ ...request, version: '1.2.4' })).kind).toBe('metadata');
+  expect(f.urls).toHaveLength(2);
+});
+
+test('a failed identity is reused within the attempt instead of fetched again', async () => {
+  const f = routed(() => new Response('', { status: 404 }));
+  expect(await f.read(request)).toMatchObject({ kind: 'unavailable', reason: 'missing' });
+  expect(await f.read(request)).toMatchObject({ kind: 'unavailable', reason: 'missing' });
+  expect(f.urls).toHaveLength(1);
+  expect(await f.read({ ...request, version: '1.2.4' })).toMatchObject({ reason: 'missing' });
+  expect(f.urls).toHaveLength(2);
+});
+
+test('a rate-limited response stops subsequent reads', async () => {
+  const f = routed(() => new Response('', { status: 429 }));
+  for (const version of ['1.2.3', '1.2.4', '1.2.5'])
+    expect(await f.read({ ...request, version })).toMatchObject({
+      kind: 'unavailable',
+      reason: 'rate_limit',
+    });
+  expect(f.urls).toHaveLength(1);
+});
+
 test('rejects hostile descriptors without invoking them', async () => {
   let invoked = false;
   const value = {
