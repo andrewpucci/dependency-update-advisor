@@ -367,3 +367,37 @@ JS
 
 These assertions describe observed defects. Shared-reviewer acceptance must
 assert the required corrected behavior, not copy these expected gaps.
+
+## U1 Synthetic uv Metadata and Comparison Failures
+
+[The uv fixture](uv-metadata.ts) invents a static manifest, four optional
+extras, marker-split declarations, conditional and source/version-qualified
+edges, two locked versions of the same normalized name, and an editable
+project anchor. Its base is schema 1 revision 3; its head is schema 1
+revision 5. The head records an empty extra table that the base omits.
+All names, versions, repositories, commits, trees, and HTTP responses are
+synthetic. The fixture preserves observed format structures; it copies no
+private consumer metadata and is not a historical PR or API replay.
+
+[`uv.integration.test.ts`](../../src/evidence/uv.integration.test.ts) drives
+actual `createGithubReadSession` and `collectUvMetadata` exports over mocked
+GitHub HTTP routes. Empty and uv-omitting comparisons, permission and ambiguous
+403s, rate-limit 403/429s, and partial comparisons retain identical file-derived
+snapshots and source membership. Comparison reasons stay separate. Missing,
+malformed, and unsupported head companions preserve the supported base and head
+manifest. A discovery permission failure still permits trusted-root reads,
+while discovery remains explicitly incomplete.
+
+U2 must consume manifest list positions, all locked variants and qualified
+selectors, missing-versus-empty metadata, and every root/side/file/entry gap,
+including failures with zero retained packages. The combination of enclosing
+snapshot identity and package key identifies an immutable package occurrence.
+These U1 fixtures produce no changes, direct/transitive classifications,
+relationship proofs, or final T4 inventory coverage. A header revision or an
+empty extra's serialization change alone is not a package or extra change.
+
+Separate gates remain U2 reconciliation and PR-body corroboration, mixed
+T4/T5 packet integration, security/upstream research, live transport and
+numeric budgets, assessment/rendering, workflow/publication, adoption, and
+cutover. These tests certify neither a live consumer run nor zero changes or
+zero vulnerabilities. Keep the old reviewer active.
