@@ -331,3 +331,114 @@ test('reordered discovery and job maps preserve IDs, counts and provenance', asy
     'jobs: { z: { uses: example/repo/.github/workflows/a.yml@v2 }, a: { uses: example/repo/.github/workflows/a.yml@v2 } }';
   expect(await collectActionsInventory(f.input, { session: f.session })).toEqual(first);
 });
+
+function comparisonRow(
+  version: string,
+  change_type = 'added',
+  manifest = workflow,
+  name = 'example/action',
+) {
+  return { ecosystem: 'actions', manifest, name, version, change_type };
+}
+test('comparison corroborates repeated exact occurrences only within its workflow', async () => {
+  const f = fixture(),
+    other = '.github/workflows/other.yml';
+  f.discovery.files = [
+    ...f.discovery.files,
+    { path: other, previousPath: null, status: 'modified', blobSha: null },
+  ];
+  for (const path of [workflow, other]) {
+    f.files[`base:${path}`] =
+      'jobs: { build: { steps: [{ uses: example/action@v1 }, { uses: example/action@v1 }] } }';
+    f.files[`head:${path}`] =
+      'jobs: { build: { steps: [{ uses: example/action@v2 }, { uses: example/action@v2 }] } }';
+  }
+  f.comparison.records = [comparisonRow('2')];
+  const result = inventory(await collectActionsInventory(f.input, { session: f.session }));
+  expect(result.coverage.status).toBe('complete');
+  expect(result.changes).toHaveLength(4);
+  const sources = result.sources.filter((s) => s.kind === 'comparison' && s.status === 'available');
+  expect(sources).toHaveLength(1);
+  expect(sources[0].memberIds).toHaveLength(2);
+  expect(
+    sources[0].memberIds.every((id) =>
+      result.changes.some(
+        (c) => c.id === id && c.to && 'workflow' in c.to && c.to.workflow === workflow,
+      ),
+    ),
+  ).toBe(true);
+  expect(result.changes.every((c) => c.to && 'ref' in c.to && c.to.ref === 'v2')).toBe(true);
+});
+test('comparison version mismatch is visible without lowering proven inventory coverage', async () => {
+  const f = fixture();
+  f.comparison.records = [comparisonRow('999')];
+  const result = inventory(await collectActionsInventory(f.input, { session: f.session }));
+  expect(result.coverage.status).toBe('complete');
+  expect(result.comparison.discrepancies).toEqual([
+    { path: workflow, side: 'head', action: 'example/action', reason: 'conflict' },
+  ]);
+  expect(result.changes).toHaveLength(1);
+});
+test('an unmatched workflow/action/side is a conflict gap without a fabricated change', async () => {
+  const f = fixture();
+  f.comparison.records = [comparisonRow('2', 'added', workflow, 'example/missing')];
+  const result = inventory(await collectActionsInventory(f.input, { session: f.session }));
+  expect(result.coverage).toMatchObject({ status: 'partial', reasons: ['conflict'] });
+  expect(result.changes).toHaveLength(1);
+});
+test.each(['permission', 'rate_limit', 'unknown'] as const)(
+  'comparison %s remains independent from complete zero-change workflow inventory',
+  async (reason) => {
+    const f = fixture();
+    f.files[`base:${workflow}`] = 'jobs: { build: { steps: [{ run: echo before }] } }';
+    f.files[`head:${workflow}`] = 'jobs: { build: { steps: [{ run: echo after }] } }';
+    f.comparison.kind = 'unavailable';
+    f.comparison.reasons = [reason];
+    const result = inventory(await collectActionsInventory(f.input, { session: f.session }));
+    expect(result.coverage.status).toBe('complete');
+    expect(result.changes).toHaveLength(0);
+    expect(result.comparison).toMatchObject({ status: 'unavailable', reasons: [reason] });
+    expect(
+      result.sources.some(
+        (s) => s.kind === 'comparison' && s.status === 'unavailable' && s.reasons.includes(reason),
+      ),
+    ).toBe(true);
+  },
+);
+test('comparison uses exact bound identities and full-SHA case corroboration', async () => {
+  const f = fixture();
+  f.files[`head:${workflow}`] = yaml('A'.repeat(40));
+  f.comparison.records = [comparisonRow('a'.repeat(40))];
+  const result = inventory(await collectActionsInventory(f.input, { session: f.session }));
+  expect(result.comparison.sourceIds).toHaveLength(1);
+  expect(result.workflows.find((w) => w.side === 'head')?.jobs[0].steps?.[0].use).toMatchObject({
+    ref: 'A'.repeat(40),
+  });
+  f.comparison.headSha = 'f'.repeat(40);
+  const wrong = inventory(await collectActionsInventory(f.input, { session: f.session }));
+  expect(wrong.coverage.status).toBe('complete');
+  expect(wrong.comparison).toMatchObject({ status: 'unavailable', reasons: ['conflict'] });
+});
+test('reordered comparison records preserve independent evidence and malformed rows remain safe', async () => {
+  const f = fixture();
+  f.comparison.records = [
+    comparisonRow('1', 'removed'),
+    comparisonRow('2'),
+    { ecosystem: 'npm', manifest: 'package-lock.json' },
+  ];
+  const before = await collectActionsInventory(f.input, { session: f.session });
+  f.comparison.records = [...f.comparison.records].reverse();
+  expect(await collectActionsInventory(f.input, { session: f.session })).toEqual(before);
+  f.comparison.records = [
+    {
+      ecosystem: 'actions',
+      manifest: workflow,
+      name: 'example/action',
+      version: { secret: 'hidden' },
+      change_type: 'added',
+    },
+  ];
+  const bad = inventory(await collectActionsInventory(f.input, { session: f.session }));
+  expect(bad.comparison.reasons).toContain('malformed');
+  expect(JSON.stringify(bad)).not.toContain('hidden');
+});

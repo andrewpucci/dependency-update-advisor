@@ -1,7 +1,7 @@
 import { createHash } from 'node:crypto';
 import { isDeepStrictEqual, types } from 'node:util';
 import { parseReviewBinding, type ReviewBinding, type RepositoryIdentity } from '../event.js';
-import type { GithubFileChange, GithubReadSession } from '../github-read.js';
+import type { GithubComparison, GithubFileChange, GithubReadSession } from '../github-read.js';
 import type {
   ActionsSide,
   EvidenceReason,
@@ -395,6 +395,129 @@ function diff(state: State, base: ActionsSnapshot, head: ActionsSnapshot) {
   for (const jobId of jobs) diffJob(state, base, head, jobId);
 }
 
+function comparisonIdentity(state: State, result: GithubComparison) {
+  const b = state.binding;
+  need(
+    result.baseSha === b.baseSha &&
+      result.headSha === b.headSha &&
+      result.mergeBaseSha === b.mergeBaseSha &&
+      isDeepStrictEqual(result.repository, b.repository) &&
+      isDeepStrictEqual(result.headRepository, b.headRepository),
+    'conflict',
+  );
+}
+function versionMatches(ref: string, version: string) {
+  return (
+    ref === version ||
+    (ref.startsWith('v') && ref.slice(1) === version) ||
+    (sha(ref) && sha(version) && ref.toLowerCase() === version.toLowerCase())
+  );
+}
+function comparisonSource(
+  state: State,
+  path: string,
+  action: string,
+  side: 'base' | 'head',
+  refs: Set<string>,
+) {
+  const field = side === 'base' ? 'from' : 'to';
+  const members = state.changes.filter(
+    (c) =>
+      c.ecosystem === 'actions' &&
+      c[field]?.workflow === path &&
+      c[field]?.action === action &&
+      refs.has(c[field]!.ref),
+  );
+  if (!members.length) return;
+  const memberIds = members.map((c) => c.id).sort();
+  const id = identity(state, 'comparison', [path, action, side, [...refs].sort(), memberIds]);
+  if (state.sources.some((s) => s.id === id)) return;
+  const b = state.binding;
+  state.sources.push({
+    id,
+    kind: 'comparison',
+    ecosystems: ['actions'],
+    memberIds,
+    status: 'available',
+    reasons: [],
+    provenance: {
+      kind: 'upstream',
+      url: `https://api.github.com/repos/${encodeURIComponent(b.repository.owner)}/${encodeURIComponent(b.repository.name)}/dependency-graph/compare/${b.baseSha}...${b.headSha}`,
+      title: 'GitHub Actions dependency comparison',
+      excerpt: 'The comparison corroborates this workflow action reference.',
+      excerptTruncated: false,
+      subjects: members.map((c) => ({
+        memberId: c.id,
+        side,
+        value: (c[field] as ActionsSide).ref,
+      })),
+      range: null,
+    },
+  });
+}
+function comparisonRow(state: State, value: unknown) {
+  const row = own(value);
+  need(canonicalPath(row.manifest) && safeIdentity(row.name) && safeIdentity(row.version, 1024));
+  need(row.change_type === 'added' || row.change_type === 'removed');
+  const path = row.manifest,
+    action = row.name,
+    version = row.version;
+  const side: 'base' | 'head' = row.change_type === 'added' ? 'head' : 'base';
+  const set = state.workflows
+    .filter((w) => w.path === path && w.side === side)
+    .flatMap(occurrences)
+    .filter((o) => o.side.action === action);
+  if (!set.length) {
+    gap(state, 'conflict', path, side);
+    return 'conflict' as const;
+  }
+  const matching = set.filter((o) => versionMatches(o.side.ref, version));
+  if (!matching.length) {
+    const discrepancy = { path, side, action, reason: 'conflict' as const };
+    if (!state.comparison.discrepancies.some((d) => isDeepStrictEqual(d, discrepancy)))
+      state.comparison.discrepancies.push(discrepancy);
+    return 'conflict' as const;
+  }
+  comparisonSource(state, path, action, side, new Set(matching.map((o) => o.side.ref)));
+  return null;
+}
+async function reconcileComparison(state: State) {
+  try {
+    const result = await state.session.readComparison();
+    comparisonIdentity(state, result);
+    const reasons = new Set(result.reasons);
+    for (const row of result.records.filter((r) => r.ecosystem === 'actions')) {
+      try {
+        const why = comparisonRow(state, row);
+        if (why) reasons.add(why);
+      } catch (e) {
+        reasons.add(e instanceof InventoryFailure ? e.reason : 'malformed');
+      }
+    }
+    state.comparison.status = result.kind === 'available' && reasons.size ? 'partial' : result.kind;
+    state.comparison.reasons = [...reasons].sort();
+  } catch (e) {
+    state.comparison.status = 'unavailable';
+    state.comparison.reasons = [e instanceof InventoryFailure ? e.reason : 'unknown'];
+  }
+  if (state.comparison.status === 'unavailable') {
+    if (!state.comparison.reasons.length) state.comparison.reasons = ['unknown'];
+    state.sources.push({
+      id: identity(state, 'comparison-unavailable', state.comparison.reasons),
+      kind: 'comparison',
+      ecosystems: ['actions'],
+      memberIds: [],
+      status: 'unavailable',
+      reasons: state.comparison.reasons,
+      provenance: { kind: 'unavailable' },
+    });
+  }
+  state.comparison.sourceIds = state.sources
+    .filter((s) => s.kind === 'comparison')
+    .map((s) => s.id)
+    .sort();
+  state.comparison.discrepancies.sort((a, b) => byCodeUnit(JSON.stringify(a), JSON.stringify(b)));
+}
 function assemble(state: State, applicable: boolean): ActionsInventory {
   const reasons = [...new Set(state.gaps.map((g) => g.reason))].sort();
   const status: InventoryCoverage['status'] = reasons.length
@@ -417,7 +540,7 @@ function assemble(state: State, applicable: boolean): ActionsInventory {
       absentEcosystems: status === 'not_applicable' ? ['actions'] : [],
     },
   };
-  for (const s of state.sources)
+  for (const s of state.sources.filter((s) => s.kind === 'file'))
     s.memberIds = state.changes
       .filter((c) => c.from?.sourceId === s.id || c.to?.sourceId === s.id)
       .map((c) => c.id)
@@ -466,9 +589,7 @@ export async function collectActionsInventory(
     const files = candidateFiles(state, discovery.files);
     for (const f of files.slice(0, state.limits.maxWorkflows)) await collectFile(state, f);
     if (files.length > state.limits.maxWorkflows) gap(state, 'budget');
-    const comparison = await session.readComparison();
-    state.comparison.status = comparison.kind;
-    state.comparison.reasons = [...comparison.reasons];
+    await reconcileComparison(state);
     return structuredClone(assemble(state, files.length > 0));
   } catch (e) {
     return { kind: 'unavailable', reason: e instanceof InventoryFailure ? e.reason : 'unknown' };
