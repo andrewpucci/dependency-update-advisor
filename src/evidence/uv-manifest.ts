@@ -204,13 +204,84 @@ function declarations(
   }
   return out;
 }
-function dynamicFields(project: Record<string, unknown>, gaps: UvEntryGap[]) {
+function dynamicFields(project: Record<string, unknown>, gaps: UvEntryGap[]): Set<string> | null {
   if (project.dynamic === undefined) return new Set<string>();
-  need(Array.isArray(project.dynamic));
-  const fields = project.dynamic.map(text);
-  for (const field of fields.filter((f) => ['dependencies', 'optional-dependencies'].includes(f)))
-    gaps.push({ entry: field, reason: 'unsupported' });
-  return new Set(fields);
+  try {
+    need(Array.isArray(project.dynamic));
+    const fields = project.dynamic.map(text);
+    for (const field of fields.filter((f) => ['dependencies', 'optional-dependencies'].includes(f)))
+      gaps.push({ entry: field, reason: 'unsupported' });
+    return new Set(fields);
+  } catch (error) {
+    gaps.push({ entry: 'dynamic', reason: reason(error) });
+    return null;
+  }
+}
+function resolutionGaps(
+  raw: Record<string, unknown>,
+  project: Record<string, unknown>,
+  gaps: UvEntryGap[],
+) {
+  const allowed = new Set([
+    'name',
+    'version',
+    'description',
+    'readme',
+    'requires-python',
+    'license',
+    'license-files',
+    'authors',
+    'maintainers',
+    'keywords',
+    'classifiers',
+    'urls',
+    'scripts',
+    'gui-scripts',
+    'entry-points',
+    'dependencies',
+    'optional-dependencies',
+    'dynamic',
+  ]);
+  if (Object.keys(project).some((key) => !allowed.has(key)))
+    gaps.push({ entry: 'project', reason: 'unsupported' });
+  if (Object.keys(raw).some((key) => !['project', 'build-system', 'tool'].includes(key)))
+    gaps.push({ entry: null, reason: 'unsupported' });
+  if (raw.tool !== undefined) {
+    try {
+      const tool = table(raw.tool);
+      if (tool.uv !== undefined && Object.keys(table(tool.uv)).length)
+        gaps.push({ entry: 'tool.uv', reason: 'unsupported' });
+    } catch (error) {
+      gaps.push({ entry: 'tool.uv', reason: reason(error) });
+    }
+  }
+}
+function readManifestField(
+  project: Record<string, unknown>,
+  field: string,
+  key: keyof UvManifest['fields'],
+  value: UvManifest,
+  dynamic: Set<string> | null,
+  gaps: UvEntryGap[],
+  read: (v: unknown, list: string) => UvDeclaration[],
+) {
+  const state =
+    dynamic === null
+      ? 'invalid'
+      : dynamic.has(field)
+        ? 'dynamic'
+        : project[field] === undefined
+          ? 'absent'
+          : 'present';
+  value.fields[key] = state;
+  if (project[field] === undefined) return;
+  try {
+    if (key === 'dependencies') value.dependencies = read(project[field], field);
+    else value.optionalDependencies = optionalTable(project[field], gaps, read);
+  } catch (error) {
+    value.fields[key] = 'invalid';
+    gaps.push({ entry: field, reason: reason(error) });
+  }
 }
 function extract(
   raw: Record<string, unknown>,
@@ -219,6 +290,7 @@ function extract(
 ): UvRead<UvManifest> {
   const project = table(raw.project),
     gaps: UvEntryGap[] = [];
+  resolutionGaps(raw, project, gaps);
   const name = normalizeName(project.name),
     dynamic = dynamicFields(project, gaps);
   const value: UvManifest = {
@@ -234,25 +306,17 @@ function extract(
   } catch (error) {
     gaps.push({ entry: 'requires-python', reason: reason(error) });
   }
-  for (const [field, key] of [
-    ['dependencies', 'dependencies'],
-    ['optional-dependencies', 'optionalDependencies'],
-  ] as const) {
-    if (dynamic.has(field)) {
-      value.fields[key] = 'dynamic';
-      continue;
-    }
-    if (project[field] === undefined) continue;
-    value.fields[key] = 'present';
-    try {
-      const read = (v: unknown, list: string) => declarations(v, list, limits, budget, gaps);
-      if (key === 'dependencies') value.dependencies = read(project[field], field);
-      else value.optionalDependencies = optionalTable(project[field], gaps, read);
-    } catch (error) {
-      value.fields[key] = 'invalid';
-      gaps.push({ entry: field, reason: reason(error) });
-    }
-  }
+  const read = (v: unknown, list: string) => declarations(v, list, limits, budget, gaps);
+  readManifestField(project, 'dependencies', 'dependencies', value, dynamic, gaps, read);
+  readManifestField(
+    project,
+    'optional-dependencies',
+    'optionalDependencies',
+    value,
+    dynamic,
+    gaps,
+    read,
+  );
   return { kind: 'parsed', value, gaps };
 }
 export function readManifest(

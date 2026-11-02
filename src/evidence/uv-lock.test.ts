@@ -34,7 +34,7 @@ test.each([3, 5])(
           `resolution-markers=["python_version < '3.13'"]\ndependencies=[{name="nova", version="2.0",source={registry="https://pypi.org/simple"},marker="sys_platform == 'linux'",extra=["Fast_IO"]},{name="nova"}]\n[package.optional-dependencies]\nempty=[]\nweb=[{name="nova"}]\n`,
         ) +
         pkg('orbit-core', '2.0') +
-        `[[package]]\nname="project"\nsource={editable="."}\n`,
+        `[[package]]\nname="project"\nsource={editable="."}\n[package.metadata]\nrequires-dist=[]\nprovides-extras=[]\n`,
     );
     expect(r.gaps).toEqual([]);
     expect(r.value.revision).toBe(revision);
@@ -115,4 +115,110 @@ test('package and edge caps preserve explicit incomplete prefixes', () => {
   expect(r.value.packages).toHaveLength(1);
   expect(r.value.packages[0].dependencies).toHaveLength(1);
   expect(r.gaps.filter((g) => g.reason === 'budget')).toHaveLength(2);
+});
+test.each([3, 5])(
+  'retains root declarations and missing versus empty metadata on revision %s',
+  (revision) => {
+    const self = `[[package]]\nname="project"\nsource={editable="."}\n`;
+    const missing = parsed(header(revision) + self + pkg('registry', '1'));
+    expect(missing.value.packages.every((p) => p.metadata === null)).toBe(true);
+    expect(missing.gaps.filter((g) => g.reason === 'unsupported')).toHaveLength(1);
+    const r = parsed(
+      header(revision) +
+        self +
+        `[package.metadata]\nrequires-dist=[{name="Orbit_Core",extras=["Fast_IO"],specifier=">=1,<2",marker="extra == 'web'"},{name="orbit-core",specifier="==2",marker="extra != 'web'"}]\nprovides-extras=["Web_UI","empty"]\n`,
+    );
+    expect(r.gaps).toEqual([]);
+    expect(r.value.packages[0].metadata).toMatchObject({
+      providesExtras: ['empty', 'web-ui'],
+      requiresDist: [
+        { name: 'orbit-core', extras: ['fast-io'], specifier: '>=1,<2', position: 0 },
+        { name: 'orbit-core', position: 1 },
+      ],
+    });
+    const empty = parsed(
+      header(revision) + self + `[package.metadata]\nrequires-dist=[]\nprovides-extras=[]\n`,
+    );
+    expect(empty.value.packages[0].metadata).toEqual({ requiresDist: [], providesExtras: [] });
+    expect(empty.gaps).toEqual([]);
+  },
+);
+test.each([
+  'manifest={}',
+  'options={}',
+  'conflicts=[]',
+  'supported-markers=[]',
+  'required-markers=[]',
+  'default-groups=[]',
+  'dependency-groups={}',
+  'group-requires-python={}',
+  'future-resolution={}',
+])('unknown/unsupported lock-root field: %s', (field) => {
+  expect(parsed(header() + field + '\n' + pkg()).gaps).toContainEqual({
+    entry: null,
+    reason: 'unsupported',
+  });
+});
+test.each([
+  'dev-dependencies={}',
+  'dependency-groups={}',
+  'default-groups=[]',
+  'group-requires-python={}',
+  'exclude-newer="2026-01-01"',
+  'future-resolution={}',
+])('unsupported package resolution field: %s', (field) => {
+  const r = parsed(header(5) + pkg('good', '1', field + '\n'));
+  expect(r.value.packages).toHaveLength(1);
+  expect(r.gaps.some((g) => g.reason === 'unsupported')).toBe(true);
+});
+test.each(['requires-dev={}', 'dependency-groups={}', 'future-requirements=[]'])(
+  'unsupported declaration metadata aliases: %s',
+  (field) => {
+    const r = parsed(
+      header(5) +
+        pkg('good', '1', `[package.metadata]\nrequires-dist=[]\nprovides-extras=[]\n${field}\n`),
+    );
+    expect(r.gaps.some((g) => g.reason === 'unsupported')).toBe(true);
+  },
+);
+test('validates artifacts then discards their values instead of creating packages or retaining URLs', () => {
+  const r = parsed(
+    header() +
+      pkg(
+        'good',
+        '1',
+        `sdist={url="https://files.example.test/p.tar.gz",hash="sha256:${'a'.repeat(64)}",size=0,upload-time="2026-01-01T00:00:00Z"}\nwheels=[{url="https://files.example.test/p.whl",hash="sha256:${'b'.repeat(64)}",size=20}]\n`,
+      ),
+  );
+  expect(r.gaps).toEqual([]);
+  expect(r.value.packages).toHaveLength(1);
+  expect(JSON.stringify(r)).not.toContain('files.example');
+});
+test.each([
+  'sdist=1',
+  'wheels={}',
+  'sdist={url="https://user:secret@example.test/a"}',
+  'sdist={url="https://example.test/a",size=-1}',
+  'sdist={url="https://example.test/a",hash="nonsense"}',
+  'sdist={url="https://example.test/a",upload-time=1}',
+  'sdist={url="https://example.test/a",future=1}',
+])('invalid/untested artifact metadata leaves fixed scoped gaps: %s', (artifact) => {
+  const r = parsed(header() + pkg('good', '1', artifact + '\n'));
+  expect(r.value.packages).toHaveLength(1);
+  expect(r.gaps).toHaveLength(1);
+  expect(JSON.stringify(r)).not.toContain('secret');
+});
+test('bad metadata items and missing root fields retain independently validated evidence', () => {
+  const r = parsed(
+    'version=1\nrevision=5\n' +
+      pkg(
+        'good',
+        '1',
+        `[package.metadata]\nrequires-dist=[{name="ok",specifier=">=1"},{name="bad",url="https://example.test/p"},{name="last"}]\nprovides-extras=["A_B","a-b"]\n`,
+      ),
+  );
+  expect(r.value.requiresPython).toBeNull();
+  expect(r.value.packages[0].metadata?.requiresDist?.map((x) => x.name)).toEqual(['ok', 'last']);
+  expect(r.value.packages[0].metadata?.providesExtras).toBeNull();
+  expect(r.gaps.map((g) => g.reason)).toContain('conflict');
 });
