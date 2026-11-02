@@ -2,11 +2,12 @@ import { expect, test } from 'vite-plus/test';
 import { collectNpmInventory } from './npm.js';
 import type { GithubReadSession } from '../github-read.js';
 import { npmScenario } from '../../tests/parity/npm-inventory.js';
-import { proveNpmRelationships } from './npm-graph.js';
+import { proveNpmRelationships, enrichNpmEvidence } from './npm-graph.js';
 
 const limits = { maxGraphWork: 100_000, maxRetainedBytes: 2_000_000 };
 const pkg = (version: string, extra = {}) => ({
   version,
+  integrity: 'sha512-' + Buffer.alloc(64, 7).toString('base64'),
   resolved: `https://registry.npmjs.org/fixture/-/fixture-${version}.tgz`,
   ...extra,
 });
@@ -374,4 +375,159 @@ test('a direct removal still counts beside a head-side direct update', async () 
   expect(graph.findings).toContainEqual(
     expect.objectContaining({ detail: expect.stringContaining('multiple changed direct') }),
   );
+});
+
+const registryLimits = {
+  maxRequests: 20,
+  maxResponseBytes: 50_000,
+  maxTotalBytes: 500_000,
+  maxJsonEntries: 100_000,
+  maxJsonDepth: 32,
+  requestTimeoutMs: 1000,
+  totalTimeoutMs: 10_000,
+};
+function registryFetch(calls: string[], scripts = {}) {
+  return async (url: string) => {
+    calls.push(url);
+    const [name, version] = new URL(url).pathname.slice(1).split('/').map(decodeURIComponent);
+    return new Response(
+      JSON.stringify({
+        _id: name + '@' + version,
+        name,
+        version,
+        dist: { integrity: 'sha512-' + Buffer.alloc(64, 7).toString('base64') },
+        scripts,
+      }),
+      { headers: { 'content-type': 'application/json' } },
+    );
+  };
+}
+
+test('one immutable N2 handoff composes proven paths and lifecycle evidence without changing other coverage', async () => {
+  const input = await graphFixture();
+  const calls: string[] = [];
+  const result = await enrichNpmEvidence(
+    { ...input, limits: { ...input.limits, ...registryLimits } },
+    { now: () => 0, fetch: registryFetch(calls) },
+  );
+  expect(result.kind).toBe('inventory');
+  if (result.kind !== 'inventory') throw new Error('expected enriched result');
+  expect(result.relationships).toHaveLength(1);
+  expect(result.changes.every((c) => c.evidence.installScript.status === 'available')).toBe(true);
+  expect(result.changes.every((c) => c.evidence.upstream.status === 'unavailable')).toBe(true);
+  expect(result.coverage).toEqual(input.inventory.coverage);
+  expect(result.comparison).toEqual(input.inventory.comparison);
+  expect(result.changes.map((c) => [c.id, c.from, c.to])).toEqual(
+    input.inventory.changes.map((c) => [c.id, c.from, c.to]),
+  );
+  expect(Object.isFrozen(result.changes[0].evidence)).toBe(true);
+  expect(calls).toHaveLength(4);
+});
+
+test('a shared request budget leaves explicit lifecycle gaps without losing inventory', async () => {
+  const input = await graphFixture();
+  const calls: string[] = [];
+  const result = await enrichNpmEvidence(
+    { ...input, limits: { ...input.limits, ...registryLimits, maxRequests: 1 } },
+    { now: () => 0, fetch: registryFetch(calls) },
+  );
+  expect(result.kind).toBe('inventory');
+  if (result.kind !== 'inventory') throw new Error('expected enriched result');
+  expect(result.changes).toHaveLength(input.inventory.changes.length);
+  expect(result.changes.some((c) => c.evidence.installScript.reasons.includes('budget'))).toBe(
+    true,
+  );
+  expect(result.coverage).toEqual(input.inventory.coverage);
+  expect(calls).toHaveLength(1);
+});
+
+test('snapshot/instance disagreement cannot send a registry request', async () => {
+  const input = await graphFixture();
+  const calls: string[] = [];
+  const changes = input.inventory.changes.map((c) => ({
+    ...c,
+    to: c.to && { ...c.to, name: 'wrong-package' },
+  }));
+  const result = await enrichNpmEvidence(
+    {
+      ...input,
+      inventory: { ...input.inventory, changes },
+      limits: { ...input.limits, ...registryLimits },
+    },
+    { now: () => 0, fetch: registryFetch(calls) },
+  );
+  expect(result).toEqual({ kind: 'invalid' });
+  expect(calls).toHaveLength(0);
+});
+
+test('split-source limits preserve exact endpoint identities and every input record', async () => {
+  const extra = Object.fromEntries(
+    Array.from({ length: 40 }, (_, i) => ['node_modules/extra-' + i, pkg('1.0.0')]),
+  );
+  const dependencies = Object.fromEntries(
+    Array.from({ length: 40 }, (_, i) => ['extra-' + i, '^1']),
+  );
+  const input = await graphFixture({
+    ...extra,
+    'node_modules/anchor': pkg('1.1.0', { dependencies: { child: '^1', ...dependencies } }),
+  });
+  const result = proveNpmRelationships(input);
+  expect(result.kind).toBe('inventory');
+  if (result.kind !== 'inventory') throw new Error('expected graph');
+  expect(result.changes).toEqual(input.inventory.changes);
+  expect(result.findings).toContainEqual(
+    expect.objectContaining({ detail: expect.stringContaining('lock-source membership') }),
+  );
+  expect(
+    result.relationships.every((proof) => proof.path[0].sourceId === proof.path.at(-1)!.sourceId),
+  ).toBe(true);
+});
+
+test('an overlong path is never truncated into a packet proof', async () => {
+  const extra: Record<string, unknown> = {};
+  for (let i = 0; i < 32; i++)
+    extra['node_modules/mid-' + i] = pkg('1.0.0', {
+      dependencies: { [i === 31 ? 'child' : 'mid-' + (i + 1)]: '^1' },
+    });
+  const input = await graphFixture(
+    { ...extra, 'node_modules/anchor': pkg('1.1.0', { dependencies: { 'mid-0': '^1' } }) },
+    { ...extra, 'node_modules/anchor': pkg('1.0.0', { dependencies: { 'mid-0': '^1' } }) },
+  );
+  const graph = proveNpmRelationships(input);
+  expect(graph.kind).toBe('inventory');
+  if (graph.kind !== 'inventory') throw new Error('expected graph');
+  expect(graph.relationships).toEqual([]);
+  expect(graph.findings).toContainEqual(
+    expect.objectContaining({ detail: expect.stringContaining('full path exceeds') }),
+  );
+});
+
+test('packet overflow fails explicitly before registry reads, without exposing a trimmed inventory', async () => {
+  const extra = Object.fromEntries(
+    Array.from({ length: 129 }, (_, i) => ['node_modules/extra-' + i, pkg('1.0.0')]),
+  );
+  const input = await graphFixture(extra);
+  expect(input.inventory.changes.length).toBeGreaterThan(128);
+  const calls: string[] = [];
+  const result = await enrichNpmEvidence(
+    { ...input, limits: { ...input.limits, ...registryLimits } },
+    { now: () => 0, fetch: registryFetch(calls) },
+  );
+  expect(result).toEqual({ kind: 'unavailable', reason: 'budget' });
+  expect(calls).toHaveLength(0);
+});
+
+test('late retention overflow returns no partial enriched result', async () => {
+  const input = await graphFixture();
+  const graph = proveNpmRelationships(input);
+  const minimum =
+    Math.max(Buffer.byteLength(JSON.stringify(input)), Buffer.byteLength(JSON.stringify(graph))) +
+    32;
+  const calls: string[] = [];
+  const result = await enrichNpmEvidence(
+    { ...input, limits: { ...input.limits, ...registryLimits, maxRetainedBytes: minimum } },
+    { now: () => 0, fetch: registryFetch(calls) },
+  );
+  expect(result).toEqual({ kind: 'unavailable', reason: 'budget' });
+  expect(calls.length).toBeGreaterThan(0);
 });
