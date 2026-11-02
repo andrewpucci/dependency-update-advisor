@@ -274,3 +274,60 @@ test('unreadable, syntactically malformed or unexpectedly absent sides are never
     expect(result.workflows.some((w) => w.side === 'base' && w.jobs.length === 1)).toBe(true);
   }
 });
+
+test('unique step IDs preserve correspondence across insertions and reordered duplicate actions', async () => {
+  const f = fixture();
+  f.files[`base:${workflow}`] =
+    'jobs: { build: { steps: [{ id: first, uses: example/action@v1 }, { id: second, uses: example/action@v1 }] } }';
+  f.files[`head:${workflow}`] =
+    'jobs: { build: { steps: [{ run: echo hello }, { id: second, uses: example/action@v1 }, { id: first, uses: example/action@v2 }] } }';
+  const result = inventory(await collectActionsInventory(f.input, { session: f.session }));
+  expect(result.coverage.status).toBe('complete');
+  expect(result.changes).toHaveLength(1);
+  expect(result.changes[0]).toMatchObject({
+    kind: 'update',
+    from: { stepIndex: 0, ref: 'v1' },
+    to: { stepIndex: 2, ref: 'v2' },
+  });
+});
+test.each([
+  'jobs: { build: { steps: [{ run: echo inserted }, { uses: example/action@v2 }] } }',
+  'jobs: { build: { steps: [{ uses: example/other@v2 }, { uses: example/action@v2 }] } }',
+])('unproved index correspondence retains sides and a pairing gap', async (head) => {
+  const f = fixture();
+  f.files[`head:${workflow}`] = head;
+  const result = inventory(await collectActionsInventory(f.input, { session: f.session }));
+  expect(result.coverage.status).toBe('partial');
+  expect(result.coverage.reasons).toContain('conflict');
+  expect(result.changes.every((c) => c.kind !== 'update')).toBe(true);
+  expect(result.changes.filter((c) => c.from).length).toBe(1);
+});
+test('identity replacements and changed job IDs never become version updates', async () => {
+  for (const head of [
+    'jobs: { build: { steps: [{ uses: example/other@v2 }] } }',
+    'jobs: { renamed: { steps: [{ uses: example/action@v2 }] } }',
+  ]) {
+    const f = fixture();
+    f.files[`head:${workflow}`] = head;
+    const result = inventory(await collectActionsInventory(f.input, { session: f.session }));
+    expect(result.changes.map((c) => c.kind).sort()).toEqual(['addition', 'removal']);
+  }
+});
+test('reordered discovery and job maps preserve IDs, counts and provenance', async () => {
+  const f = fixture(),
+    other = '.github/workflows/other.yml';
+  f.discovery.files = [
+    ...f.discovery.files,
+    { path: other, previousPath: null, status: 'modified', blobSha: null },
+  ];
+  f.files[`base:${other}`] =
+    'jobs: { z: { uses: example/repo/.github/workflows/a.yml@v1 }, a: { uses: example/repo/.github/workflows/a.yml@v1 } }';
+  f.files[`head:${other}`] =
+    'jobs: { a: { uses: example/repo/.github/workflows/a.yml@v2 }, z: { uses: example/repo/.github/workflows/a.yml@v2 } }';
+  const first = await collectActionsInventory(f.input, { session: f.session });
+  f.discovery.files = [...f.discovery.files].reverse();
+  f.files[`base:${other}`] = (f.files[`head:${other}`] as string).replaceAll('@v2', '@v1');
+  f.files[`head:${other}`] =
+    'jobs: { z: { uses: example/repo/.github/workflows/a.yml@v2 }, a: { uses: example/repo/.github/workflows/a.yml@v2 } }';
+  expect(await collectActionsInventory(f.input, { session: f.session })).toEqual(first);
+});
