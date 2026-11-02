@@ -1,5 +1,7 @@
 import { expect, test } from 'vite-plus/test';
 import { collectNpmInventory } from './npm.js';
+import { validateReviewPacket } from '../schema.js';
+import { formDecisionUnits } from '../units.js';
 import type { GithubReadSession } from '../github-read.js';
 import { npmScenario } from '../../tests/parity/npm-inventory.js';
 import { proveNpmRelationships, enrichNpmEvidence } from './npm-graph.js';
@@ -16,6 +18,7 @@ async function graphFixture(
   base: Record<string, unknown> = {},
   dependencies: Record<string, string> = { anchor: '^1' },
   baseDependencies = dependencies,
+  root = '.',
 ) {
   const { binding } = npmScenario();
   const packages = (side: 'base' | 'head') => ({
@@ -32,7 +35,14 @@ async function graphFixture(
       binding,
       complete: true,
       reasons: [],
-      files: [{ path: 'package-lock.json', previousPath: null, status: 'modified', blobSha: null }],
+      files: [
+        {
+          path: (root === '.' ? '' : root + '/') + 'package-lock.json',
+          previousPath: null,
+          status: 'modified',
+          blobSha: null,
+        },
+      ],
     }),
     readFile: async (value) => {
       const { side, path } = value as { side: 'base' | 'head'; path: string };
@@ -45,7 +55,7 @@ async function graphFixture(
         blobSha: 'e'.repeat(40),
         bytes: Buffer.from(
           JSON.stringify(
-            path === 'package.json'
+            path.endsWith('package.json')
               ? { dependencies: side === 'base' ? baseDependencies : dependencies }
               : {
                   lockfileVersion: 3,
@@ -70,7 +80,7 @@ async function graphFixture(
   const inventory = await collectNpmInventory(
     {
       binding,
-      roots: ['.'],
+      roots: [root],
       configRevision: { repository: binding.repository, sha: 'c'.repeat(40) },
       limits: {
         maxFileBytes: 500_000,
@@ -530,4 +540,164 @@ test('late retention overflow returns no partial enriched result', async () => {
   );
   expect(result).toEqual({ kind: 'unavailable', reason: 'budget' });
   expect(calls.length).toBeGreaterThan(0);
+});
+
+function validatedGraphUnits(
+  input: Awaited<ReturnType<typeof graphFixture>>,
+  graph: Extract<ReturnType<typeof proveNpmRelationships>, { kind: 'inventory' }>,
+) {
+  const fixture = npmScenario();
+  const packet = validateReviewPacket(
+    {
+      version: 1,
+      ...fixture.expected,
+      changes: graph.changes,
+      sources: [...graph.sources, fixture.absent],
+      findings: graph.findings,
+      relationships: graph.relationships,
+      coverage: {
+        npm: graph.coverage,
+        actions: { status: 'not_applicable', reasons: [], sourceIds: ['other'] },
+        uv: { status: 'not_applicable', reasons: [], sourceIds: ['other'] },
+      },
+    },
+    fixture.expected,
+  );
+  expect(input.binding).toEqual(fixture.binding);
+  expect(packet.ok, JSON.stringify(packet)).toBe(true);
+  if (!packet.ok) throw new Error('expected packet');
+  return formDecisionUnits(packet.packet);
+}
+
+test.each(['orphan', 'multi-anchor', 'unknown'] as const)(
+  'the real unit boundary retains %s standalone relationships and exact member accounting',
+  async (mode) => {
+    const input =
+      mode === 'multi-anchor'
+        ? await graphFixture(
+            { 'node_modules/other': pkg('1.1.0') },
+            { 'node_modules/other': pkg('1.0.0') },
+            { anchor: '^1', other: '^1' },
+          )
+        : await graphFixture(mode === 'orphan' ? { 'node_modules/anchor': pkg('1.1.0') } : {});
+    const inventory =
+      mode === 'unknown'
+        ? {
+            ...input.inventory,
+            changes: input.inventory.changes.map((c) =>
+              c.role === 'transitive' ? { ...c, role: 'unknown' as const } : c,
+            ),
+          }
+        : input.inventory;
+    const graph = proveNpmRelationships({ ...input, inventory });
+    expect(graph.kind).toBe('inventory');
+    if (graph.kind !== 'inventory') throw new Error('expected graph');
+    const units = validatedGraphUnits(input, graph);
+    expect(units.units.every((u) => u.kind === 'standalone')).toBe(true);
+    expect(units.units.flatMap((u) => u.memberIds).sort()).toEqual(
+      inventory.changes.map((c) => c.id).sort(),
+    );
+    expect(graph.changes.map((c) => c.evidence)).toEqual(inventory.changes.map((c) => c.evidence));
+  },
+);
+
+test('known unchanged-parent sharing is accepted by T4 and preserved within a T5 group', async () => {
+  const other = { 'node_modules/other': pkg('1.0.0', { dependencies: { child: '^1' } }) };
+  const input = await graphFixture(other, other, { anchor: '^1', other: '^1' });
+  const graph = proveNpmRelationships(input);
+  expect(graph.kind).toBe('inventory');
+  if (graph.kind !== 'inventory') throw new Error('expected graph');
+  const units = validatedGraphUnits(input, graph);
+  expect(units.units).toHaveLength(1);
+  expect(
+    units.units[0].findings.some(
+      (f) => f.kind === 'informational' && f.detail.includes('unchanged direct'),
+    ),
+  ).toBe(true);
+});
+
+test('independent nested roots can never produce a cross-root proof', async () => {
+  const first = await graphFixture(),
+    nested = await graphFixture({}, {}, { anchor: '^1' }, { anchor: '^1' }, 'nested');
+  const inventory = {
+    ...first.inventory,
+    changes: [...first.inventory.changes, ...nested.inventory.changes],
+    roots: [...first.inventory.roots, ...nested.inventory.roots],
+    sources: [
+      ...first.inventory.sources,
+      ...nested.inventory.sources.filter((s) => s.id !== 'npm:inventory'),
+    ],
+  };
+  const graph = proveNpmRelationships({ ...first, inventory });
+  expect(graph.kind).toBe('inventory');
+  if (graph.kind !== 'inventory') throw new Error('expected graph');
+  expect(graph.relationships).toHaveLength(2);
+  expect(graph.relationships.every((p) => new Set(p.path.map((s) => s.root)).size === 1)).toBe(
+    true,
+  );
+  const units = validatedGraphUnits(first, graph);
+  expect(units.units).toHaveLength(2);
+});
+
+test('handoff identities and attempted requests survive input order changes and later input mutation', async () => {
+  const input = await graphFixture();
+  const reversed = {
+    ...input,
+    inventory: {
+      ...input.inventory,
+      changes: [...input.inventory.changes].reverse(),
+      sources: [...input.inventory.sources].reverse(),
+      roots: [...input.inventory.roots].reverse(),
+    },
+    limits: { ...input.limits, ...registryLimits },
+  };
+  const firstCalls: string[] = [],
+    secondCalls: string[] = [];
+  const first = await enrichNpmEvidence(
+    { ...input, limits: reversed.limits },
+    { now: () => 0, fetch: registryFetch(firstCalls) },
+  );
+  const second = await enrichNpmEvidence(reversed, {
+    now: () => 0,
+    fetch: registryFetch(secondCalls),
+  });
+  expect(second).toEqual(first);
+  expect(secondCalls).toEqual(firstCalls);
+  const mutable = structuredClone({ ...input, limits: reversed.limits });
+  const promise = enrichNpmEvidence(mutable, { now: () => 0, fetch: registryFetch([]) });
+  const node = mutable.inventory.roots[0].head.packages['node_modules/anchor'].instance!;
+  node.version = '9.9.9';
+  const result = await promise;
+  expect(result).toEqual(first);
+});
+
+test.each(['^1.1.0-beta.1', 'next'])(
+  'registry prerelease and tag specifiers retain a proven installed relationship (%s)',
+  async (specifier) => {
+    const input = await graphFixture({
+      'node_modules/anchor': pkg('1.1.0', { dependencies: { child: specifier } }),
+    });
+    const graph = proveNpmRelationships(input);
+    expect(graph.kind === 'inventory' && graph.relationships).toHaveLength(1);
+  },
+);
+
+test('same-instance metadata-only changes preserve N1 gaps without invented resolved updates', async () => {
+  const input = await graphFixture(
+    { 'node_modules/child': pkg('1.0.0', { hasInstallScript: true }) },
+    { 'node_modules/child': pkg('1.0.0') },
+  );
+  expect(input.inventory.coverage.status).toBe('partial');
+  expect(input.inventory.gaps).toContainEqual(expect.objectContaining({ reason: 'unsupported' }));
+  expect(input.inventory.changes).toHaveLength(1);
+  const result = await enrichNpmEvidence(
+    { ...input, limits: { ...input.limits, ...registryLimits } },
+    { now: () => 0, fetch: registryFetch([]) },
+  );
+  expect(result.kind).toBe('inventory');
+  if (result.kind !== 'inventory') throw new Error('expected graph');
+  expect(result.gaps).toEqual(input.inventory.gaps);
+  expect(result.changes.map((c) => c.id)).toEqual(input.inventory.changes.map((c) => c.id));
+  expect(result.relationships).toEqual([]);
+  validatedGraphUnits(input, result);
 });

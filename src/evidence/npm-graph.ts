@@ -238,8 +238,8 @@ function supportedEdge(key: string, specifier: string, target: NpmSide) {
   return (
     target.source.kind === 'registry' &&
     target.name === name &&
-    /^[\d\s.^~<>=*|xXv+-]+$/u.test(range) &&
-    /[\d*xX]/u.test(range)
+    /^[a-z\d\s._^~<>=*|+-]+$/iu.test(range) &&
+    /[a-z\d*]/iu.test(range)
   );
 }
 function nodeKey(node: NpmSide) {

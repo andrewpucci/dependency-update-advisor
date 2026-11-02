@@ -413,7 +413,10 @@ function lifecycleSource(
             excerpt,
             excerptTruncated: false,
             subjects: [{ memberId: change.id, side, value: instance.version }],
-            range: null,
+            range: {
+              from: side === 'base' ? instance.version : null,
+              to: side === 'head' ? instance.version : null,
+            },
           },
   };
 }
