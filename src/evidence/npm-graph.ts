@@ -183,11 +183,7 @@ function pathTo(snapshot: NpmRootSide, start: NpmSide, end: NpmSide, spend: () =
   }
   return undefined;
 }
-function proofFor(
-  inventory: Inventory,
-  member: Resolved,
-  spend: () => void,
-): NpmProof | undefined {
+function proofFor(inventory: Inventory, member: Resolved, spend: () => void): NpmProof | undefined {
   const anchor = eligible(inventory, member);
   if (!anchor) return undefined;
   const side = member.kind === 'removal' ? 'base' : 'head';
