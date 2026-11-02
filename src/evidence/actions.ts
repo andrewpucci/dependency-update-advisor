@@ -513,18 +513,21 @@ function comparisonRow(state: State, value: unknown) {
   comparisonSource(state, path, action, side, new Set(matching.map((o) => o.side.ref)));
   return null;
 }
+function comparisonReason(state: State, row: unknown): EvidenceReason | null {
+  try {
+    return comparisonRow(state, row);
+  } catch (e) {
+    return e instanceof InventoryFailure ? e.reason : 'malformed';
+  }
+}
 async function reconcileComparison(state: State) {
   try {
     const result = await state.session.readComparison();
     comparisonIdentity(state, result);
     const reasons = new Set(result.reasons);
     for (const row of result.records.filter((r) => r.ecosystem === 'actions')) {
-      try {
-        const why = comparisonRow(state, row);
-        if (why) reasons.add(why);
-      } catch (e) {
-        reasons.add(e instanceof InventoryFailure ? e.reason : 'malformed');
-      }
+      const why = comparisonReason(state, row);
+      if (why) reasons.add(why);
     }
     state.comparison.status = result.kind === 'available' && reasons.size ? 'partial' : result.kind;
     state.comparison.reasons = [...reasons].sort();
@@ -550,6 +553,11 @@ async function reconcileComparison(state: State) {
     .sort();
   state.comparison.discrepancies.sort((a, b) => byCodeUnit(JSON.stringify(a), JSON.stringify(b)));
 }
+function retargetFileSource(changes: PacketChange[], from: string, to: string) {
+  for (const side of changes.flatMap((c) => [c.from, c.to])) {
+    if (side?.sourceId === from) side.sourceId = to;
+  }
+}
 function splitSource(source: PacketSource, changes: PacketChange[]) {
   const members =
     source.kind === 'file'
@@ -574,9 +582,11 @@ function splitSource(source: PacketSource, changes: PacketChange[]) {
         : source.provenance;
     result.push({ ...source, id, memberIds, provenance });
     if (source.kind === 'file')
-      for (const c of changes.filter((c) => group.has(c.id))) {
-        for (const side of [c.from, c.to]) if (side?.sourceId === source.id) side.sourceId = id;
-      }
+      retargetFileSource(
+        changes.filter((c) => group.has(c.id)),
+        source.id,
+        id,
+      );
   }
   return result;
 }

@@ -65,11 +65,10 @@ function preflight(value: unknown, limits: YamlLimits, budget: YamlBudget) {
         'unsupported',
       );
     if (r.type === 'directive') need(r.source === '%YAML 1.2', 'unsupported');
-    for (const child of Object.values(r)) {
-      if (Array.isArray(child)) {
-        for (let i = child.length - 1; i >= 0; i--) stack.push({ value: child[i], depth: next });
-      } else if (child && typeof child === 'object') stack.push({ value: child, depth: next });
-    }
+    const children = Object.values(r).flatMap((child) =>
+      Array.isArray(child) ? child.toReversed() : [child],
+    );
+    for (const child of children) stack.push({ value: child, depth: next });
   }
 }
 
