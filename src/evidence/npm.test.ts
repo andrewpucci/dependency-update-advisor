@@ -202,9 +202,13 @@ test.each(['maxFileBytes', 'maxJsonEntries', 'maxJsonDepth'] as const)(
   'enforces %s before claiming inventory completeness',
   async (field) => {
     const f = fixture();
-    f.input.limits[field] = field === 'maxJsonDepth' ? 2 : 10;
+    // Each limit admits the input envelope but not the parsed files.
+    f.input.limits[field] = { maxFileBytes: 10, maxJsonEntries: 50, maxJsonDepth: 3 }[field];
+    for (let i = 0; i < 30; i++) lock(f, 'head').packages[`node_modules/p${i}`] = pkg('1.0.0');
     const result = await collectNpmInventory(f.input, { session: f.session });
+    expect(result).not.toMatchObject({ kind: 'invalid' });
     expect(result).not.toMatchObject({ coverage: { status: 'complete' } });
+    expect(result).toMatchObject({ coverage: { reasons: expect.arrayContaining(['budget']) } });
   },
 );
 
@@ -547,5 +551,157 @@ test('manifest and lock-root project identity mismatches retain readable changes
   const result = inventory(await collectNpmInventory(f.input, { session: f.session }));
   expect(result.changes).toHaveLength(1);
   expect(result.coverage.reasons).toContain('conflict');
+  accepted(result);
+});
+
+test('inherited object member names are ordinary declarations and installed slots', async () => {
+  const f = fixture();
+  const base = { dependencies: { widget: '^1', valueOf: '1.0.0' } };
+  const head = { dependencies: { widget: '^1', valueOf: '2.0.0', toString: '1.0.0' } };
+  f.files['base:package.json'] = base;
+  f.files['head:package.json'] = head;
+  lock(f, 'base').packages[''] = structuredClone(base);
+  lock(f, 'head').packages[''] = structuredClone(head);
+  lock(f, 'head').packages['node_modules/hasOwnProperty'] = pkg('1.0.0', 'hasOwnProperty');
+  const result = inventory(await collectNpmInventory(f.input, { session: f.session }));
+  const declarations = result.changes.filter((c) => 'basis' in c);
+  expect(declarations.map((c) => [c.kind, c.to && 'name' in c.to ? c.to.name : null])).toEqual(
+    expect.arrayContaining([
+      ['addition', 'toString'],
+      ['update', 'valueOf'],
+    ]),
+  );
+  expect(declarations).toHaveLength(2);
+  expect(declarations.find((c) => c.kind === 'addition')?.from).toBeNull();
+  expect(
+    result.changes.find((c) => c.to && 'lockPath' in c.to && c.to.name === 'hasOwnProperty'),
+  ).toMatchObject({ role: 'transitive' });
+  for (const member of [Object.prototype.toString, Object.prototype.valueOf])
+    expect(Object.hasOwn(member, 'dependencies')).toBe(false);
+  accepted(result);
+});
+
+test('reordered comparison records keep sources and gaps identical', async () => {
+  const records = [
+    ['added', 'alpha', '1.0.0'],
+    ['added', 'beta', '1.0.0'],
+    ['added', 'omitted', '1.0.0'],
+  ].map(([change_type, name, version]) => ({
+    change_type,
+    manifest: 'package-lock.json',
+    ecosystem: 'npm',
+    name,
+    version,
+  }));
+  const results = [];
+  for (const rows of [records, [...records].reverse()]) {
+    const f = fixture();
+    lock(f, 'head').packages['node_modules/alpha'] = pkg('1.0.0', 'alpha');
+    lock(f, 'head').packages['node_modules/beta'] = pkg('1.0.0', 'beta');
+    const read = f.session.readComparison;
+    Object.assign(f.session, {
+      readComparison: async () => ({ ...(await read()), records: rows }),
+    });
+    results.push(inventory(await collectNpmInventory(f.input, { session: f.session })));
+  }
+  expect(results[0].comparison.sourceIds).toHaveLength(2);
+  expect(results[1]).toEqual(results[0]);
+});
+
+test('comparison discrepancies are scoped to their manifest root', async () => {
+  const f = fixture();
+  const read = f.session.readComparison;
+  Object.assign(f.session, {
+    readComparison: async () => ({
+      ...(await read()),
+      records: [
+        {
+          change_type: 'added',
+          manifest: 'packages/api/package-lock.json',
+          ecosystem: 'npm',
+          name: 'omitted',
+          version: '2.0.0',
+        },
+      ],
+    }),
+  });
+  const result = inventory(await collectNpmInventory(f.input, { session: f.session }));
+  expect(result.gaps).toEqual([
+    { root: 'packages/api', side: null, path: null, reason: 'conflict' },
+  ]);
+});
+
+test('look-alike npm file names do not create candidate roots', async () => {
+  const f = fixture();
+  f.discovery.files = [
+    ...f.discovery.files,
+    { path: 'docs/package_json', previousPath: null, status: 'added', blobSha: null },
+    { path: 'tools/package-lockXjson', previousPath: null, status: 'added', blobSha: null },
+  ];
+  const result = inventory(await collectNpmInventory(f.input, { session: f.session }));
+  expect(result.roots.map((r) => r.root)).toEqual(['.']);
+  expect(result.coverage.status).toBe('complete');
+});
+
+test.each([
+  ['git+ssh://git@github.com/org/other.git', 'direct'],
+  ['git+ssh://git@github.com:org/other.git#v1', 'direct'],
+  ['git+https://synthetic-token@example.test/other.git', 'unknown'],
+  ['git+ssh://git@x:synthetic@example.test/other.git', 'unknown'],
+])('manifest specifier %s leaves the widget role %s', async (other, role) => {
+  const f = fixture();
+  const manifest = { dependencies: { widget: '^1', other } };
+  for (const side of ['base', 'head'] as const) {
+    f.files[`${side}:package.json`] = structuredClone(manifest);
+    lock(f, side).packages[''] = structuredClone(manifest);
+  }
+  const result = inventory(await collectNpmInventory(f.input, { session: f.session }));
+  expect(result.changes.find((c) => !('basis' in c))).toMatchObject({ role });
+  expect(JSON.stringify(result)).not.toContain('synthetic');
+  if (role === 'direct') expect(result.coverage.status).toBe('complete');
+  else expect(result.gaps.map((g) => g.reason)).toContain('malformed');
+  accepted(result);
+});
+
+test('counts the input envelope as depth 1 like parsed files', async () => {
+  const f = fixture();
+  f.input.limits.maxJsonDepth = 2;
+  expect(await collectNpmInventory(f.input, { session: f.session })).toEqual({ kind: 'invalid' });
+  expect(f.calls).toEqual([]);
+  const g = fixture();
+  g.input.limits.maxJsonDepth = 3;
+  expect(await collectNpmInventory(g.input, { session: g.session })).not.toEqual({
+    kind: 'invalid',
+  });
+});
+
+test('ambiguous comparison rows stay unattributed without an inventory gap', async () => {
+  const f = fixture();
+  for (const parent of ['a', 'b'])
+    lock(f, 'head').packages[`node_modules/${parent}/node_modules/x`] = pkg('1.0.0', 'x');
+  const read = f.session.readComparison;
+  Object.assign(f.session, {
+    readComparison: async () => ({
+      ...(await read()),
+      records: [
+        {
+          change_type: 'added',
+          manifest: 'package-lock.json',
+          ecosystem: 'npm',
+          name: 'x',
+          version: '1.0.0',
+        },
+      ],
+    }),
+  });
+  const result = inventory(await collectNpmInventory(f.input, { session: f.session }));
+  expect(result.coverage.status).toBe('complete');
+  expect(result.gaps).toEqual([]);
+  expect(result.comparison).toMatchObject({
+    status: 'partial',
+    reasons: ['conflict'],
+    sourceIds: [],
+  });
+  expect(result.sources.filter((s) => s.kind === 'comparison')).toEqual([]);
   accepted(result);
 });

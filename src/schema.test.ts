@@ -246,14 +246,17 @@ test('preserves declaration-only inventory without exact versions or research ga
   expect(packet.coverage.npm.status).toBe('complete');
 });
 
-test.each(['', 'npm:other@^2', 'file:packages/local'])(
-  'retains exact declaration specifier %j',
-  (value) => {
-    const f = declarationFixture();
-    f.declaration.to.specifiers.dependencies = value;
-    expect(accepted(f).changes[0].to).toMatchObject({ specifiers: { dependencies: value } });
-  },
-);
+test.each([
+  '',
+  'npm:other@^2',
+  'file:packages/local',
+  'git+ssh://git@github.com/org/a.git',
+  'git+ssh://git@github.com:org/a.git#v1',
+])('retains exact declaration specifier %j', (value) => {
+  const f = declarationFixture();
+  f.declaration.to.specifiers.dependencies = value;
+  expect(accepted(f).changes[0].to).toMatchObject({ specifiers: { dependencies: value } });
+});
 
 test.each([
   (c: ReturnType<typeof declarationFixture>['declaration']) => {
@@ -267,6 +270,12 @@ test.each([
   },
   (c: ReturnType<typeof declarationFixture>['declaration']) => {
     c.to.specifiers.dependencies = 'https://user:pass@example.test/a';
+  },
+  (c: ReturnType<typeof declarationFixture>['declaration']) => {
+    c.to.specifiers.dependencies = 'git+https://synthetic-token@example.test/a.git';
+  },
+  (c: ReturnType<typeof declarationFixture>['declaration']) => {
+    c.to.specifiers.dependencies = 'git+ssh://git@x:synthetic@example.test/a.git';
   },
 ])('rejects invalid declaration facts', (edit) => {
   const f = declarationFixture();
