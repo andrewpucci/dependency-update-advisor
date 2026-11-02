@@ -21,8 +21,8 @@ No shared workflow exists; the old reviewer stays active.
 ## Next action
 
 [N1 #14 inventory](docs/specs/SPEC-npm-inventory.md) merged in PR #132; #131 holds
-its gates. [N2 #15](docs/specs/SPEC-npm-relationships.md) is approved for execution;
-tasks #133–#140 are approved for `as-build auto` in one PR. #93 stays separate.
+its gates. [N2 #15](docs/specs/SPEC-npm-relationships.md) is implemented on
+`issue-15`, pending review/merge; #140 holds verification. #93 stays separate.
 [#110 snapshot reuse](docs/specs/SPEC-pr-freshness-snapshot.md) awaits review/merge;
 [verification #113](https://github.com/andrewpucci/dependency-update-advisor/issues/113)
 retains remaining gates. W1/W2 must supply bounded reads and exclusive claims
