@@ -253,6 +253,22 @@ test('distinguishes complete absence of relevant paths from incomplete discovery
     inventory(await collectActionsInventory(f.input, { session: f.session })).coverage,
   ).toMatchObject({ status: 'partial', reasons: ['truncated'] });
 });
+test('only relevant non-canonical paths are malformed Actions gaps', async () => {
+  const f = fixture();
+  const unrelated = { path: 'docs/a:b.md', previousPath: null, status: 'modified' as const };
+  f.discovery.files = [...f.discovery.files, { ...unrelated, blobSha: null }];
+  const result = inventory(await collectActionsInventory(f.input, { session: f.session }));
+  expect(result.coverage.status).toBe('complete');
+  expect(result.gaps).toEqual([]);
+  expect(result.changes).toHaveLength(1);
+  f.discovery.files = [
+    ...f.discovery.files,
+    { ...unrelated, path: '.github/workflows/a:b.yml', blobSha: null },
+  ];
+  const relevant = inventory(await collectActionsInventory(f.input, { session: f.session }));
+  expect(relevant.coverage).toMatchObject({ status: 'partial', reasons: ['malformed'] });
+  expect(relevant.changes).toHaveLength(1);
+});
 test('unreadable, syntactically malformed or unexpectedly absent sides are never proven removals', async () => {
   for (const bad of [
     'jobs: [',

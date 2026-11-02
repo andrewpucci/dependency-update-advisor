@@ -241,14 +241,11 @@ function candidateFiles(state: State, files: readonly GithubFileChange[]) {
   const selected: GithubFileChange[] = [];
   for (const file of files) {
     const paths = [file.path, file.previousPath].filter((p) => p !== null);
-    if (!paths.every(canonicalPath)) {
-      gap(state, 'malformed');
-      continue;
-    }
     const definitions = paths.filter((p) => /(?:^|\/)action\.ya?ml$/u.test(p));
-    if (definitions.length) {
-      for (const p of definitions) gap(state, 'unsupported', p);
-    } else if (paths.some((p) => workflowPath.test(p))) selected.push(file);
+    if (!definitions.length && !paths.some((p) => workflowPath.test(p))) continue;
+    if (!paths.every(canonicalPath)) gap(state, 'malformed');
+    else if (definitions.length) for (const p of definitions) gap(state, 'unsupported', p);
+    else selected.push(file);
   }
   return uniqueFiles(state, selected).sort((a, b) =>
     byCodeUnit(
