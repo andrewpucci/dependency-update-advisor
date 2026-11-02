@@ -20,13 +20,13 @@ No shared workflow exists; the old reviewer stays active.
 
 ## Next action
 
-[N1 #14 inventory](docs/specs/SPEC-npm-inventory.md) is implemented on `issue-14`,
-pending review/merge; #131 records verification and remaining gates.
+[N1 #14 inventory](docs/specs/SPEC-npm-inventory.md) merged in PR #132; #131 holds
+its gates. [N2 #15](docs/specs/SPEC-npm-relationships.md) is approved for execution;
+tasks #133–#140 are approved for `as-build auto` in one PR. #93 stays separate.
 [#110 snapshot reuse](docs/specs/SPEC-pr-freshness-snapshot.md) awaits review/merge;
 [verification #113](https://github.com/andrewpucci/dependency-update-advisor/issues/113)
-retains remaining gates. Deferred reachability #93 remains separate.
-W1/W2 must supply bounded reads and exclusive claims before T2/T3 writes.
-Downstream work: [S3](https://github.com/andrewpucci/dependency-update-advisor/issues/53)
+retains remaining gates. W1/W2 must supply bounded reads and exclusive claims
+before T2/T3 writes. Downstream work: [S3](https://github.com/andrewpucci/dependency-update-advisor/issues/53)
 supplies evidence, [M2](https://github.com/andrewpucci/dependency-update-advisor/issues/22)
 validates assessments, [O1](https://github.com/andrewpucci/dependency-update-advisor/issues/23)
 renders results, and T2/T3/W2 own publication. C2 handoffs remain gates;
