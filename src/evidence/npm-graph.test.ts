@@ -13,11 +13,12 @@ const pkg = (version: string, extra = {}) => ({
 async function graphFixture(
   head: Record<string, unknown> = {},
   base: Record<string, unknown> = {},
-  dependencies = { anchor: '^1' },
+  dependencies: Record<string, string> = { anchor: '^1' },
+  baseDependencies = dependencies,
 ) {
   const { binding } = npmScenario();
   const packages = (side: 'base' | 'head') => ({
-    '': { dependencies },
+    '': { dependencies: side === 'base' ? baseDependencies : dependencies },
     'node_modules/anchor': pkg(side === 'base' ? '1.0.0' : '1.1.0', {
       dependencies: { child: '^1' },
     }),
@@ -44,7 +45,7 @@ async function graphFixture(
         bytes: Buffer.from(
           JSON.stringify(
             path === 'package.json'
-              ? { dependencies }
+              ? { dependencies: side === 'base' ? baseDependencies : dependencies }
               : {
                   lockfileVersion: 3,
                   packages: packages(side),
@@ -309,4 +310,68 @@ test('an unresolved nearer lookup position blocks a farther proven slot', async 
   }));
   const result = proveNpmRelationships({ ...input, inventory: { ...input.inventory, roots } });
   expect(result.kind === 'inventory' && result.relationships).toEqual([]);
+});
+
+test('sharing with an unchanged direct parent stays attributable without blocking the single changed anchor', async () => {
+  const other = { 'node_modules/other': pkg('1.0.0', { dependencies: { child: '^1' } }) };
+  const input = await graphFixture(other, other, { anchor: '^1', other: '^1' });
+  const graph = proveNpmRelationships(input);
+  expect(graph.kind).toBe('inventory');
+  if (graph.kind !== 'inventory') throw new Error('expected graph');
+  expect(graph.relationships).toHaveLength(1);
+  expect(graph.findings).toContainEqual(
+    expect.objectContaining({
+      kind: 'informational',
+      detail: expect.stringContaining('unchanged direct'),
+    }),
+  );
+});
+
+test('multiple changed anchors stay standalone with attributable diagnostics', async () => {
+  const input = await graphFixture(
+    { 'node_modules/other': pkg('1.1.0') },
+    { 'node_modules/other': pkg('1.0.0') },
+    { anchor: '^1', other: '^1' },
+  );
+  const graph = proveNpmRelationships(input);
+  expect(graph.kind).toBe('inventory');
+  if (graph.kind !== 'inventory') throw new Error('expected graph');
+  expect(graph.relationships).toEqual([]);
+  expect(graph.findings).toContainEqual(
+    expect.objectContaining({ detail: expect.stringContaining('multiple changed direct') }),
+  );
+});
+
+test('orphaned members keep a visible unproven path rather than an absence claim', async () => {
+  const input = await graphFixture({ 'node_modules/anchor': pkg('1.1.0') });
+  const graph = proveNpmRelationships(input);
+  expect(graph.kind).toBe('inventory');
+  if (graph.kind !== 'inventory') throw new Error('expected graph');
+  expect(graph.relationships).toEqual([]);
+  const member = input.inventory.changes.find((c) => c.role === 'transitive')!;
+  expect(graph.findings).toContainEqual(
+    expect.objectContaining({
+      memberId: member.id,
+      detail: expect.stringContaining('unproven'),
+      references: [member.to!.sourceId],
+    }),
+  );
+  expect(graph.coverage).toEqual(input.inventory.coverage);
+});
+
+test('a direct removal still counts beside a head-side direct update', async () => {
+  const input = await graphFixture(
+    { 'node_modules/other': undefined },
+    { 'node_modules/other': pkg('1.0.0') },
+    { anchor: '^1' },
+    { anchor: '^1', other: '^1' },
+  );
+  const graph = proveNpmRelationships(input);
+  expect(input.inventory.coverage.status).toBe('complete');
+  expect(graph.kind).toBe('inventory');
+  if (graph.kind !== 'inventory') throw new Error('expected graph');
+  expect(graph.relationships).toEqual([]);
+  expect(graph.findings).toContainEqual(
+    expect.objectContaining({ detail: expect.stringContaining('multiple changed direct') }),
+  );
 });
