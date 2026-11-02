@@ -20,7 +20,8 @@ export function startUvRelationships(result: UvInventory): UvObservation {
     side: null,
     path: null,
     entry: null,
-    reason: 'pending',
+    // Reserve the terminal envelope before optional work; exhaustion only shortens this marker.
+    reason: 'complete',
     sourceIds: [],
     memberIds: [],
     value: null,

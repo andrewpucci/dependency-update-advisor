@@ -187,3 +187,25 @@ test('prose cannot stitch from and to versions across distinct marker contexts',
     coverage: { status: 'partial' },
   });
 });
+
+test('corroboration conflict one-byte boundary must retain inventory', async () => {
+  const input = await uvGraphFixture();
+  const corroboration = {
+    status: 'available',
+    repository: input.binding.repository,
+    pullNumber: input.binding.pullNumber,
+    headSha: input.binding.headSha,
+    text: 'Resolved uv changes: 99.',
+  };
+  const full = reconcileUvGraph({ ...input, corroboration });
+  expect(full).toMatchObject({ kind: 'inventory', coverage: { status: 'partial' } });
+  const maxRetainedBytes = Buffer.byteLength(JSON.stringify(full)) - 1;
+  const base = reconcileUvGraph({ ...input, limits: { ...input.limits, maxRetainedBytes } });
+  expect(base.kind).toBe('inventory');
+  const limited = reconcileUvGraph({
+    ...input,
+    corroboration,
+    limits: { ...input.limits, maxRetainedBytes },
+  });
+  expect(limited.kind).toBe('inventory');
+});
