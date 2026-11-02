@@ -142,7 +142,23 @@ function rootChanges(
   result.observations.push(...inventory.observations);
   for (const change of inventory.changes)
     for (const side of [change.from, change.to])
-      if (side) result.sources.find((s) => s.id === side.sourceId)!.memberIds.push(change.id);
+      if (side) {
+        const source = result.sources.find((s) => s.id === side.sourceId)!;
+        if (source.status === 'available') source.memberIds.push(change.id);
+        else {
+          if (source.status !== 'partial' || source.provenance.kind !== 'file')
+            throw new UvGraphFailure('conflict');
+          const id = work.id('validated-file', [source.id, change.id]);
+          result.sources.push({
+            ...source,
+            id,
+            status: 'available',
+            reasons: [],
+            memberIds: [change.id],
+          });
+          side.sourceId = id;
+        }
+      }
 }
 /** Pure reconciliation of authentic U1 snapshots; coverage, not kind, reports completeness. */
 export function reconcileUvGraph(input: unknown): UvGraphResult {

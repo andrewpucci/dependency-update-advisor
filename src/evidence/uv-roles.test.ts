@@ -136,3 +136,27 @@ test('a marker rewrite is not hidden by the accompanying range exception', async
   );
   expect(r).toMatchObject({ kind: 'inventory', coverage: { status: 'partial' } });
 });
+
+test('preserves independently proven orbit direct role beside another mismatched declaration', async () => {
+  const manifest = uvManifest.replace('["orbit>=1"]', '["orbit>=1", "other>=1"]');
+  const lock = (v: string) =>
+    uvLock(v)
+      .replace('dependencies=[{name="orbit"}]', 'dependencies=[{name="orbit"},{name="other"}]')
+      .replace(
+        'requires-dist=[{name="orbit",specifier=">=1"}]',
+        'requires-dist=[{name="orbit",specifier=">=1"},{name="other",specifier=">=99"}]',
+      ) + uvPackage('other', '1');
+  const r = reconcileUvGraph(
+    await uvGraphFixture({
+      'base:pyproject.toml': manifest,
+      'head:pyproject.toml': manifest,
+      'base:uv.lock': lock('1'),
+      'head:uv.lock': lock('2'),
+    }),
+  );
+  expect(r.kind).toBe('inventory');
+  if (r.kind !== 'inventory') throw Error('expected inventory');
+  expect(r.coverage.status).toBe('partial');
+  expect(r.changes).toHaveLength(1);
+  expect(r.changes[0].role).toBe('direct');
+});

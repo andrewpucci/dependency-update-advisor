@@ -17,6 +17,7 @@ export type UvRoles = {
   nodes: Map<string, UvRoleNode>;
   associations: UvAssociation[];
   complete: boolean;
+  tableComplete: boolean;
   gaps: UvGap[];
   observations: UvObservation[];
 };
@@ -53,8 +54,17 @@ function reachability(
   let closed = true;
   const visit = (s: UvSelector, scope: string | null, guard: string | null, from: string) => {
     work.spend();
-    const target = resolveUvSelector(snapshot, s, work);
-    const nextGuard = target ? uvGuard(guard, s.marker, target) : undefined;
+    const target = resolveUvSelector(snapshot, s, work, result.tableComplete);
+    const declared =
+      from !== self.key ||
+      (!!target &&
+        result.associations.some((a) => {
+          work.spend();
+          return (
+            a.scope === scope && a.targets.includes(target.key) && selectorMatches(a.declaration, s)
+          );
+        }));
+    const nextGuard = target && declared ? uvGuard(guard, s.marker, target) : undefined;
     result.observations.push({
       kind: 'metadata',
       root: root.root,
@@ -105,7 +115,7 @@ function reachability(
     node.extras = scopes?.has(null)
       ? []
       : [...(scopes ?? [])].filter((s): s is string => s !== null).sort(byCodeUnit);
-    node.membershipComplete = !!scopes && (scopes.has(null) || closed) && result.complete;
+    node.membershipComplete = !!scopes && (scopes.has(null) || (closed && result.complete));
     if (node.role !== 'direct' && scopes && result.complete) node.role = 'transitive';
     if (!node.membershipComplete)
       result.gaps.push({
@@ -121,6 +131,7 @@ export function resolveUvSelector(
   snapshot: UvRootSide,
   s: UvSelector,
   work: GraphWork,
+  tableComplete = snapshot.lock.state === 'present',
 ): UvPackage | null {
   const candidates: UvPackage[] = [];
   for (const p of snapshot.lock.data?.packages ?? []) {
@@ -134,7 +145,7 @@ export function resolveUvSelector(
     candidates.push(p);
   }
   if (candidates.length !== 1) return null;
-  if (snapshot.lock.state !== 'present' && (s.version === null || s.source === null)) return null;
+  if (!tableComplete && (s.version === null || s.source === null)) return null;
   return candidates[0];
 }
 function mirrorMarker(d: UvDeclaration, scope: string | null, m: UvLockRequirement) {
@@ -203,7 +214,7 @@ function directMappings(snapshot: UvRootSide, self: UvPackage, roles: UvRoles, w
       continue;
     }
     for (const s of candidates) {
-      const target = resolveUvSelector(snapshot, s, work);
+      const target = resolveUvSelector(snapshot, s, work, roles.tableComplete);
       if (target) a.targets.push(target.key);
       else roles.complete = false;
     }
@@ -217,14 +228,20 @@ function directMappings(snapshot: UvRootSide, self: UvPackage, roles: UvRoles, w
         roles.complete = false;
     }
 }
-export function uvRoles(root: UvRootSnapshot, side: 'base' | 'head', work: GraphWork): UvRoles {
+export function uvRoles(
+  root: UvRootSnapshot,
+  side: 'base' | 'head',
+  work: GraphWork,
+  tableComplete = root[side].lock.state === 'present',
+): UvRoles {
   const snapshot = root[side],
     manifest = snapshot.manifest.data,
     lock = snapshot.lock.data;
   const result: UvRoles = {
     nodes: new Map(),
     associations: declarations(snapshot),
-    complete: snapshot.state === 'present',
+    complete: snapshot.manifest.state === 'present' && tableComplete,
+    tableComplete,
     gaps: [],
     observations: [],
   };
@@ -251,7 +268,7 @@ export function uvRoles(root: UvRootSnapshot, side: 'base' | 'head', work: Graph
   for (const a of result.associations)
     for (const key of a.targets) {
       const node = result.nodes.get(key);
-      if (node && result.complete) {
+      if (node) {
         node.role = 'direct';
         node.membershipComplete = a.scope === null;
       }
