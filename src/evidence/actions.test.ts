@@ -11,6 +11,8 @@ import { validateReviewPacket } from '../schema.js';
 import { formDecisionUnits, summarizeDecisionCoverage } from '../units.js';
 import { parseReviewConfig } from '../config.js';
 import { collectNpmInventory } from './npm.js';
+import { createGithubReadSession } from '../github-read.js';
+import { actionsScenario } from '../../tests/parity/actions-inventory.js';
 
 const repository = { id: 101, owner: 'example', name: 'consumer' };
 const BASE = 'b'.repeat(40),
@@ -711,3 +713,78 @@ test('real N1 plus Actions contributions preserve zero-member gaps and unperform
     expect(packet(result, npm).validated.ok).toBe(count === 127);
   }
 });
+
+test.each(['empty', 'omission'] as const)(
+  'PR 302-derived immutable scenario retains every paired update with %s comparison',
+  async (comparison) => {
+    const f = actionsScenario(comparison);
+    const opened = await createGithubReadSession(
+      { binding: f.binding, limits: f.readLimits },
+      { fetch: f.fetch, now: () => performance.now() },
+    );
+    if (opened.kind !== 'ready') throw new Error(`expected D1 session, got ${opened.kind}`);
+    const result = inventory(
+      await collectActionsInventory(
+        { binding: f.binding, limits: fixture().input.limits },
+        { session: opened.session },
+      ),
+    );
+    opened.session.close();
+    expect(result.coverage.status).toBe('complete');
+    expect(result.changes).toHaveLength(8);
+    expect(
+      result.changes.every(
+        (c) =>
+          c.kind === 'update' &&
+          c.from &&
+          c.to &&
+          'ref' in c.from &&
+          'ref' in c.to &&
+          c.from.refKind === 'sha' &&
+          c.to.refKind === 'sha' &&
+          c.from.ref !== c.to.ref,
+      ),
+    ).toBe(true);
+    expect(
+      new Set(result.changes.flatMap((c) => (c.to && 'workflow' in c.to ? [c.to.workflow] : [])))
+        .size,
+    ).toBe(5);
+    expect(
+      result.changes.filter(
+        (c) => c.to && 'action' in c.to && c.to.action === 'github/codeql-action/upload-sarif',
+      ),
+    ).toHaveLength(2);
+    for (const c of result.changes) {
+      if (c.ecosystem !== 'actions' || !c.from || !c.to) throw new Error('expected paired action');
+      const refs =
+        c.to.action === 'github/codeql-action/upload-sarif'
+          ? ['3', '4']
+          : c.to.action === 'chromaui/action'
+            ? ['5', '6']
+            : ['1', '2'];
+      expect(c.from.ref).toBe(refs[0].repeat(40));
+      expect(c.to.ref).toBe(refs[1].repeat(40));
+      expect(c.from.workflow).toBe(c.to.workflow);
+      expect(c.from.stepIndex).toBe(c.to.stepIndex);
+      expect(c.from.jobId).toBe('review');
+      expect(c.to.jobId).toBe('review');
+    }
+    const comparisons = result.sources.filter(
+      (s) => s.kind === 'comparison' && s.status === 'available',
+    );
+    expect(comparisons.length > 0).toBe(comparison === 'omission');
+    for (const source of comparisons)
+      for (const member of source.memberIds) {
+        const c = result.changes.find((c) => c.id === member)!;
+        expect(c.to && 'workflow' in c.to && c.to.workflow).toBe('.github/workflows/preview.yml');
+      }
+    const validated = packet(result).validated;
+    expect(validated.ok, JSON.stringify(validated)).toBe(true);
+    if (!validated.ok) throw new Error('expected packet');
+    expect(formDecisionUnits(validated.packet).units).toHaveLength(8);
+    expect(f.requests.some((url) => url.includes('/git/blobs/'))).toBe(true);
+    expect(
+      f.requests.every((url) => url.startsWith('https://api.github.com/repos/example/consumer/')),
+    ).toBe(true);
+  },
+);
