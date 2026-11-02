@@ -424,29 +424,29 @@ function orderedGaps(gaps: UvGap[]) {
   const unique = new Map(gaps.map((g) => [JSON.stringify(g), g]));
   return [...unique].sort(([a], [b]) => byCodeUnit(a, b)).map(([, value]) => value);
 }
+function rootFiles(root: UvRootSnapshot) {
+  return [root.base.manifest, root.base.lock, root.head.manifest, root.head.lock];
+}
 // Roots are atomic retention units. Omitted files keep diagnostics even with no retained packages.
 function prefix(state: State, count: number): UvMetadata {
   const full = state.output,
     roots = full.roots.slice(0, count),
     sourceIds = new Set<string>();
   for (const root of roots)
-    for (const side of [root.base, root.head])
-      for (const file of [side.manifest, side.lock])
-        if (file.sourceId) sourceIds.add(file.sourceId);
+    for (const file of rootFiles(root)) if (file.sourceId) sourceIds.add(file.sourceId);
   const gaps: UvGap[] = [
     ...full.gaps,
     { root: null, side: null, path: null, entry: null, reason: 'budget' },
   ];
   for (const root of full.roots.slice(count))
-    for (const side of [root.base, root.head])
-      for (const file of [side.manifest, side.lock])
-        gaps.push({
-          root: root.root,
-          side: file.side,
-          path: file.path,
-          entry: null,
-          reason: 'budget',
-        });
+    for (const file of rootFiles(root))
+      gaps.push({
+        root: root.root,
+        side: file.side,
+        path: file.path,
+        entry: null,
+        reason: 'budget',
+      });
   return {
     ...full,
     roots,
