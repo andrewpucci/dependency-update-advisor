@@ -132,6 +132,28 @@ function initial(metadata: UvMetadata, work: GraphWork): UvInventory {
     addGap(result, { root: null, side: null, path: null, entry: null, reason: 'unknown' });
   return result;
 }
+function attachFileMember(
+  result: UvInventory,
+  side: NonNullable<UvChange['from']>,
+  memberId: string,
+  work: GraphWork,
+) {
+  const source = result.sources.find((s) => s.id === side.sourceId)!;
+  if (source.status === 'available') source.memberIds.push(memberId);
+  else {
+    if (source.status !== 'partial' || source.provenance.kind !== 'file')
+      throw new UvGraphFailure('conflict');
+    const id = work.id('validated-file', [source.id, memberId]);
+    result.sources.push({
+      ...source,
+      id,
+      status: 'available',
+      reasons: [],
+      memberIds: [memberId],
+    });
+    side.sourceId = id;
+  }
+}
 function rootChanges(
   result: UvInventory,
   metadata: UvMetadata,
@@ -145,21 +167,7 @@ function rootChanges(
   for (const change of inventory.changes)
     for (const side of [change.from, change.to])
       if (side) {
-        const source = result.sources.find((s) => s.id === side.sourceId)!;
-        if (source.status === 'available') source.memberIds.push(change.id);
-        else {
-          if (source.status !== 'partial' || source.provenance.kind !== 'file')
-            throw new UvGraphFailure('conflict');
-          const id = work.id('validated-file', [source.id, change.id]);
-          result.sources.push({
-            ...source,
-            id,
-            status: 'available',
-            reasons: [],
-            memberIds: [change.id],
-          });
-          side.sourceId = id;
-        }
+        attachFileMember(result, side, change.id, work);
       }
   return { root, base: inventory.baseRoles, head: inventory.headRoles };
 }

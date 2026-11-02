@@ -40,6 +40,33 @@ function activatedSelectors(pkg: UvPackage, extras: string[]) {
     ),
   ];
 }
+function applyReachability(
+  root: UvRootSnapshot,
+  side: 'base' | 'head',
+  result: UvRoles,
+  reached: Map<string, Set<string | null>>,
+  closed: boolean,
+  work: GraphWork,
+) {
+  const snapshot = root[side];
+  for (const [key, node] of result.nodes) {
+    work.spend();
+    const scopes = reached.get(key);
+    node.extras = scopes?.has(null)
+      ? []
+      : [...(scopes ?? [])].filter((s): s is string => s !== null).sort(byCodeUnit);
+    node.membershipComplete = !!scopes && (scopes.has(null) || (closed && result.complete));
+    if (node.role !== 'direct' && scopes && result.complete) node.role = 'transitive';
+    if (!node.membershipComplete)
+      result.gaps.push({
+        root: root.root,
+        side,
+        path: snapshot.lock.path,
+        entry: key,
+        reason: 'unsupported',
+      });
+  }
+}
 function reachability(
   root: UvRootSnapshot,
   side: 'base' | 'head',
@@ -109,23 +136,7 @@ function reachability(
     for (const s of activatedSelectors(node.pkg, state.extras))
       visit(s, state.scope, state.guard, node.pkg.key);
   }
-  for (const [key, node] of result.nodes) {
-    work.spend();
-    const scopes = reached.get(key);
-    node.extras = scopes?.has(null)
-      ? []
-      : [...(scopes ?? [])].filter((s): s is string => s !== null).sort(byCodeUnit);
-    node.membershipComplete = !!scopes && (scopes.has(null) || (closed && result.complete));
-    if (node.role !== 'direct' && scopes && result.complete) node.role = 'transitive';
-    if (!node.membershipComplete)
-      result.gaps.push({
-        root: root.root,
-        side,
-        path: snapshot.lock.path,
-        entry: key,
-        reason: 'unsupported',
-      });
-  }
+  applyReachability(root, side, result, reached, closed, work);
 }
 export function resolveUvSelector(
   snapshot: UvRootSide,
@@ -192,33 +203,42 @@ function selectorMatches(d: UvDeclaration, s: UvSelector) {
     (d.marker === null || s.marker === d.marker)
   );
 }
+function mapAssociation(
+  snapshot: UvRootSide,
+  self: UvPackage,
+  roles: UvRoles,
+  work: GraphWork,
+  unused: UvLockRequirement[],
+  a: UvAssociation,
+) {
+  work.spend();
+  const mirror = unused.findIndex((m) => {
+    work.spend();
+    return mirrored(a.declaration, a.scope, m);
+  });
+  if (mirror < 0) {
+    roles.complete = false;
+    return;
+  }
+  unused.splice(mirror, 1);
+  const candidates = selectors(self, a.scope).filter((s) => {
+    work.spend();
+    return selectorMatches(a.declaration, s);
+  });
+  if (!candidates.length) {
+    roles.complete = false;
+    return;
+  }
+  for (const s of candidates) {
+    const target = resolveUvSelector(snapshot, s, work, roles.tableComplete);
+    if (target) a.targets.push(target.key);
+    else roles.complete = false;
+  }
+}
 function directMappings(snapshot: UvRootSide, self: UvPackage, roles: UvRoles, work: GraphWork) {
   const unused = [...(self.metadata?.requiresDist ?? [])];
-  for (const a of roles.associations) {
-    work.spend();
-    const mirror = unused.findIndex((m) => {
-      work.spend();
-      return mirrored(a.declaration, a.scope, m);
-    });
-    if (mirror < 0) {
-      roles.complete = false;
-      continue;
-    }
-    unused.splice(mirror, 1);
-    const candidates = selectors(self, a.scope).filter((s) => {
-      work.spend();
-      return selectorMatches(a.declaration, s);
-    });
-    if (!candidates.length) {
-      roles.complete = false;
-      continue;
-    }
-    for (const s of candidates) {
-      const target = resolveUvSelector(snapshot, s, work, roles.tableComplete);
-      if (target) a.targets.push(target.key);
-      else roles.complete = false;
-    }
-  }
+  for (const association of roles.associations)
+    mapAssociation(snapshot, self, roles, work, unused, association);
   if (unused.length) roles.complete = false;
   // A lock selector without a matching manifest declaration cannot prove direct exclusion.
   for (const scope of [null, ...(self.optionalDependencies ?? []).map((e) => e.extra)])
@@ -226,6 +246,16 @@ function directMappings(snapshot: UvRootSide, self: UvPackage, roles: UvRoles, w
       work.spend();
       if (!roles.associations.some((a) => a.scope === scope && selectorMatches(a.declaration, s)))
         roles.complete = false;
+    }
+}
+function markDirectAssociations(result: UvRoles) {
+  for (const a of result.associations)
+    for (const key of a.targets) {
+      const node = result.nodes.get(key);
+      if (node) {
+        node.role = 'direct';
+        node.membershipComplete = a.scope === null;
+      }
     }
 }
 export function uvRoles(
@@ -265,14 +295,7 @@ export function uvRoles(
     result.complete = false;
   if (self.metadata?.requiresDist === null) result.complete = false;
   directMappings(snapshot, self, result, work);
-  for (const a of result.associations)
-    for (const key of a.targets) {
-      const node = result.nodes.get(key);
-      if (node) {
-        node.role = 'direct';
-        node.membershipComplete = a.scope === null;
-      }
-    }
+  markDirectAssociations(result);
   if (!result.complete)
     result.gaps.push({
       root: root.root,
@@ -327,6 +350,45 @@ function corresponding(
       ),
   );
 }
+function declarationMembers(
+  a: UvAssociation[],
+  b: UvAssociation[],
+  base: UvRoles,
+  head: UvRoles,
+  changes: UvChange[],
+  root: UvRootSnapshot,
+) {
+  let members =
+    a.length === 1 && b.length === 1 && base.complete && head.complete
+      ? corresponding(a[0], b[0], changes, root)
+      : [];
+  if ((a.length === 1) !== (b.length === 1)) {
+    const declaration = a[0] ?? b[0],
+      side = a.length ? 'from' : 'to';
+    const complete =
+      (base.complete || root.base.state === 'absent') &&
+      (head.complete || root.head.state === 'absent');
+    if (complete)
+      members = changes.filter((c) => {
+        const instance = c[side];
+        if (c.role !== 'direct' || !instance || instance.root !== root.root) return false;
+        const represented =
+          c.kind === (side === 'from' ? 'removal' : 'addition') ||
+          (c.from && c.to && !isDeepStrictEqual(c.from.extras, c.to.extras));
+        return (
+          represented &&
+          declaration.targets.includes(
+            JSON.stringify([
+              instance.name,
+              instance.version,
+              { kind: 'registry', url: instance.source.identity },
+            ]),
+          )
+        );
+      });
+  }
+  return members;
+}
 export function uvDeclarationChanges(
   root: UvRootSnapshot,
   base: UvRoles,
@@ -348,35 +410,7 @@ export function uvDeclarationChanges(
   for (const key of [...keys].sort(byCodeUnit)) {
     const a = removed.filter((x) => declarationKey(x, false) === key),
       b = added.filter((x) => declarationKey(x, false) === key);
-    let members =
-      a.length === 1 && b.length === 1 && base.complete && head.complete
-        ? corresponding(a[0], b[0], changes, root)
-        : [];
-    if ((a.length === 1) !== (b.length === 1)) {
-      const declaration = a[0] ?? b[0],
-        side = a.length ? 'from' : 'to';
-      const complete =
-        (base.complete || root.base.state === 'absent') &&
-        (head.complete || root.head.state === 'absent');
-      if (complete)
-        members = changes.filter((c) => {
-          const instance = c[side];
-          if (c.role !== 'direct' || !instance || instance.root !== root.root) return false;
-          const represented =
-            c.kind === (side === 'from' ? 'removal' : 'addition') ||
-            (c.from && c.to && !isDeepStrictEqual(c.from.extras, c.to.extras));
-          return (
-            represented &&
-            declaration.targets.includes(
-              JSON.stringify([
-                instance.name,
-                instance.version,
-                { kind: 'registry', url: instance.source.identity },
-              ]),
-            )
-          );
-        });
-    }
+    const members = declarationMembers(a, b, base, head, changes, root);
     const explained = members.length === 1;
     observations.push({
       kind: 'declaration',

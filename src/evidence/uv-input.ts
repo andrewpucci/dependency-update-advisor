@@ -69,9 +69,29 @@ function graphWork(max: number): GraphWork {
     },
   };
 }
+type GraphFrame = { value: unknown; exit?: boolean };
+function queueProperties(value: object, stack: GraphFrame[]) {
+  const arr = Array.isArray(value);
+  need(arr || isPlainObject(value));
+  if (arr) need(Object.getPrototypeOf(value) === Array.prototype);
+  const descriptors = Object.getOwnPropertyDescriptors(value),
+    keys = Reflect.ownKeys(descriptors);
+  if (arr) need(keys.length === value.length + 1);
+  let bytes = 0;
+  for (const key of keys) {
+    if (arr && key === 'length') continue;
+    need(typeof key === 'string' && !['__proto__', 'constructor', 'prototype'].includes(key));
+    const d = descriptors[key];
+    need('value' in d && d.enumerable);
+    if (arr) need(/^(?:0|[1-9]\d*)$/u.test(key) && Number(key) < value.length);
+    bytes += Buffer.byteLength(key);
+    stack.push({ value: d.value });
+  }
+  return bytes;
+}
 /** Revisit aliases for work accounting, but reject cycles before JSON serialization. */
 export function checkGraphData(value: unknown, work: GraphWork, maxBytes: number) {
-  const stack: { value: unknown; exit?: boolean }[] = [{ value }],
+  const stack: GraphFrame[] = [{ value }],
     active = new Set<object>();
   let bytes = 0;
   while (stack.length) {
@@ -92,21 +112,7 @@ export function checkGraphData(value: unknown, work: GraphWork, maxBytes: number
     need(!active.has(next));
     active.add(next);
     stack.push({ value: next, exit: true });
-    const arr = Array.isArray(next);
-    need(arr || isPlainObject(next));
-    if (arr) need(Object.getPrototypeOf(next) === Array.prototype);
-    const descriptors = Object.getOwnPropertyDescriptors(next),
-      keys = Reflect.ownKeys(descriptors);
-    if (arr) need(keys.length === (next as unknown[]).length + 1);
-    for (const key of keys) {
-      if (arr && key === 'length') continue;
-      need(typeof key === 'string' && !['__proto__', 'constructor', 'prototype'].includes(key));
-      const d = descriptors[key];
-      need('value' in d && d.enumerable);
-      if (arr) need(/^(?:0|[1-9]\d*)$/u.test(key) && Number(key) < (next as unknown[]).length);
-      bytes += Buffer.byteLength(key);
-      stack.push({ value: d.value });
-    }
+    bytes += queueProperties(next, stack);
   }
   if (Buffer.byteLength(JSON.stringify(value)) > maxBytes) throw new UvGraphFailure('budget');
 }
@@ -236,6 +242,23 @@ function lockData(l: UvLock) {
   l.packages.forEach(packageData);
   need(new Set(l.packages.map((p) => p.key)).size === l.packages.length);
 }
+function fileSource(file: UvFileSnapshot<UvManifest | UvLock>, m: UvMetadata) {
+  if (file.sourceId !== null) {
+    const source = m.sources.find((s) => s.id === file.sourceId);
+    need(source);
+    for (const key of ['side', 'path', 'repository', 'commitSha', 'blobSha', 'treeSha'] as const)
+      need(isDeepStrictEqual(source[key], file[key]));
+    need(source.kind === (file.state === 'absent' ? 'absence' : 'file'));
+    need(
+      source.status ===
+        (file.state === 'present' || file.state === 'absent'
+          ? 'available'
+          : file.state === 'partial'
+            ? 'partial'
+            : 'unavailable'),
+    );
+  } else need(file.state === 'unavailable');
+}
 function fileData(
   file: UvFileSnapshot<UvManifest | UvLock>,
   m: UvMetadata,
@@ -264,21 +287,7 @@ function fileData(
     ),
   );
   need(safe(file.id) && ['present', 'partial', 'absent', 'unavailable'].includes(file.state));
-  if (file.sourceId !== null) {
-    const source = m.sources.find((s) => s.id === file.sourceId);
-    need(source);
-    for (const key of ['side', 'path', 'repository', 'commitSha', 'blobSha', 'treeSha'] as const)
-      need(isDeepStrictEqual(source[key], file[key]));
-    need(source.kind === (file.state === 'absent' ? 'absence' : 'file'));
-    need(
-      source.status ===
-        (file.state === 'present' || file.state === 'absent'
-          ? 'available'
-          : file.state === 'partial'
-            ? 'partial'
-            : 'unavailable'),
-    );
-  } else need(file.state === 'unavailable');
+  fileSource(file, m);
   if (file.state === 'present' || file.state === 'partial') {
     need(sha(file.blobSha) && file.treeSha === null && file.data !== null);
     if (filename === 'uv.lock') lockData(file.data as UvLock);
@@ -286,6 +295,22 @@ function fileData(
   } else {
     need(file.data === null);
     if (file.state === 'absent') need(sha(file.treeSha) && file.blobSha === null);
+  }
+}
+function rootData(r: UvMetadata['roots'][number], m: UvMetadata) {
+  keys(r, ['id', 'root', 'configured', 'base', 'head']);
+  need(path(r.root) && typeof r.configured === 'boolean');
+  for (const side of ['base', 'head'] as const) {
+    keys(r[side], ['state', 'manifest', 'lock']);
+    need(['present', 'partial', 'absent', 'unavailable'].includes(r[side].state));
+    fileData(r[side].manifest, m, r.root, side, 'pyproject.toml');
+    fileData(r[side].lock, m, r.root, side, 'uv.lock');
+    const a = r[side].manifest.state,
+      b = r[side].lock.state;
+    need(
+      r[side].state ===
+        (a === b && ['present', 'absent', 'unavailable'].includes(a) ? a : 'partial'),
+    );
   }
 }
 function metadataData(m: UvMetadata, binding: ReviewBinding) {
@@ -329,22 +354,7 @@ function metadataData(m: UvMetadata, binding: ReviewBinding) {
     need(g.entry === null || safe(g.entry));
     need(uvReasons.includes(g.reason));
   }
-  for (const r of m.roots) {
-    keys(r, ['id', 'root', 'configured', 'base', 'head']);
-    need(path(r.root) && typeof r.configured === 'boolean');
-    for (const side of ['base', 'head'] as const) {
-      keys(r[side], ['state', 'manifest', 'lock']);
-      need(['present', 'partial', 'absent', 'unavailable'].includes(r[side].state));
-      fileData(r[side].manifest, m, r.root, side, 'pyproject.toml');
-      fileData(r[side].lock, m, r.root, side, 'uv.lock');
-      const a = r[side].manifest.state,
-        b = r[side].lock.state;
-      need(
-        r[side].state ===
-          (a === b && ['present', 'absent', 'unavailable'].includes(a) ? a : 'partial'),
-      );
-    }
-  }
+  for (const root of m.roots) rootData(root, m);
   const files = m.roots.flatMap((r) => [
     r.base.manifest,
     r.base.lock,

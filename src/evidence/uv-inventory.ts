@@ -157,6 +157,22 @@ function change(
 function tablesComplete(root: UvRootSnapshot, side: 'base' | 'head') {
   return root[side].state === 'absent' || root[side].lock.state === 'present';
 }
+function oneSidedChanges(
+  metadata: UvMetadata,
+  root: UvRootSnapshot,
+  rows: UvInstance[],
+  side: 'base' | 'head',
+  opposingComplete: boolean,
+  work: GraphWork,
+  changes: UvChange[],
+) {
+  if (!opposingComplete) return;
+  for (const row of rows)
+    if (row.available)
+      changes.push(
+        change(metadata, root, side === 'base' ? row : null, side === 'head' ? row : null, work),
+      );
+}
 function unmatched(
   metadata: UvMetadata,
   root: UvRootSnapshot,
@@ -193,10 +209,8 @@ function unmatched(
           key,
         ),
       );
-    for (const row of a)
-      if (row.available && complete.head) changes.push(change(metadata, root, row, null, work));
-    for (const row of b)
-      if (row.available && complete.base) changes.push(change(metadata, root, null, row, work));
+    oneSidedChanges(metadata, root, a, 'base', complete.head, work, changes);
+    oneSidedChanges(metadata, root, b, 'head', complete.base, work, changes);
   }
 }
 function edges(node: UvRoleNode) {
