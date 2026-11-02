@@ -50,6 +50,22 @@ that action `github/codeql-action/upload-sarif`. A public `actions/setup-node`
 SBOM lists an `actions/publish-action@v0.4.0` reference as version `0.4.0`.
 These are current-state observations, not archived PR-time responses.
 
+### X1 Synthetic Immutable Workflow Fixture
+
+[The Actions inventory fixture](actions-inventory.ts) derives its three action
+identities and omission shape from the documented scenario. Its repository,
+five workflow names, eight occurrences, full-SHA ref strings, object data,
+and API responses are synthetic. The files contain ref-only bumps without
+step IDs, including repeated setup references and the CodeQL subpath action.
+
+The fixture runs through the real D1 tree/blob reader, X1 collector, T4 packet
+validator, and T5 partitioner. Both an empty comparison and a synthetic
+comparison restricted to the preview workflow retain all eight paired
+updates. No comparison record names CodeQL, and evidence in one workflow
+cannot corroborate another. This verifies the omission fallback and occurrence
+accounting; it does not replay the historical comparison payload, reproduce
+all original PR contents, or certify live research, publication, or cutover.
+
 ## Public npm Unpaired Additions: PR #307
 
 Provenance: the approved parity contract and source-local pilot note identify
