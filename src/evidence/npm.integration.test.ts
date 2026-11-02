@@ -1,6 +1,7 @@
 import { expect, test } from 'vite-plus/test';
 import { createGithubReadSession } from '../github-read.js';
 import { collectNpmInventory } from './npm.js';
+import { proveNpmRelationships } from './npm-graph.js';
 import { validateReviewPacket } from '../schema.js';
 import { formDecisionUnits, summarizeDecisionCoverage } from '../units.js';
 import { parseReviewConfig } from '../config.js';
@@ -166,4 +167,27 @@ test('mixed packets keep an independent Actions inventory gap visible', async ()
     inventoryGaps: [{ ecosystem: 'actions', reasons: ['permission'] }],
     outcome: { kind: 'decision_incomplete' },
   });
+});
+
+test('real N1 graph proofs validate through T4 and group exact changed members in T5', async () => {
+  const f = await collect(2);
+  const graph = proveNpmRelationships({
+    inventory: f.result,
+    binding: f.fixture.binding,
+    limits: { maxGraphWork: 100_000, maxRetainedBytes: 2_000_000 },
+  });
+  expect(graph.kind).toBe('inventory');
+  if (graph.kind !== 'inventory') throw new Error('expected graph');
+  expect(graph.relationships).toHaveLength(2);
+  const packet = validateReviewPacket(
+    { ...f.candidate, relationships: graph.relationships },
+    f.fixture.expected,
+  );
+  expect(packet.ok, JSON.stringify(packet)).toBe(true);
+  if (!packet.ok) throw new Error('expected packet');
+  const units = formDecisionUnits(packet.packet);
+  expect(units.units).toHaveLength(1);
+  expect(units.units[0]).toMatchObject({ kind: 'direct_group', memberCount: 3 });
+  expect(units.units[0].memberIds.slice().sort()).toEqual(f.result.changes.map((c) => c.id).sort());
+  expect(graph.changes.every((c) => c.evidence.installScript.status === 'unavailable')).toBe(true);
 });
