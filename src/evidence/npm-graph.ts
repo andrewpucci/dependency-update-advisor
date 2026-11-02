@@ -10,6 +10,13 @@ import {
 } from '../schema.js';
 import type { Finding } from '../policy.js';
 import type { NpmInventoryResult, NpmRootSide, NpmNode } from './npm.js';
+import {
+  createNpmRegistryReader,
+  interpretNpmLifecycle,
+  type NpmRegistryDependencies,
+  type NpmMetadataResult,
+  type NpmLifecycleSide,
+} from './npm-registry.js';
 
 type Inventory = Extract<NpmInventoryResult, { kind: 'inventory' }>;
 type NpmProof = Extract<RelationshipProof, { ecosystem: 'npm' }>;
@@ -102,6 +109,34 @@ function checkSide(
       );
   }
 }
+function checkChanges(inventory: Inventory) {
+  const ids = new Map(inventory.sources.map((source) => [source.id, source]));
+  need(ids.size === inventory.sources.length);
+  for (const change of inventory.changes) {
+    need(change.ecosystem === 'npm');
+    if (!resolved(change)) continue;
+    for (const [revision, side] of [
+      ['base', change.from],
+      ['head', change.to],
+    ] as const) {
+      if (!side) continue;
+      const source = ids.get(side.sourceId);
+      need(
+        source?.kind === 'file' &&
+          source.status === 'available' &&
+          source.provenance.kind === 'file' &&
+          source.memberIds.includes(change.id),
+      );
+      need(source.provenance.revision === revision);
+      const snapshot = inventory.roots.find((root) => root.root === side.root)?.[revision];
+      if (!snapshot || snapshot.state !== 'present') continue;
+      const node = own(snapshot.packages, side.lockPath)?.instance;
+      need(node && isDeepStrictEqual({ ...node, sourceId: '' }, { ...side, sourceId: '' }));
+      const lock = ids.get(snapshot.lockId!);
+      need(lock && isDeepStrictEqual(lock.provenance, source.provenance));
+    }
+  }
+}
 function parse(value: unknown) {
   need(value && typeof value === 'object' && !types.isProxy(value));
   const descriptors = Object.getOwnPropertyDescriptors(value);
@@ -124,6 +159,7 @@ function parse(value: unknown) {
   if (inventory.kind === 'inventory') {
     need(isDeepStrictEqual(binding, inventory.binding));
     need(new Set(inventory.changes.map((c) => c.id)).size === inventory.changes.length);
+    checkChanges(inventory);
     for (const root of inventory.roots) {
       checkSide(root.root, root.base, 'base', inventory);
       checkSide(root.root, root.head, 'head', inventory);
@@ -261,7 +297,8 @@ function proofFor(
     ecosystem: 'npm',
     side,
     sourceId: start.sourceId,
-    path,
+    // N1 snapshots cite the original file record; endpoints may cite an equivalent member-scoped copy.
+    path: path.map((step) => ({ ...step, sourceId: start.sourceId })),
   };
 }
 function knownSharing(inventory: Inventory, proof: NpmProof, spend: () => void) {
@@ -299,20 +336,116 @@ function collectProofs(inventory: Inventory, spend: () => void) {
   }
   return { relationships, findings };
 }
+function graphResult({ inventory, limits, spend }: ReturnType<typeof parse>): NpmGraphResult {
+  if (inventory.kind !== 'inventory') return freeze(structuredClone(inventory));
+  const result = { ...inventory, ...collectProofs(inventory, spend) };
+  if (Buffer.byteLength(JSON.stringify(result)) > limits.maxRetainedBytes)
+    throw new GraphFailure('budget');
+  return freeze(structuredClone(result));
+}
+function failure(error: unknown): NpmGraphResult {
+  return error instanceof GraphFailure
+    ? { kind: 'unavailable', reason: error.reason }
+    : { kind: 'invalid' };
+}
 /** Uses authentic N1 snapshots and an independently verified binding; no I/O occurs.
  * Limits count cumulative graph/validation work and UTF-8 retained bytes. Output is detached and frozen.
  */
 export function proveNpmRelationships(value: unknown): NpmGraphResult {
   try {
-    const { inventory, limits, spend } = parse(value);
-    if (inventory.kind !== 'inventory') return freeze(structuredClone(inventory));
-    const result = { ...inventory, ...collectProofs(inventory, spend) };
-    if (Buffer.byteLength(JSON.stringify(result)) > limits.maxRetainedBytes)
-      throw new GraphFailure('budget');
+    return graphResult(parse(value));
+  } catch (error) {
+    return failure(error);
+  }
+}
+async function lifecycleInput(
+  graph: Inventory,
+  change: Resolved,
+  reader: { read: (value: unknown) => Promise<NpmMetadataResult> },
+) {
+  const result: { base?: NpmLifecycleSide; head?: NpmLifecycleSide } = {};
+  for (const [side, instance] of [
+    ['base', change.from],
+    ['head', change.to],
+  ] as const) {
+    if (!instance) continue;
+    const snapshot = graph.roots.find((root) => root.root === instance.root)?.[side];
+    const node =
+      snapshot?.state === 'present' ? own(snapshot.packages, instance.lockPath) : undefined;
+    if (!node?.instance) continue;
+    const metadata = await reader.read({
+      name: instance.name,
+      version: instance.version,
+      source: instance.source,
+      integrity: node.integrity,
+    });
+    result[side] = { node, metadata };
+  }
+  return result;
+}
+function packetBounds(graph: Extract<NpmGraphResult, { kind: 'inventory' }>) {
+  const contribution = {
+    changes: graph.changes,
+    sources: graph.sources,
+    relationships: graph.relationships,
+    findings: graph.findings,
+  };
+  return (
+    graph.changes.length <= PACKET_LIMITS.changes &&
+    graph.sources.length <= PACKET_LIMITS.sources &&
+    graph.relationships.length <= PACKET_LIMITS.relationships &&
+    graph.findings.length <= PACKET_LIMITS.findings &&
+    Buffer.byteLength(JSON.stringify(contribution)) <= PACKET_LIMITS.bytes
+  );
+}
+/** Enriches authentic N1 evidence through one bounded attempt, retaining exact inventory/source identities.
+ * Dependencies are trusted transport/clock injection. Invalid or overflowing results expose no partial packet.
+ * Total registry duration starts after bounded input validation and includes graph traversal and metadata reads.
+ */
+export async function enrichNpmEvidence(
+  value: unknown,
+  deps: NpmRegistryDependencies,
+): Promise<NpmGraphResult> {
+  try {
+    const parsed = parse(value);
+    if (parsed.inventory.kind !== 'inventory') return graphResult(parsed);
+    const reader = createNpmRegistryReader((value as { limits: unknown }).limits, deps);
+    if (reader.kind !== 'ready') return { kind: 'invalid' };
+    const graph = graphResult(parsed);
+    if (graph.kind !== 'inventory') return graph;
+    if (!packetBounds(graph)) return { kind: 'unavailable', reason: 'budget' };
+    const changes: PacketChange[] = [],
+      sources = [...graph.sources],
+      findings = [...graph.findings];
+    for (const change of [...graph.changes].sort((a, b) => (a.id < b.id ? -1 : 1))) {
+      if (!resolved(change)) {
+        changes.push(change);
+        continue;
+      }
+      const input = await lifecycleInput(graph, change, reader);
+      const interpreted = interpretNpmLifecycle(change, input);
+      changes.push(interpreted.change);
+      sources.push(...interpreted.sources);
+      findings.push(...interpreted.findings);
+    }
+    const result = {
+      ...graph,
+      changes,
+      roots: [...graph.roots].sort((a, b) => (a.root < b.root ? -1 : 1)),
+      sources: sources.sort((a, b) => (a.id < b.id ? -1 : 1)),
+      findings: findings.sort((a, b) => (a.id < b.id ? -1 : 1)),
+    };
+    need(
+      new Set(sources.map((s) => s.id)).size === sources.length &&
+        new Set(findings.map((f) => f.id)).size === findings.length,
+    );
+    if (
+      !packetBounds(result) ||
+      Buffer.byteLength(JSON.stringify(result)) > parsed.limits.maxRetainedBytes
+    )
+      return { kind: 'unavailable', reason: 'budget' };
     return freeze(structuredClone(result));
   } catch (error) {
-    return error instanceof GraphFailure
-      ? { kind: 'unavailable', reason: error.reason }
-      : { kind: 'invalid' };
+    return failure(error);
   }
 }

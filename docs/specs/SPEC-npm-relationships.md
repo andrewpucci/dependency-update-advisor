@@ -345,6 +345,43 @@ missing install-script evidence; neither an anchor nor a successful lookup
 for a different instance can erase them. Existing N1, T4, T5, and C3 checks
 must continue to pass. No new numeric quality threshold is proposed.
 
+## Implemented N2 Handoff
+
+`src/evidence/npm-graph.ts` exports `proveNpmRelationships(input)` for pure
+relationship collection and `enrichNpmEvidence(input, dependencies)` as the
+single asynchronous N2 handoff. Input has independently verified `binding`,
+authentic N1 `inventory`, and explicit `limits`. Non-inventory N1 outcomes
+propagate; successful output retains the N1 fields and adds `relationships`
+and `findings`. Output is detached and deeply frozen. Invalid input or a
+result that cannot fit returns no usable partial contribution.
+
+Limits require `maxGraphWork`, `maxRetainedBytes`, `maxRequests`,
+`maxResponseBytes`, `maxTotalBytes`, `maxJsonEntries`, `maxJsonDepth`,
+`requestTimeoutMs`, and `totalTimeoutMs`, all positive safe integers. Graph
+work includes structural input inspection and edge/slot/visit processing.
+Retention and response limits count UTF-8 bytes. Registry entries count JSON
+properties/array elements cumulatively; depth counts containers. Total
+registry duration starts after bounded input validation and includes graph
+traversal and metadata reads. Count/byte budgets preserve request order;
+duration/cancellation yield explicit fixed-reason gaps.
+
+Dependencies supply trusted `fetch`, monotonic `now`, and optional `signal`.
+The registry module exports `createNpmRegistryReader(limits, dependencies)`
+with sequential, attempt-local `read(request)`, and pure
+`interpretNpmLifecycle(change, sides)`. A request has exact `name`, `version`,
+`source`, and lockfile `integrity`. A successful metadata result carries a
+frozen full document, constructed URL, and validated name/version. Each use
+rechecks integrity, including after cache reuse. The reader requests full
+JSON and rejects abbreviated content types or documents lacking the full
+version `_id`. This is reusable by S3 without implementing its research.
+
+T4 still validates the assembled packet. N2 retains original change-side
+source IDs. Proof intermediates may cite the equivalent immutable lock source
+already used by both endpoints; endpoints with different source IDs remain
+unproven under the current contract. No source identity or membership limit
+is rewritten to enable grouping. General research, assessment/rendering,
+workflow publication, adoption, and cutover remain separate gates.
+
 ## Commands
 
 For documentation-only planning changes:
