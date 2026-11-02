@@ -153,3 +153,31 @@ test('a self-project selector condition rewrite is not complete zero-change inve
   expect(r.coverage.status).toBe('partial');
   expect(r.observations.some((o) => o.reason === 'unrepresented_metadata')).toBe(true);
 });
+
+test('membership shift must not explain away an independent self-selector marker rewrite', async () => {
+  const manifest = (core: boolean) =>
+    `[project]\nname="project"\nrequires-python=">=3.11"\ndependencies=${core ? '["orbit>=1"]' : '[]'}\n[project.optional-dependencies]\ndocs=["orbit>=1"]\n`;
+  const lock = (core: boolean) =>
+    `version=1\nrevision=3\nrequires-python=">=3.11"\n[[package]]\nname="project"\nsource={editable="."}\n${core ? 'dependencies=[{name="orbit"}]\n' : ''}[package.optional-dependencies]\ndocs=[{name="orbit"${core ? '' : ',marker="sys_platform == \'linux\'"'}}]\n[package.metadata]\nprovides-extras=["docs"]\nrequires-dist=[${core ? '{name="orbit",specifier=">=1"},' : ''}{name="orbit",specifier=">=1",marker="extra == 'docs'"}]\n${uvPackage('orbit', '1')}`;
+  const input = await uvGraphFixture({
+    'base:pyproject.toml': manifest(true),
+    'head:pyproject.toml': manifest(false),
+    'base:uv.lock': lock(true),
+    'head:uv.lock': lock(false),
+  });
+  expect(input.metadata.gaps).toEqual([]);
+  const r = reconcileUvGraph(input);
+  expect(r.kind).toBe('inventory');
+  if (r.kind !== 'inventory') throw Error('inventory');
+  expect(r.changes).toHaveLength(1);
+  expect(r.changes[0]).toMatchObject({
+    from: { version: '1', extras: [] },
+    to: { version: '1', extras: ['docs'] },
+  });
+  expect(r.coverage.status).toBe('partial');
+  expect(
+    r.observations.some(
+      (o) => o.reason === 'unrepresented_metadata' && o.entry === 'project-selectors',
+    ),
+  ).toBe(true);
+});

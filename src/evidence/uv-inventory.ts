@@ -270,6 +270,31 @@ function selfEdges(root: UvRootSnapshot, side: 'base' | 'head', work: GraphWork)
     for (const s of e.declarations) record(e.extra, s);
   return edges;
 }
+function membershipExplained(
+  edge: ReturnType<typeof selfEdges>[number],
+  other: ReturnType<typeof selfEdges>,
+  change: UvChange,
+  side: 'from' | 'to',
+  work: GraphWork,
+) {
+  if (!change.from || !change.to || isDeepStrictEqual(change.from.extras, change.to.extras))
+    return false;
+  const opposite = side === 'from' ? change.to : change.from;
+  const target = JSON.stringify([
+    opposite.name,
+    opposite.version,
+    { kind: 'registry', url: opposite.source.identity },
+  ]);
+  return other.some((e) => {
+    work.spend();
+    return (
+      e.target === target &&
+      e.selector.name === edge.selector.name &&
+      e.selector.marker === edge.selector.marker &&
+      isDeepStrictEqual(e.selector.extra ?? [], edge.selector.extra ?? [])
+    );
+  });
+}
 function selfEdgeChanges(root: UvRootSnapshot, changes: UvChange[], work: GraphWork) {
   const before = selfEdges(root, 'base', work),
     after = selfEdges(root, 'head', work);
@@ -302,7 +327,7 @@ function selfEdgeChanges(root: UvRootSnapshot, changes: UvChange[], work: GraphW
       return (
         sameHeader ||
         addedOrRemoved ||
-        (c.from && c.to && !isDeepStrictEqual(c.from.extras, c.to.extras)) ||
+        membershipExplained(edge, other, c, side, work) ||
         (side === 'from' ? root.head.state === 'absent' : root.base.state === 'absent')
       );
     });
