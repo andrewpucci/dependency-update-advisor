@@ -160,3 +160,44 @@ test('preserves independently proven orbit direct role beside another mismatched
   expect(r.changes).toHaveLength(1);
   expect(r.changes[0].role).toBe('direct');
 });
+test('a dropped duplicate declaration stays an unrepresented declaration change', async () => {
+  const twice = uvManifest.replace('"orbit>=1"', '"orbit>=1","orbit>=1"');
+  const r = reconcileUvGraph(
+    await uvGraphFixture({
+      'base:pyproject.toml': twice,
+      'base:uv.lock': uvLock('1').replace(
+        'requires-dist=[{name="orbit",specifier=">=1"}]',
+        'requires-dist=[{name="orbit",specifier=">=1"},{name="orbit",specifier=">=1"}]',
+      ),
+      'head:uv.lock': uvLock('1'),
+    }),
+  );
+  expect(r.kind).toBe('inventory');
+  if (r.kind !== 'inventory') throw new Error('inventory');
+  expect(r.coverage).toMatchObject({ status: 'partial', reasons: ['unsupported'] });
+  expect(r.observations.some((o) => o.reason === 'unrepresented_declaration')).toBe(true);
+});
+test('one declaration replaced by several same-key declarations is not a range rewrite', async () => {
+  const manifest = (x: string, y: boolean) =>
+    `[project]\nname="project"\nrequires-python=">=3.11"\ndependencies=[]\n[project.optional-dependencies]\nx=[${x}]\n${y ? 'y=["orbit>=1"]\n' : ''}`;
+  const lock = (x: string[], y: boolean) =>
+    `version=1\nrevision=3\nrequires-python=">=3.11"\n[[package]]\nname="project"\nsource={editable="."}\n[package.optional-dependencies]\nx=[{name="orbit"}]\n${y ? 'y=[{name="orbit"}]\n' : ''}[package.metadata]\nprovides-extras=[${y ? '"x","y"' : '"x"'}]\nrequires-dist=[${[
+      ...x.map((s) => `{name="orbit",specifier="${s}",marker="extra == 'x'"}`),
+      ...(y ? [`{name="orbit",specifier=">=1",marker="extra == 'y'"}`] : []),
+    ].join(',')}]\n${uvPackage('orbit', '1')}`;
+  const r = reconcileUvGraph(
+    await uvGraphFixture({
+      'base:pyproject.toml': manifest('"orbit>=1"', false),
+      'head:pyproject.toml': manifest('"orbit>=2","orbit<9"', true),
+      'base:uv.lock': lock(['>=1'], false),
+      'head:uv.lock': lock(['>=2', '<9'], true),
+    }),
+  );
+  expect(r.kind).toBe('inventory');
+  if (r.kind !== 'inventory') throw new Error('inventory');
+  expect(r.changes).toMatchObject([
+    { role: 'direct', from: { extras: ['x'] }, to: { extras: ['x', 'y'] } },
+  ]);
+  expect(r.observations.some((o) => o.reason === 'range_rewrite')).toBe(false);
+  expect(r.coverage).toMatchObject({ status: 'partial', reasons: ['unsupported'] });
+});

@@ -362,7 +362,7 @@ function declarationMembers(
     a.length === 1 && b.length === 1 && base.complete && head.complete
       ? corresponding(a[0], b[0], changes, root)
       : [];
-  if ((a.length === 1) !== (b.length === 1)) {
+  if (a.length + b.length === 1) {
     const declaration = a[0] ?? b[0],
       side = a.length ? 'from' : 'to';
     const complete =
@@ -399,13 +399,14 @@ export function uvDeclarationChanges(
     observations: UvObservation[] = [];
   const before = base.associations,
     after = head.associations;
-  const unchanged = new Set(
-    before
-      .map((a) => declarationKey(a, true))
-      .filter((k) => after.some((a) => declarationKey(a, true) === k)),
-  );
-  const removed = before.filter((a) => !unchanged.has(declarationKey(a, true))),
-    added = after.filter((a) => !unchanged.has(declarationKey(a, true)));
+  // Match declarations as a multiset so a dropped or added duplicate stays visible.
+  const added = [...after];
+  const removed = before.filter((a) => {
+    const at = added.findIndex((b) => declarationKey(b, true) === declarationKey(a, true));
+    if (at < 0) return true;
+    added.splice(at, 1);
+    return false;
+  });
   const keys = new Set([...removed, ...added].map((a) => declarationKey(a, false)));
   for (const key of [...keys].sort(byCodeUnit)) {
     const a = removed.filter((x) => declarationKey(x, false) === key),

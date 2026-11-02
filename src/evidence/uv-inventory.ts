@@ -272,11 +272,11 @@ function metadataChanges(
   if (!isDeepStrictEqual(empty('base'), empty('head')))
     record('empty-extras', { base: empty('base'), head: empty('head') });
 }
-function selfEdges(root: UvRootSnapshot, side: 'base' | 'head', work: GraphWork) {
+function selfEdges(root: UvRootSnapshot, side: 'base' | 'head', roles: UvRoles, work: GraphWork) {
   const self = root[side].lock.data?.packages.find((p) => !p.external);
   const edges: { scope: string | null; selector: UvSelector; target: string | null }[] = [];
   const record = (scope: string | null, selector: UvSelector) => {
-    const target = resolveUvSelector(root[side], selector, work);
+    const target = resolveUvSelector(root[side], selector, work, roles.tableComplete);
     edges.push({ scope, selector, target: target?.key ?? null });
   };
   for (const s of self?.dependencies ?? []) record(null, s);
@@ -309,9 +309,14 @@ function membershipExplained(
     );
   });
 }
-function selfEdgeChanges(root: UvRootSnapshot, changes: UvChange[], work: GraphWork) {
-  const before = selfEdges(root, 'base', work),
-    after = selfEdges(root, 'head', work);
+function selfEdgeChanges(
+  root: UvRootSnapshot,
+  roles: { base: UvRoles; head: UvRoles },
+  changes: UvChange[],
+  work: GraphWork,
+) {
+  const before = selfEdges(root, 'base', roles.base, work),
+    after = selfEdges(root, 'head', roles.head, work);
   const identity = (e: (typeof before)[number]) =>
     JSON.stringify([
       e.scope,
@@ -404,7 +409,7 @@ export function uvRootInventory(metadata: UvMetadata, root: UvRootSnapshot, work
     },
   );
   metadataChanges(root, base, head, gaps, observations, work);
-  const selfChanges = selfEdgeChanges(root, changes, work);
+  const selfChanges = selfEdgeChanges(root, { base: baseRoles, head: headRoles }, changes, work);
   gaps.push(...selfChanges.gaps);
   observations.push(...selfChanges.observations);
   const declarations = uvDeclarationChanges(root, baseRoles, headRoles, changes);
