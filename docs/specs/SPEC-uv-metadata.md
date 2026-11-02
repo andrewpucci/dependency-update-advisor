@@ -108,10 +108,12 @@ empty extra or group entries that revision 3 omits; U1 retains empty
 entries as recorded, and U2 must not treat their appearance or absence
 across revisions alone as an added or removed extra.
 Fields that revision 5 adds for default groups or group metadata fall
-under the dependency-group gap below. A lock whose packages omit
-declaration metadata, which uv writes only under a preview setting, is
-`unsupported` for the affected packages; absent `requires-dist` or
-`provides-extras` is never an empty declaration set.
+under the dependency-group gap below. uv 0.10.12 revision 3 locks omit
+empty `requires-dist` and `provides-extras` lists, and omit
+`[package.metadata]` for a project with neither; revision 5 is assumed to
+match, so for the editable project an absent table or list is an empty
+declaration set. A malformed list remains a scoped gap, and a registry
+package without metadata records no declarations.
 
 The approved reader is exact runtime `smol-toml@1.9.1`, with explicit
 `maxDepth`, `unsafeKeyBehaviour: 'throw'`, and integer tokens preserved as
@@ -153,7 +155,9 @@ defines dependency strings and optional-extra tables; uv also supports
   dependency groups, legacy dev dependencies, workspace membership, source
   overrides, constraints, or other resolution-affecting settings outside
   the tested subset leave scoped `unsupported` gaps. Retain independently
-  readable static declarations. Do not reject unrelated tool configuration
+  readable static declarations. A field listed in `dynamic` and also given
+  statically is invalid under PyPA: record `conflict` and retain none of its
+  declarations. Do not reject unrelated tool configuration
   merely because it is unfamiliar or execute a build backend to fill gaps.
 - Retain lock-level `requires-python` and resolution-marker lists. For each
   package retain normalized name, exact version, credential-free source
@@ -259,9 +263,11 @@ Each root has independent base/head sides. Files and sides distinguish
 `present`, `partial`, `absent`, and `unavailable`; file data is null when
 unavailable or proven absent. Absence retains D1's tree SHA. Parsed data keeps
 manifest field states, requirement list positions, package keys, all supported
-selectors, and absent-versus-empty lock metadata. An enclosing snapshot ID plus
-`UvPackage.key` identifies an immutable package occurrence. File/source IDs bind
-repository, commit, side, path, and blob/tree identity with collision checks.
+selectors, and lock metadata: `null` for a registry package without it,
+and empty lists where uv omitted an editable project's lists. An enclosing
+snapshot ID plus `UvPackage.key` identifies an immutable package occurrence.
+File/source IDs bind repository, commit, side, path, and blob/tree identity
+with collision checks.
 Sources are U2 handoff identities, not T4 `PacketSource` records with invented
 empty change membership. U2 must assign real membership and enforce T4 ceilings.
 
@@ -333,7 +339,7 @@ insufficient. Required fixtures:
 | ------------------------------------------------------------------------------------------- | ----------------------------------------------------------------------- |
 | Schema 1, revision 3 and revision 5; static manifest; editable root; registry packages      | Valid attributable per-side snapshots; no external self-project.        |
 | Revision 3 base with revision 5 head; supported side beside unsupported side; empty entries | Per-side results; no header-only change, added extra, or lost side.     |
-| Package entries without declaration metadata                                                | Scoped `unsupported`; absent metadata is not an empty declaration set.  |
+| Editable project without metadata lists or table, as real uv writes them                    | Empty declaration sets without gaps; malformed lists stay scoped gaps.  |
 | Four extras; empty extra; conditional edges; resolution markers; same-name versions         | Every declaration, selector, and variant retained for U2.               |
 | Missing/wrong-type/invalid header; other version or revision; omitted revision              | `malformed` shapes; other/omitted revision `unsupported`; no guessing.  |
 | Broken TOML, duplicate keys, malformed UTF-8, wrong consumed-field shape                    | Fixed scoped gaps; broken documents yield no regex salvage.             |
@@ -379,6 +385,10 @@ approved the eight-task plan and invoked `as-build auto` on 2026-11-01. This
 includes exact `smol-toml@1.9.1`, the bounded name-based requirement subset,
 per-task commits, and one PR for U1. The S complexity simplification identified
 during review was separately approved and preserves the existing retention tests.
+After the PR #160 review on 2026-11-01, the user approved two amendments:
+omitted editable-project lock metadata is an empty declaration set, matching
+uv 0.10.12 output, and a field both dynamic and static is a `conflict` with no
+retained declarations.
 
 The ordered [#152–#159 sub-issues under #17](https://github.com/andrewpucci/dependency-update-advisor/issues/17)
 track implementation; [verification #159](https://github.com/andrewpucci/dependency-update-advisor/issues/159)

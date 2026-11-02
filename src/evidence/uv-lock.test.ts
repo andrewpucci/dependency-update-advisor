@@ -34,7 +34,7 @@ test.each([3, 5])(
           `resolution-markers=["python_version < '3.13'"]\ndependencies=[{name="nova", version="2.0",source={registry="https://pypi.org/simple"},marker="sys_platform == 'linux'",extra=["Fast_IO"]},{name="nova"}]\n[package.optional-dependencies]\nempty=[]\nweb=[{name="nova"}]\n`,
         ) +
         pkg('orbit-core', '2.0') +
-        `[[package]]\nname="project"\nsource={editable="."}\n[package.metadata]\nrequires-dist=[]\nprovides-extras=[]\n`,
+        `[[package]]\nname="project"\nsource={editable="."}\n`,
     );
     expect(r.gaps).toEqual([]);
     expect(r.value.revision).toBe(revision);
@@ -121,8 +121,11 @@ test.each([3, 5])(
   (revision) => {
     const self = `[[package]]\nname="project"\nsource={editable="."}\n`;
     const missing = parsed(header(revision) + self + pkg('registry', '1'));
-    expect(missing.value.packages.every((p) => p.metadata === null)).toBe(true);
-    expect(missing.gaps.filter((g) => g.reason === 'unsupported')).toHaveLength(1);
+    expect(missing.value.packages.map((p) => [p.name, p.metadata])).toEqual([
+      ['project', { requiresDist: [], providesExtras: [] }],
+      ['registry', null],
+    ]);
+    expect(missing.gaps).toEqual([]);
     const r = parsed(
       header(revision) +
         self +
@@ -174,10 +177,7 @@ test.each([
 test.each(['requires-dev={}', 'dependency-groups={}', 'future-requirements=[]'])(
   'unsupported declaration metadata aliases: %s',
   (field) => {
-    const r = parsed(
-      header(5) +
-        pkg('good', '1', `[package.metadata]\nrequires-dist=[]\nprovides-extras=[]\n${field}\n`),
-    );
+    const r = parsed(header(5) + pkg('good', '1', `[package.metadata]\n${field}\n`));
     expect(r.gaps.some((g) => g.reason === 'unsupported')).toBe(true);
   },
 );
@@ -251,4 +251,36 @@ test('resolution-marker collections sort without changing exact marker text', ()
     header() + `resolution-markers=["sys_platform == 'win32'", "os_name == 'posix'"]\n` + pkg(),
   );
   expect(r.value.resolutionMarkers).toEqual(["os_name == 'posix'", "sys_platform == 'win32'"]);
+});
+test('a per-requirement limit skips one requires-dist item without ending the list', () => {
+  const r = parsed(
+    header() +
+      `[[package]]\nname="project"\nsource={editable="."}\n[package.metadata]\nrequires-dist=[{name="a",marker="((python_version > '3'))"},{name="b",specifier=">=1"}]\n`,
+    { ...limits, maxMarkerDepth: 1 },
+  );
+  expect(r.gaps.map((g) => g.reason)).toEqual(['budget']);
+  expect(r.gaps[0].entry).toMatch(/:requires-dist:0$/u);
+  expect(r.value.packages[0].metadata?.requiresDist?.map((d) => [d.name, d.position])).toEqual([
+    ['b', 1],
+  ]);
+});
+// Shaped after `uv lock` 0.10.12 output, which omits empty metadata lists and an all-empty table.
+test.each([
+  ['no dependencies or extras', '', { requiresDist: [], providesExtras: [] }],
+  [
+    'one dependency',
+    'dependencies = [\n    { name = "idna" },\n]\n\n[package.metadata]\nrequires-dist = [{ name = "idna", specifier = ">=3" }]\n',
+    { requiresDist: [{ name: 'idna', specifier: '>=3' }], providesExtras: [] },
+  ],
+  [
+    'an empty extra',
+    '\n[package.metadata]\nprovides-extras = ["foo"]\n',
+    { requiresDist: [], providesExtras: ['foo'] },
+  ],
+])('real uv project metadata with %s is complete', (_, body, metadata) => {
+  const r = parsed(
+    `version = 1\nrevision = 3\nrequires-python = ">=3.9"\n\n[[package]]\nname = "idna"\nversion = "3.20"\nsource = { registry = "https://pypi.org/simple" }\n\n[[package]]\nname = "project"\nversion = "0.1.0"\nsource = { editable = "." }\n${body}`,
+  );
+  expect(r.gaps).toEqual([]);
+  expect(r.value.packages.find((p) => p.name === 'project')?.metadata).toMatchObject(metadata);
 });

@@ -190,3 +190,25 @@ test('unrepresentable package names are gaps rather than retained packet-incompa
   expect(r.gaps).toContainEqual({ entry: 'dependencies:0', reason: 'unsupported' });
   expect(JSON.stringify(r)).not.toContain(name);
 });
+test('a per-requirement limit skips one declaration without ending the list', () => {
+  const r = parsed(`[project]\nname="p"\ndependencies=["a; ((python_version > '3'))", "b>=1"]\n`, {
+    ...limits,
+    maxMarkerDepth: 1,
+  });
+  expect(r.gaps).toEqual([{ entry: 'dependencies:0', reason: 'budget' }]);
+  expect(r.value.dependencies.map((d) => [d.name, d.position])).toEqual([['b', 1]]);
+});
+test('a field both dynamic and static is a conflict without retained declarations', () => {
+  const r = parsed(
+    '[project]\nname="p"\ndynamic=["dependencies","optional-dependencies"]\ndependencies=["x"]\noptional-dependencies={web=["y"]}',
+  );
+  expect(r.value.fields).toEqual({ dependencies: 'invalid', optionalDependencies: 'invalid' });
+  expect(r.value.dependencies).toEqual([]);
+  expect(r.value.optionalDependencies).toEqual([]);
+  expect(r.gaps).toEqual([
+    { entry: 'dependencies', reason: 'unsupported' },
+    { entry: 'optional-dependencies', reason: 'unsupported' },
+    { entry: 'dependencies', reason: 'conflict' },
+    { entry: 'optional-dependencies', reason: 'conflict' },
+  ]);
+});

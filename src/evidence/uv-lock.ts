@@ -173,13 +173,18 @@ function requirements(
   need(Array.isArray(raw));
   const result: UvLockRequirement[] = [];
   for (let position = 0; position < raw.length; position++) {
+    const entry = `${key}:requires-dist:${position}`;
+    // Only the cumulative counter ends the list; per-requirement limits skip one entry.
     try {
       debit(budget, 'declarations', limits.maxDeclarations);
+    } catch (error) {
+      gaps.push({ entry, reason: reason(error) });
+      break;
+    }
+    try {
       result.push(requirement(raw[position], position, limits));
     } catch (error) {
-      const why = reason(error);
-      gaps.push({ entry: `${key}:requires-dist:${position}`, reason: why });
-      if (why === 'budget') break;
+      gaps.push({ entry, reason: reason(error) });
     }
   }
   return result;
@@ -192,27 +197,25 @@ function metadata(
   gaps: UvEntryGap[],
   key: string,
 ): UvLockMetadata | null {
-  if (raw === undefined) {
-    if (project) gaps.push({ entry: `${key}:metadata`, reason: 'unsupported' });
-    return null;
-  }
+  // uv omits empty metadata lists, and the whole table for a project with neither.
+  if (raw === undefined) return project ? { requiresDist: [], providesExtras: [] } : null;
   const r = table(raw),
     value: UvLockMetadata = { requiresDist: null, providesExtras: null };
   unknownFields(r, ['requires-dist', 'provides-extras'], gaps, `${key}:metadata`);
   try {
-    if (r['requires-dist'] !== undefined)
-      value.requiresDist = requirements(r['requires-dist'], limits, budget, gaps, key);
+    value.requiresDist =
+      r['requires-dist'] === undefined
+        ? []
+        : requirements(r['requires-dist'], limits, budget, gaps, key);
   } catch (error) {
     gaps.push({ entry: `${key}:requires-dist`, reason: reason(error) });
   }
   try {
-    if (r['provides-extras'] !== undefined)
-      value.providesExtras = strings(r['provides-extras'], true);
+    value.providesExtras =
+      r['provides-extras'] === undefined ? [] : strings(r['provides-extras'], true);
   } catch (error) {
     gaps.push({ entry: `${key}:provides-extras`, reason: reason(error) });
   }
-  if (project && (r['requires-dist'] === undefined || r['provides-extras'] === undefined))
-    gaps.push({ entry: `${key}:metadata`, reason: 'unsupported' });
   return value;
 }
 function artifact(raw: unknown) {
@@ -325,7 +328,10 @@ function packages(raw: unknown, limits: UvParseLimits, budget: UvBudget, gaps: U
   need(Array.isArray(raw));
   const values = new Map<string, UvPackage>(),
     conflicts = new Set<string>();
-  for (const item of [...raw].sort((a, b) => byCodeUnit(sortKey(a), sortKey(b)))) {
+  const ordered = raw
+    .map((item) => ({ item, key: sortKey(item) }))
+    .sort((a, b) => byCodeUnit(a.key, b.key));
+  for (const { item } of ordered) {
     try {
       debit(budget, 'packages', limits.maxPackages);
       const value = readPackage(table(item), limits, budget, gaps);

@@ -48,7 +48,7 @@ const binding: ReviewBinding = {
 };
 const manifest = '[project]\nname="project"\ndependencies=["orbit>=1"]\n';
 function lock(revision = 3) {
-  return `version=1\nrevision=${revision}\nrequires-python=">=3.11"\n[[package]]\nname="project"\nsource={editable="."}\n[package.metadata]\nrequires-dist=[{name="orbit",specifier=">=1"}]\nprovides-extras=[]\n[[package]]\nname="orbit"\nversion="1.0"\nsource={registry="https://pypi.org/simple"}\n`;
+  return `version=1\nrevision=${revision}\nrequires-python=">=3.11"\n[[package]]\nname="project"\nsource={editable="."}\n[package.metadata]\nrequires-dist=[{name="orbit",specifier=">=1"}]\n[[package]]\nname="orbit"\nversion="1.0"\nsource={registry="https://pypi.org/simple"}\n`;
 }
 function fixture() {
   const input = {
@@ -311,6 +311,36 @@ test('incomplete discovery and base divergence survive beside usable file data',
   expect(r.gaps.map((g) => g.reason)).toContain('truncated');
   expect(r.gaps.map((g) => g.reason)).toContain('conflict');
 });
+test('repeated identical gaps are reported once', async () => {
+  const f = fixture();
+  f.discovery.files = [
+    ...f.discovery.files,
+    { path: '../a/uv.lock', previousPath: null, status: 'modified', blobSha: null },
+    { path: '../b/uv.lock', previousPath: null, status: 'modified', blobSha: null },
+  ];
+  const r = metadata(await collectUvMetadata(f.input, { session: f.session }));
+  expect(r.gaps).toEqual([
+    { root: null, side: null, path: null, entry: null, reason: 'malformed' },
+  ]);
+});
+test('discovery made incomplete by base divergence still reads configured roots', async () => {
+  const f = fixture();
+  f.discovery.files = [];
+  f.input.binding = { ...f.input.binding, mergeBaseSha: 'c'.repeat(40) };
+  f.discovery.binding = f.input.binding;
+  f.comparison.mergeBaseSha = f.input.binding.mergeBaseSha;
+  const r = metadata(await collectUvMetadata(f.input, { session: f.session }));
+  expect(r.discovery).toMatchObject({ complete: false, applicable: true, reasons: ['conflict'] });
+  expect(r.roots.map((x) => x.root)).toEqual(['.']);
+  expect(f.calls).toEqual([
+    'discover',
+    'base:pyproject.toml',
+    'base:uv.lock',
+    'head:pyproject.toml',
+    'head:uv.lock',
+    'comparison',
+  ]);
+});
 test('complete discovery with no uv input is inapplicable without final inventory coverage', async () => {
   const f = fixture();
   f.discovery.files = [];
@@ -348,7 +378,7 @@ test('retention keeps a deterministic root prefix and every omitted file scope v
   });
 });
 test.each([
-  ['maxTomlEntries', 46],
+  ['maxTomlEntries', 44],
   ['maxPackages', 4],
   ['maxDeclarations', 4],
   ['maxTomlDepth', 6],

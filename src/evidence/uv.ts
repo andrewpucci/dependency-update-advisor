@@ -3,12 +3,13 @@ import { isDeepStrictEqual, types } from 'node:util';
 import { parseReviewBinding, type ReviewBinding, type RepositoryIdentity } from '../event.js';
 import type { GithubReadSession, GithubFileResult, GithubDiscovery } from '../github-read.js';
 import type { EvidenceReason, PacketRevision } from '../schema.js';
-import { byCodeUnit, isEvidencePath, isPlainObject, longestFittingPrefix } from './common.js';
+import { byCodeUnit, isEvidencePath, longestFittingPrefix } from './common.js';
 import { readManifest, type UvManifest } from './uv-manifest.js';
 import { readLock, type UvLock } from './uv-lock.js';
 import {
   need,
   newBudget,
+  table,
   UvFailure,
   type UvBudget,
   type UvParseLimits,
@@ -124,10 +125,6 @@ const sha = (value: unknown): value is string =>
 function failure(error: unknown): EvidenceReason {
   return error instanceof UvFailure ? error.reason : 'unknown';
 }
-function own(value: unknown) {
-  need(isPlainObject(value));
-  return value;
-}
 function array(value: unknown): unknown[] {
   need(
     Array.isArray(value) &&
@@ -148,14 +145,14 @@ function array(value: unknown): unknown[] {
   return value;
 }
 function input(value: unknown): Input {
-  const raw = own(value),
-    limits = own(raw.limits),
-    b = own(raw.binding);
+  const raw = table(value),
+    limits = table(raw.limits),
+    b = table(raw.binding);
   need(
     Object.keys(raw).length === 4 &&
       ['binding', 'configRevision', 'roots', 'limits'].every((k) => Object.hasOwn(raw, k)),
   );
-  for (const key of ['repository', 'headRepository', 'workflow']) own(b[key]);
+  for (const key of ['repository', 'headRepository', 'workflow']) table(b[key]);
   array(b.identity);
   const binding = parseReviewBinding(b);
   need(binding);
@@ -166,8 +163,8 @@ function input(value: unknown): Input {
         (limits[key] as number) > 0,
     );
   need((limits.maxStringBytes as number) <= (limits.maxFileBytes as number));
-  const config = own(raw.configRevision);
-  own(config.repository);
+  const config = table(raw.configRevision);
+  table(config.repository);
   need(isDeepStrictEqual(config.repository, binding.repository) && sha(config.sha));
   const roots = array(raw.roots).map((root) => {
     need(root === '.' || isEvidencePath(root));
@@ -204,8 +201,7 @@ function gap(
   path: string | null = null,
   entry: string | null = null,
 ) {
-  const value = { root, side, path, entry, reason };
-  if (!state.output.gaps.some((g) => isDeepStrictEqual(g, value))) state.output.gaps.push(value);
+  state.output.gaps.push({ root, side, path, entry, reason });
 }
 function emptyFile<T>(state: State, side: Side, path: string): UvFileSnapshot<T> {
   const binding = state.input.binding,
@@ -352,7 +348,7 @@ function candidateRoots(state: State, discovery: GithubDiscovery) {
       roots.add(path.includes('/') ? path.slice(0, path.lastIndexOf('/')) : '.');
     }
   }
-  if (!discovery.complete) for (const root of state.input.roots) roots.add(root);
+  if (!state.output.discovery.complete) for (const root of state.input.roots) roots.add(root);
   return [...roots].sort(byCodeUnit);
 }
 async function collectRoot(state: State, root: string) {
