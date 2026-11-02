@@ -1,13 +1,15 @@
 # Spec: U2 Conservative uv Change Reconciliation
 
-Status: approved for planning, 2026-11-01.
+Status: implemented on `issue-18`, pending review and merge.
+The revised spec was approved for planning on 2026-11-01; execution was
+approved on 2026-11-02, as recorded below.
 Supporting contract for `uv-evidence` in
 [the capability map](README.md), scoped to
 [issue #18: U2](https://github.com/andrewpucci/dependency-update-advisor/issues/18).
 This supplements [uv evidence](SPEC-uv-evidence.md), consumes
 [U1 metadata](SPEC-uv-metadata.md), and preserves the existing
 [T4 packet](SPEC-review-packet.md) and [T5 units](SPEC-decision-units.md).
-No new module, supported lock format, dependency, or T4/T5 amendment is proposed.
+No new module, supported lock format, dependency, or T4/T5 amendment is introduced.
 Plan and execution approval are recorded below.
 
 Confirmed scope decision: the user explicitly chose conservative structural
@@ -21,8 +23,8 @@ inventory coverage.
 Full-spec approval, 2026-11-01: after making review edits, the user invoked
 `as-plan` and requested sub-issues, blocker updates, and project organization.
 Under the repository approval rule, this approves the revised specification
-for planning and authorizes those tracker updates. The implementation plan
-and execution still require their own approval.
+for planning and authorizes those tracker updates. The later plan and execution
+approval is recorded below.
 
 Corroboration clarification approved, 2026-11-01: the user explicitly
 approved an `unavailable`/`conflict` source for zero-member prose
@@ -67,7 +69,7 @@ Do not claim full parent-contract completion from file reconciliation alone.
    scoped gaps, inventory coverage, comparison availability, and bounded
    observations mapping each output back to exact U1 entries and selectors.
    Retain requested package extras separately from project-extra membership.
-   The plan chooses exported names and documents their exact types.
+   The exported interface and handoff are documented below.
 4. Check every retained root/side/file against the verified repository,
    base/head SHA, path, blob or proven-absence identity, and source membership.
    U1's enclosing snapshot ID plus `UvPackage.key` identifies a package
@@ -340,14 +342,14 @@ Use existing Node.js `>=24.11.0 <25`, ESM, strict TypeScript, Node built-ins,
 and source-adjacent `vite-plus/test` tests. Keep parser and tooling pins.
 U2 is pure reconciliation over U1 results; no new runtime dependency or I/O.
 
-| Location                                                     | Responsibility                                                                |
-| ------------------------------------------------------------ | ----------------------------------------------------------------------------- |
-| `src/evidence/uv.ts` and its current parser modules          | Existing U1 metadata boundary; preserve its exports.                          |
-| `src/evidence/uv-graph.ts` and adjacent test                 | Proposed U2 reconciliation, roles, paths, and bounded output.                 |
-| `src/evidence/uv.integration.test.ts`                        | D1/U1/U2 and mixed T4/T5 handoff fixtures.                                    |
-| `tests/parity/uv-metadata.ts` and proposed uv graph fixtures | Invented format structures and honest provenance limits.                      |
-| `src/schema.ts`, `src/units.ts`                              | Existing packet/unit contracts; integration consumers, not new graph engines. |
-| `docs/specs/SPEC-uv-relationships.md`                        | This supporting contract.                                                     |
+| Location                                            | Responsibility                                                                |
+| --------------------------------------------------- | ----------------------------------------------------------------------------- |
+| `src/evidence/uv.ts` and its current parser modules | Existing U1 metadata boundary; preserve its exports.                          |
+| `src/evidence/uv-graph.ts` and adjacent test        | U2 reconciliation and bounded output; private helpers own roles and paths.    |
+| `src/evidence/uv.integration.test.ts`               | D1/U1/U2 and mixed T4/T5 handoff fixtures.                                    |
+| `tests/parity/uv-metadata.ts` and uv graph fixtures | Invented format structures and honest provenance limits.                      |
+| `src/schema.ts`, `src/units.ts`                     | Existing packet/unit contracts; integration consumers, not new graph engines. |
+| `docs/specs/SPEC-uv-relationships.md`               | This supporting contract.                                                     |
 
 The plan may choose smaller internal helpers without a generic graph framework.
 Use camelCase, `.js` import suffixes, explicit nullable sides, fixed failure
@@ -363,7 +365,7 @@ const result = {
 
 ## Commands and Testing Strategy
 
-For this documentation-only draft:
+For documentation-only updates:
 
 ```sh
 npm run lint:md
@@ -371,7 +373,7 @@ npm run format:check
 git diff --check
 ```
 
-After implementation approval, install with `npm ci` if needed and run all
+Install with `npm ci` if needed and run all
 four shared checks against one exact revision:
 
 ```sh
@@ -381,7 +383,7 @@ npm run check
 npm test -- --run
 ```
 
-Once the proposed graph test exists, focused verification is:
+Focused graph and handoff verification is:
 
 ```sh
 npm test -- --run src/evidence/uv-graph.test.ts src/evidence/uv.integration.test.ts src/schema.test.ts src/units.test.ts
@@ -453,11 +455,91 @@ remain integration gates. Execution is authorized as recorded above.
 
 The approved nine-task plan is indexed in
 [parent #18](https://github.com/andrewpucci/dependency-update-advisor/issues/18),
-with ordered sub-issues #161–#169 in the implementation project, Status `Todo`.
+with ordered sub-issues #161–#169 in the implementation project. They remain
+open pending merge; the project records implementation awaiting review.
 The gitignored `tasks/plan.md` holds the dependency graph, interface choices,
 checkpoints, and risks. U1 #17 and T5 #12 are satisfied prerequisites;
 #169 is the final U2 verification gate. W2 #26 remains separate.
 
 The user approved the zero-member corroboration clarification recorded above.
-U2.7 must verify that mapping through real T4; no packet amendment is needed.
+U2.7 and U2.8 verify that mapping through real T4; no packet amendment is needed.
 The plan and auto execution are approved as recorded above.
+
+## Implemented Interface and Handoff
+
+`reconcileUvGraph(input: unknown): UvGraphResult` is the synchronous, pure entry
+point in `src/evidence/uv-graph.ts`. Supply an object with `binding`, an authentic
+U1 result as `metadata`, and `limits: { maxGraphWork, maxRetainedBytes }`.
+Both limits are trusted positive safe integers. The optional `corroboration`
+property accepts one of these forms:
+
+```ts
+{ status: 'unattempted' }
+{ status: 'unavailable', reason: /* existing EvidenceReason */ 'missing' }
+{ status: 'available', repository: { id, owner, name }, pullNumber, headSha, text }
+```
+
+The available form must match the verified repository, PR number, and head SHA.
+There are no default budgets, network calls, Python/uv execution, or new runtime
+dependencies. Runtime shape checks do not replace trusted orchestration's duty
+to supply authentic U1 results.
+
+`UvGraphResult` preserves `invalid`, `obsolete`, and fixed `unavailable` results.
+Its usable form, `kind: 'inventory'`, includes `binding`, `configRevision`, uv-only
+`changes`, T4 `sources`, `relationships`, informational `findings`, scoped `gaps`,
+`observations`, uv `coverage`, independent `comparison`, and `corroboration`.
+Only `coverage.status` expresses inventory completeness. Inventory results are
+detached and deeply frozen; all result types are readonly. Each gap has a fixed
+recovery `nextAction`.
+Observations retain root, side, path, U1 entry or selector, reason, safe structured
+value, source/member references, and next action. They can explain a declaration
+or metadata change that has no representable PacketChange.
+
+`fileIdentities` retains U1's original immutable file and proven-absence records,
+including blob/tree identity. Package, declaration, and metadata observations
+refer to these original IDs. Change sides and relationship/corroboration notes
+refer to actual T4 sources after deterministic membership splitting (at most
+32 member IDs per source). Proven absence is never an available lock file or
+relationship source. A proof whose endpoints land in different source records
+stays unproven with `source_split`; splitting never drops a change.
+
+`UvSide.marker` is a JSON array of sorted, distinct exact package-marker strings,
+or `null` for a proven empty list. Root Python constraints and resolution markers
+remain separate observations. `UvSide.extras` records proven project-extra
+membership; requested dependency extras remain in selector observations.
+No Python range or Boolean-marker evaluation occurs. Same-side paths use the
+exact supported marker/extra context. Optional-table paths that T4 cannot express,
+unknown roles, incomplete inventories, and multiple changed direct anchors stay
+standalone under the unchanged T5 rules.
+
+The tested prose grammar recognizes whole trimmed lines `Bumps NAME from OLD to
+NEW.` and `Resolved uv changes: N.` (the final period is optional). The latter
+counts all resolved uv change records. Backticks and bounded HTTPS Markdown link
+labels can wrap tokens; links are never followed. Names normalize case and
+`-_.`; versions remain exact opaque strings. Lines over 4,096 characters and
+unrecognized text are inconclusive. Generic grouped-update counts and names
+outside the recorded uv inventory cannot establish a contradiction. A version
+claim must match both sides of the same change; it cannot pair separate variants.
+Only normalized bounded assertions are retained, with explicit truncation flags.
+Missing, malformed, stale, oversized, or inconclusive prose keeps a separate
+unavailable/unattempted corroboration state without erasing file evidence.
+Concrete contradictions use the approved conflict mapping above.
+
+Work is cumulative across validation, candidate scans, selector activation,
+traversal, and output construction. Core inventory and terminal output envelopes
+are reserved before optional corroboration and relationship work. Optional work
+exhaustion retains the full inventory with a visible budget status; if the full
+known inventory itself cannot fit, the result is `unavailable: budget`. Changes
+are never trimmed to fit. Serialized retained bytes and existing T4 bounds remain
+authoritative, including the combined 128-change ceiling across ecosystems.
+
+Orchestration combines these fragments with npm/Actions and C2 context, validates
+the assembled packet through T4, then passes only that accepted packet to T5.
+U2 leaves upstream, vulnerability, and malware evidence unavailable/missing with
+no research source IDs. The mixed fixtures use real D1/U1/U2/T4/T5 code with
+invented immutable responses; their downstream research records are test-only.
+See [fixture provenance](../../tests/parity/README.md#uv-reconciliation-fixtures)
+and [verification #169](https://github.com/andrewpucci/dependency-update-advisor/issues/169).
+Workflow acquisition of current PR prose, live transport, research, M2/O1,
+publication, packaging, adoption, parity, and cutover remain separate gates.
+The old reviewer stays active.
