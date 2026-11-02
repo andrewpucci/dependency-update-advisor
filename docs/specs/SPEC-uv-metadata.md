@@ -1,6 +1,6 @@
 # Spec: U1 Tested uv Metadata
 
-Status: approved for implementation, 2026-11-01.
+Status: implemented on `issue-17`, pending review and merge.
 Supporting contract for `uv-evidence` in
 [the capability map](README.md), scoped to
 [issue #17: U1](https://github.com/andrewpucci/dependency-update-advisor/issues/17).
@@ -88,7 +88,7 @@ exercises optional extras, top-level and per-package resolution markers,
 conditional edges, and multiple versions of one normalized package name.
 Synthetic fixtures must preserve these structures with invented names and
 versions.
-This is observed consumer structure, not evidence that a U1 parser exists.
+Fixtures preserve these observed structures without claiming a live consumer run.
 
 uv documents separate
 [schema versions and backward-compatible revisions](https://docs.astral.sh/uv/concepts/resolution/#lockfile-versioning).
@@ -113,9 +113,10 @@ declaration metadata, which uv writes only under a preview setting, is
 `unsupported` for the affected packages; absent `requires-dist` or
 `provides-extras` is never an empty declaration set.
 
-Use a maintained TOML reader selected and pinned during planning after
-approval of the new dependency. No TOML parser dependency currently exists
-in this repository. Do not approximate TOML using line splitting or regexes,
+The approved reader is exact runtime `smol-toml@1.9.1`, with explicit
+`maxDepth`, `unsafeKeyBehaviour: 'throw'`, and integer tokens preserved as
+BigInt during validation so integral floats cannot pass as schema integers.
+Do not approximate TOML using line splitting or regexes,
 or invoke Python/uv subprocesses in the production collector.
 Validate strict UTF-8, TOML syntax, duplicate/redefined keys, and consumed
 field shapes. Syntactically broken documents yield no salvaged metadata.
@@ -244,6 +245,61 @@ const unavailable = {
 | `src/schema.ts`, `src/units.ts` | Existing T4/T5 contracts; no U1 amendment.         |
 | `docs/specs/`                   | Supporting contract and approval index.            |
 
+## Implemented U2 Handoff
+
+`collectUvMetadata(input, { session })` in `src/evidence/uv.ts` accepts
+unknown input containing `binding`, `configRevision`, `roots`, and `limits`.
+Invalid input makes no session calls. Its result is `invalid`, `obsolete`,
+a fixed `unavailable` reason, or detached deeply readonly `metadata`.
+The metadata result includes the binding/config revision, root snapshots,
+file/absence sources, scoped gaps, discovery state, and independent comparison
+status/reasons. It contains no comparison payload or final packet inventory.
+
+Each root has independent base/head sides. Files and sides distinguish
+`present`, `partial`, `absent`, and `unavailable`; file data is null when
+unavailable or proven absent. Absence retains D1's tree SHA. Parsed data keeps
+manifest field states, requirement list positions, package keys, all supported
+selectors, and absent-versus-empty lock metadata. An enclosing snapshot ID plus
+`UvPackage.key` identifies an immutable package occurrence. File/source IDs bind
+repository, commit, side, path, and blob/tree identity with collision checks.
+Sources are U2 handoff identities, not T4 `PacketSource` records with invented
+empty change membership. U2 must assign real membership and enforce T4 ceilings.
+
+Discovery selects sorted changed roots from current/previous paths. Unconfigured
+changed roots are still read with an `unsupported` ownership gap. When discovery
+is incomplete, configured roots are also read as known scopes; this cannot
+repair or certify discovery. Renames retain both locations independently.
+
+The tested name-based requirement subset accepts nonempty requested extras,
+comparator/version tokens with optional outer parentheses, quoted marker
+comparisons, `and`/`or`, and balanced parentheses. It retains safe exact text
+without interpreting versions or markers. Direct URLs, arbitrary `===` ranges,
+empty requested-extra brackets, trailing comparator commas, and set-valued
+marker variables remain `unsupported`. Malformed tested syntax is `malformed`.
+Package/extra names, resolved versions, and source identities respect existing
+T4 identity ceilings. This is not a full PEP 508 or PEP 440 implementation.
+
+Caller-supplied positive safe integer limits are required; string bytes cannot
+exceed file bytes. The counters and units are:
+
+| Limit                                        | Accounting                                                                                                                                               |
+| -------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `maxFileBytes`                               | Per file, before fatal UTF-8 decoding and parsing.                                                                                                       |
+| `maxTomlDepth`                               | Per document; recursive inline parsing and iterative full structure (root depth 1).                                                                      |
+| `maxTomlEntries`                             | Cumulative object properties and array elements, including ignored fields, across all files/sides.                                                       |
+| `maxRoots`                                   | Distinct selected directories; each owns both sides, with no per-side reset.                                                                             |
+| `maxPackages`, `maxDeclarations`, `maxEdges` | Cumulative attempted entries across files/sides, including malformed entries. Declarations include manifest requirements and lock `requires-dist` items. |
+| `maxStringBytes`                             | Per TOML key/string value and requirement text, including ignored fields.                                                                                |
+| `maxRequirementTokens`, `maxMarkerDepth`     | Per requirement's lexical tokens and marker parenthesis nesting.                                                                                         |
+| `maxRetainedBytes`                           | Entire serialized metadata result, including sources, diagnostics, and comparison availability.                                                          |
+
+Retention uses a deterministic sorted prefix of whole roots. Every omitted file
+keeps a scoped budget gap; omitted sources are removed. If the remaining envelope
+cannot fit, return fixed `unavailable: budget` instead of a metadata payload.
+That fixed API failure is not a retained metadata envelope. No file is parsed
+without the reader's byte/depth controls, and the post-parse entry pass is not
+claimed to interrupt parser allocations.
+
 ## Commands and Testing Strategy
 
 For this documentation change:
@@ -316,21 +372,21 @@ no required selectors, and all four implementation checks pass on one
 recorded shared revision. U2, research, transport, publication, adoption,
 and cutover remain separate gates.
 
-## Open Decisions and Approval
+## Approval and Remaining Gates
 
-Consumer selection is confirmed. Before implementation, planning must select
-the exact TOML reader and dependency-specifier strategy, prove their bound
-controls, enumerate supported/ignored fields for schema 1 revisions 3 and 5, and
-obtain approval for any new dependency. Numeric live limits remain trusted
-orchestration choices; no values are invented here.
+The user approved the revised specification through `as-plan`, then explicitly
+approved the eight-task plan and invoked `as-build auto` on 2026-11-01. This
+includes exact `smol-toml@1.9.1`, the bounded name-based requirement subset,
+per-task commits, and one PR for U1. The S complexity simplification identified
+during review was separately approved and preserves the existing retention tests.
 
-The specification and eight-task plan are approved for implementation by
-the user's explicit approval and `as-build auto` invocation on 2026-11-01.
+The ordered [#152–#159 sub-issues under #17](https://github.com/andrewpucci/dependency-update-advisor/issues/17)
+track implementation; [verification #159](https://github.com/andrewpucci/dependency-update-advisor/issues/159)
+records revision-specific checks and review disposition. The gitignored
+`tasks/plan.md` is the working handoff. Numeric live limits remain trusted
+orchestration choices.
 
-The eight-task proposal is tracked as ordered sub-issues
-[#152–#159 under #17](https://github.com/andrewpucci/dependency-update-advisor/issues/17)
-in the implementation project, Status `Todo`, with native prerequisites.
-The gitignored `tasks/plan.md` holds decisions and review checkpoints.
-It selects approved `smol-toml@1.9.1` with explicit parser depth controls and
-a bounded name-based requirement subset. Merge, adoption, and cutover are
-separate from this implementation authorization.
+U2 must own graph reconciliation, PR-body corroboration, and the final T4/T5
+handoff, including mixed-ecosystem and zero-change gaps. Research, live
+transport/budgets, assessment/rendering, workflow/publication, adoption, merge,
+and cutover remain separate. Keep the old reviewer active.

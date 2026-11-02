@@ -19,8 +19,8 @@ No shared workflow exists; the old reviewer stays active.
 
 ## Next action
 
-[U1 #17](docs/specs/SPEC-uv-metadata.md) is approved for `as-build auto`;
-#152–#159 implement the approved plan in one PR. U2 #18 remains separate.
+[U1 #17](docs/specs/SPEC-uv-metadata.md) has #152–#159 implemented on
+`issue-17`; #159 records verification and downstream gates; merge is pending.
 [N2 #15](docs/specs/SPEC-npm-relationships.md) is implemented on
 `issue-15`, pending review/merge; #140 holds verification. #93 stays separate.
 [#110 snapshot reuse](docs/specs/SPEC-pr-freshness-snapshot.md) awaits review/merge;
