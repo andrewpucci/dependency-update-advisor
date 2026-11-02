@@ -3,16 +3,13 @@ import { PACKET_LIMITS, type UvSide, type RelationshipProof } from '../schema.js
 import type { Finding } from '../policy.js';
 import type { UvInventory, UvChange, UvObservation } from './uv-graph.js';
 import type { UvRootSnapshot } from './uv.js';
-import { resolveUvSelector, type UvRoles, type UvRoleNode } from './uv-roles.js';
+import { resolveUvSelector, uvSideKey as key, type UvRoles, type UvRoleNode } from './uv-roles.js';
 import { uvInstance, uvSemantic } from './uv-inventory.js';
 import { byCodeUnit } from './common.js';
 import { checkGraphData, UvGraphFailure, type GraphWork } from './uv-input.js';
 
 export type UvPathRoot = { root: UvRootSnapshot; base: UvRoles; head: UvRoles };
 type Path = Extract<RelationshipProof, { ecosystem: 'uv' }>;
-function key(s: UvSide) {
-  return JSON.stringify([s.name, s.version, { kind: 'registry', url: s.source.identity }]);
-}
 export function startUvRelationships(result: UvInventory): UvObservation {
   const summary: UvObservation = {
     kind: 'relationship',
@@ -214,22 +211,29 @@ export function proveUvRelationships(
     summary.reason = 'budget';
     return;
   }
+  // Track serialized size incrementally instead of reserializing the whole result per member.
+  let bytes = Buffer.byteLength(JSON.stringify(result));
+  const appended = (list: unknown[], items: unknown[]) =>
+    items.reduce<number>(
+      (n, item, i) => n + Buffer.byteLength(JSON.stringify(item)) + (list.length || i ? 1 : 0),
+      0,
+    );
   for (const member of result.changes) {
     if (member.role === 'direct') continue;
     try {
       const addition = relationshipAddition(result, contexts, member, work);
       checkGraphData(addition, work, maxBytes);
-      const projected = {
-        ...result,
-        relationships: [...result.relationships, ...addition.relationships],
-        observations: [...result.observations, ...addition.observations],
-        findings: [...result.findings, ...addition.findings],
-      };
+      const projected =
+        bytes +
+        appended(result.relationships, addition.relationships) +
+        appended(result.observations, addition.observations) +
+        appended(result.findings, addition.findings);
       const completionBytes = 'complete'.length - summary.reason.length;
-      if (Buffer.byteLength(JSON.stringify(projected)) + completionBytes > maxBytes) {
+      if (projected + completionBytes > maxBytes) {
         summary.reason = 'budget';
         return;
       }
+      bytes = projected;
       result.relationships.push(...addition.relationships);
       result.observations.push(...addition.observations);
       result.findings.push(...addition.findings);

@@ -1,5 +1,6 @@
 import { isDeepStrictEqual } from 'node:util';
 import { byCodeUnit } from './common.js';
+import type { UvSide } from '../schema.js';
 import type { UvRootSnapshot, UvRootSide, UvGap } from './uv.js';
 import type { UvPackage, UvSelector, UvLockRequirement } from './uv-lock.js';
 import type { UvDeclaration } from './uv-manifest.js';
@@ -21,6 +22,10 @@ export type UvRoles = {
   gaps: UvGap[];
   observations: UvObservation[];
 };
+/** The lock package key that a registry change side denotes. */
+export function uvSideKey(s: UvSide) {
+  return JSON.stringify([s.name, s.version, { kind: 'registry', url: s.source.identity }]);
+}
 export function uvGuard(
   current: string | null,
   edge: string | null,
@@ -251,11 +256,9 @@ function directMappings(snapshot: UvRootSide, self: UvPackage, roles: UvRoles, w
 function markDirectAssociations(result: UvRoles) {
   for (const a of result.associations)
     for (const key of a.targets) {
+      // Membership is assigned afterward by reachability.
       const node = result.nodes.get(key);
-      if (node) {
-        node.role = 'direct';
-        node.membershipComplete = a.scope === null;
-      }
+      if (node) node.role = 'direct';
     }
 }
 export function uvRoles(
@@ -330,24 +333,8 @@ function corresponding(
       c.from &&
       c.to &&
       c.from.root === root.root &&
-      a.targets.some(
-        (k) =>
-          k ===
-          JSON.stringify([
-            c.from!.name,
-            c.from!.version,
-            { kind: 'registry', url: c.from!.source.identity },
-          ]),
-      ) &&
-      b.targets.some(
-        (k) =>
-          k ===
-          JSON.stringify([
-            c.to!.name,
-            c.to!.version,
-            { kind: 'registry', url: c.to!.source.identity },
-          ]),
-      ),
+      a.targets.includes(uvSideKey(c.from)) &&
+      b.targets.includes(uvSideKey(c.to)),
   );
 }
 function declarationMembers(
@@ -375,16 +362,7 @@ function declarationMembers(
         const represented =
           c.kind === (side === 'from' ? 'removal' : 'addition') ||
           (c.from && c.to && !isDeepStrictEqual(c.from.extras, c.to.extras));
-        return (
-          represented &&
-          declaration.targets.includes(
-            JSON.stringify([
-              instance.name,
-              instance.version,
-              { kind: 'registry', url: instance.source.identity },
-            ]),
-          )
-        );
+        return represented && declaration.targets.includes(uvSideKey(instance));
       });
   }
   return members;
