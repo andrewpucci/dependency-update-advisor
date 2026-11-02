@@ -18,7 +18,105 @@ export type UvRoles = {
   associations: UvAssociation[];
   complete: boolean;
   gaps: UvGap[];
+  observations: UvObservation[];
 };
+export function uvGuard(
+  current: string | null,
+  edge: string | null,
+  pkg: UvPackage,
+): string | null | undefined {
+  const markers = pkg.resolutionMarkers ?? [];
+  if (markers.length > 1) return undefined;
+  const conditions = [current, edge, markers[0] ?? null].filter((s): s is string => s !== null);
+  return new Set(conditions).size > 1 ? undefined : (conditions[0] ?? null);
+}
+type Activation = { key: string; extras: string[]; scope: string | null; guard: string | null };
+function activatedSelectors(pkg: UvPackage, extras: string[]) {
+  return [
+    ...(pkg.dependencies ?? []),
+    ...extras.flatMap(
+      (extra) => pkg.optionalDependencies?.find((e) => e.extra === extra)?.declarations ?? [],
+    ),
+  ];
+}
+function reachability(
+  root: UvRootSnapshot,
+  side: 'base' | 'head',
+  self: UvPackage,
+  result: UvRoles,
+  work: GraphWork,
+) {
+  const snapshot = root[side],
+    queue: Activation[] = [],
+    seen = new Set<string>();
+  const reached = new Map<string, Set<string | null>>();
+  let closed = true;
+  const visit = (s: UvSelector, scope: string | null, guard: string | null, from: string) => {
+    work.spend();
+    const target = resolveUvSelector(snapshot, s, work);
+    const nextGuard = target ? uvGuard(guard, s.marker, target) : undefined;
+    result.observations.push({
+      kind: 'metadata',
+      root: root.root,
+      side,
+      path: snapshot.lock.path,
+      entry: from,
+      reason: nextGuard === undefined ? 'unresolved_selector' : 'recorded_selector',
+      sourceIds: [snapshot.lock.sourceId!],
+      memberIds: [],
+      value: { from, selector: s, target: target?.key ?? null, projectExtra: scope },
+      nextAction: 'Preserve this exact selector and its activation context.',
+    });
+    if (!target || nextGuard === undefined) {
+      closed = false;
+      return;
+    }
+    if (!target.external) {
+      closed = false;
+      return;
+    }
+    const state = {
+      key: target.key,
+      extras: [...(s.extra ?? [])].sort(byCodeUnit),
+      scope,
+      guard: nextGuard,
+    };
+    const id = JSON.stringify(state);
+    if (seen.has(id)) return;
+    seen.add(id);
+    queue.push(state);
+  };
+  for (const scope of [null, ...(self.optionalDependencies ?? []).map((e) => e.extra)])
+    for (const s of selectors(self, scope)) visit(s, scope, null, self.key);
+  for (let i = 0; i < queue.length; i++) {
+    work.spend();
+    const state = queue[i],
+      node = result.nodes.get(state.key);
+    if (!node) continue;
+    const scopes = reached.get(state.key) ?? new Set<string | null>();
+    scopes.add(state.scope);
+    reached.set(state.key, scopes);
+    for (const s of activatedSelectors(node.pkg, state.extras))
+      visit(s, state.scope, state.guard, node.pkg.key);
+  }
+  for (const [key, node] of result.nodes) {
+    work.spend();
+    const scopes = reached.get(key);
+    node.extras = scopes?.has(null)
+      ? []
+      : [...(scopes ?? [])].filter((s): s is string => s !== null).sort(byCodeUnit);
+    node.membershipComplete = !!scopes && (scopes.has(null) || closed) && result.complete;
+    if (node.role !== 'direct' && scopes && result.complete) node.role = 'transitive';
+    if (!node.membershipComplete)
+      result.gaps.push({
+        root: root.root,
+        side,
+        path: snapshot.lock.path,
+        entry: key,
+        reason: 'unsupported',
+      });
+  }
+}
 export function resolveUvSelector(
   snapshot: UvRootSide,
   s: UvSelector,
@@ -128,6 +226,7 @@ export function uvRoles(root: UvRootSnapshot, side: 'base' | 'head', work: Graph
     associations: declarations(snapshot),
     complete: snapshot.state === 'present',
     gaps: [],
+    observations: [],
   };
   for (const pkg of lock?.packages ?? [])
     if (pkg.external)
@@ -165,6 +264,7 @@ export function uvRoles(root: UvRootSnapshot, side: 'base' | 'head', work: Graph
       entry: 'declaration-map',
       reason: 'conflict',
     });
+  reachability(root, side, self, result, work);
   return result;
 }
 function declarationKey(a: UvAssociation, withRange: boolean) {
