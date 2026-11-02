@@ -1,5 +1,5 @@
 import { byCodeUnit } from './common.js';
-import { normalizeName, optionalTable, type UvExtra } from './uv-manifest.js';
+import { normalizeName, optionalTable, parseRequirement, type UvExtra } from './uv-manifest.js';
 import {
   debit,
   need,
@@ -23,6 +23,17 @@ export type UvSelector = {
   list: string;
   position: number;
 };
+export type UvLockRequirement = {
+  name: string;
+  specifier: string | null;
+  extras: string[] | null;
+  marker: string | null;
+  position: number;
+};
+export type UvLockMetadata = {
+  requiresDist: UvLockRequirement[] | null;
+  providesExtras: string[] | null;
+};
 export type UvPackage = {
   key: string;
   name: string;
@@ -32,11 +43,12 @@ export type UvPackage = {
   resolutionMarkers: string[] | null;
   dependencies: UvSelector[] | null;
   optionalDependencies: UvExtra<UvSelector>[] | null;
+  metadata: UvLockMetadata | null;
 };
 export type UvLock = {
   version: 1;
   revision: 3 | 5;
-  requiresPython: string;
+  requiresPython: string | null;
   resolutionMarkers: string[] | null;
   packages: UvPackage[];
 };
@@ -44,7 +56,8 @@ function url(value: unknown): string {
   const raw = text(value),
     parsed = new URL(raw);
   need(
-    parsed.protocol === 'https:' &&
+    !/[\\\s]/u.test(raw) &&
+      parsed.protocol === 'https:' &&
       !!parsed.hostname &&
       !parsed.username &&
       !parsed.password &&
@@ -120,6 +133,120 @@ function packageIdentity(raw: Record<string, unknown>) {
   need(resolved !== null || origin.kind === 'editable');
   return { name, version: resolved, source: origin, key: JSON.stringify([name, resolved, origin]) };
 }
+function unknownFields(
+  raw: Record<string, unknown>,
+  allowed: string[],
+  gaps: UvEntryGap[],
+  entry: string | null,
+) {
+  if (Object.keys(raw).some((key) => !allowed.includes(key)))
+    gaps.push({ entry, reason: 'unsupported' });
+}
+function requirement(raw: unknown, position: number, limits: UvParseLimits): UvLockRequirement {
+  const r = table(raw);
+  need(
+    Object.keys(r).every((k) => ['name', 'specifier', 'extras', 'marker'].includes(k)),
+    'unsupported',
+  );
+  const name = normalizeName(r.name),
+    range = r.specifier === undefined ? null : text(r.specifier),
+    marker = r.marker === undefined ? null : text(r.marker);
+  parseRequirement(`${name}${range ?? ''}${marker === null ? '' : `; ${marker}`}`, limits);
+  return {
+    name,
+    specifier: range,
+    marker,
+    extras: r.extras === undefined ? null : strings(r.extras, true),
+    position,
+  };
+}
+function requirements(
+  raw: unknown,
+  limits: UvParseLimits,
+  budget: UvBudget,
+  gaps: UvEntryGap[],
+  key: string,
+) {
+  need(Array.isArray(raw));
+  const result: UvLockRequirement[] = [];
+  for (let position = 0; position < raw.length; position++) {
+    try {
+      debit(budget, 'declarations', limits.maxDeclarations);
+      result.push(requirement(raw[position], position, limits));
+    } catch (error) {
+      const why = reason(error);
+      gaps.push({ entry: `${key}:requires-dist:${position}`, reason: why });
+      if (why === 'budget') break;
+    }
+  }
+  return result;
+}
+function metadata(
+  raw: unknown,
+  project: boolean,
+  limits: UvParseLimits,
+  budget: UvBudget,
+  gaps: UvEntryGap[],
+  key: string,
+): UvLockMetadata | null {
+  if (raw === undefined) {
+    if (project) gaps.push({ entry: `${key}:metadata`, reason: 'unsupported' });
+    return null;
+  }
+  const r = table(raw),
+    value: UvLockMetadata = { requiresDist: null, providesExtras: null };
+  unknownFields(r, ['requires-dist', 'provides-extras'], gaps, `${key}:metadata`);
+  try {
+    if (r['requires-dist'] !== undefined)
+      value.requiresDist = requirements(r['requires-dist'], limits, budget, gaps, key);
+  } catch (error) {
+    gaps.push({ entry: `${key}:requires-dist`, reason: reason(error) });
+  }
+  try {
+    if (r['provides-extras'] !== undefined)
+      value.providesExtras = strings(r['provides-extras'], true);
+  } catch (error) {
+    gaps.push({ entry: `${key}:provides-extras`, reason: reason(error) });
+  }
+  if (project && (r['requires-dist'] === undefined || r['provides-extras'] === undefined))
+    gaps.push({ entry: `${key}:metadata`, reason: 'unsupported' });
+  return value;
+}
+function artifact(raw: unknown) {
+  const r = table(raw);
+  need(
+    Object.keys(r).every((k) => ['url', 'hash', 'size', 'upload-time'].includes(k)),
+    'unsupported',
+  );
+  url(r.url);
+  if (r.hash !== undefined)
+    need(
+      /^(?:sha256:[a-f\d]{64}|sha384:[a-f\d]{96}|sha512:[a-f\d]{128}|md5:[a-f\d]{32})$/iu.test(
+        text(r.hash),
+      ),
+    );
+  if (r.size !== undefined) need(Number.isSafeInteger(r.size) && (r.size as number) >= 0);
+  if (r['upload-time'] !== undefined) {
+    const date = r['upload-time'];
+    need(
+      (date instanceof Date && Number.isFinite(date.getTime())) ||
+        (typeof date === 'string' &&
+          /^\d{4}-\d\d-\d\dT\d\d:\d\d:\d\d(?:\.\d+)?(?:Z|[+-]\d\d:\d\d)$/u.test(date) &&
+          Number.isFinite(Date.parse(date))),
+    );
+  }
+}
+function artifacts(raw: Record<string, unknown>, gaps: UvEntryGap[], key: string) {
+  try {
+    if (raw.sdist !== undefined) artifact(raw.sdist);
+    if (raw.wheels !== undefined) {
+      need(Array.isArray(raw.wheels));
+      for (const wheel of raw.wheels) artifact(wheel);
+    }
+  } catch (error) {
+    gaps.push({ entry: `${key}:artifacts`, reason: reason(error) });
+  }
+}
 function readPackage(
   raw: Record<string, unknown>,
   limits: UvParseLimits,
@@ -133,6 +260,7 @@ function readPackage(
     resolutionMarkers: null,
     dependencies: null,
     optionalDependencies: null,
+    metadata: null,
   };
   try {
     value.resolutionMarkers = nullableStrings(raw['resolution-markers']);
@@ -158,6 +286,28 @@ function readPackage(
     }
   } catch (error) {
     gaps.push({ entry: `${value.key}:optional-dependencies`, reason: reason(error) });
+  }
+  unknownFields(
+    raw,
+    [
+      'name',
+      'version',
+      'source',
+      'resolution-markers',
+      'dependencies',
+      'optional-dependencies',
+      'metadata',
+      'sdist',
+      'wheels',
+    ],
+    gaps,
+    value.key,
+  );
+  artifacts(raw, gaps, value.key);
+  try {
+    value.metadata = metadata(raw.metadata, !value.external, limits, budget, gaps, value.key);
+  } catch (error) {
+    gaps.push({ entry: `${value.key}:metadata`, reason: reason(error) });
   }
   return value;
 }
@@ -200,10 +350,21 @@ function extract(
   const value: UvLock = {
     version: 1,
     revision,
-    requiresPython: text(raw['requires-python']),
+    requiresPython: null,
     resolutionMarkers: null,
     packages: [],
   };
+  unknownFields(
+    raw,
+    ['version', 'revision', 'requires-python', 'resolution-markers', 'package'],
+    gaps,
+    null,
+  );
+  try {
+    value.requiresPython = text(raw['requires-python']);
+  } catch (error) {
+    gaps.push({ entry: 'requires-python', reason: reason(error) });
+  }
   try {
     value.resolutionMarkers = nullableStrings(raw['resolution-markers']);
   } catch (error) {

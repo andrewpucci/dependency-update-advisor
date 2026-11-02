@@ -137,3 +137,37 @@ test('missing project and unsafe identities are fixed failures', () => {
   for (const s of ['', '[project]\nname=1', '[project]\nname="invalid!"'])
     expect(read(s)).toEqual({ kind: 'unavailable', reason: 'malformed' });
 });
+test.each([
+  'dependency-groups={}',
+  'tool.uv.dev-dependencies=[]',
+  'tool.uv.sources={}',
+  'tool.uv.index=[]',
+  'tool.uv.workspace={}',
+  'tool.uv.constraint-dependencies=[]',
+  'tool.uv.override-dependencies=[]',
+  'tool.uv.exclude-dependencies=[]',
+  'tool.uv.conflicts=[]',
+  'tool.uv.environments=[]',
+  'tool.uv.required-environments=[]',
+  'tool.uv.future-resolution={}',
+])('resolution metadata remains unsupported even empty: %s', (s) => {
+  const r = parsed(s + '\n[project]\nname="p"\ndependencies=["ok"]');
+  expect(r.value.dependencies[0].name).toBe('ok');
+  expect(r.gaps.some((g) => g.reason === 'unsupported')).toBe(true);
+});
+test('ignores only descriptive/project/build and non-uv tool data after structural checks', () => {
+  const r = parsed(
+    '[project]\nname="p"\ndescription="text"\nversion="1"\nauthors=[]\nscripts={}\nlicense="MIT"\nreadme="README.md"\n[build-system]\nrequires=["build>=1"]\n[tool.other]\nflag=true',
+  );
+  expect(r.gaps).toEqual([]);
+  expect(parsed('[project]\nname="p"\nfuture-resolution={}').gaps).toContainEqual({
+    entry: 'project',
+    reason: 'unsupported',
+  });
+});
+test('malformed dynamic metadata does not erase readable static declarations or certify absent fields', () => {
+  const r = parsed('[project]\nname="p"\ndynamic=1\ndependencies=["ok"]');
+  expect(r.value.dependencies[0].name).toBe('ok');
+  expect(r.value.fields.optionalDependencies).toBe('invalid');
+  expect(r.gaps).toContainEqual({ entry: 'dynamic', reason: 'malformed' });
+});
