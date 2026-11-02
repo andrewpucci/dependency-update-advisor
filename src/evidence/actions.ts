@@ -11,6 +11,13 @@ import type {
   PacketSource,
 } from '../schema.js';
 import {
+  byCodeUnit,
+  freeze,
+  isEvidencePath,
+  isPlainObject,
+  longestFittingPrefix,
+} from './common.js';
+import {
   readWorkflow,
   safeIdentity,
   type WorkflowJob,
@@ -75,7 +82,6 @@ type State = {
 const workflowPath = /^\.github\/workflows\/[^/]+\.ya?ml$/u;
 const sha = (value: unknown): value is string =>
   typeof value === 'string' && /^[a-f\d]{40}$/iu.test(value);
-const byCodeUnit = (a: string, b: string) => (a < b ? -1 : a > b ? 1 : 0);
 class InventoryFailure extends Error {
   constructor(readonly reason: EvidenceReason) {
     super(reason);
@@ -85,17 +91,8 @@ function need(value: unknown, reason: EvidenceReason = 'malformed'): asserts val
   if (!value) throw new InventoryFailure(reason);
 }
 function own(value: unknown): Record<string, unknown> {
-  need(
-    value &&
-      typeof value === 'object' &&
-      !types.isProxy(value) &&
-      Object.getPrototypeOf(value) === Object.prototype,
-  );
-  const descriptors = Object.getOwnPropertyDescriptors(value);
-  need(
-    Reflect.ownKeys(descriptors).every((k) => typeof k === 'string' && 'value' in descriptors[k]),
-  );
-  return value as Record<string, unknown>;
+  need(isPlainObject(value));
+  return value;
 }
 function input(value: unknown) {
   const r = own(value),
@@ -209,13 +206,6 @@ async function readSide(
     return { ...absent(state, side, path), state: 'unavailable' };
   }
 }
-function canonicalPath(value: unknown): value is string {
-  return (
-    safeIdentity(value, 1024) &&
-    !/[\\:]/u.test(value) &&
-    value.split('/').every((p) => p && p !== '.' && p !== '..')
-  );
-}
 function absent(state: State, side: 'base' | 'head', path: string): ActionsSnapshot {
   return {
     state: 'absent',
@@ -234,7 +224,7 @@ function candidateFiles(state: State, files: readonly GithubFileChange[]) {
     const paths = [file.path, file.previousPath].filter((p) => p !== null);
     const definitions = paths.filter((p) => /(?:^|\/)action\.ya?ml$/u.test(p));
     if (!definitions.length && !paths.some((p) => workflowPath.test(p))) continue;
-    if (!paths.every(canonicalPath)) gap(state, 'malformed');
+    if (!paths.every(isEvidencePath)) gap(state, 'malformed');
     else if (definitions.length) for (const p of definitions) gap(state, 'unsupported', p);
     else selected.push(file);
   }
@@ -496,7 +486,7 @@ function uninventoried(state: State, path: string, side: 'base' | 'head'): Evide
 }
 function comparisonRow(state: State, value: unknown) {
   const row = own(value);
-  need(canonicalPath(row.manifest) && safeIdentity(row.name) && safeIdentity(row.version, 1024));
+  need(isEvidencePath(row.manifest) && safeIdentity(row.name) && safeIdentity(row.version, 1024));
   need(row.change_type === 'added' || row.change_type === 'removed');
   const path = row.manifest,
     action = row.name,
@@ -639,13 +629,6 @@ function assemble(state: State, applicable: boolean, snapshots = true): ActionsI
     },
   };
 }
-function freeze<T>(value: T): T {
-  if (value && typeof value === 'object') {
-    for (const child of Object.values(value)) freeze(child);
-    Object.freeze(value);
-  }
-  return value;
-}
 function finish(state: State, applicable: boolean): ActionsInventoryResult {
   const fits = (value: ActionsInventory) =>
     Buffer.byteLength(JSON.stringify(value)) <= state.limits.maxRetainedBytes;
@@ -657,15 +640,8 @@ function finish(state: State, applicable: boolean): ActionsInventoryResult {
     state.changes = all.slice(0, length);
     return assemble(state, applicable, false);
   };
-  if (!fits(prefix(0))) return { kind: 'unavailable', reason: 'budget' };
-  let low = 0,
-    high = all.length;
-  while (low < high) {
-    const mid = Math.ceil((low + high) / 2);
-    if (fits(prefix(mid))) low = mid;
-    else high = mid - 1;
-  }
-  return freeze(structuredClone(prefix(low)));
+  const trimmed = longestFittingPrefix(all.length, prefix, fits);
+  return trimmed ? freeze(structuredClone(trimmed)) : { kind: 'unavailable', reason: 'budget' };
 }
 
 /** Read-only D1 collection; no PR code, provider calls, credentials or publication capability. */
