@@ -33,9 +33,15 @@ export type GraphWork = {
 };
 export type UvGraphLimits = { maxGraphWork: number; maxRetainedBytes: number };
 const sha = (v: unknown) => typeof v === 'string' && /^[a-f\d]{40}$/u.test(v);
-const safe = (v: unknown): v is string => typeof v === 'string' && !/[\p{Cc}\p{Cs}]/u.test(v);
+const safe = (v: unknown): v is string =>
+  typeof v === 'string' && v.length > 0 && !/[\p{Cc}\p{Cs}]/u.test(v);
 const name = (v: unknown) => typeof v === 'string' && /^[a-z0-9]+(?:-[a-z0-9]+)*$/u.test(v);
 const path = (v: unknown) => v === '.' || isEvidencePath(v);
+function keys(value: object, fields: string[]) {
+  need(isPlainObject(value));
+  need(Object.keys(value).length === fields.length);
+  need(fields.every((k) => Object.hasOwn(value, k)));
+}
 function canonical(value: unknown): unknown {
   if (Array.isArray(value)) return value.map(canonical);
   if (value && typeof value === 'object')
@@ -64,7 +70,7 @@ function graphWork(max: number): GraphWork {
   };
 }
 /** Revisit aliases for work accounting, but reject cycles before JSON serialization. */
-function plain(value: unknown, work: GraphWork, maxBytes: number) {
+export function checkGraphData(value: unknown, work: GraphWork, maxBytes: number) {
   const stack: { value: unknown; exit?: boolean }[] = [{ value }],
     active = new Set<object>();
   let bytes = 0;
@@ -139,6 +145,7 @@ function requirement(d: {
   if (d.extras !== null) strings(d.extras, true);
 }
 function selector(s: UvSelector) {
+  keys(s, ['name', 'version', 'source', 'marker', 'extra', 'list', 'position']);
   need(name(s.name) && safe(s.list) && Number.isSafeInteger(s.position) && s.position >= 0);
   need(s.version === null || safe(s.version));
   if (s.source !== null) origin(s.source);
@@ -146,6 +153,17 @@ function selector(s: UvSelector) {
   if (s.extra !== null) strings(s.extra, true);
 }
 function packageData(p: UvPackage) {
+  keys(p, [
+    'key',
+    'name',
+    'version',
+    'source',
+    'external',
+    'resolutionMarkers',
+    'dependencies',
+    'optionalDependencies',
+    'metadata',
+  ]);
   need(name(p.name));
   origin(p.source);
   need(p.external === (p.source.kind === 'registry'));
@@ -154,7 +172,11 @@ function packageData(p: UvPackage) {
       ? !p.external
       : safe(p.version) && /^[A-Za-z0-9][A-Za-z0-9.!+_-]*$/u.test(p.version),
   );
-  need(p.key === JSON.stringify([p.name, p.version, p.source]));
+  const source =
+    p.source.kind === 'registry'
+      ? { kind: 'registry', url: p.source.url }
+      : { kind: 'editable', path: '.' };
+  need(p.key === JSON.stringify([p.name, p.version, source]));
   if (p.resolutionMarkers !== null) strings(p.resolutionMarkers);
   if (p.dependencies !== null) {
     need(Array.isArray(p.dependencies));
@@ -167,11 +189,13 @@ function packageData(p: UvPackage) {
       true,
     );
     for (const e of p.optionalDependencies) {
+      keys(e, ['extra', 'declarations']);
       need(Array.isArray(e.declarations));
       e.declarations.forEach(selector);
     }
   }
   if (p.metadata !== null) {
+    keys(p.metadata, ['requiresDist', 'providesExtras']);
     if (p.metadata.requiresDist !== null) {
       need(Array.isArray(p.metadata.requiresDist));
       p.metadata.requiresDist.forEach(requirement);
@@ -180,10 +204,13 @@ function packageData(p: UvPackage) {
   }
 }
 function manifestData(m: UvManifest) {
+  keys(m, ['name', 'requiresPython', 'dependencies', 'optionalDependencies', 'fields']);
+  keys(m.fields, ['dependencies', 'optionalDependencies']);
   need(name(m.name) && (m.requiresPython === null || safe(m.requiresPython)));
   need(['absent', 'present', 'dynamic', 'invalid'].includes(m.fields.dependencies));
   need(['absent', 'present', 'dynamic', 'invalid'].includes(m.fields.optionalDependencies));
   const declaration = (d: UvManifest['dependencies'][number]) => {
+    keys(d, ['text', 'name', 'extras', 'specifier', 'marker', 'list', 'position']);
     requirement(d);
     need(safe(d.text) && safe(d.list) && Number.isSafeInteger(d.position) && d.position >= 0);
   };
@@ -195,11 +222,13 @@ function manifestData(m: UvManifest) {
     true,
   );
   for (const e of m.optionalDependencies) {
+    keys(e, ['extra', 'declarations']);
     need(Array.isArray(e.declarations));
     e.declarations.forEach(declaration);
   }
 }
 function lockData(l: UvLock) {
+  keys(l, ['version', 'revision', 'requiresPython', 'resolutionMarkers', 'packages']);
   need(l.version === 1 && [3, 5].includes(l.revision));
   need(l.requiresPython === null || safe(l.requiresPython));
   if (l.resolutionMarkers !== null) strings(l.resolutionMarkers);
@@ -214,6 +243,18 @@ function fileData(
   side: 'base' | 'head',
   filename: string,
 ) {
+  keys(file, [
+    'id',
+    'sourceId',
+    'state',
+    'side',
+    'path',
+    'repository',
+    'commitSha',
+    'blobSha',
+    'treeSha',
+    'data',
+  ]);
   need(file.side === side && file.path === (root === '.' ? filename : `${root}/${filename}`));
   need(file.commitSha === (side === 'base' ? m.binding.baseSha : m.binding.headSha));
   need(
@@ -248,16 +289,40 @@ function fileData(
   }
 }
 function metadataData(m: UvMetadata, binding: ReviewBinding) {
+  keys(m, [
+    'kind',
+    'binding',
+    'configRevision',
+    'roots',
+    'sources',
+    'gaps',
+    'discovery',
+    'comparison',
+  ]);
   need(isDeepStrictEqual(m.binding, binding) && sha(m.configRevision.sha));
   need(isDeepStrictEqual(m.configRevision.repository, binding.repository));
   need(Array.isArray(m.roots) && Array.isArray(m.sources) && Array.isArray(m.gaps));
   need(new Set(m.sources.map((s) => s.id)).size === m.sources.length);
   need(new Set(m.roots.map((r) => r.root)).size === m.roots.length);
   for (const s of m.sources) {
+    keys(s, [
+      'id',
+      'kind',
+      'side',
+      'path',
+      'repository',
+      'commitSha',
+      'blobSha',
+      'treeSha',
+      'status',
+      'reasons',
+    ]);
     need(safe(s.id) && Array.isArray(s.reasons));
     need(s.reasons.every((r) => uvReasons.includes(r)));
+    need((s.status === 'available') === (s.reasons.length === 0));
   }
   for (const g of m.gaps) {
+    keys(g, ['root', 'side', 'path', 'entry', 'reason']);
     need(g.root === null || path(g.root));
     need(g.side === null || g.side === 'base' || g.side === 'head');
     need(g.path === null || isEvidencePath(g.path));
@@ -265,13 +330,28 @@ function metadataData(m: UvMetadata, binding: ReviewBinding) {
     need(uvReasons.includes(g.reason));
   }
   for (const r of m.roots) {
+    keys(r, ['id', 'root', 'configured', 'base', 'head']);
     need(path(r.root) && typeof r.configured === 'boolean');
     for (const side of ['base', 'head'] as const) {
+      keys(r[side], ['state', 'manifest', 'lock']);
       need(['present', 'partial', 'absent', 'unavailable'].includes(r[side].state));
       fileData(r[side].manifest, m, r.root, side, 'pyproject.toml');
       fileData(r[side].lock, m, r.root, side, 'uv.lock');
+      const a = r[side].manifest.state,
+        b = r[side].lock.state;
+      need(
+        r[side].state ===
+          (a === b && ['present', 'absent', 'unavailable'].includes(a) ? a : 'partial'),
+      );
     }
   }
+  const files = m.roots.flatMap((r) => [
+    r.base.manifest,
+    r.base.lock,
+    r.head.manifest,
+    r.head.lock,
+  ]);
+  need(m.sources.every((s) => files.some((f) => f.sourceId === s.id)));
   for (const x of [m.discovery, m.comparison]) {
     need(['available', 'partial', 'unavailable'].includes(x.status));
     need(Array.isArray(x.reasons) && x.reasons.every((r) => uvReasons.includes(r)));
@@ -288,7 +368,7 @@ export function parseGraphInput(value: unknown) {
     [limits.maxGraphWork, limits.maxRetainedBytes].every((n) => Number.isSafeInteger(n) && n > 0),
   );
   const work = graphWork(limits.maxGraphWork);
-  plain(value, work, limits.maxRetainedBytes);
+  checkGraphData(value, work, limits.maxRetainedBytes);
   const binding = parseReviewBinding(value.binding);
   need(binding);
   const metadata = value.metadata as UvMetadataResult;

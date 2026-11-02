@@ -7,9 +7,10 @@ import type {
   InventoryCoverage,
   PacketRevision,
 } from '../schema.js';
-import { freeze, byCodeUnit } from './common.js';
+import { freeze } from './common.js';
 import type { UvMetadata, UvGap, UvRootSnapshot } from './uv.js';
 import { uvRootInventory } from './uv-inventory.js';
+import { finishUvOutput } from './uv-output.js';
 import { parseGraphInput, UvGraphFailure, type GraphWork } from './uv-input.js';
 
 export type UvChange = Extract<PacketChange, { ecosystem: 'uv' }>;
@@ -32,6 +33,7 @@ export type UvInventory = {
   configRevision: PacketRevision;
   changes: UvChange[];
   sources: PacketSource[];
+  fileIdentities: UvMetadata['sources'];
   relationships: RelationshipProof[];
   findings: Finding[];
   gaps: UvGraphGap[];
@@ -114,6 +116,7 @@ function initial(metadata: UvMetadata, work: GraphWork): UvInventory {
     configRevision: metadata.configRevision,
     changes: [],
     sources: [discovery, ...fileSources(metadata)],
+    fileIdentities: metadata.sources,
     relationships: [],
     findings: [],
     gaps: [],
@@ -141,23 +144,6 @@ function rootChanges(
     for (const side of [change.from, change.to])
       if (side) result.sources.find((s) => s.id === side.sourceId)!.memberIds.push(change.id);
 }
-function finish(result: UvInventory, metadata: UvMetadata, work: GraphWork, maxBytes: number) {
-  result.changes.sort((a, b) => byCodeUnit(a.id, b.id));
-  const reasons = [...new Set(result.gaps.map((g) => g.reason))].sort(byCodeUnit);
-  const applicable = metadata.discovery.applicable || metadata.roots.length > 0;
-  result.coverage = {
-    status: reasons.length ? 'partial' : applicable ? 'complete' : 'not_applicable',
-    reasons,
-    sourceIds: result.sources
-      .filter((s) => s.kind === 'file-list' || s.status === 'available')
-      .map((s) => s.id)
-      .sort(byCodeUnit),
-  };
-  for (const s of result.sources) s.memberIds.sort(byCodeUnit);
-  work.spend(result.changes.length + result.sources.length + result.gaps.length);
-  if (Buffer.byteLength(JSON.stringify(result)) > maxBytes) throw new UvGraphFailure('budget');
-  return freeze(result) as DeepReadonly<UvInventory>;
-}
 /** Pure reconciliation of authentic U1 snapshots; coverage, not kind, reports completeness. */
 export function reconcileUvGraph(input: unknown): UvGraphResult {
   try {
@@ -166,7 +152,7 @@ export function reconcileUvGraph(input: unknown): UvGraphResult {
     const m = metadata as UvMetadata,
       result = initial(m, work);
     for (const root of m.roots) rootChanges(result, m, root, work);
-    return finish(result, m, work, limits.maxRetainedBytes);
+    return finishUvOutput(result, m, work, limits.maxRetainedBytes);
   } catch (error) {
     return error instanceof UvGraphFailure
       ? { kind: 'unavailable', reason: error.reason }
