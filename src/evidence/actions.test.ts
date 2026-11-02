@@ -433,6 +433,34 @@ test('an unmatched workflow/action/side is a conflict gap without a fabricated c
   expect(result.coverage).toMatchObject({ status: 'partial', reasons: ['conflict'] });
   expect(result.changes).toHaveLength(1);
 });
+test('records for selected workflows that were never read keep the read reason, not a conflict', async () => {
+  const f = fixture(),
+    other = '.github/workflows/z.yml';
+  f.input.limits.maxWorkflows = 1;
+  f.discovery.files = [
+    ...f.discovery.files,
+    { path: other, previousPath: null, status: 'modified', blobSha: null },
+  ];
+  f.files[`base:${other}`] = yaml('v1');
+  f.files[`head:${other}`] = yaml('v2');
+  f.comparison.records = [comparisonRow('2', 'added', other)];
+  const skipped = inventory(await collectActionsInventory(f.input, { session: f.session }));
+  expect(skipped.coverage).toMatchObject({ status: 'partial', reasons: ['budget'] });
+  expect(skipped.comparison).toMatchObject({ status: 'partial', reasons: ['budget'] });
+  f.input.limits.maxWorkflows = 20;
+  f.files[`head:${other}`] = {
+    kind: 'unavailable',
+    reason: 'rate_limit',
+    side: 'head',
+    path: other,
+    repository,
+    commitSha: HEAD,
+  };
+  const unread = inventory(await collectActionsInventory(f.input, { session: f.session }));
+  expect(unread.coverage).toMatchObject({ status: 'partial', reasons: ['rate_limit'] });
+  expect(unread.comparison).toMatchObject({ status: 'partial', reasons: ['rate_limit'] });
+  expect(unread.changes).toHaveLength(1);
+});
 test.each(['permission', 'rate_limit', 'unknown'] as const)(
   'comparison %s remains independent from complete zero-change workflow inventory',
   async (reason) => {
