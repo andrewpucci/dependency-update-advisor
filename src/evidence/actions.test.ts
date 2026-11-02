@@ -284,6 +284,16 @@ test('an unsafe job key does not suppress independent jobs in the same workflow'
     to: { jobId: 'build', stepIndex: 0, ref: 'v2' },
   });
 });
+test('an unchanged Docker reference in a selected workflow prevents complete coverage', async () => {
+  const f = fixture();
+  const docker = `  image:\n    steps:\n      - uses: docker://alpine:3\n`;
+  f.files[`base:${workflow}`] = yaml('v1') + docker;
+  f.files[`head:${workflow}`] = yaml('v2') + docker;
+  const result = inventory(await collectActionsInventory(f.input, { session: f.session }));
+  expect(result.coverage).toMatchObject({ status: 'partial', reasons: ['unsupported'] });
+  expect(result.changes).toHaveLength(1);
+  expect(result.changes[0]).toMatchObject({ kind: 'update', to: { jobId: 'build', ref: 'v2' } });
+});
 test('unreadable, syntactically malformed or unexpectedly absent sides are never proven removals', async () => {
   for (const bad of [
     'jobs: [',
