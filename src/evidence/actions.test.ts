@@ -519,16 +519,17 @@ test('reordered comparison records preserve independent evidence and malformed r
 });
 test('prototype-shaped keys make inputs invalid and comparison rows malformed', async () => {
   const f = fixture();
+  // defineProperty creates an own data key even for `__proto__`, as JSON.parse does.
+  const withKey = (value: object, key: string, child: unknown) =>
+    Object.defineProperty({ ...value }, key, { value: child, enumerable: true });
   for (const key of ['__proto__', 'constructor', 'prototype']) {
-    const limits = JSON.parse(JSON.stringify(f.input.limits).replace('{', `{"${key}":1,`));
+    const limits = withKey(f.input.limits, key, 1);
     expect(await collectActionsInventory({ ...f.input, limits }, { session: f.session })).toEqual({
       kind: 'invalid',
     });
     expect(f.calls).toEqual([]);
   }
-  f.comparison.records = [
-    JSON.parse(JSON.stringify(comparisonRow('2')).replace('{', '{"__proto__":{},')),
-  ];
+  f.comparison.records = [withKey(comparisonRow('2'), '__proto__', {})];
   const result = inventory(await collectActionsInventory(f.input, { session: f.session }));
   expect(result.comparison).toMatchObject({ status: 'partial', reasons: ['malformed'] });
   expect(result.coverage.status).toBe('complete');
