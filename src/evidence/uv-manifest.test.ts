@@ -171,3 +171,22 @@ test('malformed dynamic metadata does not erase readable static declarations or 
   expect(r.value.fields.optionalDependencies).toBe('invalid');
   expect(r.gaps).toContainEqual({ entry: 'dynamic', reason: 'malformed' });
 });
+test.each(['p[]', 'p>=1,', 'p(>=1,)'])(
+  'valid syntax outside the documented subset is unsupported: %s',
+  (raw) => {
+    expect(() => parseRequirement(raw, limits)).toThrow('unsupported');
+  },
+);
+test.each(['p; extra in"x"', 'p; "x"in extra', 'p; extra == "a\\b"'])(
+  'does not accept malformed marker lexical syntax: %s',
+  (raw) => {
+    expect(() => parseRequirement(raw, limits)).toThrow('malformed');
+  },
+);
+test('unrepresentable package names are gaps rather than retained packet-incompatible identities', () => {
+  const name = 'a'.repeat(1025),
+    r = parsed(`[project]\nname="p"\ndependencies=["${name}","ok"]`);
+  expect(r.value.dependencies.map((x) => x.name)).toEqual(['ok']);
+  expect(r.gaps).toContainEqual({ entry: 'dependencies:0', reason: 'unsupported' });
+  expect(JSON.stringify(r)).not.toContain(name);
+});

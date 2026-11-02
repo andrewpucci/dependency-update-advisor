@@ -1,3 +1,4 @@
+import { PACKET_LIMITS } from '../schema.js';
 import { byCodeUnit } from './common.js';
 import {
   debit,
@@ -33,7 +34,9 @@ export type UvManifest = {
 export function normalizeName(value: unknown): string {
   const name = text(value);
   need(/^[A-Za-z0-9](?:[A-Za-z0-9._-]*[A-Za-z0-9])?$/u.test(name));
-  return name.toLowerCase().replace(/[-_.]+/gu, '-');
+  const normalized = name.toLowerCase().replace(/[-_.]+/gu, '-');
+  need(Buffer.byteLength(normalized) <= PACKET_LIMITS.identityBytes, 'unsupported');
+  return normalized;
 }
 class Cursor {
   position = 0;
@@ -66,6 +69,7 @@ class Cursor {
 function extras(cursor: Cursor) {
   const out: string[] = [];
   if (!cursor.take(/^\[/u)) return out;
+  need(!cursor.rest().startsWith(']'), 'unsupported');
   do {
     out.push(normalizeName(cursor.expect(/^[A-Za-z0-9._-]+/u)));
   } while (cursor.take(/^,/u));
@@ -88,6 +92,7 @@ function specifier(cursor: Cursor): string | null {
       !version.includes('*') ||
         ((operator === '==' || operator === '!=') && /^\d+(?:\.\d+)*\.\*$/u.test(version)),
     );
+    if (cursor.rest().startsWith(',')) need(!/^, *(?:\)|;|$)/u.test(cursor.rest()), 'unsupported');
   } while (cursor.take(/^,/u));
   if (parens) cursor.expect(/^\)/u);
   return cursor.source.slice(start, cursor.position).trim();
@@ -107,10 +112,20 @@ const variables = new Set([
   'extra',
 ]);
 function markerValue(cursor: Cursor) {
-  if (cursor.take(/^(?:"[^"]*"|'[^']*')/u) !== null) return;
+  const literal = cursor.take(/^(?:"[^"]*"|'[^']*')/u);
+  if (literal !== null) {
+    need(!/[^ -~]|\\/u.test(literal));
+    return;
+  }
   const variable = cursor.expect(/^[a-z_]+/u);
   need(!['extras', 'dependency_groups'].includes(variable), 'unsupported');
   need(variables.has(variable));
+}
+function markerOperator(cursor: Cursor) {
+  const before = cursor.position,
+    operator = cursor.expect(/^(?:===|~=|==|!=|<=|>=|<|>|not +in\b|in\b)/u);
+  if (operator === 'in' || operator.startsWith('not'))
+    need(cursor.position - before > operator.length && cursor.source[cursor.position] === ' ');
 }
 function marker(cursor: Cursor): string | null {
   if (!cursor.take(/^;/u)) return null;
@@ -125,7 +140,7 @@ function marker(cursor: Cursor): string | null {
         continue;
       }
       markerValue(cursor);
-      cursor.expect(/^(?:===|~=|==|!=|<=|>=|<|>|not +in\b|in\b)/u);
+      markerOperator(cursor);
       markerValue(cursor);
       operand = false;
     } else if (cursor.take(/^\)/u)) {

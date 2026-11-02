@@ -17,7 +17,7 @@ test('reads real TOML quoted/dotted keys, tables, arrays and multiline strings',
   const r = readToml(bytes('"a.b" = [1, 2]\n[a.c]\ntext = """hello\nworld"""'), limits);
   expect(r).toEqual({
     kind: 'parsed',
-    value: { 'a.b': [1, 2], a: { c: { text: 'hello\nworld' } } },
+    value: { 'a.b': [1n, 2n], a: { c: { text: 'hello\nworld' } } },
   });
   if (r.kind === 'parsed') expect(Object.getPrototypeOf(r.value)).toBe(Object.prototype);
 });
