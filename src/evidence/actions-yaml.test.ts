@@ -138,3 +138,32 @@ test('enforces byte, node, nesting and occurrence limits with fatal UTF-8 decodi
     reason: 'malformed',
   });
 });
+
+test('counts cumulative nodes and UTF-8 bytes at exact boundaries and bounds deeply nested flow input before composition', () => {
+  const bytes = new TextEncoder().encode(ordinary),
+    budget = { nodes: 0, aliases: 0, occurrences: 0 };
+  expect(readWorkflow(bytes, limits, budget).kind).toBe('parsed');
+  const nodes = budget.nodes;
+  expect(readWorkflow(bytes, { ...limits, maxYamlNodes: nodes }).kind).toBe('parsed');
+  expect(readWorkflow(bytes, { ...limits, maxYamlNodes: nodes - 1 })).toEqual({
+    kind: 'unavailable',
+    reason: 'budget',
+  });
+  expect(readWorkflow(bytes, { ...limits, maxYamlNodes: nodes }, budget)).toEqual({
+    kind: 'unavailable',
+    reason: 'budget',
+  });
+  const text = 'jobs: { build: { steps: [{ uses: example/action@réf }] } }';
+  const size = Buffer.byteLength(text);
+  expect(read(text, { maxFileBytes: size, maxYamlDepth: 5 }).kind).toBe('parsed');
+  expect(read(text, { maxFileBytes: size - 1 })).toEqual({ kind: 'unavailable', reason: 'budget' });
+  expect(read(text, { maxYamlDepth: 4 })).toEqual({ kind: 'unavailable', reason: 'budget' });
+  expect(
+    read(`extra: ${'['.repeat(4000)}0${']'.repeat(4000)}\njobs: {}`, { maxYamlDepth: 5 }),
+  ).toEqual({ kind: 'unavailable', reason: 'budget' });
+});
+
+test('expanded scalar alias entries consume node budget before the graph can amplify', () => {
+  const yaml = `extras: &list [${Array(100).fill('value').join(',')}]\ncopies: [${Array(100).fill('*list').join(',')}]\njobs: {}`;
+  expect(read(yaml, { maxYamlNodes: 1500 })).toEqual({ kind: 'unavailable', reason: 'budget' });
+});
