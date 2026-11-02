@@ -14,6 +14,7 @@ import {
   safeIdentity,
   type WorkflowJob,
   type WorkflowUse,
+  type WorkflowStep,
   type YamlBudget,
   type YamlLimits,
 } from './actions-yaml.js';
@@ -308,35 +309,92 @@ function emit(state: State, from: ActionsSide | null, to: ActionsSide | null) {
     ),
   });
 }
-function diff(state: State, base: ActionsSnapshot, head: ActionsSnapshot) {
-  if (base.state === 'unavailable' || head.state === 'unavailable') return;
-  const before = new Map(occurrences(base).map((o) => [o.key, o.side]));
-  const after = new Map(occurrences(head).map((o) => [o.key, o.side]));
-  for (const key of new Set([...before.keys(), ...after.keys()])) {
-    const from = before.get(key) ?? null,
-      to = after.get(key) ?? null;
-    const location = (from ?? to)!;
-    if (
-      [base, head].some((snapshot) =>
-        state.gaps.some(
-          (g) =>
-            g.path === snapshot.path &&
-            g.side === snapshot.side &&
-            (g.jobId === null ||
-              (g.jobId === location.jobId &&
-                (g.stepIndex === null || g.stepIndex === location.stepIndex))),
-        ),
-      )
-    )
-      continue;
-    if (from && to && from.action === to.action) {
-      if (from.ref !== to.ref) emit(state, from, to);
-    } else {
-      if (from) emit(state, from, null);
-      if (to) emit(state, null, to);
-    }
+function signature(use: WorkflowUse | null) {
+  if (use?.kind === 'external') return use.action;
+  if (use?.kind === 'local') return `./${use.path}`;
+  return use?.kind ?? null;
+}
+function uniqueIds(steps: WorkflowStep[]) {
+  const ids = new Map<string, number | null>();
+  steps.forEach((step, i) => {
+    if (step.id) ids.set(step.id, ids.has(step.id) ? null : i);
+  });
+  return ids;
+}
+function stepPairs(base: WorkflowStep[], head: WorkflowStep[]) {
+  const before = uniqueIds(base),
+    after = uniqueIds(head),
+    pairs = new Map<number, number>();
+  for (const [id, index] of before) {
+    const to = after.get(id);
+    if (index !== null && to !== undefined && to !== null) pairs.set(index, to);
+  }
+  const aligned =
+    base.length === head.length &&
+    base.every((step, i) => signature(step.use) === signature(head[i].use));
+  if (aligned) {
+    const used = new Set(pairs.values());
+    base.forEach((_, i) => {
+      if (!pairs.has(i) && !used.has(i)) pairs.set(i, i);
+    });
+  }
+  return pairs;
+}
+function uncertain(state: State, snapshot: ActionsSnapshot, jobId: string, index?: number | null) {
+  return state.gaps.some(
+    (g) =>
+      g.path === snapshot.path &&
+      g.side === snapshot.side &&
+      (g.jobId === null ||
+        (g.jobId === jobId &&
+          (index === undefined || g.stepIndex === null || g.stepIndex === index))),
+  );
+}
+function emitPair(state: State, from: ActionsSide | null, to: ActionsSide | null) {
+  if (from && to && from.action === to.action) {
+    if (from.ref !== to.ref) emit(state, from, to);
+  } else {
+    if (from) emit(state, from, null);
+    if (to) emit(state, null, to);
   }
 }
+function diffJob(state: State, base: ActionsSnapshot, head: ActionsSnapshot, jobId: string) {
+  const before = new Map(
+    occurrences(base)
+      .filter((o) => o.side.jobId === jobId)
+      .map((o) => [o.side.stepIndex, o.side]),
+  );
+  const after = new Map(
+    occurrences(head)
+      .filter((o) => o.side.jobId === jobId)
+      .map((o) => [o.side.stepIndex, o.side]),
+  );
+  if (!uncertain(state, base, jobId, null) && !uncertain(state, head, jobId, null)) {
+    emitPair(state, before.get(null) ?? null, after.get(null) ?? null);
+  }
+  before.delete(null);
+  after.delete(null);
+  const oldJob = base.jobs.find((j) => j.jobId === jobId),
+    newJob = head.jobs.find((j) => j.jobId === jobId);
+  const pairs = stepPairs(oldJob?.steps ?? [], newJob?.steps ?? []);
+  for (const [i, j] of pairs) {
+    if (!uncertain(state, base, jobId, i) && !uncertain(state, head, jobId, j))
+      emitPair(state, before.get(i) ?? null, after.get(j) ?? null);
+    before.delete(i);
+    after.delete(j);
+  }
+  if (uncertain(state, base, jobId) || uncertain(state, head, jobId)) return;
+  if (oldJob?.steps && newJob?.steps && before.size + after.size > 0)
+    gap(state, 'conflict', head.path, null, jobId);
+  for (const from of before.values()) emit(state, from, null);
+  for (const to of after.values()) emit(state, null, to);
+}
+function diff(state: State, base: ActionsSnapshot, head: ActionsSnapshot) {
+  if (base.state === 'unavailable' || head.state === 'unavailable') return;
+  const jobs = new Set([...base.jobs, ...head.jobs].map((j) => j.jobId));
+  for (const jobId of jobs) diffJob(state, base, head, jobId);
+}
+
 function assemble(state: State, applicable: boolean): ActionsInventory {
   const reasons = [...new Set(state.gaps.map((g) => g.reason))].sort();
   const status: InventoryCoverage['status'] = reasons.length
