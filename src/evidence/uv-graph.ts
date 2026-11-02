@@ -11,7 +11,7 @@ import type {
 import { freeze, byCodeUnit } from './common.js';
 import type { UvMetadata, UvGap, UvRootSnapshot } from './uv.js';
 import type { UvPackage } from './uv-lock.js';
-import { uvRoles, uvDeclarationChanges } from './uv-roles.js';
+import { uvRoles, uvDeclarationChanges, type UvRoleNode } from './uv-roles.js';
 import { parseGraphInput, UvGraphFailure, boundedIdentity, type GraphWork } from './uv-input.js';
 
 export type UvChange = Extract<PacketChange, { ecosystem: 'uv' }>;
@@ -127,7 +127,12 @@ function initial(metadata: UvMetadata, work: GraphWork): UvInventory {
     addGap(result, { root: null, side: null, path: null, entry: null, reason: 'unknown' });
   return result;
 }
-function instance(p: UvPackage, root: UvRootSnapshot, side: 'base' | 'head'): UvSide | null {
+function instance(
+  p: UvPackage,
+  root: UvRootSnapshot,
+  side: 'base' | 'head',
+  node?: UvRoleNode,
+): UvSide | null {
   if (!p.external || p.version === null) return null;
   const marker = p.resolutionMarkers?.length
     ? JSON.stringify([...new Set(p.resolutionMarkers)].sort(byCodeUnit))
@@ -139,7 +144,7 @@ function instance(p: UvPackage, root: UvRootSnapshot, side: 'base' | 'head'): Uv
     version: p.version,
     source: { kind: 'registry', identity: p.source.kind === 'registry' ? p.source.url : '' },
     marker,
-    extras: [],
+    extras: node?.extras ?? [],
     groups: [],
     sourceId: root[side].lock.sourceId!,
   };
@@ -158,6 +163,7 @@ function rootChanges(
   const baseRoles = uvRoles(root, 'base', work),
     headRoles = uvRoles(root, 'head', work);
   for (const gap of [...baseRoles.gaps, ...headRoles.gaps]) addGap(result, gap);
+  result.observations.push(...baseRoles.observations, ...headRoles.observations);
   const base = root.base.lock.data!.packages.filter((p) => p.external),
     head = root.head.lock.data!.packages.filter((p) => p.external);
   for (const name of [...new Set([...base, ...head].map((p) => p.name))].sort(byCodeUnit)) {
@@ -174,8 +180,8 @@ function rootChanges(
       });
       continue;
     }
-    const from = old[0] ? instance(old[0], root, 'base') : null,
-      to = next[0] ? instance(next[0], root, 'head') : null;
+    const from = old[0] ? instance(old[0], root, 'base', baseRoles.nodes.get(old[0].key)) : null,
+      to = next[0] ? instance(next[0], root, 'head', headRoles.nodes.get(next[0].key)) : null;
     if (!from && !to) continue;
     if (
       from &&
