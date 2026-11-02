@@ -361,7 +361,35 @@ function metadataData(m: UvMetadata, binding: ReviewBinding) {
     !m.discovery.complete || (m.discovery.status === 'available' && !m.discovery.reasons.length),
   );
 }
+function graphEnvelope(value: unknown) {
+  need(
+    value &&
+      typeof value === 'object' &&
+      !types.isProxy(value) &&
+      Object.getPrototypeOf(value) === Object.prototype,
+  );
+  const descriptors = Object.getOwnPropertyDescriptors(value);
+  need(
+    Reflect.ownKeys(descriptors).every(
+      (k) =>
+        typeof k === 'string' && ['binding', 'metadata', 'limits', 'corroboration'].includes(k),
+    ),
+  );
+  for (const key of ['binding', 'metadata', 'limits'])
+    need(descriptors[key] && 'value' in descriptors[key] && descriptors[key].enumerable);
+  const c = descriptors.corroboration;
+  return {
+    core: {
+      binding: descriptors.binding.value,
+      metadata: descriptors.metadata.value,
+      limits: descriptors.limits.value,
+    },
+    corroboration: c ? ('value' in c && c.enumerable ? c.value : null) : undefined,
+  };
+}
 export function parseGraphInput(value: unknown) {
+  const extracted = graphEnvelope(value);
+  value = extracted.core;
   need(isPlainObject(value) && isPlainObject(value.limits));
   const limits = value.limits as UvGraphLimits;
   need(
@@ -383,7 +411,7 @@ export function parseGraphInput(value: unknown) {
     metadata: structuredClone(metadata) as UvMetadataResult,
     limits,
     work,
-    corroboration: value.corroboration,
+    corroboration: extracted.corroboration,
   };
 }
 export function boundedIdentity(s: string) {

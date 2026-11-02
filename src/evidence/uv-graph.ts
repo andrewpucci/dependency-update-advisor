@@ -12,6 +12,7 @@ import type { UvMetadata, UvGap, UvRootSnapshot } from './uv.js';
 import { uvRootInventory } from './uv-inventory.js';
 import { prepareUvOutput, finishUvOutput } from './uv-output.js';
 import { startUvRelationships, proveUvRelationships } from './uv-paths.js';
+import { startUvCorroboration, corroborateUv } from './uv-corroboration.js';
 import { parseGraphInput, UvGraphFailure, type GraphWork } from './uv-input.js';
 
 export type UvChange = Extract<PacketChange, { ecosystem: 'uv' }>;
@@ -165,13 +166,15 @@ function rootChanges(
 /** Pure reconciliation of authentic U1 snapshots; coverage, not kind, reports completeness. */
 export function reconcileUvGraph(input: unknown): UvGraphResult {
   try {
-    const { metadata, work, limits } = parseGraphInput(input);
+    const { metadata, work, limits, corroboration } = parseGraphInput(input);
     if (metadata.kind !== 'metadata') return freeze(metadata);
     const m = metadata as UvMetadata,
       result = initial(m, work);
     const contexts = m.roots.map((root) => rootChanges(result, m, root, work));
     const relationships = startUvRelationships(result);
+    const descriptionSource = startUvCorroboration(result, work);
     prepareUvOutput(result, m, work, limits.maxRetainedBytes);
+    corroborateUv(result, m, corroboration, descriptionSource, work, limits.maxRetainedBytes);
     proveUvRelationships(result, contexts, work, limits.maxRetainedBytes, relationships);
     return finishUvOutput(result, limits.maxRetainedBytes);
   } catch (error) {
