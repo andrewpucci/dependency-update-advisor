@@ -83,7 +83,7 @@ function attachObservations(result: UvInventory, work: GraphWork) {
   }
   result.observations.sort((a, b) => byCodeUnit(JSON.stringify(a), JSON.stringify(b)));
 }
-export function finishUvOutput(
+export function prepareUvOutput(
   result: UvInventory,
   metadata: UvMetadata,
   work: GraphWork,
@@ -96,5 +96,11 @@ export function finishUvOutput(
   inventoryCoverage(result, metadata);
   attachObservations(result, work);
   checkGraphData(result, work, maxBytes);
+}
+export function finishUvOutput(result: UvInventory, maxBytes: number) {
+  result.observations.sort((a, b) => byCodeUnit(JSON.stringify(a), JSON.stringify(b)));
+  result.findings.sort((a, b) => byCodeUnit(a.id, b.id));
+  result.relationships.sort((a, b) => byCodeUnit(JSON.stringify(a), JSON.stringify(b)));
+  if (Buffer.byteLength(JSON.stringify(result)) > maxBytes) throw new UvGraphFailure('budget');
   return freeze(result);
 }
