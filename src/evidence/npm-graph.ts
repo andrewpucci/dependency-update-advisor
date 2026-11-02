@@ -8,7 +8,7 @@ import {
   type EvidenceReason,
 } from '../schema.js';
 import type { Finding } from '../policy.js';
-import type { NpmInventoryResult, NpmRootSide } from './npm.js';
+import type { NpmInventoryResult, NpmRootSide, NpmNode } from './npm.js';
 
 type Inventory = Extract<NpmInventoryResult, { kind: 'inventory' }>;
 type NpmProof = Extract<RelationshipProof, { ecosystem: 'npm' }>;
@@ -163,6 +163,31 @@ function slotTarget(snapshot: NpmRootSide, path: string, key: string, spend: () 
     parent = index < 0 ? '' : parent.slice(0, index);
   }
 }
+function supportedEdge(key: string, specifier: string, target: NpmSide) {
+  const alias = /^npm:((?:@[^/]+\/)?[^@/]+)@(.+)$/u.exec(specifier);
+  const name = alias?.[1] ?? key;
+  const range = alias?.[2] ?? specifier;
+  return (
+    target.source.kind === 'registry' &&
+    target.name === name &&
+    /^[\d\s.^~<>=*|xXv+-]+$/u.test(range) &&
+    /[\d*xX]/u.test(range)
+  );
+}
+function nodeKey(node: NpmSide) {
+  return JSON.stringify([node.root, node.lockPath, node.name, node.version, node.source]);
+}
+function edges(snapshot: NpmRootSide, node: NpmNode, spend: () => void) {
+  const maps = { ...node.dependencies, ...node.optionalDependencies };
+  const targets: NpmSide[] = [];
+  for (const key of Object.keys(maps).sort()) {
+    spend();
+    if (!/^(?:@[a-z\d._-]+\/)?[a-z\d][a-z\d._-]*$/iu.test(key)) continue;
+    const target = slotTarget(snapshot, node.instance!.lockPath, key, spend);
+    if (target && supportedEdge(key, maps[key], target)) targets.push(target);
+  }
+  return targets.sort((a, b) => (nodeKey(a) < nodeKey(b) ? -1 : nodeKey(a) > nodeKey(b) ? 1 : 0));
+}
 function pathTo(snapshot: NpmRootSide, start: NpmSide, end: NpmSide, spend: () => void) {
   const queue: NpmSide[][] = [[start]],
     seen = new Set([start.lockPath]);
@@ -172,10 +197,8 @@ function pathTo(snapshot: NpmRootSide, start: NpmSide, end: NpmSide, spend: () =
       node = own(snapshot.packages, path.at(-1)!.lockPath);
     if (path.at(-1)!.lockPath === end.lockPath) return path;
     if (!node) continue;
-    for (const key of Object.keys(node.dependencies).sort()) {
-      spend();
-      const target = slotTarget(snapshot, path.at(-1)!.lockPath, key, spend);
-      if (target && !seen.has(target.lockPath)) {
+    for (const target of edges(snapshot, node, spend)) {
+      if (!seen.has(target.lockPath)) {
         seen.add(target.lockPath);
         queue.push([...path, target]);
       }

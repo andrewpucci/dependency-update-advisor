@@ -181,3 +181,132 @@ test('partial inventory and missing snapshots never prove an absent relationship
     reason: 'budget',
   });
 });
+
+test('proves installed optional edges with optional-map precedence', async () => {
+  const input = await graphFixture({
+    'node_modules/anchor': pkg('1.1.0', {
+      dependencies: { child: 'git+https://example.com/unsupported' },
+      optionalDependencies: { child: '^1', absent: '^1' },
+    }),
+  });
+  const result = proveNpmRelationships(input);
+  expect(result.kind).toBe('inventory');
+  if (result.kind !== 'inventory') throw new Error('expected graph');
+  expect(result.relationships).toHaveLength(1);
+  const optionalOnly = await graphFixture({
+    'node_modules/anchor': pkg('1.1.0', {
+      optionalDependencies: { child: '^1' },
+    }),
+  });
+  const graph = proveNpmRelationships(optionalOnly);
+  expect(graph.kind === 'inventory' && graph.relationships).toHaveLength(1);
+});
+
+test('never accepts unsupported edge specifiers merely because a same-name slot exists', async () => {
+  for (const spec of [
+    'git+https://example.com/child',
+    'file:../child',
+    'workspace:*',
+    'https://example.com/child.tgz',
+  ]) {
+    const input = await graphFixture({
+      'node_modules/anchor': pkg('1.1.0', { dependencies: { child: spec } }),
+    });
+    const result = proveNpmRelationships(input);
+    expect(result.kind === 'inventory' && result.relationships).toEqual([]);
+  }
+});
+
+test('nearest nested duplicate shadows a farther changed package', async () => {
+  const nested = { 'node_modules/anchor/node_modules/child': pkg('1.0.0') };
+  const input = await graphFixture(nested, nested);
+  const result = proveNpmRelationships(input);
+  expect(result.kind === 'inventory' && result.relationships).toEqual([]);
+});
+
+test('scoped enclosing slots look up hoisted packages without treating scope as a parent', async () => {
+  const extra = {
+    'node_modules/anchor/node_modules/@s/middle': pkg('1.0.0', { dependencies: { child: '^1' } }),
+  };
+  const input = await graphFixture(
+    { ...extra, 'node_modules/anchor': pkg('1.1.0', { dependencies: { '@s/middle': '^1' } }) },
+    { ...extra, 'node_modules/anchor': pkg('1.0.0', { dependencies: { '@s/middle': '^1' } }) },
+  );
+  const result = proveNpmRelationships(input);
+  expect(result.kind).toBe('inventory');
+  if (result.kind !== 'inventory') throw new Error('expected graph');
+  expect(result.relationships[0].path.map((p) => p.lockPath)).toEqual([
+    'node_modules/anchor',
+    'node_modules/anchor/node_modules/@s/middle',
+    'node_modules/child',
+  ]);
+});
+
+test('alias edges require the exact established target identity', async () => {
+  for (const targetName of ['real-child', 'wrong-child']) {
+    const input = await graphFixture(
+      {
+        'node_modules/anchor': pkg('1.1.0', { dependencies: { child: 'npm:real-child@^1' } }),
+        'node_modules/child': pkg('1.1.0', { name: targetName }),
+      },
+      { 'node_modules/child': pkg('1.0.0', { name: targetName }) },
+    );
+    const result = proveNpmRelationships(input);
+    expect(result.kind === 'inventory' && result.relationships.length).toBe(
+      targetName === 'real-child' ? 1 : 0,
+    );
+  }
+});
+
+test('cycles and diamonds choose one shortest canonical path under input permutations', async () => {
+  const extra = {
+    'node_modules/left': pkg('1.0.0', { dependencies: { child: '^1', anchor: '^1' } }),
+    'node_modules/right': pkg('1.0.0', { dependencies: { child: '^1' } }),
+  };
+  const input = await graphFixture(
+    {
+      ...extra,
+      'node_modules/anchor': pkg('1.1.0', { dependencies: { right: '^1', left: '^1' } }),
+    },
+    {
+      ...extra,
+      'node_modules/anchor': pkg('1.0.0', { dependencies: { right: '^1', left: '^1' } }),
+    },
+  );
+  const result = proveNpmRelationships(input);
+  expect(result.kind).toBe('inventory');
+  if (result.kind !== 'inventory') throw new Error('expected graph');
+  expect(result.relationships[0].path.map((p) => p.name)).toEqual(['anchor', 'left', 'child']);
+  const reordered = {
+    ...input,
+    inventory: {
+      ...input.inventory,
+      roots: input.inventory.roots.map((root) => ({
+        ...root,
+        base: {
+          ...root.base,
+          packages: Object.fromEntries(Object.entries(root.base.packages).reverse()),
+        },
+        head: {
+          ...root.head,
+          packages: Object.fromEntries(Object.entries(root.head.packages).reverse()),
+        },
+      })),
+    },
+  };
+  const reversed = proveNpmRelationships(reordered);
+  expect(reversed.kind === 'inventory' && reversed.relationships).toEqual(result.relationships);
+});
+
+test('an unresolved nearer lookup position blocks a farther proven slot', async () => {
+  const input = await graphFixture();
+  const roots = input.inventory.roots.map((root) => ({
+    ...root,
+    head: {
+      ...root.head,
+      unresolvedPaths: ['node_modules/anchor/node_modules/child'],
+    },
+  }));
+  const result = proveNpmRelationships({ ...input, inventory: { ...input.inventory, roots } });
+  expect(result.kind === 'inventory' && result.relationships).toEqual([]);
+});
