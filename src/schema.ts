@@ -850,7 +850,12 @@ function declarationSide(value: unknown): NpmDeclarationSide {
     const value = entries[section];
     requireValue(typeof value === 'string', 'changes');
     if (value !== '') text(value, 'changes');
-    requireValue(!/\/\/[^/\s]*@|[?&](?:token|key|password|secret|auth)=/iu.test(value), 'changes');
+    requireValue(
+      !/\/\/(?!git@[^/\s@]*(?:[/\s]|$))[^/\s]*@|[?&](?:token|key|password|secret|auth)=/iu.test(
+        value,
+      ),
+      'changes',
+    );
     specifiers[section] = value;
   }
   return {
@@ -927,8 +932,7 @@ function instanceKey(c: PacketChange, side: DependencySide) {
   if ('specifiers' in side) return JSON.stringify(['npm', 'declaration', side.root, side.name]);
   if ('workflow' in side)
     return JSON.stringify([c.ecosystem, side.workflow, side.jobId, side.stepIndex]);
-  if ('lockPath' in side)
-    return JSON.stringify([c.ecosystem, side.root, side.lockPath ?? side.name]);
+  if ('lockPath' in side) return JSON.stringify([c.ecosystem, side.root, side.lockPath]);
   return JSON.stringify([
     c.ecosystem,
     side.root,

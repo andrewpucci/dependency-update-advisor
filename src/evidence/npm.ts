@@ -85,6 +85,15 @@ const sections = [
   'optionalDependencies',
 ] as const;
 const roles = ['production', 'development', 'peer', 'optional'] as const;
+const npmFile = /(?:^|\/)(?:package\.json|package-lock\.json|npm-shrinkwrap\.json)$/u;
+const comparedFile = /(?:^|\/)(?:package-lock\.json|package\.json)$/u;
+/** Reads only own keys so hostile names such as `toString` cannot resolve inherited members. */
+function own<T>(map: Readonly<Record<string, T>>, key: string): T | undefined {
+  return Object.hasOwn(map, key) ? map[key] : undefined;
+}
+function rootOf(file: string) {
+  return file.includes('/') ? file.slice(0, file.lastIndexOf('/')) : '.';
+}
 class InventoryError extends Error {
   constructor(readonly reason: EvidenceReason) {
     super(reason);
@@ -134,10 +143,10 @@ function safeText(value: unknown, empty = false): value is string {
     (empty || value.length > 0) &&
     Buffer.byteLength(value) <= 1024 &&
     characters(value) &&
-    !/\/\/[^/\s]*@|[?&](?:token|key|password|secret|auth)=/iu.test(value)
+    !/\/\/(?!git@[^/\s@]*(?:[/\s]|$))[^/\s]*@|[?&](?:token|key|password|secret|auth)=/iu.test(value)
   );
 }
-function inspect(value: unknown, limits: Limits, depth = 0, counter = { entries: 0 }) {
+function inspect(value: unknown, limits: Limits, depth = 1, counter = { entries: 0 }) {
   if (!value || typeof value !== 'object') return;
   need(depth <= limits.maxJsonDepth, 'budget');
   need(!types.isProxy(value));
@@ -256,8 +265,10 @@ function declarations(value: Record<string, unknown>) {
   const result: Record<string, Record<string, string>> = {};
   for (const section of sections) {
     if (value[section] === undefined) continue;
-    for (const [name, specifier] of Object.entries(stringMap(value[section])))
-      (result[name] ??= {})[section] = specifier;
+    for (const [name, specifier] of Object.entries(stringMap(value[section]))) {
+      if (!Object.hasOwn(result, name)) result[name] = {};
+      result[name][section] = specifier;
+    }
   }
   return result;
 }
@@ -513,7 +524,7 @@ function classify(state: State, root: NpmRoot, instance: NpmSide, side: 'base' |
   const manifest = root[side].declarations;
   if (!manifest) return { role: 'unknown' as const };
   const slot = slotName(instance.lockPath),
-    membership = slot ? manifest[slot] : undefined;
+    membership = slot ? own(manifest, slot) : undefined;
   if (!slot || !membership || instance.lockPath !== `node_modules/${slot}`)
     return { role: 'transitive' as const };
   const effective =
@@ -555,11 +566,11 @@ function resolved(state: State, root: NpmRoot) {
   const keys = [
     ...new Set([...Object.keys(root.base.packages), ...Object.keys(root.head.packages)]),
   ].sort();
+  const unresolved = new Set([...root.base.unresolvedPaths, ...root.head.unresolvedPaths]);
   for (const key of keys) {
-    if (root.base.unresolvedPaths.includes(key) || root.head.unresolvedPaths.includes(key))
-      continue;
-    const before = root.base.packages[key],
-      after = root.head.packages[key];
+    if (unresolved.has(key)) continue;
+    const before = own(root.base.packages, key),
+      after = own(root.head.packages, key);
     const from = before?.instance ?? null,
       to = after?.instance ?? null;
     if (sameInstance(from, to)) {
@@ -579,12 +590,14 @@ function declared(state: State, root: NpmRoot) {
   if (before === null || after === null) return;
   const names = [...new Set([...Object.keys(before), ...Object.keys(after)])].sort();
   for (const name of names) {
-    if (isDeepStrictEqual(before[name], after[name])) continue;
-    const from = before[name]
-      ? { root: root.root, name, specifiers: before[name], sourceId: root.base.manifestId! }
+    const was = own(before, name),
+      now = own(after, name);
+    if (isDeepStrictEqual(was, now)) continue;
+    const from = was
+      ? { root: root.root, name, specifiers: was, sourceId: root.base.manifestId! }
       : null;
-    const to = after[name]
-      ? { root: root.root, name, specifiers: after[name], sourceId: root.head.manifestId! }
+    const to = now
+      ? { root: root.root, name, specifiers: now, sourceId: root.head.manifestId! }
       : null;
     state.changes.push({
       id: changeId(state, 'declaration', from, to),
@@ -623,10 +636,8 @@ function comparisonIdentity(state: State, result: GithubComparison) {
 function comparisonMatch(state: State, row: Readonly<Record<string, unknown>>) {
   need(safeText(row.manifest) && path(row.manifest) && safeText(row.name) && safeText(row.version));
   need(row.change_type === 'added' || row.change_type === 'removed', 'unsupported');
-  need(/(?:^|\/)(?:package-lock.json|package.json)$/u.test(row.manifest), 'unsupported');
-  const root = row.manifest.includes('/')
-    ? row.manifest.slice(0, row.manifest.lastIndexOf('/'))
-    : '.';
+  need(comparedFile.test(row.manifest), 'unsupported');
+  const root = rootOf(row.manifest);
   const revision = row.change_type === 'added' ? 'head' : 'base';
   const side = revision === 'head' ? 'to' : 'from';
   const matches = state.changes.filter(
@@ -637,6 +648,8 @@ function comparisonMatch(state: State, row: Readonly<Record<string, unknown>>) {
       c[side]?.name === row.name &&
       c[side]?.version === row.version,
   );
+  // GitHub reports one row per name@version, so duplicate installs leave the row unattributable.
+  if (matches.length > 1) return null;
   need(matches.length === 1, 'conflict');
   const c = matches[0],
     instance = c[side]!;
@@ -666,6 +679,10 @@ function comparisonMatch(state: State, row: Readonly<Record<string, unknown>>) {
     });
   return id;
 }
+/** Scopes a comparison discrepancy to its manifest root when that path is safe to retain. */
+function comparisonRoot(row: Readonly<Record<string, unknown>>) {
+  return path(row.manifest) && comparedFile.test(row.manifest) ? rootOf(row.manifest) : '.';
+}
 async function reconcileComparison(state: State) {
   try {
     const result = await state.session.readComparison();
@@ -675,11 +692,13 @@ async function reconcileComparison(state: State) {
     const rows = result.records.filter((r) => r.ecosystem === 'npm');
     for (const row of rows) {
       try {
-        sourceIds.push(comparisonMatch(state, row));
+        const id = comparisonMatch(state, row);
+        if (id) sourceIds.push(id);
+        else reasons.add('conflict');
       } catch (error) {
         const why = reason(error);
         reasons.add(why);
-        gap(state, '.', null, null, why);
+        gap(state, comparisonRoot(row), null, null, why);
       }
     }
     state.comparison = {
@@ -735,9 +754,10 @@ function fileScopes(state: State, source: PacketSource): PacketSource[] {
   const sources: PacketSource[] = [];
   for (let i = 0; i < members.length; i += 32) {
     const group = members.slice(i, i + 32),
+      ids = new Set(group),
       id = i === 0 ? source.id : source.id + ':' + i / 32;
     sources.push({ ...source, id, memberIds: group });
-    for (const c of state.changes.filter((c) => group.includes(c.id)))
+    for (const c of state.changes.filter((c) => ids.has(c.id)))
       for (const side of [c.from, c.to]) if (side?.sourceId === source.id) side.sourceId = id;
   }
   return sources;
@@ -753,6 +773,9 @@ function freeze<T>(value: T): T {
     Object.freeze(value);
   }
   return value;
+}
+function byCodeUnit(a: string, b: string) {
+  return a < b ? -1 : a > b ? 1 : 0;
 }
 function assemble(state: State, complete: boolean, applicable: boolean, snapshots = true) {
   const reasons = [...new Set(state.gaps.map((g) => g.reason))].sort();
@@ -782,9 +805,19 @@ function assemble(state: State, complete: boolean, applicable: boolean, snapshot
     kind: 'inventory' as const,
     binding: state.input.binding,
     changes: owned.changes.sort((a, b) => (a.id < b.id ? -1 : 1)),
-    sources: [source, ...sources.filter((s) => snapshots || s.memberIds.length > 0)],
+    sources: [
+      source,
+      ...sources
+        .filter((s) => snapshots || s.memberIds.length > 0)
+        .sort((a, b) => byCodeUnit(a.id, b.id)),
+    ],
     roots: snapshots ? state.roots : [],
-    gaps: state.gaps,
+    gaps: [...state.gaps].sort((a, b) =>
+      byCodeUnit(
+        JSON.stringify([a.root, a.side, a.path, a.reason]),
+        JSON.stringify([b.root, b.side, b.path, b.reason]),
+      ),
+    ),
     comparison: {
       ...state.comparison,
       sourceIds: state.comparison.sourceIds.filter((id) => sources.some((s) => s.id === id)),
@@ -794,18 +827,26 @@ function assemble(state: State, complete: boolean, applicable: boolean, snapshot
   return result;
 }
 function finish(state: State, complete: boolean, applicable: boolean): NpmInventoryResult {
-  let result = assemble(state, complete, applicable);
-  const fits = () =>
+  const fits = (result: ReturnType<typeof assemble>) =>
     Buffer.byteLength(JSON.stringify(result)) <= state.input.limits.maxRetainedBytes;
-  if (fits()) return freeze(result);
+  const full = assemble(state, complete, applicable);
+  if (fits(full)) return freeze(full);
   gap(state, '.', null, null, 'budget');
-  state.changes.sort((a, b) => (a.id < b.id ? -1 : 1));
-  result = assemble(state, false, applicable, false);
-  while (!fits() && state.changes.length) {
-    state.changes.pop();
-    result = assemble(state, false, applicable, false);
+  const ordered = [...state.changes].sort((a, b) => byCodeUnit(a.id, b.id));
+  const prefix = (count: number) => {
+    state.changes = ordered.slice(0, count);
+    return assemble(state, false, applicable, false);
+  };
+  // Retained size never grows as changes are dropped, so search for the longest fitting prefix.
+  if (!fits(prefix(0))) return { kind: 'unavailable', reason: 'budget' };
+  let low = 0,
+    high = ordered.length;
+  while (low < high) {
+    const mid = Math.ceil((low + high) / 2);
+    if (fits(prefix(mid))) low = mid;
+    else high = mid - 1;
   }
-  return fits() ? freeze(result) : { kind: 'unavailable', reason: 'budget' };
+  return freeze(prefix(low));
 }
 function candidateRoots(
   state: State,
@@ -814,13 +855,12 @@ function candidateRoots(
   const candidates = new Set<string>();
   for (const f of files)
     for (const value of [f.path, f.previousPath]) {
-      if (!value || !/(?:^|\/)(?:package.json|package-lock.json|npm-shrinkwrap.json)$/u.test(value))
-        continue;
+      if (!value || !npmFile.test(value)) continue;
       if (!path(value)) {
         gap(state, '.', null, null, 'malformed');
         continue;
       }
-      const root = value.includes('/') ? value.slice(0, value.lastIndexOf('/')) : '.';
+      const root = rootOf(value);
       if (value.endsWith('npm-shrinkwrap.json')) gap(state, root, null, value, 'unsupported');
       candidates.add(root);
     }
