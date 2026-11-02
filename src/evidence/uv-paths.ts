@@ -137,7 +137,7 @@ function isShared(result: UvInventory, contexts: UvPathRoot[], proof: Path, work
   const changed = new Set(
     result.changes
       .map((c) => (proof.side === 'base' ? c.from : c.to))
-      .filter((s): s is UvSide => s !== null)
+      .filter((s): s is UvSide => s !== null && s.root === end.root)
       .map(key),
   );
   for (const node of context[proof.side].nodes.values()) {
@@ -216,7 +216,8 @@ export function proveUvRelationships(
         observations: [...result.observations, ...addition.observations],
         findings: [...result.findings, ...addition.findings],
       };
-      if (Buffer.byteLength(JSON.stringify(projected)) > maxBytes) {
+      const completionBytes = 'complete'.length - summary.reason.length;
+      if (Buffer.byteLength(JSON.stringify(projected)) + completionBytes > maxBytes) {
         summary.reason = 'budget';
         return;
       }
