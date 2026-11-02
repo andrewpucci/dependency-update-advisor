@@ -2,6 +2,7 @@ import { createHash } from 'node:crypto';
 import { isDeepStrictEqual, types } from 'node:util';
 import { parseReviewBinding, type ReviewBinding, type RepositoryIdentity } from '../event.js';
 import type { GithubComparison, GithubFileChange, GithubReadSession } from '../github-read.js';
+import { PACKET_LIMITS } from '../schema.js';
 import type {
   ActionsSide,
   EvidenceReason,
@@ -99,6 +100,7 @@ function input(value: unknown) {
   const r = own(value),
     raw = own(r.limits),
     b = own(r.binding);
+  need(Object.keys(r).length === 2 && Object.hasOwn(r, 'binding') && Object.hasOwn(r, 'limits'));
   for (const key of ['repository', 'headRepository', 'workflow']) own(b[key]);
   need(
     Array.isArray(b.identity) &&
@@ -143,7 +145,7 @@ function gap(
   const value = { path, side, jobId, stepIndex, reason };
   if (!state.gaps.some((g) => isDeepStrictEqual(g, value))) state.gaps.push(value);
 }
-async function readSide(
+async function readSideResult(
   state: State,
   side: 'base' | 'head',
   path: string,
@@ -204,6 +206,18 @@ async function readSide(
   state.sources.push(source);
   return snapshot;
 }
+async function readSide(
+  state: State,
+  side: 'base' | 'head',
+  path: string,
+): Promise<ActionsSnapshot> {
+  try {
+    return await readSideResult(state, side, path);
+  } catch (e) {
+    gap(state, e instanceof InventoryFailure ? e.reason : 'unknown', path, side);
+    return { ...absent(state, side, path), state: 'unavailable' };
+  }
+}
 function canonicalPath(value: unknown): value is string {
   return (
     safeIdentity(value, 1024) &&
@@ -236,12 +250,30 @@ function candidateFiles(state: State, files: readonly GithubFileChange[]) {
       for (const p of definitions) gap(state, 'unsupported', p);
     } else if (paths.some((p) => workflowPath.test(p))) selected.push(file);
   }
-  return selected.sort((a, b) =>
+  return uniqueFiles(state, selected).sort((a, b) =>
     byCodeUnit(
       JSON.stringify([a.path, a.previousPath, a.status]),
       JSON.stringify([b.path, b.previousPath, b.status]),
     ),
   );
+}
+function uniqueFiles(state: State, files: GithubFileChange[]) {
+  const seenBase = new Set<string>(),
+    seenHead = new Set<string>();
+  return [...files]
+    .sort((a, b) => byCodeUnit(JSON.stringify(a), JSON.stringify(b)))
+    .filter((file) => {
+      const base =
+        file.status === 'renamed' ? file.previousPath : file.status === 'added' ? null : file.path;
+      const head = file.status === 'removed' ? null : file.path;
+      if ((base && seenBase.has(base)) || (head && seenHead.has(head))) {
+        gap(state, 'conflict', file.path);
+        return false;
+      }
+      if (base) seenBase.add(base);
+      if (head) seenHead.add(head);
+      return true;
+    });
 }
 async function collectFile(state: State, file: GithubFileChange) {
   const previous = file.status === 'renamed' ? file.previousPath : file.path;
@@ -518,7 +550,37 @@ async function reconcileComparison(state: State) {
     .sort();
   state.comparison.discrepancies.sort((a, b) => byCodeUnit(JSON.stringify(a), JSON.stringify(b)));
 }
-function assemble(state: State, applicable: boolean): ActionsInventory {
+function splitSource(source: PacketSource, changes: PacketChange[]) {
+  const members =
+    source.kind === 'file'
+      ? changes
+          .filter((c) => c.from?.sourceId === source.id || c.to?.sourceId === source.id)
+          .map((c) => c.id)
+          .sort()
+      : source.memberIds.filter((id) => changes.some((c) => c.id === id)).sort();
+  if (!members.length)
+    return source.provenance.kind === 'upstream' ? [] : [{ ...source, memberIds: [] }];
+  const result: PacketSource[] = [];
+  for (let i = 0; i < members.length; i += PACKET_LIMITS.listEntries) {
+    const memberIds = members.slice(i, i + PACKET_LIMITS.listEntries),
+      group = new Set(memberIds);
+    const id = i === 0 ? source.id : `${source.id}:${i / PACKET_LIMITS.listEntries}`;
+    const provenance =
+      source.provenance.kind === 'upstream'
+        ? {
+            ...source.provenance,
+            subjects: source.provenance.subjects.filter((t) => group.has(t.memberId)),
+          }
+        : source.provenance;
+    result.push({ ...source, id, memberIds, provenance });
+    if (source.kind === 'file')
+      for (const c of changes.filter((c) => group.has(c.id))) {
+        for (const side of [c.from, c.to]) if (side?.sourceId === source.id) side.sourceId = id;
+      }
+  }
+  return result;
+}
+function assemble(state: State, applicable: boolean, snapshots = true): ActionsInventory {
   const reasons = [...new Set(state.gaps.map((g) => g.reason))].sort();
   const status: InventoryCoverage['status'] = reasons.length
     ? 'partial'
@@ -540,21 +602,55 @@ function assemble(state: State, applicable: boolean): ActionsInventory {
       absentEcosystems: status === 'not_applicable' ? ['actions'] : [],
     },
   };
-  for (const s of state.sources.filter((s) => s.kind === 'file'))
-    s.memberIds = state.changes
-      .filter((c) => c.from?.sourceId === s.id || c.to?.sourceId === s.id)
-      .map((c) => c.id)
-      .sort();
+  const changes = structuredClone(state.changes).sort((a, b) => byCodeUnit(a.id, b.id));
+  const sources = state.sources
+    .flatMap((s) => splitSource(s, changes))
+    .filter((s) => snapshots || s.memberIds.length > 0 || s.kind === 'comparison')
+    .sort((a, b) => byCodeUnit(a.id, b.id));
+  const gaps = snapshots
+    ? [...state.gaps]
+    : reasons.map((reason) => ({ path: null, side: null, jobId: null, stepIndex: null, reason }));
   return {
     kind: 'inventory',
     binding: state.binding,
-    changes: state.changes.sort((a, b) => byCodeUnit(a.id, b.id)),
-    sources: [source, ...state.sources].sort((a, b) => byCodeUnit(a.id, b.id)),
-    workflows: state.workflows,
-    gaps: state.gaps,
+    changes,
+    sources: [source, ...sources],
+    workflows: snapshots ? state.workflows : [],
+    gaps: gaps.sort((a, b) => byCodeUnit(JSON.stringify(a), JSON.stringify(b))),
     coverage: { status, reasons, sourceIds: [source.id] },
-    comparison: state.comparison,
+    comparison: {
+      ...state.comparison,
+      sourceIds: sources.filter((s) => s.kind === 'comparison').map((s) => s.id),
+    },
   };
+}
+function freeze<T>(value: T): T {
+  if (value && typeof value === 'object') {
+    for (const child of Object.values(value)) freeze(child);
+    Object.freeze(value);
+  }
+  return value;
+}
+function finish(state: State, applicable: boolean): ActionsInventoryResult {
+  const fits = (value: ActionsInventory) =>
+    Buffer.byteLength(JSON.stringify(value)) <= state.limits.maxRetainedBytes;
+  const full = assemble(state, applicable);
+  if (fits(full)) return freeze(structuredClone(full));
+  gap(state, 'budget');
+  const all = [...state.changes].sort((a, b) => byCodeUnit(a.id, b.id));
+  const prefix = (length: number) => {
+    state.changes = all.slice(0, length);
+    return assemble(state, applicable, false);
+  };
+  if (!fits(prefix(0))) return { kind: 'unavailable', reason: 'budget' };
+  let low = 0,
+    high = all.length;
+  while (low < high) {
+    const mid = Math.ceil((low + high) / 2);
+    if (fits(prefix(mid))) low = mid;
+    else high = mid - 1;
+  }
+  return freeze(structuredClone(prefix(low)));
 }
 
 /** Read-only D1 collection; no PR code, provider calls, credentials or publication capability. */
@@ -590,7 +686,7 @@ export async function collectActionsInventory(
     for (const f of files.slice(0, state.limits.maxWorkflows)) await collectFile(state, f);
     if (files.length > state.limits.maxWorkflows) gap(state, 'budget');
     await reconcileComparison(state);
-    return structuredClone(assemble(state, files.length > 0));
+    return finish(state, files.length > 0);
   } catch (e) {
     return { kind: 'unavailable', reason: e instanceof InventoryFailure ? e.reason : 'unknown' };
   }

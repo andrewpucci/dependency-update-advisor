@@ -160,6 +160,7 @@ function expand(root: Node, limits: YamlLimits, budget: YamlBudget): Value {
       assign(null);
       continue;
     }
+    debit(budget, 'nodes', limits.maxYamlNodes);
     need(!active.has(node), 'unsupported');
     if (isAlias(node)) {
       debit(budget, 'aliases', limits.maxAliasExpansions);
@@ -169,7 +170,6 @@ function expand(root: Node, limits: YamlLimits, budget: YamlBudget): Value {
       assign(node.value as Value);
     } else {
       need(depth < limits.maxYamlDepth, 'budget');
-      debit(budget, 'nodes', limits.maxYamlNodes);
       active.add(node);
       stack.push({ leave: node });
       queueCollection(node, frame, stack);

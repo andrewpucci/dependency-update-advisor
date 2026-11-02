@@ -7,6 +7,10 @@ import type {
   GithubComparison,
 } from '../github-read.js';
 import type { ReviewBinding } from '../event.js';
+import { validateReviewPacket } from '../schema.js';
+import { formDecisionUnits, summarizeDecisionCoverage } from '../units.js';
+import { parseReviewConfig } from '../config.js';
+import { collectNpmInventory } from './npm.js';
 
 const repository = { id: 101, owner: 'example', name: 'consumer' };
 const BASE = 'b'.repeat(40),
@@ -441,4 +445,269 @@ test('reordered comparison records preserve independent evidence and malformed r
   const bad = inventory(await collectActionsInventory(f.input, { session: f.session }));
   expect(bad.comparison.reasons).toContain('malformed');
   expect(JSON.stringify(bad)).not.toContain('hidden');
+});
+
+function packet(
+  result: Inventory,
+  npm?: Extract<Awaited<ReturnType<typeof collectNpmInventory>>, { kind: 'inventory' }>,
+) {
+  const context = { ok: true, status: 'disabled', dependencies: [], reasons: [] };
+  const expected = {
+    binding,
+    baseSha: BASE,
+    contextRevision: { repository, sha: 'c'.repeat(40) },
+    context,
+  };
+  const absent = {
+    id: 'other',
+    kind: 'file-list',
+    ecosystems: npm ? ['uv'] : ['npm', 'uv'],
+    memberIds: [],
+    status: 'available',
+    reasons: [],
+    provenance: {
+      kind: 'inventory',
+      repository,
+      baseSha: BASE,
+      headSha: HEAD,
+      absentEcosystems: npm ? ['uv'] : ['npm', 'uv'],
+    },
+  };
+  const candidate = {
+    version: 1,
+    ...expected,
+    changes: [...result.changes, ...(npm?.changes ?? [])],
+    sources: [...result.sources, ...(npm?.sources ?? []), absent],
+    coverage: {
+      actions: result.coverage,
+      npm: npm?.coverage ?? { status: 'not_applicable', reasons: [], sourceIds: ['other'] },
+      uv: { status: 'not_applicable', reasons: [], sourceIds: ['other'] },
+    },
+    findings: [],
+    relationships: [],
+  };
+  return { candidate, expected, validated: validateReviewPacket(candidate, expected) };
+}
+function many(f: ReturnType<typeof fixture>, count: number) {
+  for (const [side, ref] of [
+    ['base', 'v1'],
+    ['head', 'v2'],
+  ]) {
+    f.files[`${side}:${workflow}`] =
+      `jobs:\n  build:\n    steps:\n${Array.from({ length: count }, () => `      - uses: example/action@${ref}`).join('\n')}\n`;
+  }
+}
+test('T4 accepts repeated occurrences with bounded file and comparison source scopes; T5 keeps them standalone', async () => {
+  const f = fixture();
+  many(f, 65);
+  f.comparison.records = [comparisonRow('2')];
+  const result = inventory(await collectActionsInventory(f.input, { session: f.session }));
+  const validated = packet(result).validated;
+  expect(validated.ok, JSON.stringify(validated)).toBe(true);
+  if (!validated.ok) throw new Error('expected packet');
+  expect(result.sources.every((s) => s.memberIds.length <= 32)).toBe(true);
+  const units = formDecisionUnits(validated.packet);
+  expect(units.units).toHaveLength(65);
+  expect(
+    units.units.every(
+      (u) => u.kind === 'standalone' && u.relationship.reason === 'actions_occurrence',
+    ),
+  ).toBe(true);
+});
+test('the existing combined 128-record ceiling accepts its boundary and rejects overflow without collector trimming', async () => {
+  for (const count of [128, 129]) {
+    const f = fixture();
+    many(f, count);
+    const result = inventory(await collectActionsInventory(f.input, { session: f.session }));
+    expect(result.changes).toHaveLength(count);
+    expect(result.coverage.status).toBe('complete');
+    expect(packet(result).validated.ok).toBe(count === 128);
+  }
+});
+test('retention bounds preserve explicit incompleteness, valid packet references and a detached immutable result', async () => {
+  const f = fixture();
+  many(f, 6);
+  const full = inventory(await collectActionsInventory(f.input, { session: f.session }));
+  const fullSize = Buffer.byteLength(JSON.stringify(full));
+  f.input.limits.maxRetainedBytes = fullSize;
+  expect(await collectActionsInventory(f.input, { session: f.session })).toEqual(full);
+  f.input.limits.maxRetainedBytes = fullSize - 1;
+  const limited = inventory(await collectActionsInventory(f.input, { session: f.session }));
+  expect(limited.coverage).toMatchObject({ status: 'partial', reasons: ['budget'] });
+  expect(Buffer.byteLength(JSON.stringify(limited))).toBeLessThanOrEqual(fullSize - 1);
+  expect(packet(limited).validated.ok).toBe(true);
+  expect(Object.isFrozen(full)).toBe(true);
+  expect(Object.isFrozen(full.changes[0].from)).toBe(true);
+  expect(() => (full.changes as unknown[]).pop()).toThrow();
+  Object.assign(f.input.binding.repository, { name: 'mutated' });
+  expect(full.binding.repository.name).toBe('consumer');
+  Object.assign(f.input.binding.repository, { name: 'consumer' });
+  f.input.limits.maxRetainedBytes = 1;
+  expect(await collectActionsInventory(f.input, { session: f.session })).toEqual({
+    kind: 'unavailable',
+    reason: 'budget',
+  });
+});
+test('occurrence and alias budgets accumulate across base/head files', async () => {
+  const f = fixture();
+  f.input.limits.maxOccurrences = 2;
+  expect(
+    inventory(await collectActionsInventory(f.input, { session: f.session })).coverage.status,
+  ).toBe('complete');
+  f.input.limits.maxOccurrences = 1;
+  expect(
+    inventory(await collectActionsInventory(f.input, { session: f.session })).coverage.reasons,
+  ).toContain('budget');
+  const aliases = fixture();
+  aliases.input.limits.maxAliasExpansions = 1;
+  for (const side of ['base', 'head'])
+    aliases.files[`${side}:${workflow}`] =
+      'jobs: { one: &job { steps: [{ uses: example/action@v1 }] }, two: *job }';
+  expect(
+    inventory(await collectActionsInventory(aliases.input, { session: aliases.session })).coverage
+      .reasons,
+  ).toContain('budget');
+});
+test('workflow limits and later read failures retain earlier changes', async () => {
+  const f = fixture(),
+    other = '.github/workflows/other.yml';
+  f.discovery.files = [
+    ...f.discovery.files,
+    { path: other, previousPath: null, status: 'modified', blobSha: null },
+  ];
+  f.input.limits.maxWorkflows = 1;
+  const limited = inventory(await collectActionsInventory(f.input, { session: f.session }));
+  expect(limited.changes).toHaveLength(1);
+  expect(limited.coverage.reasons).toContain('budget');
+  expect(f.calls.some((c) => c.includes(other))).toBe(false);
+  f.input.limits.maxWorkflows = 2;
+  const session = {
+    ...f.session,
+    readFile: async (request: unknown) => {
+      if ((request as { path: string }).path === other) throw new Error('private raw response');
+      return f.session.readFile(request);
+    },
+  };
+  const failed = inventory(await collectActionsInventory(f.input, { session }));
+  expect(failed.changes).toHaveLength(1);
+  expect(failed.coverage.reasons).toContain('unknown');
+  expect(JSON.stringify(failed)).not.toContain('private raw');
+});
+test('duplicate discovery cannot duplicate sources, and hostile input cannot execute getters', async () => {
+  const f = fixture();
+  f.discovery.files = [...f.discovery.files, ...f.discovery.files];
+  const result = inventory(await collectActionsInventory(f.input, { session: f.session }));
+  expect(result.coverage.reasons).toContain('conflict');
+  expect(packet(result).validated.ok).toBe(true);
+  let called = false;
+  const bad = {
+    ...f.input,
+    get binding() {
+      called = true;
+      return binding;
+    },
+  };
+  expect(await collectActionsInventory(bad, { session: f.session })).toEqual({ kind: 'invalid' });
+  expect(called).toBe(false);
+  expect(
+    await collectActionsInventory({ ...f.input, prText: 'untrusted' }, { session: f.session }),
+  ).toEqual({ kind: 'invalid' });
+});
+
+test.each([
+  'maxFileBytes',
+  'maxWorkflows',
+  'maxYamlNodes',
+  'maxYamlDepth',
+  'maxAliasExpansions',
+  'maxOccurrences',
+  'maxRetainedBytes',
+] as const)('rejects invalid %s before dispatch', async (field) => {
+  for (const value of [0, -1, 1.5, Infinity, NaN, Number.MAX_SAFE_INTEGER + 1]) {
+    const f = fixture();
+    f.input.limits[field] = value;
+    expect(await collectActionsInventory(f.input, { session: f.session })).toEqual({
+      kind: 'invalid',
+    });
+    expect(f.calls).toEqual([]);
+  }
+});
+test('real N1 plus Actions contributions preserve zero-member gaps and unperformed research through T4/T5', async () => {
+  const f = fixture();
+  const manifest = { dependencies: { widget: '^1' } };
+  const npmSession: GithubReadSession = {
+    ...f.session,
+    discoverFiles: async () => ({
+      ...f.discovery,
+      files: [{ path: 'package-lock.json', previousPath: null, status: 'modified', blobSha: null }],
+    }),
+    readFile: async (request) => {
+      const { side, path } = request as { side: 'base' | 'head'; path: string };
+      const value =
+        path === 'package.json'
+          ? manifest
+          : {
+              lockfileVersion: 3,
+              packages: {
+                '': manifest,
+                'node_modules/widget': {
+                  version: side === 'base' ? '1.0.0' : '1.1.0',
+                  resolved: `https://registry.npmjs.org/widget/-/widget-${side === 'base' ? '1.0.0' : '1.1.0'}.tgz`,
+                },
+              },
+            };
+      return {
+        kind: 'available',
+        side,
+        path,
+        repository,
+        commitSha: side === 'base' ? BASE : HEAD,
+        blobSha: 'e'.repeat(40),
+        bytes: new TextEncoder().encode(JSON.stringify(value)),
+      };
+    },
+  };
+  const npm = await collectNpmInventory(
+    {
+      binding,
+      roots: ['.'],
+      configRevision: { repository, sha: 'c'.repeat(40) },
+      limits: {
+        maxFileBytes: 100_000,
+        maxJsonEntries: 10000,
+        maxJsonDepth: 32,
+        maxRoots: 5,
+        maxRetainedBytes: 1_000_000,
+      },
+    },
+    { session: npmSession },
+  );
+  if (npm.kind !== 'inventory') throw new Error('expected N1 inventory');
+  for (const gapOnly of [false, true]) {
+    if (gapOnly) f.files[`head:${workflow}`] = 'jobs: [';
+    const actions = inventory(await collectActionsInventory(f.input, { session: f.session }));
+    const mixed = packet(actions, npm);
+    expect(mixed.validated.ok, JSON.stringify(mixed.validated)).toBe(true);
+    if (!mixed.validated.ok) throw new Error('expected mixed packet');
+    const units = formDecisionUnits(mixed.validated.packet);
+    const summary = summarizeDecisionCoverage(units, parseReviewConfig('{"version":1}'), 0);
+    if (!summary.ok) throw new Error('expected summary');
+    expect(summary.outcome.kind).toBe('decision_incomplete');
+    expect(summary.inventoryGaps.some((g) => g.ecosystem === 'actions')).toBe(gapOnly);
+    expect(mixed.validated.packet.coverage.npm.status).toBe('complete');
+    const wrong = structuredClone(mixed.candidate);
+    const action = wrong.changes.find((c) => c.ecosystem === 'actions');
+    if (action?.from && action.to) {
+      Object.assign(action.to, { sourceId: action.from.sourceId });
+      expect(validateReviewPacket(wrong, mixed.expected).ok).toBe(false);
+    }
+  }
+  for (const count of [127, 128]) {
+    const actions = fixture();
+    many(actions, count);
+    const result = inventory(
+      await collectActionsInventory(actions.input, { session: actions.session }),
+    );
+    expect(packet(result, npm).validated.ok).toBe(count === 127);
+  }
 });
