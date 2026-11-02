@@ -124,9 +124,15 @@ gaps and an introduced vulnerability before parity is claimed.
   records exact-revision checks and remaining gates.
 - [npm evidence](SPEC-npm-evidence.md) — approved for planning.
 - [npm change inventory](SPEC-npm-inventory.md) — implemented for N1 #14 and
-  #124–#131 on `issue-14`, pending review and merge. Includes T4/T5 declaration
-  records and combined 128-record accounting; [verification #131](https://github.com/andrewpucci/dependency-update-advisor/issues/131)
+  #124–#131, merged into `main` in [PR #132](https://github.com/andrewpucci/dependency-update-advisor/pull/132).
+  Includes T4/T5 declaration records and combined 128-record accounting;
+  [verification #131](https://github.com/andrewpucci/dependency-update-advisor/issues/131)
   retains separate N2, research, workflow, assessment/rendering, and cutover gates.
+- [Proven npm relationships and lifecycle evidence](SPEC-npm-relationships.md) —
+  approved for execution for N2 #15 by the user's `as-build auto` invocation.
+  Preserves T5 single-anchor grouping; broader reachability remains #93.
+  [Tasks #133–#140](https://github.com/andrewpucci/dependency-update-advisor/issues/15)
+  are approved for autonomous execution in one PR; merge remains separate.
 - [GitHub Actions evidence](SPEC-actions-evidence.md) — approved for planning.
 - [uv evidence](SPEC-uv-evidence.md) — approved for planning.
 - [Repository adoption](SPEC-repo-adoption.md) — approved for planning.
