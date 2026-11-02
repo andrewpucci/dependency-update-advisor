@@ -111,3 +111,45 @@ test('an edge-only rewrite and a new declared empty extra cannot become complete
   );
   expect(extra).toMatchObject({ kind: 'inventory', changes: [], coverage: { status: 'partial' } });
 });
+
+test('retains a proven version pair beside irrelevant artifact metadata gap', async () => {
+  const input = await uvGraphFixture({
+    'head:uv.lock': uvLock(
+      '2',
+      'sdist={url="https://files.example.test/orbit.tar.gz",hash="unknown-hash-format"}\n',
+    ),
+  });
+  expect(input.metadata.gaps).toHaveLength(1);
+  expect(input.metadata.gaps[0].entry).toContain(':artifacts');
+  const r = reconcileUvGraph(input);
+  expect(r.kind).toBe('inventory');
+  if (r.kind !== 'inventory') throw Error('expected inventory');
+  expect(r.coverage.status).toBe('partial');
+  expect(r.changes).toHaveLength(1);
+  expect(r.changes[0]).toMatchObject({
+    kind: 'update',
+    from: { name: 'orbit', version: '1' },
+    to: { name: 'orbit', version: '2' },
+  });
+  const { packet, expected } = uvPacket(r);
+  const accepted = validateReviewPacket(packet, expected);
+  expect(accepted.ok, JSON.stringify(accepted)).toBe(true);
+  expect(r.sources.some((s) => s.status === 'partial')).toBe(true);
+  expect(r.sources.find((s) => s.id === r.changes[0].to!.sourceId)?.status).toBe('available');
+});
+
+test('a self-project selector condition rewrite is not complete zero-change inventory', async () => {
+  const input = await uvGraphFixture({
+    'head:uv.lock': uvLock('1').replace(
+      'dependencies=[{name="orbit"}]',
+      'dependencies=[{name="orbit",marker="sys_platform == \'linux\'"}]',
+    ),
+  });
+  expect(input.metadata.gaps).toEqual([]);
+  const r = reconcileUvGraph(input);
+  expect(r.kind).toBe('inventory');
+  if (r.kind !== 'inventory') throw Error('expected inventory');
+  expect(r.changes).toEqual([]);
+  expect(r.coverage.status).toBe('partial');
+  expect(r.observations.some((o) => o.reason === 'unrepresented_metadata')).toBe(true);
+});

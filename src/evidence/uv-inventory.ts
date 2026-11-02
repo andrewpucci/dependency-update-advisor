@@ -6,9 +6,29 @@ import type { UvMetadata, UvRootSnapshot, UvGap } from './uv.js';
 import type { GraphWork } from './uv-input.js';
 import { boundedIdentity } from './uv-input.js';
 import type { UvChange, UvObservation } from './uv-graph.js';
-import { uvRoles, uvDeclarationChanges, type UvRoles, type UvRoleNode } from './uv-roles.js';
+import {
+  uvRoles,
+  uvDeclarationChanges,
+  resolveUvSelector,
+  type UvRoles,
+  type UvRoleNode,
+} from './uv-roles.js';
+import type { UvSelector } from './uv-lock.js';
 
 export type UvInstance = { key: string; side: UvSide; node: UvRoleNode; available: boolean };
+function packageTableComplete(metadata: UvMetadata, root: UvRootSnapshot, side: 'base' | 'head') {
+  const file = root[side].lock;
+  if (file.state === 'present') return true;
+  if (file.state !== 'partial' || !file.data) return false;
+  const gaps = metadata.gaps.filter(
+    (g) => g.root === root.root && g.side === side && g.path === file.path,
+  );
+  // Artifacts do not participate in identity, declaration mapping, or graph selectors.
+  return (
+    gaps.length > 0 &&
+    gaps.every((g) => file.data!.packages.some((p) => g.entry === `${p.key}:artifacts`))
+  );
+}
 export function uvInstance(
   node: UvRoleNode,
   root: UvRootSnapshot,
@@ -90,8 +110,7 @@ function records(
         key,
       ),
     );
-    if (value)
-      rows.push({ key, side: value, node, available: root[side].lock.state === 'present' });
+    if (value) rows.push({ key, side: value, node, available: roles.tableComplete });
     else
       gaps.push({
         root: root.root,
@@ -146,6 +165,7 @@ function unmatched(
   work: GraphWork,
   changes: UvChange[],
   observations: UvObservation[],
+  complete: { base: boolean; head: boolean },
 ) {
   const families = [...new Set([...base, ...head].map(family))].sort(byCodeUnit);
   for (const key of families) {
@@ -157,8 +177,8 @@ function unmatched(
       b.length === 1 &&
       a[0].available &&
       b[0].available &&
-      tablesComplete(root, 'base') &&
-      tablesComplete(root, 'head')
+      complete.base &&
+      complete.head
     ) {
       changes.push(change(metadata, root, a[0], b[0], work));
       continue;
@@ -174,11 +194,9 @@ function unmatched(
         ),
       );
     for (const row of a)
-      if (row.available && tablesComplete(root, 'head'))
-        changes.push(change(metadata, root, row, null, work));
+      if (row.available && complete.head) changes.push(change(metadata, root, row, null, work));
     for (const row of b)
-      if (row.available && tablesComplete(root, 'base'))
-        changes.push(change(metadata, root, null, row, work));
+      if (row.available && complete.base) changes.push(change(metadata, root, null, row, work));
   }
 }
 function edges(node: UvRoleNode) {
@@ -240,9 +258,86 @@ function metadataChanges(
   if (!isDeepStrictEqual(empty('base'), empty('head')))
     record('empty-extras', { base: empty('base'), head: empty('head') });
 }
+function selfEdges(root: UvRootSnapshot, side: 'base' | 'head', work: GraphWork) {
+  const self = root[side].lock.data?.packages.find((p) => !p.external);
+  const edges: { scope: string | null; selector: UvSelector; target: string | null }[] = [];
+  const record = (scope: string | null, selector: UvSelector) => {
+    const target = resolveUvSelector(root[side], selector, work);
+    edges.push({ scope, selector, target: target?.key ?? null });
+  };
+  for (const s of self?.dependencies ?? []) record(null, s);
+  for (const e of self?.optionalDependencies ?? [])
+    for (const s of e.declarations) record(e.extra, s);
+  return edges;
+}
+function selfEdgeChanges(root: UvRootSnapshot, changes: UvChange[], work: GraphWork) {
+  const before = selfEdges(root, 'base', work),
+    after = selfEdges(root, 'head', work);
+  const identity = (e: (typeof before)[number]) =>
+    JSON.stringify([
+      e.scope,
+      e.selector.name,
+      e.selector.version,
+      e.selector.source,
+      e.selector.marker,
+      e.selector.extra ?? [],
+    ]);
+  const header = (e: (typeof before)[number]) =>
+    JSON.stringify([e.scope, e.selector.name, e.selector.marker, e.selector.extra ?? []]);
+  const accounted = (edge: (typeof before)[number], side: 'from' | 'to', other: typeof before) => {
+    if (other.some((e) => identity(e) === identity(edge))) return true;
+    return changes.some((c) => {
+      work.spend();
+      const s = c[side];
+      if (!s || c.role !== 'direct' || !edge.target) return false;
+      if (
+        edge.target !==
+        JSON.stringify([s.name, s.version, { kind: 'registry', url: s.source.identity }])
+      )
+        return false;
+      const sameHeader = other.some((e) => header(e) === header(edge));
+      const addedOrRemoved =
+        c.kind === (side === 'from' ? 'removal' : 'addition') &&
+        !other.some((e) => e.scope === edge.scope && e.selector.name === edge.selector.name);
+      return (
+        sameHeader ||
+        addedOrRemoved ||
+        (c.from && c.to && !isDeepStrictEqual(c.from.extras, c.to.extras)) ||
+        (side === 'from' ? root.head.state === 'absent' : root.base.state === 'absent')
+      );
+    });
+  };
+  const changed =
+    before.some((e) => !accounted(e, 'from', after)) ||
+    after.some((e) => !accounted(e, 'to', before));
+  if (!changed) return { gaps: [] as UvGap[], observations: [] as UvObservation[] };
+  return {
+    gaps: [
+      {
+        root: root.root,
+        side: null,
+        path: root.head.lock.path,
+        entry: 'project-selectors',
+        reason: 'unsupported',
+      } as UvGap,
+    ],
+    observations: [
+      {
+        ...note(
+          root,
+          null,
+          'unrepresented_metadata',
+          { base: before, head: after },
+          'project-selectors',
+        ),
+        kind: 'metadata',
+      } as UvObservation,
+    ],
+  };
+}
 export function uvRootInventory(metadata: UvMetadata, root: UvRootSnapshot, work: GraphWork) {
-  const baseRoles = uvRoles(root, 'base', work),
-    headRoles = uvRoles(root, 'head', work);
+  const baseRoles = uvRoles(root, 'base', work, packageTableComplete(metadata, root, 'base')),
+    headRoles = uvRoles(root, 'head', work, packageTableComplete(metadata, root, 'head'));
   const gaps = [...baseRoles.gaps, ...headRoles.gaps],
     observations = [...baseRoles.observations, ...headRoles.observations],
     changes: UvChange[] = [];
@@ -264,8 +359,15 @@ export function uvRootInventory(metadata: UvMetadata, root: UvRootSnapshot, work
     work,
     changes,
     observations,
+    {
+      base: root.base.state === 'absent' || baseRoles.tableComplete,
+      head: root.head.state === 'absent' || headRoles.tableComplete,
+    },
   );
   metadataChanges(root, base, head, gaps, observations, work);
+  const selfChanges = selfEdgeChanges(root, changes, work);
+  gaps.push(...selfChanges.gaps);
+  observations.push(...selfChanges.observations);
   const declarations = uvDeclarationChanges(root, baseRoles, headRoles, changes);
   gaps.push(...declarations.gaps);
   observations.push(...declarations.observations);
