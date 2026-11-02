@@ -19,8 +19,8 @@ No shared workflow exists; the old reviewer stays active.
 
 ## Next action
 
-[U1 #17](docs/specs/SPEC-uv-metadata.md) has #152–#159 implemented on
-`issue-17`; #159 records verification and downstream gates; merge is pending.
+[U2 #18](docs/specs/SPEC-uv-relationships.md) is approved for auto execution.
+#161–#169 track the nine-task plan; one PR closes these issues on merge.
 [N2 #15](docs/specs/SPEC-npm-relationships.md) is implemented on
 `issue-15`, pending review/merge; #140 holds verification. #93 stays separate.
 [#110 snapshot reuse](docs/specs/SPEC-pr-freshness-snapshot.md) awaits review/merge;
