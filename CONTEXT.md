@@ -11,7 +11,6 @@
 [T4 packet validation](docs/specs/SPEC-review-packet.md),
 [T5 decision units](docs/specs/SPEC-decision-units.md), and
 [D1 reads](docs/specs/SPEC-github-read.md) are merged into `main`.
-T5 merged in [PR #100](https://github.com/andrewpucci/dependency-update-advisor/pull/100);
 [T4 evidence](https://github.com/andrewpucci/dependency-update-advisor/issues/84)
 and [T5 evidence](https://github.com/andrewpucci/dependency-update-advisor/issues/99)
 record exact-revision checks and remaining integration gates.
@@ -20,8 +19,9 @@ No shared workflow exists; the old reviewer stays active.
 
 ## Next action
 
-[N1 #14 inventory](docs/specs/SPEC-npm-inventory.md) merged in PR #132; #131 holds
-its gates. [N2 #15](docs/specs/SPEC-npm-relationships.md) is implemented on
+[X1 #16](docs/specs/SPEC-actions-inventory.md) is approved for execution;
+`as-build auto` covers ordered #142–#149 in one PR.
+[N2 #15](docs/specs/SPEC-npm-relationships.md) is implemented on
 `issue-15`, pending review/merge; #140 holds verification. #93 stays separate.
 [#110 snapshot reuse](docs/specs/SPEC-pr-freshness-snapshot.md) awaits review/merge;
 [verification #113](https://github.com/andrewpucci/dependency-update-advisor/issues/113)

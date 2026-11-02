@@ -134,6 +134,12 @@ gaps and an introduced vulnerability before parity is claimed.
   broader reachability remains #93. [Verification #140](https://github.com/andrewpucci/dependency-update-advisor/issues/140)
   retains downstream research, workflow, publication, adoption, and cutover gates.
 - [GitHub Actions evidence](SPEC-actions-evidence.md) — approved for planning.
+- [GitHub Actions reference inventory](SPEC-actions-inventory.md) — approved for
+  planning, 2026-11-01, by the user's `as-plan` invocation on reviewed revisions.
+  Supporting contract for X1 #16 in `actions-evidence`; immutable occurrence
+  inventory, exact refs, comparison omission, and separate coverage. Approved
+  execution plan: #142–#149 under #16, mapped to the implementation project.
+  The user authorized `as-build auto` in one PR on 2026-11-01.
 - [uv evidence](SPEC-uv-evidence.md) — approved for planning.
 - [Repository adoption](SPEC-repo-adoption.md) — approved for planning.
 - [Comment experience](SPEC-comment-experience.md) — approved supporting contract.
