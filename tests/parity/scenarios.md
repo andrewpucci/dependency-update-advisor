@@ -39,6 +39,17 @@ Required shared behavior: reconcile comparison data with immutable workflow
 evidence and account for updates, additions, removals, and coverage gaps. A
 grouped or repeated workflow occurrence must not conceal an omitted action.
 
+### Comparison Shape Observed 2026-11-01
+
+Read-only public API requests reached the same five changed workflows. The
+dependency comparison for the base and head above returned `removed`/`added`
+records for `voidzero-dev/setup-vp` and `chromaui/action` in only one of those
+workflows, with full-SHA `version` values, a `manifest` path, and no job or
+step. It returned no CodeQL record. The repository's dependency-graph SBOM names
+that action `github/codeql-action/upload-sarif`. A public `actions/setup-node`
+SBOM lists an `actions/publish-action@v0.4.0` reference as version `0.4.0`.
+These are current-state observations, not archived PR-time responses.
+
 ## Public npm Unpaired Additions: PR #307
 
 Provenance: the approved parity contract and source-local pilot note identify
