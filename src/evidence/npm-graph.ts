@@ -1,4 +1,5 @@
 import { isDeepStrictEqual, types } from 'node:util';
+import { createHash } from 'node:crypto';
 import { parseReviewBinding } from '../event.js';
 import {
   PACKET_LIMITS,
@@ -136,19 +137,50 @@ function resolved(change: PacketChange): change is Resolved {
 function roots(change: Resolved) {
   return [...new Set([change.from?.root, change.to?.root].filter((r) => r !== undefined))];
 }
-function eligible(inventory: Inventory, member: Resolved) {
+const explanations = {
+  inventory_incomplete: 'Relationship unproven because npm inventory is incomplete.',
+  multiple_roots: 'Relationship unproven across multiple roots.',
+  unknown_role: 'Relationship unproven because a package role is unknown.',
+  multiple_direct_changes: 'Relationship unproven with multiple changed direct dependencies.',
+  no_direct_change: 'Relationship unproven without a changed direct anchor.',
+  missing_relationship:
+    'No supported immutable path proved this relationship; it remains unproven.',
+  wrong_side: 'Relationship unproven because the anchor does not exist on the required side.',
+  source_split: 'Relationship unproven within the original lock-source membership limits.',
+  snapshot_missing: 'Relationship unproven because an immutable graph snapshot is unavailable.',
+  path_limit: 'Relationship unproven because the full path exceeds the packet limit.',
+  shared:
+    'This member is also reachable from an unchanged direct dependency; grouping does not establish exclusive ownership or causation.',
+  budget: 'Relationship search is incomplete because its graph-work budget was exhausted.',
+} as const;
+type Observation = keyof typeof explanations;
+function note(member: Resolved, reason: Observation): Finding {
+  const side = member.kind === 'removal' ? member.from : member.to;
+  need(side);
+  const id = createHash('sha256')
+    .update(JSON.stringify([member.id, reason]))
+    .digest('hex');
+  return {
+    id: 'npm:relationship:' + id,
+    memberId: member.id,
+    kind: 'informational',
+    detail: explanations[reason],
+    rationale: 'Grouping preserves each installed instance and its own research requirements.',
+    references: [side.sourceId],
+    remediation: ['Assess this member and any concrete unanswered evidence questions.'],
+    validation: ['Inspect the cited immutable lockfile and the exact member instance.'],
+  };
+}
+function eligible(inventory: Inventory, member: Resolved): Resolved | Observation {
   const root = roots(member);
-  if (member.role !== 'transitive' || root.length !== 1 || inventory.coverage.status !== 'complete')
-    return undefined;
+  if (member.role === 'unknown') return 'unknown_role';
+  if (root.length !== 1) return 'multiple_roots';
+  if (inventory.coverage.status !== 'complete') return 'inventory_incomplete';
   const candidates = inventory.changes.filter(resolved).filter((c) => roots(c).includes(root[0]));
+  if (candidates.some((c) => c.role === 'unknown')) return 'unknown_role';
   const anchors = candidates.filter((c) => c.role === 'direct');
-  if (
-    candidates.some((c) => c.role === 'unknown') ||
-    anchors.length !== 1 ||
-    roots(anchors[0]).length !== 1
-  )
-    return undefined;
-  return anchors[0];
+  if (anchors.length !== 1) return anchors.length ? 'multiple_direct_changes' : 'no_direct_change';
+  return roots(anchors[0]).length === 1 ? anchors[0] : 'multiple_roots';
 }
 function slotTarget(snapshot: NpmRootSide, path: string, key: string, spend: () => void) {
   let parent = path;
@@ -206,17 +238,23 @@ function pathTo(snapshot: NpmRootSide, start: NpmSide, end: NpmSide, spend: () =
   }
   return undefined;
 }
-function proofFor(inventory: Inventory, member: Resolved, spend: () => void): NpmProof | undefined {
+function proofFor(
+  inventory: Inventory,
+  member: Resolved,
+  spend: () => void,
+): NpmProof | Observation {
   const anchor = eligible(inventory, member);
-  if (!anchor) return undefined;
+  if (typeof anchor === 'string') return anchor;
   const side = member.kind === 'removal' ? 'base' : 'head';
   const start = side === 'head' ? anchor.to : anchor.from;
   const end = side === 'head' ? member.to : member.from;
-  if (!start || !end || start.sourceId !== end.sourceId) return undefined;
+  if (!start || !end) return 'wrong_side';
+  if (start.sourceId !== end.sourceId) return 'source_split';
   const snapshot = inventory.roots.find((r) => r.root === end.root)?.[side];
-  if (!snapshot || snapshot.state !== 'present') return undefined;
+  if (!snapshot || snapshot.state !== 'present') return 'snapshot_missing';
   const path = pathTo(snapshot, start, end, spend);
-  if (!path || path.length > PACKET_LIMITS.pathInstances) return undefined;
+  if (!path) return 'missing_relationship';
+  if (path.length > PACKET_LIMITS.pathInstances) return 'path_limit';
   return {
     fromId: anchor.id,
     toId: member.id,
@@ -226,6 +264,41 @@ function proofFor(inventory: Inventory, member: Resolved, spend: () => void): Np
     path,
   };
 }
+function knownSharing(inventory: Inventory, proof: NpmProof, spend: () => void) {
+  const end = proof.path.at(-1)!;
+  const snapshot = inventory.roots.find((r) => r.root === end.root)![proof.side];
+  const changedSlots = new Set(
+    inventory.changes.filter(resolved).flatMap((c) => [c.from?.lockPath, c.to?.lockPath]),
+  );
+  for (const key of Object.keys(snapshot.declarations ?? {}).sort()) {
+    spend();
+    const slot = 'node_modules/' + key;
+    if (changedSlots.has(slot)) continue;
+    const start = own(snapshot.packages, slot)?.instance;
+    if (start && start.lockPath !== end.lockPath && pathTo(snapshot, start, end, spend))
+      return true;
+  }
+  return false;
+}
+function collectProofs(inventory: Inventory, spend: () => void) {
+  const relationships: NpmProof[] = [],
+    findings: Finding[] = [];
+  for (const member of [...inventory.changes].sort((a, b) => (a.id < b.id ? -1 : 1))) {
+    if (!resolved(member) || member.role === 'direct') continue;
+    try {
+      const result = proofFor(inventory, member, spend);
+      if (typeof result === 'string') findings.push(note(member, result));
+      else {
+        relationships.push(result);
+        if (knownSharing(inventory, result, spend)) findings.push(note(member, 'shared'));
+      }
+    } catch (error) {
+      if (!(error instanceof GraphFailure)) throw error;
+      findings.push(note(member, 'budget'));
+    }
+  }
+  return { relationships, findings };
+}
 /** Uses authentic N1 snapshots and an independently verified binding; no I/O occurs.
  * Limits count cumulative graph/validation work and UTF-8 retained bytes. Output is detached and frozen.
  */
@@ -233,13 +306,7 @@ export function proveNpmRelationships(value: unknown): NpmGraphResult {
   try {
     const { inventory, limits, spend } = parse(value);
     if (inventory.kind !== 'inventory') return freeze(structuredClone(inventory));
-    const relationships: NpmProof[] = [];
-    for (const member of [...inventory.changes].sort((a, b) => (a.id < b.id ? -1 : 1))) {
-      if (!resolved(member)) continue;
-      const proof = proofFor(inventory, member, spend);
-      if (proof) relationships.push(proof);
-    }
-    const result = { ...inventory, relationships, findings: [] };
+    const result = { ...inventory, ...collectProofs(inventory, spend) };
     if (Buffer.byteLength(JSON.stringify(result)) > limits.maxRetainedBytes)
       throw new GraphFailure('budget');
     return freeze(structuredClone(result));

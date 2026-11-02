@@ -180,7 +180,7 @@ test('real N1 graph proofs validate through T4 and group exact changed members i
   if (graph.kind !== 'inventory') throw new Error('expected graph');
   expect(graph.relationships).toHaveLength(2);
   const packet = validateReviewPacket(
-    { ...f.candidate, relationships: graph.relationships },
+    { ...f.candidate, relationships: graph.relationships, findings: graph.findings },
     f.fixture.expected,
   );
   expect(packet.ok, JSON.stringify(packet)).toBe(true);
