@@ -414,6 +414,7 @@ export function parseGraphInput(value: unknown) {
   if (metadata.kind === 'metadata') metadataData(metadata as UvMetadata, binding);
   else {
     need(['invalid', 'obsolete', 'unavailable'].includes(metadata.kind));
+    keys(metadata, metadata.kind === 'unavailable' ? ['kind', 'reason'] : ['kind']);
     if (metadata.kind === 'unavailable') need(uvReasons.includes(metadata.reason));
   }
   return {

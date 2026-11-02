@@ -181,3 +181,17 @@ test('membership shift must not explain away an independent self-selector marker
     ),
   ).toBe(true);
 });
+test('project selectors resolve against an artifact-only partial table like role mapping', async () => {
+  const input = await uvGraphFixture({
+    'head:uv.lock': uvLock(
+      '2',
+      'sdist={url="https://files.example.test/orbit.tar.gz",hash="unknown-hash-format"}\n',
+    ).replace('dependencies=[{name="orbit"}]', 'dependencies=[{name="orbit",version="2"}]'),
+  });
+  expect(input.metadata.gaps.map((g) => g.entry)).toEqual([expect.stringContaining(':artifacts')]);
+  const r = reconcileUvGraph(input);
+  expect(r.kind).toBe('inventory');
+  if (r.kind !== 'inventory') throw Error('expected inventory');
+  expect(r.changes).toMatchObject([{ kind: 'update', role: 'direct' }]);
+  expect(r.gaps.some((g) => g.entry === 'project-selectors')).toBe(false);
+});

@@ -58,6 +58,12 @@ test('preserves U1 failure discriminants and reports bounded exhaustion', async 
     { kind: 'unavailable', reason: 'permission' },
   ])
     expect(reconcileUvGraph({ ...input, metadata })).toEqual(metadata);
+  for (const metadata of [
+    { kind: 'invalid', extra: { retained: true } },
+    { kind: 'obsolete', reason: 'timeout' },
+    { kind: 'unavailable', reason: 'permission', detail: 'x' },
+  ])
+    expect(reconcileUvGraph({ ...input, metadata })).toEqual({ kind: 'invalid' });
   expect(reconcileUvGraph({ ...input, limits: { ...input.limits, maxGraphWork: 1 } })).toEqual({
     kind: 'unavailable',
     reason: 'budget',
