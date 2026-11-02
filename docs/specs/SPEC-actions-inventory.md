@@ -1,6 +1,7 @@
 # Spec: X1 GitHub Actions Reference Inventory
 
-Status: approved for execution, 2026-11-01. Supporting contract for
+Status: X1 #16 and #142–#149 implemented on `issue-16`, pending merge.
+Approved for execution, 2026-11-01. Supporting contract for
 `actions-evidence` in [the capability map](README.md), scoped to
 [issue #16: X1](https://github.com/andrewpucci/dependency-update-advisor/issues/16).
 Approval: the user invoked `as-plan` on the reviewed, revised specification
@@ -80,11 +81,10 @@ chosen reader cannot interpret safely leave explicit incomplete coverage;
 never silently skip an alias containing `uses` and claim completeness.
 This construct support is included in the planning approval above.
 
-Use a maintained YAML reader selected during planning; no parser dependency
-or version is selected here. Do not implement a regex-only YAML reader.
-The plan must identify its bounded parsing/alias controls and dependency
-approval before installation. Reject unsupported input explicitly when the
-reader cannot enforce a required bound.
+The approved plan selects exact runtime `yaml@2.9.1`, with bounded CST
+inspection before composition and bounded effective AST traversal. No regex
+YAML reader or unrestricted JS conversion is used. Reject unsupported input
+explicitly when the reader cannot enforce a required bound.
 
 Require positive safe-integer caller limits for file bytes, workflow count,
 parsed nodes/entries, nesting depth, alias expansion, occurrences, and retained
@@ -309,8 +309,8 @@ part of this specification change.
 - **Ask first:** Add/select a YAML dependency, change the proposed YAML subset,
   expand workflow directories, inventory `action.yml` files, amend T4/T5,
   add research providers, or claim security applicability for unresolved
-  refs. Parser selection belongs in the reviewed plan; this spec authorizes
-  no installation.
+  refs. The selected `yaml@2.9.1` dependency is authorized by the approved
+  execution plan; changing it requires a new decision.
 - **Never:** Execute PR/action code, evaluate expressions, follow untrusted
   URLs, invent SHA versions, expose credentials/raw payloads, suppress gaps
   behind another ecosystem, or infer zero dependencies/vulnerabilities from
@@ -327,8 +327,8 @@ remain explicit.
 
 No new module boundary or packet amendment is proposed. The approved X1
 contract includes bounded anchors/aliases and conservative pairing.
-Planning must select the maintained YAML reader and its enforceable controls;
-that dependency choice and numeric live budgets are not settled by this spec.
+The approved plan selects `yaml@2.9.1` and its bounded CST/AST controls.
+Numeric live budgets remain trusted orchestration choices.
 
 The parent spec's Dependabot PR-body corroboration (requirement 4) has no
 assigned issue, and X1 neither fetches nor accepts PR text. Assign it before
@@ -352,3 +352,28 @@ runtime dependency, per-task commits, and one PR covering #16 and #142–#149.
 This single approval replaces manual stops between the plan checkpoints;
 each checkpoint still requires its verification. Merge, adoption, and cutover
 remain separate gates.
+
+## Implemented Handoff and Remaining Gates
+
+`src/evidence/actions.ts` exports
+`collectActionsInventory({ binding, limits }, { session })`. It accepts unknown
+input and returns `invalid`, `obsolete`, fixed `unavailable`, or an immutable
+`inventory` with changes, sources, workflow snapshots, scoped gaps, Actions
+coverage, and independent comparison availability. It adds no caller roots
+or PR-text input. `ActionsLimits` names required byte/workflow/node/depth/
+alias/occurrence/retention bounds; count accounting spans both revisions.
+
+The reader lives in `src/evidence/actions-yaml.ts`. Snapshots retain exact
+safe reference and location data with immutable file identities, without raw
+YAML, comments, or scripts. File/comparison source scopes split at T4's
+existing member bound. Retention overflow produces explicit budget coverage
+and a fitting attributable prefix, or a fixed unavailable envelope; it does
+not enlarge or silently satisfy the packet ceiling.
+
+[Verification #149](https://github.com/andrewpucci/dependency-update-advisor/issues/149)
+records exact revisions, checks, independent review, mutation checks, and
+resolved finding disposition. The sanitized fixture covers omission fallback
+through D1/X1/T4/T5; it does not certify all source-PR parity or live operation.
+PR-body ownership before S2 #20, nonstandard configured directories, numeric
+live budgets/transport, S2/S3 research, M2/O1, W1/W2 publication, adoption, and
+cutover remain separate. Keep the old reviewer active.

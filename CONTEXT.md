@@ -19,8 +19,8 @@ No shared workflow exists; the old reviewer stays active.
 
 ## Next action
 
-[X1 #16](docs/specs/SPEC-actions-inventory.md) is approved for execution;
-`as-build auto` covers ordered #142–#149 in one PR.
+[X1 #16](docs/specs/SPEC-actions-inventory.md) has #142–#149 implemented on
+`issue-16`; #149 records verification and downstream gates.
 [N2 #15](docs/specs/SPEC-npm-relationships.md) is implemented on
 `issue-15`, pending review/merge; #140 holds verification. #93 stays separate.
 [#110 snapshot reuse](docs/specs/SPEC-pr-freshness-snapshot.md) awaits review/merge;
