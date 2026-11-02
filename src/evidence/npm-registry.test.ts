@@ -1,5 +1,7 @@
 import { expect, test, vi } from 'vite-plus/test';
-import { createNpmRegistryReader } from './npm-registry.js';
+import { createNpmRegistryReader, interpretNpmLifecycle } from './npm-registry.js';
+import type { PacketChange, NpmSide } from '../schema.js';
+import type { NpmNode } from './npm.js';
 
 const integrity = 'sha512-' + Buffer.alloc(64, 7).toString('base64');
 const request = {
@@ -248,4 +250,159 @@ test('disposes an unexpected redirect body without reading it', async () => {
   );
   expect(await reader(response).read(request)).toMatchObject({ reason: 'unsupported' });
   expect(cancelled).toBe(true);
+});
+
+async function lifecycleSide(
+  version: string,
+  signal: boolean | null,
+  scripts: Record<string, string> = {},
+  extra = {},
+) {
+  const instance: NpmSide = {
+    root: '.',
+    lockPath: 'node_modules/widget',
+    name: request.name,
+    version,
+    source: { ...request.source, kind: 'registry' },
+    sourceId: version === '1.2.2' ? 'base-lock' : 'head-lock',
+  };
+  const metadata = await reader(
+    document({ _id: request.name + '@' + version, version, scripts, ...extra }),
+  ).read({ ...request, version });
+  const node: NpmNode = {
+    instance,
+    integrity,
+    hasInstallScript: signal,
+    dependencies: {},
+    optionalDependencies: {},
+    peerDependencies: {},
+    link: null,
+  };
+  return { node, metadata };
+}
+function lifecycleChange(from: NpmSide | null, to: NpmSide | null): PacketChange {
+  return {
+    id: 'changed-widget',
+    ecosystem: 'npm',
+    kind: from ? (to ? 'update' : 'removal') : 'addition',
+    role: 'transitive',
+    from,
+    to,
+    evidence: {},
+  };
+}
+
+test.each([null, false])(
+  'no explicit command is complete with a %s lock signal and full bound metadata',
+  async (signal) => {
+    const head = await lifecycleSide('1.2.3', signal);
+    const result = interpretNpmLifecycle(lifecycleChange(null, head.node.instance), { head });
+    expect(result.change.evidence.installScript).toMatchObject({
+      status: 'available',
+      reasons: [],
+    });
+    expect(result.findings).toContainEqual(
+      expect.objectContaining({
+        kind: 'informational',
+        detail: expect.stringContaining('implicit'),
+      }),
+    );
+    expect(result.findings.some((f) => f.kind === 'supplyChainChange')).toBe(false);
+  },
+);
+
+test.each([
+  [null, { install: 'node setup.js' }, {}],
+  [true, {}, {}],
+  [false, {}, { gypfile: true }],
+] as const)(
+  'conflicting lock and command facts stay unresolved (%s)',
+  async (signal, scripts, extra) => {
+    const head = await lifecycleSide('1.2.3', signal, scripts, extra);
+    const result = interpretNpmLifecycle(lifecycleChange(null, head.node.instance), { head });
+    expect(result.change.evidence.installScript.status).not.toBe('available');
+    expect(result.change.evidence.installScript.reasons).toContain('conflict');
+    expect(result.findings.some((f) => f.kind === 'supplyChainChange')).toBe(false);
+  },
+);
+
+test('changed commands under an unchanged true flag produce a finding bound to both sides', async () => {
+  const base = await lifecycleSide('1.2.2', true, { install: 'node old.js' });
+  const head = await lifecycleSide('1.2.3', true, { install: 'node new.js' });
+  const change = lifecycleChange(base.node.instance, head.node.instance);
+  const result = interpretNpmLifecycle(change, { base, head });
+  expect(result.change.evidence.installScript.status).toBe('available');
+  expect(result.findings).toContainEqual(
+    expect.objectContaining({
+      kind: 'supplyChainChange',
+      change: 'install_script',
+      memberId: change.id,
+      references: result.change.evidence.installScript.sourceIds,
+    }),
+  );
+  expect(
+    result.sources.flatMap((s) => (s.provenance.kind === 'upstream' ? s.provenance.subjects : [])),
+  ).toEqual(
+    expect.arrayContaining([
+      { memberId: change.id, side: 'base', value: '1.2.2' },
+      { memberId: change.id, side: 'head', value: '1.2.3' },
+    ]),
+  );
+  expect(change.evidence).toEqual({});
+});
+
+test('a missing side never becomes a verified changed-script finding', async () => {
+  const head = await lifecycleSide('1.2.3', true, { install: 'node new.js' });
+  const base = await lifecycleSide('1.2.2', true, { install: 'node old.js' });
+  const result = interpretNpmLifecycle(lifecycleChange(base.node.instance, head.node.instance), {
+    head,
+  });
+  expect(result.change.evidence.installScript.status).toBe('partial');
+  expect(result.findings.some((f) => f.kind === 'supplyChainChange')).toBe(false);
+});
+
+test('removed commands and removed packages are observations, not proposed-risk findings', async () => {
+  const base = await lifecycleSide('1.2.2', true, { install: 'node old.js' });
+  const head = await lifecycleSide('1.2.3', null);
+  for (const change of [
+    lifecycleChange(base.node.instance, head.node.instance),
+    lifecycleChange(base.node.instance, null),
+  ]) {
+    const result = interpretNpmLifecycle(change, { base, head });
+    expect(result.change.evidence.installScript.status).toBe('available');
+    expect(result.findings.some((f) => f.kind === 'supplyChainChange')).toBe(false);
+    expect(result.findings).toContainEqual(
+      expect.objectContaining({
+        kind: 'informational',
+        detail: expect.stringContaining('removed'),
+      }),
+    );
+  }
+});
+
+test('identical commands do not produce a changed-script finding and command text never enters excerpts', async () => {
+  const command = 'node setup.js\nnode finish.js';
+  const base = await lifecycleSide('1.2.2', true, { install: command });
+  const head = await lifecycleSide('1.2.3', true, { install: command }, { gypfile: true });
+  const result = interpretNpmLifecycle(lifecycleChange(base.node.instance, head.node.instance), {
+    base,
+    head,
+  });
+  expect(result.change.evidence.installScript.status).toBe('available');
+  expect(result.findings.some((f) => f.kind === 'supplyChainChange')).toBe(false);
+  expect(JSON.stringify(result.sources)).not.toContain('setup.js');
+});
+
+test('declarations retain empty evidence and acquire no lifecycle claims', () => {
+  const change: PacketChange = {
+    id: 'declaration',
+    ecosystem: 'npm',
+    basis: 'declaration',
+    role: 'direct',
+    kind: 'addition',
+    from: null,
+    to: { root: '.', name: 'widget', specifiers: { dependencies: '^1' }, sourceId: 'manifest' },
+    evidence: {},
+  };
+  expect(interpretNpmLifecycle(change, {})).toEqual({ change, sources: [], findings: [] });
 });
