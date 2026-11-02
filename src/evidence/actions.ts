@@ -1,7 +1,7 @@
 import { createHash } from 'node:crypto';
 import { isDeepStrictEqual, types } from 'node:util';
 import { parseReviewBinding, type ReviewBinding, type RepositoryIdentity } from '../event.js';
-import type { GithubReadSession } from '../github-read.js';
+import type { GithubFileChange, GithubReadSession } from '../github-read.js';
 import type {
   ActionsSide,
   EvidenceReason,
@@ -11,6 +11,7 @@ import type {
 } from '../schema.js';
 import {
   readWorkflow,
+  safeIdentity,
   type WorkflowJob,
   type WorkflowUse,
   type YamlBudget,
@@ -202,6 +203,67 @@ async function readSide(
   state.sources.push(source);
   return snapshot;
 }
+function canonicalPath(value: unknown): value is string {
+  return (
+    safeIdentity(value, 1024) &&
+    !/[\\:]/u.test(value) &&
+    value.split('/').every((p) => p && p !== '.' && p !== '..')
+  );
+}
+function absent(state: State, side: 'base' | 'head', path: string): ActionsSnapshot {
+  return {
+    state: 'absent',
+    side,
+    path,
+    repository: side === 'base' ? state.binding.repository : state.binding.headRepository,
+    commitSha: side === 'base' ? state.binding.baseSha : state.binding.headSha,
+    blobSha: null,
+    sourceId: null,
+    jobs: [],
+  };
+}
+function candidateFiles(state: State, files: readonly GithubFileChange[]) {
+  const selected: GithubFileChange[] = [];
+  for (const file of files) {
+    const paths = [file.path, file.previousPath].filter((p) => p !== null);
+    if (!paths.every(canonicalPath)) {
+      gap(state, 'malformed');
+      continue;
+    }
+    const definitions = paths.filter((p) => /(?:^|\/)action\.ya?ml$/u.test(p));
+    if (definitions.length) {
+      for (const p of definitions) gap(state, 'unsupported', p);
+    } else if (paths.some((p) => workflowPath.test(p))) selected.push(file);
+  }
+  return selected.sort((a, b) =>
+    byCodeUnit(
+      JSON.stringify([a.path, a.previousPath, a.status]),
+      JSON.stringify([b.path, b.previousPath, b.status]),
+    ),
+  );
+}
+async function collectFile(state: State, file: GithubFileChange) {
+  const previous = file.status === 'renamed' ? file.previousPath : file.path;
+  if (!previous || !['added', 'removed', 'modified', 'renamed'].includes(file.status)) {
+    gap(state, 'unsupported', file.path);
+    return;
+  }
+  const inBase = workflowPath.test(previous) && file.status !== 'added';
+  const inHead = workflowPath.test(file.path) && file.status !== 'removed';
+  const base = inBase ? await readSide(state, 'base', previous) : absent(state, 'base', file.path);
+  const head = inHead ? await readSide(state, 'head', file.path) : absent(state, 'head', previous);
+  for (const [expected, snapshot] of [
+    [inBase, base],
+    [inHead, head],
+  ] as const) {
+    if (expected && snapshot.state === 'absent') {
+      gap(state, 'missing', snapshot.path, snapshot.side);
+      snapshot.state = 'unavailable';
+    }
+  }
+  state.workflows.push(base, head);
+  diff(state, base, head);
+}
 function occurrences(snapshot: ActionsSnapshot) {
   const entries: { key: string; side: ActionsSide }[] = [];
   const add = (jobId: string, stepIndex: number | null, use: WorkflowUse | null) => {
@@ -253,6 +315,20 @@ function diff(state: State, base: ActionsSnapshot, head: ActionsSnapshot) {
   for (const key of new Set([...before.keys(), ...after.keys()])) {
     const from = before.get(key) ?? null,
       to = after.get(key) ?? null;
+    const location = (from ?? to)!;
+    if (
+      [base, head].some((snapshot) =>
+        state.gaps.some(
+          (g) =>
+            g.path === snapshot.path &&
+            g.side === snapshot.side &&
+            (g.jobId === null ||
+              (g.jobId === location.jobId &&
+                (g.stepIndex === null || g.stepIndex === location.stepIndex))),
+        ),
+      )
+    )
+      continue;
     if (from && to && from.action === to.action) {
       if (from.ref !== to.ref) emit(state, from, to);
     } else {
@@ -329,17 +405,9 @@ export async function collectActionsInventory(
     if (!discovery.complete)
       for (const reason of discovery.reasons.length ? discovery.reasons : ['unknown' as const])
         gap(state, reason);
-    const files = discovery.files.filter((f) => workflowPath.test(f.path));
-    for (const f of [...files].sort((a, b) => byCodeUnit(a.path, b.path))) {
-      if (f.status !== 'modified') {
-        gap(state, 'unsupported', f.path);
-        continue;
-      }
-      const base = await readSide(state, 'base', f.path),
-        head = await readSide(state, 'head', f.path);
-      state.workflows.push(base, head);
-      diff(state, base, head);
-    }
+    const files = candidateFiles(state, discovery.files);
+    for (const f of files.slice(0, state.limits.maxWorkflows)) await collectFile(state, f);
+    if (files.length > state.limits.maxWorkflows) gap(state, 'budget');
     const comparison = await session.readComparison();
     state.comparison.status = comparison.kind;
     state.comparison.reasons = [...comparison.reasons];

@@ -43,14 +43,14 @@ function fixture() {
       maxRetainedBytes: 1_000_000,
     },
   };
-  const discovery: GithubDiscovery = {
+  const discovery: { -readonly [K in keyof GithubDiscovery]: GithubDiscovery[K] } = {
     kind: 'available',
     binding: structuredClone(binding),
     files: [{ path: workflow, previousPath: null, status: 'modified', blobSha: null }],
     complete: true,
     reasons: [],
   };
-  const comparison: GithubComparison = {
+  const comparison: { -readonly [K in keyof GithubComparison]: GithubComparison[K] } = {
     kind: 'available',
     repository,
     baseSha: BASE,
@@ -170,4 +170,107 @@ test('refuses conflicting immutable file provenance without relabeling it', asyn
   expect(result.coverage.status).toBe('partial');
   expect(result.coverage.reasons).toContain('conflict');
   expect(result.changes).toHaveLength(0);
+});
+
+test.each(['added', 'removed'] as const)(
+  'accounts for an entire %s workflow with a null side',
+  async (status) => {
+    const f = fixture();
+    f.discovery.files = [{ path: workflow, previousPath: null, status, blobSha: null }];
+    const result = inventory(await collectActionsInventory(f.input, { session: f.session }));
+    expect(result.coverage.status).toBe('complete');
+    expect(result.changes).toHaveLength(1);
+    expect(result.changes[0].kind).toBe(status === 'added' ? 'addition' : 'removal');
+    expect(status === 'added' ? result.changes[0].from : result.changes[0].to).toBeNull();
+  },
+);
+test('preserves rename provenance and never reads the outside side of directory moves', async () => {
+  const previous = '.github/workflows/previous.yaml';
+  const f = fixture();
+  f.discovery.files = [
+    { path: workflow, previousPath: previous, status: 'renamed', blobSha: null },
+  ];
+  f.files[`base:${previous}`] = yaml('v1');
+  const renamed = inventory(await collectActionsInventory(f.input, { session: f.session }));
+  expect(renamed.coverage.status).toBe('complete');
+  expect(renamed.changes[0]).toMatchObject({
+    kind: 'update',
+    from: { workflow: previous },
+    to: { workflow },
+  });
+  for (const into of [true, false]) {
+    const move = fixture();
+    move.discovery.files = [
+      {
+        path: into ? workflow : 'archived/build.yml',
+        previousPath: into ? 'archived/build.yml' : workflow,
+        status: 'renamed',
+        blobSha: null,
+      },
+    ];
+    const result = inventory(await collectActionsInventory(move.input, { session: move.session }));
+    expect(result.coverage.status).toBe('complete');
+    expect(result.changes[0].kind).toBe(into ? 'addition' : 'removal');
+    expect(move.calls.some((c) => c.includes('archived/'))).toBe(false);
+    expect(into ? result.changes[0].from : result.changes[0].to).toBeNull();
+  }
+});
+test.each(['action.yml', 'action.yaml', '.github/actions/nested/action.yml'])(
+  'reports unsupported action definitions without reads: %s',
+  async (path) => {
+    const f = fixture();
+    f.discovery.files = [{ path, previousPath: null, status: 'modified', blobSha: null }];
+    const result = inventory(await collectActionsInventory(f.input, { session: f.session }));
+    expect(result.coverage).toMatchObject({ status: 'partial', reasons: ['unsupported'] });
+    expect(f.calls).toEqual(['discover', 'comparison']);
+  },
+);
+test('a renamed-away action definition stays a gap beside readable workflow changes', async () => {
+  const f = fixture();
+  f.discovery.files = [
+    ...f.discovery.files,
+    { path: 'archive.yml', previousPath: 'action.yml', status: 'renamed', blobSha: null },
+  ];
+  const result = inventory(await collectActionsInventory(f.input, { session: f.session }));
+  expect(result.coverage.status).toBe('partial');
+  expect(result.changes).toHaveLength(1);
+});
+test('distinguishes complete absence of relevant paths from incomplete discovery', async () => {
+  const f = fixture();
+  f.discovery.files = [];
+  expect(
+    inventory(await collectActionsInventory(f.input, { session: f.session })).coverage.status,
+  ).toBe('not_applicable');
+  f.discovery.complete = false;
+  f.discovery.reasons = ['truncated'];
+  expect(
+    inventory(await collectActionsInventory(f.input, { session: f.session })).coverage,
+  ).toMatchObject({ status: 'partial', reasons: ['truncated'] });
+});
+test('unreadable, syntactically malformed or unexpectedly absent sides are never proven removals', async () => {
+  for (const bad of [
+    'jobs: [',
+    'jobs: { build: { steps: [{ uses: 42 }] } }',
+    undefined,
+    'forbidden',
+  ] as const) {
+    const f = fixture();
+    if (bad === undefined) delete f.files[`head:${workflow}`];
+    else
+      f.files[`head:${workflow}`] =
+        bad === 'forbidden'
+          ? {
+              kind: 'unavailable',
+              reason: 'permission',
+              side: 'head',
+              path: workflow,
+              repository,
+              commitSha: HEAD,
+            }
+          : bad;
+    const result = inventory(await collectActionsInventory(f.input, { session: f.session }));
+    expect(result.coverage.status).toBe('partial');
+    expect(result.changes).toHaveLength(0);
+    expect(result.workflows.some((w) => w.side === 'base' && w.jobs.length === 1)).toBe(true);
+  }
 });
