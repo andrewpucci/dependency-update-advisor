@@ -3,7 +3,7 @@ import { isDeepStrictEqual, types } from 'node:util';
 import { parseReviewBinding, type ReviewBinding, type RepositoryIdentity } from '../event.js';
 import type { GithubReadSession, GithubFileResult, GithubDiscovery } from '../github-read.js';
 import type { EvidenceReason, PacketRevision } from '../schema.js';
-import { byCodeUnit, isEvidencePath, isPlainObject } from './common.js';
+import { byCodeUnit, isEvidencePath, isPlainObject, longestFittingPrefix } from './common.js';
 import { readManifest, type UvManifest } from './uv-manifest.js';
 import { readLock, type UvLock } from './uv-lock.js';
 import {
@@ -137,6 +137,13 @@ function array(value: unknown): unknown[] {
   need(
     Reflect.ownKeys(value).length === value.length + 1 &&
       Object.values(Object.getOwnPropertyDescriptors(value)).every((d) => 'value' in d),
+  );
+  need(
+    Reflect.ownKeys(value).every(
+      (key) =>
+        key === 'length' ||
+        (typeof key === 'string' && /^(?:0|[1-9]\d*)$/u.test(key) && Number(key) < value.length),
+    ),
   );
   return value;
 }
@@ -291,6 +298,9 @@ async function readFile<T>(
       parsed.gaps.map((g) => g.reason),
     );
   } catch (error) {
+    snapshot.state = 'unavailable';
+    snapshot.data = null;
+    snapshot.sourceId = null;
     gap(state, failure(error), root, side, path);
   }
   return snapshot;
@@ -404,18 +414,58 @@ function detach<T>(value: T): DeepReadonly<T> {
   while (stack.length) {
     const next = stack.pop();
     if (next && typeof next === 'object') {
-      stack.push(...Object.values(next));
+      for (const child of Object.values(next)) stack.push(child);
       Object.freeze(next);
     }
   }
   return result as DeepReadonly<T>;
 }
+function orderedGaps(gaps: UvGap[]) {
+  const unique = new Map(gaps.map((g) => [JSON.stringify(g), g]));
+  return [...unique].sort(([a], [b]) => byCodeUnit(a, b)).map(([, value]) => value);
+}
+// Roots are atomic retention units. Omitted files keep diagnostics even with no retained packages.
+function prefix(state: State, count: number): UvMetadata {
+  const full = state.output,
+    roots = full.roots.slice(0, count),
+    sourceIds = new Set<string>();
+  for (const root of roots)
+    for (const side of [root.base, root.head])
+      for (const file of [side.manifest, side.lock])
+        if (file.sourceId) sourceIds.add(file.sourceId);
+  const gaps: UvGap[] = [
+    ...full.gaps,
+    { root: null, side: null, path: null, entry: null, reason: 'budget' },
+  ];
+  for (const root of full.roots.slice(count))
+    for (const side of [root.base, root.head])
+      for (const file of [side.manifest, side.lock])
+        gaps.push({
+          root: root.root,
+          side: file.side,
+          path: file.path,
+          entry: null,
+          reason: 'budget',
+        });
+  return {
+    ...full,
+    roots,
+    sources: full.sources.filter((s) => sourceIds.has(s.id)),
+    gaps: orderedGaps(gaps),
+  };
+}
 function finish(state: State): UvMetadataResult {
-  state.output.gaps.sort((a, b) => byCodeUnit(JSON.stringify(a), JSON.stringify(b)));
+  state.output.gaps = orderedGaps(state.output.gaps);
   state.output.sources.sort((a, b) => byCodeUnit(a.id, b.id));
-  if (Buffer.byteLength(JSON.stringify(state.output)) > state.input.limits.maxRetainedBytes)
-    return { kind: 'unavailable', reason: 'budget' };
-  return detach(state.output);
+  const fits = (value: UvMetadata) =>
+    Buffer.byteLength(JSON.stringify(value)) <= state.input.limits.maxRetainedBytes;
+  if (fits(state.output)) return detach(state.output);
+  const trimmed = longestFittingPrefix(
+    state.output.roots.length,
+    (count) => prefix(state, count),
+    fits,
+  );
+  return trimmed ? detach(trimmed) : { kind: 'unavailable', reason: 'budget' };
 }
 /** Bound immutable D1 reads only. U2 must consume all gaps before making any inventory claim. */
 export async function collectUvMetadata(
@@ -452,7 +502,7 @@ export async function collectUvMetadata(
     const roots = candidateRoots(state, discovery);
     output.discovery.applicable = roots.length > 0;
     for (const root of roots.slice(0, parsed.limits.maxRoots)) await collectRoot(state, root);
-    if (roots.length > parsed.limits.maxRoots) gap(state, 'budget');
+    for (const root of roots.slice(parsed.limits.maxRoots)) gap(state, 'budget', root);
     await comparison(state);
     return finish(state);
   } catch (error) {
