@@ -5,14 +5,12 @@ import type {
   PacketSource,
   RelationshipProof,
   InventoryCoverage,
-  UvSide,
   PacketRevision,
 } from '../schema.js';
 import { freeze, byCodeUnit } from './common.js';
 import type { UvMetadata, UvGap, UvRootSnapshot } from './uv.js';
-import type { UvPackage } from './uv-lock.js';
-import { uvRoles, uvDeclarationChanges, type UvRoleNode } from './uv-roles.js';
-import { parseGraphInput, UvGraphFailure, boundedIdentity, type GraphWork } from './uv-input.js';
+import { uvRootInventory } from './uv-inventory.js';
+import { parseGraphInput, UvGraphFailure, type GraphWork } from './uv-input.js';
 
 export type UvChange = Extract<PacketChange, { ecosystem: 'uv' }>;
 export type UvObservation = {
@@ -64,24 +62,26 @@ export function addGap(result: UvInventory, gap: UvGap) {
     });
 }
 function fileSources(metadata: UvMetadata): PacketSource[] {
-  return metadata.sources.map((s) => ({
-    id: s.id,
-    kind: 'file',
-    ecosystems: ['uv'],
-    memberIds: [],
-    status: s.kind === 'absence' ? 'unavailable' : s.status,
-    reasons: s.kind === 'absence' ? ['missing'] : s.reasons,
-    provenance:
-      s.kind === 'absence'
-        ? { kind: 'unavailable' }
-        : {
-            kind: 'file',
-            revision: s.side,
-            repository: s.repository,
-            sha: s.commitSha,
-            path: s.path,
-          },
-  }));
+  return metadata.sources
+    .filter((s) => s.kind !== 'absence')
+    .map((s) => ({
+      id: s.id,
+      kind: 'file',
+      ecosystems: ['uv'],
+      memberIds: [],
+      status: s.kind === 'absence' ? 'unavailable' : s.status,
+      reasons: s.kind === 'absence' ? ['missing'] : s.reasons,
+      provenance:
+        s.kind === 'absence'
+          ? { kind: 'unavailable' }
+          : {
+              kind: 'file',
+              revision: s.side,
+              repository: s.repository,
+              sha: s.commitSha,
+              path: s.path,
+            },
+    }));
 }
 function initial(metadata: UvMetadata, work: GraphWork): UvInventory {
   const b = metadata.binding;
@@ -127,108 +127,19 @@ function initial(metadata: UvMetadata, work: GraphWork): UvInventory {
     addGap(result, { root: null, side: null, path: null, entry: null, reason: 'unknown' });
   return result;
 }
-function instance(
-  p: UvPackage,
-  root: UvRootSnapshot,
-  side: 'base' | 'head',
-  node?: UvRoleNode,
-): UvSide | null {
-  if (!p.external || p.version === null) return null;
-  const marker = p.resolutionMarkers?.length
-    ? JSON.stringify([...new Set(p.resolutionMarkers)].sort(byCodeUnit))
-    : null;
-  if (marker !== null && !boundedIdentity(marker)) return null;
-  return {
-    root: root.root,
-    name: p.name,
-    version: p.version,
-    source: { kind: 'registry', identity: p.source.kind === 'registry' ? p.source.url : '' },
-    marker,
-    extras: node?.extras ?? [],
-    groups: [],
-    sourceId: root[side].lock.sourceId!,
-  };
-}
 function rootChanges(
   result: UvInventory,
   metadata: UvMetadata,
   root: UvRootSnapshot,
   work: GraphWork,
 ) {
-  work.spend();
-  if (root.base.state !== 'present' || root.head.state !== 'present') {
-    addGap(result, { root: root.root, side: null, path: null, entry: null, reason: 'missing' });
-    return;
-  }
-  const baseRoles = uvRoles(root, 'base', work),
-    headRoles = uvRoles(root, 'head', work);
-  for (const gap of [...baseRoles.gaps, ...headRoles.gaps]) addGap(result, gap);
-  result.observations.push(...baseRoles.observations, ...headRoles.observations);
-  const base = root.base.lock.data!.packages.filter((p) => p.external),
-    head = root.head.lock.data!.packages.filter((p) => p.external);
-  for (const name of [...new Set([...base, ...head].map((p) => p.name))].sort(byCodeUnit)) {
-    work.spend();
-    const old = base.filter((p) => p.name === name),
-      next = head.filter((p) => p.name === name);
-    if (old.length > 1 || next.length > 1) {
-      addGap(result, {
-        root: root.root,
-        side: null,
-        path: root.head.lock.path,
-        entry: name,
-        reason: 'unsupported',
-      });
-      continue;
-    }
-    const from = old[0] ? instance(old[0], root, 'base', baseRoles.nodes.get(old[0].key)) : null,
-      to = next[0] ? instance(next[0], root, 'head', headRoles.nodes.get(next[0].key)) : null;
-    if (!from && !to) continue;
-    if (
-      from &&
-      to &&
-      JSON.stringify({ ...from, sourceId: '' }) === JSON.stringify({ ...to, sourceId: '' })
-    )
-      continue;
-    const oldRole = old[0] ? baseRoles.nodes.get(old[0].key)?.role : null;
-    const nextRole = next[0] ? headRoles.nodes.get(next[0].key)?.role : null;
-    const role =
-      oldRole === null
-        ? (nextRole ?? 'unknown')
-        : nextRole === null
-          ? (oldRole ?? 'unknown')
-          : oldRole === nextRole
-            ? (oldRole ?? 'unknown')
-            : 'unknown';
-    const kind = from && to ? 'update' : to ? 'addition' : 'removal';
-    const id = work.id('change', [
-      metadata.binding.identity,
-      metadata.binding.baseSha,
-      root.root,
-      kind,
-      from,
-      to,
-    ]);
-    const evidence = Object.fromEntries(
-      ['upstream', 'vulnerability', 'malware'].map((category) => [
-        category,
-        { status: 'unavailable' as const, reasons: ['missing' as const], sourceIds: [] },
-      ]),
-    );
-    result.changes.push({ id, ecosystem: 'uv', kind, role, from, to, evidence });
-    for (const s of [from, to])
-      if (s) result.sources.find((x) => x.id === s.sourceId)!.memberIds.push(id);
-    if (role === 'unknown')
-      addGap(result, {
-        root: root.root,
-        side: null,
-        path: root.head.lock.path,
-        entry: name,
-        reason: 'unsupported',
-      });
-  }
-  const declarations = uvDeclarationChanges(root, baseRoles, headRoles, result.changes);
-  for (const gap of declarations.gaps) addGap(result, gap);
-  result.observations.push(...declarations.observations);
+  const inventory = uvRootInventory(metadata, root, work);
+  result.changes.push(...inventory.changes);
+  for (const gap of inventory.gaps) addGap(result, gap);
+  result.observations.push(...inventory.observations);
+  for (const change of inventory.changes)
+    for (const side of [change.from, change.to])
+      if (side) result.sources.find((s) => s.id === side.sourceId)!.memberIds.push(change.id);
 }
 function finish(result: UvInventory, metadata: UvMetadata, work: GraphWork, maxBytes: number) {
   result.changes.sort((a, b) => byCodeUnit(a.id, b.id));
