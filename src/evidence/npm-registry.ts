@@ -1,6 +1,16 @@
 import { types } from 'node:util';
+import { createHash } from 'node:crypto';
 import type { JsonValue } from '../github-read.js';
-import type { EvidenceReason } from '../schema.js';
+import {
+  PACKET_LIMITS,
+  type EvidenceReason,
+  type PacketChange,
+  type PacketSource,
+  type NpmSide,
+  type ChangeEvidence,
+} from '../schema.js';
+import type { NpmNode } from './npm.js';
+import type { Finding } from '../policy.js';
 
 export type NpmRegistryLimits = Readonly<{
   maxRequests: number;
@@ -339,4 +349,236 @@ export function createNpmRegistryReader(
   } catch {
     return { kind: 'invalid' };
   }
+}
+
+export type NpmLifecycleSide = Readonly<{ node: NpmNode; metadata: NpmMetadataResult }>;
+export type NpmLifecycleResult = Readonly<{
+  change: PacketChange;
+  sources: readonly PacketSource[];
+  findings: readonly Finding[];
+}>;
+type Commands = Partial<Record<'preinstall' | 'install' | 'postinstall', string>>;
+function digest(value: unknown) {
+  return createHash('sha256').update(JSON.stringify(value)).digest('hex');
+}
+function commandText(value: string) {
+  requireMetadata(Buffer.byteLength(value) <= PACKET_LIMITS.textBytes, 'budget');
+  for (const char of value) {
+    const code = char.codePointAt(0)!;
+    requireMetadata(
+      code === 9 ||
+        code === 10 ||
+        code === 13 ||
+        (code >= 32 && (code < 127 || code > 159) && (code < 0xd800 || code > 0xdfff)),
+    );
+  }
+}
+function commands(data: NpmMetadataDocument['data']): Commands {
+  const scripts = data.scripts === undefined ? {} : object(data.scripts);
+  const result: Commands = {};
+  for (const key of ['preinstall', 'install', 'postinstall'] as const) {
+    const value = Object.hasOwn(scripts, key) ? scripts[key] : undefined;
+    requireMetadata(value === undefined || typeof value === 'string');
+    if (typeof value === 'string') {
+      commandText(value);
+      if (value) result[key] = value;
+    }
+  }
+  return result;
+}
+function lifecycleSource(
+  change: PacketChange,
+  side: 'base' | 'head',
+  instance: NpmSide,
+  status: ChangeEvidence['status'],
+  reason: EvidenceReason | null,
+  excerpt: string,
+  metadata = false,
+): PacketSource {
+  const id = 'npm:lifecycle:' + digest([change.id, side, metadata]);
+  return {
+    id,
+    kind: metadata ? 'metadata' : 'install-script',
+    ecosystems: ['npm'],
+    memberIds: [change.id],
+    status,
+    reasons: reason ? [reason] : [],
+    provenance:
+      status === 'unavailable'
+        ? { kind: 'unavailable' }
+        : {
+            kind: 'upstream',
+            url: `https://registry.npmjs.org/${encodeURIComponent(instance.name)}/${encodeURIComponent(instance.version)}`,
+            title: 'Exact-version npm install lifecycle metadata',
+            excerpt,
+            excerptTruncated: false,
+            subjects: [{ memberId: change.id, side, value: instance.version }],
+            range: null,
+          },
+  };
+}
+function inspectLifecycle(instance: NpmSide, side: NpmLifecycleSide | undefined) {
+  requireMetadata(side && side.node.instance, 'missing');
+  const result = side.metadata;
+  if (result.kind === 'unavailable') throw new RegistryFailure(result.reason);
+  const doc = result.document;
+  requireMetadata(doc.name === instance.name && doc.version === instance.version, 'conflict');
+  bind(
+    doc,
+    request({
+      name: instance.name,
+      version: instance.version,
+      source: instance.source,
+      integrity: side.node.integrity,
+    }),
+  );
+  const explicit = commands(doc.data),
+    hasCommands = Object.keys(explicit).length > 0;
+  const signalled = side.node.hasInstallScript === true;
+  requireMetadata(signalled ? hasCommands : !hasCommands && doc.data.gypfile !== true, 'conflict');
+  return explicit;
+}
+function sideEvidence(
+  change: PacketChange,
+  side: 'base' | 'head',
+  instance: NpmSide,
+  input: NpmLifecycleSide | undefined,
+) {
+  try {
+    const explicit = inspectLifecycle(instance, input);
+    const excerpt = `Validated exact-version explicit lifecycle commands; canonical command-map SHA-256 ${digest(explicit)}. Implicit install behavior is outside this evidence.`;
+    return {
+      commands: explicit,
+      source: lifecycleSource(change, side, instance, 'available', null, excerpt),
+      side,
+      instance,
+    };
+  } catch (error) {
+    const reason = error instanceof RegistryFailure ? error.reason : 'unknown';
+    const status =
+      reason === 'conflict' && input?.metadata.kind === 'metadata' ? 'partial' : 'unavailable';
+    return {
+      commands: null,
+      source: lifecycleSource(
+        change,
+        side,
+        instance,
+        status,
+        reason,
+        'Exact-version metadata could not reconcile the immutable install-lifecycle signal.',
+      ),
+      side,
+      instance,
+    };
+  }
+}
+function lifecycleFinding(
+  change: PacketChange,
+  key: string,
+  references: string[],
+  detail: string,
+  supplyChain = false,
+): Finding {
+  const common = {
+    id: 'npm:lifecycle-finding:' + digest([change.id, key]),
+    memberId: change.id,
+    references,
+    rationale:
+      'Immutable lock signals and integrity-bound exact-version metadata determine explicit install-lifecycle evidence.',
+    remediation: [
+      'Review the exact-version install lifecycle and package source before accepting this change.',
+    ],
+    validation: [
+      'Inspect the attributed base and proposed metadata without executing package scripts.',
+    ],
+  };
+  return supplyChain
+    ? { ...common, kind: 'supplyChainChange', change: 'install_script' }
+    : { ...common, kind: 'informational', detail };
+}
+function lifecycleObservations(change: PacketChange, rows: ReturnType<typeof sideEvidence>[]) {
+  const sources = rows.map((r) => r.source),
+    findings: Finding[] = [];
+  const references = [
+    ...new Set(
+      [change.from?.sourceId, change.to?.sourceId].filter((id): id is string => Boolean(id)),
+    ),
+  ];
+  findings.push(
+    lifecycleFinding(
+      change,
+      'scope',
+      references,
+      'Install lifecycle evidence covers explicit commands only; implicit installation behavior is outside this evidence.',
+    ),
+  );
+  const head = rows.find((r) => r.side === 'head'),
+    base = rows.find((r) => r.side === 'base');
+  if (rows.some((r) => r.commands === null)) return { sources, findings };
+  const added =
+    head &&
+    Object.entries(head.commands!).some(
+      ([key, command]) => base?.commands?.[key as keyof Commands] !== command,
+    );
+  if (added)
+    findings.push(
+      lifecycleFinding(
+        change,
+        'changed',
+        sources.map((s) => s.id),
+        '',
+        true,
+      ),
+    );
+  else if (!head || (base && digest(base.commands) !== digest(head.commands))) {
+    const observations = rows.map((r) =>
+      lifecycleSource(
+        change,
+        r.side,
+        r.instance,
+        'available',
+        null,
+        'Explicit install lifecycle metadata retained for a removed package or removed commands.',
+        true,
+      ),
+    );
+    sources.push(...observations);
+    findings.push(
+      lifecycleFinding(
+        change,
+        'removed',
+        observations.map((s) => s.id),
+        'An installed package or explicit lifecycle commands were removed; no proposed install-script risk is inferred.',
+      ),
+    );
+  }
+  return { sources, findings };
+}
+/** Pure interpretation of authentic reader results and matching immutable N1 nodes.
+ * Every existing side remains required; no command is executed or copied into an excerpt.
+ */
+export function interpretNpmLifecycle(
+  change: PacketChange,
+  input: Readonly<{ base?: NpmLifecycleSide; head?: NpmLifecycleSide }>,
+): NpmLifecycleResult {
+  if (change.ecosystem !== 'npm' || 'basis' in change)
+    return freeze({ change: structuredClone(change), sources: [], findings: [] });
+  const rows = [];
+  if (change.from) rows.push(sideEvidence(change, 'base', change.from, input.base));
+  if (change.to) rows.push(sideEvidence(change, 'head', change.to, input.head));
+  const all = rows.every((r) => r.source.status === 'available');
+  const some = rows.some((r) => r.source.status !== 'unavailable');
+  const evidence: ChangeEvidence = {
+    status: all ? 'available' : some ? 'partial' : 'unavailable',
+    reasons: [...new Set(rows.flatMap((r) => r.source.reasons))].sort(),
+    sourceIds: rows.map((r) => r.source.id),
+  };
+  const observations = lifecycleObservations(change, rows);
+  return freeze({
+    change: {
+      ...structuredClone(change),
+      evidence: { ...structuredClone(change.evidence), installScript: evidence },
+    },
+    ...observations,
+  });
 }
