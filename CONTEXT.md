@@ -19,8 +19,9 @@ No shared workflow exists; the old reviewer stays active.
 
 ## Next action
 
-[U2 #18](docs/specs/SPEC-uv-relationships.md) is approved for auto execution.
-#161–#169 track the nine-task plan; one PR closes these issues on merge.
+[U2 #18](docs/specs/SPEC-uv-relationships.md) is implemented on `issue-18`,
+pending review/merge; [verification #169](https://github.com/andrewpucci/dependency-update-advisor/issues/169)
+records exact-revision evidence. One PR closes #18 and #161–#169 on merge.
 [N2 #15](docs/specs/SPEC-npm-relationships.md) is implemented on
 `issue-15`, pending review/merge; #140 holds verification. #93 stays separate.
 [#110 snapshot reuse](docs/specs/SPEC-pr-freshness-snapshot.md) awaits review/merge;
@@ -36,5 +37,4 @@ packaging remains A1. Unit tests do not certify these integrations or cutover.
 
 - The [capability map](docs/specs/README.md) indexes module and contract status.
 - The [ADR guide](docs/adr/README.md) indexes durable architecture decisions.
-- Issues and PRs hold implementation tasks and revision-specific evidence.
-  The gitignored `tasks/plan.md` is transient; private consumer records stay local.
+- Issues/PRs hold tasks and results; `tasks/plan.md` is gitignored.

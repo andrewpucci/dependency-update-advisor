@@ -150,14 +150,15 @@ gaps and an introduced vulnerability before parity is claimed.
   [Verification #159](https://github.com/andrewpucci/dependency-update-advisor/issues/159)
   keeps U2 #18 reconciliation, mixed T4/T5 integration, research, live transport,
   workflow/publication, adoption, and cutover separate.
-- [Conservative uv change reconciliation](SPEC-uv-relationships.md) — approved
-  for planning for U2 #18 in `uv-evidence` through the user's `as-plan`
-  invocation after review edits. The user approved the nine-task plan and
-  authorized `as-build auto` in one PR on 2026-11-02.
-  Preserves existing T4/T5 gates and explicit gaps for unrepresentable changes.
-  Ordered sub-issues #161–#169 track the approved plan under
-  [parent #18](https://github.com/andrewpucci/dependency-update-advisor/issues/18);
-  the zero-member corroboration mapping clarification is approved for U2.7.
+- [Conservative uv change reconciliation](SPEC-uv-relationships.md) — implemented
+  for U2 #18 and #161–#169 on `issue-18`, pending review and merge.
+  The user approved the revised spec/plan and authorized `as-build auto`
+  in one PR on 2026-11-02. Preserves exact variants, scoped extras, conservative
+  same-side proofs, bounded prose hints, and existing T4/T5 gates. Real
+  D1/U1/U2/T4/T5 fixtures include mixed ecosystems and the approved zero-member
+  conflict mapping. [Verification #169](https://github.com/andrewpucci/dependency-update-advisor/issues/169)
+  retains live transport, workflow prose acquisition, research, assessment,
+  rendering, publication, packaging, adoption, parity, and cutover gates.
 - [Repository adoption](SPEC-repo-adoption.md) — approved for planning.
 - [Comment experience](SPEC-comment-experience.md) — approved supporting contract.
 - [Parity and cutover](SPEC-parity-cutover.md) — approved for planning.

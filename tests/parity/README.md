@@ -150,3 +150,29 @@ Edited local links resolved, the context index stayed within 40 lines, and
 the documented synthetic probe command ran successfully in the isolated copy.
 The public documentation was reviewed for restricted consumer details. No
 shared runtime tests are implied by the source-focused results above.
+
+## Uv Reconciliation Fixtures
+
+`uv-graph.ts` builds bounded synthetic U1 inputs from invented TOML and mocked
+immutable read sessions. `uv-metadata.ts` also supplies invented nested Git trees,
+blob identities, configured roots, and rename/discovery responses. No consumer
+file, live PR payload, installed Python environment, or uv execution supplies
+these fixtures.
+
+The adjacent U2 suites in `src/evidence/uv-*.test.ts` cover exact variants,
+declaration mapping, project versus requested extras, source/marker separation,
+scoped gaps, same-side paths, prose corroboration, and work/retention limits.
+`uv.integration.test.ts` passes actual D1 read results through U1 and U2, then
+assembles real T4 packets and T5 units beside the existing npm/Actions collectors.
+It checks independent comparison failures, zero-change uv failures, nested and
+renamed roots, revision 3/5 empty extras, the memberless prose-conflict fallback,
+and acceptance at 128 combined records versus rejection at 129.
+
+Synthetic downstream-only research/assessment records exercise packet and unit
+behavior. U2 itself leaves research unavailable; these records do not claim live
+research, workflow acquisition of current PR text, model output, publication,
+consumer adoption, or parity/cutover. See the
+[U2 handoff](../../docs/specs/SPEC-uv-relationships.md#implemented-interface-and-handoff)
+for the exported interface and retained-source identities, and
+[verification #169](https://github.com/andrewpucci/dependency-update-advisor/issues/169)
+for exact-revision results and review disposition.
