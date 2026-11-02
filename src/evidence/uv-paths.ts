@@ -184,6 +184,25 @@ function finding(member: UvChange, note: UvObservation, work: GraphWork): Findin
     validation: ['Inspect the exact cited immutable lockfile instance and selectors.'],
   };
 }
+function relationshipAddition(
+  result: UvInventory,
+  contexts: UvPathRoot[],
+  member: UvChange,
+  work: GraphWork,
+) {
+  const proof = proofFor(result, contexts, member, work);
+  const note =
+    typeof proof === 'string'
+      ? observation(member, proof)
+      : isShared(result, contexts, proof, work)
+        ? observation(member, 'shared')
+        : null;
+  return {
+    relationships: typeof proof === 'string' ? [] : [proof],
+    observations: note ? [note] : [],
+    findings: note ? [finding(member, note, work)] : [],
+  };
+}
 export function proveUvRelationships(
   result: UvInventory,
   contexts: UvPathRoot[],
@@ -198,18 +217,7 @@ export function proveUvRelationships(
   for (const member of result.changes) {
     if (member.role === 'direct') continue;
     try {
-      const proof = proofFor(result, contexts, member, work);
-      const note =
-        typeof proof === 'string'
-          ? observation(member, proof)
-          : isShared(result, contexts, proof, work)
-            ? observation(member, 'shared')
-            : null;
-      const addition = {
-        relationships: typeof proof === 'string' ? [] : [proof],
-        observations: note ? [note] : [],
-        findings: note ? [finding(member, note, work)] : [],
-      };
+      const addition = relationshipAddition(result, contexts, member, work);
       checkGraphData(addition, work, maxBytes);
       const projected = {
         ...result,

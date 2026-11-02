@@ -1,25 +1,29 @@
 import { PACKET_LIMITS, type PacketSource } from '../schema.js';
 import type { UvMetadata } from './uv.js';
-import type { UvInventory } from './uv-graph.js';
+import type { UvInventory, UvObservation, UvChange } from './uv-graph.js';
 import { byCodeUnit, freeze } from './common.js';
 import { checkGraphData, UvGraphFailure, type GraphWork } from './uv-input.js';
 
+function sourceChunks(s: PacketSource, work: GraphWork) {
+  const chunks: PacketSource[] = [];
+  for (let at = 0; at < Math.max(1, s.memberIds.length); at += PACKET_LIMITS.listEntries) {
+    work.spend();
+    const memberIds = s.memberIds.slice(at, at + PACKET_LIMITS.listEntries);
+    const id =
+      s.memberIds.length <= PACKET_LIMITS.listEntries
+        ? s.id
+        : work.id('file-part', [s.id, memberIds]);
+    chunks.push({ ...s, id, memberIds });
+  }
+  return chunks;
+}
 function splitSources(result: UvInventory, work: GraphWork) {
   const sources: PacketSource[] = [],
     parts = new Map<string, PacketSource[]>();
   for (const s of result.sources) {
     work.spend();
     s.memberIds = [...new Set(s.memberIds)].sort(byCodeUnit);
-    const chunks: PacketSource[] = [];
-    for (let at = 0; at < Math.max(1, s.memberIds.length); at += PACKET_LIMITS.listEntries) {
-      work.spend();
-      const memberIds = s.memberIds.slice(at, at + PACKET_LIMITS.listEntries);
-      const id =
-        s.memberIds.length <= PACKET_LIMITS.listEntries
-          ? s.id
-          : work.id('file-part', [s.id, memberIds]);
-      chunks.push({ ...s, id, memberIds });
-    }
+    const chunks = sourceChunks(s, work);
     parts.set(s.id, chunks);
     sources.push(...chunks);
   }
@@ -54,6 +58,16 @@ function inventoryCoverage(result: UvInventory, metadata: UvMetadata) {
     summary.provenance.absentEcosystems = status === 'not_applicable' ? ['uv'] : [];
   result.coverage = { status, reasons, sourceIds: [summary.id] };
 }
+function observationMatches(o: UvObservation, c: UvChange, keys: (string | null)[]) {
+  const sides = o.side === 'base' ? [c.from] : o.side === 'head' ? [c.to] : [c.from, c.to];
+  return sides.some(
+    (s) =>
+      s &&
+      keys.includes(
+        JSON.stringify([s.name, s.version, { kind: 'registry', url: s.source.identity }]),
+      ),
+  );
+}
 function attachObservations(result: UvInventory, work: GraphWork) {
   for (const o of result.observations) {
     const keys = [o.entry];
@@ -67,17 +81,7 @@ function attachObservations(result: UvInventory, work: GraphWork) {
     for (const c of result.changes) {
       work.spend();
       if (o.root === null || o.root !== (c.to ?? c.from)!.root) continue;
-      const sides = o.side === 'base' ? [c.from] : o.side === 'head' ? [c.to] : [c.from, c.to];
-      if (
-        sides.some(
-          (s) =>
-            s &&
-            keys.includes(
-              JSON.stringify([s.name, s.version, { kind: 'registry', url: s.source.identity }]),
-            ),
-        )
-      )
-        o.memberIds.push(c.id);
+      if (observationMatches(o, c, keys)) o.memberIds.push(c.id);
     }
     o.memberIds = [...new Set(o.memberIds)].sort(byCodeUnit);
   }
