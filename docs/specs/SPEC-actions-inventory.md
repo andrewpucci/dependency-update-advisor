@@ -11,6 +11,11 @@ separate. This refines the inventory slice of
 [Actions evidence](SPEC-actions-evidence.md); it adds no module,
 dependency direction, or packet-schema amendment.
 
+Amendment approved 2026-11-01:
+
+- An unsupported reference anywhere in a selected workflow, including an
+  unchanged Docker or dynamic reference, prevents complete Actions coverage.
+
 ## Objective and Scope
 
 Give maintainers an immutable, occurrence-level inventory of external Actions
@@ -96,16 +101,16 @@ remain independent and unchanged.
 
 Inventory these locations, retaining zero-based step indexes:
 
-| Workflow location                                                            | Reference inventory                                                                                                                       |
-| ---------------------------------------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------- |
-| `jobs[jobId].steps[index].uses`                                              | External repository action, including repository subpaths.                                                                                |
-| `jobs[jobId].uses`                                                           | External repository reusable workflow, with `stepIndex: null`.                                                                            |
-| Local `./` reference                                                         | Recognized local reference; no external dependency record. Transitions to/from an external reference still account for the external side. |
-| Docker, dynamic, missing-ref, or otherwise uninterpretable changed reference | Explicit scoped `unsupported` or `malformed` gap; no fabricated repository/ref.                                                           |
+| Workflow location                                                                          | Reference inventory                                                                                                                       |
+| ------------------------------------------------------------------------------------------ | ----------------------------------------------------------------------------------------------------------------------------------------- |
+| `jobs[jobId].steps[index].uses`                                                            | External repository action, including repository subpaths.                                                                                |
+| `jobs[jobId].uses`                                                                         | External repository reusable workflow, with `stepIndex: null`.                                                                            |
+| Local `./` reference                                                                       | Recognized local reference; no external dependency record. Transitions to/from an external reference still account for the external side. |
+| Docker, dynamic, missing-ref, or otherwise uninterpretable reference, changed or unchanged | Explicit scoped `unsupported` or `malformed` gap; no fabricated repository/ref.                                                           |
 
 Do not traverse local action definitions, reusable-workflow dependencies, or
-Docker registries. An unsupported reference relevant to the changed workflow
-prevents a completeness claim where its unchangedness cannot be established.
+Docker registries. An unsupported reference anywhere in a selected workflow
+prevents a completeness claim, even when unchanged.
 Ignore `uses` text inside comments, `run` scripts, names, or arbitrary mappings.
 Preserve independently valid occurrences when another job is unsupported;
 do not salvage references from syntactically broken YAML using regexes.
