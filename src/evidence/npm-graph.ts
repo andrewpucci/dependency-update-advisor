@@ -218,12 +218,18 @@ function eligible(inventory: Inventory, member: Resolved): Resolved | Observatio
   if (anchors.length !== 1) return anchors.length ? 'multiple_direct_changes' : 'no_direct_change';
   return roots(anchors[0]).length === 1 ? anchors[0] : 'multiple_roots';
 }
-function slotTarget(snapshot: NpmRootSide, path: string, key: string, spend: () => void) {
+function slotTarget(
+  snapshot: NpmRootSide,
+  unresolved: ReadonlySet<string>,
+  path: string,
+  key: string,
+  spend: () => void,
+) {
   let parent = path;
   for (;;) {
     spend();
     const candidate = (parent ? parent + '/' : '') + 'node_modules/' + key;
-    if (snapshot.unresolvedPaths.includes(candidate)) return undefined;
+    if (unresolved.has(candidate)) return undefined;
     const node = own(snapshot.packages, candidate);
     if (node) return node.instance ?? undefined;
     if (!parent) return undefined;
@@ -245,30 +251,41 @@ function supportedEdge(key: string, specifier: string, target: NpmSide) {
 function nodeKey(node: NpmSide) {
   return JSON.stringify([node.root, node.lockPath, node.name, node.version, node.source]);
 }
-function edges(snapshot: NpmRootSide, node: NpmNode, spend: () => void) {
+function edges(
+  snapshot: NpmRootSide,
+  unresolved: ReadonlySet<string>,
+  node: NpmNode,
+  spend: () => void,
+) {
   const maps = { ...node.dependencies, ...node.optionalDependencies };
   const targets: NpmSide[] = [];
   for (const key of Object.keys(maps).sort()) {
     spend();
     if (!/^(?:@[a-z\d._-]+\/)?[a-z\d][a-z\d._-]*$/iu.test(key)) continue;
-    const target = slotTarget(snapshot, node.instance!.lockPath, key, spend);
+    const target = slotTarget(snapshot, unresolved, node.instance!.lockPath, key, spend);
     if (target && supportedEdge(key, maps[key], target)) targets.push(target);
   }
   return targets.sort((a, b) => (nodeKey(a) < nodeKey(b) ? -1 : nodeKey(a) > nodeKey(b) ? 1 : 0));
 }
 function pathTo(snapshot: NpmRootSide, start: NpmSide, end: NpmSide, spend: () => void) {
-  const queue: NpmSide[][] = [[start]],
-    seen = new Set([start.lockPath]);
+  // First discovery keeps the shortest canonical parent; paths are rebuilt only on success.
+  const queue = [start],
+    parents = new Map<string, NpmSide | null>([[start.lockPath, null]]),
+    unresolved = new Set(snapshot.unresolvedPaths);
   for (let i = 0; i < queue.length; i++) {
     spend();
-    const path = queue[i],
-      node = own(snapshot.packages, path.at(-1)!.lockPath);
-    if (path.at(-1)!.lockPath === end.lockPath) return path;
+    const step = queue[i],
+      node = own(snapshot.packages, step.lockPath);
+    if (step.lockPath === end.lockPath) {
+      const path: NpmSide[] = [];
+      for (let at: NpmSide | null = step; at; at = parents.get(at.lockPath)!) path.unshift(at);
+      return path;
+    }
     if (!node) continue;
-    for (const target of edges(snapshot, node, spend)) {
-      if (!seen.has(target.lockPath)) {
-        seen.add(target.lockPath);
-        queue.push([...path, target]);
+    for (const target of edges(snapshot, unresolved, node, spend)) {
+      if (!parents.has(target.lockPath)) {
+        parents.set(target.lockPath, step);
+        queue.push(target);
       }
     }
   }
@@ -323,12 +340,13 @@ function unchangedReach(
     const start = changedSlots.has(slot) ? undefined : own(snapshot.packages, slot)?.instance;
     if (start) queue.push(start);
   }
-  const seen = new Set(queue.map((s) => s.lockPath));
+  const seen = new Set(queue.map((s) => s.lockPath)),
+    unresolved = new Set(snapshot.unresolvedPaths);
   for (let i = 0; i < queue.length; i++) {
     spend();
     const node = own(snapshot.packages, queue[i].lockPath);
     if (!node) continue;
-    for (const target of edges(snapshot, node, spend)) {
+    for (const target of edges(snapshot, unresolved, node, spend)) {
       if (!seen.has(target.lockPath)) {
         seen.add(target.lockPath);
         queue.push(target);
