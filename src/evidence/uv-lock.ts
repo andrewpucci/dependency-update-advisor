@@ -1,3 +1,4 @@
+import { PACKET_LIMITS } from '../schema.js';
 import { byCodeUnit } from './common.js';
 import { normalizeName, optionalTable, parseRequirement, type UvExtra } from './uv-manifest.js';
 import {
@@ -53,8 +54,9 @@ export type UvLock = {
   packages: UvPackage[];
 };
 function url(value: unknown): string {
-  const raw = text(value),
-    parsed = new URL(raw);
+  const raw = text(value);
+  need(Buffer.byteLength(raw) <= PACKET_LIMITS.identityBytes, 'unsupported');
+  const parsed = new URL(raw);
   need(
     !/[\\\s]/u.test(raw) &&
       parsed.protocol === 'https:' &&
@@ -76,6 +78,7 @@ function source(value: unknown): UvSource {
 }
 function version(value: unknown): string {
   const raw = text(value);
+  need(Buffer.byteLength(raw) <= PACKET_LIMITS.identityBytes, 'unsupported');
   need(/^[A-Za-z0-9][A-Za-z0-9.!+_-]*$/u.test(raw));
   return raw;
 }
@@ -83,7 +86,7 @@ function strings(raw: unknown, normalize = false): string[] {
   need(Array.isArray(raw));
   const values = raw.map(normalize ? normalizeName : text);
   if (normalize) need(new Set(values).size === values.length, 'conflict');
-  return normalize ? values.sort(byCodeUnit) : values;
+  return values.sort(byCodeUnit);
 }
 function nullableStrings(raw: unknown) {
   return raw === undefined ? null : strings(raw);
@@ -225,7 +228,7 @@ function artifact(raw: unknown) {
         text(r.hash),
       ),
     );
-  if (r.size !== undefined) need(Number.isSafeInteger(r.size) && (r.size as number) >= 0);
+  if (r.size !== undefined) integer(r.size, Number.MAX_SAFE_INTEGER);
   if (r['upload-time'] !== undefined) {
     const date = r['upload-time'];
     need(
@@ -312,9 +315,11 @@ function readPackage(
   return value;
 }
 function sortKey(value: unknown): string {
-  if (!value || typeof value !== 'object') return '';
-  const r = value as Record<string, unknown>;
-  return JSON.stringify([r.name ?? null, r.version ?? null, r.source ?? null]);
+  try {
+    return packageIdentity(table(value)).key;
+  } catch {
+    return '';
+  }
 }
 function packages(raw: unknown, limits: UvParseLimits, budget: UvBudget, gaps: UvEntryGap[]) {
   need(Array.isArray(raw));
@@ -337,15 +342,18 @@ function packages(raw: unknown, limits: UvParseLimits, budget: UvBudget, gaps: U
   }
   return [...values.values()].sort((a, b) => byCodeUnit(a.key, b.key));
 }
+function integer(value: unknown, max = 2 ** 32 - 1): number {
+  need(typeof value === 'bigint' && value >= 0n && value <= BigInt(max));
+  return Number(value);
+}
 function extract(
   raw: Record<string, unknown>,
   limits: UvParseLimits,
   budget: UvBudget,
 ): UvRead<UvLock> {
-  need(Number.isSafeInteger(raw.version) && (raw.version as number) > 0);
-  const revision = raw.revision === undefined ? 0 : raw.revision;
-  need(Number.isSafeInteger(revision) && (revision as number) >= 0);
-  need(raw.version === 1 && (revision === 3 || revision === 5), 'unsupported');
+  const schema = integer(raw.version),
+    revision = raw.revision === undefined ? 0 : integer(raw.revision);
+  need(schema === 1 && (revision === 3 || revision === 5), 'unsupported');
   const gaps: UvEntryGap[] = [];
   const value: UvLock = {
     version: 1,

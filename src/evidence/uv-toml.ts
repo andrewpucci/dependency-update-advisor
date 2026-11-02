@@ -94,7 +94,11 @@ export function readToml(
   try {
     need(bytes.byteLength <= limits.maxFileBytes, 'budget');
     const source = new TextDecoder('utf-8', { fatal: true }).decode(bytes);
-    const raw = parse(source, { maxDepth: limits.maxTomlDepth, unsafeKeyBehaviour: 'throw' });
+    const raw = parse(source, {
+      maxDepth: limits.maxTomlDepth,
+      unsafeKeyBehaviour: 'throw',
+      integersAsBigInt: true,
+    });
     return { kind: 'parsed', value: copyDocument(raw, limits, budget) };
   } catch (error) {
     // The pinned reader exposes depth exhaustion only through this fixed message prefix.

@@ -222,3 +222,33 @@ test('bad metadata items and missing root fields retain independently validated 
   expect(r.value.packages[0].metadata?.providesExtras).toBeNull();
   expect(r.gaps.map((g) => g.reason)).toContain('conflict');
 });
+test.each(['version=1.0\nrevision=3', 'version=1\nrevision=5e0'])(
+  'integral TOML floats are malformed headers rather than integer schema tokens: %s',
+  (header) => {
+    expect(read(header)).toEqual({ kind: 'unavailable', reason: 'malformed' });
+  },
+);
+test('numeric invalid entries cannot discard independent packages; artifact sizes are integer tokens', () => {
+  const r = parsed(
+    header() +
+      pkg('good', '1', `sdist={url="https://example.test/p",size=1.0}\n`) +
+      `[[package]]\nname="bad"\nversion=1\nsource={registry="https://pypi.org/simple"}\n`,
+  );
+  expect(r.value.packages.map((x) => x.name)).toEqual(['good']);
+  expect(r.gaps.map((g) => g.reason)).toEqual(['malformed', 'malformed']);
+});
+test('unrepresentable source identities leave fixed gaps while bounded metadata survives', () => {
+  const source = 'https://example.test/' + 'x'.repeat(1100);
+  const r = parsed(
+    header() + pkg('bad', '1', '').replace('https://pypi.org/simple', source) + pkg('good', '1'),
+  );
+  expect(r.value.packages.map((x) => x.name)).toEqual(['good']);
+  expect(r.gaps).toContainEqual({ entry: null, reason: 'unsupported' });
+  expect(JSON.stringify(r)).not.toContain(source);
+});
+test('resolution-marker collections sort without changing exact marker text', () => {
+  const r = parsed(
+    header() + `resolution-markers=["sys_platform == 'win32'", "os_name == 'posix'"]\n` + pkg(),
+  );
+  expect(r.value.resolutionMarkers).toEqual(["os_name == 'posix'", "sys_platform == 'win32'"]);
+});
