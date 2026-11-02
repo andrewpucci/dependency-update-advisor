@@ -10,6 +10,7 @@ import {
   uvRoles,
   uvDeclarationChanges,
   resolveUvSelector,
+  uvSideKey,
   type UvRoles,
   type UvRoleNode,
 } from './uv-roles.js';
@@ -188,14 +189,8 @@ function unmatched(
     work.spend(base.length + head.length);
     const a = base.filter((r) => family(r) === key),
       b = head.filter((r) => family(r) === key);
-    if (
-      a.length === 1 &&
-      b.length === 1 &&
-      a[0].available &&
-      b[0].available &&
-      complete.base &&
-      complete.head
-    ) {
+    // A row's availability equals its own side's completeness, since its side is not absent.
+    if (a.length === 1 && b.length === 1 && complete.base && complete.head) {
       changes.push(change(metadata, root, a[0], b[0], work));
       continue;
     }
@@ -293,12 +288,7 @@ function membershipExplained(
 ) {
   if (!change.from || !change.to || isDeepStrictEqual(change.from.extras, change.to.extras))
     return false;
-  const opposite = side === 'from' ? change.to : change.from;
-  const target = JSON.stringify([
-    opposite.name,
-    opposite.version,
-    { kind: 'registry', url: opposite.source.identity },
-  ]);
+  const target = uvSideKey(side === 'from' ? change.to : change.from);
   return other.some((e) => {
     work.spend();
     return (
@@ -334,11 +324,7 @@ function selfEdgeChanges(
       work.spend();
       const s = c[side];
       if (!s || c.role !== 'direct' || !edge.target) return false;
-      if (
-        edge.target !==
-        JSON.stringify([s.name, s.version, { kind: 'registry', url: s.source.identity }])
-      )
-        return false;
+      if (edge.target !== uvSideKey(s)) return false;
       const sameHeader = other.some((e) => header(e) === header(edge));
       const addedOrRemoved =
         c.kind === (side === 'from' ? 'removal' : 'addition') &&
@@ -387,13 +373,14 @@ export function uvRootInventory(metadata: UvMetadata, root: UvRootSnapshot, work
     changes: UvChange[] = [];
   const base = records(root, 'base', baseRoles, work, gaps, observations),
     head = records(root, 'head', headRoles, work, gaps, observations);
+  const headSemantics = new Set(head.map((b) => uvSemantic(b.side)));
   const unchanged = new Set(
     base
-      .filter((a) => {
+      .map((a) => uvSemantic(a.side))
+      .filter((semantic) => {
         work.spend(head.length);
-        return head.some((b) => uvSemantic(a.side) === uvSemantic(b.side));
-      })
-      .map((a) => uvSemantic(a.side)),
+        return headSemantics.has(semantic);
+      }),
   );
   unmatched(
     metadata,

@@ -327,13 +327,15 @@ export function corroborateUv(
       reject(result, source, 'budget', maxBytes);
       return;
     }
-    const compared = compare(all, result.changes),
-      next = candidate(result, source, all, compared.members, compared.conflict, work);
+    const compared = compare(all, result.changes);
     if (compared.ambiguous && !compared.conflict) {
       reject(result, source, 'unknown', maxBytes);
       return;
     }
-    Object.assign(result, next);
+    Object.assign(
+      result,
+      candidate(result, source, all, compared.members, compared.conflict, work),
+    );
   } catch (error) {
     reject(result, source, error instanceof UvGraphFailure ? error.reason : 'malformed', maxBytes);
   }

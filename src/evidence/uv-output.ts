@@ -3,6 +3,7 @@ import type { UvMetadata } from './uv.js';
 import type { UvInventory, UvObservation, UvChange } from './uv-graph.js';
 import { byCodeUnit, freeze } from './common.js';
 import { checkGraphData, UvGraphFailure, type GraphWork } from './uv-input.js';
+import { uvSideKey } from './uv-roles.js';
 
 function sourceChunks(s: PacketSource, work: GraphWork) {
   const chunks: PacketSource[] = [];
@@ -60,13 +61,7 @@ function inventoryCoverage(result: UvInventory, metadata: UvMetadata) {
 }
 function observationMatches(o: UvObservation, c: UvChange, keys: (string | null)[]) {
   const sides = o.side === 'base' ? [c.from] : o.side === 'head' ? [c.to] : [c.from, c.to];
-  return sides.some(
-    (s) =>
-      s &&
-      keys.includes(
-        JSON.stringify([s.name, s.version, { kind: 'registry', url: s.source.identity }]),
-      ),
-  );
+  return sides.some((s) => s && keys.includes(uvSideKey(s)));
 }
 function attachObservations(result: UvInventory, work: GraphWork) {
   for (const o of result.observations) {

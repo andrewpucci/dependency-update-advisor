@@ -73,18 +73,15 @@ function fileSources(metadata: UvMetadata): PacketSource[] {
       kind: 'file',
       ecosystems: ['uv'],
       memberIds: [],
-      status: s.kind === 'absence' ? 'unavailable' : s.status,
-      reasons: s.kind === 'absence' ? ['missing'] : s.reasons,
-      provenance:
-        s.kind === 'absence'
-          ? { kind: 'unavailable' }
-          : {
-              kind: 'file',
-              revision: s.side,
-              repository: s.repository,
-              sha: s.commitSha,
-              path: s.path,
-            },
+      status: s.status,
+      reasons: s.reasons,
+      provenance: {
+        kind: 'file',
+        revision: s.side,
+        repository: s.repository,
+        sha: s.commitSha,
+        path: s.path,
+      },
     }));
 }
 function initial(metadata: UvMetadata, work: GraphWork): UvInventory {
