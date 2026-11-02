@@ -1,6 +1,6 @@
 import { expect, test } from 'vite-plus/test';
 import { reconcileUvGraph } from './uv-graph.js';
-import { uvGraphFixture, uvLock, uvPacket } from '../../tests/parity/uv-graph.js';
+import { uvGraphFixture, uvLock, uvPacket, uvPackage } from '../../tests/parity/uv-graph.js';
 import { validateReviewPacket } from '../schema.js';
 function body(input: Awaited<ReturnType<typeof uvGraphFixture>>, text: string) {
   return {
@@ -157,4 +157,33 @@ test('generic group counts and unknown package prose do not establish uv discrep
     );
   expect(r.coverage.status).toBe('complete');
   expect(r.corroboration.status).toBe('unavailable');
+});
+
+test('prose cannot stitch from and to versions across distinct marker contexts', async () => {
+  const lock = (a: string, b: string) =>
+    uvLock(a, 'resolution-markers=["sys_platform == \'linux\'"]\n').replace(
+      'dependencies=[{name="orbit"}]',
+      `dependencies=[{name="orbit",version="${a}",marker="sys_platform == 'linux'"},{name="orbit",version="${b}",marker="sys_platform == 'darwin'"}]`,
+    ) + uvPackage('orbit', b, 'resolution-markers=["sys_platform == \'darwin\'"]\n');
+  const input = await uvGraphFixture({
+    'base:uv.lock': lock('1', '3'),
+    'head:uv.lock': lock('2', '4'),
+  });
+  const full = reconcileUvGraph(input);
+  expect(full).toMatchObject({ kind: 'inventory', coverage: { status: 'complete' } });
+  const r = reconcileUvGraph({
+    ...input,
+    corroboration: {
+      status: 'available',
+      repository: input.binding.repository,
+      pullNumber: input.binding.pullNumber,
+      headSha: input.binding.headSha,
+      text: 'Bumps orbit from 1 to 4.',
+    },
+  });
+  expect(r).toMatchObject({
+    kind: 'inventory',
+    corroboration: { status: 'partial', reasons: ['conflict'] },
+    coverage: { status: 'partial' },
+  });
 });

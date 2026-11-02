@@ -140,22 +140,33 @@ function scopedClaims(all: Claim[], metadata: UvMetadata) {
 }
 function compare(all: Claim[], changes: UvChange[]) {
   const members = new Map<string, UvChange>();
-  let conflict = false;
+  let conflict = false,
+    ambiguous = false;
   for (const c of all) {
     const scoped =
       c.kind === 'count' ? changes : changes.filter((m) => (m.to ?? m.from)!.name === c.name);
-    scoped.forEach((m) => members.set(m.id, m));
     if (c.kind === 'count') {
+      scoped.forEach((m) => members.set(m.id, m));
       if (c.count !== changes.length) conflict = true;
       continue;
     }
-    if (
-      !scoped.some((m) => m.from?.version === c.from) ||
-      !scoped.some((m) => m.to?.version === c.to)
+    const exact = scoped.filter((m) => m.from?.version === c.from && m.to?.version === c.to);
+    if (exact.length) exact.forEach((m) => members.set(m.id, m));
+    else if (
+      scoped.some((m) => m.kind === 'removal' && m.from?.version === c.from) &&
+      scoped.some((m) => m.kind === 'addition' && m.to?.version === c.to)
     )
+      ambiguous = true;
+    else {
       conflict = true;
+      scoped.forEach((m) => members.set(m.id, m));
+    }
   }
-  return { conflict, members: [...members.values()].sort((a, b) => byCodeUnit(a.id, b.id)) };
+  return {
+    conflict,
+    ambiguous,
+    members: [...members.values()].sort((a, b) => byCodeUnit(a.id, b.id)),
+  };
 }
 function sourceChunks(members: UvChange[]) {
   const chunks: { ids: string[]; subjects: SourceSubject[] }[] = [];
@@ -318,6 +329,10 @@ export function corroborateUv(
     }
     const compared = compare(all, result.changes),
       next = candidate(result, source, all, compared.members, compared.conflict, work);
+    if (compared.ambiguous && !compared.conflict) {
+      reject(result, source, 'unknown', maxBytes);
+      return;
+    }
     Object.assign(result, next);
   } catch (error) {
     reject(result, source, error instanceof UvGraphFailure ? error.reason : 'malformed', maxBytes);

@@ -21,6 +21,12 @@ export async function uvGraphFixture(overrides: Record<string, string | null> = 
     'head:uv.lock': uvLock('2'),
     ...overrides,
   };
+  const paths = [...new Set(Object.keys(files).map((k) => k.slice(k.indexOf(':') + 1)))]
+    .filter((p) => /(?:^|\/)(?:pyproject\.toml|uv\.lock)$/u.test(p))
+    .sort();
+  f.input.roots = [
+    ...new Set(paths.map((p) => (p.includes('/') ? p.slice(0, p.lastIndexOf('/')) : '.'))),
+  ].sort();
   const binding = f.input.binding;
   const session: GithubReadSession = {
     discoverFiles: async () => ({
@@ -28,7 +34,7 @@ export async function uvGraphFixture(overrides: Record<string, string | null> = 
       binding,
       complete: true,
       reasons: [],
-      files: [{ path: 'uv.lock', previousPath: null, status: 'modified', blobSha: null }],
+      files: paths.map((path) => ({ path, previousPath: null, status: 'modified', blobSha: null })),
     }),
     readFile: async (request) => {
       const { side, path } = request as { side: 'base' | 'head'; path: string };

@@ -225,3 +225,50 @@ test('optional proof-work exhaustion retains the entire usable inventory and an 
   expect(r.coverage.status).toBe('complete');
   expect(r.observations.some((o) => o.kind === 'relationship' && o.reason === 'budget')).toBe(true);
 });
+
+test('optional proof one-byte boundary preserves usable inventory', async () => {
+  const lock = (v: string) => uvLock(v, 'dependencies=[{name="child"}]\n') + uvPackage('child', v);
+  const input = await uvGraphFixture({ 'base:uv.lock': lock('1'), 'head:uv.lock': lock('2') });
+  const full = reconcileUvGraph(input);
+  expect(full.kind).toBe('inventory');
+  const size = Buffer.byteLength(JSON.stringify(full));
+  const limited = reconcileUvGraph({
+    ...input,
+    limits: { ...input.limits, maxRetainedBytes: size - 1 },
+  });
+  expect(limited.kind).toBe('inventory');
+  if (limited.kind !== 'inventory') throw Error('inventory');
+  expect(limited.changes).toHaveLength(2);
+  expect(limited.observations.some((o) => o.kind === 'relationship' && o.reason === 'budget')).toBe(
+    true,
+  );
+});
+
+test('a same-package change in another root must not suppress an unchanged direct sharer', async () => {
+  const manifest = uvManifest.replace('["orbit>=1"]', '["orbit>=1","other>=1"]');
+  const lock = (v: string) =>
+    uvLock(v, 'dependencies=[{name="child"}]\n')
+      .replace('dependencies=[{name="orbit"}]', 'dependencies=[{name="orbit"},{name="other"}]')
+      .replace(
+        'requires-dist=[{name="orbit",specifier=">=1"}]',
+        'requires-dist=[{name="orbit",specifier=">=1"},{name="other",specifier=">=1"}]',
+      ) +
+    uvPackage('child', v) +
+    uvPackage('other', '9', 'dependencies=[{name="child"}]\n');
+  const input = await uvGraphFixture({
+    'base:pyproject.toml': manifest,
+    'head:pyproject.toml': manifest,
+    'base:uv.lock': lock('1'),
+    'head:uv.lock': lock('2'),
+    'base:nested/pyproject.toml': uvManifest.replaceAll('orbit', 'other'),
+    'head:nested/pyproject.toml': uvManifest.replaceAll('orbit', 'other'),
+    'base:nested/uv.lock': uvLock('8').replaceAll('orbit', 'other'),
+    'head:nested/uv.lock': uvLock('9').replaceAll('orbit', 'other'),
+  });
+  expect(input.metadata.gaps).toEqual([]);
+  const r = reconcileUvGraph(input);
+  expect(r).toMatchObject({ kind: 'inventory', coverage: { status: 'complete' } });
+  if (r.kind !== 'inventory') throw Error('inventory');
+  expect(r.relationships).toHaveLength(1);
+  expect(r.observations.some((o) => o.root === '.' && o.reason === 'shared')).toBe(true);
+});
