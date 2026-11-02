@@ -331,7 +331,9 @@ test('retention keeps a deterministic root prefix and every omitted file scope v
     f.files[`${side}:sub/uv.lock`] = lock();
   }
   const full = metadata(await collectUvMetadata(f.input, { session: f.session }));
-  f.input.limits.maxRetainedBytes = Buffer.byteLength(JSON.stringify(full)) - 1;
+  f.input.limits.maxRetainedBytes = Buffer.byteLength(JSON.stringify(full));
+  expect(await collectUvMetadata(f.input, { session: f.session })).toEqual(full);
+  f.input.limits.maxRetainedBytes--;
   const r = metadata(await collectUvMetadata(f.input, { session: f.session }));
   expect(r.roots.map((x) => x.root)).toEqual(['.']);
   expect(Buffer.byteLength(JSON.stringify(r))).toBeLessThanOrEqual(f.input.limits.maxRetainedBytes);
