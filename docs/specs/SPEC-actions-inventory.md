@@ -15,6 +15,9 @@ Amendment approved 2026-11-01:
 
 - An unsupported reference anywhere in a selected workflow, including an
   unchanged Docker or dynamic reference, prevents complete Actions coverage.
+- A comparison record for a selected workflow side that was never read, because
+  of the workflow limit or a failed read, keeps that read reason instead of a
+  `conflict` gap.
 
 ## Objective and Scope
 
@@ -187,7 +190,8 @@ changes. Retain comparison availability and fixed reasons independently.
 Comparison failure or omission alone does not make an otherwise proven
 workflow inventory incomplete; actual file/discovery failures still do. A
 record whose workflow, action/subpath, and side match no file-backed
-occurrence is a `conflict` gap that prevents `complete`. A matched record
+occurrence is a `conflict` gap that prevents `complete`, unless that workflow
+side was selected but never read; it then keeps the read reason. A matched record
 whose `version` corroborates none of the set's refs stays a visible
 comparison discrepancy without lowering inventory coverage.
 
