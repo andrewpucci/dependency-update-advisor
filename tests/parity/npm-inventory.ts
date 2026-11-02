@@ -2,7 +2,12 @@ import { createHash } from 'node:crypto';
 import type { PacketExpected } from '../../src/schema.js';
 
 /** Synthetic API-shaped fixtures, not a captured historical consumer payload. */
-export function npmScenario(additions = 20, rangeChange = false, comparison = 'empty') {
+export function npmScenario(
+  additions = 20,
+  rangeChange = false,
+  comparison = 'empty',
+  lifecycle: boolean | 'no-scripts' = false,
+) {
   const BASE = 'b'.repeat(40),
     HEAD = 'a'.repeat(40);
   const repository = { id: 101, owner: 'example', name: 'consumer' };
@@ -32,6 +37,12 @@ export function npmScenario(additions = 20, rangeChange = false, comparison = 'e
   const hash = (value: unknown) => createHash('sha1').update(JSON.stringify(value)).digest('hex');
   const node = (name: string, version: string) => ({
     version,
+    ...(lifecycle
+      ? {
+          ...(lifecycle === true ? { hasInstallScript: true } : {}),
+          integrity: 'sha512-' + Buffer.alloc(64, 7).toString('base64'),
+        }
+      : {}),
     resolved: `https://registry.npmjs.org/${name}/-/${name}-${version}.tgz`,
   });
   for (const side of ['base', 'head'] as const) {
