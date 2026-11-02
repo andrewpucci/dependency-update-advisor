@@ -10,7 +10,13 @@ export type UvComparisonMode =
   | 'rate403'
   | 'rate429'
   | 'partial';
-type Options = { headLock?: 'missing' | 'malformed' | 'unsupported'; discoveryFailure?: boolean };
+type Options = {
+  headLock?: 'missing' | 'malformed' | 'unsupported';
+  discoveryFailure?: boolean;
+  files?: Partial<Record<'base' | 'head', Record<string, string | null>>>;
+  roots?: string[];
+  renames?: Record<string, string>;
+};
 const manifest = `[project]
 name="synthetic-project"
 requires-python=">=3.11"
@@ -126,17 +132,43 @@ export function uvMetadataScenario(mode: UvComparisonMode = 'empty', options: Op
   };
   const objects = new Map<string, unknown>(),
     headBlobs = new Map<string, string>();
+  const sides: Record<'base' | 'head', Record<string, string>> = { base: {}, head: {} };
+  function storeTree(blobs: Map<string, string>, prefix = ''): string {
+    const names = [
+      ...new Set(
+        [...blobs.keys()]
+          .filter((p) => p.startsWith(prefix))
+          .map((p) => p.slice(prefix.length).split('/')[0]),
+      ),
+    ].sort();
+    const tree = names.map((name) => {
+      const path = prefix + name,
+        sha = blobs.get(path);
+      return sha
+        ? { path: name, mode: '100644', type: 'blob', sha }
+        : { path: name, mode: '040000', type: 'tree', sha: storeTree(blobs, path + '/') };
+    });
+    const sha = createHash('sha1').update(JSON.stringify(tree)).digest('hex');
+    objects.set(sha, { sha, truncated: false, tree });
+    return sha;
+  }
   for (const side of ['base', 'head'] as const) {
     const files: Record<string, string> = {
       'pyproject.toml': manifest,
       'uv.lock': lock(side === 'base' ? 3 : 5),
     };
+    for (const [path, value] of Object.entries(options.files?.[side] ?? {})) {
+      if (value === null) delete files[path];
+      else files[path] = value;
+    }
     if (side === 'head' && options.headLock === 'missing') delete files['uv.lock'];
     if (side === 'head' && options.headLock === 'malformed')
       files['uv.lock'] = 'version=1\nrevision=[';
     if (side === 'head' && options.headLock === 'unsupported')
       files['uv.lock'] = 'version=1\nrevision=4';
-    const tree = Object.entries(files).map(([path, text]) => {
+    sides[side] = files;
+    const blobs = new Map<string, string>();
+    for (const [path, text] of Object.entries(files)) {
       const bytes = Buffer.from(text),
         sha = createHash('sha1').update(`blob ${bytes.length}\0`).update(bytes).digest('hex');
       objects.set(sha, {
@@ -146,13 +178,16 @@ export function uvMetadataScenario(mode: UvComparisonMode = 'empty', options: Op
         content: bytes.toString('base64'),
       });
       if (side === 'head') headBlobs.set(path, sha);
-      return { path, mode: '100644', type: 'blob', sha };
-    });
-    const treeSha = createHash('sha1').update(JSON.stringify(tree)).digest('hex');
-    objects.set(treeSha, { sha: treeSha, truncated: false, tree });
+      blobs.set(path, sha);
+    }
+    const treeSha = storeTree(blobs);
     const commitSha = side === 'base' ? BASE : HEAD;
     objects.set(commitSha, { sha: commitSha, tree: { sha: treeSha } });
   }
+  const renamed = new Set(Object.values(options.renames ?? {}));
+  const changed = [...new Set([...Object.keys(sides.base), ...Object.keys(sides.head)])]
+    .filter((p) => !renamed.has(p))
+    .sort();
   const requests: string[] = [];
   const fetch = async (url: string, init: RequestInit) => {
     requests.push(url);
@@ -175,7 +210,7 @@ export function uvMetadataScenario(mode: UvComparisonMode = 'empty', options: Op
         user: { id: 201, login: 'dependabot[bot]', type: 'Bot' },
         base: { ref: 'main', sha: BASE, repo: { id: 101, full_name: 'example/consumer' } },
         head: { sha: HEAD, repo: { id: 101, full_name: 'example/consumer' } },
-        changed_files: 2,
+        changed_files: changed.length,
       });
     if (path === '/pulls/42/files')
       return options.discoveryFailure
@@ -183,10 +218,18 @@ export function uvMetadataScenario(mode: UvComparisonMode = 'empty', options: Op
             status: 403,
           })
         : json(
-            ['pyproject.toml', 'uv.lock'].map((filename) => ({
+            changed.map((filename) => ({
               filename,
-              status:
-                filename === 'uv.lock' && options.headLock === 'missing' ? 'removed' : 'modified',
+              status: options.renames?.[filename]
+                ? 'renamed'
+                : !(filename in sides.head)
+                  ? 'removed'
+                  : !(filename in sides.base)
+                    ? 'added'
+                    : 'modified',
+              ...(options.renames?.[filename]
+                ? { previous_filename: options.renames[filename] }
+                : {}),
               sha: headBlobs.get(filename) ?? 'c'.repeat(40),
             })),
           );
@@ -199,7 +242,12 @@ export function uvMetadataScenario(mode: UvComparisonMode = 'empty', options: Op
     throw new Error('unexpected synthetic API route');
   };
   return {
-    input: { binding, roots: ['.'], configRevision: { repository, sha: BASE }, limits },
+    input: {
+      binding,
+      roots: options.roots ?? ['.'],
+      configRevision: { repository, sha: BASE },
+      limits,
+    },
     readLimits,
     requests,
     fetch,
