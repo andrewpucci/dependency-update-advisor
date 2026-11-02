@@ -98,6 +98,8 @@ export function prepareUvOutput(
   checkGraphData(result, work, maxBytes);
 }
 export function finishUvOutput(result: UvInventory, maxBytes: number) {
+  result.sources.sort((a, b) => byCodeUnit(a.id, b.id));
+  result.gaps.sort((a, b) => byCodeUnit(JSON.stringify(a), JSON.stringify(b)));
   result.observations.sort((a, b) => byCodeUnit(JSON.stringify(a), JSON.stringify(b)));
   result.findings.sort((a, b) => byCodeUnit(a.id, b.id));
   result.relationships.sort((a, b) => byCodeUnit(JSON.stringify(a), JSON.stringify(b)));
