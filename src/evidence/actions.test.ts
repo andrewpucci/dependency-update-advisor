@@ -269,6 +269,21 @@ test('only relevant non-canonical paths are malformed Actions gaps', async () =>
   expect(relevant.coverage).toMatchObject({ status: 'partial', reasons: ['malformed'] });
   expect(relevant.changes).toHaveLength(1);
 });
+test('an unsafe job key does not suppress independent jobs in the same workflow', async () => {
+  const f = fixture();
+  const unsafe = `  ${'j'.repeat(300)}:\n    steps:\n      - run: echo\n`;
+  f.files[`base:${workflow}`] = yaml('v1') + unsafe;
+  f.files[`head:${workflow}`] = yaml('v2') + unsafe;
+  const result = inventory(await collectActionsInventory(f.input, { session: f.session }));
+  expect(result.coverage).toMatchObject({ status: 'partial', reasons: ['malformed'] });
+  expect(result.gaps).toHaveLength(2);
+  expect(result.changes).toHaveLength(1);
+  expect(result.changes[0]).toMatchObject({
+    kind: 'update',
+    from: { jobId: 'build', stepIndex: 0, ref: 'v1' },
+    to: { jobId: 'build', stepIndex: 0, ref: 'v2' },
+  });
+});
 test('unreadable, syntactically malformed or unexpectedly absent sides are never proven removals', async () => {
   for (const bad of [
     'jobs: [',

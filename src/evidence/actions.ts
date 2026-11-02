@@ -374,9 +374,8 @@ function uncertain(state: State, snapshot: ActionsSnapshot, jobId: string, index
     (g) =>
       g.path === snapshot.path &&
       g.side === snapshot.side &&
-      (g.jobId === null ||
-        (g.jobId === jobId &&
-          (index === undefined || g.stepIndex === null || g.stepIndex === index))),
+      g.jobId === jobId &&
+      (index === undefined || g.stepIndex === null || g.stepIndex === index),
   );
 }
 function emitPair(state: State, from: ActionsSide | null, to: ActionsSide | null) {
