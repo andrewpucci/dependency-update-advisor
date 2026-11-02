@@ -11,6 +11,13 @@ import type {
   NpmSide,
   PackageSource,
 } from '../schema.js';
+import {
+  byCodeUnit,
+  freeze,
+  isEvidencePath,
+  isPlainObject,
+  longestFittingPrefix,
+} from './common.js';
 
 type Limits = Readonly<{
   maxFileBytes: number;
@@ -103,22 +110,8 @@ function need(condition: unknown, reason: EvidenceReason = 'malformed'): asserts
   if (!condition) throw new InventoryError(reason);
 }
 function object(value: unknown): Record<string, unknown> {
-  need(
-    value &&
-      typeof value === 'object' &&
-      !types.isProxy(value) &&
-      Object.getPrototypeOf(value) === Object.prototype,
-  );
-  const descriptors = Object.getOwnPropertyDescriptors(value);
-  need(
-    Reflect.ownKeys(descriptors).every(
-      (k) =>
-        typeof k === 'string' &&
-        !['__proto__', 'constructor', 'prototype'].includes(k) &&
-        'value' in descriptors[k],
-    ),
-  );
-  return value as Record<string, unknown>;
+  need(isPlainObject(value));
+  return value;
 }
 function characters(value: string) {
   return [...value].every((c) => {
@@ -127,15 +120,7 @@ function characters(value: string) {
   });
 }
 function path(value: unknown, root = false): value is string {
-  return (
-    typeof value === 'string' &&
-    Buffer.byteLength(value) <= 1024 &&
-    ((root && value === '.') ||
-      (value.length > 0 &&
-        !/[\\:]/u.test(value) &&
-        characters(value) &&
-        value.split('/').every((p) => p && p !== '.' && p !== '..')))
-  );
+  return (root && value === '.') || isEvidencePath(value);
 }
 function safeText(value: unknown, empty = false): value is string {
   return (
@@ -767,16 +752,6 @@ function sourceMembers(state: State) {
     source.kind === 'file' ? fileScopes(state, source) : corroboratingSource(state, source),
   );
 }
-function freeze<T>(value: T): T {
-  if (value && typeof value === 'object') {
-    for (const child of Object.values(value)) freeze(child);
-    Object.freeze(value);
-  }
-  return value;
-}
-function byCodeUnit(a: string, b: string) {
-  return a < b ? -1 : a > b ? 1 : 0;
-}
 function assemble(state: State, complete: boolean, applicable: boolean, snapshots = true) {
   const reasons = [...new Set(state.gaps.map((g) => g.reason))].sort();
   const status: InventoryCoverage['status'] = reasons.length
@@ -837,16 +812,8 @@ function finish(state: State, complete: boolean, applicable: boolean): NpmInvent
     state.changes = ordered.slice(0, count);
     return assemble(state, false, applicable, false);
   };
-  // Retained size never grows as changes are dropped, so search for the longest fitting prefix.
-  if (!fits(prefix(0))) return { kind: 'unavailable', reason: 'budget' };
-  let low = 0,
-    high = ordered.length;
-  while (low < high) {
-    const mid = Math.ceil((low + high) / 2);
-    if (fits(prefix(mid))) low = mid;
-    else high = mid - 1;
-  }
-  return freeze(prefix(low));
+  const trimmed = longestFittingPrefix(ordered.length, prefix, fits);
+  return trimmed ? freeze(trimmed) : { kind: 'unavailable', reason: 'budget' };
 }
 function candidateRoots(
   state: State,
