@@ -388,6 +388,17 @@ function packageNode(root: string, lockPath: string, value: unknown, sourceId: s
     ...facts,
   };
 }
+function validateLockRoot(
+  value: unknown,
+  manifest: Record<string, unknown> | null,
+  declared: NpmRootSide['declarations'],
+) {
+  const own = object(value);
+  for (const key of ['name', 'version'])
+    if (manifest && manifest[key] !== undefined && own[key] !== undefined)
+      need(manifest[key] === own[key], 'conflict');
+  if (declared !== null) need(isDeepStrictEqual(declared, declarations(own)), 'conflict');
+}
 function lockPackages(
   state: State,
   root: string,
@@ -405,12 +416,7 @@ function lockPackages(
   const packages = object(data.packages),
     file = (root === '.' ? '' : root + '/') + 'package-lock.json';
   try {
-    const own = object(packages['']);
-    for (const key of ['name', 'version'])
-      if (manifest && manifest[key] !== undefined && own[key] !== undefined)
-        need(manifest[key] === own[key], 'conflict');
-    if (result.declarations && !isDeepStrictEqual(result.declarations, declarations(own)))
-      gap(state, root, side, file, 'conflict');
+    validateLockRoot(packages[''], manifest, result.declarations);
   } catch (error) {
     gap(state, root, side, file, reason(error));
   }
