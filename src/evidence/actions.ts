@@ -1,0 +1,350 @@
+import { createHash } from 'node:crypto';
+import { isDeepStrictEqual, types } from 'node:util';
+import { parseReviewBinding, type ReviewBinding, type RepositoryIdentity } from '../event.js';
+import type { GithubReadSession } from '../github-read.js';
+import type {
+  ActionsSide,
+  EvidenceReason,
+  InventoryCoverage,
+  PacketChange,
+  PacketSource,
+} from '../schema.js';
+import {
+  readWorkflow,
+  type WorkflowJob,
+  type WorkflowUse,
+  type YamlBudget,
+  type YamlLimits,
+} from './actions-yaml.js';
+
+export type ActionsLimits = YamlLimits & { maxWorkflows: number; maxRetainedBytes: number };
+export type ActionsGap = {
+  path: string | null;
+  side: 'base' | 'head' | null;
+  jobId: string | null;
+  stepIndex: number | null;
+  reason: EvidenceReason;
+};
+export type ActionsSnapshot = {
+  state: 'present' | 'absent' | 'unavailable';
+  side: 'base' | 'head';
+  path: string;
+  repository: RepositoryIdentity;
+  commitSha: string;
+  blobSha: string | null;
+  sourceId: string | null;
+  jobs: WorkflowJob[];
+};
+export type ActionsComparison = {
+  status: 'available' | 'partial' | 'unavailable';
+  reasons: EvidenceReason[];
+  sourceIds: string[];
+  discrepancies: { path: string; side: 'base' | 'head'; action: string; reason: 'conflict' }[];
+};
+export type ActionsInventory = {
+  kind: 'inventory';
+  binding: ReviewBinding;
+  changes: PacketChange[];
+  sources: PacketSource[];
+  workflows: ActionsSnapshot[];
+  gaps: ActionsGap[];
+  coverage: InventoryCoverage;
+  comparison: ActionsComparison;
+};
+type ReadonlyDeep<T> = T extends object ? { readonly [K in keyof T]: ReadonlyDeep<T[K]> } : T;
+export type ActionsInventoryResult =
+  | { readonly kind: 'invalid' | 'obsolete' }
+  | { readonly kind: 'unavailable'; readonly reason: EvidenceReason }
+  | ReadonlyDeep<ActionsInventory>;
+type State = {
+  binding: ReviewBinding;
+  limits: ActionsLimits;
+  session: GithubReadSession;
+  budget: YamlBudget;
+  changes: PacketChange[];
+  sources: PacketSource[];
+  workflows: ActionsSnapshot[];
+  gaps: ActionsGap[];
+  comparison: ActionsComparison;
+  identities: Map<string, string>;
+};
+const workflowPath = /^\.github\/workflows\/[^/]+\.ya?ml$/u;
+const sha = (value: unknown): value is string =>
+  typeof value === 'string' && /^[a-f\d]{40}$/iu.test(value);
+const byCodeUnit = (a: string, b: string) => (a < b ? -1 : a > b ? 1 : 0);
+class InventoryFailure extends Error {
+  constructor(readonly reason: EvidenceReason) {
+    super(reason);
+  }
+}
+function need(value: unknown, reason: EvidenceReason = 'malformed'): asserts value {
+  if (!value) throw new InventoryFailure(reason);
+}
+function own(value: unknown): Record<string, unknown> {
+  need(
+    value &&
+      typeof value === 'object' &&
+      !types.isProxy(value) &&
+      Object.getPrototypeOf(value) === Object.prototype,
+  );
+  const descriptors = Object.getOwnPropertyDescriptors(value);
+  need(
+    Reflect.ownKeys(descriptors).every((k) => typeof k === 'string' && 'value' in descriptors[k]),
+  );
+  return value as Record<string, unknown>;
+}
+function input(value: unknown) {
+  const r = own(value),
+    raw = own(r.limits),
+    b = own(r.binding);
+  for (const key of ['repository', 'headRepository', 'workflow']) own(b[key]);
+  need(
+    Array.isArray(b.identity) &&
+      !types.isProxy(b.identity) &&
+      Object.getPrototypeOf(b.identity) === Array.prototype,
+  );
+  need(b.identity.length === 6 && Reflect.ownKeys(b.identity).length === 7);
+  need(Object.values(Object.getOwnPropertyDescriptors(b.identity)).every((d) => 'value' in d));
+  const binding = parseReviewBinding(b);
+  need(binding);
+  const keys = [
+    'maxFileBytes',
+    'maxWorkflows',
+    'maxYamlNodes',
+    'maxYamlDepth',
+    'maxAliasExpansions',
+    'maxOccurrences',
+    'maxRetainedBytes',
+  ] as const;
+  need(
+    keys.every(
+      (k) => typeof raw[k] === 'number' && Number.isSafeInteger(raw[k]) && (raw[k] as number) > 0,
+    ),
+  );
+  return { binding, limits: Object.fromEntries(keys.map((k) => [k, raw[k]])) as ActionsLimits };
+}
+function identity(state: State, kind: string, value: unknown) {
+  const canonical = JSON.stringify([state.binding.identity, state.binding.baseSha, kind, value]);
+  const id = `actions:${kind}:${createHash('sha256').update(canonical).digest('hex')}`;
+  need(!state.identities.has(id) || state.identities.get(id) === canonical, 'conflict');
+  state.identities.set(id, canonical);
+  return id;
+}
+function gap(
+  state: State,
+  reason: EvidenceReason,
+  path: string | null = null,
+  side: ActionsGap['side'] = null,
+  jobId: string | null = null,
+  stepIndex: number | null = null,
+) {
+  const value = { path, side, jobId, stepIndex, reason };
+  if (!state.gaps.some((g) => isDeepStrictEqual(g, value))) state.gaps.push(value);
+}
+async function readSide(
+  state: State,
+  side: 'base' | 'head',
+  path: string,
+): Promise<ActionsSnapshot> {
+  const repository = side === 'base' ? state.binding.repository : state.binding.headRepository;
+  const commitSha = side === 'base' ? state.binding.baseSha : state.binding.headSha;
+  const snapshot: ActionsSnapshot = {
+    state: 'unavailable',
+    side,
+    path,
+    repository,
+    commitSha,
+    blobSha: null,
+    sourceId: null,
+    jobs: [],
+  };
+  const result = await state.session.readFile({ side, path });
+  if (
+    result.kind === 'invalid' ||
+    result.side !== side ||
+    result.path !== path ||
+    result.commitSha !== commitSha ||
+    !isDeepStrictEqual(result.repository, repository)
+  ) {
+    gap(state, 'conflict', path, side);
+    return snapshot;
+  }
+  if (result.kind === 'unavailable') {
+    gap(state, result.reason, path, side);
+    return snapshot;
+  }
+  if (result.kind === 'absent') {
+    snapshot.state = 'absent';
+    return snapshot;
+  }
+  need(sha(result.blobSha) && result.bytes instanceof Uint8Array);
+  snapshot.blobSha = result.blobSha;
+  snapshot.sourceId = identity(state, 'file', [repository, commitSha, path, result.blobSha]);
+  const parsed = readWorkflow(result.bytes, state.limits, state.budget);
+  const source: PacketSource = {
+    id: snapshot.sourceId,
+    kind: 'file',
+    ecosystems: ['actions'],
+    memberIds: [],
+    status: 'available',
+    reasons: [],
+    provenance: { kind: 'file', revision: side, repository, sha: commitSha, path },
+  };
+  if (parsed.kind === 'unavailable') {
+    gap(state, parsed.reason, path, side);
+    source.status = 'unavailable';
+    source.reasons = [parsed.reason];
+  } else {
+    snapshot.state = 'present';
+    snapshot.jobs = parsed.jobs;
+    for (const g of parsed.gaps) gap(state, g.reason, path, side, g.jobId, g.stepIndex);
+  }
+  state.sources.push(source);
+  return snapshot;
+}
+function occurrences(snapshot: ActionsSnapshot) {
+  const entries: { key: string; side: ActionsSide }[] = [];
+  const add = (jobId: string, stepIndex: number | null, use: WorkflowUse | null) => {
+    if (use?.kind !== 'external' || !snapshot.sourceId) return;
+    entries.push({
+      key: JSON.stringify([jobId, stepIndex]),
+      side: {
+        workflow: snapshot.path,
+        jobId,
+        stepIndex,
+        action: use.action,
+        ref: use.refKind === 'sha' ? use.ref.toLowerCase() : use.ref,
+        refKind: use.refKind,
+        sourceId: snapshot.sourceId,
+      },
+    });
+  };
+  for (const job of snapshot.jobs) {
+    add(job.jobId, null, job.use);
+    job.steps?.forEach((step, i) => add(job.jobId, i, step.use));
+  }
+  return entries;
+}
+function emit(state: State, from: ActionsSide | null, to: ActionsSide | null) {
+  const id = identity(state, 'change', [from, to]);
+  if (state.changes.some((c) => c.id === id)) {
+    gap(state, 'conflict');
+    return;
+  }
+  state.changes.push({
+    id,
+    ecosystem: 'actions',
+    kind: !from ? 'addition' : !to ? 'removal' : 'update',
+    role: 'direct',
+    from,
+    to,
+    evidence: Object.fromEntries(
+      ['upstream', 'vulnerability', 'malware'].map((k) => [
+        k,
+        { status: 'unavailable', reasons: ['missing'], sourceIds: [] },
+      ]),
+    ),
+  });
+}
+function diff(state: State, base: ActionsSnapshot, head: ActionsSnapshot) {
+  if (base.state === 'unavailable' || head.state === 'unavailable') return;
+  const before = new Map(occurrences(base).map((o) => [o.key, o.side]));
+  const after = new Map(occurrences(head).map((o) => [o.key, o.side]));
+  for (const key of new Set([...before.keys(), ...after.keys()])) {
+    const from = before.get(key) ?? null,
+      to = after.get(key) ?? null;
+    if (from && to && from.action === to.action) {
+      if (from.ref !== to.ref) emit(state, from, to);
+    } else {
+      if (from) emit(state, from, null);
+      if (to) emit(state, null, to);
+    }
+  }
+}
+function assemble(state: State, applicable: boolean): ActionsInventory {
+  const reasons = [...new Set(state.gaps.map((g) => g.reason))].sort();
+  const status: InventoryCoverage['status'] = reasons.length
+    ? 'partial'
+    : applicable
+      ? 'complete'
+      : 'not_applicable';
+  const source: PacketSource = {
+    id: 'actions:inventory',
+    kind: 'file-list',
+    ecosystems: ['actions'],
+    memberIds: [],
+    status: reasons.length ? 'partial' : 'available',
+    reasons,
+    provenance: {
+      kind: 'inventory',
+      repository: state.binding.repository,
+      baseSha: state.binding.baseSha,
+      headSha: state.binding.headSha,
+      absentEcosystems: status === 'not_applicable' ? ['actions'] : [],
+    },
+  };
+  for (const s of state.sources)
+    s.memberIds = state.changes
+      .filter((c) => c.from?.sourceId === s.id || c.to?.sourceId === s.id)
+      .map((c) => c.id)
+      .sort();
+  return {
+    kind: 'inventory',
+    binding: state.binding,
+    changes: state.changes.sort((a, b) => byCodeUnit(a.id, b.id)),
+    sources: [source, ...state.sources].sort((a, b) => byCodeUnit(a.id, b.id)),
+    workflows: state.workflows,
+    gaps: state.gaps,
+    coverage: { status, reasons, sourceIds: [source.id] },
+    comparison: state.comparison,
+  };
+}
+
+/** Read-only D1 collection; no PR code, provider calls, credentials or publication capability. */
+export async function collectActionsInventory(
+  value: unknown,
+  { session }: { session: GithubReadSession },
+): Promise<ActionsInventoryResult> {
+  let parsed: ReturnType<typeof input>;
+  try {
+    parsed = input(value);
+  } catch {
+    return { kind: 'invalid' };
+  }
+  const state: State = {
+    ...parsed,
+    session,
+    budget: { nodes: 0, aliases: 0, occurrences: 0 },
+    changes: [],
+    sources: [],
+    workflows: [],
+    gaps: [],
+    identities: new Map(),
+    comparison: { status: 'unavailable', reasons: ['missing'], sourceIds: [], discrepancies: [] },
+  };
+  try {
+    const discovery = await session.discoverFiles();
+    if (discovery.kind === 'obsolete') return { kind: 'obsolete' };
+    need(isDeepStrictEqual(discovery.binding, state.binding), 'conflict');
+    if (!discovery.complete)
+      for (const reason of discovery.reasons.length ? discovery.reasons : ['unknown' as const])
+        gap(state, reason);
+    const files = discovery.files.filter((f) => workflowPath.test(f.path));
+    for (const f of [...files].sort((a, b) => byCodeUnit(a.path, b.path))) {
+      if (f.status !== 'modified') {
+        gap(state, 'unsupported', f.path);
+        continue;
+      }
+      const base = await readSide(state, 'base', f.path),
+        head = await readSide(state, 'head', f.path);
+      state.workflows.push(base, head);
+      diff(state, base, head);
+    }
+    const comparison = await session.readComparison();
+    state.comparison.status = comparison.kind;
+    state.comparison.reasons = [...comparison.reasons];
+    return structuredClone(assemble(state, files.length > 0));
+  } catch (e) {
+    return { kind: 'unavailable', reason: e instanceof InventoryFailure ? e.reason : 'unknown' };
+  }
+}
