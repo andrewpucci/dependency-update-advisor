@@ -11,6 +11,7 @@ import type {
 import { freeze, byCodeUnit } from './common.js';
 import type { UvMetadata, UvGap, UvRootSnapshot } from './uv.js';
 import type { UvPackage } from './uv-lock.js';
+import { uvRoles, uvDeclarationChanges } from './uv-roles.js';
 import { parseGraphInput, UvGraphFailure, boundedIdentity, type GraphWork } from './uv-input.js';
 
 export type UvChange = Extract<PacketChange, { ecosystem: 'uv' }>;
@@ -143,20 +144,6 @@ function instance(p: UvPackage, root: UvRootSnapshot, side: 'base' | 'head'): Uv
     sourceId: root[side].lock.sourceId!,
   };
 }
-function direct(root: UvRootSnapshot, side: 'base' | 'head', p: UvPackage) {
-  const snapshot = root[side],
-    m = snapshot.manifest.data,
-    l = snapshot.lock.data;
-  if (!m || !l) return false;
-  const self = l.packages.find((x) => !x.external);
-  return (
-    m.dependencies.some((d) => d.name === p.name && d.marker === null && !d.extras.length) &&
-    !!self?.dependencies?.some(
-      (s) =>
-        s.name === p.name && (s.version === null || s.version === p.version) && s.marker === null,
-    )
-  );
-}
 function rootChanges(
   result: UvInventory,
   metadata: UvMetadata,
@@ -168,6 +155,9 @@ function rootChanges(
     addGap(result, { root: root.root, side: null, path: null, entry: null, reason: 'missing' });
     return;
   }
+  const baseRoles = uvRoles(root, 'base', work),
+    headRoles = uvRoles(root, 'head', work);
+  for (const gap of [...baseRoles.gaps, ...headRoles.gaps]) addGap(result, gap);
   const base = root.base.lock.data!.packages.filter((p) => p.external),
     head = root.head.lock.data!.packages.filter((p) => p.external);
   for (const name of [...new Set([...base, ...head].map((p) => p.name))].sort(byCodeUnit)) {
@@ -193,10 +183,16 @@ function rootChanges(
       JSON.stringify({ ...from, sourceId: '' }) === JSON.stringify({ ...to, sourceId: '' })
     )
       continue;
+    const oldRole = old[0] ? baseRoles.nodes.get(old[0].key)?.role : null;
+    const nextRole = next[0] ? headRoles.nodes.get(next[0].key)?.role : null;
     const role =
-      (!old[0] || direct(root, 'base', old[0])) && (!next[0] || direct(root, 'head', next[0]))
-        ? 'direct'
-        : 'unknown';
+      oldRole === null
+        ? (nextRole ?? 'unknown')
+        : nextRole === null
+          ? (oldRole ?? 'unknown')
+          : oldRole === nextRole
+            ? (oldRole ?? 'unknown')
+            : 'unknown';
     const kind = from && to ? 'update' : to ? 'addition' : 'removal';
     const id = work.id('change', [
       metadata.binding.identity,
@@ -224,6 +220,9 @@ function rootChanges(
         reason: 'unsupported',
       });
   }
+  const declarations = uvDeclarationChanges(root, baseRoles, headRoles, result.changes);
+  for (const gap of declarations.gaps) addGap(result, gap);
+  result.observations.push(...declarations.observations);
 }
 function finish(result: UvInventory, metadata: UvMetadata, work: GraphWork, maxBytes: number) {
   result.changes.sort((a, b) => byCodeUnit(a.id, b.id));
