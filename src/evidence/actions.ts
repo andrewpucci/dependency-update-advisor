@@ -67,6 +67,7 @@ type State = {
   changes: PacketChange[];
   sources: PacketSource[];
   workflows: ActionsSnapshot[];
+  skipped: GithubFileChange[];
   gaps: ActionsGap[];
   comparison: ActionsComparison;
   identities: Map<string, string>;
@@ -244,15 +245,20 @@ function candidateFiles(state: State, files: readonly GithubFileChange[]) {
     ),
   );
 }
+function fileSides(file: GithubFileChange) {
+  return {
+    base:
+      file.status === 'renamed' ? file.previousPath : file.status === 'added' ? null : file.path,
+    head: file.status === 'removed' ? null : file.path,
+  };
+}
 function uniqueFiles(state: State, files: GithubFileChange[]) {
   const seenBase = new Set<string>(),
     seenHead = new Set<string>();
   return [...files]
     .sort((a, b) => byCodeUnit(JSON.stringify(a), JSON.stringify(b)))
     .filter((file) => {
-      const base =
-        file.status === 'renamed' ? file.previousPath : file.status === 'added' ? null : file.path;
-      const head = file.status === 'removed' ? null : file.path;
+      const { base, head } = fileSides(file);
       if ((base && seenBase.has(base)) || (head && seenHead.has(head))) {
         gap(state, 'conflict', file.path);
         return false;
@@ -480,6 +486,14 @@ function comparisonSource(
     },
   });
 }
+// A record for a selected workflow that was never read can be neither matched nor contradicted.
+function uninventoried(state: State, path: string, side: 'base' | 'head'): EvidenceReason | null {
+  if (state.skipped.some((f) => fileSides(f)[side] === path)) return 'budget';
+  const at = (w: { path: string | null; side: string | null }) =>
+    w.path === path && w.side === side;
+  if (!state.workflows.some((w) => at(w) && w.state === 'unavailable')) return null;
+  return state.gaps.find((g) => at(g) && g.jobId === null)?.reason ?? 'unknown';
+}
 function comparisonRow(state: State, value: unknown) {
   const row = own(value);
   need(canonicalPath(row.manifest) && safeIdentity(row.name) && safeIdentity(row.version, 1024));
@@ -493,6 +507,8 @@ function comparisonRow(state: State, value: unknown) {
     .flatMap(occurrences)
     .filter((o) => o.side.action === action);
   if (!set.length) {
+    const unread = uninventoried(state, path, side);
+    if (unread) return unread;
     gap(state, 'conflict', path, side);
     return 'conflict' as const;
   }
@@ -670,6 +686,7 @@ export async function collectActionsInventory(
     changes: [],
     sources: [],
     workflows: [],
+    skipped: [],
     gaps: [],
     identities: new Map(),
     comparison: { status: 'unavailable', reasons: ['missing'], sourceIds: [], discrepancies: [] },
@@ -683,7 +700,8 @@ export async function collectActionsInventory(
         gap(state, reason);
     const files = candidateFiles(state, discovery.files);
     for (const f of files.slice(0, state.limits.maxWorkflows)) await collectFile(state, f);
-    if (files.length > state.limits.maxWorkflows) gap(state, 'budget');
+    state.skipped = files.slice(state.limits.maxWorkflows);
+    if (state.skipped.length) gap(state, 'budget');
     await reconcileComparison(state);
     return finish(state, files.length > 0);
   } catch (e) {
