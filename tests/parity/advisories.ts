@@ -7,6 +7,9 @@ import { uvMetadataScenario } from './uv-metadata.js';
 import { uvManifest, uvLock, uvPacket } from './uv-graph.js';
 import { collectUvMetadata } from '../../src/evidence/uv.js';
 import { reconcileUvGraph } from '../../src/evidence/uv-graph.js';
+import { actionsScenario } from './actions-inventory.js';
+import { collectActionsInventory } from '../../src/evidence/actions.js';
+import type { ActionVersionMapping } from '../../src/evidence/advisories.js';
 
 export const advisoryTestLimits = {
   maxRequests: 1000,
@@ -161,6 +164,103 @@ export async function collectAdvisoryUv(registry = 'https://pypi.org/simple') {
     const validated = validateReviewPacket(scaffold.packet, scaffold.expected);
     if (!validated.ok) throw new Error('valid uv scaffold');
     return { fixture, inventory, input, expected: scaffold.expected, packet: validated.packet };
+  } finally {
+    opened.session.close();
+  }
+}
+
+export async function collectAdvisoryActions(mapped = false) {
+  const fixture = actionsScenario();
+  const opened = await createGithubReadSession(
+    { binding: fixture.binding, limits: fixture.readLimits },
+    { fetch: fixture.fetch, now: () => 0 },
+  );
+  if (opened.kind !== 'ready') throw new Error('D1');
+  try {
+    const inventory = await collectActionsInventory(
+      {
+        binding: fixture.binding,
+        limits: {
+          maxFileBytes: 100_000,
+          maxWorkflows: 20,
+          maxYamlNodes: 100_000,
+          maxYamlDepth: 32,
+          maxAliasExpansions: 100,
+          maxOccurrences: 1000,
+          maxRetainedBytes: 2_000_000,
+        },
+      },
+      { session: opened.session },
+    );
+    if (inventory.kind !== 'inventory') throw new Error('X1');
+    const sources: PacketSource[] = [],
+      actionVersions: ActionVersionMapping[] = [];
+    if (mapped)
+      for (const c of inventory.changes)
+        for (const side of ['base', 'head'] as const) {
+          const s = side === 'base' ? c.from : c.to;
+          if (!s || !('action' in s)) continue;
+          const name = s.action.split('/').slice(0, 2).join('/'),
+            version = side === 'base' ? '1.0.0' : '2.0.0';
+          const id = `synthetic-action-map:${c.id}:${side}`;
+          sources.push({
+            id,
+            kind: 'release',
+            ecosystems: ['actions'],
+            memberIds: [c.id],
+            status: 'available',
+            reasons: [],
+            provenance: {
+              kind: 'upstream',
+              url: `https://github.com/${name}/releases/tag/v${version}`,
+              title: 'Synthetic mapping proof',
+              excerpt: `Invented mapping: ${s.action}@${s.ref} to ${name}@${version}.`,
+              excerptTruncated: false,
+              subjects: [{ memberId: c.id, side, value: s.ref }],
+              range: { from: side === 'base' ? s.ref : null, to: side === 'head' ? s.ref : null },
+            },
+          });
+          actionVersions.push({
+            memberId: c.id,
+            side,
+            action: s.action,
+            ref: s.ref,
+            name,
+            version,
+            sourceIds: [id],
+          });
+        }
+    const input: AdvisoryInput = {
+      binding: inventory.binding,
+      changes: inventory.changes,
+      sources: [...inventory.sources, ...sources],
+      findings: [],
+      publicIdentities: [],
+      actionVersions,
+      limits: advisoryTestLimits,
+    };
+    const absent: PacketSource = {
+      id: 'absent-actions-others',
+      kind: 'file-list',
+      ecosystems: ['npm', 'uv'],
+      memberIds: [],
+      status: 'available',
+      reasons: [],
+      provenance: {
+        kind: 'inventory',
+        repository: inventory.binding.repository,
+        baseSha: inventory.binding.baseSha,
+        headSha: inventory.binding.headSha,
+        absentEcosystems: ['npm', 'uv'],
+      },
+    };
+    const expected = {
+      binding: inventory.binding,
+      baseSha: inventory.binding.baseSha,
+      contextRevision: { repository: inventory.binding.repository, sha: 'c'.repeat(40) },
+      context: { ok: true as const, status: 'disabled' as const, dependencies: [], reasons: [] },
+    };
+    return { fixture, inventory, input, absent, expected };
   } finally {
     opened.session.close();
   }

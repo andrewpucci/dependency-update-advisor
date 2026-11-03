@@ -51,6 +51,7 @@ export type AdvisoryInput = Readonly<{
   publicIdentities: readonly PublicPackageIdentity[];
   limits: AdvisoryLimits;
   comparisons?: readonly GithubComparison[];
+  actionVersions?: readonly ActionVersionMapping[];
 }>;
 export type MemberAdvisoryLookup = Readonly<{
   memberId: string;
@@ -72,19 +73,59 @@ export type AdvisoryResult =
   | { kind: 'unavailable'; reason: EvidenceReason };
 const id = (value: unknown) =>
   'advisory:' + createHash('sha256').update(JSON.stringify(value)).digest('hex');
-function publicTarget(
+function actionTarget(
   input: AdvisoryInput,
   change: PacketChange,
   side: 'head' | 'base',
 ): AdvisoryTarget | null {
   const instance = side === 'head' ? change.to : change.from;
+  if (!instance || !('action' in instance)) return null;
+  const proof = input.actionVersions?.find((p) => p.memberId === change.id && p.side === side);
   if (
-    !instance ||
-    !('source' in instance) ||
-    change.ecosystem === 'actions' ||
-    instance.source.kind !== 'registry'
+    !proof ||
+    proof.action !== instance.action ||
+    proof.ref !== instance.ref ||
+    !advisoryText(proof.name) ||
+    !advisoryText(proof.version) ||
+    !proof.sourceIds.length
   )
     return null;
+  const repository = instance.action.split('/').slice(0, 2).join('/');
+  if (proof.name.toLowerCase() !== repository.toLowerCase()) return null;
+  const valid = proof.sourceIds.every((ref) => {
+    const source = input.sources.find((s) => s.id === ref),
+      p = source?.provenance;
+    if (
+      source?.status !== 'available' ||
+      !['release', 'compare', 'metadata'].includes(source.kind) ||
+      !source.memberIds.includes(change.id) ||
+      !source.ecosystems.includes('actions') ||
+      p?.kind !== 'upstream'
+    )
+      return false;
+    const url = new URL(p.url);
+    return (
+      url.origin === 'https://github.com' &&
+      !url.username &&
+      !url.password &&
+      !url.search &&
+      !url.hash &&
+      url.pathname.toLowerCase().startsWith('/' + repository.toLowerCase() + '/') &&
+      p.subjects.some(
+        (s) => s.memberId === change.id && s.side === side && s.value === instance.ref,
+      )
+    );
+  });
+  return valid ? { ecosystem: 'actions', name: proof.name, version: proof.version } : null;
+}
+function publicTarget(
+  input: AdvisoryInput,
+  change: PacketChange,
+  side: 'head' | 'base',
+): AdvisoryTarget | null {
+  if (change.ecosystem === 'actions') return actionTarget(input, change, side);
+  const instance = side === 'head' ? change.to : change.from;
+  if (!instance || !('source' in instance) || instance.source.kind !== 'registry') return null;
   const origin = new URL(instance.source.identity);
   if (
     (change.ecosystem === 'npm'
@@ -360,6 +401,11 @@ function validate(input: AdvisoryInput) {
   );
   advisoryCheck(new Set(input.changes.map((c) => c.id)).size === input.changes.length);
   advisoryCheck(new Set(input.sources.map((s) => s.id)).size === input.sources.length);
+  advisoryCheck(
+    input.actionVersions === undefined ||
+      (Array.isArray(input.actionVersions) &&
+        input.actionVersions.length <= PACKET_LIMITS.changes * 2),
+  );
   advisoryCheck(
     input.comparisons === undefined ||
       (Array.isArray(input.comparisons) && input.comparisons.length <= PACKET_LIMITS.listEntries),

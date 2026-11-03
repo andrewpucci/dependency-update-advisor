@@ -7,6 +7,7 @@ import {
   advisoryTestLimits,
   syntheticAdvisory,
   collectAdvisoryUv,
+  collectAdvisoryActions,
 } from '../../tests/parity/advisories.js';
 
 test.each(['permission', 'empty', 'omission'])(
@@ -149,5 +150,66 @@ test.each(['https://pypi.org/simple', 'https://private.example/simple'])(
     expect(out.changes).toMatchObject(
       f.inventory.changes.map((c) => ({ id: c.id, from: c.from, to: c.to })),
     );
+  },
+);
+
+test.each([false, true])(
+  'actual X1 refs require a proven mapping=%s, including action subpaths',
+  async (mapped) => {
+    const f = await collectAdvisoryActions(mapped);
+    let calls = 0;
+    const reader = createAdvisoryReader(advisoryTestLimits, {
+      now: () => 0,
+      fetch: async (url) => {
+        calls++;
+        const query = new URL(url),
+          name = query.searchParams.get('affects')!.split('@')[0];
+        expect(query.searchParams.get('ecosystem')).toBe('actions');
+        expect(query.searchParams.get('affects')).toMatch(/@[12]\.0\.0$/);
+        return Response.json(
+          query.searchParams.get('affects')!.endsWith('@2.0.0')
+            ? [
+                {
+                  ...syntheticAdvisory,
+                  vulnerabilities: [
+                    {
+                      package: { ecosystem: 'actions', name },
+                      vulnerable_version_range: '>=2.0.0',
+                    },
+                  ],
+                },
+              ]
+            : [],
+        );
+      },
+    });
+    if (reader.kind !== 'ready') throw new Error('reader');
+    const out = await enrichAdvisories(f.input, { reader });
+    reader.close();
+    if (out.kind !== 'enriched') throw new Error('enrichment');
+    expect(calls > 0).toBe(mapped);
+    expect(out.findings).toHaveLength(mapped ? f.inventory.changes.length : 0);
+    expect(
+      out.changes.every(
+        (c) => c.evidence.vulnerability.status === (mapped ? 'available' : 'unavailable'),
+      ),
+    ).toBe(true);
+    const packet = validateReviewPacket(
+      {
+        version: 1,
+        ...f.expected,
+        changes: out.changes,
+        sources: [...out.sources, f.absent],
+        findings: out.findings,
+        relationships: [],
+        coverage: {
+          actions: f.inventory.coverage,
+          npm: { status: 'not_applicable', reasons: [], sourceIds: [f.absent.id] },
+          uv: { status: 'not_applicable', reasons: [], sourceIds: [f.absent.id] },
+        },
+      },
+      f.expected,
+    );
+    expect(packet.ok, JSON.stringify(packet)).toBe(true);
   },
 );
