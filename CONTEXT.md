@@ -19,8 +19,8 @@ No shared workflow exists; the old reviewer stays active.
 
 ## Next action
 
-[S1 #19](docs/specs/SPEC-advisory-lookup.md) is approved for auto execution.
-`tasks/plan.md` links #173–#181; verification and review remain open.
+[S1 #19](docs/specs/SPEC-advisory-lookup.md) is implemented locally.
+`issue-19` awaits review; #181 holds verification and remaining gates.
 [U2 #18](docs/specs/SPEC-uv-relationships.md) awaits review/merge; #169 holds evidence.
 [N2 #15](docs/specs/SPEC-npm-relationships.md) is implemented on
 `issue-15`, pending review/merge; #140 holds verification. #93 stays separate.

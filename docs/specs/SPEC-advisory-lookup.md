@@ -1,6 +1,7 @@
 # Spec: S1 Applicable Vulnerability Advisories
 
-Status: approved for planning, 2026-11-03. Supporting contract for `shared-review`
+Status: implemented on `issue-19`, pending review, 2026-11-03.
+Supporting contract for `shared-review`
 in [the capability map](README.md), scoped to
 [issue #19: S1](https://github.com/andrewpucci/dependency-update-advisor/issues/19).
 This supplies shared research to the approved npm, Actions, and uv evidence
@@ -22,11 +23,12 @@ per-task commits, automated verification checkpoints, and issue/project
 updates. Merge, publication, consumer adoption, parity and cutover remain
 separate gates.
 
-Proposed planning handoff: ordered [#173–#181 under #19](https://github.com/andrewpucci/dependency-update-advisor/issues/19)
+Implementation handoff: ordered [#173–#181 under #19](https://github.com/andrewpucci/dependency-update-advisor/issues/19)
 cover exact lookup, pagination/failure handling, two-side conclusions,
 comparison positives, uv, Actions mappings, conflict/retention behavior,
 mixed real-collector integration, and exact-revision verification. They are
-tracked on the implementation project; execution follows the approved plan.
+tracked on the implementation project. [Verification #181](https://github.com/andrewpucci/dependency-update-advisor/issues/181)
+records revision-specific checks, review disposition, and remaining gates.
 
 ## Objective and Scope
 
@@ -263,6 +265,8 @@ new secret, config field, or permission is proposed.
 
 ```text
 src/evidence/advisories.ts         → bounded shared advisory enrichment
+src/evidence/advisory-read.ts      → exact query transport and normalization
+src/evidence/advisory-evidence.ts  → source/finding attribution and reconciliation
 src/evidence/advisories.test.ts    → identity, applicability, and failure cases
 src/evidence/*.integration.test.ts → authentic collector/T4/T5/C3 handoffs
 tests/parity/                     → synthetic scenario helpers when needed
@@ -280,6 +284,61 @@ if (severity === 'unknown') return undefined;
 if (severity === 'critical' || severity === 'high' || severity === 'low') return severity;
 throw new TypeError('Invalid advisory severity');
 ```
+
+## Implemented Interface and Handoff
+
+`createAdvisoryReader(limits, dependencies)` returns `invalid` or a ready,
+collection-local reader with `read(target)` and `close()`. Dependencies supply
+fetch, monotonic time and optional cancellation. Explicit `AdvisoryLimits`
+cover requests, pages, response/total bytes, JSON entries/depth, retained bytes,
+findings, and request/total time. The transport pins API version `2026-03-10`,
+queries reviewed singleton `package@version` targets serially, follows validated
+cursors, omits credentials, rejects redirects and makes no retries. Close the
+reader in the caller's `finally` block.
+
+`enrichAdvisories(input, { reader })` consumes an `AdvisoryInput`: binding,
+normalized changes/sources/findings, limits, required `publicIdentities`, and
+optional `actionVersions` and bounded D1 `comparisons`. Trusted orchestration
+selects authentic successful N1/N2, X1 and U1/U2 handoffs and preserves failed
+collector outcomes before calling S1. No generic collector wrapper, inventory
+reconstruction or packet-schema change was added.
+
+`PublicPackageIdentity` binds member, side, ecosystem, actual name/version,
+original registry source identity and proof source IDs. npm requires the public
+npm origin; uv requires `https://pypi.org/simple` with optional trailing slash.
+Proofs cite available exact-side public metadata. A registry hostname alone
+does not establish public availability. `ActionVersionMapping` binds member,
+side, full action/ref, advisory package/version and proof source IDs. Its
+available upstream sources belong to that action's GitHub repository and exact
+recorded ref; subpaths and workflow occurrences retain their full identities.
+These proof producers remain live integration gates, not S1 discovery APIs.
+
+`AdvisoryResult` is `invalid`, `unavailable` with a fixed reason, or immutable
+`enriched` data with binding, changes, sources, findings and side-specific
+`lookups`. Apply only these enriched fields over original collector data,
+preserving snapshots, relationships, inventory gaps, ecosystem coverage and
+comparison state. `kind` and `lookups` are diagnostics outside packet version 1.
+On failure, keep original inventory/findings and mark research unavailable;
+failed enrichment cannot establish newly complete research. T4 validates the
+final assembled packet.
+
+Exact queries are deduplicated only within one enrichment. Conflicting same-side
+GHSA facts yield explicit gaps; independent findings survive. A comparison
+positive contradicted by a complete global query remains cited with a conflict
+gap. Disagreeing package URLs cannot establish a claim. If new member evidence
+exceeds retention limits, bounded `budget` diagnostics replace that member's
+new enrichment, retaining all original findings and completed independent
+members. If even a truthful fallback cannot fit, enrichment is unavailable.
+No inventory member is dropped.
+
+`tests/parity/advisories.ts` supplies synthetic HTTP and proof fixtures for
+actual D1/N1/N2/X1/U1/U2, T4, T5 and C3. These cover proposed high/critical
+blockers, two-side fixed claims, comparison failures, source/ref attribution,
+grouped-member findings and the combined 128-change boundary. Public identity
+and Actions mappings are explicitly invented test scaffolding. Advisory and
+consumer HTTP responses are mocked. No live proof acquisition, S2/S3,
+workflow, assessment, rendering/publication, packaging, adoption or cutover
+completion is implied.
 
 ## Commands and Testing Strategy
 
@@ -351,9 +410,7 @@ implementation checks must pass on the exact documented revision.
 
 ## Open Questions
 
-No further product decision is required to plan this contract. Planning must
-document concrete budget inputs, exported adapter types, public-source identity
-checks, supported attributable Actions mapping inputs, and the tested GitHub
-API version. Those choices must preserve these limits; any expansion needs
-separate approval. Specification approval does not approve the implementation
-plan or authorize execution.
+None for the implemented scope. Live proof acquisition and caller-wide budget
+allocation remain explicit integration gates. New discovery strategies,
+providers, permissions, range evaluators or coverage meanings need separately
+approved scope.

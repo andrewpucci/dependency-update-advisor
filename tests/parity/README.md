@@ -176,3 +176,21 @@ consumer adoption, or parity/cutover. See the
 for the exported interface and retained-source identities, and
 [verification #169](https://github.com/andrewpucci/dependency-update-advisor/issues/169)
 for exact-revision results and review disposition.
+
+## S1 Advisory Fixtures
+
+`advisories.ts` creates invented public identity/mapping proofs and GitHub-shaped
+HTTP responses alongside actual D1/N1/N2/X1/U1/U2 collectors. Adjacent advisory
+suites execute real T4 validation, T5 grouping and C3 evaluation. No test runs
+consumer code, installs dependencies, resolves an Actions ref, or performs a
+live advisory lookup.
+
+The fixture set covers proposed high/critical vulnerabilities, complete empty
+queries, fixed claims with both sides, comparison 403s, SHA applicability,
+withdrawal/severity handling, duplicate/conflicting facts, bounded pagination,
+stream/time/work/retention failures, additions/removals/declarations, grouped
+transitive findings, and 128 versus 129 combined changes. Missing proof remains
+unknown. Synthetic proof scaffolding is not evidence of live public-identity
+or Actions mapping acquisition. See the [S1 handoff](../../docs/specs/SPEC-advisory-lookup.md#implemented-interface-and-handoff)
+and [verification #181](https://github.com/andrewpucci/dependency-update-advisor/issues/181)
+for the implemented scope and remaining integration gates.
