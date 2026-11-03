@@ -5,7 +5,7 @@ import { proveNpmRelationships } from '../../src/evidence/npm-graph.js';
 import type { PublicPackageIdentity, AdvisoryInput } from '../../src/evidence/advisories.js';
 import { npmScenario } from './npm-inventory.js';
 import { uvMetadataScenario } from './uv-metadata.js';
-import { uvManifest, uvLock, uvPacket } from './uv-graph.js';
+import { uvManifest, uvLock, uvPacket, uvPackage } from './uv-graph.js';
 import { collectUvMetadata } from '../../src/evidence/uv.js';
 import { reconcileUvGraph } from '../../src/evidence/uv-graph.js';
 import { actionsScenario } from './actions-inventory.js';
@@ -138,9 +138,14 @@ export async function collectAdvisoryNpm(
   }
 }
 
-export async function collectAdvisoryUv(registry = 'https://pypi.org/simple') {
-  const replace = (version: string) =>
-    uvLock(version).replaceAll('https://pypi.org/simple', registry);
+export async function collectAdvisoryUv(registry = 'https://pypi.org/simple', variants = false) {
+  const replace = (version: string) => {
+    const fields = variants ? 'resolution-markers=["sys_platform == \'linux\'"]\n' : '';
+    const extra = variants
+      ? uvPackage('orbit', version + '+other', 'resolution-markers=["sys_platform != \'linux\'"]\n')
+      : '';
+    return (uvLock(version, fields) + extra).replaceAll('https://pypi.org/simple', registry);
+  };
   const fixture = uvMetadataScenario('permission403', {
     files: {
       base: { 'pyproject.toml': uvManifest, 'uv.lock': replace('1.0') },

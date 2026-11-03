@@ -382,3 +382,67 @@ test('actual N1 removals, declarations, and unchanged versions never create a mi
     }
   }
 });
+
+test.each([
+  ['v2.0.0', 'tag'],
+  ['v2', 'tag'],
+  ['main', 'branch'],
+  ['expression', 'unknown'],
+] as const)('unmapped Actions ref %s remains unknown without guessing', async (ref, refKind) => {
+  const f = await collectAdvisoryActions();
+  const changes = f.input.changes.map((c) =>
+    c.ecosystem === 'actions' && c.to ? { ...c, to: { ...c.to, ref, refKind } } : c,
+  );
+  let calls = 0;
+  const reader = createAdvisoryReader(advisoryTestLimits, {
+    now: () => 0,
+    fetch: async () => {
+      calls++;
+      return Response.json([]);
+    },
+  });
+  if (reader.kind !== 'ready') throw new Error('reader');
+  const result = await enrichAdvisories({ ...f.input, changes }, { reader });
+  reader.close();
+  expect(result.kind).toBe('enriched');
+  expect(calls).toBe(0);
+  if (result.kind === 'enriched')
+    expect(result.changes.every((c) => c.evidence.vulnerability.status === 'unavailable')).toBe(
+      true,
+    );
+});
+
+test('real uv marker variants keep exact separate subjects through shared advisory requests', async () => {
+  const f = await collectAdvisoryUv('https://pypi.org/simple', true);
+  expect(f.inventory.changes.length).toBeGreaterThan(1);
+  const queries: string[] = [];
+  const reader = createAdvisoryReader(advisoryTestLimits, {
+    now: () => 0,
+    fetch: async (url) => {
+      queries.push(new URL(url).searchParams.get('affects')!);
+      return Response.json([]);
+    },
+  });
+  if (reader.kind !== 'ready') throw new Error('reader');
+  const result = await enrichAdvisories(f.input, { reader });
+  reader.close();
+  if (result.kind !== 'enriched') throw new Error('enrichment');
+  expect(result.changes.every((c) => c.evidence.vulnerability.status === 'available')).toBe(true);
+  expect(result.changes.map((c) => [c.id, c.from, c.to])).toEqual(
+    f.inventory.changes.map((c) => [c.id, c.from, c.to]),
+  );
+  expect(new Set(queries).size).toBe(queries.length);
+  const packet = validateReviewPacket(
+    {
+      ...f.packet,
+      changes: result.changes,
+      sources: [
+        ...result.sources,
+        ...f.packet.sources.filter((s) => !f.input.sources.some((x) => x.id === s.id)),
+      ],
+      findings: result.findings,
+    },
+    f.expected,
+  );
+  expect(packet.ok, JSON.stringify(packet)).toBe(true);
+});
