@@ -80,12 +80,11 @@ export function advisoryLimits(value: unknown): AdvisoryLimits {
   return Object.fromEntries(keys.map((k) => [k, value[k]])) as AdvisoryLimits;
 }
 /** Inspect descriptors before cloning: callers cannot run getters during validation. */
-export function copyAdvisoryData<T>(value: T, limits: AdvisoryLimits): T {
+export function copyAdvisoryData<T>(value: T, limits: AdvisoryLimits, work = { entries: 0 }): T {
   const pending = [{ value: value as unknown, depth: 0 }];
-  let entries = 0,
-    bytes = 0;
+  let bytes = 0;
   while (pending.length) {
-    advisoryCheck(++entries <= limits.maxJsonEntries, 'budget');
+    advisoryCheck(++work.entries <= limits.maxJsonEntries, 'budget');
     const item = pending.pop()!;
     advisoryCheck(item.depth <= limits.maxJsonDepth, 'budget');
     const v = item.value;
@@ -102,7 +101,7 @@ export function copyAdvisoryData<T>(value: T, limits: AdvisoryLimits): T {
     const array = Array.isArray(v);
     advisoryCheck(array ? Object.getPrototypeOf(v) === Array.prototype : isPlainObject(v));
     const keys = Reflect.ownKeys(v);
-    advisoryCheck(keys.length <= limits.maxJsonEntries - entries + 1, 'budget');
+    advisoryCheck(keys.length <= limits.maxJsonEntries - work.entries + 1, 'budget');
     for (const key of keys) {
       if (array && key === 'length') continue;
       const d = Object.getOwnPropertyDescriptor(v, key)!;
@@ -171,10 +170,86 @@ function normalize(value: unknown, t: AdvisoryTarget): AdvisoryRecord {
       : {}),
   };
 }
+function httpReason(response: Response, data: unknown): EvidenceReason {
+  const message = isPlainObject(data) && typeof data.message === 'string' ? data.message : '';
+  const retry = response.headers.get('retry-after');
+  if (
+    response.status === 429 ||
+    (response.status === 403 &&
+      (response.headers.get('x-ratelimit-remaining') === '0' ||
+        (retry !== null && /^\d+$/u.test(retry)) ||
+        /secondary rate limit/iu.test(message)))
+  )
+    return 'rate_limit';
+  if (
+    response.status === 401 ||
+    (response.status === 403 &&
+      [
+        'Resource not accessible by integration',
+        'Resource not accessible by personal access token',
+      ].includes(message))
+  )
+    return 'permission';
+  return response.status === 404 ? 'missing' : 'unknown';
+}
+function deadlineTimer(duration: number, expire: () => void) {
+  let remaining = duration,
+    handle: ReturnType<typeof setTimeout>;
+  const schedule = () => {
+    const interval = Math.min(remaining, 2 ** 31 - 1);
+    handle = setTimeout(() => {
+      remaining -= interval;
+      if (remaining > 0) schedule();
+      else expire();
+    }, interval);
+  };
+  schedule();
+  return () => clearTimeout(handle);
+}
+function continuation(link: string | null, original: string, seen: Set<string>): string | null {
+  if (!link) return null;
+  let next: string | null = null;
+  for (const part of link.split(/,\s*(?=<)/u)) {
+    const match = /^\s*<([^>]+)>;\s*rel="(next|prev|first|last)"\s*$/u.exec(part);
+    advisoryCheck(match);
+    const supplied = new URL(match[1]),
+      expected = new URL(original);
+    advisoryCheck(
+      supplied.origin === expected.origin &&
+        supplied.pathname === expected.pathname &&
+        !supplied.username &&
+        !supplied.password &&
+        !supplied.hash,
+      'unsupported',
+    );
+    for (const [key, value] of expected.searchParams)
+      advisoryCheck(
+        supplied.searchParams.getAll(key).length === 1 && supplied.searchParams.get(key) === value,
+        'conflict',
+      );
+    advisoryCheck(
+      [...supplied.searchParams.keys()].every(
+        (k) => expected.searchParams.has(k) || k === 'after' || k === 'before',
+      ),
+    );
+    if (match[2] !== 'next') continue;
+    advisoryCheck(
+      next === null &&
+        supplied.searchParams.getAll('after').length === 1 &&
+        !supplied.searchParams.has('before'),
+    );
+    const cursor = supplied.searchParams.get('after');
+    advisoryCheck(advisoryText(cursor));
+    expected.searchParams.set('after', cursor);
+    next = expected.href;
+    advisoryCheck(!seen.has(next), 'conflict');
+  }
+  return next;
+}
 class Reader implements AdvisoryReader {
   private requests = 0;
   private bytes = 0;
-  private entries = 0;
+  private work = { entries: 0 };
   private started: number;
   private last: number;
   private busy = false;
@@ -242,10 +317,7 @@ class Reader implements AdvisoryReader {
     this.active = cancel;
     this.deps.signal?.addEventListener('abort', cancel, { once: true });
     const duration = Math.min(this.remaining(), this.limits.requestTimeoutMs);
-    // Avoid Node's overflow-to-1ms behavior for caller-supplied large deadlines.
-    const deadline = AbortSignal.timeout(Math.min(duration, 2 ** 32 - 1));
-    const timeout = () => stop('timeout');
-    deadline.addEventListener('abort', timeout, { once: true });
+    const clear = deadlineTimer(duration, () => stop('timeout'));
     let response: Response | undefined;
     try {
       response = await Promise.race([
@@ -260,31 +332,35 @@ class Reader implements AdvisoryReader {
       ]);
       advisoryCheck(!response.redirected && (!response.url || response.url === url), 'unsupported');
       advisoryCheck(response.status < 300 || response.status >= 400, 'unsupported');
-      if (
-        response.status === 429 ||
-        (response.status === 403 && response.headers.get('x-ratelimit-remaining') === '0')
-      )
+      if (httpReason(response, null) === 'rate_limit') {
         this.stopped = 'rate_limit';
-      advisoryCheck(
-        response.status === 200,
-        this.stopped ?? (response.status === 404 ? 'missing' : 'unknown'),
-      );
+        throw new AdvisoryFailure('rate_limit');
+      }
       const bytes = await this.body(response, aborted);
       let data: unknown;
       try {
         data = JSON.parse(new TextDecoder('utf-8', { fatal: true }).decode(bytes));
       } catch {
-        throw new AdvisoryFailure('malformed');
+        throw new AdvisoryFailure(
+          response.status === 200 ? 'malformed' : httpReason(response, null),
+        );
       }
-      data = copyAdvisoryData(data, {
-        ...this.limits,
-        maxJsonEntries: this.limits.maxJsonEntries - this.entries,
-      });
-      this.entries += bytes.length === 0 ? 0 : 1;
+      if (response.status !== 200) {
+        const reason = httpReason(response, data);
+        if (reason === 'rate_limit') this.stopped = reason;
+        throw new AdvisoryFailure(reason);
+      }
+      advisoryCheck(
+        /^application\/(?:json|vnd.github\+json)(?:\s*;|$)/iu.test(
+          response.headers.get('content-type') ?? '',
+        ),
+        'unsupported',
+      );
+      data = copyAdvisoryData(data, this.limits, this.work);
       this.remaining();
       return { data, link: response.headers.get('link') };
     } finally {
-      deadline.removeEventListener('abort', timeout);
+      clear();
       this.deps.signal?.removeEventListener('abort', cancel);
       this.active = null;
       controller.abort();
@@ -309,22 +385,30 @@ class Reader implements AdvisoryReader {
     try {
       t = target(value);
       url = advisoryUrl(t);
-      const page = await this.page(url);
-      advisoryCheck(Array.isArray(page.data));
-      records = page.data.map((v) => normalize(v, t));
-      advisoryCheck(records.length <= this.limits.maxFindings, 'budget');
-      advisoryCheck(
-        Buffer.byteLength(JSON.stringify(records)) <= this.limits.maxRetainedBytes,
-        'budget',
-      );
-      const complete = !page.link;
+      let next: string | null = url;
+      const seen = new Set<string>();
+      while (next) {
+        seen.add(next);
+        const page = await this.page(next);
+        advisoryCheck(Array.isArray(page.data));
+        for (const value of page.data) {
+          const record = normalize(value, t);
+          advisoryCheck(records.length < this.limits.maxFindings, 'budget');
+          advisoryCheck(
+            Buffer.byteLength(JSON.stringify([...records, record])) <= this.limits.maxRetainedBytes,
+            'budget',
+          );
+          records.push(record);
+        }
+        next = continuation(page.link, url, seen);
+      }
       return freeze({
         target: t,
         url,
         records,
-        complete,
-        status: complete ? 'available' : 'partial',
-        reasons: complete ? [] : ['truncated'],
+        complete: true,
+        status: 'available',
+        reasons: [],
       } as AdvisoryLookup);
     } catch (error) {
       return freeze({
