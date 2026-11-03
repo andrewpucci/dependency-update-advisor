@@ -153,7 +153,11 @@ function source(
       : { kind: 'unavailable' },
   };
 }
-function finding(change: PacketChange, record: AdvisoryRecord, ref: string): Finding {
+function finding(
+  change: PacketChange,
+  record: AdvisoryRecord,
+  ref: string,
+): Extract<Finding, { kind: 'vulnerability' }> {
   return {
     id: id([change.id, record.id, 'finding']),
     memberId: change.id,
@@ -168,6 +172,91 @@ function finding(change: PacketChange, record: AdvisoryRecord, ref: string): Fin
     remediation: [],
     validation: [],
   };
+}
+type SideResult = {
+  target: AdvisoryTarget | null;
+  lookup: AdvisoryLookup | null;
+  records: Map<string, PacketSource>;
+};
+async function collectSide(
+  input: AdvisoryInput,
+  change: PacketChange,
+  side: 'head' | 'base',
+  output: AdvisoryEnrichment,
+  reader: AdvisoryReader,
+): Promise<SideResult> {
+  const target = publicTarget(input, change, side);
+  const lookup = target ? await reader.read(target) : null;
+  const evidence = source(change, side, lookup);
+  output.sources.push(evidence);
+  if (side === 'head' || !change.to)
+    change.evidence.vulnerability = {
+      status: lookup?.complete ? 'available' : lookup?.records.length ? 'partial' : 'unavailable',
+      reasons: lookup?.complete ? [] : [...(lookup?.reasons ?? ['unsupported'])],
+      sourceIds: [evidence.id],
+    };
+  output.lookups.push({
+    memberId: change.id,
+    side,
+    lookup,
+    reasons: lookup?.reasons ?? ['unsupported'],
+  });
+  const records = new Map<string, PacketSource>();
+  for (const record of lookup?.records ?? []) {
+    const positive = source(change, side, lookup, record);
+    output.sources.push(positive);
+    records.set(record.id, positive);
+  }
+  return { target, lookup, records };
+}
+function samePackage(base: SideResult | null, head: SideResult | null) {
+  return (
+    !!base?.target &&
+    !!head?.target &&
+    base.target.ecosystem === head.target.ecosystem &&
+    base.target.name === head.target.name
+  );
+}
+function attachFindings(
+  change: PacketChange,
+  output: AdvisoryEnrichment,
+  base: SideResult | null,
+  head: SideResult | null,
+) {
+  for (const record of head?.lookup?.records ?? []) {
+    const claim = finding(change, record, head!.records.get(record.id)!.id);
+    if (
+      !record.withdrawn &&
+      samePackage(base, head) &&
+      base?.lookup?.complete &&
+      !base.lookup.records.some((r) => r.id === record.id)
+    ) {
+      output.findings.push({
+        ...claim,
+        rationale:
+          'The update introduces this advisory: the complete current-version check excludes it.',
+      });
+      continue;
+    }
+    output.findings.push(claim);
+  }
+  if (!samePackage(base, head) || !head?.lookup?.complete) return;
+  for (const record of base?.lookup?.records ?? []) {
+    if (record.withdrawn || head.lookup.records.some((r) => r.id === record.id)) continue;
+    const absent = source(change, 'head', head.lookup, record);
+    if (absent.provenance.kind === 'upstream') {
+      absent.provenance.url = head.lookup.url;
+      absent.provenance.excerpt =
+        'The complete proposed-version query excludes this current-version advisory.';
+    }
+    output.sources.push(absent);
+    output.findings.push({
+      ...finding(change, record, base!.records.get(record.id)!.id),
+      applicability: 'resolved_by_proposed',
+      references: [base!.records.get(record.id)!.id, absent.id],
+      rationale: 'The complete proposed-version check excludes this current-version advisory.',
+    });
+  }
 }
 function validate(input: AdvisoryInput) {
   advisoryCheck(parseReviewBinding(input.binding));
@@ -227,27 +316,13 @@ export async function enrichAdvisories(
   try {
     for (const change of output.changes) {
       if ('basis' in change) continue;
-      const side = change.to ? 'head' : 'base';
-      const target = publicTarget(input, change, side);
-      const lookup = target ? await dependencies.reader.read(target) : null;
-      const evidence = source(change, side, lookup);
-      output.sources.push(evidence);
-      change.evidence.vulnerability = {
-        status: lookup?.complete ? 'available' : lookup?.records.length ? 'partial' : 'unavailable',
-        reasons: lookup?.complete ? [] : [...(lookup?.reasons ?? ['unsupported'])],
-        sourceIds: [evidence.id],
-      };
-      output.lookups.push({
-        memberId: change.id,
-        side,
-        lookup,
-        reasons: lookup?.reasons ?? ['unsupported'],
-      });
-      for (const record of lookup?.records ?? []) {
-        const positive = source(change, side, lookup, record);
-        output.sources.push(positive);
-        if (side === 'head') output.findings.push(finding(change, record, positive.id));
-      }
+      const head = change.to
+        ? await collectSide(input, change, 'head', output, dependencies.reader)
+        : null;
+      const base = change.from
+        ? await collectSide(input, change, 'base', output, dependencies.reader)
+        : null;
+      attachFindings(change, output, base, head);
     }
     advisoryCheck(
       output.sources.length <= PACKET_LIMITS.sources &&

@@ -29,7 +29,7 @@ const advisory = {
     { package: { ecosystem: 'npm', name: 'fixture-anchor' }, vulnerable_version_range: '>=1.1.0' },
   ],
 };
-async function fixture() {
+async function fixture(both = false) {
   const f = npmScenario(1);
   const opened = await createGithubReadSession(
     {
@@ -61,39 +61,45 @@ async function fixture() {
     );
     if (inventory.kind !== 'inventory') throw new Error('expected inventory');
     const proofs: PacketSource[] = [];
-    const publicIdentities = inventory.changes.flatMap((c) => {
-      if (c.ecosystem !== 'npm' || 'basis' in c || !c.to) return [];
-      const s = c.to,
-        id = 'public:' + c.id;
-      proofs.push({
-        id,
-        kind: 'metadata',
-        ecosystems: ['npm'],
-        memberIds: [c.id],
-        status: 'available',
-        reasons: [],
-        provenance: {
-          kind: 'upstream',
-          url: `https://registry.npmjs.org/${s.name}/${s.version}`,
-          title: 'Synthetic public identity proof',
-          excerpt: 'Synthetic exact public metadata.',
-          excerptTruncated: false,
-          subjects: [{ memberId: c.id, side: 'head', value: s.version }],
-          range: { from: null, to: s.version },
-        },
-      });
-      return [
-        {
-          memberId: c.id,
-          side: 'head' as const,
-          ecosystem: 'npm' as const,
-          name: s.name,
-          version: s.version,
-          sourceIdentity: s.source.identity,
-          sourceIds: [id],
-        },
-      ];
-    });
+    const publicIdentities = inventory.changes.flatMap((c) =>
+      (['head', ...(both ? ['base' as const] : [])] as const).flatMap((side) => {
+        if (c.ecosystem !== 'npm' || 'basis' in c) return [];
+        const s = side === 'head' ? c.to : c.from;
+        if (!s) return [];
+        const id = 'public:' + c.id + ':' + side;
+        proofs.push({
+          id,
+          kind: 'metadata',
+          ecosystems: ['npm'],
+          memberIds: [c.id],
+          status: 'available',
+          reasons: [],
+          provenance: {
+            kind: 'upstream',
+            url: `https://registry.npmjs.org/${s.name}/${s.version}`,
+            title: 'Synthetic public identity proof',
+            excerpt: 'Synthetic exact public metadata.',
+            excerptTruncated: false,
+            subjects: [{ memberId: c.id, side, value: s.version }],
+            range: {
+              from: side === 'base' ? s.version : null,
+              to: side === 'head' ? s.version : null,
+            },
+          },
+        });
+        return [
+          {
+            memberId: c.id,
+            side,
+            ecosystem: 'npm' as const,
+            name: s.name,
+            version: s.version,
+            sourceIdentity: s.source.identity,
+            sourceIds: [id],
+          },
+        ];
+      }),
+    );
     const input = {
       binding: f.binding,
       changes: inventory.changes,
@@ -175,3 +181,57 @@ test('missing public identity stays unknown without disclosing a guessed package
     });
   expect(calls).toBe(0);
 });
+
+test.each([
+  ['empty', 'hit', 'affects_proposed', true],
+  ['hit', 'hit', 'affects_proposed', false],
+  ['fail', 'hit', 'affects_proposed', false],
+  ['hit', 'empty', 'resolved_by_proposed', false],
+  ['hit', 'fail', null, false],
+  ['empty', 'empty', null, false],
+] as const)(
+  'base %s / head %s retains only proved conclusions',
+  async (base, head, applicability, introduced) => {
+    const { input, f, inventory } = await fixture(true);
+    const reader = createAdvisoryReader(advisoryLimits, {
+      now: () => 0,
+      fetch: async (url) => {
+        const query = new URL(url).searchParams.get('affects')!;
+        if (!query.startsWith('fixture-anchor@')) return Response.json([]);
+        const mode = query.endsWith('@1.0.0') ? base : head;
+        return mode === 'fail'
+          ? Response.json({}, { status: 500 })
+          : Response.json(mode === 'hit' ? [advisory] : []);
+      },
+    });
+    if (reader.kind !== 'ready') throw new Error('reader');
+    const output = await enrichAdvisories(input, { reader });
+    reader.close();
+    if (output.kind !== 'enriched') throw new Error('evidence');
+    expect(output.findings).toHaveLength(applicability ? 1 : 0);
+    if (applicability) {
+      expect(output.findings[0]).toMatchObject({ applicability });
+      expect(output.findings[0].rationale.includes('introduces')).toBe(introduced);
+    }
+    expect(output.changes[0].evidence.vulnerability.status).toBe(
+      head === 'fail' ? 'unavailable' : 'available',
+    );
+    const accepted = validateReviewPacket(
+      {
+        version: 1,
+        ...f.expected,
+        changes: output.changes,
+        sources: [...output.sources, f.absent],
+        findings: output.findings,
+        relationships: [],
+        coverage: {
+          npm: inventory.coverage,
+          actions: { status: 'not_applicable', reasons: [], sourceIds: ['other'] },
+          uv: { status: 'not_applicable', reasons: [], sourceIds: ['other'] },
+        },
+      },
+      f.expected,
+    );
+    expect(accepted.ok, JSON.stringify(accepted)).toBe(true);
+  },
+);
