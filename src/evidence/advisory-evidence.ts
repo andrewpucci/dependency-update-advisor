@@ -91,7 +91,7 @@ export function source(
           title: record?.title ?? 'Exact-version reviewed advisory lookup',
           excerpt: record
             ? 'Attributable advisory evidence identifies this exact target.'
-            : 'No active matching reviewed advisory was returned by the complete exact-version query.',
+            : 'The complete exact-version query checked reviewed advisories for this target.',
           excerptTruncated: false,
           subjects: [{ memberId: change.id, side, value }],
           range: { from: side === 'base' ? value : null, to: side === 'head' ? value : null },

@@ -1,6 +1,7 @@
 import { validateReviewPacket, type PacketSource } from '../../src/schema.js';
 import { createGithubReadSession, type JsonValue } from '../../src/github-read.js';
 import { collectNpmInventory } from '../../src/evidence/npm.js';
+import { proveNpmRelationships } from '../../src/evidence/npm-graph.js';
 import type { PublicPackageIdentity, AdvisoryInput } from '../../src/evidence/advisories.js';
 import { npmScenario } from './npm-inventory.js';
 import { uvMetadataScenario } from './uv-metadata.js';
@@ -261,6 +262,119 @@ export async function collectAdvisoryActions(mapped = false) {
       context: { ok: true as const, status: 'disabled' as const, dependencies: [], reasons: [] },
     };
     return { fixture, inventory, input, absent, expected };
+  } finally {
+    opened.session.close();
+  }
+}
+
+export async function collectMixedAdvisoryInventories(children = 1) {
+  const manifest = { dependencies: { 'fixture-anchor': '^1' } };
+  const npm = (version: string) => {
+    const node = (name: string, v: string) => ({
+      version: v,
+      resolved: `https://registry.npmjs.org/${name}/-/${name}-${v}.tgz`,
+    });
+    return JSON.stringify({
+      lockfileVersion: 3,
+      packages: {
+        '': manifest,
+        'node_modules/fixture-anchor': {
+          ...node('fixture-anchor', version === '1' ? '1.0.0' : '1.1.0'),
+          dependencies: Object.fromEntries(
+            Array.from({ length: children }, (_, i) => [`fixture-child-${i}`, '*']),
+          ),
+        },
+        ...Object.fromEntries(
+          Array.from({ length: children }, (_, i) => [
+            `node_modules/fixture-child-${i}`,
+            node(`fixture-child-${i}`, `${version}.0.0`),
+          ]),
+        ),
+      },
+    });
+  };
+  const workflow = (ref: string) =>
+    `jobs:\n  review:\n    steps:\n      - uses: fixture/action@${ref}\n`;
+  const files = (head: boolean) => ({
+    'pyproject.toml': uvManifest,
+    'uv.lock': uvLock(head ? '2' : '1'),
+    'package.json': JSON.stringify(manifest),
+    'package-lock.json': npm(head ? '2' : '1'),
+    '.github/workflows/example.yml': workflow((head ? '2' : '1').repeat(40)),
+  });
+  const fixture = uvMetadataScenario('permission403', {
+    files: { base: files(false), head: files(true) },
+  });
+  const opened = await createGithubReadSession(
+    {
+      binding: fixture.input.binding,
+      limits: { ...fixture.readLimits, maxRequests: 200, maxJsonEntries: 500_000 },
+    },
+    { fetch: fixture.fetch, now: () => 0 },
+  );
+  if (opened.kind !== 'ready') throw new Error('D1');
+  try {
+    const rawNpm = await collectNpmInventory(
+      {
+        binding: fixture.input.binding,
+        roots: ['.'],
+        configRevision: fixture.input.configRevision,
+        limits: { ...advisoryTestLimits, maxFileBytes: 500_000, maxRoots: 10 },
+      },
+      { session: opened.session },
+    );
+    const npm = proveNpmRelationships({
+      binding: fixture.input.binding,
+      inventory: rawNpm,
+      limits: { maxGraphWork: 1_000_000, maxRetainedBytes: 2_000_000 },
+    });
+    const actions = await collectActionsInventory(
+      {
+        binding: fixture.input.binding,
+        limits: {
+          maxFileBytes: 100_000,
+          maxWorkflows: 20,
+          maxYamlNodes: 100_000,
+          maxYamlDepth: 32,
+          maxAliasExpansions: 100,
+          maxOccurrences: 1000,
+          maxRetainedBytes: 2_000_000,
+        },
+      },
+      { session: opened.session },
+    );
+    const metadata = await collectUvMetadata(fixture.input, { session: opened.session });
+    const uv = reconcileUvGraph({
+      binding: fixture.input.binding,
+      metadata,
+      limits: { maxGraphWork: 1_000_000, maxRetainedBytes: 2_000_000 },
+    });
+    if (npm.kind !== 'inventory' || actions.kind !== 'inventory' || uv.kind !== 'inventory')
+      throw new Error('actual collectors');
+    const changes = [...npm.changes, ...actions.changes, ...uv.changes];
+    const proofs = syntheticPublicProofs(changes);
+    const sources = [...npm.sources, ...actions.sources, ...uv.sources, ...proofs.sources];
+    const input: AdvisoryInput = {
+      binding: fixture.input.binding,
+      changes,
+      sources,
+      findings: [...npm.findings, ...uv.findings],
+      publicIdentities: proofs.publicIdentities,
+      limits: advisoryTestLimits,
+    };
+    const expected = {
+      binding: fixture.input.binding,
+      baseSha: fixture.input.binding.baseSha,
+      contextRevision: fixture.input.configRevision,
+      context: { ok: true as const, status: 'disabled' as const, dependencies: [], reasons: [] },
+    };
+    return {
+      fixture,
+      input,
+      expected,
+      coverage: { npm: npm.coverage, actions: actions.coverage, uv: uv.coverage },
+      relationships: [...npm.relationships, ...uv.relationships],
+    };
   } finally {
     opened.session.close();
   }

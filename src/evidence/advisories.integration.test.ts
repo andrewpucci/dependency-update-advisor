@@ -2,12 +2,15 @@ import { expect, test } from 'vite-plus/test';
 import { enrichAdvisories } from './advisories.js';
 import { createAdvisoryReader } from './advisory-read.js';
 import { validateReviewPacket } from '../schema.js';
+import { formDecisionUnits, evaluateUnitPolicy } from '../units.js';
+import { parseReviewConfig } from '../config.js';
 import {
   collectAdvisoryNpm,
   advisoryTestLimits,
   syntheticAdvisory,
   collectAdvisoryUv,
   collectAdvisoryActions,
+  collectMixedAdvisoryInventories,
 } from '../../tests/parity/advisories.js';
 
 test.each(['permission', 'empty', 'omission'])(
@@ -211,5 +214,107 @@ test.each([false, true])(
       f.expected,
     );
     expect(packet.ok, JSON.stringify(packet)).toBe(true);
+  },
+);
+
+test.each(['high', 'critical'])(
+  'mixed authentic collectors preserve %s blockers and unknown SHA applicability through T4/T5/C3',
+  async (severity) => {
+    const f = await collectMixedAdvisoryInventories();
+    const reader = createAdvisoryReader(advisoryTestLimits, {
+      now: () => 0,
+      fetch: async (url) => {
+        const query = new URL(url),
+          affects = query.searchParams.get('affects')!;
+        return Response.json(
+          affects === 'fixture-child-0@2.0.0'
+            ? [
+                {
+                  ...syntheticAdvisory,
+                  severity,
+                  vulnerabilities: [
+                    {
+                      package: { ecosystem: 'npm', name: 'fixture-child-0' },
+                      vulnerable_version_range: '>=2.0.0',
+                    },
+                  ],
+                },
+              ]
+            : [],
+        );
+      },
+    });
+    if (reader.kind !== 'ready') throw new Error('reader');
+    const out = await enrichAdvisories(f.input, { reader });
+    reader.close();
+    if (out.kind !== 'enriched') throw new Error('enrichment');
+    const accepted = validateReviewPacket(
+      {
+        version: 1,
+        ...f.expected,
+        changes: out.changes,
+        sources: out.sources,
+        findings: out.findings,
+        coverage: f.coverage,
+        relationships: f.relationships,
+      },
+      f.expected,
+    );
+    expect(accepted.ok, JSON.stringify(accepted)).toBe(true);
+    if (!accepted.ok) throw new Error('packet');
+    const units = formDecisionUnits(accepted.packet),
+      policy = evaluateUnitPolicy(units, parseReviewConfig('{"version":1}'), 0);
+    expect(policy.ok).toBe(true);
+    if (!policy.ok) throw new Error('policy');
+    expect(policy.defaultCeiling).toBe('do_not_merge');
+    const group = units.units.find((u) => u.kind === 'direct_group');
+    expect(group?.memberCount).toBe(2);
+    expect(group?.findings.some((f) => f.kind === 'vulnerability')).toBe(true);
+    expect(
+      out.changes.find((c) => c.ecosystem === 'actions')?.evidence.vulnerability,
+    ).toMatchObject({ status: 'unavailable', reasons: ['unsupported'] });
+    expect(out.changes.find((c) => c.ecosystem === 'uv')?.evidence.vulnerability.status).toBe(
+      'available',
+    );
+    const source = out.sources.find(
+      (s) =>
+        s.kind === 'advisory' &&
+        s.memberIds.includes(out.findings.find((f) => f.kind === 'vulnerability')!.memberId) &&
+        s.provenance.kind === 'upstream' &&
+        !s.provenance.advisoryId,
+    );
+    expect(source?.provenance.kind === 'upstream' && source.provenance.excerpt).not.toContain(
+      'No active',
+    );
+  },
+);
+
+test.each([125, 126])(
+  'combined %s npm children respect the unchanged 128-change T4 ceiling',
+  async (count) => {
+    const f = await collectMixedAdvisoryInventories(count);
+    expect(f.input.changes).toHaveLength(count + 3);
+    const reader = createAdvisoryReader(advisoryTestLimits, {
+      now: () => 0,
+      fetch: async () => Response.json([]),
+    });
+    if (reader.kind !== 'ready') throw new Error('reader');
+    const result = await enrichAdvisories(f.input, { reader });
+    reader.close();
+    expect(result.kind).toBe(count === 125 ? 'enriched' : 'invalid');
+    const changes = result.kind === 'enriched' ? result.changes : f.input.changes;
+    const packet = validateReviewPacket(
+      {
+        version: 1,
+        ...f.expected,
+        changes,
+        sources: result.kind === 'enriched' ? result.sources : f.input.sources,
+        findings: result.kind === 'enriched' ? result.findings : f.input.findings,
+        coverage: f.coverage,
+        relationships: f.relationships,
+      },
+      f.expected,
+    );
+    expect(packet.ok).toBe(count === 125);
   },
 );
