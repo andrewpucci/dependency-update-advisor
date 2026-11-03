@@ -1,4 +1,6 @@
 import { createHash } from 'node:crypto';
+import { isDeepStrictEqual } from 'node:util';
+import type { GithubComparison } from '../github-read.js';
 import { parseReviewBinding, type ReviewBinding } from '../event.js';
 import {
   PACKET_LIMITS,
@@ -7,13 +9,14 @@ import {
   type EvidenceReason,
 } from '../schema.js';
 import type { Finding } from '../policy.js';
-import { freeze } from './common.js';
+import { freeze, isPlainObject } from './common.js';
 import {
   advisoryCheck,
   advisoryLimits,
   advisoryText,
   copyAdvisoryData,
   AdvisoryFailure,
+  comparisonAdvisory,
   type AdvisoryLimits,
   type AdvisoryReader,
   type AdvisoryTarget,
@@ -46,6 +49,7 @@ export type AdvisoryInput = Readonly<{
   findings: readonly Finding[];
   publicIdentities: readonly PublicPackageIdentity[];
   limits: AdvisoryLimits;
+  comparisons?: readonly GithubComparison[];
 }>;
 export type MemberAdvisoryLookup = Readonly<{
   memberId: string;
@@ -143,12 +147,14 @@ function source(
           url: record?.url ?? lookup!.url,
           title: record?.title ?? 'Exact-version reviewed advisory lookup',
           excerpt: record
-            ? 'The exact-version query returned this advisory.'
+            ? 'Attributable advisory evidence identifies this exact target.'
             : 'No active matching reviewed advisory was returned by the complete exact-version query.',
           excerptTruncated: false,
           subjects: [{ memberId: change.id, side, value }],
           range: { from: side === 'base' ? value : null, to: side === 'head' ? value : null },
-          ...(record ? { advisoryId: record.id, affectedRange: record.range } : {}),
+          ...(record
+            ? { advisoryId: record.id, ...(record.range ? { affectedRange: record.range } : {}) }
+            : {}),
         }
       : { kind: 'unavailable' },
   };
@@ -164,7 +170,7 @@ function finding(
     kind: 'vulnerability',
     applicability: record.withdrawn ? 'withdrawn' : 'affects_proposed',
     ...(record.severity ? { severity: record.severity } : {}),
-    affectedRange: record.range,
+    ...(record.range ? { affectedRange: record.range } : {}),
     references: [ref],
     rationale: record.withdrawn
       ? 'The cited advisory was withdrawn.'
@@ -178,6 +184,77 @@ type SideResult = {
   lookup: AdvisoryLookup | null;
   records: Map<string, PacketSource>;
 };
+function comparisonManifest(change: PacketChange, side: 'head' | 'base', path: unknown) {
+  const instance = side === 'head' ? change.to : change.from;
+  if (!instance || !advisoryText(path)) return false;
+  if ('workflow' in instance) return path === instance.workflow;
+  const root = instance.root === '.' ? '' : instance.root + '/';
+  return (
+    change.ecosystem === 'npm'
+      ? ['package.json', 'package-lock.json']
+      : ['pyproject.toml', 'uv.lock']
+  ).some((p) => path === root + p);
+}
+function comparisonRecords(
+  input: AdvisoryInput,
+  change: PacketChange,
+  side: 'head' | 'base',
+  target: AdvisoryTarget,
+) {
+  const records: AdvisoryRecord[] = [],
+    reasons: EvidenceReason[] = [];
+  for (const comparison of input.comparisons ?? []) {
+    for (const row of comparison.records) {
+      if (
+        row.name !== target.name ||
+        row.version !== target.version ||
+        row.ecosystem !== target.ecosystem ||
+        row.change_type !== (side === 'head' ? 'added' : 'removed') ||
+        !comparisonManifest(change, side, row.manifest)
+      )
+        continue;
+      const matches = input.changes.filter((c) => {
+        const s = side === 'head' ? c.to : c.from;
+        return (
+          c.ecosystem === change.ecosystem &&
+          s &&
+          ('name' in s ? s.name : s.action) === target.name &&
+          ('version' in s ? s.version : 'ref' in s ? s.ref : '') === target.version &&
+          comparisonManifest(c, side, row.manifest)
+        );
+      });
+      if (matches.length !== 1) {
+        reasons.push('conflict');
+        continue;
+      }
+      try {
+        advisoryCheck(Array.isArray(row.vulnerabilities));
+        for (const value of row.vulnerabilities) records.push(comparisonAdvisory(value));
+      } catch (error) {
+        reasons.push(error instanceof AdvisoryFailure ? error.reason : 'malformed');
+      }
+    }
+  }
+  return { records, reasons };
+}
+function withComparison(
+  input: AdvisoryInput,
+  change: PacketChange,
+  side: 'head' | 'base',
+  target: AdvisoryTarget,
+  lookup: AdvisoryLookup,
+): AdvisoryLookup {
+  const compared = comparisonRecords(input, change, side, target);
+  const records = [...lookup.records, ...compared.records];
+  const reasons = [...new Set([...lookup.reasons, ...compared.reasons])];
+  return {
+    ...lookup,
+    records,
+    reasons,
+    complete: lookup.complete && compared.reasons.length === 0,
+    status: reasons.length ? (records.length ? 'partial' : 'unavailable') : lookup.status,
+  };
+}
 async function collectSide(
   input: AdvisoryInput,
   change: PacketChange,
@@ -186,7 +263,9 @@ async function collectSide(
   reader: AdvisoryReader,
 ): Promise<SideResult> {
   const target = publicTarget(input, change, side);
-  const lookup = target ? await reader.read(target) : null;
+  const lookup = target
+    ? withComparison(input, change, side, target, await reader.read(target))
+    : null;
   const evidence = source(change, side, lookup);
   output.sources.push(evidence);
   if (side === 'head' || !change.to)
@@ -269,6 +348,21 @@ function validate(input: AdvisoryInput) {
   );
   advisoryCheck(new Set(input.changes.map((c) => c.id)).size === input.changes.length);
   advisoryCheck(new Set(input.sources.map((s) => s.id)).size === input.sources.length);
+  advisoryCheck(
+    input.comparisons === undefined ||
+      (Array.isArray(input.comparisons) && input.comparisons.length <= PACKET_LIMITS.listEntries),
+  );
+  for (const c of input.comparisons ?? []) {
+    const b = input.binding;
+    advisoryCheck(
+      isDeepStrictEqual(c.repository, b.repository) &&
+        isDeepStrictEqual(c.headRepository, b.headRepository) &&
+        c.baseSha === b.baseSha &&
+        c.headSha === b.headSha &&
+        c.mergeBaseSha === b.mergeBaseSha,
+    );
+    advisoryCheck(Array.isArray(c.records) && c.records.every(isPlainObject));
+  }
   for (const c of input.changes) {
     advisoryCheck(advisoryText(c.id) && ['npm', 'uv', 'actions'].includes(c.ecosystem));
     for (const [side, instance] of [

@@ -204,6 +204,7 @@ test.each([
           : Response.json(mode === 'hit' ? [advisory] : []);
       },
     });
+
     if (reader.kind !== 'ready') throw new Error('reader');
     const output = await enrichAdvisories(input, { reader });
     reader.close();
@@ -235,3 +236,46 @@ test.each([
     expect(accepted.ok, JSON.stringify(accepted)).toBe(true);
   },
 );
+
+test('bounded comparison positives survive a failed global lookup with an explicit gap', async () => {
+  const { input, f } = await fixture();
+  const reader = createAdvisoryReader(advisoryLimits, {
+    now: () => 0,
+    fetch: async () => Response.json({}, { status: 500 }),
+  });
+  if (reader.kind !== 'ready') throw new Error('reader');
+  const comparisons = [
+    {
+      kind: 'available' as const,
+      repository: f.binding.repository,
+      headRepository: f.binding.headRepository,
+      baseSha: f.binding.baseSha,
+      headSha: f.binding.headSha,
+      mergeBaseSha: f.binding.mergeBaseSha,
+      reasons: [],
+      records: [
+        {
+          manifest: 'package-lock.json',
+          ecosystem: 'npm',
+          name: 'fixture-anchor',
+          version: '1.1.0',
+          change_type: 'added',
+          vulnerabilities: [
+            {
+              severity: 'high',
+              advisory_ghsa_id: advisory.ghsa_id,
+              advisory_url: advisory.html_url,
+              advisory_summary: advisory.summary,
+            },
+          ],
+        },
+      ],
+    },
+  ];
+  const output = await enrichAdvisories({ ...input, comparisons }, { reader });
+  reader.close();
+  if (output.kind !== 'enriched') throw new Error('evidence');
+  expect(output.findings).toHaveLength(1);
+  expect(output.findings[0]).toMatchObject({ applicability: 'affects_proposed', severity: 'high' });
+  expect(output.changes[0].evidence.vulnerability.status).toBe('partial');
+});

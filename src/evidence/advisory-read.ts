@@ -23,7 +23,7 @@ export type AdvisoryRecord = Readonly<{
   id: string;
   url: string;
   title: string;
-  range: string;
+  range?: string;
   withdrawn: boolean;
   severity?: 'critical' | 'high' | 'moderate' | 'low';
 }>;
@@ -165,6 +165,32 @@ function normalize(value: unknown, t: AdvisoryTarget): AdvisoryRecord {
     title: value.summary,
     range: matches[0].vulnerable_version_range,
     withdrawn: value.withdrawn_at !== null,
+    ...(['critical', 'high', 'moderate', 'low'].includes(String(severity))
+      ? { severity: severity as AdvisoryRecord['severity'] }
+      : {}),
+  };
+}
+export function comparisonAdvisory(value: unknown): AdvisoryRecord {
+  advisoryCheck(isPlainObject(value));
+  const identity = value.advisory_ghsa_id;
+  advisoryCheck(
+    typeof identity === 'string' && /^GHSA-[a-z\d]{4}-[a-z\d]{4}-[a-z\d]{4}$/u.test(identity),
+  );
+  advisoryCheck(
+    value.advisory_url === `https://github.com/advisories/${identity}` &&
+      advisoryText(value.advisory_summary),
+  );
+  const severity = value.severity === 'medium' ? 'moderate' : value.severity;
+  advisoryCheck(
+    severity === undefined ||
+      severity === null ||
+      ['unknown', 'critical', 'high', 'moderate', 'low'].includes(String(severity)),
+  );
+  return {
+    id: identity,
+    url: String(value.advisory_url),
+    title: value.advisory_summary,
+    withdrawn: false,
     ...(['critical', 'high', 'moderate', 'low'].includes(String(severity))
       ? { severity: severity as AdvisoryRecord['severity'] }
       : {}),
