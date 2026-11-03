@@ -1,8 +1,12 @@
-import type { PacketChange, PacketSource } from '../../src/schema.js';
+import { validateReviewPacket, type PacketSource } from '../../src/schema.js';
 import { createGithubReadSession, type JsonValue } from '../../src/github-read.js';
 import { collectNpmInventory } from '../../src/evidence/npm.js';
 import type { PublicPackageIdentity, AdvisoryInput } from '../../src/evidence/advisories.js';
 import { npmScenario } from './npm-inventory.js';
+import { uvMetadataScenario } from './uv-metadata.js';
+import { uvManifest, uvLock, uvPacket } from './uv-graph.js';
+import { collectUvMetadata } from '../../src/evidence/uv.js';
+import { reconcileUvGraph } from '../../src/evidence/uv-graph.js';
 
 export const advisoryTestLimits = {
   maxRequests: 1000,
@@ -29,7 +33,7 @@ export const syntheticAdvisory = {
 };
 
 /** Invented proof data exercises S1's trusted producer boundary; no public identity was fetched. */
-export function syntheticPublicProofs(changes: readonly PacketChange[]) {
+export function syntheticPublicProofs(changes: AdvisoryInput['changes']) {
   const sources: PacketSource[] = [],
     publicIdentities: PublicPackageIdentity[] = [];
   for (const c of changes)
@@ -117,6 +121,46 @@ export async function collectAdvisoryNpm(
       limits: advisoryTestLimits,
     };
     return { fixture, inventory, comparison, input };
+  } finally {
+    opened.session.close();
+  }
+}
+
+export async function collectAdvisoryUv(registry = 'https://pypi.org/simple') {
+  const replace = (version: string) =>
+    uvLock(version).replaceAll('https://pypi.org/simple', registry);
+  const fixture = uvMetadataScenario('permission403', {
+    files: {
+      base: { 'pyproject.toml': uvManifest, 'uv.lock': replace('1.0') },
+      head: { 'pyproject.toml': uvManifest, 'uv.lock': replace('2.0rc1') },
+    },
+  });
+  const opened = await createGithubReadSession(
+    { binding: fixture.input.binding, limits: fixture.readLimits },
+    { fetch: fixture.fetch, now: () => 0 },
+  );
+  if (opened.kind !== 'ready') throw new Error('D1');
+  try {
+    const metadata = await collectUvMetadata(fixture.input, { session: opened.session });
+    const inventory = reconcileUvGraph({
+      binding: fixture.input.binding,
+      metadata,
+      limits: { maxGraphWork: 1_000_000, maxRetainedBytes: 2_000_000 },
+    });
+    if (inventory.kind !== 'inventory') throw new Error('U2');
+    const proofs = syntheticPublicProofs(inventory.changes);
+    const input: AdvisoryInput = {
+      binding: inventory.binding,
+      changes: inventory.changes,
+      sources: [...inventory.sources, ...proofs.sources],
+      findings: inventory.findings,
+      publicIdentities: proofs.publicIdentities,
+      limits: advisoryTestLimits,
+    };
+    const scaffold = uvPacket(inventory);
+    const validated = validateReviewPacket(scaffold.packet, scaffold.expected);
+    if (!validated.ok) throw new Error('valid uv scaffold');
+    return { fixture, inventory, input, expected: scaffold.expected, packet: validated.packet };
   } finally {
     opened.session.close();
   }

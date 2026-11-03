@@ -42,10 +42,11 @@ export type ActionVersionMapping = Readonly<{
   version: string;
   sourceIds: readonly string[];
 }>;
+type ReadonlyData<T> = T extends object ? { readonly [K in keyof T]: ReadonlyData<T[K]> } : T;
 export type AdvisoryInput = Readonly<{
   binding: ReviewBinding;
-  changes: readonly PacketChange[];
-  sources: readonly PacketSource[];
+  changes: readonly ReadonlyData<PacketChange>[];
+  sources: readonly ReadonlyData<PacketSource>[];
   findings: readonly Finding[];
   publicIdentities: readonly PublicPackageIdentity[];
   limits: AdvisoryLimits;
@@ -80,13 +81,16 @@ function publicTarget(
   if (
     !instance ||
     !('source' in instance) ||
-    change.ecosystem !== 'npm' ||
+    change.ecosystem === 'actions' ||
     instance.source.kind !== 'registry'
   )
     return null;
   const origin = new URL(instance.source.identity);
   if (
-    origin.origin !== 'https://registry.npmjs.org' ||
+    (change.ecosystem === 'npm'
+      ? origin.origin !== 'https://registry.npmjs.org'
+      : origin.origin !== 'https://pypi.org' ||
+        !['/simple', '/simple/'].includes(origin.pathname)) ||
     origin.username ||
     origin.password ||
     origin.hash ||
@@ -121,7 +125,11 @@ function publicTarget(
     );
   });
   return valid && advisoryText(proof.name) && advisoryText(proof.version)
-    ? { ecosystem: 'npm', name: proof.name, version: proof.version }
+    ? {
+        ecosystem: change.ecosystem === 'uv' ? 'pip' : 'npm',
+        name: proof.name,
+        version: proof.version,
+      }
     : null;
 }
 function source(
@@ -184,7 +192,11 @@ type SideResult = {
   lookup: AdvisoryLookup | null;
   records: Map<string, PacketSource>;
 };
-function comparisonManifest(change: PacketChange, side: 'head' | 'base', path: unknown) {
+function comparisonManifest(
+  change: ReadonlyData<PacketChange>,
+  side: 'head' | 'base',
+  path: unknown,
+) {
   const instance = side === 'head' ? change.to : change.from;
   if (!instance || !advisoryText(path)) return false;
   if ('workflow' in instance) return path === instance.workflow;
@@ -403,7 +415,7 @@ export async function enrichAdvisories(
     kind: 'enriched',
     binding: input.binding,
     changes: structuredClone(input.changes) as PacketChange[],
-    sources: [...input.sources],
+    sources: structuredClone(input.sources) as PacketSource[],
     findings: [...input.findings],
     lookups: [],
   };
