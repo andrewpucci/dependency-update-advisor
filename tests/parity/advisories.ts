@@ -82,8 +82,9 @@ export async function collectAdvisoryNpm(
   mode = 'empty',
   additions = 1,
   rows?: Readonly<Record<string, JsonValue>>[],
+  options: { reverse?: boolean; declaration?: boolean } = {},
 ) {
-  const fixture = npmScenario(additions, false, mode);
+  const fixture = npmScenario(additions, options.declaration ?? false, mode);
   const opened = await createGithubReadSession(
     {
       binding: fixture.binding,
@@ -95,10 +96,17 @@ export async function collectAdvisoryNpm(
     },
     {
       now: () => 0,
-      fetch: async (url, init) =>
-        rows && url.includes('/dependency-graph/compare/')
-          ? Response.json(rows)
-          : fixture.fetch(url, init),
+      fetch: async (url, init) => {
+        if (rows && url.includes('/dependency-graph/compare/')) return Response.json(rows);
+        if (options.reverse && url.includes('/git/commits/')) {
+          const sha = url.split('/').at(-1)!;
+          const opposite =
+            sha === fixture.binding.baseSha ? fixture.binding.headSha : fixture.binding.baseSha;
+          const response = await fixture.fetch(url.replace(sha, opposite), init);
+          return Response.json({ ...(await response.json()), sha });
+        }
+        return fixture.fetch(url, init);
+      },
     },
   );
   if (opened.kind !== 'ready') throw new Error('expected actual D1 session');

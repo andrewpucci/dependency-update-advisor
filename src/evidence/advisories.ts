@@ -231,6 +231,15 @@ function comparisonRecords(
         continue;
       }
       try {
+        if (row.package_url !== undefined) {
+          advisoryCheck(advisoryText(row.package_url), 'conflict');
+          const purlEcosystem = { npm: 'npm', pip: 'pypi', actions: 'github' }[target.ecosystem];
+          advisoryCheck(
+            decodeURIComponent(row.package_url) ===
+              `pkg:${purlEcosystem}/${target.name}@${target.version}`,
+            'conflict',
+          );
+        }
         advisoryCheck(Array.isArray(row.vulnerabilities));
         for (const value of row.vulnerabilities) records.push(comparisonAdvisory(value));
       } catch (error) {
@@ -248,6 +257,13 @@ function withComparison(
   lookup: AdvisoryLookup,
 ): AdvisoryLookup {
   const compared = comparisonRecords(input, change, side, target);
+  if (
+    lookup.complete &&
+    compared.records.some(
+      (r) => !r.withdrawn && !lookup.records.some((other) => other.id === r.id && !other.withdrawn),
+    )
+  )
+    compared.reasons.push('conflict');
   const reconciled = reconcileRecords([...lookup.records, ...compared.records]);
   const records = reconciled.records;
   const reasons = [...new Set([...lookup.reasons, ...compared.reasons, ...reconciled.reasons])];

@@ -318,3 +318,67 @@ test.each([125, 126])(
     expect(packet.ok).toBe(count === 125);
   },
 );
+
+test.each([false, true])(
+  'comparison/global disagreement or wrong purl cannot yield complete coverage: wrong purl=%s',
+  async (wrongPurl) => {
+    const f = await collectAdvisoryNpm('empty', 1, [
+      {
+        manifest: 'package-lock.json',
+        change_type: 'added',
+        ecosystem: 'npm',
+        name: 'fixture-anchor',
+        version: '1.1.0',
+        package_url: wrongPurl ? 'pkg:npm/unrelated@1.1.0' : 'pkg:npm/fixture-anchor@1.1.0',
+        vulnerabilities: [
+          {
+            severity: 'high',
+            advisory_ghsa_id: syntheticAdvisory.ghsa_id,
+            advisory_url: syntheticAdvisory.html_url,
+            advisory_summary: syntheticAdvisory.summary,
+          },
+        ],
+      },
+    ]);
+    const reader = createAdvisoryReader(advisoryTestLimits, {
+      now: () => 0,
+      fetch: async () => Response.json([]),
+    });
+    if (reader.kind !== 'ready') throw new Error('reader');
+    const out = await enrichAdvisories(f.input, { reader });
+    reader.close();
+    if (out.kind !== 'enriched') throw new Error('enrichment');
+    expect(out.changes[0].evidence.vulnerability.reasons).toContain('conflict');
+    expect(out.findings).toHaveLength(wrongPurl ? 0 : 1);
+  },
+);
+
+test('actual N1 removals, declarations, and unchanged versions never create a missing-side claim', async () => {
+  for (const options of [{ reverse: true }, { declaration: true }, {}]) {
+    const f = await collectAdvisoryNpm('empty', 'reverse' in options ? 1 : 0, undefined, options);
+    const requests: string[] = [];
+    const reader = createAdvisoryReader(advisoryTestLimits, {
+      now: () => 0,
+      fetch: async (url) => {
+        requests.push(url);
+        return Response.json([]);
+      },
+    });
+    if (reader.kind !== 'ready') throw new Error('reader');
+    const out = await enrichAdvisories(f.input, { reader });
+    reader.close();
+    if (out.kind !== 'enriched') throw new Error('enrichment');
+    expect(out.findings).toEqual([]);
+    if ('reverse' in options) {
+      const removed = out.changes.find((c) => c.kind === 'removal');
+      expect(removed).toBeDefined();
+      expect(out.lookups.filter((l) => l.memberId === removed!.id).map((l) => l.side)).toEqual([
+        'base',
+      ]);
+    } else {
+      expect(requests).toEqual([]);
+      expect(out.changes).toHaveLength('declaration' in options ? 1 : 0);
+      if ('declaration' in options) expect(out.changes[0].evidence).toEqual({});
+    }
+  }
+});

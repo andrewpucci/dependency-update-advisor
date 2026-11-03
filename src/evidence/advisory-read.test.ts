@@ -215,3 +215,44 @@ test.each([
   expect((await r.read(target)).complete).toBe(false);
   r.close();
 });
+
+test.each([
+  { type: 'malware' },
+  { type: 'unreviewed' },
+  { severity: 'urgent' },
+  { html_url: 'https://user:password@github.com/advisories/GHSA-aaaa-bbbb-cccc' },
+  {
+    vulnerabilities: [
+      { package: { ecosystem: 'pip', name: target.name }, vulnerable_version_range: '*' },
+    ],
+  },
+  { vulnerabilities: [...record.vulnerabilities, ...record.vulnerabilities] },
+])('unexpected advisory shape %j stays unknown', async (extra) => {
+  const r = reader(async () => Response.json([{ ...record, ...extra }]));
+  const result = await r.read(target);
+  r.close();
+  expect(result.complete).toBe(false);
+  expect(result.records).toEqual([]);
+});
+test.each([
+  ['medium', 'moderate'],
+  ['unknown', undefined],
+  [null, undefined],
+] as const)('normalizes %s without inventing a score', async (severity, expected) => {
+  const r = reader(async () =>
+    Response.json([{ ...record, severity, withdrawn_at: '2026-01-01T00:00:00Z' }]),
+  );
+  const result = await r.read(target);
+  r.close();
+  expect(result.complete).toBe(true);
+  expect(result.records[0]).toMatchObject({ withdrawn: true });
+  expect(result.records[0].severity).toBe(expected);
+});
+test('a malformed later record preserves an independently validated positive prefix', async () => {
+  const r = reader(async () => Response.json([record, { ...record, severity: 'urgent' }]));
+  const result = await r.read(target);
+  r.close();
+  expect(result.complete).toBe(false);
+  expect(result.records).toHaveLength(1);
+  expect(result.status).toBe('partial');
+});
