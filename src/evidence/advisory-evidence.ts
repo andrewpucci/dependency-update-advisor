@@ -67,15 +67,39 @@ function addFinding(
 }
 const id = (value: unknown) =>
   'advisory:' + createHash('sha256').update(JSON.stringify(value)).digest('hex');
+function subjectValue(change: PacketChange, side: 'head' | 'base') {
+  const instance = side === 'head' ? change.to : change.from;
+  advisoryCheck(instance);
+  return 'ref' in instance ? instance.ref : 'version' in instance ? instance.version : '';
+}
+function provenance(
+  change: PacketChange,
+  side: 'head' | 'base',
+  lookup: AdvisoryLookup,
+  record?: AdvisoryRecord,
+): Extract<PacketSource['provenance'], { kind: 'upstream' }> {
+  const value = subjectValue(change, side);
+  return {
+    kind: 'upstream',
+    url: record?.url ?? lookup.url,
+    title: record?.title ?? 'Exact-version reviewed advisory lookup',
+    excerpt: record
+      ? 'Attributable advisory evidence identifies this exact target.'
+      : 'The complete exact-version query checked reviewed advisories for this target.',
+    excerptTruncated: false,
+    subjects: [{ memberId: change.id, side, value }],
+    range: { from: side === 'base' ? value : null, to: side === 'head' ? value : null },
+    ...(record
+      ? { advisoryId: record.id, ...(record.range ? { affectedRange: record.range } : {}) }
+      : {}),
+  };
+}
 export function source(
   change: PacketChange,
   side: 'head' | 'base',
   lookup: AdvisoryLookup | null,
   record?: AdvisoryRecord,
 ): PacketSource {
-  const instance = side === 'head' ? change.to : change.from;
-  advisoryCheck(instance);
-  const value = 'ref' in instance ? instance.ref : 'version' in instance ? instance.version : '';
   const success = !!lookup && (record || lookup.complete);
   return {
     id: id([change.id, side, record?.id ?? 'lookup']),
@@ -84,22 +108,7 @@ export function source(
     memberIds: [change.id],
     status: success ? 'available' : 'unavailable',
     reasons: success ? [] : [...(lookup?.reasons ?? ['unsupported'])],
-    provenance: success
-      ? {
-          kind: 'upstream',
-          url: record?.url ?? lookup!.url,
-          title: record?.title ?? 'Exact-version reviewed advisory lookup',
-          excerpt: record
-            ? 'Attributable advisory evidence identifies this exact target.'
-            : 'The complete exact-version query checked reviewed advisories for this target.',
-          excerptTruncated: false,
-          subjects: [{ memberId: change.id, side, value }],
-          range: { from: side === 'base' ? value : null, to: side === 'head' ? value : null },
-          ...(record
-            ? { advisoryId: record.id, ...(record.range ? { affectedRange: record.range } : {}) }
-            : {}),
-        }
-      : { kind: 'unavailable' },
+    provenance: success ? provenance(change, side, lookup!, record) : { kind: 'unavailable' },
   };
 }
 function finding(

@@ -198,6 +198,54 @@ function comparisonManifest(
       : ['pyproject.toml', 'uv.lock']
   ).some((p) => path === root + p);
 }
+function rowApplies(
+  row: GithubComparison['records'][number],
+  change: PacketChange,
+  side: 'head' | 'base',
+  target: AdvisoryTarget,
+) {
+  return (
+    row.name === target.name &&
+    row.version === target.version &&
+    row.ecosystem === target.ecosystem &&
+    row.change_type === (side === 'head' ? 'added' : 'removed') &&
+    comparisonManifest(change, side, row.manifest)
+  );
+}
+function matchingChanges(
+  input: AdvisoryInput,
+  change: PacketChange,
+  side: 'head' | 'base',
+  target: AdvisoryTarget,
+  manifest: unknown,
+) {
+  return input.changes.filter((c) => {
+    const s = side === 'head' ? c.to : c.from;
+    return (
+      c.ecosystem === change.ecosystem &&
+      s &&
+      ('name' in s ? s.name : s.action) === target.name &&
+      ('version' in s ? s.version : 'ref' in s ? s.ref : '') === target.version &&
+      comparisonManifest(c, side, manifest)
+    );
+  });
+}
+function appendComparisonRecords(
+  row: GithubComparison['records'][number],
+  target: AdvisoryTarget,
+  records: AdvisoryRecord[],
+) {
+  if (row.package_url !== undefined) {
+    advisoryCheck(advisoryText(row.package_url), 'conflict');
+    const ecosystem = { npm: 'npm', pip: 'pypi', actions: 'github' }[target.ecosystem];
+    advisoryCheck(
+      decodeURIComponent(row.package_url) === `pkg:${ecosystem}/${target.name}@${target.version}`,
+      'conflict',
+    );
+  }
+  advisoryCheck(Array.isArray(row.vulnerabilities));
+  for (const value of row.vulnerabilities) records.push(comparisonAdvisory(value));
+}
 function comparisonRecords(
   input: AdvisoryInput,
   change: PacketChange,
@@ -206,45 +254,17 @@ function comparisonRecords(
 ) {
   const records: AdvisoryRecord[] = [],
     reasons: EvidenceReason[] = [];
-  for (const comparison of input.comparisons ?? []) {
-    for (const row of comparison.records) {
-      if (
-        row.name !== target.name ||
-        row.version !== target.version ||
-        row.ecosystem !== target.ecosystem ||
-        row.change_type !== (side === 'head' ? 'added' : 'removed') ||
-        !comparisonManifest(change, side, row.manifest)
-      )
-        continue;
-      const matches = input.changes.filter((c) => {
-        const s = side === 'head' ? c.to : c.from;
-        return (
-          c.ecosystem === change.ecosystem &&
-          s &&
-          ('name' in s ? s.name : s.action) === target.name &&
-          ('version' in s ? s.version : 'ref' in s ? s.ref : '') === target.version &&
-          comparisonManifest(c, side, row.manifest)
-        );
-      });
-      if (matches.length !== 1) {
-        reasons.push('conflict');
-        continue;
-      }
-      try {
-        if (row.package_url !== undefined) {
-          advisoryCheck(advisoryText(row.package_url), 'conflict');
-          const purlEcosystem = { npm: 'npm', pip: 'pypi', actions: 'github' }[target.ecosystem];
-          advisoryCheck(
-            decodeURIComponent(row.package_url) ===
-              `pkg:${purlEcosystem}/${target.name}@${target.version}`,
-            'conflict',
-          );
-        }
-        advisoryCheck(Array.isArray(row.vulnerabilities));
-        for (const value of row.vulnerabilities) records.push(comparisonAdvisory(value));
-      } catch (error) {
-        reasons.push(error instanceof AdvisoryFailure ? error.reason : 'malformed');
-      }
+  const rows = (input.comparisons ?? []).flatMap((c) => c.records);
+  for (const row of rows) {
+    if (!rowApplies(row, change, side, target)) continue;
+    if (matchingChanges(input, change, side, target, row.manifest).length !== 1) {
+      reasons.push('conflict');
+      continue;
+    }
+    try {
+      appendComparisonRecords(row, target, records);
+    } catch (error) {
+      reasons.push(error instanceof AdvisoryFailure ? error.reason : 'malformed');
     }
   }
   return { records, reasons };
@@ -352,52 +372,61 @@ function instanceKey(instance: NonNullable<ReadonlyData<PacketChange>['from']>) 
     instance.groups,
   ]);
 }
+function validateChangeShape(c: ReadonlyData<PacketChange>) {
+  advisoryCheck(
+    advisoryText(c.id) &&
+      c.id.length <= PACKET_LIMITS.idCodeUnits &&
+      ['npm', 'uv', 'actions'].includes(c.ecosystem),
+  );
+  advisoryCheck(['direct', 'transitive', 'unknown'].includes(c.role) && isPlainObject(c.evidence));
+  advisoryCheck(
+    (c.from === null || isPlainObject(c.from)) && (c.to === null || isPlainObject(c.to)),
+  );
+  advisoryCheck(
+    c.kind === 'update'
+      ? c.from && c.to
+      : c.kind === 'addition'
+        ? c.from === null && c.to
+        : c.kind === 'removal' && c.from && c.to === null,
+  );
+}
+function validateInstance(
+  input: AdvisoryInput,
+  c: ReadonlyData<PacketChange>,
+  side: 'base' | 'head',
+  instance: NonNullable<ReadonlyData<PacketChange>['from']>,
+) {
+  const source = input.sources.find((s) => s.id === instance.sourceId),
+    p = source?.provenance;
+  advisoryCheck(
+    source?.kind === 'file' &&
+      source.status === 'available' &&
+      source.memberIds.includes(c.id) &&
+      source.ecosystems.includes(c.ecosystem),
+  );
+  advisoryCheck(
+    p?.kind === 'file' &&
+      p.revision === side &&
+      p.sha === (side === 'base' ? input.binding.baseSha : input.binding.headSha) &&
+      isEvidencePath(p.path),
+  );
+  advisoryCheck(
+    isDeepStrictEqual(
+      p.repository,
+      side === 'base' ? input.binding.repository : input.binding.headRepository,
+    ),
+  );
+}
 function validateChanges(input: AdvisoryInput) {
   const instances = new Set<string>();
   for (const c of input.changes) {
-    advisoryCheck(
-      advisoryText(c.id) &&
-        c.id.length <= PACKET_LIMITS.idCodeUnits &&
-        ['npm', 'uv', 'actions'].includes(c.ecosystem),
-    );
-    advisoryCheck(
-      ['direct', 'transitive', 'unknown'].includes(c.role) && isPlainObject(c.evidence),
-    );
-    advisoryCheck(
-      (c.from === null || isPlainObject(c.from)) && (c.to === null || isPlainObject(c.to)),
-    );
-    advisoryCheck(
-      c.kind === 'update'
-        ? c.from && c.to
-        : c.kind === 'addition'
-          ? c.from === null && c.to
-          : c.kind === 'removal' && c.from && c.to === null,
-    );
+    validateChangeShape(c);
     for (const [side, instance] of [
       ['base', c.from],
       ['head', c.to],
     ] as const) {
       if (!instance) continue;
-      const s = input.sources.find((s) => s.id === instance.sourceId),
-        p = s?.provenance;
-      advisoryCheck(
-        s?.kind === 'file' &&
-          s.status === 'available' &&
-          s.memberIds.includes(c.id) &&
-          s.ecosystems.includes(c.ecosystem),
-      );
-      advisoryCheck(
-        p?.kind === 'file' &&
-          p.revision === side &&
-          p.sha === (side === 'base' ? input.binding.baseSha : input.binding.headSha) &&
-          isEvidencePath(p.path),
-      );
-      advisoryCheck(
-        isDeepStrictEqual(
-          p.repository,
-          side === 'base' ? input.binding.repository : input.binding.headRepository,
-        ),
-      );
+      validateInstance(input, c, side, instance);
       const key = JSON.stringify([c.ecosystem, side, instanceKey(instance)]);
       advisoryCheck(!instances.has(key));
       instances.add(key);
@@ -496,21 +525,70 @@ function validate(input: AdvisoryInput) {
   validateChanges(input);
   validateProofs(input);
 }
-export async function enrichAdvisories(
+function prepareInput(
   value: AdvisoryInput,
-  dependencies: { reader: AdvisoryReader },
-): Promise<AdvisoryResult> {
+): { ok: true; input: AdvisoryInput } | { ok: false; result: AdvisoryResult } {
   let input: AdvisoryInput;
   try {
     advisoryCheck(isPlainObject(value));
     const limits = advisoryLimits(value.limits);
     input = copyAdvisoryData(value, limits);
     validate(input);
+    return { ok: true, input };
   } catch (error) {
-    return error instanceof AdvisoryFailure && error.reason === 'budget'
-      ? { kind: 'unavailable', reason: 'budget' }
-      : { kind: 'invalid' };
+    return {
+      ok: false,
+      result:
+        error instanceof AdvisoryFailure && error.reason === 'budget'
+          ? { kind: 'unavailable', reason: 'budget' }
+          : { kind: 'invalid' },
+    };
   }
+}
+function budgetGap(output: AdvisoryEnrichment, change: PacketChange) {
+  const side = change.to ? 'head' : 'base',
+    gap = source(change, side, null);
+  gap.id += ':budget';
+  gap.reasons = ['budget'];
+  addSource(output, gap);
+  change.evidence.vulnerability = {
+    status: 'unavailable',
+    reasons: ['budget'],
+    sourceIds: [gap.id],
+  };
+  output.lookups.push({ memberId: change.id, side, lookup: null, reasons: ['budget'] });
+  if (change.to && change.from)
+    output.lookups.push({ memberId: change.id, side: 'base', lookup: null, reasons: ['budget'] });
+}
+async function enrichMember(
+  input: AdvisoryInput,
+  output: AdvisoryEnrichment,
+  change: PacketChange,
+  reader: AdvisoryReader,
+  cache: Map<string, AdvisoryLookup>,
+) {
+  const checkpoint = {
+    sources: output.sources.length,
+    findings: output.findings.length,
+    lookups: output.lookups.length,
+  };
+  const head = change.to ? await collectSide(input, change, 'head', output, reader, cache) : null;
+  const base = change.from ? await collectSide(input, change, 'base', output, reader, cache) : null;
+  attachFindings(change, output, base, head);
+  if (fits(output, input)) return;
+  output.sources.length = checkpoint.sources;
+  output.findings.length = checkpoint.findings;
+  output.lookups.length = checkpoint.lookups;
+  budgetGap(output, change);
+  advisoryCheck(fits(output, input), 'budget');
+}
+export async function enrichAdvisories(
+  value: AdvisoryInput,
+  dependencies: { reader: AdvisoryReader },
+): Promise<AdvisoryResult> {
+  const prepared = prepareInput(value);
+  if (!prepared.ok) return prepared.result;
+  const input = prepared.input;
   const output: AdvisoryEnrichment = {
     kind: 'enriched',
     binding: input.binding,
@@ -524,54 +602,8 @@ export async function enrichAdvisories(
     advisoryCheck(fits(output, input), 'budget');
     for (const change of output.changes) {
       if ('basis' in change) continue;
-      const checkpoint = {
-        sources: output.sources.length,
-        findings: output.findings.length,
-        lookups: output.lookups.length,
-      };
-      const head = change.to
-        ? await collectSide(input, change, 'head', output, dependencies.reader, cache)
-        : null;
-      const base = change.from
-        ? await collectSide(input, change, 'base', output, dependencies.reader, cache)
-        : null;
-      attachFindings(change, output, base, head);
-      if (!fits(output, input)) {
-        output.sources.length = checkpoint.sources;
-        output.findings.length = checkpoint.findings;
-        output.lookups.length = checkpoint.lookups;
-        const side = change.to ? 'head' : 'base',
-          gap = source(change, side, null);
-        gap.id += ':budget';
-        gap.reasons = ['budget'];
-        addSource(output, gap);
-        change.evidence.vulnerability = {
-          status: 'unavailable',
-          reasons: ['budget'],
-          sourceIds: [gap.id],
-        };
-        output.lookups.push({ memberId: change.id, side, lookup: null, reasons: ['budget'] });
-        if (change.to && change.from)
-          output.lookups.push({
-            memberId: change.id,
-            side: 'base',
-            lookup: null,
-            reasons: ['budget'],
-          });
-        advisoryCheck(fits(output, input), 'budget');
-      }
+      await enrichMember(input, output, change, dependencies.reader, cache);
     }
-    advisoryCheck(
-      output.sources.length <= PACKET_LIMITS.sources &&
-        output.findings.length <=
-          Math.min(PACKET_LIMITS.findings, input.findings.length + input.limits.maxFindings),
-      'budget',
-    );
-    advisoryCheck(
-      Buffer.byteLength(JSON.stringify(output)) <=
-        Math.min(input.limits.maxRetainedBytes, PACKET_LIMITS.bytes),
-      'budget',
-    );
     return freeze(output);
   } catch (error) {
     return {
