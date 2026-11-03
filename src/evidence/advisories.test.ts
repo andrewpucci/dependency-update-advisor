@@ -279,3 +279,157 @@ test('bounded comparison positives survive a failed global lookup with an explic
   expect(output.findings[0]).toMatchObject({ applicability: 'affects_proposed', severity: 'high' });
   expect(output.changes[0].evidence.vulnerability.status).toBe('partial');
 });
+
+test.each([false, true])(
+  'duplicate GHSA records are reconciled; conflict=%s retains independent findings',
+  async (conflict) => {
+    const { input, f, inventory } = await fixture();
+    const independent = {
+      ...advisory,
+      ghsa_id: 'GHSA-dddd-eeee-ffff',
+      html_url: 'https://github.com/advisories/GHSA-dddd-eeee-ffff',
+    };
+    const reader = createAdvisoryReader(advisoryLimits, {
+      now: () => 0,
+      fetch: async (url) =>
+        Response.json(
+          new URL(url).searchParams.get('affects') === 'fixture-anchor@1.1.0'
+            ? [advisory, { ...advisory, severity: conflict ? 'low' : 'high' }, independent]
+            : [],
+        ),
+    });
+    if (reader.kind !== 'ready') throw new Error('reader');
+    const output = await enrichAdvisories(input, { reader });
+    reader.close();
+    if (output.kind !== 'enriched') throw new Error('enrichment');
+    expect(output.findings).toHaveLength(conflict ? 1 : 2);
+    expect(output.changes[0].evidence.vulnerability.status).toBe(
+      conflict ? 'partial' : 'available',
+    );
+    const accepted = validateReviewPacket(
+      {
+        version: 1,
+        ...f.expected,
+        changes: output.changes,
+        sources: [...output.sources, f.absent],
+        findings: output.findings,
+        relationships: [],
+        coverage: {
+          npm: inventory.coverage,
+          actions: { status: 'not_applicable', reasons: [], sourceIds: ['other'] },
+          uv: { status: 'not_applicable', reasons: [], sourceIds: ['other'] },
+        },
+      },
+      f.expected,
+    );
+    expect(accepted.ok, JSON.stringify(accepted)).toBe(true);
+  },
+);
+
+test('retention limits preserve original findings and mark omitted new evidence as budget gaps', async () => {
+  const { input } = await fixture();
+  const old = {
+    id: 'retained-original',
+    memberId: input.changes[0].id,
+    kind: 'informational' as const,
+    detail: 'Original fact',
+    references: [input.changes[0].to!.sourceId],
+    rationale: 'Original fact',
+    remediation: [],
+    validation: [],
+  };
+  const reader = createAdvisoryReader(advisoryLimits, {
+    now: () => 0,
+    fetch: async () =>
+      Response.json([
+        advisory,
+        {
+          ...advisory,
+          ghsa_id: 'GHSA-dddd-eeee-ffff',
+          html_url: 'https://github.com/advisories/GHSA-dddd-eeee-ffff',
+        },
+      ]),
+  });
+  if (reader.kind !== 'ready') throw new Error('reader');
+  const output = await enrichAdvisories(
+    { ...input, findings: [old], limits: { ...advisoryLimits, maxFindings: 1 } },
+    { reader },
+  );
+  reader.close();
+  expect(output.kind).toBe('enriched');
+  if (output.kind !== 'enriched') throw new Error('enrichment');
+  expect(output.findings).toContainEqual(old);
+  expect(output.changes[0].evidence.vulnerability.reasons).toContain('budget');
+});
+
+test('input getters and conflicting eligibility proofs cannot run or disclose package names', async () => {
+  const { input } = await fixture();
+  let executed = 0,
+    calls = 0;
+  const reader = createAdvisoryReader(advisoryLimits, {
+    now: () => 0,
+    fetch: async () => {
+      calls++;
+      return Response.json([]);
+    },
+  });
+  if (reader.kind !== 'ready') throw new Error('reader');
+  const hostile = Object.defineProperty({ ...input }, 'limits', {
+    get() {
+      executed++;
+      return advisoryLimits;
+    },
+  });
+  expect(await enrichAdvisories(hostile, { reader })).toEqual({ kind: 'invalid' });
+  expect(executed).toBe(0);
+  expect(
+    await enrichAdvisories(
+      {
+        ...input,
+        publicIdentities: [
+          ...input.publicIdentities,
+          { ...input.publicIdentities[0], name: 'private-name' },
+        ],
+      },
+      { reader },
+    ),
+  ).toEqual({ kind: 'invalid' });
+  reader.close();
+  expect(calls).toBe(0);
+});
+
+test('duplicate semantic instances and dangling references fail before I/O', async () => {
+  const { input } = await fixture();
+  let calls = 0;
+  const reader = createAdvisoryReader(advisoryLimits, {
+    now: () => 0,
+    fetch: async () => {
+      calls++;
+      return Response.json([]);
+    },
+  });
+  if (reader.kind !== 'ready') throw new Error('reader');
+  const duplicate = { ...input.changes[0], id: 'duplicate-instance' };
+  const sources = input.sources.map((s) =>
+    s.kind === 'file' && s.memberIds.includes(input.changes[0].id)
+      ? { ...s, memberIds: [...s.memberIds, duplicate.id] }
+      : s,
+  );
+  expect(
+    await enrichAdvisories(
+      { ...input, changes: [...input.changes, duplicate], sources },
+      { reader },
+    ),
+  ).toEqual({ kind: 'invalid' });
+  expect(
+    await enrichAdvisories(
+      {
+        ...input,
+        publicIdentities: [{ ...input.publicIdentities[0], sourceIds: ['missing-proof'] }],
+      },
+      { reader },
+    ),
+  ).toEqual({ kind: 'invalid' });
+  expect(calls).toBe(0);
+  reader.close();
+});

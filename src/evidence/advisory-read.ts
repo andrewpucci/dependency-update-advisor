@@ -116,6 +116,16 @@ function target(value: unknown): AdvisoryTarget {
   advisoryCheck(['npm', 'pip', 'actions'].includes(String(value.ecosystem)), 'unsupported');
   advisoryCheck(advisoryText(value.name) && advisoryText(value.version), 'unsupported');
   advisoryCheck(!/[\s,@]/u.test(value.version) && !/[,\s]/u.test(value.name), 'unsupported');
+  const names = {
+    npm: /^(?:@[a-z\d][a-z\d._-]*\/)?[a-z\d][a-z\d._-]*$/iu,
+    pip: /^[a-z\d]+(?:-[a-z\d]+)*$/u,
+    actions: /^[a-z\d][a-z\d-]*\/[a-z\d_.-]+$/iu,
+  };
+  advisoryCheck(
+    names[value.ecosystem as AdvisoryTarget['ecosystem']].test(value.name),
+    'unsupported',
+  );
+  advisoryCheck(!/[<>=~^*|]/u.test(value.version), 'unsupported');
   return {
     ecosystem: value.ecosystem as AdvisoryTarget['ecosystem'],
     name: value.name,
@@ -330,6 +340,7 @@ class Reader implements AdvisoryReader {
       ++this.requests <= Math.min(this.limits.maxRequests, this.limits.maxPages),
       'budget',
     );
+    const duration = Math.min(this.remaining(), this.limits.requestTimeoutMs);
     const controller = new AbortController();
     let reject: (e: AdvisoryFailure) => void = () => {};
     const aborted = new Promise<never>((_, r) => {
@@ -342,10 +353,10 @@ class Reader implements AdvisoryReader {
     const cancel = () => stop('unknown');
     this.active = cancel;
     this.deps.signal?.addEventListener('abort', cancel, { once: true });
-    const duration = Math.min(this.remaining(), this.limits.requestTimeoutMs);
     const clear = deadlineTimer(duration, () => stop('timeout'));
     let response: Response | undefined;
     try {
+      this.remaining();
       response = await Promise.race([
         this.deps.fetch(url, {
           method: 'GET',

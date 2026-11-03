@@ -1,4 +1,10 @@
-import { createHash } from 'node:crypto';
+import {
+  source,
+  attachFindings,
+  reconcileRecords,
+  addSource,
+  type SideResult,
+} from './advisory-evidence.js';
 import { isDeepStrictEqual } from 'node:util';
 import type { GithubComparison } from '../github-read.js';
 import { parseReviewBinding, type ReviewBinding } from '../event.js';
@@ -9,7 +15,7 @@ import {
   type EvidenceReason,
 } from '../schema.js';
 import type { Finding } from '../policy.js';
-import { freeze, isPlainObject } from './common.js';
+import { freeze, isPlainObject, isEvidencePath } from './common.js';
 import {
   advisoryCheck,
   advisoryLimits,
@@ -71,8 +77,6 @@ export type AdvisoryResult =
   | Readonly<AdvisoryEnrichment>
   | { kind: 'invalid' }
   | { kind: 'unavailable'; reason: EvidenceReason };
-const id = (value: unknown) =>
-  'advisory:' + createHash('sha256').update(JSON.stringify(value)).digest('hex');
 function actionTarget(
   input: AdvisoryInput,
   change: PacketChange,
@@ -153,13 +157,19 @@ function publicTarget(
       p = source?.provenance;
     if (
       source?.status !== 'available' ||
+      !['metadata', 'install-script'].includes(source.kind) ||
       !source.memberIds.includes(change.id) ||
       !source.ecosystems.includes(change.ecosystem) ||
       p?.kind !== 'upstream'
     )
       return false;
+    const url = new URL(p.url);
     return (
-      new URL(p.url).origin === origin.origin &&
+      url.origin === origin.origin &&
+      !url.username &&
+      !url.password &&
+      !url.hash &&
+      !url.search &&
       p.subjects.some(
         (s) => s.memberId === change.id && s.side === side && s.value === instance.version,
       )
@@ -173,66 +183,6 @@ function publicTarget(
       }
     : null;
 }
-function source(
-  change: PacketChange,
-  side: 'head' | 'base',
-  lookup: AdvisoryLookup | null,
-  record?: AdvisoryRecord,
-): PacketSource {
-  const instance = side === 'head' ? change.to : change.from;
-  advisoryCheck(instance);
-  const value = 'ref' in instance ? instance.ref : 'version' in instance ? instance.version : '';
-  const success = !!lookup && (record || lookup.complete);
-  return {
-    id: id([change.id, side, record?.id ?? 'lookup']),
-    kind: 'advisory',
-    ecosystems: [change.ecosystem],
-    memberIds: [change.id],
-    status: success ? 'available' : 'unavailable',
-    reasons: success ? [] : [...(lookup?.reasons ?? ['unsupported'])],
-    provenance: success
-      ? {
-          kind: 'upstream',
-          url: record?.url ?? lookup!.url,
-          title: record?.title ?? 'Exact-version reviewed advisory lookup',
-          excerpt: record
-            ? 'Attributable advisory evidence identifies this exact target.'
-            : 'No active matching reviewed advisory was returned by the complete exact-version query.',
-          excerptTruncated: false,
-          subjects: [{ memberId: change.id, side, value }],
-          range: { from: side === 'base' ? value : null, to: side === 'head' ? value : null },
-          ...(record
-            ? { advisoryId: record.id, ...(record.range ? { affectedRange: record.range } : {}) }
-            : {}),
-        }
-      : { kind: 'unavailable' },
-  };
-}
-function finding(
-  change: PacketChange,
-  record: AdvisoryRecord,
-  ref: string,
-): Extract<Finding, { kind: 'vulnerability' }> {
-  return {
-    id: id([change.id, record.id, 'finding']),
-    memberId: change.id,
-    kind: 'vulnerability',
-    applicability: record.withdrawn ? 'withdrawn' : 'affects_proposed',
-    ...(record.severity ? { severity: record.severity } : {}),
-    ...(record.range ? { affectedRange: record.range } : {}),
-    references: [ref],
-    rationale: record.withdrawn
-      ? 'The cited advisory was withdrawn.'
-      : 'The cited reviewed advisory affects the exact proposed target.',
-    remediation: [],
-    validation: [],
-  };
-}
-type SideResult = {
-  target: AdvisoryTarget | null;
-  lookup: AdvisoryLookup | null;
-  records: Map<string, PacketSource>;
-};
 function comparisonManifest(
   change: ReadonlyData<PacketChange>,
   side: 'head' | 'base',
@@ -298,13 +248,14 @@ function withComparison(
   lookup: AdvisoryLookup,
 ): AdvisoryLookup {
   const compared = comparisonRecords(input, change, side, target);
-  const records = [...lookup.records, ...compared.records];
-  const reasons = [...new Set([...lookup.reasons, ...compared.reasons])];
+  const reconciled = reconcileRecords([...lookup.records, ...compared.records]);
+  const records = reconciled.records;
+  const reasons = [...new Set([...lookup.reasons, ...compared.reasons, ...reconciled.reasons])];
   return {
     ...lookup,
     records,
     reasons,
-    complete: lookup.complete && compared.reasons.length === 0,
+    complete: lookup.complete && compared.reasons.length === 0 && reconciled.reasons.length === 0,
     status: reasons.length ? (records.length ? 'partial' : 'unavailable') : lookup.status,
   };
 }
@@ -314,13 +265,21 @@ async function collectSide(
   side: 'head' | 'base',
   output: AdvisoryEnrichment,
   reader: AdvisoryReader,
+  cache: Map<string, AdvisoryLookup>,
 ): Promise<SideResult> {
   const target = publicTarget(input, change, side);
-  const lookup = target
-    ? withComparison(input, change, side, target, await reader.read(target))
-    : null;
+  let lookup: AdvisoryLookup | null = null;
+  if (target) {
+    const key = JSON.stringify(target);
+    let checked = cache.get(key);
+    if (!checked) {
+      checked = await reader.read(target);
+      cache.set(key, checked);
+    }
+    lookup = withComparison(input, change, side, target, checked);
+  }
   const evidence = source(change, side, lookup);
-  output.sources.push(evidence);
+  addSource(output, evidence);
   if (side === 'head' || !change.to)
     change.evidence.vulnerability = {
       status: lookup?.complete ? 'available' : lookup?.records.length ? 'partial' : 'unavailable',
@@ -336,58 +295,154 @@ async function collectSide(
   const records = new Map<string, PacketSource>();
   for (const record of lookup?.records ?? []) {
     const positive = source(change, side, lookup, record);
-    output.sources.push(positive);
+    addSource(output, positive);
     records.set(record.id, positive);
   }
   return { target, lookup, records };
 }
-function samePackage(base: SideResult | null, head: SideResult | null) {
-  return (
-    !!base?.target &&
-    !!head?.target &&
-    base.target.ecosystem === head.target.ecosystem &&
-    base.target.name === head.target.name
-  );
+function instanceKey(instance: NonNullable<ReadonlyData<PacketChange>['from']>) {
+  if ('action' in instance)
+    return JSON.stringify([
+      instance.workflow,
+      instance.jobId,
+      instance.stepIndex,
+      instance.action,
+      instance.ref,
+      instance.refKind,
+    ]);
+  if ('specifiers' in instance)
+    return JSON.stringify([
+      instance.root,
+      instance.name,
+      Object.entries(instance.specifiers).sort(),
+    ]);
+  if ('lockPath' in instance)
+    return JSON.stringify([
+      instance.root,
+      instance.lockPath,
+      instance.name,
+      instance.version,
+      instance.source.kind,
+      instance.source.identity,
+    ]);
+  return JSON.stringify([
+    instance.root,
+    instance.name,
+    instance.version,
+    instance.source.kind,
+    instance.source.identity,
+    instance.marker,
+    instance.extras,
+    instance.groups,
+  ]);
 }
-function attachFindings(
-  change: PacketChange,
-  output: AdvisoryEnrichment,
-  base: SideResult | null,
-  head: SideResult | null,
-) {
-  for (const record of head?.lookup?.records ?? []) {
-    const claim = finding(change, record, head!.records.get(record.id)!.id);
-    if (
-      !record.withdrawn &&
-      samePackage(base, head) &&
-      base?.lookup?.complete &&
-      !base.lookup.records.some((r) => r.id === record.id)
-    ) {
-      output.findings.push({
-        ...claim,
-        rationale:
-          'The update introduces this advisory: the complete current-version check excludes it.',
-      });
-      continue;
+function validateChanges(input: AdvisoryInput) {
+  const instances = new Set<string>();
+  for (const c of input.changes) {
+    advisoryCheck(
+      advisoryText(c.id) &&
+        c.id.length <= PACKET_LIMITS.idCodeUnits &&
+        ['npm', 'uv', 'actions'].includes(c.ecosystem),
+    );
+    advisoryCheck(
+      ['direct', 'transitive', 'unknown'].includes(c.role) && isPlainObject(c.evidence),
+    );
+    advisoryCheck(
+      (c.from === null || isPlainObject(c.from)) && (c.to === null || isPlainObject(c.to)),
+    );
+    advisoryCheck(
+      c.kind === 'update'
+        ? c.from && c.to
+        : c.kind === 'addition'
+          ? c.from === null && c.to
+          : c.kind === 'removal' && c.from && c.to === null,
+    );
+    for (const [side, instance] of [
+      ['base', c.from],
+      ['head', c.to],
+    ] as const) {
+      if (!instance) continue;
+      const s = input.sources.find((s) => s.id === instance.sourceId),
+        p = s?.provenance;
+      advisoryCheck(
+        s?.kind === 'file' &&
+          s.status === 'available' &&
+          s.memberIds.includes(c.id) &&
+          s.ecosystems.includes(c.ecosystem),
+      );
+      advisoryCheck(
+        p?.kind === 'file' &&
+          p.revision === side &&
+          p.sha === (side === 'base' ? input.binding.baseSha : input.binding.headSha) &&
+          isEvidencePath(p.path),
+      );
+      advisoryCheck(
+        isDeepStrictEqual(
+          p.repository,
+          side === 'base' ? input.binding.repository : input.binding.headRepository,
+        ),
+      );
+      const key = JSON.stringify([c.ecosystem, side, instanceKey(instance)]);
+      advisoryCheck(!instances.has(key));
+      instances.add(key);
     }
-    output.findings.push(claim);
   }
-  if (!samePackage(base, head) || !head?.lookup?.complete) return;
-  for (const record of base?.lookup?.records ?? []) {
-    if (record.withdrawn || head.lookup.records.some((r) => r.id === record.id)) continue;
-    const absent = source(change, 'head', head.lookup, record);
-    if (absent.provenance.kind === 'upstream') {
-      absent.provenance.url = head.lookup.url;
-      absent.provenance.excerpt =
-        'The complete proposed-version query excludes this current-version advisory.';
-    }
-    output.sources.push(absent);
-    output.findings.push({
-      ...finding(change, record, base!.records.get(record.id)!.id),
-      applicability: 'resolved_by_proposed',
-      references: [base!.records.get(record.id)!.id, absent.id],
-      rationale: 'The complete proposed-version check excludes this current-version advisory.',
-    });
+}
+function validateSources(input: AdvisoryInput) {
+  for (const s of input.sources) {
+    advisoryCheck(advisoryText(s.id) && s.id.length <= PACKET_LIMITS.idCodeUnits);
+    advisoryCheck(
+      Array.isArray(s.ecosystems) &&
+        Array.isArray(s.memberIds) &&
+        s.memberIds.length <= PACKET_LIMITS.listEntries,
+    );
+    advisoryCheck(s.memberIds.every((id) => input.changes.some((c) => c.id === id)));
+    const p = s.provenance;
+    advisoryCheck(isPlainObject(p));
+    if (p.kind !== 'upstream') continue;
+    const url = new URL(p.url);
+    advisoryCheck(
+      url.protocol === 'https:' &&
+        url.hostname &&
+        !url.username &&
+        !url.password &&
+        !/[\p{Cc}\p{Cs}]/u.test(p.url),
+    );
+    advisoryCheck(Array.isArray(p.subjects) && p.subjects.length <= PACKET_LIMITS.listEntries);
+  }
+  for (const f of input.findings) {
+    advisoryCheck(input.changes.some((c) => c.id === f.memberId));
+    advisoryCheck(
+      Array.isArray(f.references) &&
+        f.references.length > 0 &&
+        f.references.length <= PACKET_LIMITS.listEntries,
+    );
+    advisoryCheck(
+      f.references.every((id) =>
+        input.sources.some((s) => s.id === id && s.memberIds.includes(f.memberId)),
+      ),
+    );
+  }
+}
+function validateProofs(input: AdvisoryInput) {
+  const proofs = [...input.publicIdentities, ...(input.actionVersions ?? [])];
+  advisoryCheck(
+    new Set(proofs.map((p) => JSON.stringify([p.memberId, p.side]))).size === proofs.length,
+  );
+  for (const p of proofs) {
+    const change = input.changes.find((c) => c.id === p.memberId);
+    advisoryCheck(change && (p.side === 'base' || p.side === 'head'));
+    advisoryCheck(p.side === 'base' ? change.from : change.to);
+    advisoryCheck(advisoryText(p.name) && advisoryText(p.version));
+    advisoryCheck(
+      Array.isArray(p.sourceIds) &&
+        p.sourceIds.length > 0 &&
+        p.sourceIds.length <= PACKET_LIMITS.listEntries,
+    );
+    advisoryCheck(
+      new Set(p.sourceIds).size === p.sourceIds.length &&
+        p.sourceIds.every((id) => input.sources.some((s) => s.id === id)),
+    );
   }
 }
 function validate(input: AdvisoryInput) {
@@ -421,29 +476,9 @@ function validate(input: AdvisoryInput) {
     );
     advisoryCheck(Array.isArray(c.records) && c.records.every(isPlainObject));
   }
-  for (const c of input.changes) {
-    advisoryCheck(advisoryText(c.id) && ['npm', 'uv', 'actions'].includes(c.ecosystem));
-    for (const [side, instance] of [
-      ['base', c.from],
-      ['head', c.to],
-    ] as const) {
-      if (!instance) continue;
-      const s = input.sources.find((s) => s.id === instance.sourceId),
-        p = s?.provenance;
-      advisoryCheck(
-        s?.kind === 'file' &&
-          s.status === 'available' &&
-          s.memberIds.includes(c.id) &&
-          s.ecosystems.includes(c.ecosystem),
-      );
-      advisoryCheck(
-        p?.kind === 'file' &&
-          p.revision === side &&
-          p.sha === (side === 'base' ? input.binding.baseSha : input.binding.headSha),
-      );
-      advisoryCheck(p.repository.id === input.binding.repository.id);
-    }
-  }
+  validateSources(input);
+  validateChanges(input);
+  validateProofs(input);
 }
 export async function enrichAdvisories(
   value: AdvisoryInput,
@@ -451,11 +486,14 @@ export async function enrichAdvisories(
 ): Promise<AdvisoryResult> {
   let input: AdvisoryInput;
   try {
+    advisoryCheck(isPlainObject(value));
     const limits = advisoryLimits(value.limits);
     input = copyAdvisoryData(value, limits);
     validate(input);
-  } catch {
-    return { kind: 'invalid' };
+  } catch (error) {
+    return error instanceof AdvisoryFailure && error.reason === 'budget'
+      ? { kind: 'unavailable', reason: 'budget' }
+      : { kind: 'invalid' };
   }
   const output: AdvisoryEnrichment = {
     kind: 'enriched',
@@ -465,16 +503,47 @@ export async function enrichAdvisories(
     findings: [...input.findings],
     lookups: [],
   };
+  const cache = new Map<string, AdvisoryLookup>();
   try {
+    advisoryCheck(fits(output, input), 'budget');
     for (const change of output.changes) {
       if ('basis' in change) continue;
+      const checkpoint = {
+        sources: output.sources.length,
+        findings: output.findings.length,
+        lookups: output.lookups.length,
+      };
       const head = change.to
-        ? await collectSide(input, change, 'head', output, dependencies.reader)
+        ? await collectSide(input, change, 'head', output, dependencies.reader, cache)
         : null;
       const base = change.from
-        ? await collectSide(input, change, 'base', output, dependencies.reader)
+        ? await collectSide(input, change, 'base', output, dependencies.reader, cache)
         : null;
       attachFindings(change, output, base, head);
+      if (!fits(output, input)) {
+        output.sources.length = checkpoint.sources;
+        output.findings.length = checkpoint.findings;
+        output.lookups.length = checkpoint.lookups;
+        const side = change.to ? 'head' : 'base',
+          gap = source(change, side, null);
+        gap.id += ':budget';
+        gap.reasons = ['budget'];
+        addSource(output, gap);
+        change.evidence.vulnerability = {
+          status: 'unavailable',
+          reasons: ['budget'],
+          sourceIds: [gap.id],
+        };
+        output.lookups.push({ memberId: change.id, side, lookup: null, reasons: ['budget'] });
+        if (change.to && change.from)
+          output.lookups.push({
+            memberId: change.id,
+            side: 'base',
+            lookup: null,
+            reasons: ['budget'],
+          });
+        advisoryCheck(fits(output, input), 'budget');
+      }
     }
     advisoryCheck(
       output.sources.length <= PACKET_LIMITS.sources &&
@@ -494,4 +563,13 @@ export async function enrichAdvisories(
       reason: error instanceof AdvisoryFailure ? error.reason : 'unknown',
     };
   }
+}
+function fits(output: AdvisoryEnrichment, input: AdvisoryInput) {
+  return (
+    output.sources.length <= PACKET_LIMITS.sources &&
+    output.findings.length <=
+      Math.min(PACKET_LIMITS.findings, input.findings.length + input.limits.maxFindings) &&
+    Buffer.byteLength(JSON.stringify(output)) <=
+      Math.min(input.limits.maxRetainedBytes, PACKET_LIMITS.bytes)
+  );
 }
