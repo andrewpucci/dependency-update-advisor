@@ -187,7 +187,7 @@ function prepare(value: unknown, limits: UpstreamLimits): UpstreamInput {
   return input;
 }
 function npmNode(
-  input: UpstreamInput,
+  input: Pick<UpstreamInput, 'npmInventory' | 'sources'>,
   change: ReadonlyData<PacketChange>,
   side: 'base' | 'head',
 ): ReadonlyData<NpmNode> | null {
@@ -215,9 +215,9 @@ function npmNode(
   }
   return node ?? null;
 }
-function metadataTarget(
-  input: UpstreamInput,
-  change: PacketChange,
+export function metadataTarget(
+  input: Pick<UpstreamInput, 'npmInventory' | 'sources'>,
+  change: ReadonlyData<PacketChange>,
   side: 'base' | 'head',
 ): UpstreamTarget | null {
   if (change.ecosystem === 'actions' || 'basis' in change) return null;

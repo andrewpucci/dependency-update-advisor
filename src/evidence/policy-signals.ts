@@ -13,10 +13,14 @@ import { prepareAdvisoryInput, resolveAdvisoryTarget, type AdvisoryInput } from 
 import { advisoryCheck, AdvisoryFailure, type AdvisoryReader } from './advisory-read.js';
 import { collectMemberMalware } from './policy-signals-malware.js';
 import type { NpmPublishTimeReader, NpmTimesResult } from './npm-publish-times.js';
+import type { UpstreamInput } from './upstream.js';
+import { metadataTarget } from './upstream.js';
+import { collectNpmPolicySignals, type NpmPolicyReader } from './policy-signals-npm.js';
 
 export type PolicySignalInput = AdvisoryInput & {
   evaluationTime: number;
   limits: AdvisoryInput['limits'] & { maxAttempts: number };
+  npmInventory?: UpstreamInput['npmInventory'];
 };
 export type SignalAttempt = {
   memberId: string;
@@ -43,7 +47,21 @@ export type PolicySignalResult =
 export type SignalDependencies = {
   malwareReader: AdvisoryReader;
   publishTimeReader?: NpmPublishTimeReader;
+  npmReader?: NpmPolicyReader;
 };
+export type Observation<T> =
+  | { kind: 'known'; value: T }
+  | { kind: 'unchecked'; reason: EvidenceReason };
+export function observe<T>(read: () => T): Observation<T> {
+  try {
+    return { kind: 'known', value: read() };
+  } catch (error) {
+    return {
+      kind: 'unchecked',
+      reason: error instanceof AdvisoryFailure ? error.reason : 'malformed',
+    };
+  }
+}
 export type OptionalCategory = 'publishTime' | 'deprecation' | 'trust' | 'publisher' | 'license';
 export function recordSignal(
   input: PolicySignalInput,
@@ -51,7 +69,7 @@ export function recordSignal(
   change: PacketChange,
   side: 'base' | 'head',
   category: OptionalCategory,
-  known: { url: string; value: unknown } | null,
+  known: { url: string; value: unknown; reasons?: EvidenceReason[]; bothSides?: boolean } | null,
   reason: EvidenceReason = 'unsupported',
 ): PacketSource {
   const instance = side === 'base' ? change.from : change.to;
@@ -67,8 +85,8 @@ export function recordSignal(
     kind: category === 'license' ? 'metadata' : category,
     ecosystems: [change.ecosystem],
     memberIds: [change.id],
-    status: known ? 'available' : 'unavailable',
-    reasons: known ? [] : [reason],
+    status: known ? (known.reasons?.length ? 'partial' : 'available') : 'unavailable',
+    reasons: known ? (known.reasons ?? []) : [reason],
     provenance: known
       ? {
           kind: 'upstream',
@@ -76,8 +94,26 @@ export function recordSignal(
           title: 'Exact ' + category + ' observation',
           excerpt,
           excerptTruncated: false,
-          subjects: [{ memberId: change.id, side, value }],
-          range: { from: side === 'base' ? value : null, to: side === 'head' ? value : null },
+          subjects: known.bothSides
+            ? (['base', 'head'] as const).flatMap((s) => {
+                const i = s === 'base' ? change.from : change.to;
+                return i
+                  ? [
+                      {
+                        memberId: change.id,
+                        side: s,
+                        value: 'version' in i ? i.version : 'ref' in i ? i.ref : '',
+                      },
+                    ]
+                  : [];
+              })
+            : [{ memberId: change.id, side, value }],
+          range: known.bothSides
+            ? {
+                from: change.from && 'version' in change.from ? change.from.version : null,
+                to: change.to && 'version' in change.to ? change.to.version : null,
+              }
+            : { from: side === 'base' ? value : null, to: side === 'head' ? value : null },
         }
       : { kind: 'unavailable' },
   };
@@ -221,6 +257,19 @@ export async function enrichPolicySignals(
     input.limits.maxAttempts < 1
   )
     return { kind: 'invalid' };
+  try {
+    if (input.npmInventory) {
+      advisoryCheck(
+        input.npmInventory.kind === 'inventory' &&
+          isDeepStrictEqual(input.npmInventory.binding, input.binding),
+      );
+      for (const c of input.changes)
+        if (c.ecosystem === 'npm' && !('basis' in c))
+          for (const side of ['base', 'head'] as const) metadataTarget(input, c, side);
+    }
+  } catch {
+    return { kind: 'invalid' };
+  }
   const output: SignalEnrichment = {
     kind: 'enriched',
     binding: input.binding,
@@ -238,8 +287,10 @@ export async function enrichPolicySignals(
       signalBounds(input, output);
     }
     for (const change of output.changes) {
-      if (change.ecosystem === 'npm' && !('basis' in change))
-        await collectNpmTimes(input, output, change, dependencies.publishTimeReader);
+      if (change.ecosystem === 'npm' && !('basis' in change)) {
+        const times = await collectNpmTimes(input, output, change, dependencies.publishTimeReader);
+        await collectNpmPolicySignals(input, output, change, times, dependencies.npmReader);
+      }
       signalBounds(input, output);
     }
     return freeze(output);
