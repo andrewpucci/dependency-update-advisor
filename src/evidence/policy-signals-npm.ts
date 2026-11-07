@@ -213,6 +213,76 @@ export function comparePublishing(
     ]);
   }
 }
+async function npmSide(
+  input: PolicySignalInput,
+  output: SignalEnrichment,
+  change: PacketChange,
+  side: 'base' | 'head',
+  reader?: NpmPolicyReader,
+): Promise<Side> {
+  const eligible = resolveAdvisoryTarget(input, change, side),
+    target = eligible ? metadataTarget(input, change, side) : null;
+  const result =
+    reader && target
+      ? await reader.read(target)
+      : { kind: 'unavailable' as const, reason: 'unsupported' as const };
+  const url = result.kind === 'metadata' ? result.document.url : null;
+  const facts =
+    result.kind === 'metadata'
+      ? npmPublishingFacts(result.document.data)
+      : unknownFacts(result.reason);
+  const trust = factSource(
+    input,
+    output,
+    change,
+    side,
+    'trust',
+    { trustedPublishing: facts.trustedPublishing, provenance: facts.provenance },
+    url,
+  );
+  const publisher = {
+    account: factSource(input, output, change, side, 'publisher', { account: facts.account }, url),
+    maintainers: factSource(
+      input,
+      output,
+      change,
+      side,
+      'publisher',
+      { maintainers: facts.maintainers },
+      url,
+    ),
+  };
+  return { facts, url, trust, publisher };
+}
+function npmDeprecation(
+  input: PolicySignalInput,
+  output: SignalEnrichment,
+  change: PacketChange,
+  { facts, url }: Side,
+) {
+  const d = facts.deprecated;
+  const source = recordSignal(
+    input,
+    output,
+    change,
+    'head',
+    'deprecation',
+    d.kind === 'known' && url ? { url, value: { deprecated: d.value } } : null,
+    d.kind === 'unchecked' ? d.reason : 'unsupported',
+  );
+  attachSignalCoverage(change, 'deprecation', [source]);
+  if (d.kind === 'known' && d.value && source.status === 'available')
+    retainSignalFinding(output, {
+      id: signalId(source.id, 'releaseMetadata'),
+      memberId: change.id,
+      kind: 'releaseMetadata',
+      deprecated: d.value,
+      references: [source.id],
+      rationale: 'The exact proposed npm version is deprecated: ' + d.value.reason,
+      remediation: ['Choose a maintained release or review the registry deprecation reason.'],
+      validation: ['Check the exact version deprecation marker.'],
+    });
+}
 export async function collectNpmPolicySignals(
   input: PolicySignalInput,
   output: SignalEnrichment,
@@ -223,71 +293,8 @@ export async function collectNpmPolicySignals(
   const sides: NpmMetadataSides = {};
   for (const side of ['base', 'head'] as const) {
     if (!(side === 'base' ? change.from : change.to)) continue;
-    const eligible = resolveAdvisoryTarget(input, change, side),
-      target = eligible ? metadataTarget(input, change, side) : null;
-    const result =
-      reader && target
-        ? await reader.read(target)
-        : { kind: 'unavailable' as const, reason: 'unsupported' as const };
-    const url = result.kind === 'metadata' ? result.document.url : null;
-    const facts =
-      result.kind === 'metadata'
-        ? npmPublishingFacts(result.document.data)
-        : unknownFacts(result.reason);
-    const trust = factSource(
-      input,
-      output,
-      change,
-      side,
-      'trust',
-      { trustedPublishing: facts.trustedPublishing, provenance: facts.provenance },
-      url,
-    );
-    const publisher = {
-      account: factSource(
-        input,
-        output,
-        change,
-        side,
-        'publisher',
-        { account: facts.account },
-        url,
-      ),
-      maintainers: factSource(
-        input,
-        output,
-        change,
-        side,
-        'publisher',
-        { maintainers: facts.maintainers },
-        url,
-      ),
-    };
-    sides[side] = { facts, url, trust, publisher };
-    if (side === 'head') {
-      const d = facts.deprecated;
-      const source = recordSignal(
-        input,
-        output,
-        change,
-        side,
-        'deprecation',
-        d.kind === 'known' && url ? { url, value: { deprecated: d.value } } : null,
-        d.kind === 'unchecked' ? d.reason : 'unsupported',
-      );
-      attachSignalCoverage(change, 'deprecation', [source]);
-      if (d.kind === 'known' && d.value && source.status === 'available')
-        retainSignalFinding(output, {
-          id: signalId(source.id, 'releaseMetadata'),
-          memberId: change.id,
-          kind: 'releaseMetadata',
-          deprecated: d.value,
-          references: [source.id],
-          rationale: 'The exact proposed npm version is deprecated: ' + d.value.reason,
-          remediation: ['Choose a maintained release or review the registry deprecation reason.'],
-          validation: ['Check the exact version deprecation marker.'],
-        });
-    }
+    sides[side] = await npmSide(input, output, change, side, reader);
+    if (side === 'head') npmDeprecation(input, output, change, sides[side]);
   }
   for (const category of ['trust', 'publisher'] as const)
     attachSignalCoverage(
