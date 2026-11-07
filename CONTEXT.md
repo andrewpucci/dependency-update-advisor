@@ -19,9 +19,9 @@ No shared workflow exists; the old reviewer stays active.
 
 ## Next action
 
-[U2 #18](docs/specs/SPEC-uv-relationships.md) is implemented on `issue-18`,
-pending review/merge; [verification #169](https://github.com/andrewpucci/dependency-update-advisor/issues/169)
-records exact-revision evidence. One PR closes #18 and #161–#169 on merge.
+[S1 #19](docs/specs/SPEC-advisory-lookup.md) is implemented; #19 tracks
+review/merge, and #181 holds verification and remaining integration gates.
+[U2 #18](docs/specs/SPEC-uv-relationships.md) awaits review/merge; #169 holds evidence.
 [N2 #15](docs/specs/SPEC-npm-relationships.md) is implemented on
 `issue-15`, pending review/merge; #140 holds verification. #93 stays separate.
 [#110 snapshot reuse](docs/specs/SPEC-pr-freshness-snapshot.md) awaits review/merge;

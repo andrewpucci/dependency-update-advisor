@@ -76,6 +76,11 @@ gaps and an introduced vulnerability before parity is claimed.
   on `main` in `review-config` for C3 #7; [verification and integration limits](https://github.com/andrewpucci/dependency-update-advisor/issues/52)
   remain separate from downstream collector, provider, renderer, and workflow gates.
 - [Shared workflow](SPEC-shared-review.md) — approved for planning.
+- [Applicable vulnerability advisories](SPEC-advisory-lookup.md) — S1 #19 and
+  #173–#181 implemented; #19 tracks review and merge. Exact public-identity
+  proofs, Actions mappings and separate lookup outcomes preserve T4/T5/C3
+  attribution; [verification #181](https://github.com/andrewpucci/dependency-update-advisor/issues/181)
+  retains live proof acquisition, downstream workflow and cutover gates.
 - [Common review packet validation](SPEC-review-packet.md) — implemented for
   T4 #11 and #77–#84 in `shared-review`, merged in
   [PR #89](https://github.com/andrewpucci/dependency-update-advisor/pull/89).
