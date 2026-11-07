@@ -70,6 +70,9 @@ export class UpstreamFailure extends Error {
     super(reason);
   }
 }
+function cancelUnusedBody(response?: Response) {
+  if (response?.body && !response.body.locked) void response.body.cancel().catch(() => {});
+}
 export function upstreamFailureReason(error: unknown): EvidenceReason {
   return error instanceof UpstreamFailure || error instanceof AdvisoryFailure
     ? error.reason
@@ -410,8 +413,7 @@ class Reader {
       });
       void request.then(
         (late) => {
-          if (controller.signal.aborted && late.body && !late.body.locked)
-            void late.body.cancel().catch(() => {});
+          if (controller.signal.aborted) cancelUnusedBody(late);
         },
         () => {},
       );
@@ -446,7 +448,7 @@ class Reader {
       clear();
       controller.abort();
       for (const signal of signals) signal.removeEventListener('abort', cancel);
-      if (response?.body && !response.body.locked) void response.body.cancel().catch(() => {});
+      cancelUnusedBody(response);
     }
   }
   private async pypi(t: MetadataTarget, url: string) {
