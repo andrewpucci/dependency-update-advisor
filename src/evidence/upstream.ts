@@ -132,6 +132,22 @@ function validateEvidence(input: UpstreamInput, change: ReadonlyData<PacketChang
     );
   }
 }
+function validateChange(input: UpstreamInput, change: ReadonlyData<PacketChange>) {
+  requireUpstream(upstreamText(change.id) && ['npm', 'uv', 'actions'].includes(change.ecosystem));
+  requireUpstream(['direct', 'transitive', 'unknown'].includes(change.role));
+  requireUpstream(isPlainObject(change.evidence));
+  requireUpstream(change.id.length <= PACKET_LIMITS.idCodeUnits);
+  requireUpstream(['update', 'addition', 'removal'].includes(change.kind));
+  requireUpstream(
+    change.kind === 'update'
+      ? !!change.from && !!change.to
+      : change.kind === 'addition'
+        ? change.from === null && !!change.to
+        : !!change.from && change.to === null,
+  );
+  validateEvidence(input, change);
+  for (const side of ['base', 'head'] as const) inventorySource(input, change, side);
+}
 function prepare(value: unknown, limits: UpstreamLimits): UpstreamInput {
   const cloned = upstreamCopy(value, limits);
   requireUpstream(isPlainObject(cloned));
@@ -142,22 +158,7 @@ function prepare(value: unknown, limits: UpstreamLimits): UpstreamInput {
   requireUpstream(Array.isArray(input.findings) && input.findings.length <= PACKET_LIMITS.findings);
   requireUpstream(new Set(input.sources.map((s) => s.id)).size === input.sources.length);
   requireUpstream(new Set(input.changes.map((c) => c.id)).size === input.changes.length);
-  for (const change of input.changes) {
-    requireUpstream(upstreamText(change.id) && ['npm', 'uv', 'actions'].includes(change.ecosystem));
-    requireUpstream(['direct', 'transitive', 'unknown'].includes(change.role));
-    requireUpstream(isPlainObject(change.evidence));
-    requireUpstream(change.id.length <= PACKET_LIMITS.idCodeUnits);
-    requireUpstream(['update', 'addition', 'removal'].includes(change.kind));
-    requireUpstream(
-      change.kind === 'update'
-        ? !!change.from && !!change.to
-        : change.kind === 'addition'
-          ? change.from === null && !!change.to
-          : !!change.from && change.to === null,
-    );
-    validateEvidence(input, change);
-    for (const side of ['base', 'head'] as const) inventorySource(input, change, side);
-  }
+  for (const change of input.changes) validateChange(input, change);
   for (const finding of input.findings) {
     requireUpstream(input.changes.some((c) => c.id === finding.memberId));
     requireUpstream(
@@ -303,6 +304,64 @@ function bounds(output: UpstreamEnrichment, limits: UpstreamLimits) {
     'budget',
   );
 }
+function metadataAttempt(
+  output: UpstreamEnrichment,
+  change: PacketChange,
+  side: 'base' | 'head',
+  lookup: UpstreamLookup,
+  sourceIds: string[],
+) {
+  const instance = side === 'base' ? change.from : change.to;
+  requireUpstream(instance);
+  output.attempts.push({
+    memberId: change.id,
+    side,
+    stage: 'metadata',
+    target:
+      'name' in instance
+        ? `${instance.name}@${'version' in instance ? instance.version : ''}`
+        : instance.action + '@' + instance.ref,
+    range:
+      'version' in instance
+        ? side === 'base'
+          ? { from: instance.version, to: null }
+          : { from: null, to: instance.version }
+        : null,
+    url: lookup.url,
+    outcome:
+      lookup.status === 'available' ? 'available' : lookup.fetched ? 'unavailable' : 'skipped',
+    reasons: lookup.reasons,
+    sourceIds,
+    truncated: sourceIds.some((id) => {
+      const p = output.sources.find((s) => s.id === id)?.provenance;
+      return p?.kind === 'upstream' && p.excerptTruncated;
+    }),
+  });
+}
+function metadataCoverage(
+  change: PacketChange,
+  side: 'base' | 'head',
+  lookup: UpstreamLookup,
+  sourceIds: string[],
+) {
+  if (change.to ? side === 'head' : side === 'base') {
+    const previous = change.evidence.upstream;
+    if (previous.status !== 'available') {
+      const merged = [...new Set([...previous.sourceIds, ...sourceIds])];
+      requireUpstream(merged.length <= PACKET_LIMITS.listEntries, 'budget');
+      change.evidence.upstream = {
+        status: sourceIds.length || previous.status === 'partial' ? 'partial' : 'unavailable',
+        sourceIds: merged,
+        reasons: [
+          ...new Set([
+            ...previous.reasons,
+            ...(sourceIds.length ? ['unsupported' as const] : lookup.reasons),
+          ]),
+        ],
+      };
+    }
+  }
+}
 async function metadata(
   input: UpstreamInput,
   output: UpstreamEnrichment,
@@ -332,47 +391,8 @@ async function metadata(
       sourceIds,
     });
   }
-  output.attempts.push({
-    memberId: change.id,
-    side,
-    stage: 'metadata',
-    target:
-      'name' in instance
-        ? `${instance.name}@${'version' in instance ? instance.version : ''}`
-        : instance.action + '@' + instance.ref,
-    range:
-      'version' in instance
-        ? side === 'base'
-          ? { from: instance.version, to: null }
-          : { from: null, to: instance.version }
-        : null,
-    url: lookup.url,
-    outcome:
-      lookup.status === 'available' ? 'available' : lookup.fetched ? 'unavailable' : 'skipped',
-    reasons: lookup.reasons,
-    sourceIds,
-    truncated: sourceIds.some((id) => {
-      const p = output.sources.find((s) => s.id === id)?.provenance;
-      return p?.kind === 'upstream' && p.excerptTruncated;
-    }),
-  });
-  if (change.to ? side === 'head' : side === 'base') {
-    const previous = change.evidence.upstream;
-    if (previous.status !== 'available') {
-      const merged = [...new Set([...previous.sourceIds, ...sourceIds])];
-      requireUpstream(merged.length <= PACKET_LIMITS.listEntries, 'budget');
-      change.evidence.upstream = {
-        status: sourceIds.length || previous.status === 'partial' ? 'partial' : 'unavailable',
-        sourceIds: merged,
-        reasons: [
-          ...new Set([
-            ...previous.reasons,
-            ...(sourceIds.length ? ['unsupported' as const] : lookup.reasons),
-          ]),
-        ],
-      };
-    }
-  }
+  metadataAttempt(output, change, side, lookup, sourceIds);
+  metadataCoverage(change, side, lookup, sourceIds);
   return lookup;
 }
 function researchSource(
@@ -666,6 +686,29 @@ function attachActionMappings(
       };
   }
 }
+async function enrichChange(
+  input: UpstreamInput,
+  output: UpstreamEnrichment,
+  change: PacketChange,
+  reader: UpstreamReader,
+) {
+  if ('basis' in change) return;
+  if (change.ecosystem === 'actions') {
+    const result = await collectActionResearch(change, reader);
+    attachActionMappings(input, output, change, result.mappings);
+    attachUpstreamResearch(input, output, change, result.research);
+    bounds(output, input.limits);
+    return;
+  }
+  const lookups = new Map<string, UpstreamLookup>();
+  for (const side of ['base', 'head'] as const) {
+    const lookup = await metadata(input, output, change, side, reader);
+    if (lookup) lookups.set(side, lookup);
+    bounds(output, input.limits);
+  }
+  await packageResearch(input, output, change, lookups, reader);
+  bounds(output, input.limits);
+}
 /** Enrich exact inventory identities; caller retains inventory coverage and relationships separately. */
 export async function enrichUpstream(
   value: unknown,
@@ -696,24 +739,8 @@ export async function enrichUpstream(
   };
   try {
     bounds(output, input.limits);
-    for (const change of output.changes) {
-      if ('basis' in change) continue;
-      if (change.ecosystem === 'actions') {
-        const result = await collectActionResearch(change, dependencies.reader);
-        attachActionMappings(input, output, change, result.mappings);
-        attachUpstreamResearch(input, output, change, result.research);
-        bounds(output, input.limits);
-        continue;
-      }
-      const lookups = new Map<string, UpstreamLookup>();
-      for (const side of ['base', 'head'] as const) {
-        const lookup = await metadata(input, output, change, side, dependencies.reader);
-        if (lookup) lookups.set(side, lookup);
-        bounds(output, input.limits);
-      }
-      await packageResearch(input, output, change, lookups, dependencies.reader);
-      bounds(output, input.limits);
-    }
+    for (const change of output.changes)
+      await enrichChange(input, output, change, dependencies.reader);
     return freeze(output);
   } catch (error) {
     return {
