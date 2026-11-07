@@ -18,11 +18,14 @@ import { metadataTarget } from './upstream.js';
 import { collectNpmPolicySignals, type NpmPolicyReader } from './policy-signals-npm.js';
 import { collectPyPIReleaseSignals } from './policy-signals-pypi.js';
 import type { PolicyMetadataReader } from './policy-signals-read.js';
+import type { GithubReadSession } from '../github-read.js';
+import { artifactLimits, type ArtifactLimits } from './policy-signals-uv-artifacts.js';
 
 export type PolicySignalInput = AdvisoryInput & {
   evaluationTime: number;
   limits: AdvisoryInput['limits'] & { maxAttempts: number };
   npmInventory?: UpstreamInput['npmInventory'];
+  artifactLimits?: ArtifactLimits;
 };
 export type SignalAttempt = {
   memberId: string;
@@ -51,6 +54,7 @@ export type SignalDependencies = {
   publishTimeReader?: NpmPublishTimeReader;
   npmReader?: NpmPolicyReader;
   metadataReader?: PolicyMetadataReader;
+  artifactSession?: GithubReadSession;
 };
 export type Observation<T> =
   | { kind: 'known'; value: T }
@@ -145,7 +149,7 @@ export function attachSignalCoverage(
         ? 'partial'
         : 'unavailable'
       : 'available',
-    sourceIds: sources.map((s) => s.id),
+    sourceIds: [...new Set(sources.map((s) => s.id))],
     reasons,
   };
 }
@@ -261,6 +265,7 @@ export async function enrichPolicySignals(
   )
     return { kind: 'invalid' };
   try {
+    if (input.artifactLimits) artifactLimits(input.artifactLimits);
     if (input.npmInventory) {
       advisoryCheck(
         input.npmInventory.kind === 'inventory' &&
@@ -295,7 +300,13 @@ export async function enrichPolicySignals(
         await collectNpmPolicySignals(input, output, change, times, dependencies.npmReader);
       }
       if (change.ecosystem === 'uv')
-        await collectPyPIReleaseSignals(input, output, change, dependencies.metadataReader);
+        await collectPyPIReleaseSignals(
+          input,
+          output,
+          change,
+          dependencies.metadataReader,
+          dependencies.artifactSession,
+        );
       signalBounds(input, output);
     }
     return freeze(output);

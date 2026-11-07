@@ -1,5 +1,5 @@
 import { expect, test } from 'vite-plus/test';
-import { pypiReleaseFacts } from './policy-signals-pypi.js';
+import { pypiReleaseFacts, pypiProvenanceFacts } from './policy-signals-pypi.js';
 import { createPolicySignalReader } from './policy-signals-read.js';
 import { enrichPolicySignals } from './policy-signals.js';
 import { createMalwareReader } from './advisory-read.js';
@@ -8,6 +8,66 @@ import { enrichUpstream } from './upstream.js';
 import { upstreamScenario, upstreamTestLimits } from '../../tests/parity/upstream.js';
 import { validateReviewPacket } from '../schema.js';
 const evaluationTime = Date.parse('2026-11-07T00:00:00Z');
+test.each(['valid', 'digest', 'predicate', 'publisher', 'envelope'])(
+  'PyPI %s provenance is bound to the exact artifact without a cryptographic claim',
+  (mode) => {
+    const artifact = { filename: 'fixture.whl', sha256: 'a'.repeat(64) };
+    const statement = {
+      _type: 'https://in-toto.io/Statement/v1',
+      subject: [
+        {
+          name: artifact.filename,
+          digest: { sha256: mode === 'digest' ? 'b'.repeat(64) : artifact.sha256 },
+        },
+      ],
+      predicateType:
+        mode === 'predicate'
+          ? 'https://unknown.example/predicate'
+          : 'https://docs.pypi.org/attestations/publish/v1',
+    };
+    const metadata = createPolicySignalReader(upstreamTestLimits, {
+      now: () => 0,
+      fetch: async () => Response.json({}),
+    });
+    if (metadata.kind !== 'ready') throw new Error('reader');
+    const envelope = {
+      statement:
+        mode === 'envelope' ? 'broken' : Buffer.from(JSON.stringify(statement)).toString('base64'),
+      signature: 'c2lnbmF0dXJl',
+    };
+    const result = pypiProvenanceFacts(
+      {
+        version: 1,
+        attestation_bundles: [
+          {
+            publisher: {
+              kind: mode === 'publisher' ? 'Unknown' : 'GitHub',
+              repository: 'fixture/project',
+              workflow: 'release.yml',
+              environment: '',
+            },
+            attestations: [
+              {
+                version: 1,
+                envelope,
+                verification_material: {
+                  certificate: 'registry-reported-certificate',
+                  transparency_entries: [{}],
+                },
+              },
+            ],
+          },
+        ],
+      },
+      artifact,
+      metadata,
+    );
+    metadata.close();
+    expect(result.kind).toBe(mode === 'valid' ? 'known' : 'unchecked');
+    if (result.kind === 'known')
+      expect(result.value).toMatchObject({ kind: 'trusted', provider: 'pypi:GitHub' });
+  },
+);
 const file = (date: string, yanked = false) => ({
   filename: date.includes('01T') ? 'fixture.tar.gz' : 'fixture.whl',
   digests: { sha256: 'a'.repeat(64) },
