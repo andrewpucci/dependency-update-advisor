@@ -108,7 +108,7 @@ type Side = {
   facts: NpmPublishingFacts;
   url: string | null;
   trust: PacketSource;
-  publisher: PacketSource;
+  publisher: Record<'account' | 'maintainers', PacketSource>;
 };
 export type NpmMetadataSides = Partial<Record<'base' | 'head', Side>>;
 function unknownFacts(reason: EvidenceReason): NpmPublishingFacts {
@@ -182,7 +182,10 @@ export function comparePublishing(
     const old = a.facts[mechanism],
       next = b.facts[mechanism];
     if (old.kind === 'known' && next.kind === 'known' && !isDeepStrictEqual(old.value, next.value))
-      supplyChainFinding(input, output, change, 'publisher', mechanism, [a.publisher, b.publisher]);
+      supplyChainFinding(input, output, change, 'publisher', mechanism, [
+        a.publisher[mechanism],
+        b.publisher[mechanism],
+      ]);
   }
   for (const mechanism of ['trustedPublishing', 'provenance'] as const) {
     const old = a.facts[mechanism],
@@ -240,15 +243,26 @@ export async function collectNpmPolicySignals(
       { trustedPublishing: facts.trustedPublishing, provenance: facts.provenance },
       url,
     );
-    const publisher = factSource(
-      input,
-      output,
-      change,
-      side,
-      'publisher',
-      { account: facts.account, maintainers: facts.maintainers },
-      url,
-    );
+    const publisher = {
+      account: factSource(
+        input,
+        output,
+        change,
+        side,
+        'publisher',
+        { account: facts.account },
+        url,
+      ),
+      maintainers: factSource(
+        input,
+        output,
+        change,
+        side,
+        'publisher',
+        { maintainers: facts.maintainers },
+        url,
+      ),
+    };
     sides[side] = { facts, url, trust, publisher };
     if (side === 'head') {
       const d = facts.deprecated;
@@ -279,7 +293,9 @@ export async function collectNpmPolicySignals(
     attachSignalCoverage(
       change,
       category,
-      Object.values(sides).map((s) => s[category]),
+      Object.values(sides).flatMap((s) =>
+        category === 'publisher' ? Object.values(s.publisher) : [s.trust],
+      ),
     );
   comparePublishing(input, output, change, sides, times);
   return sides;

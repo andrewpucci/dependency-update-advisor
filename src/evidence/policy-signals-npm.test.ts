@@ -65,108 +65,120 @@ test('missing supported records mean absent trust, not known publishing identity
   expect(f.account).toMatchObject({ kind: 'unchecked' });
   expect(f.maintainers).toMatchObject({ kind: 'unchecked' });
 });
-test.each(['downgrade', 'absent', 'base-failed', 'rollback', 'kind-change', 'maintainer-change'])(
-  'real exact npm metadata preserves %s policy facts and chronology attribution',
-  async (mode) => {
-    const f = await upstreamScenario();
-    const ur = createUpstreamReader(upstreamTestLimits, { now: () => 0, fetch: f.fetch });
-    if (ur.kind !== 'ready') throw new Error('reader');
-    const upstream = await enrichUpstream(f.input, ur);
-    ur.reader.close();
-    if (upstream.kind !== 'enriched') throw new Error('upstream');
-    const npm = createNpmRegistryReader(upstreamTestLimits, {
-      now: () => 0,
-      fetch: async (url, init) => {
-        const version = new URL(url).pathname.split('/').at(-1);
-        if (mode === 'base-failed' && version === '1.0.0')
-          return Response.json({}, { status: 503 });
-        const data = await (await f.fetch(url, init)).json();
-        const trusted =
-          mode === 'kind-change'
-            ? version === '2.0.0'
-            : mode !== 'absent' && mode !== 'maintainer-change' && version === '1.0.0';
-        return Response.json({
-          ...data,
-          _npmUser: trusted
-            ? {
-                name: 'GitHub Actions',
-                trustedPublisher: { id: 'github', oidcConfigId: 'fixture-configuration' },
-              }
-            : { name: 'alice', email: 'never-output@example.invalid' },
-          maintainers: [
-            { name: mode === 'maintainer-change' && version === '2.0.0' ? 'bob' : 'alice' },
-          ],
-          deprecated: version === '2.0.0' ? 'Use the maintained line' : undefined,
-        });
-      },
-    });
-    const times = createNpmPublishTimeReader(
-      { ...upstreamTestLimits, maxWork: 100000 },
-      {
-        now: () => 0,
-        fetch: async (url) =>
-          Response.json({
-            name: decodeURIComponent(new URL(url).pathname.slice(1)),
-            time: {
-              '1.0.0': mode === 'rollback' ? '2026-11-02T00:00:00Z' : '2026-10-01T00:00:00Z',
-              '2.0.0': '2026-11-01T00:00:00Z',
+test.each([
+  'downgrade',
+  'absent',
+  'base-failed',
+  'rollback',
+  'kind-change',
+  'maintainer-change',
+  'long-maintainers',
+])('real exact npm metadata preserves %s policy facts and chronology attribution', async (mode) => {
+  const f = await upstreamScenario();
+  const ur = createUpstreamReader(upstreamTestLimits, { now: () => 0, fetch: f.fetch });
+  if (ur.kind !== 'ready') throw new Error('reader');
+  const upstream = await enrichUpstream(f.input, ur);
+  ur.reader.close();
+  if (upstream.kind !== 'enriched') throw new Error('upstream');
+  const npm = createNpmRegistryReader(upstreamTestLimits, {
+    now: () => 0,
+    fetch: async (url, init) => {
+      const version = new URL(url).pathname.split('/').at(-1);
+      if (mode === 'base-failed' && version === '1.0.0') return Response.json({}, { status: 503 });
+      const data = await (await f.fetch(url, init)).json();
+      const trusted =
+        mode === 'kind-change'
+          ? version === '2.0.0'
+          : ['downgrade', 'base-failed', 'rollback'].includes(mode) && version === '1.0.0';
+      return Response.json({
+        ...data,
+        _npmUser: trusted
+          ? {
+              name: 'GitHub Actions',
+              trustedPublisher: { id: 'github', oidcConfigId: 'fixture-configuration' },
+            }
+          : {
+              name: mode === 'long-maintainers' && version === '2.0.0' ? 'bob' : 'alice',
+              email: 'never-output@example.invalid',
             },
-          }),
-      },
-    );
-    const malware = createMalwareReader(f.advisoryLimits, {
+        maintainers:
+          mode === 'long-maintainers'
+            ? Array.from({ length: 24 }, (_, i) => ({
+                name: 'maintainer-' + i + '-abcdefghijklmnopqrstuvwxyz',
+              }))
+            : [{ name: mode === 'maintainer-change' && version === '2.0.0' ? 'bob' : 'alice' }],
+        deprecated: version === '2.0.0' ? 'Use the maintained line' : undefined,
+      });
+    },
+  });
+  const times = createNpmPublishTimeReader(
+    { ...upstreamTestLimits, maxWork: 100000 },
+    {
       now: () => 0,
-      fetch: async () => Response.json([]),
-    });
-    if (npm.kind !== 'ready' || times.kind !== 'ready' || malware.kind !== 'ready')
-      throw new Error('reader');
-    const out = await enrichPolicySignals(
-      {
-        ...f.input,
-        ...upstream,
-        limits: { ...f.advisoryLimits, maxAttempts: 1000 },
-        evaluationTime: Date.parse('2026-11-07T00:00:00Z'),
-      },
-      { malwareReader: malware, publishTimeReader: times, npmReader: npm },
-    );
-    malware.close();
-    times.close();
-    if (out.kind !== 'enriched') throw new Error(JSON.stringify(out));
-    const changes = out.changes.filter((c) => c.ecosystem === 'npm');
-    const downgrades = out.findings.filter(
-      (f) => f.kind === 'supplyChainChange' && f.change === 'trust_downgrade',
-    );
-    expect(downgrades.length > 0).toBe(mode === 'downgrade');
+      fetch: async (url) =>
+        Response.json({
+          name: decodeURIComponent(new URL(url).pathname.slice(1)),
+          time: {
+            '1.0.0': mode === 'rollback' ? '2026-11-02T00:00:00Z' : '2026-10-01T00:00:00Z',
+            '2.0.0': '2026-11-01T00:00:00Z',
+          },
+        }),
+    },
+  );
+  const malware = createMalwareReader(f.advisoryLimits, {
+    now: () => 0,
+    fetch: async () => Response.json([]),
+  });
+  if (npm.kind !== 'ready' || times.kind !== 'ready' || malware.kind !== 'ready')
+    throw new Error('reader');
+  const out = await enrichPolicySignals(
+    {
+      ...f.input,
+      ...upstream,
+      limits: { ...f.advisoryLimits, maxAttempts: 1000 },
+      evaluationTime: Date.parse('2026-11-07T00:00:00Z'),
+    },
+    { malwareReader: malware, publishTimeReader: times, npmReader: npm },
+  );
+  malware.close();
+  times.close();
+  if (out.kind !== 'enriched') throw new Error(JSON.stringify(out));
+  const changes = out.changes.filter((c) => c.ecosystem === 'npm');
+  const downgrades = out.findings.filter(
+    (f) => f.kind === 'supplyChainChange' && f.change === 'trust_downgrade',
+  );
+  expect(downgrades.length > 0).toBe(mode === 'downgrade');
+  expect(out.findings.some((f) => f.kind === 'supplyChainChange' && f.change === 'publisher')).toBe(
+    ['downgrade', 'rollback', 'kind-change', 'maintainer-change', 'long-maintainers'].includes(
+      mode,
+    ),
+  );
+  if (mode === 'base-failed')
     expect(
-      out.findings.some((f) => f.kind === 'supplyChainChange' && f.change === 'publisher'),
-    ).toBe(['downgrade', 'rollback', 'kind-change', 'maintainer-change'].includes(mode));
-    if (mode === 'base-failed')
-      expect(
-        changes.every(
-          (c) => c.evidence.trust.status === 'partial' && c.evidence.publisher.status === 'partial',
-        ),
-      ).toBe(true);
-    if (mode === 'absent')
-      expect(changes.every((c) => c.evidence.trust.status === 'available')).toBe(true);
-    expect(JSON.stringify(out)).not.toContain('never-output@example.invalid');
-    const packet = validateReviewPacket(
-      {
-        version: 1,
-        ...f.expected,
-        changes: out.changes,
-        sources: out.sources,
-        findings: out.findings,
-        coverage: f.coverage,
-        relationships: f.relationships,
-      },
-      f.expected,
-    );
-    expect(packet.ok, JSON.stringify(packet)).toBe(true);
-    if (downgrades.length)
-      expect(
-        downgrades.every((f) =>
-          f.references.every((id) => out.sources.find((s) => s.id === id)?.kind === 'trust'),
-        ),
-      ).toBe(true);
-  },
-);
+      changes.every(
+        (c) => c.evidence.trust.status === 'partial' && c.evidence.publisher.status === 'partial',
+      ),
+    ).toBe(true);
+  if (mode === 'absent')
+    expect(changes.every((c) => c.evidence.trust.status === 'available')).toBe(true);
+  expect(JSON.stringify(out)).not.toContain('never-output@example.invalid');
+  const packet = validateReviewPacket(
+    {
+      version: 1,
+      ...f.expected,
+      changes: out.changes,
+      sources: out.sources,
+      findings: out.findings,
+      coverage: f.coverage,
+      relationships: f.relationships,
+    },
+    f.expected,
+  );
+  expect(packet.ok, JSON.stringify(packet)).toBe(true);
+  if (downgrades.length)
+    expect(
+      downgrades.every((f) =>
+        f.references.every((id) => out.sources.find((s) => s.id === id)?.kind === 'trust'),
+      ),
+    ).toBe(true);
+});
