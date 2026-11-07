@@ -12,7 +12,11 @@ import type { Finding } from '../policy.js';
 import type { NpmInventoryResult, NpmNode } from './npm.js';
 import type { PublicPackageIdentity, ActionVersionMapping } from './advisories.js';
 import { freeze, isPlainObject } from './common.js';
-import { collectTargetRelease, type UpstreamResearch } from './upstream-github.js';
+import {
+  collectTargetRelease,
+  collectPackageComparison,
+  type UpstreamResearch,
+} from './upstream-github.js';
 import {
   requireUpstream,
   upstreamCopy,
@@ -372,6 +376,25 @@ async function packageResearch(
     reader,
   );
   attachUpstreamResearch(input, output, change, research);
+  const base = lookups.get('base');
+  if (change.evidence.upstream.status !== 'available' && change.from && change.to && base?.data) {
+    const compared = await collectPackageComparison(
+      {
+        ecosystem: change.ecosystem,
+        name: change.from.name,
+        version: change.from.version,
+        metadata: base.data,
+      },
+      {
+        ecosystem: change.ecosystem,
+        name: change.to.name,
+        version: change.to.version,
+        metadata: lookup.data,
+      },
+      reader,
+    );
+    attachUpstreamResearch(input, output, change, compared);
+  }
 }
 /** Enrich exact inventory identities; caller retains inventory coverage and relationships separately. */
 export async function enrichUpstream(

@@ -1,7 +1,11 @@
 import { expect, test } from 'vite-plus/test';
 import { createHash } from 'node:crypto';
 import { createUpstreamReader } from './upstream-read.js';
-import { collectTargetRelease, resolveUpstreamRef } from './upstream-github.js';
+import {
+  collectTargetRelease,
+  resolveUpstreamRef,
+  collectExactComparison,
+} from './upstream-github.js';
 
 const sha = 'a'.repeat(40);
 const limits = {
@@ -59,7 +63,9 @@ function setup(overrides: Record<string, unknown> = {}) {
         },
         ...overrides,
       };
-      return path in data ? Response.json(data[path]) : Response.json({}, { status: 404 });
+      const value = typeof data[path] === 'function' ? data[path](url) : data[path];
+      if (value instanceof Response) return value;
+      return path in data ? Response.json(value) : Response.json({}, { status: 404 });
     },
   });
   if (opened.kind !== 'ready') throw new Error('reader');
@@ -108,6 +114,107 @@ test.each([{ body: '' }, { draft: true }, { tag_name: 'v9.0.0' }])(
       },
     });
     expect((await collectTargetRelease(target, f.reader)).status).toBe('unavailable');
+    f.reader.close();
+  },
+);
+
+test('complete comparison retains exact direction and reviewed commits', async () => {
+  const base = 'c'.repeat(40);
+  const f = setup({
+    ['/compare/' + base + '...' + sha]: {
+      base_commit: { sha: base },
+      merge_base_commit: { sha: base },
+      status: 'ahead',
+      ahead_by: 1,
+      behind_by: 0,
+      total_commits: 1,
+      commits: [{ sha, commit: { message: 'Target change' } }],
+      files: [{ filename: 'index.js', patch: '@@ change' }],
+    },
+  });
+  const result = await collectExactComparison(
+    'fixture/orbit',
+    { sha: base, value: '1.0.0' },
+    { sha, value: '2.0.0' },
+    f.reader,
+  );
+  expect(result.status).toBe('available');
+  expect(result.sources[0]).toMatchObject({ range: { from: '1.0.0', to: '2.0.0' } });
+  expect(result.sources[0].text).toContain('Target change');
+  f.reader.close();
+});
+test('a failed comparison continuation preserves earlier commits as partial', async () => {
+  const base = 'c'.repeat(40),
+    path = '/compare/' + base + '...' + sha;
+  const f = setup({
+    [path]: (url: string) =>
+      new URL(url).searchParams.get('page') === '1'
+        ? Response.json(
+            {
+              base_commit: { sha: base },
+              merge_base_commit: { sha: base },
+              status: 'ahead',
+              ahead_by: 2,
+              behind_by: 0,
+              total_commits: 2,
+              commits: [{ sha: 'd'.repeat(40), commit: { message: 'Earlier retained commit' } }],
+              files: [{ filename: 'index.js', patch: '@@ change' }],
+            },
+            {
+              headers: {
+                link:
+                  '<https://api.github.com/repos/fixture/orbit' +
+                  path +
+                  '?per_page=100&page=2>; rel="next"',
+              },
+            },
+          )
+        : Response.json({}, { status: 500 }),
+  });
+  const result = await collectExactComparison(
+    'fixture/orbit',
+    { sha: base, value: '1.0.0' },
+    { sha, value: '2.0.0' },
+    f.reader,
+  );
+  expect(result.status).toBe('partial');
+  expect(result.sources[0].text).toContain('Earlier retained commit');
+  expect(result.reasons.length).toBeGreaterThan(0);
+  f.reader.close();
+});
+
+test.each(['diverged', 'missing-patch', 'wrong-base', 'hostile-next'])(
+  'comparison %s cannot claim complete range coverage',
+  async (mode) => {
+    const base = 'c'.repeat(40),
+      path = '/compare/' + base + '...' + sha;
+    const payload = {
+      base_commit: { sha: mode === 'wrong-base' ? sha : base },
+      merge_base_commit: { sha: mode === 'diverged' ? 'e'.repeat(40) : base },
+      status: mode === 'diverged' ? 'diverged' : 'ahead',
+      ahead_by: 1,
+      behind_by: mode === 'diverged' ? 1 : 0,
+      total_commits: 1,
+      commits: [{ sha, commit: { message: 'Retained' } }],
+      files:
+        mode === 'missing-patch'
+          ? [{ filename: 'image.png' }]
+          : [{ filename: 'index.js', patch: 'change' }],
+    };
+    const f = setup({
+      [path]:
+        mode === 'hostile-next'
+          ? Response.json(payload, { headers: { link: '<https://evil.example/page>; rel="next"' } })
+          : payload,
+    });
+    const result = await collectExactComparison(
+      'fixture/orbit',
+      { sha: base, value: '1.0.0' },
+      { sha, value: '2.0.0' },
+      f.reader,
+    );
+    expect(result.status).not.toBe('available');
+    expect(f.calls.every((url) => new URL(url).hostname === 'api.github.com')).toBe(true);
     f.reader.close();
   },
 );

@@ -28,10 +28,22 @@ export type MetadataTarget = Readonly<{
 export type GithubUpstreamTarget = Readonly<{
   kind: 'github';
   repository: string;
-  resource: 'repository' | 'ref' | 'tag' | 'commit' | 'release' | 'contents';
+  resource:
+    | 'repository'
+    | 'ref'
+    | 'tag'
+    | 'commit'
+    | 'release'
+    | 'contents'
+    | 'compare'
+    | 'releases'
+    | 'tags';
   ref?: string;
   sha?: string;
   path?: string;
+  base?: string;
+  head?: string;
+  page?: number;
 }>;
 export type UpstreamTarget = MetadataTarget | GithubUpstreamTarget;
 export type UpstreamLookup = Readonly<{
@@ -40,6 +52,7 @@ export type UpstreamLookup = Readonly<{
   url: string | null;
   data: Readonly<Record<string, unknown>> | null;
   reasons: readonly EvidenceReason[];
+  nextPage?: boolean;
 }>;
 export type UpstreamReader = Readonly<{
   limits: UpstreamLimits;
@@ -168,7 +181,17 @@ function githubTarget(value: unknown): GithubUpstreamTarget {
   );
   requireUpstream(!['.', '..'].includes(value.repository.split('/')[1]), 'unsupported');
   requireUpstream(
-    ['repository', 'ref', 'tag', 'commit', 'release', 'contents'].includes(String(value.resource)),
+    [
+      'repository',
+      'ref',
+      'tag',
+      'commit',
+      'release',
+      'contents',
+      'compare',
+      'releases',
+      'tags',
+    ].includes(String(value.resource)),
     'unsupported',
   );
   if (['ref', 'release'].includes(String(value.resource)))
@@ -181,7 +204,28 @@ function githubTarget(value: unknown): GithubUpstreamTarget {
       'unsupported',
     );
   if (value.resource === 'contents') requireUpstream(isEvidencePath(value.path), 'unsupported');
+  if (value.resource === 'compare')
+    requireUpstream(
+      [value.base, value.head].every(
+        (sha) => typeof sha === 'string' && /^[a-f\d]{40}$/u.test(sha),
+      ),
+      'unsupported',
+    );
+  if (['compare', 'releases', 'tags'].includes(String(value.resource)))
+    requireUpstream(Number.isSafeInteger(value.page) && Number(value.page) > 0, 'unsupported');
   return value as unknown as GithubUpstreamTarget;
+}
+function githubNext(link: string | null, original: string) {
+  if (!link || !/rel="next"/u.test(link)) return false;
+  const matches = [...link.matchAll(/<([^>]+)>;\s*rel="next"/gu)];
+  requireUpstream(matches.length === 1, 'conflict');
+  const next = new URL(matches[0][1]),
+    expected = new URL(original);
+  expected.searchParams.set('page', String(Number(expected.searchParams.get('page')) + 1));
+  next.searchParams.sort();
+  expected.searchParams.sort();
+  requireUpstream(next.href === expected.href, 'conflict');
+  return true;
 }
 export function upstreamGithubUrl(t: GithubUpstreamTarget) {
   const base = 'https://api.github.com/repos/' + t.repository;
@@ -200,6 +244,12 @@ export function upstreamGithubUrl(t: GithubUpstreamTarget) {
       return (
         base + '/contents/' + t.path!.split('/').map(encodeURIComponent).join('/') + '?ref=' + t.sha
       );
+    case 'compare':
+      return base + '/compare/' + t.base + '...' + t.head + '?per_page=100&page=' + t.page;
+    case 'releases':
+      return base + '/releases?per_page=100&page=' + t.page;
+    case 'tags':
+      return base + '/tags?per_page=100&page=' + t.page;
   }
 }
 class Reader {
@@ -215,6 +265,8 @@ class Reader {
   private readonly controller = new AbortController();
   private readonly blocked = new Set<string>();
   private readonly cache = new Map<string, Readonly<Record<string, unknown>>>();
+  private readonly nextPages = new Map<string, boolean>();
+  private pages = 0;
   private readonly npm: ReturnType<typeof createNpmRegistryReader>;
   constructor(
     readonly limits: UpstreamLimits,
@@ -360,12 +412,18 @@ class Reader {
   private async githubData(t: GithubUpstreamTarget, url: string) {
     const cached = t.resource === 'ref' ? null : this.cache.get(url);
     if (cached) return cached;
+    if (t.page !== undefined) requireUpstream(++this.pages <= this.limits.maxPages, 'budget');
     const response = await this.fetchBounded(url, {});
     const parsed = JSON.parse(
       new TextDecoder('utf-8', { fatal: true }).decode(await response.arrayBuffer()),
     );
-    const data = upstreamCopy(parsed, this.limits, this.work);
+    const data = upstreamCopy(
+      Array.isArray(parsed) ? { items: parsed } : parsed,
+      this.limits,
+      this.work,
+    );
     requireUpstream(isPlainObject(data));
+    this.nextPages.set(url, githubNext(response.headers.get('link'), url));
     if (t.resource !== 'ref') this.cache.set(url, freeze(data));
     return data;
   }
@@ -402,6 +460,7 @@ class Reader {
         url,
         data,
         reasons: [],
+        nextPage: this.nextPages.get(url) ?? false,
       });
     } catch (error) {
       return freeze({

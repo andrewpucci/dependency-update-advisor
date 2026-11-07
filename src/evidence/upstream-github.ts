@@ -326,3 +326,198 @@ export async function collectTargetRelease(
   result.reasons = [...new Set(result.reasons)];
   return result;
 }
+
+type Endpoint = Readonly<{ sha: string; value: string }>;
+type ComparisonState = {
+  valid: boolean;
+  total: number | null;
+  messages: Map<string, string>;
+  forward: boolean;
+  filesComplete: boolean;
+  reasons: Set<EvidenceReason>;
+};
+function comparisonIdentity(
+  data: Readonly<Record<string, unknown>>,
+  base: Endpoint,
+  state: ComparisonState,
+) {
+  requireUpstream(isPlainObject(data.base_commit) && data.base_commit.sha === base.sha, 'conflict');
+  requireUpstream(isPlainObject(data.merge_base_commit));
+  requireUpstream(Number.isSafeInteger(data.total_commits) && Number(data.total_commits) >= 0);
+  requireUpstream(state.total === null || state.total === data.total_commits, 'conflict');
+  state.total = Number(data.total_commits);
+  state.forward =
+    data.status === 'ahead' &&
+    data.behind_by === 0 &&
+    data.ahead_by === state.total &&
+    data.merge_base_commit.sha === base.sha;
+  if (!state.forward) state.reasons.add('unsupported');
+}
+function comparisonCommits(data: Readonly<Record<string, unknown>>, state: ComparisonState) {
+  requireUpstream(Array.isArray(data.commits));
+  for (const commit of data.commits) {
+    requireUpstream(
+      isPlainObject(commit) && typeof commit.sha === 'string' && /^[a-f\d]{40}$/u.test(commit.sha),
+    );
+    requireUpstream(isPlainObject(commit.commit) && typeof commit.commit.message === 'string');
+    requireUpstream(!state.messages.has(commit.sha), 'conflict');
+    state.messages.set(commit.sha, commit.commit.message);
+  }
+  requireUpstream(state.messages.size <= state.total!, 'conflict');
+}
+function comparisonFiles(data: Readonly<Record<string, unknown>>, state: ComparisonState) {
+  requireUpstream(Array.isArray(data.files));
+  state.filesComplete =
+    data.files.length < 300 &&
+    data.files.every(
+      (file) =>
+        isPlainObject(file) && upstreamText(file.filename) && typeof file.patch === 'string',
+    );
+  if (!state.filesComplete) state.reasons.add('truncated');
+}
+async function comparisonPages(
+  repository: string,
+  base: Endpoint,
+  head: Endpoint,
+  reader: UpstreamReader,
+) {
+  const state: ComparisonState = {
+    valid: false,
+    total: null,
+    messages: new Map(),
+    forward: false,
+    filesComplete: false,
+    reasons: new Set(),
+  };
+  for (let page = 1; page <= reader.limits.maxPages; page++) {
+    try {
+      const result = await reader.read({
+        kind: 'github',
+        repository,
+        resource: 'compare',
+        base: base.sha,
+        head: head.sha,
+        page,
+      });
+      requireUpstream(result.status === 'available' && result.data, result.reasons[0] ?? 'unknown');
+      comparisonIdentity(result.data, base, state);
+      comparisonCommits(result.data, state);
+      if (page === 1) comparisonFiles(result.data, state);
+      state.valid = true;
+      if (!result.nextPage) {
+        if (state.messages.size !== state.total) state.reasons.add('truncated');
+        if (state.forward && [...state.messages.keys()].at(-1) !== head.sha)
+          state.reasons.add('conflict');
+        return state;
+      }
+      requireUpstream(page < reader.limits.maxPages, 'budget');
+    } catch (error) {
+      state.reasons.add(upstreamReason(error));
+      return state;
+    }
+  }
+  return state;
+}
+export async function collectExactComparison(
+  repository: string,
+  base: Endpoint,
+  head: Endpoint,
+  reader: UpstreamReader,
+): Promise<UpstreamResearch> {
+  const state = await comparisonPages(repository, base, head, reader);
+  const url = 'https://github.com/' + repository + '/compare/' + base.sha + '...' + head.sha;
+  const reasons = [...state.reasons];
+  const status = !state.valid ? 'unavailable' : reasons.length ? 'partial' : 'available';
+  return {
+    status,
+    reasons,
+    sources: state.valid
+      ? [
+          {
+            kind: 'compare',
+            url,
+            title: `${base.value} to ${head.value} upstream comparison`,
+            text:
+              `Exact commits ${base.sha} to ${head.sha}. ${status === 'available' ? 'Complete bounded comparison.' : 'Partial comparison; not all changes were reviewed.'}\n` +
+              [...state.messages.values()].join('\n'),
+            range: { from: base.value, to: head.value },
+          },
+        ]
+      : [],
+    attempts: [
+      {
+        stage: 'compare',
+        target: base.value + '...' + head.value,
+        url,
+        outcome: state.valid ? 'available' : 'unavailable',
+        reasons,
+        range: { from: base.value, to: head.value },
+      },
+    ],
+  };
+}
+export async function resolvePackageVersion(
+  target: PackageResearchTarget,
+  repo: UpstreamRepository,
+  reader: UpstreamReader,
+) {
+  const candidates = ['v' + target.version, target.version];
+  if (repo.directory) candidates.push(target.name + '@' + target.version);
+  let failure: EvidenceReason = 'missing';
+  for (const [index, tag] of candidates.entries()) {
+    requireUpstream(index < reader.limits.maxTagCandidates, 'budget');
+    const resolved = await resolveUpstreamRef(repo.repository, 'tags/' + tag, reader);
+    if (resolved.status !== 'available') {
+      failure = resolved.reason;
+      continue;
+    }
+    await packageCorrespondence(target, repo, resolved.sha, reader);
+    const check = await resolveUpstreamRef(repo.repository, 'tags/' + tag, reader);
+    requireUpstream(check.status === 'available' && check.sha === resolved.sha, 'conflict');
+    return { sha: resolved.sha, value: target.version, ref: tag };
+  }
+  throw new UpstreamFailure(failure);
+}
+export async function collectPackageComparison(
+  base: PackageResearchTarget,
+  head: PackageResearchTarget,
+  reader: UpstreamReader,
+): Promise<UpstreamResearch> {
+  try {
+    requireUpstream(
+      base.ecosystem === head.ecosystem && base.name === head.name && base.version !== head.version,
+      'unsupported',
+    );
+    const before = repositoryCandidate(base.metadata),
+      after = repositoryCandidate(head.metadata);
+    requireUpstream(
+      before.repository === after.repository && before.directory === after.directory,
+      'conflict',
+    );
+    await publicRepository(before.repository, reader);
+    const from = await resolvePackageVersion(base, before, reader),
+      to = await resolvePackageVersion(head, after, reader);
+    return {
+      ...(await collectExactComparison(before.repository, from, to, reader)),
+      repository: after,
+      head: { sha: to.sha, ref: to.ref },
+    };
+  } catch (error) {
+    const reason = upstreamReason(error);
+    return {
+      status: 'unavailable',
+      reasons: [reason],
+      sources: [],
+      attempts: [
+        {
+          stage: 'compare',
+          target: base.version + '...' + head.version,
+          url: null,
+          outcome: 'skipped',
+          reasons: [reason],
+          range: { from: base.version, to: head.version },
+        },
+      ],
+    };
+  }
+}
