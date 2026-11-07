@@ -13,6 +13,7 @@ import type { NpmInventoryResult, NpmNode } from './npm.js';
 import type { PublicPackageIdentity, ActionVersionMapping } from './advisories.js';
 import { freeze, isPlainObject } from './common.js';
 import { collectActionResearch, type ActionMappingDraft } from './upstream-actions.js';
+import { collectRangeFallback, collectChangelog } from './upstream-range.js';
 import {
   collectTargetRelease,
   collectPackageComparison,
@@ -396,6 +397,27 @@ async function packageResearch(
     );
     attachUpstreamResearch(input, output, change, compared);
   }
+  if (change.evidence.upstream.status === 'available') return;
+  const target = {
+    ecosystem: change.ecosystem,
+    name: instance.name,
+    version: instance.version,
+    metadata: lookup.data,
+  };
+  if (change.from && change.to && base?.data) {
+    const range = await collectRangeFallback(
+      {
+        ecosystem: change.ecosystem,
+        name: change.from.name,
+        version: change.from.version,
+        metadata: base.data,
+      },
+      target,
+      reader,
+    );
+    attachUpstreamResearch(input, output, change, range);
+  }
+  attachUpstreamResearch(input, output, change, await collectChangelog(target, reader));
 }
 function attachActionMappings(
   input: UpstreamInput,
