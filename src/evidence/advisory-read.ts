@@ -132,22 +132,23 @@ function target(value: unknown): AdvisoryTarget {
     version: value.version,
   };
 }
-export function advisoryUrl(t: AdvisoryTarget): string {
+type QueryKind = 'reviewed' | 'malware';
+export function advisoryUrl(t: AdvisoryTarget, kind: QueryKind = 'reviewed'): string {
   const url = new URL('https://api.github.com/advisories');
   url.search = new URLSearchParams({
     ecosystem: t.ecosystem,
     affects: `${t.name}@${t.version}`,
-    type: 'reviewed',
+    type: kind,
     per_page: '100',
   }).toString();
   return url.href;
 }
-function normalize(value: unknown, t: AdvisoryTarget): AdvisoryRecord {
+function normalize(value: unknown, t: AdvisoryTarget, kind: QueryKind): AdvisoryRecord {
   advisoryCheck(
     isPlainObject(value) && /^GHSA-[a-z\d]{4}-[a-z\d]{4}-[a-z\d]{4}$/u.test(String(value.ghsa_id)),
   );
   advisoryCheck(value.html_url === `https://github.com/advisories/${value.ghsa_id}`);
-  advisoryCheck(value.type === 'reviewed', 'unsupported');
+  advisoryCheck(value.type === kind, 'unsupported');
   advisoryCheck(advisoryText(value.summary));
   advisoryCheck(
     value.withdrawn_at === null ||
@@ -294,6 +295,7 @@ class Reader implements AdvisoryReader {
   constructor(
     private limits: AdvisoryLimits,
     private deps: Dependencies,
+    private kind: QueryKind,
   ) {
     this.started = this.last = deps.now();
     advisoryCheck(Number.isFinite(this.started));
@@ -421,7 +423,7 @@ class Reader implements AdvisoryReader {
     this.busy = true;
     try {
       t = target(value);
-      url = advisoryUrl(t);
+      url = advisoryUrl(t, this.kind);
       let next: string | null = url;
       const seen = new Set<string>();
       while (next) {
@@ -429,7 +431,7 @@ class Reader implements AdvisoryReader {
         const page = await this.page(next);
         advisoryCheck(Array.isArray(page.data));
         for (const value of page.data) {
-          const record = normalize(value, t);
+          const record = normalize(value, t, this.kind);
           advisoryCheck(records.length < this.limits.maxFindings, 'budget');
           advisoryCheck(
             Buffer.byteLength(JSON.stringify([...records, record])) <= this.limits.maxRetainedBytes,
@@ -461,12 +463,13 @@ class Reader implements AdvisoryReader {
     }
   }
 }
-export function createAdvisoryReader(
+function createReader(
   limits: unknown,
   dependencies: Dependencies,
+  kind: QueryKind,
 ): ({ kind: 'ready' } & AdvisoryReader) | { kind: 'invalid' } {
   try {
-    const reader = new Reader(advisoryLimits(limits), dependencies);
+    const reader = new Reader(advisoryLimits(limits), dependencies, kind);
     return Object.freeze({
       kind: 'ready',
       read: (value: unknown) => reader.read(value),
@@ -475,4 +478,10 @@ export function createAdvisoryReader(
   } catch {
     return { kind: 'invalid' };
   }
+}
+export function createAdvisoryReader(limits: unknown, dependencies: Dependencies) {
+  return createReader(limits, dependencies, 'reviewed');
+}
+export function createMalwareReader(limits: unknown, dependencies: Dependencies) {
+  return createReader(limits, dependencies, 'malware');
 }

@@ -1,5 +1,5 @@
 import { expect, test, vi } from 'vite-plus/test';
-import { createAdvisoryReader } from './advisory-read.js';
+import { createAdvisoryReader, createMalwareReader } from './advisory-read.js';
 
 const limits = {
   maxRequests: 10,
@@ -50,6 +50,79 @@ const record = {
     { package: { ecosystem: 'npm', name: target.name }, vulnerable_version_range: '<2.0.0' },
   ],
 };
+test.each(['npm', 'pip', 'actions'] as const)(
+  'malware reader explicitly queries %s and retains positive prefix on final-page failure',
+  async (ecosystem) => {
+    const name = ecosystem === 'actions' ? 'fixture/action' : 'fixture';
+    let calls = 0;
+    const r = createMalwareReader(limits, {
+      now: () => 0,
+      fetch: async (url) => {
+        calls++;
+        expect(new URL(url).searchParams.get('type')).toBe('malware');
+        expect(new URL(url).searchParams.get('affects')).toBe(name + '@1.0.0');
+        const next = new URL(url);
+        next.searchParams.set('after', 'last');
+        return calls === 1
+          ? Response.json(
+              [
+                {
+                  ...record,
+                  type: 'malware',
+                  vulnerabilities: [
+                    { package: { ecosystem, name }, vulnerable_version_range: '*' },
+                  ],
+                },
+              ],
+              { headers: { link: `<${next}>; rel="next"` } },
+            )
+          : Response.json({}, { status: 503 });
+      },
+    });
+    if (r.kind !== 'ready') throw new Error('reader');
+    const result = await r.read({ ecosystem, name, version: '1.0.0' });
+    r.close();
+    expect(result).toMatchObject({
+      complete: false,
+      status: 'partial',
+      records: [{ id: record.ghsa_id }],
+    });
+  },
+);
+test('malware and reviewed factories reject each other’s record type', async () => {
+  for (const [factory, type] of [
+    [createMalwareReader, 'reviewed'],
+    [createAdvisoryReader, 'malware'],
+  ] as const) {
+    const r = factory(limits, {
+      now: () => 0,
+      fetch: async () => Response.json([{ ...record, type }]),
+    });
+    if (r.kind !== 'ready') throw new Error('reader');
+    expect(await r.read(target)).toMatchObject({
+      complete: false,
+      records: [],
+      reasons: ['unsupported'],
+    });
+    r.close();
+  }
+});
+test('malware empty query and withdrawn observations retain their exact scope', async () => {
+  for (const records of [
+    [],
+    [{ ...record, type: 'malware', withdrawn_at: '2026-01-01T00:00:00Z' }],
+  ]) {
+    const r = createMalwareReader(limits, {
+      now: () => 0,
+      fetch: async () => Response.json(records),
+    });
+    if (r.kind !== 'ready') throw new Error('reader');
+    const result = await r.read(target);
+    r.close();
+    expect(result.complete).toBe(true);
+    expect(result.records.every((r) => r.withdrawn)).toBe(true);
+  }
+});
 function reader(fetch: (url: string, init: RequestInit) => Promise<Response>, overrides = {}) {
   const ready = createAdvisoryReader({ ...limits, ...overrides }, { fetch, now: () => 0 });
   if (ready.kind !== 'ready') throw new Error('reader');

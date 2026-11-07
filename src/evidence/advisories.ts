@@ -122,7 +122,7 @@ function actionTarget(
   });
   return valid ? { ecosystem: 'actions', name: proof.name, version: proof.version } : null;
 }
-function publicTarget(
+export function resolveAdvisoryTarget(
   input: AdvisoryInput,
   change: PacketChange,
   side: 'head' | 'base',
@@ -303,7 +303,7 @@ async function collectSide(
   reader: AdvisoryReader,
   cache: Map<string, AdvisoryLookup>,
 ): Promise<SideResult> {
-  const target = publicTarget(input, change, side);
+  const target = resolveAdvisoryTarget(input, change, side);
   let lookup: AdvisoryLookup | null = null;
   if (target) {
     const key = JSON.stringify(target);
@@ -525,7 +525,7 @@ function validate(input: AdvisoryInput) {
   validateChanges(input);
   validateProofs(input);
 }
-function prepareInput(
+export function prepareAdvisoryInput(
   value: AdvisoryInput,
 ): { ok: true; input: AdvisoryInput } | { ok: false; result: AdvisoryResult } {
   let input: AdvisoryInput;
@@ -586,7 +586,7 @@ export async function enrichAdvisories(
   value: AdvisoryInput,
   dependencies: { reader: AdvisoryReader },
 ): Promise<AdvisoryResult> {
-  const prepared = prepareInput(value);
+  const prepared = prepareAdvisoryInput(value);
   if (!prepared.ok) return prepared.result;
   const input = prepared.input;
   const output: AdvisoryEnrichment = {

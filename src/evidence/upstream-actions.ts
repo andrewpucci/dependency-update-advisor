@@ -33,7 +33,7 @@ export type ActionMappingDraft = Readonly<{
 type ObservedRef = { sha: string; namespace: string | null };
 /** Release-enumeration tag reads shared by both sides of one change; proof rechecks stay fresh. */
 type TagReads = Map<string, Awaited<ReturnType<typeof resolveUpstreamRef>>>;
-async function observeRef(
+export async function observeRef(
   repository: string,
   instance: ActionsSide,
   reader: UpstreamReader,
@@ -53,7 +53,7 @@ async function observeRef(
     return { sha: branch.sha, namespace: 'heads/' + instance.ref };
   throw new UpstreamFailure(tag.status === 'unavailable' ? tag.reason : 'unknown');
 }
-async function recheck(repository: string, observed: ObservedRef, reader: UpstreamReader) {
+export async function recheck(repository: string, observed: ObservedRef, reader: UpstreamReader) {
   if (!observed.namespace) return;
   const next = await resolveUpstreamRef(repository, observed.namespace, reader);
   requireUpstream(next.status === 'available' && next.sha === observed.sha, 'conflict');
@@ -90,7 +90,7 @@ async function releaseAtCommit(
   );
   if (resolved.sha === sha) return { version, tag, data: item };
 }
-async function matchingReleases(
+export async function matchingReleases(
   repository: string,
   sha: string,
   tags: TagReads,
