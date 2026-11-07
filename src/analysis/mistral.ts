@@ -1,3 +1,4 @@
+import { types } from 'node:util';
 import { freeze, isPlainObject } from '../evidence/common.js';
 import {
   preparedSnapshot,
@@ -58,8 +59,8 @@ class MistralFailure extends Error {
 function requireValue(value: unknown, category: MistralCategory): asserts value {
   if (!value) throw new MistralFailure(category);
 }
-function preflight(options: MistralOptions, deps: MistralDependencies): number {
-  requireValue(isPlainObject(options), 'configuration');
+function preflight(options: MistralOptions, deps: MistralDependencies) {
+  requireValue(isPlainObject(options) && !types.isProxy(options), 'configuration');
   for (const key of Reflect.ownKeys(options)) {
     const field = Object.getOwnPropertyDescriptor(options, key)!;
     requireValue(
@@ -67,21 +68,22 @@ function preflight(options: MistralOptions, deps: MistralDependencies): number {
       'configuration',
     );
   }
+  const selected = { ...options };
   requireValue(
-    typeof options.apiKey === 'string' && /^[\x21-\x7e]+$/.test(options.apiKey),
+    typeof selected.apiKey === 'string' && /^[\x21-\x7e]+$/.test(selected.apiKey),
     'configuration',
   );
   requireValue(
-    options.signal === undefined || options.signal instanceof AbortSignal,
+    selected.signal === undefined || selected.signal instanceof AbortSignal,
     'configuration',
   );
-  requireValue(!options.signal?.aborted, 'cancelled');
+  requireValue(!selected.signal?.aborted, 'cancelled');
   const now = deps.now();
   requireValue(
-    Number.isFinite(now) && Number.isFinite(options.deadlineMs) && options.deadlineMs > now,
+    Number.isFinite(now) && Number.isFinite(selected.deadlineMs) && selected.deadlineMs > now,
     'deadline',
   );
-  return now;
+  return { start: now, options: selected };
 }
 function cancelBody(response: Response | undefined) {
   if (response?.body && !response.body.locked) void response.body.cancel().catch(() => {});
@@ -256,10 +258,10 @@ export async function analyzeMistralBatch(
     run: Lifecycle | undefined,
     response: Response | undefined;
   try {
-    const start = preflight(options, deps);
+    const selected = preflight(options, deps);
     const body = JSON.stringify(snapshot.request);
     requireValue(Buffer.byteLength(body) <= snapshot.limits.requestBytes, 'budget');
-    run = lifecycle(options, deps, start, snapshot.limits.requestTimeoutMs);
+    run = lifecycle(selected.options, deps, selected.start, snapshot.limits.requestTimeoutMs);
     run.check();
     attempted = true;
     const pending = deps.fetch('https://api.mistral.ai/v1/chat/completions', {
@@ -267,7 +269,7 @@ export async function analyzeMistralBatch(
       redirect: 'error',
       credentials: 'omit',
       headers: {
-        Authorization: `Bearer ${options.apiKey}`,
+        Authorization: `Bearer ${selected.options.apiKey}`,
         'Content-Type': 'application/json',
         Accept: 'application/json',
       },
