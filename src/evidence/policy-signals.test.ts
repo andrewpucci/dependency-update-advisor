@@ -7,6 +7,8 @@ import { upstreamScenario, upstreamTestLimits } from '../../tests/parity/upstrea
 import { validateReviewPacket } from '../schema.js';
 import { formDecisionUnits, evaluateUnitPolicy } from '../units.js';
 import { parseReviewConfig } from '../config.js';
+import { AdvisoryFailure } from './advisory-read.js';
+import { createNpmRegistryReader } from './npm-registry.js';
 
 async function fixture(extras = false) {
   const f = await upstreamScenario({ extras, declaration: extras });
@@ -136,4 +138,85 @@ test('invalid input cannot trigger network and does not mutate caller data', asy
     await enrichPolicySignals({ ...input, evaluationTime: NaN }, { malwareReader: reader }),
   ).toEqual({ kind: 'invalid' });
   expect(reads).toBe(0);
+});
+test('optional attempt exhaustion keeps a bounded explained result and known deprecation findings', async () => {
+  const { f, input } = await fixture();
+  const count = input.changes.filter((c) => !('basis' in c)).length;
+  const malware = createMalwareReader(input.limits, {
+    now: () => 0,
+    fetch: async () => Response.json([]),
+  });
+  const npm = createNpmRegistryReader(upstreamTestLimits, {
+    now: () => 0,
+    fetch: async (url, init) => {
+      const data = await (await f.fetch(url, init)).json();
+      return Response.json({ ...data, deprecated: 'Maintained replacement required' });
+    },
+  });
+  if (malware.kind !== 'ready' || npm.kind !== 'ready') throw new Error('reader');
+  const out = await enrichPolicySignals(
+    {
+      ...input,
+      npmInventory: f.input.npmInventory,
+      limits: { ...input.limits, maxAttempts: count * 6 },
+    },
+    { malwareReader: malware, npmReader: npm },
+  );
+  malware.close();
+  expect(out.kind, JSON.stringify(out)).toBe('enriched');
+  if (out.kind !== 'enriched') throw new Error('output');
+  expect(out.attempts.length).toBeLessThanOrEqual(count * 6);
+  expect(
+    out.changes
+      .filter((c) => !('basis' in c))
+      .every((c) => c.evidence.malware.status === 'available'),
+  ).toBe(true);
+  expect(
+    out.findings.some((f) => f.kind === 'releaseMetadata' && f.deprecated?.marker === 'deprecated'),
+  ).toBe(true);
+  expect(out.changes.some((c) => c.evidence.trust?.reasons.includes('budget'))).toBe(true);
+  const packet = validateReviewPacket(
+    {
+      version: 1,
+      ...f.expected,
+      changes: out.changes,
+      sources: out.sources,
+      findings: out.findings,
+      coverage: f.coverage,
+      relationships: f.relationships,
+    },
+    f.expected,
+  );
+  expect(packet.ok, JSON.stringify(packet)).toBe(true);
+});
+test('an optional adapter throwing a bounded failure cannot fail completed required checks', async () => {
+  const { f, input } = await fixture();
+  const malware = createMalwareReader(input.limits, {
+    now: () => 0,
+    fetch: async () => Response.json([]),
+  });
+  if (malware.kind !== 'ready') throw new Error('reader');
+  const out = await enrichPolicySignals(
+    { ...input, npmInventory: f.input.npmInventory },
+    {
+      malwareReader: malware,
+      npmReader: {
+        read: async () => {
+          throw new AdvisoryFailure('budget');
+        },
+      },
+    },
+  );
+  malware.close();
+  expect(out.kind, JSON.stringify(out)).toBe('enriched');
+  if (out.kind !== 'enriched') throw new Error('output');
+  expect(
+    out.changes
+      .filter((c) => c.ecosystem === 'npm')
+      .every(
+        (c) =>
+          c.evidence.malware.status === 'available' &&
+          c.evidence.publisher.reasons.includes('budget'),
+      ),
+  ).toBe(true);
 });
