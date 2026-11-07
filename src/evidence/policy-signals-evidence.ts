@@ -22,18 +22,92 @@ export function observe<T>(read: () => T): Observation<T> {
   }
 }
 export type OptionalCategory = 'publishTime' | 'deprecation' | 'trust' | 'publisher' | 'license';
+type KnownSignal = { url: string; value: unknown; reasons?: EvidenceReason[]; bothSides?: boolean };
+function signalSubject(change: PacketChange, side: 'base' | 'head') {
+  const instance = side === 'base' ? change.from : change.to;
+  if (!instance) return null;
+  const value = 'version' in instance ? instance.version : 'ref' in instance ? instance.ref : '';
+  return { memberId: change.id, side, value };
+}
+function signalRange(
+  change: PacketChange,
+  side: 'base' | 'head',
+  value: string,
+  bothSides?: boolean,
+) {
+  if (!bothSides)
+    return { from: side === 'base' ? value : null, to: side === 'head' ? value : null };
+  return {
+    from: change.from && 'version' in change.from ? change.from.version : null,
+    to: change.to && 'version' in change.to ? change.to.version : null,
+  };
+}
+function signalProvenance(
+  change: PacketChange,
+  side: 'base' | 'head',
+  category: OptionalCategory,
+  known: KnownSignal | null,
+  excerpt: string,
+): PacketSource['provenance'] {
+  if (!known) return { kind: 'unavailable' };
+  const reviewed = signalSubject(change, side);
+  advisoryCheck(reviewed);
+  const sides: ('base' | 'head')[] = known.bothSides ? ['base', 'head'] : [side];
+  const subjects = sides.flatMap((s) => {
+    const subject = signalSubject(change, s);
+    return subject ? [subject] : [];
+  });
+  return {
+    kind: 'upstream',
+    url: known.url,
+    title: 'Exact ' + category + ' observation',
+    excerpt,
+    excerptTruncated: false,
+    subjects,
+    range: signalRange(change, side, reviewed.value, known.bothSides),
+  };
+}
+function signalState(
+  known: KnownSignal | null,
+  reason: EvidenceReason,
+): Pick<PacketSource, 'status' | 'reasons'> {
+  if (!known) return { status: 'unavailable', reasons: [reason] };
+  const reasons = known.reasons ?? [];
+  return { status: reasons.length ? 'partial' : 'available', reasons };
+}
+function optionalAttempt(
+  source: PacketSource,
+  side: 'base' | 'head',
+  category: OptionalCategory,
+  known: KnownSignal | null,
+  reason: EvidenceReason,
+) {
+  const outcome = known
+    ? ('available' as const)
+    : reason === 'unsupported'
+      ? ('skipped' as const)
+      : ('unavailable' as const);
+  return {
+    memberId: source.memberIds[0],
+    side,
+    category,
+    url: known?.url ?? null,
+    outcome,
+    reasons: source.reasons,
+    sourceIds: [source.id],
+    truncated: reason === 'truncated' && !known,
+  };
+}
 export function recordSignal(
   input: PolicySignalInput,
   output: SignalEnrichment,
   change: PacketChange,
   side: 'base' | 'head',
   category: OptionalCategory,
-  known: { url: string; value: unknown; reasons?: EvidenceReason[]; bothSides?: boolean } | null,
+  known: KnownSignal | null,
   reason: EvidenceReason = 'unsupported',
 ): PacketSource {
-  const instance = side === 'base' ? change.from : change.to;
-  advisoryCheck(instance);
-  const value = 'version' in instance ? instance.version : 'ref' in instance ? instance.ref : '';
+  advisoryCheck(signalSubject(change, side));
   const excerpt = known ? JSON.stringify(known.value) : '';
   if (known && excerpt.length > PACKET_LIMITS.excerptCodeUnits) {
     known = null;
@@ -44,49 +118,11 @@ export function recordSignal(
     kind: category === 'license' ? 'metadata' : category,
     ecosystems: [change.ecosystem],
     memberIds: [change.id],
-    status: known ? (known.reasons?.length ? 'partial' : 'available') : 'unavailable',
-    reasons: known ? (known.reasons ?? []) : [reason],
-    provenance: known
-      ? {
-          kind: 'upstream',
-          url: known.url,
-          title: 'Exact ' + category + ' observation',
-          excerpt,
-          excerptTruncated: false,
-          subjects: known.bothSides
-            ? (['base', 'head'] as const).flatMap((s) => {
-                const i = s === 'base' ? change.from : change.to;
-                return i
-                  ? [
-                      {
-                        memberId: change.id,
-                        side: s,
-                        value: 'version' in i ? i.version : 'ref' in i ? i.ref : '',
-                      },
-                    ]
-                  : [];
-              })
-            : [{ memberId: change.id, side, value }],
-          range: known.bothSides
-            ? {
-                from: change.from && 'version' in change.from ? change.from.version : null,
-                to: change.to && 'version' in change.to ? change.to.version : null,
-              }
-            : { from: side === 'base' ? value : null, to: side === 'head' ? value : null },
-        }
-      : { kind: 'unavailable' },
+    ...signalState(known, reason),
+    provenance: signalProvenance(change, side, category, known, excerpt),
   };
   retainSignalSource(output, source);
-  output.attempts.push({
-    memberId: change.id,
-    side,
-    category,
-    url: known?.url ?? null,
-    outcome: known ? 'available' : reason === 'unsupported' ? 'skipped' : 'unavailable',
-    reasons: source.reasons,
-    sourceIds: [source.id],
-    truncated: reason === 'truncated' && !known,
-  });
+  output.attempts.push(optionalAttempt(source, side, category, known, reason));
   return source;
 }
 export function attachSignalCoverage(
