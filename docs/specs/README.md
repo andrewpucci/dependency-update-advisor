@@ -140,10 +140,11 @@ gaps and an introduced vulnerability before parity is claimed.
   after the user's edits, plan review, and `as-build auto`.
   M1 owns projection, common
   validation, and transport; M2 retains scheduling, splits, and aggregation.
-  The approved plan includes a gated live `model_length` spike and initial
+  The approved plan includes a live `model_length` spike and initial
   resource/interface choices; #210–#218 are ordered sub-issues of #21 on the
-  implementation project. The paid spike retains its separate approval gate;
-  preparation/validation can proceed independently.
+  implementation project. After the inconclusive spike, the user approved
+  ordinary-failure handling for `model_length` and continued execution.
+  #211–#213 are implemented locally; transport and later verification remain.
 - [Immutable GitHub evidence reads](SPEC-github-read.md) — implemented for
   D1 #13 and #101–#107 in `shared-review`, merged into `main`. Caller-supplied
   budgets cover discovery, immutable file bytes, and independent comparison

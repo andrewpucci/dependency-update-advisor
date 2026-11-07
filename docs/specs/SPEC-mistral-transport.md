@@ -4,7 +4,7 @@ Status: approved for execution, 2026-11-07. Supporting contract for
 `analysis-providers` in [the capability map](README.md), scoped to
 [M1 #21](https://github.com/andrewpucci/dependency-update-advisor/issues/21).
 The approved [analysis-provider contract](SPEC-analysis-providers.md) remains
-authoritative. The spike retains its credential and finish-classification gates.
+authoritative. The spike decision is resolved below; paid-call limits remain fixed.
 
 Confirmed scope decision, 2026-11-07: the user agreed that M1 owns
 provider-neutral request projection and full response validation for one
@@ -42,6 +42,11 @@ within eight minutes total. The user selected `mistral-medium-latest` and
 authorized the execution environment's `MISTRAL_API_KEY` source. No credential
 value is recorded here. Credential availability and live evidence remain gates;
 this does not authorize another model/source or expanding the probe envelope.
+
+Credential-source amendment approved 2026-11-07: the user authorized retrieving
+the Mistral API credential from 1Password instead. Use scoped CLI injection
+into the probe's environment; never print the key or write a plaintext keyfile.
+This changes only credential acquisition, not model, endpoint, or paid-call limits.
 
 ## Implemented Independent Analysis Handoff
 
@@ -328,8 +333,10 @@ anchor's sources. Unknown or unavailable evidence cannot satisfy these checks.
    its partial content need not be valid inner JSON and supplies no usable
    assessment. Unknown finish reasons and invalid envelopes are ordinary
    failures, not permission to split/retry. Mistral's client also defines
-   `model_length` (prompt plus output reached the model's context window);
-   its classification awaits the planning spike under Open Questions.
+   `model_length` (prompt plus output reached the model's context window).
+   The user approved treating it as an ordinary envelope failure, with no
+   split/retry signal. The live spike did not conclusively establish its
+   behavior; this is the recorded conservative v1 contract choice.
    Parse successful content as one JSON document; do not extract fenced
    JSON, repair syntax, or strip prose. This intentionally differs from the
    baseline, which stripped one surrounding code fence: JSON mode makes a
@@ -600,20 +607,17 @@ index `0`; normal nullable/empty absent tool/refusal fields are not themselves
 a refusal or tool call, but populated ones fail. Body validation remains
 independent of selected model aliases and bounded ignorable provider metadata.
 
-## Open Questions
+## Finish Decision and Open Questions
 
-1. `finish_reason: 'model_length'`. Decided 2026-11-07: the plan includes a
-   spike, ordered before the transport task, that settles this with actual
-   Mistral requests. Without the spike, the draft would leave it as an
-   ordinary failure that M2 cannot split. Determine whether an over-context
-   request returns HTTP 400 or HTTP 200 with `model_length`, and whether
-   `max_tokens` changes that. Then either treat a well-formed `model_length`
-   like `length` or record it as an ordinary failure, and amend this spec.
-   The spike needs a credential and paid calls with the user's approval. It
-   uses synthetic input; record sanitized findings in the issue, never raw
-   payloads. It is outside default tests.
+Decision approved 2026-11-07: after reviewing the four-call
+[live spike evidence](https://github.com/andrewpucci/dependency-update-advisor/issues/210),
+the user explicitly approved keeping `model_length` as an ordinary failure
+and continuing the automatic build. Only a well-formed `length` result enables
+M2 splitting; HTTP 400 remains a non-retryable HTTP failure. The incomplete
+live evidence is retained rather than treated as proof that `model_length`
+cannot occur. No additional paid calls were authorized by this decision.
 
-No other question requires a product-scope decision. Numeric budgets,
-canonical identity, aliases, and exported types are recorded above and approved
-for execution. Paid-call, model, credential-source, and evidence-based finish
-classification decisions remain required before transport.
+This resolves M1.1's decision gate and permits transport implementation.
+No product-scope question remains for M1. Numeric budgets, canonical identity,
+aliases, and exported types are approved for execution. M2 scheduling, live
+workflow/consumer integration, adoption, parity, and cutover remain separate.
