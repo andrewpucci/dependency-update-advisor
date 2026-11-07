@@ -1,5 +1,5 @@
 import { createNpmRegistryReader } from './npm-registry.js';
-import { copyAdvisoryData, type AdvisoryLimits } from './advisory-read.js';
+import { copyAdvisoryData, AdvisoryFailure, type AdvisoryLimits } from './advisory-read.js';
 import { freeze, isPlainObject, isEvidencePath } from './common.js';
 import type { EvidenceReason, PackageSource } from '../schema.js';
 
@@ -58,6 +58,7 @@ export type UpstreamReader = Readonly<{
   limits: UpstreamLimits;
   read: (target: unknown) => Promise<UpstreamLookup>;
   close: () => void;
+  spend: (amount: number) => void;
 }>;
 export type UpstreamDependencies = {
   fetch: (url: string, init: RequestInit) => Promise<Response>;
@@ -68,6 +69,11 @@ export class UpstreamFailure extends Error {
   constructor(readonly reason: EvidenceReason) {
     super(reason);
   }
+}
+export function upstreamFailureReason(error: unknown): EvidenceReason {
+  return error instanceof UpstreamFailure || error instanceof AdvisoryFailure
+    ? error.reason
+    : 'malformed';
 }
 export function requireUpstream(
   value: unknown,
@@ -252,6 +258,13 @@ export function upstreamGithubUrl(t: GithubUpstreamTarget) {
       return base + '/tags?per_page=100&page=' + t.page;
   }
 }
+function targetUrl(t: UpstreamTarget) {
+  if (t.kind === 'github') return upstreamGithubUrl(t);
+  const identity = encodeURIComponent(t.name) + '/' + encodeURIComponent(t.version);
+  return t.kind === 'npm'
+    ? 'https://registry.npmjs.org/' + identity
+    : 'https://pypi.org/pypi/' + identity + '/json';
+}
 class Reader {
   private requests = 0;
   private bytes = 0;
@@ -265,6 +278,11 @@ class Reader {
   private readonly controller = new AbortController();
   private readonly blocked = new Set<string>();
   private readonly cache = new Map<string, Readonly<Record<string, unknown>>>();
+  private readonly cacheSizes = new Map<string, number>();
+  private readonly failures = new Map<string, EvidenceReason>();
+  private readonly npmRetained = new Set<string>();
+  private retained = 0;
+  private effort = 0;
   private readonly nextPages = new Map<string, boolean>();
   private pages = 0;
   private readonly npm: ReturnType<typeof createNpmRegistryReader>;
@@ -284,6 +302,41 @@ class Reader {
   close() {
     this.closed = true;
     this.controller.abort();
+    this.cache.clear();
+    this.cacheSizes.clear();
+    this.failures.clear();
+    this.npmRetained.clear();
+    this.nextPages.clear();
+  }
+  spend(amount: number) {
+    requireUpstream(Number.isSafeInteger(amount) && amount >= 0);
+    if (amount > this.limits.maxWork - this.effort) this.stopped = 'budget';
+    requireUpstream(!this.stopped, this.stopped ?? 'budget');
+    this.effort += amount;
+  }
+  private copy<T>(value: T): T {
+    const before = this.work.entries;
+    try {
+      return upstreamCopy(value, this.limits, this.work);
+    } finally {
+      this.spend(this.work.entries - before);
+    }
+  }
+  private reserve(bytes: number) {
+    if (bytes > this.limits.maxRetainedBytes - this.retained) this.stopped = 'budget';
+    requireUpstream(!this.stopped, this.stopped ?? 'budget');
+    this.retained += bytes;
+  }
+  private cached(url: string) {
+    const cached = this.cache.get(url);
+    if (cached) this.spend(this.cacheSizes.get(url)!);
+    return cached;
+  }
+  private remember(url: string, data: Readonly<Record<string, unknown>>) {
+    const size = Buffer.byteLength(url) + Buffer.byteLength(JSON.stringify(data));
+    this.reserve(size);
+    this.cacheSizes.set(url, size);
+    this.cache.set(url, freeze(data));
   }
   private remaining() {
     requireUpstream(!this.closed && !this.deps.signal?.aborted, 'unknown');
@@ -319,6 +372,9 @@ class Reader {
         this.remaining();
         chunks.push(chunk.value);
       }
+    } catch (error) {
+      if (error instanceof UpstreamFailure) throw error;
+      throw new UpstreamFailure(size ? 'truncated' : 'unknown');
     } finally {
       void reader.cancel().catch(() => {});
       reader.releaseLock();
@@ -345,21 +401,31 @@ class Reader {
     );
     let response: Response | undefined;
     try {
-      response = await Promise.race([
-        this.deps.fetch(url, {
-          method: 'GET',
-          credentials: 'omit',
-          redirect: 'manual',
-          headers: { accept: 'application/json' },
-          signal: controller.signal,
-        }),
-        aborted,
-      ]);
+      const request = this.deps.fetch(url, {
+        method: 'GET',
+        credentials: 'omit',
+        redirect: 'manual',
+        headers: { accept: 'application/json' },
+        signal: controller.signal,
+      });
+      void request.then(
+        (late) => {
+          if (controller.signal.aborted && late.body && !late.body.locked)
+            void late.body.cancel().catch(() => {});
+        },
+        () => {},
+      );
+      response = await Promise.race([request, aborted]);
       requireUpstream(
         !response.redirected && (!response.url || response.url === url),
         'unsupported',
       );
-      const bytes = await this.body(response, aborted);
+      const immediate = httpReason(response, Buffer.alloc(0));
+      if (response.status !== 200 && immediate !== 'unknown') {
+        if (immediate === 'rate_limit') this.blocked.add(new URL(url).origin);
+        throw new UpstreamFailure(immediate);
+      }
+      const bytes = response.body ? await this.body(response, aborted) : Buffer.alloc(0);
       if (response.status !== 200) {
         const reason = httpReason(response, bytes);
         if (reason === 'rate_limit') this.blocked.add(new URL(url).origin);
@@ -384,13 +450,13 @@ class Reader {
     }
   }
   private async pypi(t: MetadataTarget, url: string) {
-    const cached = this.cache.get(url);
+    const cached = this.cached(url);
     if (cached) return cached;
     const response = await this.fetchBounded(url, {});
     const parsed = JSON.parse(
       new TextDecoder('utf-8', { fatal: true }).decode(await response.arrayBuffer()),
     );
-    const data = upstreamCopy(parsed, this.limits, this.work);
+    const data = this.copy(parsed);
     requireUpstream(isPlainObject(data) && isPlainObject(data.info));
     const info = data.info;
     requireUpstream(
@@ -399,61 +465,83 @@ class Reader {
         info.version === t.version,
       'conflict',
     );
-    this.cache.set(url, freeze(info));
+    this.remember(url, info);
     return info;
   }
-  private async npmData(t: MetadataTarget) {
+  private async npmData(t: MetadataTarget, url: string) {
     requireUpstream(this.npm.kind === 'ready');
     const result = await this.npm.read(t);
     if (result.kind === 'unavailable')
       throw new UpstreamFailure(this.networkReason ?? result.reason);
-    return upstreamCopy(result.document.data, this.limits, this.work);
+    const data = this.copy(result.document.data);
+    if (!this.npmRetained.has(url)) {
+      this.reserve(Buffer.byteLength(url) + Buffer.byteLength(JSON.stringify(data)));
+      this.npmRetained.add(url);
+    }
+    return data;
   }
   private async githubData(t: GithubUpstreamTarget, url: string) {
-    const cached = t.resource === 'ref' ? null : this.cache.get(url);
+    const cached = t.resource === 'ref' ? null : this.cached(url);
     if (cached) return cached;
     if (t.page !== undefined) requireUpstream(++this.pages <= this.limits.maxPages, 'budget');
     const response = await this.fetchBounded(url, {});
     const parsed = JSON.parse(
       new TextDecoder('utf-8', { fatal: true }).decode(await response.arrayBuffer()),
     );
-    const data = upstreamCopy(
-      Array.isArray(parsed) ? { items: parsed } : parsed,
-      this.limits,
-      this.work,
-    );
+    const data = this.copy(Array.isArray(parsed) ? { items: parsed } : parsed);
     requireUpstream(isPlainObject(data));
     this.nextPages.set(url, githubNext(response.headers.get('link'), url));
-    if (t.resource !== 'ref') this.cache.set(url, freeze(data));
+    if (t.resource !== 'ref') this.remember(url, data);
     return data;
   }
   private async targetData(t: UpstreamTarget, url: string) {
     if (t.kind === 'github') return this.githubData(t, url);
-    return t.kind === 'npm' ? this.npmData(t) : this.pypi(t, url);
+    return t.kind === 'npm' ? this.npmData(t, url) : this.pypi(t, url);
+  }
+  private failedLookup(
+    error: unknown,
+    before: number,
+    url: string | null,
+    key: string | null,
+  ): UpstreamLookup {
+    let reason = upstreamFailureReason(error);
+    if (key && !this.failures.has(key) && this.requests > before) {
+      try {
+        this.reserve(Buffer.byteLength(key) + Buffer.byteLength(reason));
+        this.failures.set(key, reason);
+      } catch {
+        reason = 'budget';
+      }
+    }
+    return freeze({
+      status: 'unavailable',
+      fetched: this.requests > before,
+      url,
+      data: null,
+      reasons: [reason],
+    });
   }
   async read(value: unknown): Promise<UpstreamLookup> {
     const before = this.requests;
     let url: string | null = null;
+    let key: string | null = null;
     if (this.busy)
       return { status: 'unavailable', fetched: false, url, data: null, reasons: ['conflict'] };
     this.busy = true;
     this.networkReason = null;
     try {
       this.remaining();
-      const copied = upstreamCopy(value, this.limits, this.work);
+      const copied = this.copy(value);
       const t =
         isPlainObject(copied) && copied.kind === 'github'
           ? githubTarget(copied)
           : metadataTarget(copied);
-      url =
-        t.kind === 'github'
-          ? upstreamGithubUrl(t)
-          : t.kind === 'npm'
-            ? `https://registry.npmjs.org/${encodeURIComponent(t.name)}/${encodeURIComponent(t.version)}`
-            : `https://pypi.org/pypi/${encodeURIComponent(t.name)}/${encodeURIComponent(t.version)}/json`;
+      url = targetUrl(t);
       requireUpstream(!this.blocked.has(new URL(url).origin), 'rate_limit');
+      if (t.kind !== 'github' || t.resource !== 'ref')
+        key = JSON.stringify([url, t.kind === 'npm' ? t.integrity : null]);
+      if (key && this.failures.has(key)) throw new UpstreamFailure(this.failures.get(key)!);
       const data = await this.targetData(t, url);
-      requireUpstream(this.work.entries <= this.limits.maxWork, 'budget');
       return freeze({
         status: 'available',
         fetched: this.requests > before,
@@ -463,13 +551,7 @@ class Reader {
         nextPage: this.nextPages.get(url) ?? false,
       });
     } catch (error) {
-      return freeze({
-        status: 'unavailable',
-        fetched: this.requests > before,
-        url,
-        data: null,
-        reasons: [error instanceof UpstreamFailure ? error.reason : 'unknown'],
-      });
+      return this.failedLookup(error, before, url, key);
     } finally {
       this.busy = false;
     }
@@ -489,6 +571,7 @@ export function createUpstreamReader(
         limits,
         read: (t: unknown) => reader.read(t),
         close: () => reader.close(),
+        spend: (amount: number) => reader.spend(amount),
       }),
     };
   } catch {

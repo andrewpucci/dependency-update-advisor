@@ -118,6 +118,7 @@ export async function collectRangeFallback(
       requireUpstream(lookup.status === 'available' && lookup.data, lookup.reasons[0] ?? 'unknown');
       requireUpstream(Array.isArray(lookup.data.items));
       for (const item of lookup.data.items) {
+        reader.spend(1);
         requireUpstream(++count <= reader.limits.maxTagCandidates, 'budget');
         requireUpstream(isPlainObject(item) && upstreamText(item.tag_name));
         requireUpstream(!seen.has(item.tag_name), 'conflict');

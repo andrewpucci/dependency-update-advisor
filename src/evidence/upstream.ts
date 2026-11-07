@@ -11,13 +11,14 @@ import {
 import type { Finding } from '../policy.js';
 import type { NpmInventoryResult, NpmNode } from './npm.js';
 import type { PublicPackageIdentity, ActionVersionMapping } from './advisories.js';
-import { freeze, isPlainObject } from './common.js';
+import { freeze, isPlainObject, isEvidencePath } from './common.js';
 import { collectActionResearch, type ActionMappingDraft } from './upstream-actions.js';
 import { collectRangeFallback, collectChangelog } from './upstream-range.js';
 import {
   collectTargetRelease,
   collectPackageComparison,
   type UpstreamResearch,
+  type UpstreamDocument,
 } from './upstream-github.js';
 import {
   requireUpstream,
@@ -25,6 +26,7 @@ import {
   upstreamLimits,
   upstreamText,
   UpstreamFailure,
+  upstreamFailureReason,
   type UpstreamLimits,
   type UpstreamLookup,
   type UpstreamReader,
@@ -86,6 +88,44 @@ function inventorySource(input: UpstreamInput, change: PacketChange, side: 'base
   );
   if ('name' in instance) requireUpstream(upstreamText(instance.name));
   if ('version' in instance) requireUpstream(upstreamText(instance.version));
+  if ('workflow' in instance) {
+    requireUpstream(
+      change.ecosystem === 'actions' &&
+        p.path === instance.workflow &&
+        upstreamText(instance.jobId),
+    );
+    requireUpstream(upstreamText(instance.action) && upstreamText(instance.ref));
+    requireUpstream(['sha', 'tag', 'branch', 'unknown'].includes(instance.refKind));
+    requireUpstream(instance.refKind !== 'sha' || /^[a-f\d]{40}$/u.test(instance.ref));
+  } else {
+    requireUpstream(instance.root === '.' || isEvidencePath(instance.root));
+  }
+}
+function validateEvidence(input: UpstreamInput, change: PacketChange) {
+  if ('basis' in change) {
+    requireUpstream(Object.keys(change.evidence).length === 0);
+    return;
+  }
+  const required = ['upstream', 'vulnerability', 'malware'];
+  if (change.ecosystem === 'npm') required.push('installScript');
+  requireUpstream(required.every((key) => isPlainObject(change.evidence[key])));
+  for (const entry of Object.values(change.evidence)) {
+    requireUpstream(
+      isPlainObject(entry) && ['available', 'partial', 'unavailable'].includes(entry.status),
+    );
+    requireUpstream(
+      Array.isArray(entry.reasons) && entry.reasons.length <= PACKET_LIMITS.listEntries,
+    );
+    requireUpstream(
+      Array.isArray(entry.sourceIds) && entry.sourceIds.length <= PACKET_LIMITS.listEntries,
+    );
+    requireUpstream(entry.status !== 'available' || entry.sourceIds.length > 0);
+    requireUpstream(
+      entry.sourceIds.every((id) =>
+        input.sources.some((s) => s.id === id && s.memberIds.includes(change.id)),
+      ),
+    );
+  }
 }
 function prepare(value: unknown, limits: UpstreamLimits): UpstreamInput {
   const cloned = upstreamCopy(value, limits);
@@ -101,7 +141,26 @@ function prepare(value: unknown, limits: UpstreamLimits): UpstreamInput {
     requireUpstream(upstreamText(change.id) && ['npm', 'uv', 'actions'].includes(change.ecosystem));
     requireUpstream(['direct', 'transitive', 'unknown'].includes(change.role));
     requireUpstream(isPlainObject(change.evidence));
+    requireUpstream(change.id.length <= PACKET_LIMITS.idCodeUnits);
+    requireUpstream(['update', 'addition', 'removal'].includes(change.kind));
+    requireUpstream(
+      change.kind === 'update'
+        ? !!change.from && !!change.to
+        : change.kind === 'addition'
+          ? change.from === null && !!change.to
+          : !!change.from && change.to === null,
+    );
+    validateEvidence(input, change);
     for (const side of ['base', 'head'] as const) inventorySource(input, change, side);
+  }
+  for (const finding of input.findings) {
+    requireUpstream(input.changes.some((c) => c.id === finding.memberId));
+    requireUpstream(
+      Array.isArray(finding.references) &&
+        finding.references.every((id: unknown) =>
+          input.sources.some((s) => s.id === id && s.memberIds.includes(finding.memberId)),
+        ),
+    );
   }
   if (input.npmInventory) {
     requireUpstream(input.npmInventory.kind === 'inventory');
@@ -292,48 +351,52 @@ async function metadata(
     };
   return lookup;
 }
-export function attachUpstreamResearch(
+function researchSource(
   input: UpstreamInput,
-  output: UpstreamEnrichment,
   change: PacketChange,
+  doc: UpstreamDocument,
   research: UpstreamResearch,
-) {
+): PacketSource {
   const side = change.to ? 'head' : 'base',
     instance = change.to ?? change.from;
   requireUpstream(instance);
   const value = 'version' in instance ? instance.version : 'ref' in instance ? instance.ref : null;
   requireUpstream(value);
-  const added: PacketSource[] = research.sources.map((doc) => {
-    const excerpt = upstreamExcerpt(doc.text);
-    const range =
-      side === 'base' && doc.range?.from === null ? { from: doc.range.to, to: null } : doc.range;
-    const subjects = [{ memberId: change.id, side: side as 'base' | 'head', value }];
-    if (range?.from && range.to && change.from && side === 'head')
-      subjects.unshift({ memberId: change.id, side: 'base', value: range.from });
-    return {
-      id: upstreamId([input.binding.identity, change.id, doc.kind, doc.url, 'research']),
-      kind: doc.kind,
-      ecosystems: [change.ecosystem],
-      memberIds: [change.id],
-      status:
-        research.status === 'available' && !excerpt.excerptTruncated ? 'available' : 'partial',
-      reasons:
-        research.status === 'available' && !excerpt.excerptTruncated
-          ? []
-          : excerpt.excerptTruncated
-            ? ['truncated']
-            : research.reasons,
-      provenance: {
-        kind: 'upstream',
-        url: doc.url,
-        title: upstreamExcerpt(doc.title).excerpt,
-        ...excerpt,
-        subjects,
-        range,
-      },
-    };
-  });
-  for (const source of added) retain(output, source);
+  const excerpt = upstreamExcerpt(doc.text);
+  const range =
+    side === 'base' && doc.range?.from === null ? { from: doc.range.to, to: null } : doc.range;
+  const subjects = [{ memberId: change.id, side: side as 'base' | 'head', value }];
+  if (range?.from && range.to && change.from && side === 'head')
+    subjects.unshift({ memberId: change.id, side: 'base', value: range.from });
+  return {
+    id: upstreamId([input.binding.identity, change.id, doc.kind, doc.url, 'research']),
+    kind: doc.kind,
+    ecosystems: [change.ecosystem],
+    memberIds: [change.id],
+    status: research.status === 'available' && !excerpt.excerptTruncated ? 'available' : 'partial',
+    reasons:
+      research.status === 'available' && !excerpt.excerptTruncated
+        ? []
+        : excerpt.excerptTruncated
+          ? ['truncated']
+          : research.reasons,
+    provenance: {
+      kind: 'upstream',
+      url: doc.url,
+      title: upstreamExcerpt(doc.title).excerpt,
+      ...excerpt,
+      subjects,
+      range,
+    },
+  };
+}
+function researchAttempts(
+  output: UpstreamEnrichment,
+  change: PacketChange,
+  research: UpstreamResearch,
+  added: PacketSource[],
+) {
+  const side = change.to ? 'head' : 'base';
   for (const a of research.attempts)
     output.attempts.push({
       ...a,
@@ -346,16 +409,41 @@ export function attachUpstreamResearch(
         (s) => s.provenance.kind === 'upstream' && s.provenance.excerptTruncated,
       ),
     });
-  if (added.length)
+}
+function researchCoverage(change: PacketChange, research: UpstreamResearch, added: PacketSource[]) {
+  const previous = change.evidence.upstream;
+  if (added.length && added.every((s) => s.status === 'available')) {
     change.evidence.upstream = {
-      status: added.every((s) => s.status === 'available') ? 'available' : 'partial',
+      status: 'available',
       sourceIds: added.map((s) => s.id),
-      reasons: [...new Set(added.flatMap((s) => s.reasons))],
+      reasons: [],
     };
-  else
-    change.evidence.upstream.reasons = [
-      ...new Set([...change.evidence.upstream.reasons, ...research.reasons]),
-    ];
+    return;
+  }
+  if (previous.status === 'available') return;
+  const sourceIds = [...new Set([...previous.sourceIds, ...added.map((s) => s.id)])];
+  requireUpstream(sourceIds.length <= PACKET_LIMITS.listEntries, 'budget');
+  change.evidence.upstream = {
+    status: sourceIds.length ? 'partial' : 'unavailable',
+    sourceIds,
+    reasons: [
+      ...new Set([...previous.reasons, ...research.reasons, ...added.flatMap((s) => s.reasons)]),
+    ],
+  };
+}
+export function attachUpstreamResearch(
+  input: UpstreamInput,
+  output: UpstreamEnrichment,
+  change: PacketChange,
+  research: UpstreamResearch,
+) {
+  const added = research.sources.map((doc) => researchSource(input, change, doc, research));
+  for (const source of added) retain(output, source);
+  researchAttempts(output, change, research, added);
+  researchCoverage(change, research, added);
+}
+function upstreamComplete(change: PacketChange) {
+  return change.evidence.upstream.status === 'available';
 }
 async function packageResearch(
   input: UpstreamInput,
@@ -367,7 +455,17 @@ async function packageResearch(
   if (change.ecosystem === 'actions' || 'basis' in change) return;
   const instance = change.to ?? change.from,
     lookup = lookups.get(change.to ? 'head' : 'base');
-  if (!instance || !lookup?.data) return;
+  if (!instance) return;
+  if (!lookup?.data) {
+    skippedStages(
+      output,
+      change,
+      ['release', 'compare', 'range', 'changelog'],
+      lookup?.reasons ?? ['missing'],
+      'No attributable metadata',
+    );
+    return;
+  }
   const research = await collectTargetRelease(
     {
       ecosystem: change.ecosystem,
@@ -378,8 +476,18 @@ async function packageResearch(
     reader,
   );
   attachUpstreamResearch(input, output, change, research);
+  if (upstreamComplete(change)) {
+    skippedStages(
+      output,
+      change,
+      ['compare', 'range', 'changelog'],
+      [],
+      'Target notes satisfied upstream research',
+    );
+    return;
+  }
   const base = lookups.get('base');
-  if (change.evidence.upstream.status !== 'available' && change.from && change.to && base?.data) {
+  if (!upstreamComplete(change) && change.from && change.to && base?.data) {
     const compared = await collectPackageComparison(
       {
         ecosystem: change.ecosystem,
@@ -397,7 +505,16 @@ async function packageResearch(
     );
     attachUpstreamResearch(input, output, change, compared);
   }
-  if (change.evidence.upstream.status === 'available') return;
+  if (upstreamComplete(change)) {
+    skippedStages(
+      output,
+      change,
+      ['range', 'changelog'],
+      [],
+      'Comparison satisfied upstream research',
+    );
+    return;
+  }
   const target = {
     ecosystem: change.ecosystem,
     name: instance.name,
@@ -416,8 +533,60 @@ async function packageResearch(
       reader,
     );
     attachUpstreamResearch(input, output, change, range);
-  }
+  } else
+    skippedStages(
+      output,
+      change,
+      ['compare', 'range'],
+      base?.reasons ?? ['unsupported'],
+      'No proven two-side range',
+    );
   attachUpstreamResearch(input, output, change, await collectChangelog(target, reader));
+  const sourceIds = output.sources
+    .filter(
+      (s) =>
+        s.kind === 'metadata' &&
+        s.provenance.kind === 'upstream' &&
+        s.provenance.url === lookup.url &&
+        s.provenance.subjects.some(
+          (subject) =>
+            subject.memberId === change.id && subject.side === (change.to ? 'head' : 'base'),
+        ),
+    )
+    .map((s) => s.id);
+  output.attempts.push({
+    memberId: change.id,
+    side: change.to ? 'head' : 'base',
+    stage: 'metadata',
+    target: 'Metadata fallback already fetched for exact identity',
+    range: null,
+    url: lookup.url,
+    outcome: 'available',
+    reasons: [],
+    sourceIds,
+    truncated: false,
+  });
+}
+function skippedStages(
+  output: UpstreamEnrichment,
+  change: PacketChange,
+  stages: UpstreamAttempt['stage'][],
+  reasons: readonly EvidenceReason[],
+  detail: string,
+) {
+  for (const stage of stages)
+    output.attempts.push({
+      memberId: change.id,
+      side: change.to ? 'head' : 'base',
+      stage,
+      target: detail,
+      range: null,
+      url: null,
+      outcome: 'skipped',
+      reasons,
+      sourceIds: [],
+      truncated: false,
+    });
 }
 function attachActionMappings(
   input: UpstreamInput,
@@ -478,8 +647,11 @@ export async function enrichUpstream(
     const limits = upstreamLimits(raw.limits);
     requireUpstream(isDeepStrictEqual(limits, dependencies.reader.limits));
     input = prepare(value, limits);
-  } catch {
-    return { kind: 'invalid' };
+    dependencies.reader.spend(Buffer.byteLength(JSON.stringify(input)));
+  } catch (error) {
+    return upstreamFailureReason(error) === 'budget'
+      ? { kind: 'unavailable', reason: 'budget' }
+      : { kind: 'invalid' };
   }
   const output: UpstreamEnrichment = {
     kind: 'enriched',

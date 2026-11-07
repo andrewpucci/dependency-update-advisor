@@ -1,6 +1,6 @@
 import { expect, test } from 'vite-plus/test';
 import { collectAdvisoryNpm, collectAdvisoryUv } from '../../tests/parity/advisories.js';
-import { enrichUpstream } from './upstream.js';
+import { enrichUpstream, attachUpstreamResearch } from './upstream.js';
 import { createUpstreamReader } from './upstream-read.js';
 
 const integrity = 'sha512-' + Buffer.alloc(64, 7).toString('base64');
@@ -114,5 +114,98 @@ test('real U1/U2 supplies PyPI proofs without losing uv side identity', async ()
   expect(result.changes.map((c) => [c.from, c.to])).toEqual(
     f.input.changes.map((c) => [c.from, c.to]),
   );
+  opened.reader.close();
+});
+
+test('enrichment is stable and detached when repeated with identical evidence', async () => {
+  const input = await fixture(),
+    a = reader();
+  const first = await enrichUpstream(input, a);
+  if (first.kind !== 'enriched') throw new Error('enrichment');
+  const b = reader();
+  const second = await enrichUpstream(
+    { ...input, changes: first.changes, sources: first.sources, findings: first.findings },
+    b,
+  );
+  expect(second).toEqual(first);
+  a.reader.close();
+  b.reader.close();
+});
+test('insufficient input retention is an explicit budget outcome', async () => {
+  const input = await fixture();
+  const constrained = { ...limits, maxRetainedBytes: 1 };
+  const r = createUpstreamReader(constrained, {
+    now: () => 0,
+    fetch: async () => {
+      throw new Error('unexpected request');
+    },
+  });
+  if (r.kind !== 'ready') throw new Error('reader');
+  expect(await enrichUpstream({ ...input, limits: constrained }, r)).toEqual({
+    kind: 'unavailable',
+    reason: 'budget',
+  });
+  r.reader.close();
+});
+
+test('independent partial fallbacks retain all earlier category citations', async () => {
+  const input = await fixture(),
+    r = reader();
+  const result = await enrichUpstream(input, r);
+  if (result.kind !== 'enriched') throw new Error('enrichment');
+  const output = structuredClone(result),
+    change = output.changes[0];
+  const original = [...change.evidence.upstream.sourceIds];
+  for (const suffix of ['range', 'changelog'])
+    attachUpstreamResearch(input, output, change, {
+      status: 'partial',
+      reasons: ['unsupported'],
+      attempts: [],
+      sources: [
+        {
+          kind: 'metadata',
+          url: 'https://github.com/fixture/orbit/' + suffix,
+          title: suffix,
+          text: 'Partial context.',
+          range: null,
+        },
+      ],
+    });
+  expect(change.evidence.upstream.sourceIds).toHaveLength(original.length + 2);
+  expect(original.every((id) => change.evidence.upstream.sourceIds.includes(id))).toBe(true);
+  r.reader.close();
+});
+test('malformed category records and getters are rejected before any request', async () => {
+  const input = await fixture(),
+    r = reader();
+  const broken = structuredClone(input);
+  delete broken.changes[0].evidence.upstream;
+  expect(await enrichUpstream(broken, r)).toEqual({ kind: 'invalid' });
+  let invoked = false;
+  const accessor = { ...input };
+  Object.defineProperty(accessor, 'limits', {
+    enumerable: true,
+    get() {
+      invoked = true;
+      return limits;
+    },
+  });
+  expect(await enrichUpstream(accessor, r)).toEqual({ kind: 'invalid' });
+  expect(invoked).toBe(false);
+  expect(r.calls).toHaveLength(0);
+  r.reader.close();
+});
+test('missing metadata explicitly names the research stages that could not run', async () => {
+  const input = await fixture();
+  const opened = createUpstreamReader(limits, {
+    now: () => 0,
+    fetch: async () => Response.json({}, { status: 404 }),
+  });
+  if (opened.kind !== 'ready') throw new Error('reader');
+  const result = await enrichUpstream(input, opened);
+  if (result.kind !== 'enriched') throw new Error('enrichment');
+  for (const stage of ['release', 'compare', 'range', 'changelog']) {
+    expect(result.attempts.some((a) => a.stage === stage && a.outcome === 'skipped')).toBe(true);
+  }
   opened.reader.close();
 });

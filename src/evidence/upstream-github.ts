@@ -6,6 +6,7 @@ import {
   upstreamCopy,
   upstreamText,
   UpstreamFailure,
+  upstreamFailureReason,
   type UpstreamReader,
   type GithubUpstreamTarget,
 } from './upstream-read.js';
@@ -42,7 +43,7 @@ export type UpstreamResearch = {
   head?: { sha: string; ref: string };
 };
 export function upstreamReason(error: unknown): EvidenceReason {
-  return error instanceof UpstreamFailure ? error.reason : 'malformed';
+  return upstreamFailureReason(error);
 }
 export async function githubData(
   reader: UpstreamReader,
@@ -147,6 +148,7 @@ export async function immutableContents(
   const encoded = data.content.replace(/\n/gu, '');
   requireUpstream(/^(?:[A-Za-z\d+/]{4})*(?:[A-Za-z\d+/]{2}==|[A-Za-z\d+/]{3}=)?$/u.test(encoded));
   const bytes = Buffer.from(encoded, 'base64');
+  reader.spend(bytes.byteLength);
   requireUpstream(bytes.byteLength <= reader.limits.maxResponseBytes, 'budget');
   const hash = createHash('sha1')
     .update('blob ' + bytes.byteLength + '\0')

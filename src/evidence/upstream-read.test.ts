@@ -32,7 +32,8 @@ const document = {
   description: 'Version-specific package description.',
 };
 function setup(
-  response: () => Promise<Response> = async () => Response.json(document),
+  response: (url: string, init: RequestInit) => Promise<Response> = async () =>
+    Response.json(document),
   overrides = {},
 ) {
   const fetch = vi.fn(response);
@@ -127,5 +128,100 @@ test('exact public PyPI metadata validates both normalized identity and version'
     ).status,
   ).toBe('unavailable');
   expect(f.fetch).toHaveBeenCalledTimes(calls);
+  f.reader.close();
+});
+
+test('failed exact metadata is not retried for another identical request', async () => {
+  const f = setup(async () => Response.json({}, { status: 500 }));
+  const py = {
+    kind: 'pypi',
+    name: 'orbit',
+    version: '1.0',
+    source: { kind: 'registry', identity: 'https://pypi.org/simple' },
+  };
+  await f.reader.read(py);
+  expect(await f.reader.read(py)).toMatchObject({ status: 'unavailable', fetched: false });
+  expect(f.fetch).toHaveBeenCalledTimes(1);
+  f.reader.close();
+});
+test('cache retention is cumulative across individually small documents', async () => {
+  const fetch = vi.fn(async (url: string) =>
+    Response.json({
+      info: {
+        name: 'orbit',
+        version: new URL(url).pathname.split('/')[3],
+        description: 'x'.repeat(400),
+      },
+    }),
+  );
+  const opened = createUpstreamReader(
+    { ...limits, maxRetainedBytes: 700 },
+    { fetch, now: () => 0 },
+  );
+  if (opened.kind !== 'ready') throw new Error('reader');
+  const py = {
+    kind: 'pypi',
+    name: 'orbit',
+    version: '1.0',
+    source: { kind: 'registry', identity: 'https://pypi.org/simple' },
+  };
+  expect((await opened.reader.read(py)).status).toBe('available');
+  expect((await opened.reader.read({ ...py, version: '2.0' })).reasons).toContain('budget');
+  opened.reader.close();
+});
+test('a damaged body after initial bytes retains a truncation reason', async () => {
+  const f = setup(async () => {
+    let first = true;
+    return new Response(
+      new ReadableStream({
+        pull(controller) {
+          if (first) {
+            first = false;
+            controller.enqueue(new TextEncoder().encode('{"info":'));
+          } else controller.error(new Error('network failure'));
+        },
+      }),
+      { headers: { 'content-type': 'application/json' } },
+    );
+  });
+  expect((await f.reader.read(target)).reasons).toContain('truncated');
+  f.reader.close();
+});
+test('closing the reader cancels a fetch that ignores its signal', async () => {
+  const f = setup(() => new Promise<Response>(() => {}));
+  const pending = f.reader.read(target);
+  await Promise.resolve();
+  f.reader.close();
+  expect((await pending).status).toBe('unavailable');
+});
+test('an empty 429 body stops its host while independent registry research can succeed', async () => {
+  const f = setup(async (url) =>
+    new URL(url).hostname === 'pypi.org'
+      ? new Response(null, { status: 429 })
+      : Response.json(document),
+  );
+  const py = {
+    kind: 'pypi',
+    name: 'orbit',
+    version: '1.0',
+    source: { kind: 'registry', identity: 'https://pypi.org/simple' },
+  };
+  expect((await f.reader.read(py)).reasons).toEqual(['rate_limit']);
+  expect(await f.reader.read({ ...py, version: '2.0' })).toMatchObject({
+    fetched: false,
+    reasons: ['rate_limit'],
+  });
+  expect((await f.reader.read(target)).status).toBe('available');
+  expect(f.fetch).toHaveBeenCalledTimes(2);
+  f.reader.close();
+});
+test.each([
+  [{ message: 'Resource not accessible by integration' }, {}, 'permission'],
+  [{ message: 'secondary rate limit' }, {}, 'rate_limit'],
+  [{}, { 'x-ratelimit-remaining': '0' }, 'rate_limit'],
+  [{}, {}, 'unknown'],
+] as const)('403 uses bounded response context (%j)', async (data, headers, reason) => {
+  const f = setup(async () => Response.json(data, { status: 403, headers }));
+  expect((await f.reader.read(target)).reasons).toEqual([reason]);
   f.reader.close();
 });

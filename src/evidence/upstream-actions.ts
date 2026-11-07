@@ -70,6 +70,7 @@ async function matchingReleases(repository: string, sha: string, reader: Upstrea
     requireUpstream(result.status === 'available' && result.data, result.reasons[0] ?? 'unknown');
     requireUpstream(Array.isArray(result.data.items));
     for (const item of result.data.items) {
+      reader.spend(1);
       requireUpstream(++candidates <= reader.limits.maxTagCandidates, 'budget');
       requireUpstream(isPlainObject(item) && upstreamText(item.tag_name));
       if (item.draft === true) continue;
