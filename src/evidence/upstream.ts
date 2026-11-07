@@ -34,13 +34,14 @@ import {
 } from './upstream-read.js';
 
 type Inventory = Extract<NpmInventoryResult, { kind: 'inventory' }>;
+type ReadonlyData<T> = T extends object ? { readonly [K in keyof T]: ReadonlyData<T[K]> } : T;
 export type UpstreamInput = Readonly<{
   binding: ReviewBinding;
-  changes: readonly PacketChange[];
-  sources: readonly PacketSource[];
-  findings: readonly Finding[];
+  changes: readonly ReadonlyData<PacketChange>[];
+  sources: readonly ReadonlyData<PacketSource>[];
+  findings: readonly ReadonlyData<Finding>[];
   limits: UpstreamLimits;
-  npmInventory?: Inventory;
+  npmInventory?: ReadonlyData<Inventory>;
 }>;
 export type UpstreamAttempt = Readonly<{
   memberId: string;
@@ -69,7 +70,11 @@ export type UpstreamResult =
   | { kind: 'invalid' }
   | { kind: 'unavailable'; reason: EvidenceReason };
 
-function inventorySource(input: UpstreamInput, change: PacketChange, side: 'base' | 'head') {
+function inventorySource(
+  input: UpstreamInput,
+  change: ReadonlyData<PacketChange>,
+  side: 'base' | 'head',
+) {
   const instance = side === 'base' ? change.from : change.to;
   if (!instance) return;
   requireUpstream(upstreamText(instance.sourceId));
@@ -101,7 +106,7 @@ function inventorySource(input: UpstreamInput, change: PacketChange, side: 'base
     requireUpstream(instance.root === '.' || isEvidencePath(instance.root));
   }
 }
-function validateEvidence(input: UpstreamInput, change: PacketChange) {
+function validateEvidence(input: UpstreamInput, change: ReadonlyData<PacketChange>) {
   if ('basis' in change) {
     requireUpstream(Object.keys(change.evidence).length === 0);
     return;
@@ -182,19 +187,27 @@ function prepare(value: unknown, limits: UpstreamLimits): UpstreamInput {
 }
 function npmNode(
   input: UpstreamInput,
-  change: PacketChange,
+  change: ReadonlyData<PacketChange>,
   side: 'base' | 'head',
-): NpmNode | null {
+): ReadonlyData<NpmNode> | null {
   const instance = side === 'base' ? change.from : change.to;
   if (!instance || !('lockPath' in instance)) return null;
   const root = input.npmInventory?.roots.find((r) => r.root === instance.root);
   const node = root?.[side].packages[instance.lockPath];
-  requireUpstream(!node || isDeepStrictEqual(node.instance, instance));
+  requireUpstream(
+    !node ||
+      (node.instance &&
+        isDeepStrictEqual({ ...node.instance, sourceId: '' }, { ...instance, sourceId: '' })),
+  );
   if (node && root) {
-    requireUpstream(root[side].state === 'present' && root[side].lockId === instance.sourceId);
+    requireUpstream(
+      root[side].state === 'present' && root[side].lockId === node.instance?.sourceId,
+    );
     const source = input.sources.find((s) => s.id === instance.sourceId);
+    const original = input.npmInventory?.sources.find((s) => s.id === root[side].lockId);
     requireUpstream(
       source?.provenance.kind === 'file' &&
+        isDeepStrictEqual(source.provenance, original?.provenance) &&
         source.provenance.path ===
           (instance.root === '.' ? '' : instance.root + '/') + 'package-lock.json',
     );
@@ -676,7 +689,7 @@ export async function enrichUpstream(
     binding: input.binding,
     changes: structuredClone(input.changes) as PacketChange[],
     sources: structuredClone(input.sources) as PacketSource[],
-    findings: [...input.findings],
+    findings: structuredClone(input.findings) as Finding[],
     attempts: [],
     publicIdentities: [],
     actionVersions: [],
