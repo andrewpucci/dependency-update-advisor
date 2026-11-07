@@ -20,6 +20,8 @@ import { collectPyPIReleaseSignals } from './policy-signals-pypi.js';
 import type { PolicyMetadataReader } from './policy-signals-read.js';
 import type { GithubReadSession } from '../github-read.js';
 import { artifactLimits, type ArtifactLimits } from './policy-signals-uv-artifacts.js';
+import { collectActionsPolicySignals } from './policy-signals-actions.js';
+import type { UpstreamReader } from './upstream-read.js';
 
 export type PolicySignalInput = AdvisoryInput & {
   evaluationTime: number;
@@ -55,6 +57,7 @@ export type SignalDependencies = {
   npmReader?: NpmPolicyReader;
   metadataReader?: PolicyMetadataReader;
   artifactSession?: GithubReadSession;
+  upstreamReader?: UpstreamReader;
 };
 export type Observation<T> =
   | { kind: 'known'; value: T }
@@ -307,6 +310,8 @@ export async function enrichPolicySignals(
           dependencies.metadataReader,
           dependencies.artifactSession,
         );
+      if (change.ecosystem === 'actions')
+        await collectActionsPolicySignals(input, output, change, dependencies.upstreamReader);
       signalBounds(input, output);
     }
     return freeze(output);
