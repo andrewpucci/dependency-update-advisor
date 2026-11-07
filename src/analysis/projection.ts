@@ -54,9 +54,12 @@ function requireValue(value: unknown, category: AnalysisCategory = 'input'): ass
 }
 
 // These input-work bounds cover T4 plus its detached T5 expansion, not additional wire data.
-function snapshotData(
+export function snapshotData(
   value: unknown,
-  budget = { entries: PACKET_LIMITS.bytes, bytes: 8 * PACKET_LIMITS.bytes },
+  budget: { entries: number; bytes: number } = {
+    entries: PACKET_LIMITS.bytes,
+    bytes: 8 * PACKET_LIMITS.bytes,
+  },
   depth = 0,
 ): unknown {
   requireValue(--budget.entries >= 0 && depth <= 64, 'budget');

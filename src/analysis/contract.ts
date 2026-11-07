@@ -1,5 +1,7 @@
 import { freeze } from '../evidence/common.js';
-import { projectBatch, type BatchSnapshot } from './projection.js';
+import { projectBatch, snapshotData, type BatchSnapshot } from './projection.js';
+import { parseAssessments, rejectedAnalysis, type AnalysisResult } from './validation.js';
+export type { AnalysisResult, ValidatedAssessment, ResolvedReference } from './validation.js';
 
 export const ANALYSIS_LIMITS = Object.freeze({
   maxUnits: 8,
@@ -69,4 +71,40 @@ export function prepareAnalysisBatch(value: unknown): PreparationResult {
 /** Internal transport/validator access accepts an owned handle, never a structural lookalike. */
 export function preparedSnapshot(batch: PreparedAnalysisBatch): BatchSnapshot | undefined {
   return snapshots.get(batch);
+}
+
+export type AnalysisReply = Readonly<{ batchId: string }>;
+const replies = new WeakMap<AnalysisReply, { batch: PreparedAnalysisBatch; value: unknown }>();
+
+/** Capture response ownership around the adapter's receive callback; raw bodies cannot be rebound. */
+export async function receiveAnalysisReply(
+  batch: PreparedAnalysisBatch,
+  receive: () => Promise<unknown>,
+): Promise<AnalysisReply> {
+  const snapshot = snapshots.get(batch);
+  if (!snapshot) return Object.freeze({ batchId: '' });
+  const candidate = await receive();
+  let value: unknown = null;
+  try {
+    value = snapshotData(candidate, {
+      entries: snapshot.limits.responseBytes,
+      bytes: snapshot.limits.responseBytes,
+    });
+  } catch {
+    /* Invalid data is rejected by the same closed schema, without echoing parser details. */
+  }
+  const reply = Object.freeze({ batchId: batch.batchId });
+  replies.set(reply, { batch, value });
+  return reply;
+}
+
+export function validateAnalysisReply(
+  batch: PreparedAnalysisBatch,
+  reply: AnalysisReply,
+): AnalysisResult {
+  const snapshot = snapshots.get(batch),
+    bound = replies.get(reply);
+  if (!snapshot) return { kind: 'invalid', category: 'reference', attempted: false };
+  if (!bound || bound.batch !== batch) return rejectedAnalysis(snapshot, 'reference');
+  return parseAssessments(bound.value, snapshot);
 }
