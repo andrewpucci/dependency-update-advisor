@@ -90,6 +90,14 @@ gaps and an introduced vulnerability before parity is claimed.
   proofs, Actions mappings and separate lookup outcomes preserve T4/T5/C3
   attribution; [verification #181](https://github.com/andrewpucci/dependency-update-advisor/issues/181)
   retains live proof acquisition, downstream workflow and cutover gates.
+- [Advisory policy signals](SPEC-policy-signals.md) — approved for execution
+  on 2026-11-07, supporting S3 #53
+  contract in `shared-review`; explicit malware queries and exact-version
+  release, trust, publisher, license, and Actions pinning evidence for C3.
+  The user approved the plan, exact dependency pins, and `as-build auto` on
+  2026-11-07. Tasks #195–#207 are sub-issues of
+  [#53](https://github.com/andrewpucci/dependency-update-advisor/issues/53)
+  with Status `Todo` on the implementation project.
 - [Common review packet validation](SPEC-review-packet.md) — implemented for
   T4 #11 and #77–#84 in `shared-review`, merged in
   [PR #89](https://github.com/andrewpucci/dependency-update-advisor/pull/89).
