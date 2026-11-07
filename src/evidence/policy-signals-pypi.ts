@@ -1,4 +1,4 @@
-import type { PacketChange, PacketSource } from '../schema.js';
+import type { PacketChange, PacketSource, EvidenceReason } from '../schema.js';
 import { isPlainObject } from './common.js';
 import { advisoryCheck, advisoryText, copyAdvisoryData } from './advisory-read.js';
 import { isDeepStrictEqual } from 'node:util';
@@ -114,6 +114,95 @@ export type PyPIReleaseSides = Partial<
     }
   >
 >;
+function unknownReleaseFacts(reason: EvidenceReason): PyPIReleaseFacts {
+  const unchecked = { kind: 'unchecked' as const, reason };
+  return { publishedAt: unchecked, deprecated: unchecked, license: unchecked, files: unchecked };
+}
+async function pypiReleaseSide(
+  input: PolicySignalInput,
+  change: PacketChange,
+  side: 'base' | 'head',
+  instance: { source: unknown },
+  reader?: PolicyMetadataReader,
+) {
+  const target = resolveAdvisoryTarget(input, change, side);
+  const result =
+    target && reader
+      ? await reader.read({
+          kind: 'pypi',
+          name: target.name,
+          version: target.version,
+          source: instance.source,
+        })
+      : { kind: 'unavailable' as const, reason: 'unsupported' as const };
+  const facts =
+    result.kind === 'data'
+      ? pypiReleaseFacts(result.data, input.evaluationTime)
+      : unknownReleaseFacts(result.kind === 'unavailable' ? result.reason : 'missing');
+  return { facts, url: result.kind === 'data' ? result.url : null };
+}
+function pypiTimeSource(
+  input: PolicySignalInput,
+  output: SignalEnrichment,
+  change: PacketChange,
+  side: 'base' | 'head',
+  facts: PyPIReleaseFacts,
+  url: string | null,
+) {
+  const t = facts.publishedAt;
+  const source = recordSignal(
+    input,
+    output,
+    change,
+    side,
+    'publishTime',
+    t.kind === 'known' && url
+      ? { url, value: { publishedAt: t.value, derivation: 'earliest release file upload' } }
+      : null,
+    t.kind === 'unchecked' ? t.reason : 'missing',
+  );
+  return {
+    source,
+    ...(t.kind === 'known' && source.status === 'available' ? { publishedAt: t.value } : {}),
+  };
+}
+function pypiReleaseFindings(
+  input: PolicySignalInput,
+  output: SignalEnrichment,
+  change: PacketChange,
+  facts: PyPIReleaseFacts,
+  url: string | null,
+  source: PacketSource,
+) {
+  const t = facts.publishedAt,
+    d = facts.deprecated,
+    dep = recordSignal(
+      input,
+      output,
+      change,
+      'head',
+      'deprecation',
+      d.kind === 'known' && url ? { url, value: { deprecated: d.value } } : null,
+      d.kind === 'unchecked' ? d.reason : 'missing',
+    );
+  attachSignalCoverage(change, 'deprecation', [dep]);
+  for (const [value, ref] of [
+    [t.kind === 'known' ? { publishedAt: t.value } : null, source],
+    [d.kind === 'known' && d.value ? { deprecated: d.value } : null, dep],
+  ] as const) {
+    if (value && ref.status === 'available')
+      retainSignalFinding(output, {
+        id: signalId(ref.id, 'releaseMetadata'),
+        memberId: change.id,
+        kind: 'releaseMetadata',
+        ...value,
+        references: [ref.id],
+        rationale: 'The exact PyPI release supplies the cited release metadata.',
+        remediation: ['Review release age and any yank reason before merging.'],
+        validation: ['Recheck the exact release metadata.'],
+      });
+  }
+}
 export async function collectPyPIReleaseSignals(
   input: PolicySignalInput,
   output: SignalEnrichment,
@@ -125,87 +214,10 @@ export async function collectPyPIReleaseSignals(
   for (const side of ['base', 'head'] as const) {
     const instance = side === 'base' ? change.from : change.to;
     if (!instance || !('version' in instance) || !('source' in instance)) continue;
-    const target = resolveAdvisoryTarget(input, change, side);
-    const result =
-      target && reader
-        ? await reader.read({
-            kind: 'pypi',
-            name: target.name,
-            version: target.version,
-            source: instance.source,
-          })
-        : { kind: 'unavailable' as const, reason: 'unsupported' as const };
-    const facts =
-      result.kind === 'data'
-        ? pypiReleaseFacts(result.data, input.evaluationTime)
-        : {
-            publishedAt: {
-              kind: 'unchecked' as const,
-              reason: result.kind === 'unavailable' ? result.reason : ('missing' as const),
-            },
-            deprecated: {
-              kind: 'unchecked' as const,
-              reason: result.kind === 'unavailable' ? result.reason : ('missing' as const),
-            },
-            license: {
-              kind: 'unchecked' as const,
-              reason: result.kind === 'unavailable' ? result.reason : ('missing' as const),
-            },
-            files: {
-              kind: 'unchecked' as const,
-              reason: result.kind === 'unavailable' ? result.reason : ('missing' as const),
-            },
-          };
-    const url = result.kind === 'data' ? result.url : null,
-      t = facts.publishedAt;
-    const source = recordSignal(
-      input,
-      output,
-      change,
-      side,
-      'publishTime',
-      t.kind === 'known' && url
-        ? { url, value: { publishedAt: t.value, derivation: 'earliest release file upload' } }
-        : null,
-      t.kind === 'unchecked' ? t.reason : 'missing',
-    );
-    sides[side] = {
-      facts,
-      url,
-      times: {
-        source,
-        ...(t.kind === 'known' && source.status === 'available' ? { publishedAt: t.value } : {}),
-      },
-    };
-    if (side === 'head') {
-      const d = facts.deprecated,
-        dep = recordSignal(
-          input,
-          output,
-          change,
-          side,
-          'deprecation',
-          d.kind === 'known' && url ? { url, value: { deprecated: d.value } } : null,
-          d.kind === 'unchecked' ? d.reason : 'missing',
-        );
-      attachSignalCoverage(change, 'deprecation', [dep]);
-      for (const [value, ref] of [
-        [t.kind === 'known' ? { publishedAt: t.value } : null, source],
-        [d.kind === 'known' && d.value ? { deprecated: d.value } : null, dep],
-      ] as const) {
-        if (value && ref.status === 'available')
-          retainSignalFinding(output, {
-            id: signalId(ref.id, 'releaseMetadata'),
-            memberId: change.id,
-            kind: 'releaseMetadata',
-            ...value,
-            references: [ref.id],
-            rationale: 'The exact PyPI release supplies the cited release metadata.',
-            remediation: ['Review release age and any yank reason before merging.'],
-            validation: ['Recheck the exact release metadata.'],
-          });
-      }
-    }
+    const { facts, url } = await pypiReleaseSide(input, change, side, instance, reader);
+    const times = pypiTimeSource(input, output, change, side, facts, url);
+    sides[side] = { facts, url, times };
+    if (side === 'head') pypiReleaseFindings(input, output, change, facts, url, times.source);
   }
   const reviewed = sides[change.to ? 'head' : 'base'];
   if (reviewed) attachSignalCoverage(change, 'publishTime', [reviewed.times.source]);
@@ -323,126 +335,155 @@ type PyPIPublishingSide = {
   provenance: Observation<boolean>;
   account: Observation<Publisher>;
 };
-async function collectPyPIPublishing(
+type ArtifactPublishing = { provenance: boolean; account: Publisher | null };
+type ArtifactPublishingSources = {
+  trust: PacketSource[];
+  publisher: PacketSource[];
+  observations: ArtifactPublishing[];
+  failure?: EvidenceReason;
+};
+async function artifactPublishing(
+  instance: { name: string; version: string; source: unknown },
+  artifact: UvArtifact,
+  files: PyPIFile[],
+  reader: PolicyMetadataReader,
+): Promise<Observation<ArtifactPublishing & { url: string }>> {
+  const work = observe(() => reader.spend(1));
+  if (work.kind === 'unchecked') return work;
+  const live = files.find((f) => f.filename === artifact.filename);
+  if (!live || live.digests.sha256 !== artifact.sha256)
+    return { kind: 'unchecked', reason: 'conflict' };
+  const result = await reader.read({
+    kind: 'pypi-provenance',
+    name: instance.name,
+    version: instance.version,
+    source: instance.source,
+    filename: artifact.filename,
+  });
+  const fact = result.kind === 'data' ? pypiProvenanceFacts(result.data, artifact, reader) : null;
+  if (result.kind === 'unavailable') return { kind: 'unchecked', reason: result.reason };
+  if (fact?.kind === 'unchecked') return fact;
+  return {
+    kind: 'known',
+    value: {
+      url: result.kind === 'absent' || result.kind === 'data' ? result.url : '',
+      account: fact?.kind === 'known' ? fact.value : null,
+      provenance: result.kind === 'data',
+    },
+  };
+}
+function artifactPublishingSources(
+  input: PolicySignalInput,
+  output: SignalEnrichment,
+  change: PacketChange,
+  side: 'base' | 'head',
+  artifact: UvArtifact,
+  { url, account, provenance }: ArtifactPublishing & { url: string },
+) {
+  const trust = recordSignal(input, output, change, side, 'trust', {
+    url,
+    value: { level: 'registry_reported', ...artifact, provenance },
+  });
+  const publisher = recordSignal(
+    input,
+    output,
+    change,
+    side,
+    'publisher',
+    account ? { url, value: { ...artifact, account } } : null,
+    'missing',
+  );
+  return { trust, publisher };
+}
+async function collectArtifactPublishing(
+  input: PolicySignalInput,
+  output: SignalEnrichment,
+  change: PacketChange,
+  side: 'base' | 'head',
+  instance: { name: string; version: string; source: unknown },
+  files: Observation<PyPIFile[]> | undefined,
+  reader?: PolicyMetadataReader,
+  session?: GithubReadSession,
+): Promise<ArtifactPublishingSources> {
+  const collected: ArtifactPublishingSources = { trust: [], publisher: [], observations: [] };
+  const artifacts = await readUvArtifacts(input, change, side, session, input.artifactLimits);
+  if (artifacts.kind !== 'known' || files?.kind !== 'known' || !reader) {
+    collected.failure =
+      artifacts.kind === 'unchecked'
+        ? artifacts.reason
+        : files?.kind === 'unchecked'
+          ? files.reason
+          : 'unsupported';
+    return collected;
+  }
+  for (const artifact of artifacts.value) {
+    const observation = await artifactPublishing(instance, artifact, files.value, reader);
+    if (observation.kind === 'unchecked') {
+      collected.failure = observation.reason;
+      break;
+    }
+    const { provenance, account } = observation.value;
+    collected.observations.push({ provenance, account });
+    const sources = artifactPublishingSources(
+      input,
+      output,
+      change,
+      side,
+      artifact,
+      observation.value,
+    );
+    collected.trust.push(sources.trust);
+    collected.publisher.push(sources.publisher);
+  }
+  return collected;
+}
+function artifactProvenance(
+  observations: ArtifactPublishing[],
+  failure?: EvidenceReason,
+): Observation<boolean> {
+  return !failure &&
+    observations.length &&
+    observations.every((o) => o.provenance === observations[0].provenance)
+    ? { kind: 'known', value: observations[0].provenance }
+    : { kind: 'unchecked', reason: failure ?? 'conflict' };
+}
+function artifactAccount(
+  observations: ArtifactPublishing[],
+  failure?: EvidenceReason,
+): Observation<Publisher> {
+  const first = observations[0]?.account;
+  return !failure && first && observations.every((o) => isDeepStrictEqual(o.account, first))
+    ? { kind: 'known', value: first }
+    : {
+        kind: 'unchecked',
+        reason: failure ?? (observations.some((o) => o.account) ? 'conflict' : 'missing'),
+      };
+}
+function publishingSide(
+  input: PolicySignalInput,
+  output: SignalEnrichment,
+  change: PacketChange,
+  side: 'base' | 'head',
+  { trust, publisher, observations, failure }: ArtifactPublishingSources,
+): PyPIPublishingSide {
+  const provenance = artifactProvenance(observations, failure);
+  const account = artifactAccount(observations, failure);
+  if (provenance.kind === 'unchecked')
+    trust.push(recordSignal(input, output, change, side, 'trust', null, provenance.reason));
+  if (account.kind === 'unchecked' && !publisher.some((p) => p.status === 'unavailable'))
+    publisher.push(recordSignal(input, output, change, side, 'publisher', null, account.reason));
+  // Registry account provenance is independent from the unexposed maintainer snapshot.
+  publisher.push(recordSignal(input, output, change, side, 'publisher', null, 'unsupported'));
+  return { trust, publisher, provenance, account };
+}
+function comparePyPITrust(
   input: PolicySignalInput,
   output: SignalEnrichment,
   change: PacketChange,
   releases: PyPIReleaseSides,
-  reader?: PolicyMetadataReader,
-  session?: GithubReadSession,
+  a: PyPIPublishingSide,
+  b: PyPIPublishingSide,
 ) {
-  const sides: Partial<Record<'base' | 'head', PyPIPublishingSide>> = {};
-  for (const side of ['base', 'head'] as const) {
-    const instance = side === 'base' ? change.from : change.to;
-    if (!instance || !('source' in instance) || !('version' in instance)) continue;
-    const trust: PacketSource[] = [],
-      publisher: PacketSource[] = [],
-      observations: { provenance: boolean; account: Publisher | null }[] = [];
-    const artifacts = await readUvArtifacts(input, change, side, session, input.artifactLimits),
-      files = releases[side]?.facts.files;
-    let failure: import('../schema.js').EvidenceReason | undefined;
-    if (artifacts.kind === 'known' && files?.kind === 'known' && reader) {
-      for (const artifact of artifacts.value) {
-        const work = observe(() => reader.spend(1));
-        if (work.kind === 'unchecked') {
-          failure = work.reason;
-          break;
-        }
-        const live = files.value.find((f) => f.filename === artifact.filename);
-        if (!live || live.digests.sha256 !== artifact.sha256) {
-          failure = 'conflict';
-          break;
-        }
-        const result = await reader.read({
-          kind: 'pypi-provenance',
-          name: instance.name,
-          version: instance.version,
-          source: instance.source,
-          filename: artifact.filename,
-        });
-        const fact =
-          result.kind === 'data' ? pypiProvenanceFacts(result.data, artifact, reader) : null;
-        if (result.kind === 'unavailable' || fact?.kind === 'unchecked') {
-          failure =
-            result.kind === 'unavailable'
-              ? result.reason
-              : fact!.kind === 'unchecked'
-                ? fact!.reason
-                : 'unknown';
-          break;
-        }
-        const url = result.kind === 'absent' || result.kind === 'data' ? result.url : '';
-        const account = fact?.kind === 'known' ? fact.value : null;
-        observations.push({ provenance: result.kind === 'data', account });
-        trust.push(
-          recordSignal(input, output, change, side, 'trust', {
-            url,
-            value: { level: 'registry_reported', ...artifact, provenance: result.kind === 'data' },
-          }),
-        );
-        publisher.push(
-          recordSignal(
-            input,
-            output,
-            change,
-            side,
-            'publisher',
-            account ? { url, value: { ...artifact, account } } : null,
-            'missing',
-          ),
-        );
-      }
-    } else
-      failure =
-        artifacts.kind === 'unchecked'
-          ? artifacts.reason
-          : files?.kind === 'unchecked'
-            ? files.reason
-            : 'unsupported';
-    const provenance: Observation<boolean> =
-      !failure &&
-      observations.length &&
-      observations.every((o) => o.provenance === observations[0].provenance)
-        ? { kind: 'known', value: observations[0].provenance }
-        : { kind: 'unchecked', reason: failure ?? 'conflict' };
-    const first = observations[0]?.account;
-    const account: Observation<Publisher> =
-      !failure && first && observations.every((o) => isDeepStrictEqual(o.account, first))
-        ? { kind: 'known', value: first }
-        : {
-            kind: 'unchecked',
-            reason: failure ?? (observations.some((o) => o.account) ? 'conflict' : 'missing'),
-          };
-    if (provenance.kind === 'unchecked')
-      trust.push(recordSignal(input, output, change, side, 'trust', null, provenance.reason));
-    if (account.kind === 'unchecked' && !publisher.some((p) => p.status === 'unavailable'))
-      publisher.push(recordSignal(input, output, change, side, 'publisher', null, account.reason));
-    // Registry account provenance is independent from the unexposed maintainer snapshot.
-    publisher.push(recordSignal(input, output, change, side, 'publisher', null, 'unsupported'));
-    sides[side] = { trust, publisher, provenance, account };
-  }
-  for (const category of ['trust', 'publisher'] as const)
-    attachSignalCoverage(
-      change,
-      category,
-      Object.values(sides).flatMap((s) => s[category]),
-    );
-  const a = sides.base,
-    b = sides.head;
-  if (!a || !b) return;
-  if (
-    a.account.kind === 'known' &&
-    b.account.kind === 'known' &&
-    !isDeepStrictEqual(a.account.value, b.account.value)
-  )
-    supplyChainFinding(
-      input,
-      output,
-      change,
-      'publisher',
-      'PyPI account',
-      [...a.publisher, ...b.publisher].filter((s) => s.status !== 'unavailable'),
-    );
   if (
     a.provenance.kind === 'known' &&
     a.provenance.value &&
@@ -468,4 +509,61 @@ async function collectPyPIPublishing(
       chronology,
     ]);
   }
+}
+function comparePyPIPublishing(
+  input: PolicySignalInput,
+  output: SignalEnrichment,
+  change: PacketChange,
+  releases: PyPIReleaseSides,
+  sides: Partial<Record<'base' | 'head', PyPIPublishingSide>>,
+) {
+  const a = sides.base,
+    b = sides.head;
+  if (!a || !b) return;
+  if (
+    a.account.kind === 'known' &&
+    b.account.kind === 'known' &&
+    !isDeepStrictEqual(a.account.value, b.account.value)
+  )
+    supplyChainFinding(
+      input,
+      output,
+      change,
+      'publisher',
+      'PyPI account',
+      [...a.publisher, ...b.publisher].filter((s) => s.status !== 'unavailable'),
+    );
+  comparePyPITrust(input, output, change, releases, a, b);
+}
+async function collectPyPIPublishing(
+  input: PolicySignalInput,
+  output: SignalEnrichment,
+  change: PacketChange,
+  releases: PyPIReleaseSides,
+  reader?: PolicyMetadataReader,
+  session?: GithubReadSession,
+) {
+  const sides: Partial<Record<'base' | 'head', PyPIPublishingSide>> = {};
+  for (const side of ['base', 'head'] as const) {
+    const instance = side === 'base' ? change.from : change.to;
+    if (!instance || !('source' in instance) || !('version' in instance)) continue;
+    const collected = await collectArtifactPublishing(
+      input,
+      output,
+      change,
+      side,
+      instance,
+      releases[side]?.facts.files,
+      reader,
+      session,
+    );
+    sides[side] = publishingSide(input, output, change, side, collected);
+  }
+  for (const category of ['trust', 'publisher'] as const)
+    attachSignalCoverage(
+      change,
+      category,
+      Object.values(sides).flatMap((s) => s[category]),
+    );
+  comparePyPIPublishing(input, output, change, releases, sides);
 }
