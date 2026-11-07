@@ -79,6 +79,48 @@ export type Observation<T> =
 export type NpmTimeSides = Partial<
   Record<'base' | 'head', { source: PacketSource; publishedAt?: number }>
 >;
+function npmTimeVersions(change: PacketChange, name: string): string[] {
+  return [
+    ...new Set(
+      [change.from, change.to].flatMap((s) =>
+        s && 'version' in s && 'name' in s && s.name === name ? [s.version] : [],
+      ),
+    ),
+  ];
+}
+function npmTimeSide(
+  input: PolicySignalInput,
+  output: SignalEnrichment,
+  change: PacketChange,
+  side: 'base' | 'head',
+  result: NpmTimesResult,
+  version: string,
+) {
+  const publishedAt = result.kind === 'times' ? result.times[version] : undefined;
+  const source = recordSignal(
+    input,
+    output,
+    change,
+    side,
+    'publishTime',
+    publishedAt === undefined
+      ? null
+      : { url: result.kind === 'times' ? result.url : '', value: { publishedAt } },
+    result.kind === 'times' ? (result.reasons[version] ?? 'missing') : result.reason,
+  );
+  if (side === 'head' && publishedAt !== undefined && source.status === 'available')
+    retainSignalFinding(output, {
+      id: signalId(source.id, 'releaseMetadata'),
+      memberId: change.id,
+      kind: 'releaseMetadata',
+      publishedAt,
+      references: [source.id],
+      rationale: 'The public registry records this exact proposed version publication time.',
+      remediation: ['Re-run after the configured release-age window ends.'],
+      validation: ['Check the configured release-age policy and exact timestamp.'],
+    });
+  return { source, ...(source.status === 'available' ? { publishedAt } : {}) };
+}
 async function collectNpmTimes(
   input: PolicySignalInput,
   output: SignalEnrichment,
@@ -91,15 +133,7 @@ async function collectNpmTimes(
     const instance = side === 'head' ? change.to : change.from;
     if (!instance || !('version' in instance) || !('source' in instance)) continue;
     const target = resolveAdvisoryTarget(input, change, side);
-    const versions = target
-      ? [
-          ...new Set(
-            [change.from, change.to].flatMap((s) =>
-              s && 'version' in s && 'name' in s && s.name === target.name ? [s.version] : [],
-            ),
-          ),
-        ]
-      : [];
+    const versions = target ? npmTimeVersions(change, target.name) : [];
     const key = JSON.stringify([target?.name, versions]);
     const result =
       cache.get(key) ??
@@ -112,52 +146,21 @@ async function collectNpmTimes(
           })
         : { kind: 'unavailable' as const, reason: 'unsupported' as const });
     cache.set(key, result);
-    const publishedAt = result.kind === 'times' ? result.times[instance.version] : undefined;
-    const source = recordSignal(
-      input,
-      output,
-      change,
-      side,
-      'publishTime',
-      publishedAt === undefined
-        ? null
-        : { url: result.kind === 'times' ? result.url : '', value: { publishedAt } },
-      result.kind === 'times' ? (result.reasons[instance.version] ?? 'missing') : result.reason,
-    );
-    sides[side] = { source, ...(source.status === 'available' ? { publishedAt } : {}) };
-    if (side === 'head' && publishedAt !== undefined && source.status === 'available')
-      retainSignalFinding(output, {
-        id: signalId(source.id, 'releaseMetadata'),
-        memberId: change.id,
-        kind: 'releaseMetadata',
-        publishedAt,
-        references: [source.id],
-        rationale: 'The public registry records this exact proposed version publication time.',
-        remediation: ['Re-run after the configured release-age window ends.'],
-        validation: ['Check the configured release-age policy and exact timestamp.'],
-      });
+    sides[side] = npmTimeSide(input, output, change, side, result, instance.version);
   }
   const reviewed = sides[change.to ? 'head' : 'base'];
   if (reviewed) attachSignalCoverage(change, 'publishTime', [reviewed.source]);
   return sides;
 }
 
-/** Required malware runs before optional adapters; input/outputs never share mutable records. */
-export async function enrichPolicySignals(
-  value: unknown,
-  dependencies: SignalDependencies,
-): Promise<PolicySignalResult> {
-  const prepared = prepareAdvisoryInput(value as AdvisoryInput);
-  if (!prepared.ok)
-    return prepared.result.kind === 'unavailable' ? prepared.result : { kind: 'invalid' };
-  const input = prepared.input as PolicySignalInput;
+function validSignalInput(input: PolicySignalInput): boolean {
   if (
     !Number.isSafeInteger(input.evaluationTime) ||
     input.evaluationTime < 0 ||
     !Number.isSafeInteger(input.limits.maxAttempts) ||
     input.limits.maxAttempts < 1
   )
-    return { kind: 'invalid' };
+    return false;
   try {
     if (input.artifactLimits) artifactLimits(input.artifactLimits);
     if (input.npmInventory) {
@@ -170,8 +173,66 @@ export async function enrichPolicySignals(
           for (const side of ['base', 'head'] as const) metadataTarget(input, c, side);
     }
   } catch {
-    return { kind: 'invalid' };
+    return false;
   }
+  return true;
+}
+async function collectOptionalMember(
+  input: PolicySignalInput,
+  output: SignalEnrichment,
+  change: PacketChange,
+  dependencies: SignalDependencies,
+) {
+  if (change.ecosystem === 'npm' && !('basis' in change)) {
+    const times = await collectNpmTimes(input, output, change, dependencies.publishTimeReader);
+    const sides = await collectNpmPolicySignals(
+      input,
+      output,
+      change,
+      times,
+      dependencies.npmReader,
+    );
+    collectLicenseSignals(
+      input,
+      output,
+      change,
+      Object.fromEntries(
+        Object.entries(sides).map(([side, s]) => [side, { license: s.facts.license, url: s.url }]),
+      ),
+    );
+  }
+  if (change.ecosystem === 'uv') {
+    const sides = await collectPyPIReleaseSignals(
+      input,
+      output,
+      change,
+      dependencies.metadataReader,
+      dependencies.artifactSession,
+    );
+    collectLicenseSignals(
+      input,
+      output,
+      change,
+      Object.fromEntries(
+        Object.entries(sides).map(([side, s]) => [side, { license: s.facts.license, url: s.url }]),
+      ),
+    );
+  }
+  if (change.ecosystem === 'actions') {
+    await collectActionsPolicySignals(input, output, change, dependencies.upstreamReader);
+    collectLicenseSignals(input, output, change, {});
+  }
+}
+/** Required malware runs before optional adapters; input/outputs never share mutable records. */
+export async function enrichPolicySignals(
+  value: unknown,
+  dependencies: SignalDependencies,
+): Promise<PolicySignalResult> {
+  const prepared = prepareAdvisoryInput(value as AdvisoryInput);
+  if (!prepared.ok)
+    return prepared.result.kind === 'unavailable' ? prepared.result : { kind: 'invalid' };
+  const input = prepared.input as PolicySignalInput;
+  if (!validSignalInput(input)) return { kind: 'invalid' };
   const output: SignalEnrichment = {
     kind: 'enriched',
     binding: input.binding,
@@ -192,56 +253,7 @@ export async function enrichPolicySignals(
     for (const change of output.changes) {
       if ('basis' in change) continue;
       await runOptionalSignals(input, output, change, async () => {
-        if (change.ecosystem === 'npm' && !('basis' in change)) {
-          const times = await collectNpmTimes(
-            input,
-            output,
-            change,
-            dependencies.publishTimeReader,
-          );
-          const sides = await collectNpmPolicySignals(
-            input,
-            output,
-            change,
-            times,
-            dependencies.npmReader,
-          );
-          collectLicenseSignals(
-            input,
-            output,
-            change,
-            Object.fromEntries(
-              Object.entries(sides).map(([side, s]) => [
-                side,
-                { license: s.facts.license, url: s.url },
-              ]),
-            ),
-          );
-        }
-        if (change.ecosystem === 'uv') {
-          const sides = await collectPyPIReleaseSignals(
-            input,
-            output,
-            change,
-            dependencies.metadataReader,
-            dependencies.artifactSession,
-          );
-          collectLicenseSignals(
-            input,
-            output,
-            change,
-            Object.fromEntries(
-              Object.entries(sides).map(([side, s]) => [
-                side,
-                { license: s.facts.license, url: s.url },
-              ]),
-            ),
-          );
-        }
-        if (change.ecosystem === 'actions') {
-          await collectActionsPolicySignals(input, output, change, dependencies.upstreamReader);
-          collectLicenseSignals(input, output, change, {});
-        }
+        await collectOptionalMember(input, output, change, dependencies);
       });
     }
     return freeze(output);

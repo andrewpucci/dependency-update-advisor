@@ -154,6 +154,27 @@ function extractor(t: Target, limits: PublishTimeLimits, spend: () => void) {
     }
     return null;
   }
+  function appendText(value: string) {
+    if (collectingKey) {
+      if (text.length <= keyLimit) text = (text + value).slice(0, keyLimit + 1);
+    } else if (capture) {
+      text += value;
+      advisoryCheck(Buffer.byteLength(text) <= PACKET_LIMITS.identityBytes, 'budget');
+    }
+  }
+  function finishString() {
+    if (capture === 'name') advisoryCheck(text === t.name, 'conflict');
+    else if (capture) {
+      const time = publishTimestamp(text, t.evaluationTime);
+      if (time === null)
+        reasons[capture] =
+          Number.isFinite(Date.parse(text)) && Date.parse(text) > t.evaluationTime
+            ? 'conflict'
+            : 'malformed';
+      else times[capture] = time;
+    }
+    capture = null;
+  }
   function accept(token: Token) {
     spend();
     switch (token.name) {
@@ -182,25 +203,10 @@ function extractor(t: Target, limits: PublishTimeLimits, spend: () => void) {
         text = '';
         break;
       case 'stringChunk':
-        if (collectingKey) {
-          if (text.length <= keyLimit) text = (text + token.value).slice(0, keyLimit + 1);
-        } else if (capture) {
-          text += token.value;
-          advisoryCheck(Buffer.byteLength(text) <= PACKET_LIMITS.identityBytes, 'budget');
-        }
+        appendText(token.value);
         break;
       case 'endString':
-        if (capture === 'name') advisoryCheck(text === t.name, 'conflict');
-        else if (capture) {
-          const time = publishTimestamp(text, t.evaluationTime);
-          if (time === null)
-            reasons[capture] =
-              Number.isFinite(Date.parse(text)) && Date.parse(text) > t.evaluationTime
-                ? 'conflict'
-                : 'malformed';
-          else times[capture] = time;
-        }
-        capture = null;
+        finishString();
         break;
       case 'startNumber':
       case 'trueValue':
@@ -222,6 +228,24 @@ function extractor(t: Target, limits: PublishTimeLimits, spend: () => void) {
       return { times, reasons };
     },
   };
+}
+function validateResponse(response: Response, url: string) {
+  advisoryCheck(!response.redirected && (!response.url || response.url === url), 'unsupported');
+  if (response.status === 429) throw new AdvisoryFailure('rate_limit');
+  if (response.status !== 200)
+    throw new AdvisoryFailure(
+      response.status === 404
+        ? 'missing'
+        : [401, 403].includes(response.status)
+          ? 'permission'
+          : response.status >= 300 && response.status < 400
+            ? 'unsupported'
+            : 'unknown',
+    );
+  advisoryCheck(
+    /^application\/json(?:\s*;|$)/iu.test(response.headers.get('content-type') ?? ''),
+    'unsupported',
+  );
 }
 class TimeReader {
   private requests = 0;
@@ -287,22 +311,7 @@ class TimeReader {
         }),
         aborted,
       ]);
-      advisoryCheck(!response.redirected && (!response.url || response.url === url), 'unsupported');
-      if (response.status === 429) throw new AdvisoryFailure('rate_limit');
-      if (response.status !== 200)
-        throw new AdvisoryFailure(
-          response.status === 404
-            ? 'missing'
-            : [401, 403].includes(response.status)
-              ? 'permission'
-              : response.status >= 300 && response.status < 400
-                ? 'unsupported'
-                : 'unknown',
-        );
-      advisoryCheck(
-        /^application\/json(?:\s*;|$)/iu.test(response.headers.get('content-type') ?? ''),
-        'unsupported',
-      );
+      validateResponse(response, url);
       advisoryCheck(response.body);
       const stream = response.body.getReader(),
         decoder = new TextDecoder('utf-8', { fatal: true });
