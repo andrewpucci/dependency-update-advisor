@@ -1,5 +1,6 @@
 import { Readable } from 'node:stream';
 import { pipeline } from 'node:stream/promises';
+import { types } from 'node:util';
 import parser, { type Token } from 'stream-json/parser.js';
 import { PACKET_LIMITS, type EvidenceReason } from '../schema.js';
 import { advisoryCheck, AdvisoryFailure, advisoryText } from './advisory-read.js';
@@ -59,12 +60,19 @@ function target(value: unknown): Target {
     'unsupported',
   );
   advisoryCheck(
-    Array.isArray(v.versions) && v.versions.length > 0 && v.versions.length <= 2,
+    Array.isArray(v.versions) &&
+      !types.isProxy(v.versions) &&
+      Object.getPrototypeOf(v.versions) === Array.prototype &&
+      v.versions.length > 0 &&
+      v.versions.length <= 2,
     'unsupported',
   );
   advisoryCheck(
     Reflect.ownKeys(v.versions).every(
-      (k) => 'value' in Object.getOwnPropertyDescriptor(v.versions, k)!,
+      (k) =>
+        typeof k === 'string' &&
+        (k === 'length' || /^(?:0|[1-9]\d*)$/u.test(k)) &&
+        'value' in Object.getOwnPropertyDescriptor(v.versions, k)!,
     ),
     'unsupported',
   );
@@ -84,6 +92,19 @@ export function publishTimestamp(value: unknown, evaluationTime: number): number
   if (
     typeof value !== 'string' ||
     !/^\d{4}-\d\d-\d\dT\d\d:\d\d:\d\d(?:\.\d+)?(?:Z|[+-]\d\d:\d\d)$/u.test(value)
+  )
+    return null;
+  const year = Number(value.slice(0, 4)),
+    month = Number(value.slice(5, 7)),
+    day = Number(value.slice(8, 10));
+  if (
+    month < 1 ||
+    month > 12 ||
+    day < 1 ||
+    day > new Date(Date.UTC(year, month, 0)).getUTCDate() ||
+    Number(value.slice(11, 13)) > 23 ||
+    Number(value.slice(14, 16)) > 59 ||
+    Number(value.slice(17, 19)) > 59
   )
     return null;
   const time = Date.parse(value);

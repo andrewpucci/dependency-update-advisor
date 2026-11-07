@@ -1,5 +1,5 @@
-import { expect, test } from 'vite-plus/test';
-import { createNpmPublishTimeReader } from './npm-publish-times.js';
+import { expect, test, vi } from 'vite-plus/test';
+import { createNpmPublishTimeReader, publishTimestamp } from './npm-publish-times.js';
 import { enrichPolicySignals } from './policy-signals.js';
 import { createMalwareReader } from './advisory-read.js';
 import { createUpstreamReader } from './upstream-read.js';
@@ -23,6 +23,63 @@ const target = {
   versions: ['1.0.0', '2.0.0'],
   evaluationTime: Date.parse('2026-11-07T00:00:00Z'),
 };
+test.each([
+  '2026-02-30T00:00:00Z',
+  '2026-01-01T24:00:00Z',
+  '2026-01-01T00:00:00+24:00',
+  '2026-11-01T00:00:00',
+])('invalid calendar/zone timestamp %s cannot become verified release age', (date) =>
+  expect(publishTimestamp(date, target.evaluationTime)).toBeNull(),
+);
+test('proxy and accessor version arrays are rejected before executing traps or network', async () => {
+  let trapped = false,
+    requests = 0;
+  const r = createNpmPublishTimeReader(limits, {
+    now: () => 0,
+    fetch: async () => {
+      requests++;
+      return Response.json({});
+    },
+  });
+  if (r.kind !== 'ready') throw new Error('reader');
+  const versions = new Proxy(['1.0.0'], {
+    ownKeys() {
+      trapped = true;
+      return ['0', 'length'];
+    },
+  });
+  expect(await r.read({ ...target, versions })).toMatchObject({ kind: 'unavailable' });
+  expect(trapped).toBe(false);
+  expect(requests).toBe(0);
+  r.close();
+});
+test('timestamp timeout and close cancel even a fetch that ignores AbortSignal', async () => {
+  vi.useFakeTimers();
+  try {
+    for (const action of ['timeout', 'close']) {
+      let signal: AbortSignal | undefined;
+      const r = createNpmPublishTimeReader(limits, {
+        now: () => 0,
+        fetch: async (_url, init) => {
+          signal = init.signal as AbortSignal;
+          return new Promise<Response>(() => {});
+        },
+      });
+      if (r.kind !== 'ready') throw new Error('reader');
+      const pending = r.read(target);
+      if (action === 'close') r.close();
+      else await vi.advanceTimersByTimeAsync(limits.requestTimeoutMs);
+      expect(await pending).toMatchObject({
+        kind: 'unavailable',
+        reason: action === 'close' ? 'unknown' : 'timeout',
+      });
+      expect(signal?.aborted).toBe(true);
+      r.close();
+    }
+  } finally {
+    vi.useRealTimers();
+  }
+});
 test('npm optional timestamp failure cannot erase completed malware coverage', async () => {
   const f = await upstreamScenario();
   const upstreamReader = createUpstreamReader(upstreamTestLimits, { now: () => 0, fetch: f.fetch });

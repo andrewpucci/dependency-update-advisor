@@ -1,4 +1,4 @@
-import { expect, test } from 'vite-plus/test';
+import { expect, test, vi } from 'vite-plus/test';
 import { createPolicySignalReader } from './policy-signals-read.js';
 const limits = {
   maxRequests: 10,
@@ -17,6 +17,68 @@ const query = {
   version: '2.0rc1',
   source: { kind: 'registry', identity: 'https://pypi.org/simple' },
 };
+test('dot-segment versions cannot change the locally constructed metadata route', async () => {
+  let requests = 0;
+  const r = createPolicySignalReader(limits, {
+    now: () => 0,
+    fetch: async () => {
+      requests++;
+      return Response.json({});
+    },
+  });
+  if (r.kind !== 'ready') throw new Error('reader');
+  for (const version of ['.', '..'])
+    expect(await r.read({ ...query, version })).toEqual({
+      kind: 'unavailable',
+      reason: 'unsupported',
+    });
+  expect(requests).toBe(0);
+  r.close();
+});
+test.each(['maxJsonDepth', 'maxJsonEntries', 'maxWork', 'maxRetainedBytes'] as const)(
+  'optional %s remains a bounded failure',
+  async (field) => {
+    const r = createPolicySignalReader(
+      { ...limits, [field]: 1 },
+      {
+        now: () => 0,
+        fetch: async () =>
+          Response.json({ info: { name: query.name, version: query.version }, urls: [] }),
+      },
+    );
+    if (r.kind !== 'ready') throw new Error('reader');
+    expect(await r.read(query)).toEqual({ kind: 'unavailable', reason: 'budget' });
+    r.close();
+  },
+);
+test('close and timeout cancel ignored-signal fetches without leaking timers', async () => {
+  vi.useFakeTimers();
+  try {
+    for (const close of [true, false]) {
+      let signal: AbortSignal | undefined;
+      const r = createPolicySignalReader(limits, {
+        now: () => 0,
+        fetch: async (_url, init) => {
+          signal = init.signal as AbortSignal;
+          return new Promise<Response>(() => {});
+        },
+      });
+      if (r.kind !== 'ready') throw new Error('reader');
+      const pending = r.read(query);
+      if (close) r.close();
+      else await vi.advanceTimersByTimeAsync(limits.requestTimeoutMs);
+      expect(await pending).toMatchObject({
+        kind: 'unavailable',
+        reason: close ? 'unknown' : 'timeout',
+      });
+      expect(signal?.aborted).toBe(true);
+      r.close();
+      expect(vi.getTimerCount()).toBe(0);
+    }
+  } finally {
+    vi.useRealTimers();
+  }
+});
 test('constructs exact public metadata routes, bounds JSON, and never forwards credentials', async () => {
   let requests = 0;
   const r = createPolicySignalReader(limits, {

@@ -32,6 +32,8 @@ export function metadataUrl(value: unknown): { query: MetadataQuery; url: string
       advisoryText(value.name) &&
       /^[a-z\d]+(?:-[a-z\d]+)*$/u.test(value.name) &&
       advisoryText(value.version) &&
+      value.version !== '.' &&
+      value.version !== '..' &&
       !/[\s/@,<>=~^*|]/u.test(value.version),
     'unsupported',
   );
