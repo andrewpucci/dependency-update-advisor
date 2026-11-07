@@ -9,9 +9,10 @@ import {
 import type { ReviewBinding } from '../event.js';
 import type { Finding } from '../policy.js';
 import { freeze } from './common.js';
-import { prepareAdvisoryInput, type AdvisoryInput } from './advisories.js';
+import { prepareAdvisoryInput, resolveAdvisoryTarget, type AdvisoryInput } from './advisories.js';
 import { advisoryCheck, AdvisoryFailure, type AdvisoryReader } from './advisory-read.js';
 import { collectMemberMalware } from './policy-signals-malware.js';
+import type { NpmPublishTimeReader, NpmTimesResult } from './npm-publish-times.js';
 
 export type PolicySignalInput = AdvisoryInput & {
   evaluationTime: number;
@@ -39,7 +40,141 @@ export type PolicySignalResult =
   | Readonly<SignalEnrichment>
   | { kind: 'invalid' }
   | { kind: 'unavailable'; reason: EvidenceReason };
-export type SignalDependencies = { malwareReader: AdvisoryReader };
+export type SignalDependencies = {
+  malwareReader: AdvisoryReader;
+  publishTimeReader?: NpmPublishTimeReader;
+};
+export type OptionalCategory = 'publishTime' | 'deprecation' | 'trust' | 'publisher' | 'license';
+export function recordSignal(
+  input: PolicySignalInput,
+  output: SignalEnrichment,
+  change: PacketChange,
+  side: 'base' | 'head',
+  category: OptionalCategory,
+  known: { url: string; value: unknown } | null,
+  reason: EvidenceReason = 'unsupported',
+): PacketSource {
+  const instance = side === 'base' ? change.from : change.to;
+  advisoryCheck(instance);
+  const value = 'version' in instance ? instance.version : 'ref' in instance ? instance.ref : '';
+  const excerpt = known ? JSON.stringify(known.value) : '';
+  if (known && excerpt.length > PACKET_LIMITS.excerptCodeUnits) {
+    known = null;
+    reason = 'truncated';
+  }
+  const source: PacketSource = {
+    id: signalId(input.binding.identity, change.id, side, category, known ?? reason),
+    kind: category === 'license' ? 'metadata' : category,
+    ecosystems: [change.ecosystem],
+    memberIds: [change.id],
+    status: known ? 'available' : 'unavailable',
+    reasons: known ? [] : [reason],
+    provenance: known
+      ? {
+          kind: 'upstream',
+          url: known.url,
+          title: 'Exact ' + category + ' observation',
+          excerpt,
+          excerptTruncated: false,
+          subjects: [{ memberId: change.id, side, value }],
+          range: { from: side === 'base' ? value : null, to: side === 'head' ? value : null },
+        }
+      : { kind: 'unavailable' },
+  };
+  retainSignalSource(output, source);
+  output.attempts.push({
+    memberId: change.id,
+    side,
+    category,
+    url: known?.url ?? null,
+    outcome: known ? 'available' : reason === 'unsupported' ? 'skipped' : 'unavailable',
+    reasons: source.reasons,
+    sourceIds: [source.id],
+    truncated: reason === 'truncated' && !known,
+  });
+  return source;
+}
+export function attachSignalCoverage(
+  change: PacketChange,
+  category: Exclude<OptionalCategory, 'license'>,
+  sources: PacketSource[],
+) {
+  const reasons = [...new Set(sources.flatMap((s) => s.reasons))];
+  change.evidence[category] = {
+    status: reasons.length
+      ? sources.some((s) => s.status === 'available')
+        ? 'partial'
+        : 'unavailable'
+      : 'available',
+    sourceIds: sources.map((s) => s.id),
+    reasons,
+  };
+}
+export type NpmTimeSides = Partial<
+  Record<'base' | 'head', { source: PacketSource; publishedAt?: number }>
+>;
+async function collectNpmTimes(
+  input: PolicySignalInput,
+  output: SignalEnrichment,
+  change: PacketChange,
+  reader?: NpmPublishTimeReader,
+): Promise<NpmTimeSides> {
+  const sides: NpmTimeSides = {},
+    cache = new Map<string, NpmTimesResult>();
+  for (const side of ['head', 'base'] as const) {
+    const instance = side === 'head' ? change.to : change.from;
+    if (!instance || !('version' in instance) || !('source' in instance)) continue;
+    const target = resolveAdvisoryTarget(input, change, side);
+    const versions = target
+      ? [
+          ...new Set(
+            [change.from, change.to].flatMap((s) =>
+              s && 'version' in s && 'name' in s && s.name === target.name ? [s.version] : [],
+            ),
+          ),
+        ]
+      : [];
+    const key = JSON.stringify([target?.name, versions]);
+    const result =
+      cache.get(key) ??
+      (target && reader
+        ? await reader.read({
+            name: target.name,
+            versions,
+            source: instance.source,
+            evaluationTime: input.evaluationTime,
+          })
+        : { kind: 'unavailable' as const, reason: 'unsupported' as const });
+    cache.set(key, result);
+    const publishedAt = result.kind === 'times' ? result.times[instance.version] : undefined;
+    const source = recordSignal(
+      input,
+      output,
+      change,
+      side,
+      'publishTime',
+      publishedAt === undefined
+        ? null
+        : { url: result.kind === 'times' ? result.url : '', value: { publishedAt } },
+      result.kind === 'times' ? (result.reasons[instance.version] ?? 'missing') : result.reason,
+    );
+    sides[side] = { source, ...(source.status === 'available' ? { publishedAt } : {}) };
+    if (side === 'head' && publishedAt !== undefined && source.status === 'available')
+      retainSignalFinding(output, {
+        id: signalId(source.id, 'releaseMetadata'),
+        memberId: change.id,
+        kind: 'releaseMetadata',
+        publishedAt,
+        references: [source.id],
+        rationale: 'The public registry records this exact proposed version publication time.',
+        remediation: ['Re-run after the configured release-age window ends.'],
+        validation: ['Check the configured release-age policy and exact timestamp.'],
+      });
+  }
+  const reviewed = sides[change.to ? 'head' : 'base'];
+  if (reviewed) attachSignalCoverage(change, 'publishTime', [reviewed.source]);
+  return sides;
+}
 
 export const signalId = (...values: unknown[]) =>
   'signal:' + createHash('sha256').update(JSON.stringify(values)).digest('hex');
@@ -100,6 +235,11 @@ export async function enrichPolicySignals(
     for (const change of output.changes) {
       if ('basis' in change) continue;
       await collectMemberMalware(input, output, change, dependencies.malwareReader, cache);
+      signalBounds(input, output);
+    }
+    for (const change of output.changes) {
+      if (change.ecosystem === 'npm' && !('basis' in change))
+        await collectNpmTimes(input, output, change, dependencies.publishTimeReader);
       signalBounds(input, output);
     }
     return freeze(output);

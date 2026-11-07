@@ -17,6 +17,7 @@
     "@renovatebot/pep440": "6.0.0",
     "semver": "7.8.6",
     "smol-toml": "1.9.1",
+    "stream-json": "3.8.0",
     "yaml": "2.9.1"
   },
   "devDependencies": {
