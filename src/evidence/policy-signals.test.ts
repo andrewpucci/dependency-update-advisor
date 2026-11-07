@@ -9,60 +9,76 @@ import { formDecisionUnits, evaluateUnitPolicy } from '../units.js';
 import { parseReviewConfig } from '../config.js';
 import { AdvisoryFailure } from './advisory-read.js';
 import { createNpmRegistryReader } from './npm-registry.js';
-test('severity disagreement cannot erase a verified active malware hold', async () => {
-  const { f, input } = await fixture();
-  const r = createMalwareReader(input.limits, {
-    now: () => 0,
-    fetch: async (url) => {
-      const q = new URL(url),
-        target = q.searchParams.get('affects')!,
-        i = target.lastIndexOf('@');
-      const record = {
-        ghsa_id: 'GHSA-aaaa-bbbb-cccc',
-        html_url: 'https://github.com/advisories/GHSA-aaaa-bbbb-cccc',
-        summary: 'Active malware',
-        type: 'malware',
-        withdrawn_at: null,
-        vulnerabilities: [
+test.each(['severity', 'range'])(
+  '%s disagreement cannot erase a verified active malware hold',
+  async (conflict) => {
+    const { f, input } = await fixture();
+    const r = createMalwareReader(input.limits, {
+      now: () => 0,
+      fetch: async (url) => {
+        const q = new URL(url),
+          target = q.searchParams.get('affects')!,
+          i = target.lastIndexOf('@');
+        const record = {
+          ghsa_id: 'GHSA-aaaa-bbbb-cccc',
+          html_url: 'https://github.com/advisories/GHSA-aaaa-bbbb-cccc',
+          summary: 'Active malware',
+          type: 'malware',
+          withdrawn_at: null,
+          vulnerabilities: [
+            {
+              package: { ecosystem: q.searchParams.get('ecosystem'), name: target.slice(0, i) },
+              vulnerable_version_range: '*',
+            },
+          ],
+        };
+        return Response.json([
+          { ...record, severity: 'high' },
           {
-            package: { ecosystem: q.searchParams.get('ecosystem'), name: target.slice(0, i) },
-            vulnerable_version_range: '*',
+            ...record,
+            severity: conflict === 'severity' ? 'low' : 'high',
+            vulnerabilities: record.vulnerabilities.map((v) => ({
+              ...v,
+              vulnerable_version_range: conflict === 'range' ? '>= 1.0.0' : '*',
+            })),
           },
-        ],
-      };
-      return Response.json([
-        { ...record, severity: 'low' },
-        { ...record, severity: 'high' },
-      ]);
-    },
-  });
-  if (r.kind !== 'ready') throw new Error('reader');
-  const out = await enrichPolicySignals(input, { malwareReader: r });
-  r.close();
-  if (out.kind !== 'enriched') throw new Error(JSON.stringify(out));
-  expect(out.findings.some((f) => f.kind === 'malware')).toBe(true);
-  expect(out.changes.every((c) => c.evidence.malware.reasons.includes('conflict'))).toBe(true);
-  const packet = validateReviewPacket(
-    {
-      version: 1,
-      ...f.expected,
-      changes: out.changes,
-      sources: out.sources,
-      findings: out.findings,
-      coverage: f.coverage,
-      relationships: f.relationships,
-    },
-    f.expected,
-  );
-  expect(packet.ok, JSON.stringify(packet)).toBe(true);
-  if (!packet.ok) throw new Error('packet');
-  const policy = evaluateUnitPolicy(
-    formDecisionUnits(packet.packet),
-    parseReviewConfig('{"version":1,"policy":{"verdicts":{"incompleteEvidence":"merge"}}}'),
-    input.evaluationTime,
-  );
-  expect(policy.ok && policy.defaultCeiling).toBe('do_not_merge');
-});
+        ]);
+      },
+    });
+    if (r.kind !== 'ready') throw new Error('reader');
+    const out = await enrichPolicySignals(input, { malwareReader: r });
+    r.close();
+    if (out.kind !== 'enriched') throw new Error(JSON.stringify(out));
+    expect(out.findings.some((f) => f.kind === 'malware')).toBe(true);
+    if (conflict === 'range')
+      expect(
+        out.findings
+          .filter((f) => f.kind === 'malware')
+          .every((f) => f.affectedRange === undefined),
+      ).toBe(true);
+    expect(out.changes.every((c) => c.evidence.malware.reasons.includes('conflict'))).toBe(true);
+    const packet = validateReviewPacket(
+      {
+        version: 1,
+        ...f.expected,
+        changes: out.changes,
+        sources: out.sources,
+        findings: out.findings,
+        coverage: f.coverage,
+        relationships: f.relationships,
+      },
+      f.expected,
+    );
+    expect(packet.ok, JSON.stringify(packet)).toBe(true);
+    if (!packet.ok) throw new Error('packet');
+    const policy = evaluateUnitPolicy(
+      formDecisionUnits(packet.packet),
+      parseReviewConfig('{"version":1,"policy":{"verdicts":{"incompleteEvidence":"merge"}}}'),
+      input.evaluationTime,
+    );
+    expect(policy.ok && policy.defaultCeiling).toBe('do_not_merge');
+  },
+);
 
 async function fixture(extras = false) {
   const f = await upstreamScenario({ extras, declaration: extras });
