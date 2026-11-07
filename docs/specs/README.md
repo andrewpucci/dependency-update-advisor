@@ -77,7 +77,7 @@ gaps and an introduced vulnerability before parity is claimed.
   remain separate from downstream collector, provider, renderer, and workflow gates.
 - [Shared workflow](SPEC-shared-review.md) — approved for planning.
 - [Applicable vulnerability advisories](SPEC-advisory-lookup.md) — S1 #19 and
-  #173–#181 implemented on `issue-19`, pending review. Exact public-identity
+  #173–#181 implemented; #19 tracks review and merge. Exact public-identity
   proofs, Actions mappings and separate lookup outcomes preserve T4/T5/C3
   attribution; [verification #181](https://github.com/andrewpucci/dependency-update-advisor/issues/181)
   retains live proof acquisition, downstream workflow and cutover gates.

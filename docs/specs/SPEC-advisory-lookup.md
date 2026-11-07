@@ -1,6 +1,7 @@
 # Spec: S1 Applicable Vulnerability Advisories
 
-Status: implemented on `issue-19`, pending review, 2026-11-03.
+Status: implemented; [#19](https://github.com/andrewpucci/dependency-update-advisor/issues/19)
+tracks review and merge, 2026-11-06.
 Supporting contract for `shared-review`
 in [the capability map](README.md), scoped to
 [issue #19: S1](https://github.com/andrewpucci/dependency-update-advisor/issues/19).
