@@ -22,6 +22,7 @@ import type { GithubReadSession } from '../github-read.js';
 import { artifactLimits, type ArtifactLimits } from './policy-signals-uv-artifacts.js';
 import { collectActionsPolicySignals } from './policy-signals-actions.js';
 import type { UpstreamReader } from './upstream-read.js';
+import { collectLicenseSignals } from './policy-signals-licenses.js';
 
 export type PolicySignalInput = AdvisoryInput & {
   evaluationTime: number;
@@ -300,18 +301,49 @@ export async function enrichPolicySignals(
     for (const change of output.changes) {
       if (change.ecosystem === 'npm' && !('basis' in change)) {
         const times = await collectNpmTimes(input, output, change, dependencies.publishTimeReader);
-        await collectNpmPolicySignals(input, output, change, times, dependencies.npmReader);
+        const sides = await collectNpmPolicySignals(
+          input,
+          output,
+          change,
+          times,
+          dependencies.npmReader,
+        );
+        collectLicenseSignals(
+          input,
+          output,
+          change,
+          Object.fromEntries(
+            Object.entries(sides).map(([side, s]) => [
+              side,
+              { license: s.facts.license, url: s.url },
+            ]),
+          ),
+        );
       }
-      if (change.ecosystem === 'uv')
-        await collectPyPIReleaseSignals(
+      if (change.ecosystem === 'uv') {
+        const sides = await collectPyPIReleaseSignals(
           input,
           output,
           change,
           dependencies.metadataReader,
           dependencies.artifactSession,
         );
-      if (change.ecosystem === 'actions')
+        collectLicenseSignals(
+          input,
+          output,
+          change,
+          Object.fromEntries(
+            Object.entries(sides).map(([side, s]) => [
+              side,
+              { license: s.facts.license, url: s.url },
+            ]),
+          ),
+        );
+      }
+      if (change.ecosystem === 'actions') {
         await collectActionsPolicySignals(input, output, change, dependencies.upstreamReader);
+        collectLicenseSignals(input, output, change, {});
+      }
       signalBounds(input, output);
     }
     return freeze(output);
