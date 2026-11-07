@@ -1,6 +1,6 @@
 # Spec: S3 Advisory Policy Signals
 
-Status: approved for execution, 2026-11-07. Supporting contract for
+Status: implemented, pending review and merge. Supporting contract for
 `shared-review` in
 [the capability map](README.md), scoped to
 [issue #53: S3](https://github.com/andrewpucci/dependency-update-advisor/issues/53).
@@ -21,8 +21,8 @@ Implementation handoff:
 [#195–#207 under #53](https://github.com/andrewpucci/dependency-update-advisor/issues/53)
 cover malware, bounded ecosystem metadata, exact artifact attribution,
 license normalization, outcome preservation, integration, and verification.
-Tasks #195–#206 are implemented on the working branch; final review and
-verification disposition remain in
+Tasks #195–#207 are implemented on the working branch, pending review and
+merge; verification, resolved findings, and remaining integration gates are in
 [#207](https://github.com/andrewpucci/dependency-update-advisor/issues/207).
 
 Plan and execution approval, 2026-11-07: the user invoked `as-build auto`

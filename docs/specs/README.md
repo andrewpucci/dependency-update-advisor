@@ -90,13 +90,13 @@ gaps and an introduced vulnerability before parity is claimed.
   proofs, Actions mappings and separate lookup outcomes preserve T4/T5/C3
   attribution; [verification #181](https://github.com/andrewpucci/dependency-update-advisor/issues/181)
   retains live proof acquisition, downstream workflow and cutover gates.
-- [Advisory policy signals](SPEC-policy-signals.md) — approved for execution
-  on 2026-11-07, supporting S3 #53
+- [Advisory policy signals](SPEC-policy-signals.md) — implemented, pending
+  review and merge, supporting S3 #53
   contract in `shared-review`; explicit malware queries and exact-version
   release, trust, publisher, license, and Actions pinning evidence for C3.
   The user approved the plan, exact dependency pins, and `as-build auto` on
-  2026-11-07. Tasks #195–#206 are implemented; final review and advisory
-  disposition remain in [#207](https://github.com/andrewpucci/dependency-update-advisor/issues/207).
+  2026-11-07. Tasks #195–#207 are implemented; verification, resolved
+  review findings, and remaining integration gates are in [#207](https://github.com/andrewpucci/dependency-update-advisor/issues/207).
   The task issues are sub-issues of
   [#53](https://github.com/andrewpucci/dependency-update-advisor/issues/53)
   on the implementation project. Live transport, workflow, downstream

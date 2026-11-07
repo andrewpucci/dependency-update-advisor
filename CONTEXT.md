@@ -31,9 +31,9 @@ retains remaining gates.
 retains remaining gates. W1/W2 must supply bounded reads and exclusive claims
 before T2/T3 writes. [S3 #53](docs/specs/SPEC-policy-signals.md) is implemented;
 [final review #207](https://github.com/andrewpucci/dependency-update-advisor/issues/207)
-awaits advisory disposition. M2 assessment, O1 rendering, T2/T3/W2 publication,
-and C2 handoffs remain gates;
-packaging remains A1. Unit tests do not certify these integrations or cutover.
+records verification and resolved review findings, pending review/merge.
+M2/O1/W2, C2 handoffs, A1 packaging, adoption, parity, and cutover remain gates.
+Unit tests do not certify these integrations.
 
 - The [capability map](docs/specs/README.md) indexes module and contract status.
 - The [ADR guide](docs/adr/README.md) indexes durable architecture decisions.
