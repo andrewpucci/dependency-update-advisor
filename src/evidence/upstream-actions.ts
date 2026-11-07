@@ -63,6 +63,28 @@ async function recheck(repository: string, observed: ObservedRef, reader: Upstre
   );
   requireUpstream(collision.status === 'unavailable' && collision.reason === 'missing', 'conflict');
 }
+async function releaseAtCommit(
+  repository: string,
+  sha: string,
+  item: unknown,
+  seen: Set<string>,
+  reader: UpstreamReader,
+) {
+  requireUpstream(isPlainObject(item) && upstreamText(item.tag_name));
+  if (item.draft === true) return;
+  const tag = item.tag_name,
+    version = tag.replace(/^v/u, '');
+  if (compareUpstreamVersions('npm', version, version) !== 0) return;
+  requireUpstream(!seen.has(tag), 'conflict');
+  seen.add(tag);
+  releaseIdentity(item, repository, tag);
+  const resolved = await resolveUpstreamRef(repository, 'tags/' + tag, reader);
+  requireUpstream(
+    resolved.status === 'available',
+    resolved.status === 'unavailable' ? resolved.reason : 'unknown',
+  );
+  if (resolved.sha === sha) return { version, tag, data: item };
+}
 async function matchingReleases(repository: string, sha: string, reader: UpstreamReader) {
   const matches: { version: string; tag: string; data: Readonly<Record<string, unknown>> }[] = [];
   const seen = new Set<string>();
@@ -74,20 +96,8 @@ async function matchingReleases(repository: string, sha: string, reader: Upstrea
     for (const item of result.data.items) {
       reader.spend(1);
       requireUpstream(++candidates <= reader.limits.maxTagCandidates, 'budget');
-      requireUpstream(isPlainObject(item) && upstreamText(item.tag_name));
-      if (item.draft === true) continue;
-      const tag = item.tag_name,
-        version = tag.replace(/^v/u, '');
-      if (compareUpstreamVersions('npm', version, version) !== 0) continue;
-      requireUpstream(!seen.has(tag), 'conflict');
-      seen.add(tag);
-      releaseIdentity(item, repository, tag);
-      const resolved = await resolveUpstreamRef(repository, 'tags/' + tag, reader);
-      requireUpstream(
-        resolved.status === 'available',
-        resolved.status === 'unavailable' ? resolved.reason : 'unknown',
-      );
-      if (resolved.sha === sha) matches.push({ version, tag, data: item });
+      const match = await releaseAtCommit(repository, sha, item, seen, reader);
+      if (match) matches.push(match);
     }
     if (!result.nextPage) return matches;
     requireUpstream(page < reader.limits.maxPages, 'budget');
@@ -126,6 +136,22 @@ async function mapping(
     },
   };
   return { draft, release: selected };
+}
+function retainTargetRelease(
+  change: Extract<PacketChange, { ecosystem: 'actions' }>,
+  side: 'base' | 'head',
+  mapped: Awaited<ReturnType<typeof mapping>>,
+  research: UpstreamResearch,
+) {
+  if (change.to ? side !== 'head' : side !== 'base') return;
+  const doc = releaseDocument(mapped.release.data, mapped.draft.name, mapped.release.tag);
+  research.sources.push({
+    ...doc,
+    text: mapped.draft.document.text + '\n' + doc.text,
+    range: { from: null, to: mapped.draft.ref },
+  });
+  research.status = 'available';
+  research.reasons = [];
 }
 function discardMapping(mappings: ActionMappingDraft[], side: 'base' | 'head') {
   for (let i = mappings.length - 1; i >= 0; i--)
@@ -176,6 +202,35 @@ async function mappingTagsStable(
     requireUpstream(release.status === 'available' && release.sha === proof.sha, 'conflict');
   }
 }
+async function finalMappingCheck(
+  change: Extract<PacketChange, { ecosystem: 'actions' }>,
+  side: 'base' | 'head',
+  mappings: ActionMappingDraft[],
+  research: UpstreamResearch,
+  reader: UpstreamReader,
+) {
+  const instance = side === 'base' ? change.from : change.to;
+  if (!instance) return;
+  const repository = instance.action.split('/').slice(0, 2).join('/');
+  const requiredSide = change.to ? side === 'head' : side === 'base';
+  try {
+    await mappingTagsStable(repository, side, mappings, reader);
+  } catch (error) {
+    discardMapping(mappings, side);
+    const reason = recheckFailure(
+      research,
+      side,
+      'Final release tag recheck: ' + instance.ref,
+      error,
+    );
+    if (!requiredSide) return;
+    research.sources = research.sources.filter((doc) => doc.kind !== 'release');
+    if (!research.sources.length) {
+      research.status = 'unavailable';
+      research.reasons = [reason];
+    }
+  }
+}
 async function finalRefChecks(
   change: Extract<PacketChange, { ecosystem: 'actions' }>,
   observed: Map<'base' | 'head', ObservedRef>,
@@ -206,23 +261,38 @@ async function finalRefChecks(
       } else invalidateComparison(research, reason);
       continue;
     }
-    try {
-      await mappingTagsStable(repository, side, mappings, reader);
-    } catch (error) {
-      discardMapping(mappings, side);
-      const reason = recheckFailure(
-        research,
-        side,
-        'Final release tag recheck: ' + instance.ref,
-        error,
-      );
-      if (!requiredSide) continue;
-      research.sources = research.sources.filter((doc) => doc.kind !== 'release');
-      if (!research.sources.length) {
-        research.status = 'unavailable';
-        research.reasons = [reason];
-      }
-    }
+    await finalMappingCheck(change, side, mappings, research, reader);
+  }
+}
+async function compareActionFallback(
+  change: Extract<PacketChange, { ecosystem: 'actions' }>,
+  observed: Map<'base' | 'head', ObservedRef>,
+  mappings: ActionMappingDraft[],
+  research: UpstreamResearch,
+  reader: UpstreamReader,
+) {
+  const from = observed.get('base'),
+    to = observed.get('head');
+  if (
+    research.status !== 'available' &&
+    from &&
+    to &&
+    change.from &&
+    change.to &&
+    change.from.action === change.to.action
+  ) {
+    const repository = change.to.action.split('/').slice(0, 2).join('/');
+    const compared = await collectExactComparison(
+      repository,
+      { sha: from.sha, value: change.from.ref },
+      { sha: to.sha, value: change.to.ref },
+      reader,
+    );
+    research.sources.push(...compared.sources);
+    research.attempts.push(...compared.attempts);
+    research.status = compared.status;
+    research.reasons = compared.reasons;
+    await finalRefChecks(change, observed, mappings, research, reader);
   }
 }
 export async function collectActionResearch(
@@ -262,16 +332,7 @@ export async function collectActionResearch(
         reasons: [],
         range: mapped.draft.document.range,
       });
-      if (change.to ? side === 'head' : side === 'base') {
-        const doc = releaseDocument(mapped.release.data, repository, mapped.release.tag);
-        research.sources.push({
-          ...doc,
-          text: mapped.draft.document.text + '\n' + doc.text,
-          range: { from: null, to: instance.ref },
-        });
-        research.status = 'available';
-        research.reasons = [];
-      }
+      retainTargetRelease(change, side, mapped, research);
     } catch (error) {
       const reason = upstreamReason(error);
       sideErrors.push(reason);
@@ -287,29 +348,7 @@ export async function collectActionResearch(
     }
   }
   await finalRefChecks(change, observed, mappings, research, reader);
-  const from = observed.get('base'),
-    to = observed.get('head');
-  if (
-    research.status !== 'available' &&
-    from &&
-    to &&
-    change.from &&
-    change.to &&
-    change.from.action === change.to.action
-  ) {
-    const repository = change.to.action.split('/').slice(0, 2).join('/');
-    const compared = await collectExactComparison(
-      repository,
-      { sha: from.sha, value: change.from.ref },
-      { sha: to.sha, value: change.to.ref },
-      reader,
-    );
-    research.sources.push(...compared.sources);
-    attempts.push(...compared.attempts);
-    research.status = compared.status;
-    research.reasons = compared.reasons;
-    await finalRefChecks(change, observed, mappings, research, reader);
-  }
+  await compareActionFallback(change, observed, mappings, research, reader);
   if (research.status === 'unavailable')
     research.reasons = [...new Set([...research.reasons, ...sideErrors])];
   return { research, mappings };
