@@ -12,6 +12,7 @@ import type { Finding } from '../policy.js';
 import type { NpmInventoryResult, NpmNode } from './npm.js';
 import type { PublicPackageIdentity, ActionVersionMapping } from './advisories.js';
 import { freeze, isPlainObject } from './common.js';
+import { collectTargetRelease, type UpstreamResearch } from './upstream-github.js';
 import {
   requireUpstream,
   upstreamCopy,
@@ -283,6 +284,94 @@ async function metadata(
       sourceIds,
       reasons: sourceIds.length ? ['unsupported'] : [...lookup.reasons],
     };
+  return lookup;
+}
+export function attachUpstreamResearch(
+  input: UpstreamInput,
+  output: UpstreamEnrichment,
+  change: PacketChange,
+  research: UpstreamResearch,
+) {
+  const side = change.to ? 'head' : 'base',
+    instance = change.to ?? change.from;
+  requireUpstream(instance);
+  const value = 'version' in instance ? instance.version : 'ref' in instance ? instance.ref : null;
+  requireUpstream(value);
+  const added: PacketSource[] = research.sources.map((doc) => {
+    const excerpt = upstreamExcerpt(doc.text);
+    const range =
+      side === 'base' && doc.range?.from === null ? { from: doc.range.to, to: null } : doc.range;
+    const subjects = [{ memberId: change.id, side: side as 'base' | 'head', value }];
+    if (range?.from && range.to && change.from && side === 'head')
+      subjects.unshift({ memberId: change.id, side: 'base', value: range.from });
+    return {
+      id: upstreamId([input.binding.identity, change.id, doc.kind, doc.url, 'research']),
+      kind: doc.kind,
+      ecosystems: [change.ecosystem],
+      memberIds: [change.id],
+      status:
+        research.status === 'available' && !excerpt.excerptTruncated ? 'available' : 'partial',
+      reasons:
+        research.status === 'available' && !excerpt.excerptTruncated
+          ? []
+          : excerpt.excerptTruncated
+            ? ['truncated']
+            : research.reasons,
+      provenance: {
+        kind: 'upstream',
+        url: doc.url,
+        title: upstreamExcerpt(doc.title).excerpt,
+        ...excerpt,
+        subjects,
+        range,
+      },
+    };
+  });
+  for (const source of added) retain(output, source);
+  for (const a of research.attempts)
+    output.attempts.push({
+      ...a,
+      memberId: change.id,
+      side,
+      sourceIds: added
+        .filter((s) => s.provenance.kind === 'upstream' && s.provenance.url === a.url)
+        .map((s) => s.id),
+      truncated: added.some(
+        (s) => s.provenance.kind === 'upstream' && s.provenance.excerptTruncated,
+      ),
+    });
+  if (added.length)
+    change.evidence.upstream = {
+      status: added.every((s) => s.status === 'available') ? 'available' : 'partial',
+      sourceIds: added.map((s) => s.id),
+      reasons: [...new Set(added.flatMap((s) => s.reasons))],
+    };
+  else
+    change.evidence.upstream.reasons = [
+      ...new Set([...change.evidence.upstream.reasons, ...research.reasons]),
+    ];
+}
+async function packageResearch(
+  input: UpstreamInput,
+  output: UpstreamEnrichment,
+  change: PacketChange,
+  lookups: Map<string, UpstreamLookup>,
+  reader: UpstreamReader,
+) {
+  if (change.ecosystem === 'actions' || 'basis' in change) return;
+  const instance = change.to ?? change.from,
+    lookup = lookups.get(change.to ? 'head' : 'base');
+  if (!instance || !lookup?.data) return;
+  const research = await collectTargetRelease(
+    {
+      ecosystem: change.ecosystem,
+      name: instance.name,
+      version: instance.version,
+      metadata: lookup.data,
+    },
+    reader,
+  );
+  attachUpstreamResearch(input, output, change, research);
 }
 /** Enrich exact inventory identities; caller retains inventory coverage and relationships separately. */
 export async function enrichUpstream(
@@ -313,10 +402,14 @@ export async function enrichUpstream(
     bounds(output, input.limits);
     for (const change of output.changes) {
       if ('basis' in change) continue;
+      const lookups = new Map<string, UpstreamLookup>();
       for (const side of ['base', 'head'] as const) {
-        await metadata(input, output, change, side, dependencies.reader);
+        const lookup = await metadata(input, output, change, side, dependencies.reader);
+        if (lookup) lookups.set(side, lookup);
         bounds(output, input.limits);
       }
+      await packageResearch(input, output, change, lookups, dependencies.reader);
+      bounds(output, input.limits);
     }
     return freeze(output);
   } catch (error) {

@@ -1,6 +1,6 @@
 import { createNpmRegistryReader } from './npm-registry.js';
 import { copyAdvisoryData, type AdvisoryLimits } from './advisory-read.js';
-import { freeze, isPlainObject } from './common.js';
+import { freeze, isPlainObject, isEvidencePath } from './common.js';
 import type { EvidenceReason, PackageSource } from '../schema.js';
 
 export type UpstreamLimits = Readonly<{
@@ -18,13 +18,22 @@ export type UpstreamLimits = Readonly<{
   requestTimeoutMs: number;
   totalTimeoutMs: number;
 }>;
-export type UpstreamTarget = Readonly<{
+export type MetadataTarget = Readonly<{
   kind: 'npm' | 'pypi';
   name: string;
   version: string;
   source: PackageSource;
   integrity?: string;
 }>;
+export type GithubUpstreamTarget = Readonly<{
+  kind: 'github';
+  repository: string;
+  resource: 'repository' | 'ref' | 'tag' | 'commit' | 'release' | 'contents';
+  ref?: string;
+  sha?: string;
+  path?: string;
+}>;
+export type UpstreamTarget = MetadataTarget | GithubUpstreamTarget;
 export type UpstreamLookup = Readonly<{
   status: 'available' | 'unavailable';
   fetched: boolean;
@@ -124,7 +133,7 @@ function httpReason(response: Response, bytes: Buffer): EvidenceReason {
   if (response.status >= 300 && response.status < 400) return 'unsupported';
   return response.status === 404 ? 'missing' : 'unknown';
 }
-function metadataTarget(value: unknown): UpstreamTarget {
+function metadataTarget(value: unknown): MetadataTarget {
   requireUpstream(
     isPlainObject(value) && ['npm', 'pypi'].includes(String(value.kind)),
     'unsupported',
@@ -149,7 +158,49 @@ function metadataTarget(value: unknown): UpstreamTarget {
       'unsupported',
     );
   }
-  return value as unknown as UpstreamTarget;
+  return value as unknown as MetadataTarget;
+}
+function githubTarget(value: unknown): GithubUpstreamTarget {
+  requireUpstream(isPlainObject(value) && value.kind === 'github', 'unsupported');
+  requireUpstream(
+    upstreamText(value.repository) && /^[a-z\d][a-z\d-]*\/[a-z\d_.-]+$/iu.test(value.repository),
+    'unsupported',
+  );
+  requireUpstream(!['.', '..'].includes(value.repository.split('/')[1]), 'unsupported');
+  requireUpstream(
+    ['repository', 'ref', 'tag', 'commit', 'release', 'contents'].includes(String(value.resource)),
+    'unsupported',
+  );
+  if (['ref', 'release'].includes(String(value.resource)))
+    requireUpstream(upstreamText(value.ref) && isEvidencePath(value.ref), 'unsupported');
+  if (value.resource === 'ref')
+    requireUpstream(/^(?:tags|heads)\/.+/u.test(String(value.ref)), 'unsupported');
+  if (['tag', 'commit', 'contents'].includes(String(value.resource)))
+    requireUpstream(
+      typeof value.sha === 'string' && /^[a-f\d]{40}$/u.test(value.sha),
+      'unsupported',
+    );
+  if (value.resource === 'contents') requireUpstream(isEvidencePath(value.path), 'unsupported');
+  return value as unknown as GithubUpstreamTarget;
+}
+export function upstreamGithubUrl(t: GithubUpstreamTarget) {
+  const base = 'https://api.github.com/repos/' + t.repository;
+  switch (t.resource) {
+    case 'repository':
+      return base;
+    case 'ref':
+      return base + '/git/ref/' + t.ref!.split('/').map(encodeURIComponent).join('/');
+    case 'tag':
+      return base + '/git/tags/' + t.sha;
+    case 'commit':
+      return base + '/commits/' + t.sha;
+    case 'release':
+      return base + '/releases/tags/' + encodeURIComponent(t.ref!);
+    case 'contents':
+      return (
+        base + '/contents/' + t.path!.split('/').map(encodeURIComponent).join('/') + '?ref=' + t.sha
+      );
+  }
 }
 class Reader {
   private requests = 0;
@@ -280,7 +331,7 @@ class Reader {
       if (response?.body && !response.body.locked) void response.body.cancel().catch(() => {});
     }
   }
-  private async pypi(t: UpstreamTarget, url: string) {
+  private async pypi(t: MetadataTarget, url: string) {
     const cached = this.cache.get(url);
     if (cached) return cached;
     const response = await this.fetchBounded(url, {});
@@ -299,12 +350,28 @@ class Reader {
     this.cache.set(url, freeze(info));
     return info;
   }
-  private async npmData(t: UpstreamTarget) {
+  private async npmData(t: MetadataTarget) {
     requireUpstream(this.npm.kind === 'ready');
     const result = await this.npm.read(t);
     if (result.kind === 'unavailable')
       throw new UpstreamFailure(this.networkReason ?? result.reason);
     return upstreamCopy(result.document.data, this.limits, this.work);
+  }
+  private async githubData(t: GithubUpstreamTarget, url: string) {
+    const cached = t.resource === 'ref' ? null : this.cache.get(url);
+    if (cached) return cached;
+    const response = await this.fetchBounded(url, {});
+    const parsed = JSON.parse(
+      new TextDecoder('utf-8', { fatal: true }).decode(await response.arrayBuffer()),
+    );
+    const data = upstreamCopy(parsed, this.limits, this.work);
+    requireUpstream(isPlainObject(data));
+    if (t.resource !== 'ref') this.cache.set(url, freeze(data));
+    return data;
+  }
+  private async targetData(t: UpstreamTarget, url: string) {
+    if (t.kind === 'github') return this.githubData(t, url);
+    return t.kind === 'npm' ? this.npmData(t) : this.pypi(t, url);
   }
   async read(value: unknown): Promise<UpstreamLookup> {
     const before = this.requests;
@@ -315,13 +382,19 @@ class Reader {
     this.networkReason = null;
     try {
       this.remaining();
-      const t = metadataTarget(upstreamCopy(value, this.limits, this.work));
+      const copied = upstreamCopy(value, this.limits, this.work);
+      const t =
+        isPlainObject(copied) && copied.kind === 'github'
+          ? githubTarget(copied)
+          : metadataTarget(copied);
       url =
-        t.kind === 'npm'
-          ? `https://registry.npmjs.org/${encodeURIComponent(t.name)}/${encodeURIComponent(t.version)}`
-          : `https://pypi.org/pypi/${encodeURIComponent(t.name)}/${encodeURIComponent(t.version)}/json`;
+        t.kind === 'github'
+          ? upstreamGithubUrl(t)
+          : t.kind === 'npm'
+            ? `https://registry.npmjs.org/${encodeURIComponent(t.name)}/${encodeURIComponent(t.version)}`
+            : `https://pypi.org/pypi/${encodeURIComponent(t.name)}/${encodeURIComponent(t.version)}/json`;
       requireUpstream(!this.blocked.has(new URL(url).origin), 'rate_limit');
-      const data = t.kind === 'npm' ? await this.npmData(t) : await this.pypi(t, url);
+      const data = await this.targetData(t, url);
       requireUpstream(this.work.entries <= this.limits.maxWork, 'budget');
       return freeze({
         status: 'available',
