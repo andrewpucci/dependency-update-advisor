@@ -317,3 +317,88 @@ test('base branch movement during comparison invalidates its applicable ref rang
   expect(result.research.sources[0].range).toBeNull();
   opened.reader.close();
 });
+
+test('moving a selected version tag preserves an independent exact-SHA comparison', async () => {
+  const base = 'a'.repeat(40),
+    head = 'b'.repeat(40);
+  let moved = false;
+  const opened = createUpstreamReader(limits, {
+    now: () => 0,
+    fetch: async (url) => {
+      const path = new URL(url).pathname.replace('/repos/fixture/action', '');
+      if (!path) return Response.json({ private: false, full_name: 'fixture/action' });
+      if (path.startsWith('/commits/')) return Response.json({ sha: path.split('/').at(-1) });
+      if (path === '/releases')
+        return Response.json(
+          ['v1.0.0', 'v2.0.0'].map((tag_name, i) => ({
+            id: i + 1,
+            tag_name,
+            draft: false,
+            published_at: '2026-10-01T00:00:00Z',
+            body: '',
+            html_url: 'https://github.com/fixture/action/releases/tag/' + tag_name,
+          })),
+        );
+      const tag = path.split('/git/ref/tags/')[1];
+      if (tag)
+        return Response.json({
+          ref: 'refs/tags/' + tag,
+          object: {
+            type: 'commit',
+            sha: tag === 'v1.0.0' ? base : moved ? 'c'.repeat(40) : head,
+          },
+        });
+      if (path.startsWith('/compare/')) {
+        moved = true;
+        return Response.json({
+          base_commit: { sha: base },
+          merge_base_commit: { sha: base },
+          status: 'ahead',
+          ahead_by: 1,
+          behind_by: 0,
+          total_commits: 1,
+          commits: [{ sha: head, commit: { message: 'Change' } }],
+          files: [{ filename: 'index.js', patch: '@@\n+change' }],
+        });
+      }
+      return Response.json({}, { status: 404 });
+    },
+  });
+  if (opened.kind !== 'ready') throw new Error('reader');
+  const side = (ref: string): ActionsSide => ({
+    action: 'fixture/action',
+    ref,
+    refKind: 'sha',
+    workflow: '.github/workflows/ci.yml',
+    jobId: 'job',
+    stepIndex: 0,
+    sourceId: 'file',
+  });
+  const result = await collectActionResearch(
+    {
+      id: 'action',
+      ecosystem: 'actions',
+      kind: 'update',
+      role: 'direct',
+      from: side(base),
+      to: side(head),
+      evidence: {},
+    },
+    opened.reader,
+  );
+  expect(result.mappings.map((m) => m.side)).toEqual(['base']);
+  expect(result.research.status).toBe('available');
+  expect(result.research.sources).toHaveLength(1);
+  expect(result.research.sources[0]).toMatchObject({
+    kind: 'compare',
+    range: { from: base, to: head },
+  });
+  expect(result.research.attempts).toContainEqual(
+    expect.objectContaining({
+      side: 'head',
+      outcome: 'unavailable',
+      reasons: ['conflict'],
+    }),
+  );
+  opened.reader.close();
+});
