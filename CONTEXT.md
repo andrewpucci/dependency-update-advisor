@@ -29,10 +29,10 @@ retains remaining gates.
 [#110 snapshot reuse](docs/specs/SPEC-pr-freshness-snapshot.md) awaits review/merge;
 [verification #113](https://github.com/andrewpucci/dependency-update-advisor/issues/113)
 retains remaining gates. W1/W2 must supply bounded reads and exclusive claims
-before T2/T3 writes. Downstream work: [S3 #53](docs/specs/SPEC-policy-signals.md)
-is executing #195–#207; [M2](https://github.com/andrewpucci/dependency-update-advisor/issues/22)
-validates assessments, [O1](https://github.com/andrewpucci/dependency-update-advisor/issues/23)
-renders results, and T2/T3/W2 own publication. C2 handoffs remain gates;
+before T2/T3 writes. [S3 #53](docs/specs/SPEC-policy-signals.md) is implemented;
+[final review #207](https://github.com/andrewpucci/dependency-update-advisor/issues/207)
+awaits advisory disposition. M2 assessment, O1 rendering, T2/T3/W2 publication,
+and C2 handoffs remain gates;
 packaging remains A1. Unit tests do not certify these integrations or cutover.
 
 - The [capability map](docs/specs/README.md) indexes module and contract status.

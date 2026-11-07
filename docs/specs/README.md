@@ -95,9 +95,12 @@ gaps and an introduced vulnerability before parity is claimed.
   contract in `shared-review`; explicit malware queries and exact-version
   release, trust, publisher, license, and Actions pinning evidence for C3.
   The user approved the plan, exact dependency pins, and `as-build auto` on
-  2026-11-07. Tasks #195–#207 are sub-issues of
+  2026-11-07. Tasks #195–#206 are implemented; final review and advisory
+  disposition remain in [#207](https://github.com/andrewpucci/dependency-update-advisor/issues/207).
+  The task issues are sub-issues of
   [#53](https://github.com/andrewpucci/dependency-update-advisor/issues/53)
-  with Status `Todo` on the implementation project.
+  on the implementation project. Live transport, workflow, downstream
+  assessment/publication, adoption, and cutover remain separate gates.
 - [Common review packet validation](SPEC-review-packet.md) — implemented for
   T4 #11 and #77–#84 in `shared-review`, merged in
   [PR #89](https://github.com/andrewpucci/dependency-update-advisor/pull/89).

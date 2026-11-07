@@ -17,10 +17,14 @@ The ordered handoff is `tasks/plan.md`; implementation tasks belong under
 issue #53 on the implementation project. Plan approval, dependency pins,
 and execution approval remain separate and are not recorded by this step.
 
-Proposed implementation handoff:
+Implementation handoff:
 [#195–#207 under #53](https://github.com/andrewpucci/dependency-update-advisor/issues/53)
 cover malware, bounded ecosystem metadata, exact artifact attribution,
 license normalization, outcome preservation, integration, and verification.
+Tasks #195–#206 are implemented on the working branch; final review and
+verification disposition remain in
+[#207](https://github.com/andrewpucci/dependency-update-advisor/issues/207).
+
 Plan and execution approval, 2026-11-07: the user invoked `as-build auto`
 in response to the proposed thirteen-task plan and its three exact dependency
 pins. This authorizes #195–#207 in dependency order, per-task commits,
@@ -387,7 +391,8 @@ type Observation<T> =
   | { kind: 'unchecked'; reason: EvidenceReason; sourceIds: readonly string[] };
 ```
 
-This illustrates style, not an approved exported API. Keep transport,
+This illustrates style; the implemented entry point is `enrichPolicySignals`
+in `src/evidence/policy-signals.ts`. Keep transport,
 normalization, and policy evaluation separate; prefer existing packet and
 finding variants over parallel schemas.
 
@@ -476,6 +481,13 @@ T4/T5/C3 integration proves those distinctions within existing bounds.
 Required install-script and inventory failures stay required. Revision-specific
 verification and remaining downstream gates must be recorded before claiming
 implementation completion.
+
+Integration limits: X1 represents owner/repository replacements as removal
+plus addition, so those records do not establish a paired S3 identity finding.
+Rich research can reach T4's independent source/output caps before reaching
+the 128-change limit; rejection remains explicit and fail secure. Live
+transport, workflow diagnostics and budget allocation, M2/O1/W2, packaging,
+adoption, parity, and cutover remain separate gates in #207.
 
 ## Approved Scope and Planning Decisions
 
