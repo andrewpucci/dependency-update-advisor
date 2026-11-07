@@ -127,6 +127,55 @@ async function mapping(
   };
   return { draft, release: selected };
 }
+function discardMapping(mappings: ActionMappingDraft[], side: 'base' | 'head') {
+  for (let i = mappings.length - 1; i >= 0; i--)
+    if (mappings[i].side === side) mappings.splice(i, 1);
+}
+function recheckFailure(
+  research: UpstreamResearch,
+  side: 'base' | 'head',
+  target: string,
+  error: unknown,
+) {
+  const reason = upstreamReason(error);
+  research.attempts.push({
+    side,
+    stage: 'mapping',
+    target,
+    url: null,
+    outcome: 'unavailable',
+    reasons: [reason],
+    range: null,
+  });
+  return reason;
+}
+function invalidateComparison(research: UpstreamResearch, reason: EvidenceReason) {
+  if (!research.sources.some((doc) => doc.kind === 'compare')) return;
+  research.sources = research.sources.map((doc) =>
+    doc.kind === 'compare'
+      ? {
+          ...doc,
+          range: null,
+          text:
+            'An inventory ref changed after collection; exact ref applicability is unknown.\n' +
+            doc.text,
+        }
+      : doc,
+  );
+  research.status = 'partial';
+  research.reasons = [...new Set([...research.reasons, reason])];
+}
+async function mappingTagsStable(
+  repository: string,
+  side: 'base' | 'head',
+  mappings: ActionMappingDraft[],
+  reader: UpstreamReader,
+) {
+  for (const proof of mappings.filter((m) => m.side === side)) {
+    const release = await resolveUpstreamRef(repository, 'tags/' + proof.tag, reader);
+    requireUpstream(release.status === 'available' && release.sha === proof.sha, 'conflict');
+  }
+}
 async function finalRefChecks(
   change: Extract<PacketChange, { ecosystem: 'actions' }>,
   observed: Map<'base' | 'head', ObservedRef>,
@@ -137,29 +186,39 @@ async function finalRefChecks(
   for (const [side, value] of observed) {
     const instance = side === 'base' ? change.from : change.to;
     if (!instance) continue;
+    const repository = instance.action.split('/').slice(0, 2).join('/');
+    const requiredSide = change.to ? side === 'head' : side === 'base';
     try {
-      await recheck(instance.action.split('/').slice(0, 2).join('/'), value, reader);
-      const repository = instance.action.split('/').slice(0, 2).join('/');
-      for (const proof of mappings.filter((m) => m.side === side)) {
-        const release = await resolveUpstreamRef(repository, 'tags/' + proof.tag, reader);
-        requireUpstream(release.status === 'available' && release.sha === proof.sha, 'conflict');
-      }
+      await recheck(repository, value, reader);
     } catch (error) {
       observed.delete(side);
-      for (let i = mappings.length - 1; i >= 0; i--)
-        if (mappings[i].side === side) mappings.splice(i, 1);
-      const reason = upstreamReason(error);
-      research.attempts.push({
+      discardMapping(mappings, side);
+      const reason = recheckFailure(
+        research,
         side,
-        stage: 'mapping',
-        target: 'Final ref recheck: ' + instance.ref,
-        url: null,
-        outcome: 'unavailable',
-        reasons: [reason],
-        range: null,
-      });
-      if (change.to ? side === 'head' : side === 'base') {
+        'Final inventory ref recheck: ' + instance.ref,
+        error,
+      );
+      if (requiredSide) {
         research.sources = [];
+        research.status = 'unavailable';
+        research.reasons = [reason];
+      } else invalidateComparison(research, reason);
+      continue;
+    }
+    try {
+      await mappingTagsStable(repository, side, mappings, reader);
+    } catch (error) {
+      discardMapping(mappings, side);
+      const reason = recheckFailure(
+        research,
+        side,
+        'Final release tag recheck: ' + instance.ref,
+        error,
+      );
+      if (!requiredSide) continue;
+      research.sources = research.sources.filter((doc) => doc.kind !== 'release');
+      if (!research.sources.length) {
         research.status = 'unavailable';
         research.reasons = [reason];
       }

@@ -259,3 +259,61 @@ test('a selected release tag moving during another side invalidates the earlier 
   expect(result.mappings.some((m) => m.side === 'head')).toBe(true);
   opened.reader.close();
 });
+test('base branch movement during comparison invalidates its applicable ref range', async () => {
+  const base = 'a'.repeat(40),
+    head = 'b'.repeat(40);
+  let moved = false;
+  const opened = createUpstreamReader(limits, {
+    now: () => 0,
+    fetch: async (url) => {
+      const path = new URL(url).pathname.replace('/repos/fixture/action', '');
+      if (!path) return Response.json({ private: false, full_name: 'fixture/action' });
+      if (path === '/git/ref/heads/main')
+        return Response.json({
+          ref: 'refs/heads/main',
+          object: { type: 'commit', sha: moved ? 'c'.repeat(40) : base },
+        });
+      if (path === '/commits/' + head) return Response.json({ sha: head });
+      if (path === '/releases') return Response.json([]);
+      if (path.startsWith('/compare/')) {
+        moved = true;
+        return Response.json({
+          base_commit: { sha: base },
+          merge_base_commit: { sha: base },
+          status: 'ahead',
+          ahead_by: 1,
+          behind_by: 0,
+          total_commits: 1,
+          commits: [{ sha: head, commit: { message: 'Change' } }],
+          files: [{ filename: 'index.js', patch: '@@\n+change' }],
+        });
+      }
+      return Response.json({}, { status: 404 });
+    },
+  });
+  if (opened.kind !== 'ready') throw new Error('reader');
+  const side = (ref: string, refKind: ActionsSide['refKind']): ActionsSide => ({
+    action: 'fixture/action',
+    ref,
+    refKind,
+    workflow: '.github/workflows/ci.yml',
+    jobId: 'job',
+    stepIndex: 0,
+    sourceId: 'file',
+  });
+  const result = await collectActionResearch(
+    {
+      id: 'action',
+      ecosystem: 'actions',
+      kind: 'update',
+      role: 'direct',
+      from: side('main', 'branch'),
+      to: side(head, 'sha'),
+      evidence: {},
+    },
+    opened.reader,
+  );
+  expect(result.research.status).toBe('partial');
+  expect(result.research.sources[0].range).toBeNull();
+  opened.reader.close();
+});
