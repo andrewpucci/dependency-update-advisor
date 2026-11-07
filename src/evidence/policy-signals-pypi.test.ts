@@ -8,6 +8,17 @@ import { enrichUpstream } from './upstream.js';
 import { upstreamScenario, upstreamTestLimits } from '../../tests/parity/upstream.js';
 import { validateReviewPacket } from '../schema.js';
 const evaluationTime = Date.parse('2026-11-07T00:00:00Z');
+test('a valid future PyPI upload is conflicting metadata, distinct from an invalid date', () => {
+  const data = (date: string) => ({ info: {}, urls: [file(date)] });
+  expect(pypiReleaseFacts(data('2027-01-01T00:00:00Z'), evaluationTime).publishedAt).toEqual({
+    kind: 'unchecked',
+    reason: 'conflict',
+  });
+  expect(pypiReleaseFacts(data('2027-02-30T00:00:00Z'), evaluationTime).publishedAt).toEqual({
+    kind: 'unchecked',
+    reason: 'malformed',
+  });
+});
 test.each(['valid', 'digest', 'predicate', 'publisher', 'envelope'])(
   'PyPI %s provenance is bound to the exact artifact without a cryptographic claim',
   (mode) => {

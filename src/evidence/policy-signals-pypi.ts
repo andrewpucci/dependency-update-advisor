@@ -61,8 +61,9 @@ export function pypiReleaseFacts(value: unknown, evaluationTime: number): PyPIRe
     publishedAt: observe(() => {
       advisoryCheck(files.kind === 'known', files.kind === 'unchecked' ? files.reason : 'missing');
       const times = files.value.map((f) => {
-        const t = publishTimestamp(f.upload_time_iso_8601, evaluationTime);
+        const t = publishTimestamp(f.upload_time_iso_8601, Number.MAX_SAFE_INTEGER);
         advisoryCheck(t !== null, 'malformed');
+        advisoryCheck(t <= evaluationTime, 'conflict');
         return t;
       });
       return times.reduce((earliest, time) => Math.min(earliest, time), Infinity);
