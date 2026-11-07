@@ -209,3 +209,27 @@ test('missing metadata explicitly names the research stages that could not run',
   }
   opened.reader.close();
 });
+test('failed repeat lookups preserve prior upstream citations and coverage', async () => {
+  const input = await fixture(),
+    good = reader();
+  const known = await enrichUpstream(input, good);
+  if (known.kind !== 'enriched') throw new Error('enrichment');
+  const bad = createUpstreamReader(limits, {
+    now: () => 0,
+    fetch: async () => Response.json({}, { status: 404 }),
+  });
+  if (bad.kind !== 'ready') throw new Error('reader');
+  const result = await enrichUpstream(
+    { ...input, changes: known.changes, sources: known.sources },
+    bad,
+  );
+  if (result.kind !== 'enriched') throw new Error('enrichment');
+  expect(result.changes[0].evidence.upstream.sourceIds).toEqual(
+    known.changes[0].evidence.upstream.sourceIds,
+  );
+  expect(result.changes[0].evidence.upstream.status).toBe(
+    known.changes[0].evidence.upstream.status,
+  );
+  good.reader.close();
+  bad.reader.close();
+});

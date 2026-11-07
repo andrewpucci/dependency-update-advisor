@@ -27,6 +27,7 @@ export type UpstreamDocument = Readonly<{
   range: { from: string | null; to: string | null } | null;
 }>;
 export type ResearchAttempt = Readonly<{
+  side?: 'base' | 'head';
   stage: 'release' | 'compare' | 'range' | 'changelog' | 'mapping';
   target: string;
   url: string | null;
@@ -279,8 +280,7 @@ export async function collectTargetRelease(
     const repo = repositoryCandidate(target.metadata);
     await publicRepository(repo.repository, reader);
     result.repository = repo;
-    const candidates = ['v' + target.version, target.version];
-    if (repo.directory) candidates.push(target.name + '@' + target.version);
+    const candidates = packageTags(target, repo);
     for (const [index, tag] of candidates.entries()) {
       const url =
         'https://github.com/' + repo.repository + '/releases/tag/' + encodeURIComponent(tag);
@@ -337,6 +337,7 @@ type ComparisonState = {
   valid: boolean;
   total: number | null;
   messages: Map<string, string>;
+  patches: string[];
   forward: boolean;
   filesComplete: boolean;
   reasons: Set<EvidenceReason>;
@@ -379,6 +380,12 @@ function comparisonFiles(data: Readonly<Record<string, unknown>>, state: Compari
         isPlainObject(file) && upstreamText(file.filename) && typeof file.patch === 'string',
     );
   if (!state.filesComplete) state.reasons.add('truncated');
+  state.patches = data.files
+    .filter(
+      (file) =>
+        isPlainObject(file) && typeof file.filename === 'string' && typeof file.patch === 'string',
+    )
+    .map((file) => file.filename + '\n' + file.patch);
 }
 async function comparisonPages(
   repository: string,
@@ -390,6 +397,7 @@ async function comparisonPages(
     valid: false,
     total: null,
     messages: new Map(),
+    patches: [],
     forward: false,
     filesComplete: false,
     reasons: new Set(),
@@ -444,7 +452,7 @@ export async function collectExactComparison(
             title: `${base.value} to ${head.value} upstream comparison`,
             text:
               `Exact commits ${base.sha} to ${head.sha}. ${status === 'available' ? 'Complete bounded comparison.' : 'Partial comparison; not all changes were reviewed.'}\n` +
-              [...state.messages.values()].join('\n'),
+              [...state.messages.values(), ...state.patches].join('\n'),
             range: { from: base.value, to: head.value },
           },
         ]
@@ -466,8 +474,7 @@ export async function resolvePackageVersion(
   repo: UpstreamRepository,
   reader: UpstreamReader,
 ) {
-  const candidates = ['v' + target.version, target.version];
-  if (repo.directory) candidates.push(target.name + '@' + target.version);
+  const candidates = packageTags(target, repo);
   let failure: EvidenceReason = 'missing';
   for (const [index, tag] of candidates.entries()) {
     requireUpstream(index < reader.limits.maxTagCandidates, 'budget');
@@ -482,6 +489,11 @@ export async function resolvePackageVersion(
     return { sha: resolved.sha, value: target.version, ref: tag };
   }
   throw new UpstreamFailure(failure);
+}
+function packageTags(target: PackageResearchTarget, repo: UpstreamRepository) {
+  return repo.directory
+    ? [target.name + '@' + target.version]
+    : ['v' + target.version, target.version];
 }
 export async function collectPackageComparison(
   base: PackageResearchTarget,
@@ -502,11 +514,39 @@ export async function collectPackageComparison(
     await publicRepository(before.repository, reader);
     const from = await resolvePackageVersion(base, before, reader),
       to = await resolvePackageVersion(head, after, reader);
-    return {
-      ...(await collectExactComparison(before.repository, from, to, reader)),
-      repository: after,
-      head: { sha: to.sha, ref: to.ref },
-    };
+    const compared = await collectExactComparison(before.repository, from, to, reader);
+    try {
+      for (const endpoint of [from, to]) {
+        const check = await resolveUpstreamRef(before.repository, 'tags/' + endpoint.ref, reader);
+        requireUpstream(check.status === 'available' && check.sha === endpoint.sha, 'conflict');
+      }
+      return { ...compared, repository: after, head: { sha: to.sha, ref: to.ref } };
+    } catch (error) {
+      const reason = upstreamReason(error);
+      return {
+        ...compared,
+        status: compared.sources.length ? 'partial' : 'unavailable',
+        reasons: [...new Set([...compared.reasons, reason])],
+        sources: compared.sources.map((doc) => ({
+          ...doc,
+          range: null,
+          text:
+            'Package tag correspondence changed after collection; exact version applicability is unknown.\n' +
+            doc.text,
+        })),
+        attempts: [
+          ...compared.attempts,
+          {
+            stage: 'compare',
+            target: 'Final package tag recheck',
+            url: null,
+            outcome: 'unavailable',
+            reasons: [reason],
+            range: null,
+          },
+        ],
+      };
+    }
   } catch (error) {
     const reason = upstreamReason(error);
     return {

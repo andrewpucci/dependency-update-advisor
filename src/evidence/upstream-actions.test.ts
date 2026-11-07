@@ -1,7 +1,7 @@
 import { expect, test } from 'vite-plus/test';
 import { collectActionResearch } from './upstream-actions.js';
 import { createUpstreamReader } from './upstream-read.js';
-import type { PacketChange } from '../schema.js';
+import type { PacketChange, ActionsSide } from '../schema.js';
 import { collectAdvisoryActions } from '../../tests/parity/advisories.js';
 import { enrichUpstream } from './upstream.js';
 import { enrichAdvisories } from './advisories.js';
@@ -162,6 +162,12 @@ test('actual X1 -> S2 mappings satisfy the existing S1 handoff', async () => {
   const upstream = await enrichUpstream({ ...input, limits }, opened);
   if (upstream.kind !== 'enriched') throw new Error('upstream');
   expect(upstream.actionVersions).toHaveLength(2);
+  const baseRef = selected.from && 'ref' in selected.from ? selected.from.ref : '';
+  const baseAttempt = upstream.attempts.find(
+    (a) => a.stage === 'mapping' && a.target.endsWith('@' + baseRef),
+  );
+  expect(baseAttempt?.side).toBe('base');
+  expect(baseAttempt?.sourceIds.length).toBeGreaterThan(0);
   const queries: string[] = [];
   const advisory = createAdvisoryReader(f.input.limits, {
     now: () => 0,
@@ -190,5 +196,66 @@ test('actual X1 -> S2 mappings satisfy the existing S1 handoff', async () => {
   if (result.kind === 'enriched')
     expect(result.changes[0].evidence.vulnerability.status).toBe('available');
   advisory.close();
+  opened.reader.close();
+});
+test('a selected release tag moving during another side invalidates the earlier mapping', async () => {
+  const base = 'c'.repeat(40),
+    head = 'd'.repeat(40);
+  let moved = false;
+  const opened = createUpstreamReader(limits, {
+    now: () => 0,
+    fetch: async (url) => {
+      const path = new URL(url).pathname.replace('/repos/fixture/action', '');
+      if (!path) return Response.json({ private: false, full_name: 'fixture/action' });
+      if (path.startsWith('/commits/')) {
+        const commit = path.split('/').at(-1);
+        if (commit === head) moved = true;
+        return Response.json({ sha: commit });
+      }
+      if (path === '/releases')
+        return Response.json(
+          ['v1.0.0', 'v2.0.0'].map((tag_name, i) => ({
+            id: i + 1,
+            tag_name,
+            draft: false,
+            published_at: '2026-10-01T00:00:00Z',
+            body: 'Notes',
+            html_url: 'https://github.com/fixture/action/releases/tag/' + tag_name,
+          })),
+        );
+      const tag = path.split('/git/ref/tags/')[1];
+      if (tag)
+        return Response.json({
+          ref: 'refs/tags/' + tag,
+          object: {
+            type: 'commit',
+            sha: tag === 'v1.0.0' ? (moved ? 'e'.repeat(40) : base) : head,
+          },
+        });
+      return Response.json({}, { status: 404 });
+    },
+  });
+  if (opened.kind !== 'ready') throw new Error('reader');
+  const side = (ref: string): ActionsSide => ({
+    workflow: '.github/workflows/ci.yml',
+    jobId: 'job',
+    stepIndex: 0,
+    sourceId: 'file',
+    action: 'fixture/action',
+    ref,
+    refKind: 'sha',
+  });
+  const change: PacketChange = {
+    id: 'action',
+    ecosystem: 'actions',
+    kind: 'update',
+    role: 'direct',
+    from: side(base),
+    to: side(head),
+    evidence: {},
+  };
+  const result = await collectActionResearch(change, opened.reader);
+  expect(result.mappings.some((m) => m.side === 'base')).toBe(false);
+  expect(result.mappings.some((m) => m.side === 'head')).toBe(true);
   opened.reader.close();
 });

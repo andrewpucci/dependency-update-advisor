@@ -50,6 +50,7 @@ async function intermediate(
   if (item.draft === true) return;
   const tag = item.tag_name;
   const prefix = repo.directory ? after.name + '@' : '';
+  if (prefix && !tag.startsWith(prefix)) return;
   const version = (prefix && tag.startsWith(prefix) ? tag.slice(prefix.length) : tag).replace(
     /^v/u,
     '',

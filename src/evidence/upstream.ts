@@ -343,12 +343,23 @@ async function metadata(
       return p?.kind === 'upstream' && p.excerptTruncated;
     }),
   });
-  if (change.to ? side === 'head' : side === 'base')
-    change.evidence.upstream = {
-      status: sourceIds.length ? 'partial' : 'unavailable',
-      sourceIds,
-      reasons: sourceIds.length ? ['unsupported'] : [...lookup.reasons],
-    };
+  if (change.to ? side === 'head' : side === 'base') {
+    const previous = change.evidence.upstream;
+    if (previous.status !== 'available') {
+      const merged = [...new Set([...previous.sourceIds, ...sourceIds])];
+      requireUpstream(merged.length <= PACKET_LIMITS.listEntries, 'budget');
+      change.evidence.upstream = {
+        status: sourceIds.length || previous.status === 'partial' ? 'partial' : 'unavailable',
+        sourceIds: merged,
+        reasons: [
+          ...new Set([
+            ...previous.reasons,
+            ...(sourceIds.length ? ['unsupported' as const] : lookup.reasons),
+          ]),
+        ],
+      };
+    }
+  }
   return lookup;
 }
 function researchSource(
@@ -394,21 +405,28 @@ function researchAttempts(
   output: UpstreamEnrichment,
   change: PacketChange,
   research: UpstreamResearch,
-  added: PacketSource[],
 ) {
-  const side = change.to ? 'head' : 'base';
-  for (const a of research.attempts)
+  for (const a of research.attempts) {
+    const side = a.side ?? (change.to ? 'head' : 'base');
+    const linked = output.sources.filter(
+      (s) =>
+        s.memberIds.includes(change.id) &&
+        s.provenance.kind === 'upstream' &&
+        s.provenance.url === a.url &&
+        s.provenance.subjects.some(
+          (subject) => subject.memberId === change.id && subject.side === side,
+        ),
+    );
     output.attempts.push({
       ...a,
       memberId: change.id,
       side,
-      sourceIds: added
-        .filter((s) => s.provenance.kind === 'upstream' && s.provenance.url === a.url)
-        .map((s) => s.id),
-      truncated: added.some(
+      sourceIds: linked.map((s) => s.id),
+      truncated: linked.some(
         (s) => s.provenance.kind === 'upstream' && s.provenance.excerptTruncated,
       ),
     });
+  }
 }
 function researchCoverage(change: PacketChange, research: UpstreamResearch, added: PacketSource[]) {
   const previous = change.evidence.upstream;
@@ -439,7 +457,7 @@ export function attachUpstreamResearch(
 ) {
   const added = research.sources.map((doc) => researchSource(input, change, doc, research));
   for (const source of added) retain(output, source);
-  researchAttempts(output, change, research, added);
+  researchAttempts(output, change, research);
   researchCoverage(change, research, added);
 }
 function upstreamComplete(change: PacketChange) {

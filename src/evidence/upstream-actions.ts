@@ -21,6 +21,8 @@ import {
 import { compareUpstreamVersions } from './upstream-version.js';
 
 export type ActionMappingDraft = Readonly<{
+  tag: string;
+  sha: string;
   side: 'base' | 'head';
   action: string;
   ref: string;
@@ -109,6 +111,8 @@ async function mapping(
   await recheck(repository, observed, reader);
   const identity = releaseIdentity(selected.data, repository, selected.tag);
   const draft: ActionMappingDraft = {
+    tag: selected.tag,
+    sha: observed.sha,
     side,
     action: instance.action,
     ref: instance.ref,
@@ -135,12 +139,18 @@ async function finalRefChecks(
     if (!instance) continue;
     try {
       await recheck(instance.action.split('/').slice(0, 2).join('/'), value, reader);
+      const repository = instance.action.split('/').slice(0, 2).join('/');
+      for (const proof of mappings.filter((m) => m.side === side)) {
+        const release = await resolveUpstreamRef(repository, 'tags/' + proof.tag, reader);
+        requireUpstream(release.status === 'available' && release.sha === proof.sha, 'conflict');
+      }
     } catch (error) {
       observed.delete(side);
       for (let i = mappings.length - 1; i >= 0; i--)
         if (mappings[i].side === side) mappings.splice(i, 1);
       const reason = upstreamReason(error);
       research.attempts.push({
+        side,
         stage: 'mapping',
         target: 'Final ref recheck: ' + instance.ref,
         url: null,
@@ -185,6 +195,7 @@ export async function collectActionResearch(
       const mapped = await mapping(instance, side, ref, reader);
       mappings.push(mapped.draft);
       attempts.push({
+        side,
         stage: 'mapping',
         target: instance.action + '@' + instance.ref,
         url: mapped.draft.document.url,
@@ -206,6 +217,7 @@ export async function collectActionResearch(
       const reason = upstreamReason(error);
       sideErrors.push(reason);
       attempts.push({
+        side,
         stage: 'mapping',
         target: instance.action + '@' + instance.ref,
         url: null,
@@ -237,6 +249,7 @@ export async function collectActionResearch(
     attempts.push(...compared.attempts);
     research.status = compared.status;
     research.reasons = compared.reasons;
+    await finalRefChecks(change, observed, mappings, research, reader);
   }
   if (research.status === 'unavailable')
     research.reasons = [...new Set([...research.reasons, ...sideErrors])];

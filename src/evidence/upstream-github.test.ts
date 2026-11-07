@@ -5,6 +5,7 @@ import {
   collectTargetRelease,
   resolveUpstreamRef,
   collectExactComparison,
+  collectPackageComparison,
 } from './upstream-github.js';
 
 const sha = 'a'.repeat(40);
@@ -80,6 +81,25 @@ test('target notes require exact immutable package correspondence', async () => 
   expect(f.calls.filter((url) => url.includes('/git/ref/'))).toHaveLength(2);
   f.reader.close();
 });
+test('a generic repository release cannot stand for a directory component release', async () => {
+  const f = setup({
+    '/contents/packages/orbit/package.json': file({ name: 'orbit', version: '2.0.0' }),
+  });
+  const result = await collectTargetRelease(
+    {
+      ...target,
+      metadata: {
+        repository: {
+          url: 'https://github.com/fixture/orbit',
+          directory: 'packages/orbit',
+        },
+      },
+    },
+    f.reader,
+  );
+  expect(result.status).toBe('unavailable');
+  f.reader.close();
+});
 test('a matching tag in another monorepo component cannot supply notes', async () => {
   const f = setup({
     '/contents/package.json': file({ name: 'other-component', version: '2.0.0' }),
@@ -129,7 +149,7 @@ test('complete comparison retains exact direction and reviewed commits', async (
       behind_by: 0,
       total_commits: 1,
       commits: [{ sha, commit: { message: 'Target change' } }],
-      files: [{ filename: 'index.js', patch: '@@ change' }],
+      files: [{ filename: 'index.js', patch: '@@\n+breaking change' }],
     },
   });
   const result = await collectExactComparison(
@@ -141,6 +161,7 @@ test('complete comparison retains exact direction and reviewed commits', async (
   expect(result.status).toBe('available');
   expect(result.sources[0]).toMatchObject({ range: { from: '1.0.0', to: '2.0.0' } });
   expect(result.sources[0].text).toContain('Target change');
+  expect(result.sources[0].text).toContain('breaking change');
   f.reader.close();
 });
 test('a failed comparison continuation preserves earlier commits as partial', async () => {
@@ -218,3 +239,35 @@ test.each(['diverged', 'missing-patch', 'wrong-base', 'hostile-next'])(
     f.reader.close();
   },
 );
+test('package comparison tags are rechecked after comparison collection', async () => {
+  const base = 'c'.repeat(40);
+  let moved = false;
+  const f = setup({
+    '/git/ref/tags/v1.0.0': () => ({
+      ref: 'refs/tags/v1.0.0',
+      object: { type: 'commit', sha: moved ? 'e'.repeat(40) : base },
+    }),
+    '/contents/package.json': (url: string) =>
+      file({
+        name: 'orbit',
+        version: new URL(url).searchParams.get('ref') === base ? '1.0.0' : '2.0.0',
+      }),
+    ['/compare/' + base + '...' + sha]: () => {
+      moved = true;
+      return {
+        base_commit: { sha: base },
+        merge_base_commit: { sha: base },
+        status: 'ahead',
+        ahead_by: 1,
+        behind_by: 0,
+        total_commits: 1,
+        commits: [{ sha, commit: { message: 'Change' } }],
+        files: [{ filename: 'index.js', patch: 'patch' }],
+      };
+    },
+  });
+  const result = await collectPackageComparison({ ...target, version: '1.0.0' }, target, f.reader);
+  expect(result.status).not.toBe('available');
+  expect(result.reasons).toContain('conflict');
+  f.reader.close();
+});
