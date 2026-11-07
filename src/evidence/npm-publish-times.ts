@@ -5,18 +5,15 @@ import parser, { type Token } from 'stream-json/parser.js';
 import { PACKET_LIMITS, type EvidenceReason } from '../schema.js';
 import { advisoryCheck, AdvisoryFailure, advisoryText } from './advisory-read.js';
 import { freeze, isPlainObject } from './common.js';
+import {
+  boundedGet,
+  boundedLimits,
+  BoundedClock,
+  type BoundedDependencies,
+  type BoundedLimits,
+} from './bounded-request.js';
 
-export type PublishTimeLimits = {
-  maxRequests: number;
-  maxResponseBytes: number;
-  maxTotalBytes: number;
-  maxJsonEntries: number;
-  maxJsonDepth: number;
-  maxWork: number;
-  maxRetainedBytes: number;
-  requestTimeoutMs: number;
-  totalTimeoutMs: number;
-};
+export type PublishTimeLimits = BoundedLimits;
 type Target = {
   name: string;
   versions: string[];
@@ -31,11 +28,6 @@ export type NpmTimesResult =
       reasons: Readonly<Record<string, EvidenceReason>>;
     }
   | { kind: 'unavailable'; reason: EvidenceReason };
-type Dependencies = {
-  fetch: (url: string, init: RequestInit) => Promise<Response>;
-  now: () => number;
-  signal?: AbortSignal;
-};
 export type NpmPublishTimeReader = {
   limits: PublishTimeLimits;
   read: (value: unknown) => Promise<NpmTimesResult>;
@@ -251,8 +243,7 @@ class TimeReader {
   private requests = 0;
   private bytes = 0;
   private work = 0;
-  private last: number;
-  private started: number;
+  private readonly clock: BoundedClock;
   private stopped = false;
   private busy = false;
   private active: (() => void) | null = null;
@@ -260,23 +251,16 @@ class TimeReader {
   private cache = new Map<string, NpmTimesResult>();
   constructor(
     readonly limits: PublishTimeLimits,
-    private deps: Dependencies,
+    private deps: BoundedDependencies,
   ) {
-    this.started = this.last = deps.now();
-    advisoryCheck(Number.isFinite(this.started));
+    this.clock = new BoundedClock(limits.totalTimeoutMs, deps);
   }
   close() {
     this.stopped = true;
     this.active?.();
   }
   private remaining() {
-    const time = this.deps.now();
-    advisoryCheck(!this.stopped && !this.deps.signal?.aborted, 'unknown');
-    advisoryCheck(Number.isFinite(time) && time >= this.last, 'unknown');
-    this.last = time;
-    const left = this.limits.totalTimeoutMs - (time - this.started);
-    advisoryCheck(left > 0, 'timeout');
-    return left;
+    return this.clock.remaining(this.stopped ? 'unknown' : null);
   }
   private spend = () => {
     advisoryCheck(++this.work <= this.limits.maxWork, 'budget');
@@ -284,94 +268,71 @@ class TimeReader {
   };
   private async fetch(t: Target): Promise<NpmTimesResult> {
     advisoryCheck(++this.requests <= this.limits.maxRequests, 'budget');
-    const duration = Math.min(this.remaining(), this.limits.requestTimeoutMs);
-    const url = 'https://registry.npmjs.org/' + encodeURIComponent(t.name),
-      controller = new AbortController();
-    let reject: (error: AdvisoryFailure) => void = () => {};
-    const aborted = new Promise<never>((_, r) => {
-      reject = r;
-    });
-    const stop = (reason: EvidenceReason) => {
-      controller.abort();
-      reject(new AdvisoryFailure(reason));
-    };
-    const cancel = () => stop('unknown');
-    this.active = cancel;
-    this.deps.signal?.addEventListener('abort', cancel, { once: true });
-    const timer = setTimeout(() => stop('timeout'), duration);
-    let response: Response | undefined;
-    try {
-      response = await Promise.race([
-        this.deps.fetch(url, {
-          method: 'GET',
-          redirect: 'manual',
-          credentials: 'omit',
-          headers: { accept: 'application/json' },
-          signal: controller.signal,
-        }),
-        aborted,
-      ]);
-      validateResponse(response, url);
-      advisoryCheck(response.body);
-      const stream = response.body.getReader(),
-        decoder = new TextDecoder('utf-8', { fatal: true });
-      let size = 0;
-      const state = extractor(t, this.limits, this.spend);
-      const debitBytes = (count: number) => {
-        size += count;
-        this.bytes += count;
+    const timeoutMs = Math.min(this.remaining(), this.limits.requestTimeoutMs);
+    const url = 'https://registry.npmjs.org/' + encodeURIComponent(t.name);
+    return boundedGet(
+      this.deps,
+      { url, accept: 'application/json', timeoutMs },
+      (cancel) => {
+        this.active = cancel;
+      },
+      async (response, aborted) => {
+        validateResponse(response, url);
+        advisoryCheck(response.body);
+        const stream = response.body.getReader(),
+          decoder = new TextDecoder('utf-8', { fatal: true });
+        let size = 0;
+        const state = extractor(t, this.limits, this.spend);
+        const debitBytes = (count: number) => {
+          size += count;
+          this.bytes += count;
+          advisoryCheck(
+            size <= this.limits.maxResponseBytes && this.bytes <= this.limits.maxTotalBytes,
+            'budget',
+          );
+          this.remaining();
+        };
+        async function* chunks() {
+          try {
+            for (;;) {
+              const part = await Promise.race([
+                stream.read().catch(() => {
+                  throw new AdvisoryFailure('unknown');
+                }),
+                aborted,
+              ]);
+              if (part.done) break;
+              debitBytes(part.value.byteLength);
+              for (let i = 0; i < part.value.length; i += PACKET_LIMITS.textBytes)
+                yield decoder.decode(part.value.subarray(i, i + PACKET_LIMITS.textBytes), {
+                  stream: true,
+                });
+            }
+            yield decoder.decode();
+          } finally {
+            void stream.cancel().catch(() => {});
+            stream.releaseLock();
+          }
+        }
+        try {
+          await pipeline(
+            Readable.from(chunks()),
+            parser.asStream({ packValues: false, streamValues: true, jsonStreaming: false }),
+            async (tokens) => {
+              for await (const token of tokens) state.accept(token as Token);
+            },
+          );
+        } catch (error) {
+          throw error instanceof AdvisoryFailure ? error : new AdvisoryFailure('malformed');
+        }
+        const result = { kind: 'times' as const, url, ...state.finish() };
         advisoryCheck(
-          size <= this.limits.maxResponseBytes && this.bytes <= this.limits.maxTotalBytes,
+          Buffer.byteLength(JSON.stringify(result)) <= this.limits.maxRetainedBytes,
           'budget',
         );
-        this.remaining();
-      };
-      async function* chunks() {
-        try {
-          for (;;) {
-            const part = await Promise.race([
-              stream.read().catch(() => {
-                throw new AdvisoryFailure('unknown');
-              }),
-              aborted,
-            ]);
-            if (part.done) break;
-            debitBytes(part.value.byteLength);
-            for (let i = 0; i < part.value.length; i += PACKET_LIMITS.textBytes)
-              yield decoder.decode(part.value.subarray(i, i + PACKET_LIMITS.textBytes), {
-                stream: true,
-              });
-          }
-          yield decoder.decode();
-        } finally {
-          void stream.cancel().catch(() => {});
-          stream.releaseLock();
-        }
-      }
-      try {
-        await pipeline(
-          Readable.from(chunks()),
-          parser.asStream({ packValues: false, streamValues: true, jsonStreaming: false }),
-          async (tokens) => {
-            for await (const token of tokens) state.accept(token as Token);
-          },
-        );
-      } catch (error) {
-        throw error instanceof AdvisoryFailure ? error : new AdvisoryFailure('malformed');
-      }
-      const result = { kind: 'times' as const, url, ...state.finish() };
-      advisoryCheck(
-        Buffer.byteLength(JSON.stringify(result)) <= this.limits.maxRetainedBytes,
-        'budget',
-      );
-      return freeze(result);
-    } finally {
-      clearTimeout(timer);
-      this.deps.signal?.removeEventListener('abort', cancel);
-      controller.abort();
-      this.active = null;
-      if (response?.body && !response.body.locked) void response.body.cancel().catch(() => {});
-    }
+        return freeze(result);
+      },
+    );
   }
   async read(value: unknown): Promise<NpmTimesResult> {
     if (this.busy) return { kind: 'unavailable', reason: 'conflict' };
@@ -408,28 +369,10 @@ class TimeReader {
 }
 export function createNpmPublishTimeReader(
   value: unknown,
-  dependencies: Dependencies,
+  dependencies: BoundedDependencies,
 ): ({ kind: 'ready' } & NpmPublishTimeReader) | { kind: 'invalid' } {
   try {
-    advisoryCheck(isPlainObject(value));
-    const keys = [
-      'maxRequests',
-      'maxResponseBytes',
-      'maxTotalBytes',
-      'maxJsonEntries',
-      'maxJsonDepth',
-      'maxWork',
-      'maxRetainedBytes',
-      'requestTimeoutMs',
-      'totalTimeoutMs',
-    ] as const;
-    advisoryCheck(keys.every((k) => Number.isSafeInteger(value[k]) && Number(value[k]) > 0));
-    advisoryCheck(
-      Number(value.maxResponseBytes) <= Number(value.maxTotalBytes) &&
-        Number(value.requestTimeoutMs) <= Number(value.totalTimeoutMs) &&
-        Number(value.requestTimeoutMs) <= 2 ** 31 - 1,
-    );
-    const limits = Object.fromEntries(keys.map((k) => [k, value[k]])) as PublishTimeLimits,
+    const limits = boundedLimits(value),
       reader = new TimeReader(limits, dependencies);
     return Object.freeze({
       kind: 'ready',

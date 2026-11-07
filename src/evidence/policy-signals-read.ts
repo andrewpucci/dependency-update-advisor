@@ -2,6 +2,12 @@ import { PACKET_LIMITS, type EvidenceReason } from '../schema.js';
 import { advisoryCheck, AdvisoryFailure, copyAdvisoryData, advisoryText } from './advisory-read.js';
 import { isPlainObject, freeze } from './common.js';
 import type { PublishTimeLimits } from './npm-publish-times.js';
+import {
+  boundedGet,
+  boundedLimits,
+  BoundedClock,
+  type BoundedDependencies,
+} from './bounded-request.js';
 
 export type MetadataQuery = {
   kind: 'pypi' | 'pypi-provenance';
@@ -19,11 +25,6 @@ export type PolicyMetadataReader = {
   read: (value: unknown) => Promise<MetadataRead>;
   spend: (amount: number) => void;
   close: () => void;
-};
-type Dependencies = {
-  fetch: (url: string, init: RequestInit) => Promise<Response>;
-  now: () => number;
-  signal?: AbortSignal;
 };
 export function metadataUrl(value: unknown): { query: MetadataQuery; url: string } {
   advisoryCheck(isPlainObject(value) && isPlainObject(value.source), 'unsupported');
@@ -94,31 +95,23 @@ class MetadataReader {
   private work = { entries: 0 };
   private operations = 0;
   private retained = 0;
-  private started: number;
-  private last: number;
+  private readonly clock: BoundedClock;
   private active: (() => void) | null = null;
   private stopped: EvidenceReason | null = null;
   private busy = false;
   private cache = new Map<string, MetadataRead>();
   constructor(
     readonly limits: PublishTimeLimits,
-    private deps: Dependencies,
+    private deps: BoundedDependencies,
   ) {
-    this.started = this.last = deps.now();
-    advisoryCheck(Number.isFinite(this.started));
+    this.clock = new BoundedClock(limits.totalTimeoutMs, deps);
   }
   close() {
     this.stopped = 'unknown';
     this.active?.();
   }
   private remaining() {
-    advisoryCheck(!this.stopped && !this.deps.signal?.aborted, this.stopped ?? 'unknown');
-    const now = this.deps.now();
-    advisoryCheck(Number.isFinite(now) && now >= this.last, 'unknown');
-    this.last = now;
-    const left = this.limits.totalTimeoutMs - (now - this.started);
-    advisoryCheck(left > 0, 'timeout');
-    return left;
+    return this.clock.remaining(this.stopped);
   }
   spend(amount: number) {
     advisoryCheck(Number.isSafeInteger(amount) && amount >= 0);
@@ -152,80 +145,65 @@ class MetadataReader {
   }
   private async fetch(query: MetadataQuery, url: string): Promise<MetadataRead> {
     advisoryCheck(++this.requests <= this.limits.maxRequests, 'budget');
-    const controller = new AbortController();
-    let reject: (error: AdvisoryFailure) => void = () => {};
-    const aborted = new Promise<never>((_, r) => {
-      reject = r;
-    });
-    const stop = (reason: EvidenceReason) => {
-      controller.abort();
-      reject(new AdvisoryFailure(reason));
+    const request = {
+      url,
+      accept: query.kind === 'pypi' ? 'application/json' : 'application/vnd.pypi.integrity.v1+json',
+      timeoutMs: Math.min(this.remaining(), this.limits.requestTimeoutMs),
     };
-    const cancel = () => stop('unknown');
-    const duration = Math.min(this.remaining(), this.limits.requestTimeoutMs);
-    this.active = cancel;
-    this.deps.signal?.addEventListener('abort', cancel, { once: true });
-    const timer = setTimeout(() => stop('timeout'), duration);
-    let response: Response | undefined;
-    try {
-      response = await Promise.race([
-        this.deps.fetch(url, {
-          method: 'GET',
-          redirect: 'manual',
-          credentials: 'omit',
-          headers: {
-            accept:
-              query.kind === 'pypi' ? 'application/json' : 'application/vnd.pypi.integrity.v1+json',
-          },
-          signal: controller.signal,
-        }),
-        aborted,
-      ]);
-      advisoryCheck(!response.redirected && (!response.url || response.url === url), 'unsupported');
-      if (response.status === 404 && query.kind === 'pypi-provenance')
-        return { kind: 'absent', url };
-      if (response.status !== 200) {
-        const reason = httpReason(response);
-        if (reason === 'rate_limit') this.stopped = reason;
-        throw new AdvisoryFailure(reason);
-      }
-      advisoryCheck(
-        /^application\/(?:[\w.+-]*\+)?json(?:\s*;|$)/iu.test(
-          response.headers.get('content-type') ?? '',
-        ),
-        'unsupported',
-      );
-      const bytes = await this.body(response, aborted);
-      let parsed: unknown;
-      try {
-        parsed = JSON.parse(new TextDecoder('utf-8', { fatal: true }).decode(bytes));
-      } catch {
-        throw new AdvisoryFailure('malformed');
-      }
-      const previousEntries = this.work.entries;
-      const data = copyAdvisoryData(
-        parsed,
-        { ...this.limits, maxPages: this.limits.maxRequests, maxFindings: PACKET_LIMITS.findings },
-        this.work,
-      );
-      this.spend(this.work.entries - previousEntries);
-      advisoryCheck(isPlainObject(data));
-      if (query.kind === 'pypi')
+    return boundedGet(
+      this.deps,
+      request,
+      (cancel) => {
+        this.active = cancel;
+      },
+      async (response, aborted) => {
         advisoryCheck(
-          isPlainObject(data.info) &&
-            typeof data.info.name === 'string' &&
-            data.info.name.toLowerCase().replace(/[-_.]+/gu, '-') === query.name &&
-            data.info.version === query.version,
-          'conflict',
+          !response.redirected && (!response.url || response.url === url),
+          'unsupported',
         );
-      return freeze({ kind: 'data', url, data });
-    } finally {
-      clearTimeout(timer);
-      this.deps.signal?.removeEventListener('abort', cancel);
-      this.active = null;
-      controller.abort();
-      if (response?.body && !response.body.locked) void response.body.cancel().catch(() => {});
-    }
+        if (response.status === 404 && query.kind === 'pypi-provenance')
+          return { kind: 'absent', url };
+        if (response.status !== 200) {
+          const reason = httpReason(response);
+          if (reason === 'rate_limit') this.stopped = reason;
+          throw new AdvisoryFailure(reason);
+        }
+        advisoryCheck(
+          /^application\/(?:[\w.+-]*\+)?json(?:\s*;|$)/iu.test(
+            response.headers.get('content-type') ?? '',
+          ),
+          'unsupported',
+        );
+        const bytes = await this.body(response, aborted);
+        let parsed: unknown;
+        try {
+          parsed = JSON.parse(new TextDecoder('utf-8', { fatal: true }).decode(bytes));
+        } catch {
+          throw new AdvisoryFailure('malformed');
+        }
+        const previousEntries = this.work.entries;
+        const data = copyAdvisoryData(
+          parsed,
+          {
+            ...this.limits,
+            maxPages: this.limits.maxRequests,
+            maxFindings: PACKET_LIMITS.findings,
+          },
+          this.work,
+        );
+        this.spend(this.work.entries - previousEntries);
+        advisoryCheck(isPlainObject(data));
+        if (query.kind === 'pypi')
+          advisoryCheck(
+            isPlainObject(data.info) &&
+              typeof data.info.name === 'string' &&
+              data.info.name.toLowerCase().replace(/[-_.]+/gu, '-') === query.name &&
+              data.info.version === query.version,
+            'conflict',
+          );
+        return freeze({ kind: 'data', url, data });
+      },
+    );
   }
   async read(value: unknown): Promise<MetadataRead> {
     if (this.busy) return { kind: 'unavailable', reason: 'conflict' };
@@ -261,28 +239,10 @@ class MetadataReader {
 }
 export function createPolicySignalReader(
   value: unknown,
-  dependencies: Dependencies,
+  dependencies: BoundedDependencies,
 ): ({ kind: 'ready' } & PolicyMetadataReader) | { kind: 'invalid' } {
   try {
-    advisoryCheck(isPlainObject(value));
-    const keys = [
-      'maxRequests',
-      'maxResponseBytes',
-      'maxTotalBytes',
-      'maxJsonEntries',
-      'maxJsonDepth',
-      'maxWork',
-      'maxRetainedBytes',
-      'requestTimeoutMs',
-      'totalTimeoutMs',
-    ] as const;
-    advisoryCheck(keys.every((k) => Number.isSafeInteger(value[k]) && Number(value[k]) > 0));
-    advisoryCheck(
-      Number(value.maxResponseBytes) <= Number(value.maxTotalBytes) &&
-        Number(value.requestTimeoutMs) <= Number(value.totalTimeoutMs) &&
-        Number(value.requestTimeoutMs) <= 2 ** 31 - 1,
-    );
-    const limits = Object.fromEntries(keys.map((k) => [k, value[k]])) as PublishTimeLimits,
+    const limits = boundedLimits(value),
       reader = new MetadataReader(limits, dependencies);
     return Object.freeze({
       kind: 'ready',
