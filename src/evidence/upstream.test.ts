@@ -233,3 +233,25 @@ test('failed repeat lookups preserve prior upstream citations and coverage', asy
   good.reader.close();
   bad.reader.close();
 });
+test('an empty registry description still yields a non-empty metadata excerpt', async () => {
+  const f = await collectAdvisoryUv();
+  const opened = createUpstreamReader(limits, {
+    now: () => 0,
+    fetch: async (url) => {
+      const parts = new URL(url).pathname.split('/').map(decodeURIComponent);
+      return Response.json({ info: { name: parts[2], version: parts[3], description: '' } });
+    },
+  });
+  if (opened.kind !== 'ready') throw new Error('reader');
+  const result = await enrichUpstream(
+    { ...f.input, sources: f.input.sources.filter((s) => !s.id.startsWith('proof:')), limits },
+    opened,
+  );
+  if (result.kind !== 'enriched') throw new Error('enrichment');
+  const metadata = result.sources.filter((s) => s.kind === 'metadata' && s.id.startsWith('s2:'));
+  expect(metadata.length).toBeGreaterThan(0);
+  expect(
+    metadata.every((s) => s.provenance.kind === 'upstream' && s.provenance.excerpt.length > 0),
+  ).toBe(true);
+  opened.reader.close();
+});

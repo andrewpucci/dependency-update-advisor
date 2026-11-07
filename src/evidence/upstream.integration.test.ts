@@ -165,3 +165,41 @@ test.each([125, 126])(
     opened.reader.close();
   },
 );
+test('clipped target notes beside an unavailable comparison keep the whole enrichment usable', async () => {
+  const f = await upstreamScenario();
+  const opened = createUpstreamReader(upstreamTestLimits, {
+    now: () => 0,
+    fetch: async (url, init) => {
+      const response = await f.fetch(url, init);
+      if (!/^\/repos\/[^/]+\/[^/]+\/releases(?:\/tags\/|$)/u.test(new URL(url).pathname))
+        return response;
+      const data = await response.json();
+      const long = (r: Record<string, unknown>) => ({ ...r, body: 'Long notes. '.repeat(300) });
+      return Response.json(Array.isArray(data) ? data.map(long) : long(data));
+    },
+  });
+  if (opened.kind !== 'ready') throw new Error('reader');
+  const r = await enrichUpstream(f.input, opened);
+  opened.reader.close();
+  expect(r.kind, JSON.stringify(r)).toBe('enriched');
+  if (r.kind !== 'enriched') throw new Error('upstream');
+  const npm = r.changes.find((c) => c.ecosystem === 'npm' && c.kind === 'update');
+  expect(npm?.evidence.upstream.status).toBe('partial');
+  expect(npm?.evidence.upstream.reasons).toContain('truncated');
+});
+test('the retained-output budget admits the exact enriched size and rejects one byte less', async () => {
+  const run = async (maxRetainedBytes: number) => {
+    const f = await upstreamScenario();
+    const scoped = { ...upstreamTestLimits, maxRetainedBytes };
+    const opened = createUpstreamReader(scoped, { now: () => 0, fetch: f.fetch });
+    if (opened.kind !== 'ready') throw new Error('reader');
+    const r = await enrichUpstream({ ...f.input, limits: scoped }, opened);
+    opened.reader.close();
+    return r;
+  };
+  const full = await run(upstreamTestLimits.maxRetainedBytes);
+  if (full.kind !== 'enriched') throw new Error('upstream');
+  const exact = Buffer.byteLength(JSON.stringify(full));
+  expect(await run(exact)).toEqual(full);
+  expect(await run(exact - 1)).toEqual({ kind: 'unavailable', reason: 'budget' });
+});

@@ -4,6 +4,7 @@ import {
   requireUpstream,
   upstreamText,
   UpstreamFailure,
+  upstreamFailureReason,
   type UpstreamReader,
 } from './upstream-read.js';
 import {
@@ -13,7 +14,6 @@ import {
   releaseIdentity,
   releaseDocument,
   collectExactComparison,
-  upstreamReason,
   type UpstreamDocument,
   type UpstreamResearch,
   type ResearchAttempt,
@@ -31,6 +31,8 @@ export type ActionMappingDraft = Readonly<{
   document: UpstreamDocument;
 }>;
 type ObservedRef = { sha: string; namespace: string | null };
+/** Release-enumeration tag reads shared by both sides of one change; proof rechecks stay fresh. */
+type TagReads = Map<string, Awaited<ReturnType<typeof resolveUpstreamRef>>>;
 async function observeRef(
   repository: string,
   instance: ActionsSide,
@@ -68,6 +70,7 @@ async function releaseAtCommit(
   sha: string,
   item: unknown,
   seen: Set<string>,
+  tags: TagReads,
   reader: UpstreamReader,
 ) {
   requireUpstream(isPlainObject(item) && upstreamText(item.tag_name));
@@ -78,14 +81,21 @@ async function releaseAtCommit(
   requireUpstream(!seen.has(tag), 'conflict');
   seen.add(tag);
   releaseIdentity(item, repository, tag);
-  const resolved = await resolveUpstreamRef(repository, 'tags/' + tag, reader);
+  const key = repository + '\n' + tag;
+  const resolved = tags.get(key) ?? (await resolveUpstreamRef(repository, 'tags/' + tag, reader));
+  tags.set(key, resolved);
   requireUpstream(
     resolved.status === 'available',
     resolved.status === 'unavailable' ? resolved.reason : 'unknown',
   );
   if (resolved.sha === sha) return { version, tag, data: item };
 }
-async function matchingReleases(repository: string, sha: string, reader: UpstreamReader) {
+async function matchingReleases(
+  repository: string,
+  sha: string,
+  tags: TagReads,
+  reader: UpstreamReader,
+) {
   const matches: { version: string; tag: string; data: Readonly<Record<string, unknown>> }[] = [];
   const seen = new Set<string>();
   let candidates = 0;
@@ -96,7 +106,7 @@ async function matchingReleases(repository: string, sha: string, reader: Upstrea
     for (const item of result.data.items) {
       reader.spend(1);
       requireUpstream(++candidates <= reader.limits.maxTagCandidates, 'budget');
-      const match = await releaseAtCommit(repository, sha, item, seen, reader);
+      const match = await releaseAtCommit(repository, sha, item, seen, tags, reader);
       if (match) matches.push(match);
     }
     if (!result.nextPage) return matches;
@@ -108,11 +118,12 @@ async function mapping(
   instance: ActionsSide,
   side: 'base' | 'head',
   observed: ObservedRef,
+  tags: TagReads,
   reader: UpstreamReader,
 ) {
   const repository = instance.action.split('/').slice(0, 2).join('/');
   requireUpstream(instance.action === repository, 'unsupported');
-  const releases = await matchingReleases(repository, observed.sha, reader);
+  const releases = await matchingReleases(repository, observed.sha, tags, reader);
   const versions = new Set(releases.map((r) => r.version));
   requireUpstream(versions.size === 1, versions.size ? 'conflict' : 'missing');
   const selected = releases[0];
@@ -144,14 +155,30 @@ function retainTargetRelease(
   research: UpstreamResearch,
 ) {
   if (change.to ? side !== 'head' : side !== 'base') return;
-  const doc = releaseDocument(mapped.release.data, mapped.draft.name, mapped.release.tag);
-  research.sources.push({
-    ...doc,
-    text: mapped.draft.document.text + '\n' + doc.text,
-    range: { from: null, to: mapped.draft.ref },
-  });
-  research.status = 'available';
-  research.reasons = [];
+  const target = mapped.draft.action + '@' + mapped.release.tag;
+  try {
+    const doc = releaseDocument(mapped.release.data, mapped.draft.name, mapped.release.tag);
+    research.sources.push({
+      ...doc,
+      text: mapped.draft.document.text + '\n' + doc.text,
+      range: { from: null, to: mapped.draft.ref },
+    });
+    research.status = 'available';
+    research.reasons = [];
+  } catch (error) {
+    // The mapping already stands; only the notes for its release are unusable.
+    const reason = upstreamFailureReason(error);
+    research.attempts.push({
+      side,
+      stage: 'release',
+      target,
+      url: mapped.draft.document.url,
+      outcome: 'unavailable',
+      reasons: [reason],
+      range: { from: null, to: mapped.draft.ref },
+    });
+    return reason;
+  }
 }
 function discardMapping(mappings: ActionMappingDraft[], side: 'base' | 'head') {
   for (let i = mappings.length - 1; i >= 0; i--)
@@ -163,7 +190,7 @@ function recheckFailure(
   target: string,
   error: unknown,
 ) {
-  const reason = upstreamReason(error);
+  const reason = upstreamFailureReason(error);
   research.attempts.push({
     side,
     stage: 'mapping',
@@ -313,6 +340,7 @@ export async function collectActionResearch(
   if (change.ecosystem !== 'actions') return { research, mappings };
   const observed = new Map<'base' | 'head', ObservedRef>();
   const sideErrors: EvidenceReason[] = [];
+  const tags: TagReads = new Map();
   for (const side of ['base', 'head'] as const) {
     const instance = side === 'base' ? change.from : change.to;
     if (!instance) continue;
@@ -321,7 +349,7 @@ export async function collectActionResearch(
       await publicRepository(repository, reader);
       const ref = await observeRef(repository, instance, reader);
       observed.set(side, ref);
-      const mapped = await mapping(instance, side, ref, reader);
+      const mapped = await mapping(instance, side, ref, tags, reader);
       mappings.push(mapped.draft);
       attempts.push({
         side,
@@ -332,9 +360,10 @@ export async function collectActionResearch(
         reasons: [],
         range: mapped.draft.document.range,
       });
-      retainTargetRelease(change, side, mapped, research);
+      const notesFailure = retainTargetRelease(change, side, mapped, research);
+      if (notesFailure) sideErrors.push(notesFailure);
     } catch (error) {
-      const reason = upstreamReason(error);
+      const reason = upstreamFailureReason(error);
       sideErrors.push(reason);
       attempts.push({
         side,

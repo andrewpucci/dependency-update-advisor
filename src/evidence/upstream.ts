@@ -266,7 +266,7 @@ function metadataSource(
   const instance = side === 'base' ? change.from : change.to;
   requireUpstream(instance && 'version' in instance && lookup.url && lookup.data);
   const description =
-    typeof lookup.data.description === 'string'
+    typeof lookup.data.description === 'string' && lookup.data.description.trim()
       ? lookup.data.description
       : 'Exact public registry package/version metadata; no release notes were reviewed.';
   const provenance: SourceProvenance = {
@@ -293,14 +293,49 @@ function retain(output: UpstreamEnrichment, source: PacketSource) {
   requireUpstream(!previous || isDeepStrictEqual(previous, source), 'conflict');
   if (!previous) output.sources.push(source);
 }
-function bounds(output: UpstreamEnrichment, limits: UpstreamLimits) {
+// Retained entries are never mutated after they are pushed, except the change being enriched.
+const entryBytes = new WeakMap<object, number>();
+function arrayBytes(entries: readonly object[], current?: PacketChange) {
+  let total = 2 + Math.max(0, entries.length - 1);
+  for (const entry of entries) {
+    let size = entry === current ? undefined : entryBytes.get(entry);
+    if (size === undefined) {
+      size = Buffer.byteLength(JSON.stringify(entry));
+      entryBytes.set(entry, size);
+    }
+    total += size;
+  }
+  return total;
+}
+/** Exactly `Buffer.byteLength(JSON.stringify(output))` without re-serializing settled entries. */
+function outputBytes(output: UpstreamEnrichment, current?: PacketChange) {
+  const { changes, sources, findings, attempts, publicIdentities, actionVersions } = output;
+  const lists = [sources, findings, attempts, publicIdentities, actionVersions];
+  const shell = Buffer.byteLength(
+    JSON.stringify({
+      ...output,
+      changes: [],
+      sources: [],
+      findings: [],
+      attempts: [],
+      publicIdentities: [],
+      actionVersions: [],
+    }),
+  );
+  return (
+    shell -
+    2 * (lists.length + 1) +
+    arrayBytes(changes, current) +
+    lists.reduce((total, list) => total + arrayBytes(list), 0)
+  );
+}
+function bounds(output: UpstreamEnrichment, limits: UpstreamLimits, current?: PacketChange) {
   requireUpstream(
     output.sources.length <= PACKET_LIMITS.sources && output.attempts.length <= limits.maxAttempts,
     'budget',
   );
   requireUpstream(
-    Buffer.byteLength(JSON.stringify(output)) <=
-      Math.min(limits.maxRetainedBytes, PACKET_LIMITS.bytes),
+    outputBytes(output, current) <= Math.min(limits.maxRetainedBytes, PACKET_LIMITS.bytes),
     'budget',
   );
 }
@@ -538,7 +573,7 @@ async function packageResearch(
     return;
   }
   const base = lookups.get('base');
-  if (!upstreamComplete(change) && change.from && change.to && base?.data) {
+  if (change.from && change.to && base?.data) {
     const compared = await collectPackageComparison(
       {
         ecosystem: change.ecosystem,
@@ -697,17 +732,17 @@ async function enrichChange(
     const result = await collectActionResearch(change, reader);
     attachActionMappings(input, output, change, result.mappings);
     attachUpstreamResearch(input, output, change, result.research);
-    bounds(output, input.limits);
+    bounds(output, input.limits, change);
     return;
   }
   const lookups = new Map<string, UpstreamLookup>();
   for (const side of ['base', 'head'] as const) {
     const lookup = await metadata(input, output, change, side, reader);
     if (lookup) lookups.set(side, lookup);
-    bounds(output, input.limits);
+    bounds(output, input.limits, change);
   }
   await packageResearch(input, output, change, lookups, reader);
-  bounds(output, input.limits);
+  bounds(output, input.limits, change);
 }
 /** Enrich exact inventory identities; caller retains inventory coverage and relationships separately. */
 export async function enrichUpstream(

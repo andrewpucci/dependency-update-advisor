@@ -36,8 +36,7 @@ export type GithubUpstreamTarget = Readonly<{
     | 'release'
     | 'contents'
     | 'compare'
-    | 'releases'
-    | 'tags';
+    | 'releases';
   ref?: string;
   sha?: string;
   path?: string;
@@ -190,17 +189,9 @@ function githubTarget(value: unknown): GithubUpstreamTarget {
   );
   requireUpstream(!['.', '..'].includes(value.repository.split('/')[1]), 'unsupported');
   requireUpstream(
-    [
-      'repository',
-      'ref',
-      'tag',
-      'commit',
-      'release',
-      'contents',
-      'compare',
-      'releases',
-      'tags',
-    ].includes(String(value.resource)),
+    ['repository', 'ref', 'tag', 'commit', 'release', 'contents', 'compare', 'releases'].includes(
+      String(value.resource),
+    ),
     'unsupported',
   );
   if (['ref', 'release'].includes(String(value.resource)))
@@ -220,7 +211,7 @@ function githubTarget(value: unknown): GithubUpstreamTarget {
       ),
       'unsupported',
     );
-  if (['compare', 'releases', 'tags'].includes(String(value.resource)))
+  if (['compare', 'releases'].includes(String(value.resource)))
     requireUpstream(Number.isSafeInteger(value.page) && Number(value.page) > 0, 'unsupported');
   return value as unknown as GithubUpstreamTarget;
 }
@@ -257,8 +248,6 @@ export function upstreamGithubUrl(t: GithubUpstreamTarget) {
       return base + '/compare/' + t.base + '...' + t.head + '?per_page=100&page=' + t.page;
     case 'releases':
       return base + '/releases?per_page=100&page=' + t.page;
-    case 'tags':
-      return base + '/tags?per_page=100&page=' + t.page;
   }
 }
 function targetUrl(t: UpstreamTarget) {

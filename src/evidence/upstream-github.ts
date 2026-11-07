@@ -43,9 +43,6 @@ export type UpstreamResearch = {
   repository?: UpstreamRepository;
   head?: { sha: string; ref: string };
 };
-export function upstreamReason(error: unknown): EvidenceReason {
-  return upstreamFailureReason(error);
-}
 export async function githubData(
   reader: UpstreamReader,
   target: Omit<GithubUpstreamTarget, 'kind'>,
@@ -126,7 +123,7 @@ export async function resolveUpstreamRef(
     }
     throw new UpstreamFailure('budget');
   } catch (error) {
-    return { status: 'unavailable', reason: upstreamReason(error) };
+    return { status: 'unavailable', reason: upstreamFailureReason(error) };
   }
 }
 export async function immutableContents(
@@ -200,6 +197,8 @@ export async function packageCorrespondence(
 ) {
   const manifest = await packageManifest(target, repo, sha, reader);
   requireUpstream(isPlainObject(manifest) && typeof manifest.name === 'string', 'unsupported');
+  // Dynamic Python versions (and unversioned manifests) cannot be proven from static content.
+  requireUpstream(typeof manifest.version === 'string', 'unsupported');
   const name =
     target.ecosystem === 'uv'
       ? manifest.name.toLowerCase().replace(/[-_.]+/gu, '-')
@@ -222,15 +221,20 @@ export function releaseIdentity(
     'missing',
   );
   const url = 'https://github.com/' + repository + '/releases/tag/' + encodeURIComponent(tag);
+  requireUpstream(typeof data.html_url === 'string', 'conflict');
+  const html = new URL(data.html_url),
+    path = decodeURIComponent(html.pathname),
+    prefix = '/' + repository + '/releases/tag/';
+  // GitHub owner/repository names are case-insensitive and html_url uses canonical case; tags are not.
   requireUpstream(
-    typeof data.html_url === 'string' &&
-      decodeURIComponent(new URL(data.html_url).pathname) ===
-        '/' + repository + '/releases/tag/' + tag &&
-      new URL(data.html_url).origin === 'https://github.com' &&
-      !new URL(data.html_url).search &&
-      !new URL(data.html_url).hash &&
-      !new URL(data.html_url).username &&
-      !new URL(data.html_url).password,
+    path.length === prefix.length + tag.length &&
+      path.slice(0, prefix.length).toLowerCase() === prefix.toLowerCase() &&
+      path.slice(prefix.length) === tag &&
+      html.origin === 'https://github.com' &&
+      !html.search &&
+      !html.hash &&
+      !html.username &&
+      !html.password,
     'conflict',
   );
   return { url, title: upstreamText(data.name) ? data.name : tag };
@@ -304,7 +308,7 @@ export async function collectTargetRelease(
         });
         return result;
       } catch (error) {
-        const reason = upstreamReason(error);
+        const reason = upstreamFailureReason(error);
         result.reasons.push(reason);
         result.attempts.push({
           stage: 'release',
@@ -317,7 +321,7 @@ export async function collectTargetRelease(
       }
     }
   } catch (error) {
-    const reason = upstreamReason(error);
+    const reason = upstreamFailureReason(error);
     result.reasons.push(reason);
     result.attempts.push({
       stage: 'release',
@@ -425,7 +429,7 @@ async function comparisonPages(
       }
       requireUpstream(page < reader.limits.maxPages, 'budget');
     } catch (error) {
-      state.reasons.add(upstreamReason(error));
+      state.reasons.add(upstreamFailureReason(error));
       return state;
     }
   }
@@ -469,6 +473,10 @@ export async function collectExactComparison(
     ],
   };
 }
+/** An absent later candidate must not hide what an earlier candidate proved wrong. */
+function strongerFailure(previous: EvidenceReason, next: EvidenceReason) {
+  return next === 'missing' ? previous : next;
+}
 export async function resolvePackageVersion(
   target: PackageResearchTarget,
   repo: UpstreamRepository,
@@ -480,12 +488,18 @@ export async function resolvePackageVersion(
     requireUpstream(index < reader.limits.maxTagCandidates, 'budget');
     const resolved = await resolveUpstreamRef(repo.repository, 'tags/' + tag, reader);
     if (resolved.status !== 'available') {
-      failure = resolved.reason;
+      failure = strongerFailure(failure, resolved.reason);
       continue;
     }
-    await packageCorrespondence(target, repo, resolved.sha, reader);
-    const check = await resolveUpstreamRef(repo.repository, 'tags/' + tag, reader);
-    requireUpstream(check.status === 'available' && check.sha === resolved.sha, 'conflict');
+    try {
+      await packageCorrespondence(target, repo, resolved.sha, reader);
+      const check = await resolveUpstreamRef(repo.repository, 'tags/' + tag, reader);
+      requireUpstream(check.status === 'available' && check.sha === resolved.sha, 'conflict');
+    } catch (error) {
+      // Like the target-release stage, one unproven candidate does not rule out the next.
+      failure = strongerFailure(failure, upstreamFailureReason(error));
+      continue;
+    }
     return { sha: resolved.sha, value: target.version, ref: tag };
   }
   throw new UpstreamFailure(failure);
@@ -522,7 +536,7 @@ export async function collectPackageComparison(
       }
       return { ...compared, repository: after, head: { sha: to.sha, ref: to.ref } };
     } catch (error) {
-      const reason = upstreamReason(error);
+      const reason = upstreamFailureReason(error);
       return {
         ...compared,
         status: compared.sources.length ? 'partial' : 'unavailable',
@@ -548,7 +562,7 @@ export async function collectPackageComparison(
       };
     }
   } catch (error) {
-    const reason = upstreamReason(error);
+    const reason = upstreamFailureReason(error);
     return {
       status: 'unavailable',
       reasons: [reason],

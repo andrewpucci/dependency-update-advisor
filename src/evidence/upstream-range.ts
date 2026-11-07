@@ -1,6 +1,11 @@
 import { PACKET_LIMITS } from '../schema.js';
 import { isPlainObject } from './common.js';
-import { requireUpstream, upstreamText, type UpstreamReader } from './upstream-read.js';
+import {
+  requireUpstream,
+  upstreamText,
+  upstreamFailureReason,
+  type UpstreamReader,
+} from './upstream-read.js';
 import {
   repositoryCandidate,
   publicRepository,
@@ -9,7 +14,6 @@ import {
   releaseDocument,
   immutableContents,
   resolvePackageVersion,
-  upstreamReason,
   type PackageResearchTarget,
   type UpstreamRepository,
   type UpstreamResearch,
@@ -26,7 +30,7 @@ function failed(
   error: unknown,
   url: string | null = null,
 ) {
-  const reason = upstreamReason(error);
+  const reason = upstreamFailureReason(error);
   result.reasons = [...new Set([...result.reasons, reason])];
   result.attempts.push({
     stage,
@@ -56,6 +60,8 @@ async function intermediate(
     '',
   );
   if (withinUpstreamRange(after.ecosystem, version, before.version, after.version) !== true) return;
+  // The target-release stage owns the proposed tag; re-retaining it here would reuse its source ID.
+  if (compareUpstreamVersions(after.ecosystem, version, after.version) === 0) return;
   const url = 'https://github.com/' + repo.repository + '/releases/tag/' + encodeURIComponent(tag);
   try {
     requireUpstream(result.sources.length < PACKET_LIMITS.listEntries, 'budget');

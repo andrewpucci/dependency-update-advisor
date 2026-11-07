@@ -42,7 +42,7 @@ function fixture() {
       if (!path) return Response.json({ private: false, full_name: 'fixture/orbit' });
       if (path === '/releases')
         return Response.json(
-          ['v1.0.0', 'v1.5.0', 'v3.0.0'].map((tag_name, i) => ({
+          ['v1.0.0', 'v1.5.0', 'v2.0.0', 'v3.0.0'].map((tag_name, i) => ({
             id: i + 1,
             tag_name,
             draft: false,
@@ -85,6 +85,7 @@ test('intermediate releases retain native ranges without inventing target covera
     true,
   );
   expect(result.sources[0].text).toContain('context');
+  expect(result.sources[0].url).toContain('/releases/tag/v1.5.0');
   f.reader.close();
 });
 test('changelog fallback is bound to an established full commit and stays partial', async () => {

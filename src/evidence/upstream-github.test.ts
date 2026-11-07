@@ -6,6 +6,7 @@ import {
   resolveUpstreamRef,
   collectExactComparison,
   collectPackageComparison,
+  resolvePackageVersion,
 } from './upstream-github.js';
 
 const sha = 'a'.repeat(40);
@@ -79,6 +80,57 @@ test('target notes require exact immutable package correspondence', async () => 
   expect(result.sources[0]).toMatchObject({ kind: 'release', range: { from: null, to: '2.0.0' } });
   expect(result.sources[0].text).toContain('Exact target notes.');
   expect(f.calls.filter((url) => url.includes('/git/ref/'))).toHaveLength(2);
+  f.reader.close();
+});
+test('canonical repository case in release URLs is accepted while tag case stays exact', async () => {
+  const release = (html_url: string) => ({
+    '/releases/tags/v2.0.0': {
+      id: 1,
+      tag_name: 'v2.0.0',
+      draft: false,
+      published_at: '2026-10-01T00:00:00Z',
+      html_url,
+      name: 'Orbit 2.0.0',
+      body: 'Exact target notes.',
+    },
+  });
+  const canonical = setup(release('https://github.com/Fixture/Orbit/releases/tag/v2.0.0'));
+  expect((await collectTargetRelease(target, canonical.reader)).status).toBe('available');
+  canonical.reader.close();
+  const retagged = setup(release('https://github.com/fixture/orbit/releases/tag/V2.0.0'));
+  expect((await collectTargetRelease(target, retagged.reader)).reasons).toContain('conflict');
+  retagged.reader.close();
+});
+test('a manifest without a static version is unsupported rather than conflicting', async () => {
+  const f = setup({ '/contents/package.json': file({ name: 'orbit' }) });
+  const result = await collectTargetRelease(target, f.reader);
+  expect(result.status).toBe('unavailable');
+  expect(result.reasons).toContain('unsupported');
+  expect(result.reasons).not.toContain('conflict');
+  f.reader.close();
+});
+test('a v-prefixed tag on an unrelated commit falls through to the bare version tag', async () => {
+  const other = 'b'.repeat(40);
+  const f = setup({
+    '/git/ref/tags/2.0.0': { ref: 'refs/tags/2.0.0', object: { type: 'commit', sha: other } },
+    '/contents/package.json': (url: string) =>
+      file({ name: 'orbit', version: url.includes(other) ? '2.0.0' : '1.9.0' }),
+  });
+  const repo = { repository: 'fixture/orbit', directory: '' };
+  await expect(resolvePackageVersion(target, repo, f.reader)).resolves.toEqual({
+    sha: other,
+    value: '2.0.0',
+    ref: '2.0.0',
+  });
+  f.reader.close();
+});
+test.each([
+  ['unsupported', { '/contents/package.json': file({ name: 'orbit' }) }],
+  ['conflict', { '/contents/package.json': file({ name: 'orbit', version: '1.9.0' }) }],
+])('a missing bare tag does not hide an earlier %s candidate', async (reason, overrides) => {
+  const f = setup(overrides);
+  const repo = { repository: 'fixture/orbit', directory: '' };
+  await expect(resolvePackageVersion(target, repo, f.reader)).rejects.toMatchObject({ reason });
   f.reader.close();
 });
 test('a generic repository release cannot stand for a directory component release', async () => {
