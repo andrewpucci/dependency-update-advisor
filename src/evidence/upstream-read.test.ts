@@ -95,3 +95,37 @@ test('stream and cumulative request bounds cover nested registry reads', async (
   expect(g.fetch).toHaveBeenCalledTimes(1);
   g.reader.close();
 });
+
+test('exact public PyPI metadata validates both normalized identity and version', async () => {
+  const f = setup(async () =>
+    Response.json({
+      info: { name: 'Fixture_Widget', version: '2.0rc1', description: 'Exact prerelease.' },
+    }),
+  );
+  const py = {
+    kind: 'pypi',
+    name: 'fixture-widget',
+    version: '2.0rc1',
+    source: { kind: 'registry', identity: 'https://pypi.org/simple' },
+  };
+  expect(await f.reader.read(py)).toMatchObject({
+    status: 'available',
+    data: { description: 'Exact prerelease.' },
+  });
+  expect(f.fetch).toHaveBeenCalledWith(
+    'https://pypi.org/pypi/fixture-widget/2.0rc1/json',
+    expect.anything(),
+  );
+  expect((await f.reader.read({ ...py, version: '2.0' })).reasons).toContain('conflict');
+  const calls = f.fetch.mock.calls.length;
+  expect(
+    (
+      await f.reader.read({
+        ...py,
+        source: { kind: 'registry', identity: 'https://private.example/simple' },
+      })
+    ).status,
+  ).toBe('unavailable');
+  expect(f.fetch).toHaveBeenCalledTimes(calls);
+  f.reader.close();
+});

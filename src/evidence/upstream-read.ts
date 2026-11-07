@@ -19,11 +19,11 @@ export type UpstreamLimits = Readonly<{
   totalTimeoutMs: number;
 }>;
 export type UpstreamTarget = Readonly<{
-  kind: 'npm';
+  kind: 'npm' | 'pypi';
   name: string;
   version: string;
   source: PackageSource;
-  integrity: string;
+  integrity?: string;
 }>;
 export type UpstreamLookup = Readonly<{
   status: 'available' | 'unavailable';
@@ -124,21 +124,31 @@ function httpReason(response: Response, bytes: Buffer): EvidenceReason {
   if (response.status >= 300 && response.status < 400) return 'unsupported';
   return response.status === 404 ? 'missing' : 'unknown';
 }
-function npmTarget(value: unknown): UpstreamTarget {
-  requireUpstream(isPlainObject(value) && value.kind === 'npm', 'unsupported');
+function metadataTarget(value: unknown): UpstreamTarget {
+  requireUpstream(
+    isPlainObject(value) && ['npm', 'pypi'].includes(String(value.kind)),
+    'unsupported',
+  );
   requireUpstream(upstreamText(value.name) && upstreamText(value.version), 'unsupported');
   requireUpstream(isPlainObject(value.source) && value.source.kind === 'registry', 'unsupported');
   requireUpstream(upstreamText(value.source.identity), 'unsupported');
   const url = new URL(value.source.identity);
   requireUpstream(
-    url.origin === 'https://registry.npmjs.org' &&
+    url.origin === (value.kind === 'npm' ? 'https://registry.npmjs.org' : 'https://pypi.org') &&
       !url.username &&
       !url.password &&
       !url.search &&
       !url.hash,
     'unsupported',
   );
-  requireUpstream(upstreamText(value.integrity), 'missing');
+  if (value.kind === 'npm') requireUpstream(upstreamText(value.integrity), 'missing');
+  else {
+    requireUpstream(['/simple', '/simple/'].includes(url.pathname), 'unsupported');
+    requireUpstream(
+      /^[a-z\d]+(?:-[a-z\d]+)*$/u.test(value.name) && !/[\s<>=~^*|/@]/u.test(value.version),
+      'unsupported',
+    );
+  }
   return value as unknown as UpstreamTarget;
 }
 class Reader {
@@ -153,6 +163,7 @@ class Reader {
   private networkReason: EvidenceReason | null = null;
   private readonly controller = new AbortController();
   private readonly blocked = new Set<string>();
+  private readonly cache = new Map<string, Readonly<Record<string, unknown>>>();
   private readonly npm: ReturnType<typeof createNpmRegistryReader>;
   constructor(
     readonly limits: UpstreamLimits,
@@ -269,6 +280,32 @@ class Reader {
       if (response?.body && !response.body.locked) void response.body.cancel().catch(() => {});
     }
   }
+  private async pypi(t: UpstreamTarget, url: string) {
+    const cached = this.cache.get(url);
+    if (cached) return cached;
+    const response = await this.fetchBounded(url, {});
+    const parsed = JSON.parse(
+      new TextDecoder('utf-8', { fatal: true }).decode(await response.arrayBuffer()),
+    );
+    const data = upstreamCopy(parsed, this.limits, this.work);
+    requireUpstream(isPlainObject(data) && isPlainObject(data.info));
+    const info = data.info;
+    requireUpstream(
+      typeof info.name === 'string' &&
+        info.name.toLowerCase().replace(/[-_.]+/gu, '-') === t.name &&
+        info.version === t.version,
+      'conflict',
+    );
+    this.cache.set(url, freeze(info));
+    return info;
+  }
+  private async npmData(t: UpstreamTarget) {
+    requireUpstream(this.npm.kind === 'ready');
+    const result = await this.npm.read(t);
+    if (result.kind === 'unavailable')
+      throw new UpstreamFailure(this.networkReason ?? result.reason);
+    return upstreamCopy(result.document.data, this.limits, this.work);
+  }
   async read(value: unknown): Promise<UpstreamLookup> {
     const before = this.requests;
     let url: string | null = null;
@@ -278,14 +315,13 @@ class Reader {
     this.networkReason = null;
     try {
       this.remaining();
-      const t = npmTarget(upstreamCopy(value, this.limits, this.work));
-      url = `https://registry.npmjs.org/${encodeURIComponent(t.name)}/${encodeURIComponent(t.version)}`;
+      const t = metadataTarget(upstreamCopy(value, this.limits, this.work));
+      url =
+        t.kind === 'npm'
+          ? `https://registry.npmjs.org/${encodeURIComponent(t.name)}/${encodeURIComponent(t.version)}`
+          : `https://pypi.org/pypi/${encodeURIComponent(t.name)}/${encodeURIComponent(t.version)}/json`;
       requireUpstream(!this.blocked.has(new URL(url).origin), 'rate_limit');
-      requireUpstream(this.npm.kind === 'ready');
-      const result = await this.npm.read(t);
-      if (result.kind === 'unavailable')
-        throw new UpstreamFailure(this.networkReason ?? result.reason);
-      const data = upstreamCopy(result.document.data, this.limits, this.work);
+      const data = t.kind === 'npm' ? await this.npmData(t) : await this.pypi(t, url);
       requireUpstream(this.work.entries <= this.limits.maxWork, 'budget');
       return freeze({
         status: 'available',

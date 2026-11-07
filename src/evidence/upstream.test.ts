@@ -1,5 +1,5 @@
 import { expect, test } from 'vite-plus/test';
-import { collectAdvisoryNpm } from '../../tests/parity/advisories.js';
+import { collectAdvisoryNpm, collectAdvisoryUv } from '../../tests/parity/advisories.js';
 import { enrichUpstream } from './upstream.js';
 import { createUpstreamReader } from './upstream-read.js';
 
@@ -89,4 +89,30 @@ test('bad bindings or detached npm nodes cannot authorize requests', async () =>
   expect(await enrichUpstream(bad, { reader: r.reader })).toEqual({ kind: 'invalid' });
   expect(r.calls).toHaveLength(0);
   r.reader.close();
+});
+
+test('real U1/U2 supplies PyPI proofs without losing uv side identity', async () => {
+  const f = await collectAdvisoryUv();
+  const opened = createUpstreamReader(limits, {
+    now: () => 0,
+    fetch: async (url) => {
+      const parts = new URL(url).pathname.split('/').map(decodeURIComponent);
+      return Response.json({
+        info: { name: parts[2], version: parts[3], description: 'Version metadata.' },
+      });
+    },
+  });
+  if (opened.kind !== 'ready') throw new Error('reader');
+  const result = await enrichUpstream(
+    { ...f.input, sources: f.input.sources.filter((s) => !s.id.startsWith('proof:')), limits },
+    opened,
+  );
+  expect(result.kind).toBe('enriched');
+  if (result.kind !== 'enriched') throw new Error('enrichment');
+  expect(result.publicIdentities).toHaveLength(2);
+  expect(result.publicIdentities.every((p) => p.ecosystem === 'uv')).toBe(true);
+  expect(result.changes.map((c) => [c.from, c.to])).toEqual(
+    f.input.changes.map((c) => [c.from, c.to]),
+  );
+  opened.reader.close();
 });

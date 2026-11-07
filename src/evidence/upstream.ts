@@ -140,9 +140,16 @@ function metadataTarget(
   change: PacketChange,
   side: 'base' | 'head',
 ): UpstreamTarget | null {
-  if (change.ecosystem !== 'npm' || 'basis' in change) return null;
+  if (change.ecosystem === 'actions' || 'basis' in change) return null;
   const instance = side === 'base' ? change.from : change.to;
   if (!instance) return null;
+  if (change.ecosystem === 'uv')
+    return {
+      kind: 'pypi',
+      name: instance.name,
+      version: instance.version,
+      source: instance.source,
+    };
   const node = npmNode(input, change, side);
   if (!node?.integrity) return null;
   return {
