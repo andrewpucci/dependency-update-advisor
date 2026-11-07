@@ -16,6 +16,8 @@ import type { NpmPublishTimeReader, NpmTimesResult } from './npm-publish-times.j
 import type { UpstreamInput } from './upstream.js';
 import { metadataTarget } from './upstream.js';
 import { collectNpmPolicySignals, type NpmPolicyReader } from './policy-signals-npm.js';
+import { collectPyPIReleaseSignals } from './policy-signals-pypi.js';
+import type { PolicyMetadataReader } from './policy-signals-read.js';
 
 export type PolicySignalInput = AdvisoryInput & {
   evaluationTime: number;
@@ -48,6 +50,7 @@ export type SignalDependencies = {
   malwareReader: AdvisoryReader;
   publishTimeReader?: NpmPublishTimeReader;
   npmReader?: NpmPolicyReader;
+  metadataReader?: PolicyMetadataReader;
 };
 export type Observation<T> =
   | { kind: 'known'; value: T }
@@ -291,6 +294,8 @@ export async function enrichPolicySignals(
         const times = await collectNpmTimes(input, output, change, dependencies.publishTimeReader);
         await collectNpmPolicySignals(input, output, change, times, dependencies.npmReader);
       }
+      if (change.ecosystem === 'uv')
+        await collectPyPIReleaseSignals(input, output, change, dependencies.metadataReader);
       signalBounds(input, output);
     }
     return freeze(output);
