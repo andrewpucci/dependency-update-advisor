@@ -76,6 +76,12 @@ gaps and an introduced vulnerability before parity is claimed.
   on `main` in `review-config` for C3 #7; [verification and integration limits](https://github.com/andrewpucci/dependency-update-advisor/issues/52)
   remain separate from downstream collector, provider, renderer, and workflow gates.
 - [Shared workflow](SPEC-shared-review.md) — approved for planning.
+- [Upstream range evidence](SPEC-upstream-evidence.md) — approved supporting
+  contract for S2 #20 in `shared-review`; release/compare/metadata attribution,
+  explicit fallback outcomes, and confirmed Actions ref-to-version discovery
+  for S1. Specification approved for planning on 2026-11-07; proposed
+  [#183–#192 under #20](https://github.com/andrewpucci/dependency-update-advisor/issues/20)
+  are approved for automatic execution on 2026-11-07, with one closing PR.
 - [Applicable vulnerability advisories](SPEC-advisory-lookup.md) — S1 #19 and
   #173–#181 implemented; #19 tracks review and merge. Exact public-identity
   proofs, Actions mappings and separate lookup outcomes preserve T4/T5/C3
