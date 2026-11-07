@@ -80,6 +80,25 @@ test('timestamp timeout and close cancel even a fetch that ignores AbortSignal',
     vi.useRealTimers();
   }
 });
+test('a deadline exhausted before I/O allocates no cancellation listener', async () => {
+  const controller = new AbortController();
+  let reads = 0,
+    requests = 0;
+  const add = vi.spyOn(controller.signal, 'addEventListener');
+  const r = createNpmPublishTimeReader(limits, {
+    signal: controller.signal,
+    now: () => (++reads < 3 ? 0 : limits.totalTimeoutMs + 1),
+    fetch: async () => {
+      requests++;
+      return Response.json({});
+    },
+  });
+  if (r.kind !== 'ready') throw new Error('reader');
+  expect(await r.read(target)).toEqual({ kind: 'unavailable', reason: 'timeout' });
+  expect(requests).toBe(0);
+  expect(add).not.toHaveBeenCalled();
+  r.close();
+});
 test('npm optional timestamp failure cannot erase completed malware coverage', async () => {
   const f = await upstreamScenario();
   const upstreamReader = createUpstreamReader(upstreamTestLimits, { now: () => 0, fetch: f.fetch });

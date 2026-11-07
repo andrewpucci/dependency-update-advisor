@@ -260,6 +260,7 @@ class TimeReader {
   };
   private async fetch(t: Target): Promise<NpmTimesResult> {
     advisoryCheck(++this.requests <= this.limits.maxRequests, 'budget');
+    const duration = Math.min(this.remaining(), this.limits.requestTimeoutMs);
     const url = 'https://registry.npmjs.org/' + encodeURIComponent(t.name),
       controller = new AbortController();
     let reject: (error: AdvisoryFailure) => void = () => {};
@@ -273,10 +274,7 @@ class TimeReader {
     const cancel = () => stop('unknown');
     this.active = cancel;
     this.deps.signal?.addEventListener('abort', cancel, { once: true });
-    const timer = setTimeout(
-      () => stop('timeout'),
-      Math.min(this.remaining(), this.limits.requestTimeoutMs),
-    );
+    const timer = setTimeout(() => stop('timeout'), duration);
     let response: Response | undefined;
     try {
       response = await Promise.race([
