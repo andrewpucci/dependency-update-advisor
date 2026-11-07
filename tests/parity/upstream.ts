@@ -33,6 +33,8 @@ type Options = {
   uvVariants?: boolean;
   actionsSubpath?: boolean;
   failedAdvisoryChild?: boolean;
+  uvArtifacts?: boolean;
+  actionChange?: 'owner' | 'mutable';
 };
 function packageNode(name: string, version: string) {
   return {
@@ -179,19 +181,27 @@ function researchFetch(options: Options, requests: string[]) {
 }
 /** Invented HTTP/file snapshots through authentic collectors; no public-identity proof is pre-filled. */
 export async function upstreamScenario(options: Options = {}) {
+  const artifacts = (version: string) =>
+    options.uvArtifacts
+      ? `sdist={url="https://files.pythonhosted.org/orbit-${version}.tar.gz",hash="sha256:${'a'.repeat(64)}"}\nwheels=[{url="https://files.pythonhosted.org/orbit-${version}.whl",hash="sha256:${'b'.repeat(64)}"}]\n`
+      : '';
   const python = (head: boolean) => {
     const version = head ? '2.0.0' : '1.0.0';
-    if (!options.uvVariants) return uvLock(version);
+    if (!options.uvVariants) return uvLock(version, artifacts(version));
     return (
-      uvLock(version, 'resolution-markers=["sys_platform == \'linux\'"]\n') +
-      uvPackage('orbit', version + '+other', 'resolution-markers=["sys_platform != \'linux\'"]\n')
+      uvLock(version, 'resolution-markers=["sys_platform == \'linux\'"]\n' + artifacts(version)) +
+      uvPackage(
+        'orbit',
+        version + '+other',
+        'resolution-markers=["sys_platform != \'linux\'"]\n' + artifacts(version + '+other'),
+      )
     );
   };
   const files = (head: boolean) => ({
     ...npmFiles(head, options),
     'pyproject.toml': uvManifest,
     'uv.lock': python(head),
-    '.github/workflows/ci.yml': `jobs:\n  review:\n    steps:\n      - uses: fixture/action${options.actionsSubpath ? '/component' : ''}@${(head ? '2' : '1').repeat(40)}\n`,
+    '.github/workflows/ci.yml': `jobs:\n  review:\n    steps:\n      - uses: ${head && options.actionChange === 'owner' ? 'other-owner/action' : 'fixture/action'}${options.actionsSubpath ? '/component' : ''}@${head && options.actionChange === 'mutable' ? 'v2.0.0' : (head ? '2' : '1').repeat(40)}\n`,
   });
   const fixture = uvMetadataScenario('permission403', {
     files: { base: files(false), head: files(true) },
@@ -258,6 +268,9 @@ export async function upstreamScenario(options: Options = {}) {
     };
     return {
       input,
+      consumerFetch: fixture.fetch,
+      consumerReadLimits: fixture.readLimits,
+      artifactParseLimits: fixture.input.limits,
       npm,
       actions,
       uv,

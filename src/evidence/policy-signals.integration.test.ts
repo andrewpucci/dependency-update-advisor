@@ -59,3 +59,98 @@ test.each([
   if (mode === 'security-fix')
     expect(r.policy.units.flatMap((u) => u.releaseExemptions).length).toBeGreaterThan(0);
 });
+
+test.each([
+  'pypi-provenance',
+  'trust-downgrade',
+  'artifact-mismatch',
+  'artifact-mixed',
+  'yanked',
+] as const)('real uv artifact %s handoff stays bound to the complete locked set', async (mode) => {
+  const r = await policySignalScenario({ mode });
+  if (!r.policy.ok) throw new Error('policy');
+  const uv = r.result.changes.find((c) => c.ecosystem === 'uv')!;
+  expect(r.requests.some((url) => new URL(url).pathname.startsWith('/integrity/'))).toBe(
+    mode !== 'artifact-mismatch',
+  );
+  const findings = r.result.findings.filter((f) => f.memberId === uv.id);
+  if (mode === 'trust-downgrade')
+    expect(
+      findings.some((f) => f.kind === 'supplyChainChange' && f.change === 'trust_downgrade'),
+    ).toBe(true);
+  if (mode === 'pypi-provenance')
+    expect(findings.some((f) => f.kind === 'supplyChainChange' && f.change === 'publisher')).toBe(
+      true,
+    );
+  if (mode === 'artifact-mismatch' || mode === 'artifact-mixed') {
+    expect(uv.evidence.trust.status).not.toBe('available');
+    expect(
+      findings.some((f) => f.kind === 'supplyChainChange' && f.change === 'trust_downgrade'),
+    ).toBe(false);
+  }
+  if (mode === 'yanked')
+    expect(
+      findings.some((f) => f.kind === 'releaseMetadata' && f.deprecated?.marker === 'yanked'),
+    ).toBe(true);
+  expect(
+    r.result.changes
+      .filter((c) => c.ecosystem === 'npm')
+      .every((c) => c.evidence.malware.status === 'available'),
+  ).toBe(true);
+});
+test.each(['owner', 'mutable'] as const)(
+  'actual X1 %s workflow edit yields attributed supply-chain evidence',
+  async (actionChange) => {
+    const r = await policySignalScenario({
+      inventory: { actionChange, extras: true, declaration: true },
+    });
+    if (actionChange === 'mutable')
+      expect(
+        r.result.findings.some(
+          (f) => f.kind === 'supplyChainChange' && f.change === 'mutable_action_ref',
+        ),
+      ).toBe(true);
+    else {
+      const actions = r.result.changes.filter((c) => c.ecosystem === 'actions');
+      expect(actions.some((c) => c.kind === 'addition')).toBe(true);
+      expect(actions.some((c) => c.kind === 'removal')).toBe(true);
+      expect(
+        r.result.findings.some(
+          (f) => f.kind === 'supplyChainChange' && f.change === 'action_identity',
+        ),
+      ).toBe(false);
+    }
+    expect(
+      r.result.changes
+        .filter((c) => 'basis' in c)
+        .every((c) => Object.keys(c.evidence).length === 0),
+    ).toBe(true);
+    expect(
+      r.result.findings
+        .filter((f) => f.kind === 'malware')
+        .every((f) => r.result.changes.find((c) => c.id === f.memberId)?.to),
+    ).toBe(true);
+  },
+);
+test('mixed unsupported Actions and uv variants preserve separate per-member evidence', async () => {
+  const r = await policySignalScenario({
+    inventory: { actionsSubpath: true, uvVariants: true, uvArtifacts: true },
+  });
+  expect(r.result.changes.find((c) => c.ecosystem === 'actions')?.evidence.malware.status).toBe(
+    'unavailable',
+  );
+  expect(r.result.changes.filter((c) => c.ecosystem === 'uv')).toHaveLength(2);
+  expect(
+    r.result.changes
+      .filter((c) => c.ecosystem === 'npm')
+      .every((c) => c.evidence.malware.status === 'available'),
+  ).toBe(true);
+});
+test.each([124, 125])(
+  'rich mixed %s-child research fails closed at independent source/output caps',
+  async (children) => {
+    await expect(
+      policySignalScenario({ inventory: { children, lifecycle: false } }),
+    ).rejects.toThrow('{"kind":"unavailable","reason":"budget"}');
+  },
+);

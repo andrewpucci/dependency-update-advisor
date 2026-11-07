@@ -10,6 +10,7 @@ import { enrichPolicySignals } from '../../src/evidence/policy-signals.js';
 import { validateReviewPacket } from '../../src/schema.js';
 import { formDecisionUnits, evaluateUnitPolicy } from '../../src/units.js';
 import { parseReviewConfig } from '../../src/config.js';
+import { createGithubReadSession } from '../../src/github-read.js';
 
 export type SignalScenarioOptions = {
   mode?:
@@ -22,7 +23,12 @@ export type SignalScenarioOptions = {
     | 'security-fix'
     | 'supply'
     | 'license'
-    | 'deprecated';
+    | 'deprecated'
+    | 'pypi-provenance'
+    | 'trust-downgrade'
+    | 'artifact-mismatch'
+    | 'artifact-mixed'
+    | 'yanked';
   inventory?: Parameters<typeof upstreamScenario>[0];
 };
 const evaluationTime = Date.parse('2026-11-07T00:00:00Z');
@@ -42,8 +48,17 @@ function advisory(ecosystem: string, name: string, malware: boolean) {
 }
 /** Synthetic HTTP with actual collectors/proof acquisition; C2 is explicitly disabled scaffolding. */
 export async function policySignalScenario(options: SignalScenarioOptions = {}) {
-  const fixture = await upstreamScenario(options.inventory),
-    mode = options.mode ?? 'clean',
+  const mode = options.mode ?? 'clean',
+    withArtifacts =
+      options.inventory?.uvArtifacts ||
+      [
+        'pypi-provenance',
+        'trust-downgrade',
+        'artifact-mismatch',
+        'artifact-mixed',
+        'yanked',
+      ].includes(mode);
+  const fixture = await upstreamScenario({ ...options.inventory, uvArtifacts: withArtifacts }),
     requests: string[] = [];
   let phase: 'research' | 'signals' = 'research';
   const fetch = async (url: string, init: RequestInit) => {
@@ -108,18 +123,79 @@ export async function policySignalScenario(options: SignalScenarioOptions = {}) 
       });
     }
     if (u.origin === 'https://pypi.org') {
+      if (parts[1] === 'integrity') {
+        const version = parts[3],
+          filename = parts[4];
+        if (
+          version === '2.0.0' &&
+          (mode === 'trust-downgrade' || (mode === 'artifact-mixed' && filename.endsWith('.whl')))
+        )
+          return Response.json({}, { status: 404 });
+        const sha256 = filename.endsWith('.whl') ? 'b'.repeat(64) : 'a'.repeat(64);
+        const statement = {
+          _type: 'https://in-toto.io/Statement/v1',
+          subject: [{ name: filename, digest: { sha256 } }],
+          predicateType: 'https://docs.pypi.org/attestations/publish/v1',
+        };
+        return Response.json({
+          version: 1,
+          attestation_bundles: [
+            {
+              publisher: {
+                kind: 'GitHub',
+                repository: 'fixture/python',
+                workflow:
+                  mode === 'pypi-provenance' && version === '2.0.0'
+                    ? 'new-release.yml'
+                    : 'release.yml',
+                environment: '',
+              },
+              attestations: [
+                {
+                  version: 1,
+                  envelope: {
+                    statement: Buffer.from(JSON.stringify(statement)).toString('base64'),
+                    signature: 'c2lnbmF0dXJl',
+                  },
+                  verification_material: {
+                    certificate: 'registry-reported-certificate',
+                    transparency_entries: [{}],
+                  },
+                },
+              ],
+            },
+          ],
+        });
+      }
       const raw = await (await fixture.fetch(url, init)).json();
+      const yanked = mode === 'yanked' && parts[3] === '2.0.0';
       return Response.json({
         ...raw,
-        info: { ...raw.info, license_expression: 'MIT', yanked: false },
+        info: {
+          ...raw.info,
+          license_expression: 'MIT',
+          yanked,
+          yanked_reason: yanked ? 'Compatibility regression' : null,
+        },
         urls: [
           {
             filename: parts[2] + '-' + parts[3] + '.tar.gz',
-            digests: { sha256: 'a'.repeat(64) },
+            digests: { sha256: mode === 'artifact-mismatch' ? 'c'.repeat(64) : 'a'.repeat(64) },
             upload_time_iso_8601: time(parts[2], parts[3]),
-            yanked: false,
-            yanked_reason: null,
+            yanked,
+            yanked_reason: yanked ? 'Compatibility regression' : null,
           },
+          ...(withArtifacts
+            ? [
+                {
+                  filename: parts[2] + '-' + parts[3] + '.whl',
+                  digests: { sha256: 'b'.repeat(64) },
+                  upload_time_iso_8601: '2026-10-02T00:00:00Z',
+                  yanked,
+                  yanked_reason: yanked ? 'Compatibility regression' : null,
+                },
+              ]
+            : []),
         ],
       });
     }
@@ -129,7 +205,7 @@ export async function policySignalScenario(options: SignalScenarioOptions = {}) 
   if (open.kind !== 'ready') throw new Error('reader');
   const upstream = await enrichUpstream(fixture.input, open);
   open.reader.close();
-  if (upstream.kind !== 'enriched') throw new Error('upstream');
+  if (upstream.kind !== 'enriched') throw new Error('S2: ' + JSON.stringify(upstream));
   const reviewed = createAdvisoryReader(fixture.advisoryLimits, { now: () => 0, fetch });
   if (reviewed.kind !== 'ready') throw new Error('reader');
   const advisories = await enrichAdvisories(
@@ -139,6 +215,13 @@ export async function policySignalScenario(options: SignalScenarioOptions = {}) 
   reviewed.close();
   if (advisories.kind !== 'enriched') throw new Error('advisories');
   phase = 'signals';
+  const artifacts = withArtifacts
+    ? await createGithubReadSession(
+        { binding: fixture.input.binding, limits: fixture.consumerReadLimits },
+        { fetch: fixture.consumerFetch, now: () => 0 },
+      )
+    : null;
+  if (artifacts && artifacts.kind !== 'ready') throw new Error('artifact session');
   const malware = createMalwareReader(upstreamTestLimits, { now: () => 0, fetch }),
     npm = createNpmRegistryReader(upstreamTestLimits, { now: () => 0, fetch }),
     times = createNpmPublishTimeReader(upstreamTestLimits, { now: () => 0, fetch }),
@@ -159,6 +242,9 @@ export async function policySignalScenario(options: SignalScenarioOptions = {}) 
     actionVersions: upstream.actionVersions,
     evaluationTime,
     limits: { ...upstreamTestLimits, maxFindings: 500 },
+    ...(withArtifacts
+      ? { artifactLimits: { ...fixture.artifactParseLimits, maxArtifacts: 10 } }
+      : {}),
   };
   const result = await enrichPolicySignals(input, {
     malwareReader: malware,
@@ -166,11 +252,13 @@ export async function policySignalScenario(options: SignalScenarioOptions = {}) 
     publishTimeReader: times,
     metadataReader: metadata,
     upstreamReader: actions.reader,
+    artifactSession: artifacts?.kind === 'ready' ? artifacts.session : undefined,
   });
   malware.close();
   times.close();
   metadata.close();
   actions.reader.close();
+  if (artifacts?.kind === 'ready') artifacts.session.close();
   if (result.kind !== 'enriched') throw new Error(JSON.stringify(result));
   const packet = validateReviewPacket(
     {
