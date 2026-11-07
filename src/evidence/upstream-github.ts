@@ -203,11 +203,11 @@ export async function packageCorrespondence(
       : manifest.name;
   requireUpstream(name === target.name && manifest.version === target.version, 'conflict');
 }
-export function releaseDocument(
+export function releaseIdentity(
   data: Readonly<Record<string, unknown>>,
   repository: string,
   tag: string,
-): Omit<UpstreamDocument, 'range'> {
+): { url: string; title: string } {
   requireUpstream(
     Number.isSafeInteger(data.id) && Number(data.id) > 0 && data.tag_name === tag,
     'conflict',
@@ -218,7 +218,6 @@ export function releaseDocument(
       Number.isFinite(Date.parse(data.published_at)),
     'missing',
   );
-  requireUpstream(typeof data.body === 'string' && data.body.trim().length > 0, 'missing');
   const url = 'https://github.com/' + repository + '/releases/tag/' + encodeURIComponent(tag);
   requireUpstream(
     typeof data.html_url === 'string' &&
@@ -231,12 +230,16 @@ export function releaseDocument(
       !new URL(data.html_url).password,
     'conflict',
   );
-  return {
-    kind: 'release',
-    url,
-    title: upstreamText(data.name) ? data.name : tag,
-    text: data.body,
-  };
+  return { url, title: upstreamText(data.name) ? data.name : tag };
+}
+export function releaseDocument(
+  data: Readonly<Record<string, unknown>>,
+  repository: string,
+  tag: string,
+): Omit<UpstreamDocument, 'range'> {
+  const identity = releaseIdentity(data, repository, tag);
+  requireUpstream(typeof data.body === 'string' && data.body.trim().length > 0, 'missing');
+  return { kind: 'release', ...identity, text: data.body };
 }
 export async function targetAtTag(
   target: PackageResearchTarget,

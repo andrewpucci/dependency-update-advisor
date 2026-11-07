@@ -12,6 +12,7 @@ import type { Finding } from '../policy.js';
 import type { NpmInventoryResult, NpmNode } from './npm.js';
 import type { PublicPackageIdentity, ActionVersionMapping } from './advisories.js';
 import { freeze, isPlainObject } from './common.js';
+import { collectActionResearch, type ActionMappingDraft } from './upstream-actions.js';
 import {
   collectTargetRelease,
   collectPackageComparison,
@@ -396,6 +397,53 @@ async function packageResearch(
     attachUpstreamResearch(input, output, change, compared);
   }
 }
+function attachActionMappings(
+  input: UpstreamInput,
+  output: UpstreamEnrichment,
+  change: PacketChange,
+  mappings: readonly ActionMappingDraft[],
+) {
+  for (const mapping of mappings) {
+    const doc = mapping.document,
+      excerpt = upstreamExcerpt(doc.text);
+    const source: PacketSource = {
+      id: upstreamId([input.binding.identity, change.id, mapping.side, 'mapping', doc.url]),
+      kind: 'metadata',
+      ecosystems: ['actions'],
+      memberIds: [change.id],
+      status: excerpt.excerptTruncated ? 'partial' : 'available',
+      reasons: excerpt.excerptTruncated ? ['truncated'] : [],
+      provenance: {
+        kind: 'upstream',
+        url: doc.url,
+        title: upstreamExcerpt(doc.title).excerpt,
+        ...excerpt,
+        subjects: [{ memberId: change.id, side: mapping.side, value: mapping.ref }],
+        range: doc.range,
+      },
+    };
+    retain(output, source);
+    if (!excerpt.excerptTruncated)
+      output.actionVersions.push({
+        memberId: change.id,
+        side: mapping.side,
+        action: mapping.action,
+        ref: mapping.ref,
+        name: mapping.name,
+        version: mapping.version,
+        sourceIds: [source.id],
+      });
+    if (
+      (change.to ? mapping.side === 'head' : mapping.side === 'base') &&
+      change.evidence.upstream.status === 'unavailable'
+    )
+      change.evidence.upstream = {
+        status: 'partial',
+        reasons: ['unsupported'],
+        sourceIds: [source.id],
+      };
+  }
+}
 /** Enrich exact inventory identities; caller retains inventory coverage and relationships separately. */
 export async function enrichUpstream(
   value: unknown,
@@ -425,6 +473,13 @@ export async function enrichUpstream(
     bounds(output, input.limits);
     for (const change of output.changes) {
       if ('basis' in change) continue;
+      if (change.ecosystem === 'actions') {
+        const result = await collectActionResearch(change, dependencies.reader);
+        attachActionMappings(input, output, change, result.mappings);
+        attachUpstreamResearch(input, output, change, result.research);
+        bounds(output, input.limits);
+        continue;
+      }
       const lookups = new Map<string, UpstreamLookup>();
       for (const side of ['base', 'head'] as const) {
         const lookup = await metadata(input, output, change, side, dependencies.reader);
