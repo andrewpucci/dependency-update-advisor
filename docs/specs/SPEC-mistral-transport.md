@@ -4,7 +4,7 @@ Status: approved for execution, 2026-11-07. Supporting contract for
 `analysis-providers` in [the capability map](README.md), scoped to
 [M1 #21](https://github.com/andrewpucci/dependency-update-advisor/issues/21).
 The approved [analysis-provider contract](SPEC-analysis-providers.md) remains
-authoritative. The paid spike retains its separate approval gate.
+authoritative. The spike retains its credential and finish-classification gates.
 
 Confirmed scope decision, 2026-11-07: the user agreed that M1 owns
 provider-neutral request projection and full response validation for one
@@ -35,6 +35,39 @@ Working handoff: `tasks/plan.md` indexes M1.1–M1.9 as
 [#210–#218 under #21](https://github.com/andrewpucci/dependency-update-advisor/issues/21),
 in plan order on the implementation project. Issues record current status.
 M1.1 is a hard prerequisite of transport; preparation/validation is independent.
+
+Paid-spike approval, 2026-11-07: the user approved at most four synthetic
+requests, each capped at 4 MiB, 4,096 completion tokens, and 120 seconds,
+within eight minutes total. The user selected `mistral-medium-latest` and
+authorized the execution environment's `MISTRAL_API_KEY` source. No credential
+value is recorded here. Credential availability and live evidence remain gates;
+this does not authorize another model/source or expanding the probe envelope.
+
+## Implemented Independent Analysis Handoff
+
+M1.2–M1.4 supply the preparation and validation path in `src/analysis/`.
+`prepareAnalysisBatch` returns a frozen owned handle whose `request` is the
+exact bounded chat request and whose `unitIds` retain original T5 identities.
+`preparedSnapshot` is an internal inspection boundary for trusted adapters
+and fixtures; copied handles cannot resolve through its private ownership map.
+
+`receiveAnalysisReply(batch, receive)` captures ownership around a trusted
+adapter's response callback and detaches its returned JSON. The opaque reply
+can be used only with that same handle in `validateAnalysisReply`. No raw body
+or alias map can be supplied to rebind a reply. The validator restores original
+references, normalizes order, preserves per-member context uncertainty and
+truncation, and exposes no partial assessment on failure. C3/T5 still own the
+authoritative PR decision and independently retain deterministic findings.
+
+The alias/projection and validation details live in `projection.ts` and
+`validation.ts`; neither depends on Mistral SDK types. Input-copy work is
+bounded separately to 64 levels, 1,048,576 entries, and 8 MiB of string values
+for the accepted packet plus T5 expansion. Reply-copy entries/string bytes
+are bounded by the selected response ceiling. These are work/retention limits,
+not expanded T4/C2 wire allowances or measured performance thresholds.
+
+No Mistral transport, deadline lifecycle, live provider compatibility, M2
+scheduling/splits, publication, adoption, or cutover is certified by this path.
 
 ## Objective and Scope
 

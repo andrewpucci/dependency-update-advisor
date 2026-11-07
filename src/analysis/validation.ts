@@ -28,6 +28,21 @@ export type ValidatedFollowup = Readonly<{
   blocking: false;
   references: readonly ResolvedReference[];
 }>;
+export type ValidatedCapability = Readonly<{
+  kind: 'new_capability';
+  memberId: string;
+  feature: string;
+  sourceId: string;
+  sourceUrl: string;
+  usefulness: 'use_now' | 'consider_later' | 'not_relevant';
+  action: string | null;
+  contextId: string | null;
+  contextPath: string | null;
+  contextStatus: BatchSnapshot['inventory']['packet']['context']['status'];
+  contextReasons: readonly string[];
+  contextExcerptTruncated: boolean | null;
+  rationale: string;
+}>;
 export type ValidatedAssessment = Readonly<{
   unitId: string;
   verdict: Verdict;
@@ -35,7 +50,7 @@ export type ValidatedAssessment = Readonly<{
   findingIds: readonly string[];
   blockers: readonly ValidatedBlocker[];
   followups: readonly ValidatedFollowup[];
-  newFunctionality: readonly never[];
+  newFunctionality: readonly ValidatedCapability[];
 }>;
 export type AnalysisResult =
   | Readonly<{
@@ -100,7 +115,10 @@ function member(scope: Scope, alias: unknown) {
   check(entry && scope.unit.memberIds.includes(entry.id), 'reference');
   return entry;
 }
-function sourceReference(value: unknown, scope: Scope): ResolvedReference {
+function sourceReference(
+  value: unknown,
+  scope: Scope,
+): Extract<ResolvedReference, { kind: 'source' }> {
   const ref = object(value, ['kind', 'sourceId', 'memberId', 'side', 'category']);
   const change = member(scope, ref.memberId);
   const source = scope.snapshot.sources.find((entry) => entry.alias === ref.sourceId);
@@ -146,7 +164,10 @@ function sourceReference(value: unknown, scope: Scope): ResolvedReference {
     url,
   };
 }
-function contextReference(value: unknown, scope: Scope): ResolvedReference {
+function contextReference(
+  value: unknown,
+  scope: Scope,
+): Extract<ResolvedReference, { kind: 'context' }> {
   const ref = object(value, ['kind', 'contextId', 'memberId']);
   const change = member(scope, ref.memberId);
   const fact = scope.snapshot.contexts.find((entry) => entry.alias === ref.contextId);
@@ -231,6 +252,67 @@ function followup(value: unknown, scope: Scope): ValidatedFollowup {
 }
 
 const verdictRanks = { merge: 0, merge_with_followups: 1, do_not_merge: 2 } as const;
+function capability(value: unknown, scope: Scope): ValidatedCapability {
+  const entry = object(value, [
+    'kind',
+    'memberId',
+    'feature',
+    'sourceId',
+    'usefulness',
+    'action',
+    'contextId',
+    'rationale',
+  ]);
+  check(entry.kind === 'new_capability');
+  check(
+    entry.usefulness === 'use_now' ||
+      entry.usefulness === 'consider_later' ||
+      entry.usefulness === 'not_relevant',
+  );
+  const change = member(scope, entry.memberId);
+  check(scope.unit.kind !== 'direct_group' || scope.unit.anchorId === change.id, 'reference');
+  const source = sourceReference(
+    {
+      kind: 'source',
+      sourceId: entry.sourceId,
+      memberId: entry.memberId,
+      side: 'head',
+      category: 'upstream',
+    },
+    scope,
+  );
+  check(source.kind === 'source' && source.url !== null, 'reference');
+  const action = entry.action === null ? null : text(entry.action, scope.snapshot.limits.textBytes);
+  const context =
+    entry.contextId === null
+      ? null
+      : contextReference(
+          { kind: 'context', contextId: entry.contextId, memberId: entry.memberId },
+          scope,
+        );
+  check(!context || context.kind === 'context', 'reference');
+  if (entry.usefulness !== 'not_relevant') check(action && context, 'reference');
+  const contextState = scope.snapshot.inventory.packet.context;
+  const dependency = contextState.dependencies.find((item) => item.id === change.id);
+  const fact = scope.snapshot.contexts.find((item) => item.alias === entry.contextId);
+  return {
+    kind: 'new_capability',
+    memberId: change.id,
+    feature: text(entry.feature, scope.snapshot.limits.featureBytes),
+    sourceId: source.sourceId,
+    sourceUrl: source.url,
+    usefulness: entry.usefulness,
+    action,
+    contextId: context?.contextId ?? null,
+    contextPath: context?.path ?? null,
+    contextStatus:
+      dependency?.status ?? (contextState.status === 'disabled' ? 'disabled' : 'unavailable'),
+    contextReasons: dependency?.reasons ?? contextState.reasons,
+    contextExcerptTruncated: fact?.value.excerptTruncated ?? null,
+    rationale: text(entry.rationale, scope.snapshot.limits.textBytes),
+  };
+}
+
 function assessment(value: unknown, snapshot: BatchSnapshot): ValidatedAssessment {
   const entry = object(value, [
     'unitId',
@@ -267,7 +349,7 @@ function assessment(value: unknown, snapshot: BatchSnapshot): ValidatedAssessmen
     verdict === 'merge_with_followups' ? followups.length > 0 : followups.length === 0,
     'policy',
   );
-  check(list(entry.newFunctionality, 1).length === 0);
+  const newFunctionality = list(entry.newFunctionality, 1).map((item) => capability(item, scope));
   return {
     unitId: unit.id,
     verdict,
@@ -275,7 +357,7 @@ function assessment(value: unknown, snapshot: BatchSnapshot): ValidatedAssessmen
     findingIds,
     blockers,
     followups,
-    newFunctionality: [],
+    newFunctionality,
   };
 }
 
