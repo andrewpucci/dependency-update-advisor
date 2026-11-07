@@ -32,8 +32,8 @@ retains remaining gates. W1/W2 must supply bounded reads and exclusive claims
 before T2/T3 writes. [S3 #53](docs/specs/SPEC-policy-signals.md) is implemented;
 [final review #207](https://github.com/andrewpucci/dependency-update-advisor/issues/207)
 records verification and resolved review findings, pending review/merge.
-M2/O1/W2, C2 handoffs, A1 packaging, adoption, parity, and cutover remain gates.
-Unit tests do not certify these integrations.
+[M1 #21](docs/specs/SPEC-mistral-transport.md): execution approved; spike gated.
+M2/O1/W2, C2 handoffs, A1, adoption, parity, and cutover need integration proof.
 
 - The [capability map](docs/specs/README.md) indexes module and contract status.
 - The [ADR guide](docs/adr/README.md) indexes durable architecture decisions.
