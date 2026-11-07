@@ -24,12 +24,13 @@ authorizes S2.1–S2.10 in order, per-task commits, automatic verification
 checkpoints, issue/project updates, and one PR closing #20 and #183–#192 on
 merge. Merge itself, consumer adoption, parity and cutover remain separate.
 
-Proposed implementation handoff: [#183–#192 under #20](https://github.com/andrewpucci/dependency-update-advisor/issues/20)
+Implementation handoff: [#183–#192 under #20](https://github.com/andrewpucci/dependency-update-advisor/issues/20)
 cover public metadata proofs, target notes, comparisons, Actions mappings,
 version ordering, range/changelog fallback, bounded outcome preservation,
-mixed integration, and exact-revision verification. They are linked in plan
-order on the implementation project with Status `Todo`. The plan proposes
-exact ordering-library pins, now approved by the execution instruction above.
+mixed integration, and exact-revision verification. The implementation is
+pending review and merge; [verification #192](https://github.com/andrewpucci/dependency-update-advisor/issues/192)
+records revision-specific checks and remaining integration gates. These tasks
+stay open until the single closing PR merges.
 
 ## Objective and Scope
 
@@ -95,10 +96,18 @@ stays active.
    nor declares execution successful. W1/W2 must carry bounded fallback
    diagnostics to later consumers rather than silently discarding them.
 
-The plan must name the exported enrichment/reader interfaces and adapters
-against actual collector and S1 exports. It must distinguish S2 network
-budgets from D1's consumer-repository reads. No inventory or packet-schema
-amendment is proposed.
+The implemented entry points are `enrichUpstream(value, { reader })` in
+`src/evidence/upstream.ts` and `createUpstreamReader(limits, dependencies)` in
+`src/evidence/upstream-read.ts`. `UpstreamInput` accepts the validated binding,
+deep-readonly collector changes/sources/findings, explicit `UpstreamLimits`,
+and the authentic `NpmInventoryResult` inventory when npm proofs are needed.
+`UpstreamResult` distinguishes immutable `enriched`, `invalid`, and fixed-reason
+`unavailable` results. Enrichment adds `attempts`, `publicIdentities`, and
+`actionVersions` alongside the preserved collector data. Pass these proofs
+and enriched sources to S1's `enrichAdvisories`; they use its existing types.
+Close the reader after collection to release cancellation and timer resources.
+S2 research budgets are independent of D1 consumer-repository reads. No
+inventory or packet-schema amendment is implemented.
 
 ## Eligible Sources and Identity
 
@@ -165,8 +174,9 @@ release is not absence of a tag or change.
 
 For ordered release filtering, use correct ecosystem ordering, including npm
 prereleases and Python pre/dev/post/local versions. Lexical sorting, dropping
-qualifiers, and comparing only numeric prefixes are prohibited. The plan must
-select and document the tested ordering implementation before execution.
+qualifiers, and comparing only numeric prefixes are prohibited. The approved
+implementation uses exact `semver@7.8.6` and `@renovatebot/pep440@6.0.0` pins;
+validation and comparisons leave recorded inventory values unchanged.
 Until an ordering form is supported, retain exact target research and mark
 range filtering `unsupported`; do not approximate. Upgrades use the interval
 after the old version through the proposed version. Downgrades and changed
@@ -281,9 +291,10 @@ source cannot independently establish complete upstream coverage.
 ## Network, Work, and Privacy Bounds
 
 Use Node.js 24 ESM, strict TypeScript, the pinned repository toolchain, and
-injected fetch/clock/cancellation dependencies. No runtime dependency is
-selected by this specification. New ordering dependencies need approval during
-planning; do not add a homegrown approximation to avoid that decision.
+injected fetch/clock/cancellation dependencies. The execution approval selected
+`semver@7.8.6`, `@renovatebot/pep440@6.0.0`, and development-only
+`@types/semver@7.8.0`. Further runtime dependencies need approval; do not add
+a homegrown ordering approximation to avoid that decision.
 
 Require positive safe-integer caller limits for requests, pages, tag candidates,
 peeling depth, streamed response and cumulative bytes, parsed JSON depth and
@@ -338,11 +349,15 @@ Record installation separately and report SHA, working changes, tool versions,
 commands, outcomes, and checks not run in the issue or PR. Distinguish the
 CI merge SHA from the PR head. No build command exists yet; packaging is A1.
 
-Proposed locations, with file splits selected during planning:
+Implemented locations:
 
 ```text
 src/evidence/upstream.ts                 → validation, enrichment, fallback handoff
 src/evidence/upstream-read.ts            → bounded fixed-host reads and attribution
+src/evidence/upstream-github.ts          → immutable manifests, releases, comparisons
+src/evidence/upstream-actions.ts         → exact ref resolution and S1 version mappings
+src/evidence/upstream-range.ts           → contextual range and changelog fallbacks
+src/evidence/upstream-version.ts         → strict ecosystem version ordering
 src/evidence/upstream*.test.ts           → source, range, mapping, and failure fixtures
 src/evidence/upstream.integration.test.ts → real collector/S1/T4/T5/C3 integration
 tests/parity/upstream.ts                 → synthetic shared scenarios
@@ -394,9 +409,20 @@ consumer adoption, parity, or cutover.
   treat PR prose as proof, leak private identity/content, imply an unavailable
   source was reviewed, or lower T4/fail-secure gates.
 
-No further product-scope question is required for the approved scope. Planning must
-select the tested version-ordering implementation, exact tag/component
-correspondence rules, and explicit caller budget allocation before execution.
-These selections do not authorize broader hosts, guessed mappings, or a
-packet-schema amendment. Execution follows the approved implementation plan;
-remaining integration and cutover gates are not satisfied by local tests.
+No further product-scope question is required for the approved scope. Supported
+package correspondence requires an immutable static `package.json` or
+`pyproject.toml` identity at the selected commit. Repository-root packages use
+exact `vVERSION`/`VERSION` candidates; directory packages require
+`NAME@VERSION` tags and the directory's matching manifest. Dynamic Python
+metadata and unproven shared release conventions remain unsupported. Actions
+root mappings require complete bounded enumeration and a unique concrete
+SemVer release at the exact recorded ref's commit; subpath and reusable-workflow
+component mappings remain unsupported without additional correspondence.
+
+Trusted orchestration must allocate every `UpstreamLimits` field explicitly;
+test budgets are fixture settings, not workflow defaults. Live transport,
+workflow budget/diagnostic integration, S3 collection, C2 context, model
+analysis, rendering, publication, packaging, consumer adoption, parity, and
+cutover remain separate gates. Local mixed fixtures exercise actual
+D1/N1/N2/X1/U1/U2/S2/S1/T4/T5/C3 handoffs with synthetic S3 scaffolding; they
+do not certify these remaining gates or authorize retiring the old reviewer.
