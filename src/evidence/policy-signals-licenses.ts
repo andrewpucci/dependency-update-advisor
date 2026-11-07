@@ -50,6 +50,36 @@ export function canonicalLicense(
   });
 }
 type LicenseSide = { license: Observation<string | null>; url: string | null };
+function licenseSide(
+  input: PolicySignalInput,
+  output: SignalEnrichment,
+  change: PacketChange,
+  side: 'base' | 'head',
+  raw?: LicenseSide,
+): { value: string | null; source: PacketSource } | undefined {
+  const fact =
+    raw?.license.kind === 'known'
+      ? canonicalLicense(raw.license.value, {
+          maxBytes: PACKET_LIMITS.textBytes,
+          maxTokens: input.limits.maxJsonEntries,
+          maxDepth: input.limits.maxJsonDepth,
+        })
+      : (raw?.license ?? {
+          kind: 'unchecked' as const,
+          reason: 'unsupported' as const,
+        });
+  const source = recordSignal(
+    input,
+    output,
+    change,
+    side,
+    'license',
+    fact.kind === 'known' && raw?.url ? { url: raw.url, value: { license: fact.value } } : null,
+    fact.kind === 'unchecked' ? fact.reason : 'missing',
+  );
+  if (fact.kind === 'known' && source.status === 'available') return { value: fact.value, source };
+  return undefined;
+}
 export function collectLicenseSignals(
   input: PolicySignalInput,
   output: SignalEnrichment,
@@ -61,26 +91,7 @@ export function collectLicenseSignals(
   > = {};
   for (const side of ['base', 'head'] as const) {
     if (!(side === 'base' ? change.from : change.to)) continue;
-    const raw = sides[side],
-      fact =
-        raw?.license.kind === 'known'
-          ? canonicalLicense(raw.license.value, {
-              maxBytes: PACKET_LIMITS.textBytes,
-              maxTokens: input.limits.maxJsonEntries,
-              maxDepth: input.limits.maxJsonDepth,
-            })
-          : (raw?.license ?? { kind: 'unchecked' as const, reason: 'unsupported' as const });
-    const source = recordSignal(
-      input,
-      output,
-      change,
-      side,
-      'license',
-      fact.kind === 'known' && raw?.url ? { url: raw.url, value: { license: fact.value } } : null,
-      fact.kind === 'unchecked' ? fact.reason : 'missing',
-    );
-    if (fact.kind === 'known' && source.status === 'available')
-      normalized[side] = { value: fact.value, source };
+    normalized[side] = licenseSide(input, output, change, side, sides[side]);
   }
   const a = normalized.base,
     b = normalized.head;

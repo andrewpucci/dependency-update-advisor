@@ -80,14 +80,11 @@ async function releaseTime(input: PolicySignalInput, change: PacketChange, reade
     commit: observed.sha,
   };
 }
-export async function collectActionsPolicySignals(
+async function observeRelease(
   input: PolicySignalInput,
-  output: SignalEnrichment,
   change: PacketChange,
   reader?: UpstreamReader,
 ) {
-  attachActionInventoryFindings(input, output, change);
-  const side = change.to ? 'head' : 'base';
   let known: Awaited<ReturnType<typeof releaseTime>> | null = null,
     reason: import('../schema.js').EvidenceReason = 'unsupported';
   if (reader)
@@ -96,6 +93,31 @@ export async function collectActionsPolicySignals(
     } catch (error) {
       reason = upstreamFailureReason(error);
     }
+  return { known, reason };
+}
+function unsupportedSignals(
+  input: PolicySignalInput,
+  output: SignalEnrichment,
+  change: PacketChange,
+  side: 'base' | 'head',
+) {
+  for (const category of ['deprecation', 'trust', 'publisher'] as const) {
+    const sources = [];
+    for (const s of ['base', 'head'] as const)
+      if ((s === 'base' ? change.from : change.to) && (category !== 'deprecation' || s === side))
+        sources.push(recordSignal(input, output, change, s, category, null));
+    attachSignalCoverage(change, category, sources);
+  }
+}
+export async function collectActionsPolicySignals(
+  input: PolicySignalInput,
+  output: SignalEnrichment,
+  change: PacketChange,
+  reader?: UpstreamReader,
+) {
+  attachActionInventoryFindings(input, output, change);
+  const side = change.to ? 'head' : 'base';
+  const { known, reason } = await observeRelease(input, change, reader);
   const source = recordSignal(
     input,
     output,
@@ -118,11 +140,5 @@ export async function collectActionsPolicySignals(
       remediation: ['Review the release and configured release-age window.'],
       validation: ['Recheck the original ref, selected tag and release time.'],
     });
-  for (const category of ['deprecation', 'trust', 'publisher'] as const) {
-    const sources = [];
-    for (const s of ['base', 'head'] as const)
-      if ((s === 'base' ? change.from : change.to) && (category !== 'deprecation' || s === side))
-        sources.push(recordSignal(input, output, change, s, category, null));
-    attachSignalCoverage(change, category, sources);
-  }
+  unsupportedSignals(input, output, change, side);
 }
