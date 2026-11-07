@@ -290,3 +290,29 @@ test('an optional adapter throwing a bounded failure cannot fail completed requi
       ),
   ).toBe(true);
 });
+test('a removal explains proposed-only signals as unsupported, not budget exhaustion', async () => {
+  const { input } = await fixture(true);
+  const malware = createMalwareReader(input.limits, {
+    now: () => 0,
+    fetch: async () => Response.json([]),
+  });
+  if (malware.kind !== 'ready') throw new Error('reader');
+  const out = await enrichPolicySignals(input, { malwareReader: malware });
+  malware.close();
+  if (out.kind !== 'enriched') throw new Error(JSON.stringify(out));
+  const removals = out.changes.filter((c) => !('basis' in c) && c.from && !c.to);
+  expect(removals.length).toBeGreaterThan(0);
+  for (const c of removals) {
+    expect(c.evidence.deprecation).toEqual({
+      status: 'unavailable',
+      reasons: ['unsupported'],
+      sourceIds: [],
+    });
+    for (const category of ['publishTime', 'deprecation', 'trust', 'publisher', 'license'])
+      expect(
+        out.attempts.some((a) => a.memberId === c.id && a.category === category),
+        category,
+      ).toBe(true);
+  }
+  expect(out.attempts.some((a) => a.reasons.includes('budget'))).toBe(false);
+});

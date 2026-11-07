@@ -22,6 +22,18 @@ export function observe<T>(read: () => T): Observation<T> {
   }
 }
 export type OptionalCategory = 'publishTime' | 'deprecation' | 'trust' | 'publisher' | 'license';
+const REASON_CODE_UNITS = 350;
+/** Bounds a registry reason by UTF-16 units without splitting a surrogate pair. */
+export function boundedReason(value: string): string {
+  const clean = value.replace(/[\p{Cc}\p{Cs}]/gu, ' ');
+  if (clean.length <= REASON_CODE_UNITS) return clean;
+  let kept = '';
+  for (const point of clean) {
+    if (kept.length + point.length > REASON_CODE_UNITS) break;
+    kept += point;
+  }
+  return kept + ' [reason truncated]';
+}
 type KnownSignal = { url: string; value: unknown; reasons?: EvidenceReason[]; bothSides?: boolean };
 function signalSubject(change: PacketChange, side: 'base' | 'head') {
   const instance = side === 'base' ? change.from : change.to;
@@ -133,7 +145,7 @@ export function attachSignalCoverage(
   const reasons = [...new Set(sources.flatMap((s) => s.reasons))];
   change.evidence[category] = {
     status: reasons.length
-      ? sources.some((s) => s.status === 'available')
+      ? sources.some((s) => s.status !== 'unavailable')
         ? 'partial'
         : 'unavailable'
       : 'available',
@@ -198,6 +210,28 @@ export function reserveOptionalSignals(input: PolicySignalInput, output: SignalE
   }
   signalBounds(input, output);
 }
+/** A collector with no side to observe, e.g. proposed-only deprecation for a removal. */
+function explainUnattempted(output: SignalEnrichment, change: PacketChange) {
+  for (const category of OPTIONAL_CATEGORIES) {
+    if (output.attempts.some((a) => a.memberId === change.id && a.category === category)) continue;
+    if (category !== 'license')
+      change.evidence[category] = {
+        status: 'unavailable',
+        reasons: ['unsupported'],
+        sourceIds: [],
+      };
+    output.attempts.push({
+      memberId: change.id,
+      side: change.to ? 'head' : 'base',
+      category,
+      url: null,
+      outcome: 'skipped',
+      reasons: ['unsupported'],
+      sourceIds: [],
+      truncated: false,
+    });
+  }
+}
 export async function runOptionalSignals(
   input: PolicySignalInput,
   output: SignalEnrichment,
@@ -215,6 +249,7 @@ export async function runOptionalSignals(
   );
   try {
     await collect();
+    explainUnattempted(output, change);
     signalBounds(input, output);
     return;
   } catch (error) {

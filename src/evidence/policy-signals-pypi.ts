@@ -3,14 +3,18 @@ import { isPlainObject } from './common.js';
 import { advisoryCheck, advisoryText, copyAdvisoryData } from './advisory-read.js';
 import { isDeepStrictEqual } from 'node:util';
 import { PACKET_LIMITS } from '../schema.js';
-import type { GithubReadSession } from '../github-read.js';
-import { readUvArtifacts, type UvArtifact } from './policy-signals-uv-artifacts.js';
+import {
+  readUvArtifacts,
+  type LockfileReader,
+  type UvArtifact,
+} from './policy-signals-uv-artifacts.js';
 import { supplyChainFinding, type Publisher } from './policy-signals-npm.js';
 import { publishTimestamp } from './npm-publish-times.js';
 import { resolveAdvisoryTarget } from './advisories.js';
 import type { PolicyMetadataReader } from './policy-signals-read.js';
 import {
   observe,
+  boundedReason,
   recordSignal,
   attachSignalCoverage,
   retainSignalFinding,
@@ -87,13 +91,7 @@ export function pypiReleaseFacts(value: unknown, evaluationTime: number): PyPIRe
       const reason = reasons[0] as string | undefined;
       return {
         marker: 'yanked' as const,
-        ...(reason !== undefined
-          ? {
-              reason:
-                reason.replace(/[\p{Cc}\p{Cs}]/gu, ' ').slice(0, 350) +
-                (reason.length > 350 ? ' [reason truncated]' : ''),
-            }
-          : {}),
+        ...(reason !== undefined ? { reason: boundedReason(reason) } : {}),
       };
     }),
     license: observe(() => {
@@ -166,6 +164,9 @@ function pypiTimeSource(
     ...(t.kind === 'known' && source.status === 'available' ? { publishedAt: t.value } : {}),
   };
 }
+function findingYank(value: { marker: 'yanked'; reason?: string }) {
+  return value.reason === '' ? { marker: value.marker } : value;
+}
 function pypiReleaseFindings(
   input: PolicySignalInput,
   output: SignalEnrichment,
@@ -188,7 +189,8 @@ function pypiReleaseFindings(
   attachSignalCoverage(change, 'deprecation', [dep]);
   for (const [value, ref] of [
     [t.kind === 'known' ? { publishedAt: t.value } : null, source],
-    [d.kind === 'known' && d.value ? { deprecated: d.value } : null, dep],
+    // T4 finding text must be non-empty; the source excerpt still retains an empty reason.
+    [d.kind === 'known' && d.value ? { deprecated: findingYank(d.value) } : null, dep],
   ] as const) {
     if (value && ref.status === 'available')
       retainSignalFinding(output, {
@@ -208,7 +210,7 @@ export async function collectPyPIReleaseSignals(
   output: SignalEnrichment,
   change: PacketChange,
   reader?: PolicyMetadataReader,
-  session?: GithubReadSession,
+  session?: LockfileReader,
 ): Promise<PyPIReleaseSides> {
   const sides: PyPIReleaseSides = {};
   for (const side of ['base', 'head'] as const) {
@@ -403,7 +405,7 @@ async function collectArtifactPublishing(
   instance: { name: string; version: string; source: unknown },
   files: Observation<PyPIFile[]> | undefined,
   reader?: PolicyMetadataReader,
-  session?: GithubReadSession,
+  session?: LockfileReader,
 ): Promise<ArtifactPublishingSources> {
   const collected: ArtifactPublishingSources = { trust: [], publisher: [], observations: [] };
   const artifacts = await readUvArtifacts(input, change, side, session, input.artifactLimits);
@@ -541,7 +543,7 @@ async function collectPyPIPublishing(
   change: PacketChange,
   releases: PyPIReleaseSides,
   reader?: PolicyMetadataReader,
-  session?: GithubReadSession,
+  session?: LockfileReader,
 ) {
   const sides: Partial<Record<'base' | 'head', PyPIPublishingSide>> = {};
   for (const side of ['base', 'head'] as const) {

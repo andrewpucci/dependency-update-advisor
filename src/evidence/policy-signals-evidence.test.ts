@@ -36,3 +36,28 @@ test('same observations deduplicate and oversized optional facts become explicit
   attachSignalCoverage(change, 'publisher', [a, truncated]);
   expect(change.evidence.publisher.status).toBe('partial');
 });
+test('coverage from only partially known sources is partial, not unavailable', async () => {
+  const f = await upstreamScenario(),
+    change = structuredClone(f.input.changes[0]) as SignalEnrichment['changes'][number];
+  const input = {
+    ...f.input,
+    evaluationTime: 0,
+    limits: { ...f.advisoryLimits, maxAttempts: 100 },
+  } as PolicySignalInput;
+  const out: SignalEnrichment = {
+    kind: 'enriched',
+    binding: input.binding,
+    changes: [change],
+    sources: [],
+    findings: [],
+    attempts: [],
+  };
+  const partial = recordSignal(input, out, change, 'head', 'trust', {
+    url: 'https://registry.npmjs.org/fixture/2.0.0',
+    value: { trustedPublishing: true },
+    reasons: ['unsupported'],
+  });
+  expect(partial.status).toBe('partial');
+  attachSignalCoverage(change, 'trust', [partial]);
+  expect(change.evidence.trust).toMatchObject({ status: 'partial', reasons: ['unsupported'] });
+});

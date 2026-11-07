@@ -8,6 +8,19 @@ import { isPlainObject, byCodeUnit } from './common.js';
 import { observe, type Observation } from './policy-signals.js';
 
 export type UvArtifact = { filename: string; sha256: string };
+export type LockfileReader = Pick<GithubReadSession, 'readFile'>;
+/** Members sharing a lockfile reuse one budgeted read per side instead of re-reading it. */
+export function cacheLockfileReads(session: LockfileReader): LockfileReader {
+  const reads = new Map<string, ReturnType<LockfileReader['readFile']>>();
+  return {
+    readFile: (request) => {
+      const key = JSON.stringify(request);
+      const read = reads.get(key) ?? session.readFile(request);
+      reads.set(key, read);
+      return read;
+    },
+  };
+}
 export type ArtifactLimits = UvParseLimits & { maxArtifacts: number };
 export function artifactLimits(value: unknown): ArtifactLimits {
   advisoryCheck(isPlainObject(value));
@@ -30,7 +43,7 @@ export async function readUvArtifacts(
   input: Pick<AdvisoryInput, 'binding' | 'sources'>,
   change: AdvisoryInput['changes'][number],
   side: 'base' | 'head',
-  session?: Pick<GithubReadSession, 'readFile'>,
+  session?: LockfileReader,
   limits?: ArtifactLimits,
 ): Promise<Observation<UvArtifact[]>> {
   if (!session || !limits) return { kind: 'unchecked', reason: 'unsupported' };

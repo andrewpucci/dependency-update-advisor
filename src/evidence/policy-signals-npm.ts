@@ -7,6 +7,7 @@ import { advisoryCheck, advisoryText } from './advisory-read.js';
 import { isPlainObject, byCodeUnit } from './common.js';
 import {
   observe,
+  boundedReason,
   recordSignal,
   attachSignalCoverage,
   retainSignalFinding,
@@ -47,15 +48,10 @@ export function npmPublishingFacts(value: unknown): NpmPublishingFacts {
     deprecated: observe(() => {
       advisoryCheck(data.deprecated === undefined || typeof data.deprecated === 'string');
       if (!data.deprecated) return null;
-      const reason = data.deprecated.replace(/[\p{Cc}\p{Cs}]/gu, ' ').slice(0, 350);
-      return {
-        marker: 'deprecated' as const,
-        reason: reason + (data.deprecated.length > 350 ? ' [reason truncated]' : ''),
-      };
+      return { marker: 'deprecated' as const, reason: boundedReason(data.deprecated) };
     }),
     trustedPublishing: observe(() => {
-      if (data._npmUser === undefined) return false;
-      advisoryCheck(isPlainObject(data._npmUser));
+      advisoryCheck(isPlainObject(data._npmUser), 'missing');
       if (data._npmUser.trustedPublisher === undefined) return false;
       return account(data).kind === 'trusted';
     }),

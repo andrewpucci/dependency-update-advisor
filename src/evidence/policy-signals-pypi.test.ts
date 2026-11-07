@@ -122,65 +122,71 @@ test.each([
   const f = pypiReleaseFacts({ info: {}, urls }, evaluationTime);
   expect(f.publishedAt.kind === 'unchecked' || f.deprecated.kind === 'unchecked').toBe(true);
 });
-test('exact PyPI release evidence passes T4 with earliest upload and yank findings', async () => {
-  const f = await upstreamScenario();
-  const ur = createUpstreamReader(upstreamTestLimits, { now: () => 0, fetch: f.fetch });
-  if (ur.kind !== 'ready') throw new Error('reader');
-  const upstream = await enrichUpstream(f.input, ur);
-  ur.reader.close();
-  if (upstream.kind !== 'enriched') throw new Error('upstream');
-  const metadata = createPolicySignalReader(upstreamTestLimits, {
-    now: () => 0,
-    fetch: async (url) => {
-      const parts = new URL(url).pathname.split('/');
-      return Response.json({
-        info: {
-          name: parts[2],
-          version: parts[3],
-          yanked: true,
-          yanked_reason: 'Compatibility regression',
-        },
-        urls: [
-          { ...file('2026-11-01T00:00:00Z', true), yanked_reason: 'Compatibility regression' },
-        ],
-      });
-    },
-  });
-  const malware = createMalwareReader(f.advisoryLimits, {
-    now: () => 0,
-    fetch: async () => Response.json([]),
-  });
-  if (metadata.kind !== 'ready' || malware.kind !== 'ready') throw new Error('reader');
-  const out = await enrichPolicySignals(
-    { ...upstream, evaluationTime, limits: { ...f.advisoryLimits, maxAttempts: 1000 } },
-    { malwareReader: malware, metadataReader: metadata },
-  );
-  metadata.close();
-  malware.close();
-  if (out.kind !== 'enriched') throw new Error(JSON.stringify(out));
-  expect(
-    out.changes
-      .filter((c) => c.ecosystem === 'uv')
-      .every(
-        (c) =>
-          c.evidence.publishTime.status === 'available' &&
-          c.evidence.deprecation.status === 'available',
-      ),
-  ).toBe(true);
-  expect(
-    out.findings.some((f) => f.kind === 'releaseMetadata' && f.deprecated?.marker === 'yanked'),
-  ).toBe(true);
-  const packet = validateReviewPacket(
-    {
-      version: 1,
-      ...f.expected,
-      changes: out.changes,
-      sources: out.sources,
-      findings: out.findings,
-      coverage: f.coverage,
-      relationships: f.relationships,
-    },
-    f.expected,
-  );
-  expect(packet.ok, JSON.stringify(packet)).toBe(true);
-});
+test.each([
+  ['a reason', 'Compatibility regression'],
+  ['an empty reason', ''],
+  ['an emoji at the truncation boundary', 'x'.repeat(349) + '\u{1F600} tail'],
+  ['an astral-heavy long reason', '\u{1F600}'.repeat(400)],
+])(
+  'exact PyPI release evidence with %s passes T4 with earliest upload and yank findings',
+  async (_label, reason) => {
+    const f = await upstreamScenario();
+    const ur = createUpstreamReader(upstreamTestLimits, { now: () => 0, fetch: f.fetch });
+    if (ur.kind !== 'ready') throw new Error('reader');
+    const upstream = await enrichUpstream(f.input, ur);
+    ur.reader.close();
+    if (upstream.kind !== 'enriched') throw new Error('upstream');
+    const metadata = createPolicySignalReader(upstreamTestLimits, {
+      now: () => 0,
+      fetch: async (url) => {
+        const parts = new URL(url).pathname.split('/');
+        return Response.json({
+          info: {
+            name: parts[2],
+            version: parts[3],
+            yanked: true,
+            yanked_reason: reason,
+          },
+          urls: [{ ...file('2026-11-01T00:00:00Z', true), yanked_reason: reason }],
+        });
+      },
+    });
+    const malware = createMalwareReader(f.advisoryLimits, {
+      now: () => 0,
+      fetch: async () => Response.json([]),
+    });
+    if (metadata.kind !== 'ready' || malware.kind !== 'ready') throw new Error('reader');
+    const out = await enrichPolicySignals(
+      { ...upstream, evaluationTime, limits: { ...f.advisoryLimits, maxAttempts: 1000 } },
+      { malwareReader: malware, metadataReader: metadata },
+    );
+    metadata.close();
+    malware.close();
+    if (out.kind !== 'enriched') throw new Error(JSON.stringify(out));
+    expect(
+      out.changes
+        .filter((c) => c.ecosystem === 'uv')
+        .every(
+          (c) =>
+            c.evidence.publishTime.status === 'available' &&
+            c.evidence.deprecation.status === 'available',
+        ),
+    ).toBe(true);
+    expect(
+      out.findings.some((f) => f.kind === 'releaseMetadata' && f.deprecated?.marker === 'yanked'),
+    ).toBe(true);
+    const packet = validateReviewPacket(
+      {
+        version: 1,
+        ...f.expected,
+        changes: out.changes,
+        sources: out.sources,
+        findings: out.findings,
+        coverage: f.coverage,
+        relationships: f.relationships,
+      },
+      f.expected,
+    );
+    expect(packet.ok, JSON.stringify(packet)).toBe(true);
+  },
+);

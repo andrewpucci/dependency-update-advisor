@@ -222,6 +222,17 @@ export async function policySignalScenario(options: SignalScenarioOptions = {}) 
       )
     : null;
   if (artifacts && artifacts.kind !== 'ready') throw new Error('artifact session');
+  const lockReads: unknown[] = [];
+  const artifactSession =
+    artifacts?.kind === 'ready'
+      ? {
+          ...artifacts.session,
+          readFile: (request: unknown) => {
+            lockReads.push(request);
+            return artifacts.session.readFile(request);
+          },
+        }
+      : undefined;
   const malware = createMalwareReader(upstreamTestLimits, { now: () => 0, fetch }),
     npm = createNpmRegistryReader(upstreamTestLimits, { now: () => 0, fetch }),
     times = createNpmPublishTimeReader(upstreamTestLimits, { now: () => 0, fetch }),
@@ -252,7 +263,7 @@ export async function policySignalScenario(options: SignalScenarioOptions = {}) 
     publishTimeReader: times,
     metadataReader: metadata,
     upstreamReader: actions.reader,
-    artifactSession: artifacts?.kind === 'ready' ? artifacts.session : undefined,
+    artifactSession,
   });
   malware.close();
   times.close();
@@ -289,5 +300,16 @@ export async function policySignalScenario(options: SignalScenarioOptions = {}) 
     ),
     evaluationTime,
   );
-  return { fixture, upstream, advisories, result, packet, units, policy, requests, input };
+  return {
+    fixture,
+    upstream,
+    advisories,
+    result,
+    packet,
+    units,
+    policy,
+    requests,
+    input,
+    lockReads,
+  };
 }

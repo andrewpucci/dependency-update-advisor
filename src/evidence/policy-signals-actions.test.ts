@@ -112,6 +112,63 @@ test.each(['earliest', 'future', 'failed-page', 'moved', 'unmapped'])(
     expect(packet.ok, JSON.stringify(packet)).toBe(true);
   },
 );
+test('Actions releases published together select the code-unit-first tag', async () => {
+  const f = await upstreamScenario();
+  const ur = createUpstreamReader(upstreamTestLimits, { now: () => 0, fetch: f.fetch });
+  if (ur.kind !== 'ready') throw new Error('reader');
+  const upstream = await enrichUpstream(f.input, ur);
+  ur.reader.close();
+  if (upstream.kind !== 'enriched') throw new Error('upstream');
+  // Locale collation orders these two tags oppositely to code units.
+  const tags = ['v2.0.0-rc.1', 'v2.0.0-RC.1', '2.0.0'];
+  const reader = createUpstreamReader(upstreamTestLimits, {
+    now: () => 0,
+    fetch: async (url, init) => {
+      const u = new URL(url),
+        tail = u.pathname.split('/').slice(4).join('/');
+      const repo = u.pathname.split('/').slice(2, 4).join('/');
+      if (tail === 'releases')
+        return Response.json(
+          tags.map((tag, i) => ({
+            id: i + 10,
+            tag_name: tag,
+            draft: false,
+            published_at: tag === '2.0.0' ? '2026-10-02T00:00:00Z' : '2026-10-01T00:00:00Z',
+            html_url: `https://github.com/${repo}/releases/tag/${tag}`,
+          })),
+        );
+      const tag = tags.find((t) => tail === 'git/ref/tags/' + t);
+      if (tag)
+        return Response.json({
+          ref: 'refs/tags/' + tag,
+          object: { type: 'commit', sha: '2'.repeat(40) },
+        });
+      return f.fetch(url, init);
+    },
+  });
+  const malware = createMalwareReader(f.advisoryLimits, {
+    now: () => 0,
+    fetch: async () => Response.json([]),
+  });
+  if (reader.kind !== 'ready' || malware.kind !== 'ready') throw new Error('reader');
+  const out = await enrichPolicySignals(
+    {
+      ...upstream,
+      evaluationTime: Date.parse('2026-11-07T00:00:00Z'),
+      limits: { ...f.advisoryLimits, maxAttempts: 1000 },
+    },
+    { malwareReader: malware, upstreamReader: reader.reader },
+  );
+  malware.close();
+  reader.reader.close();
+  if (out.kind !== 'enriched') throw new Error(JSON.stringify(out));
+  const action = out.changes.find((c) => c.ecosystem === 'actions')!;
+  expect(action.evidence.publishTime.status).toBe('available');
+  const source = out.sources.find((s) => s.id === action.evidence.publishTime.sourceIds[0]);
+  expect(source?.provenance).toMatchObject({
+    excerpt: expect.stringContaining('"selectedTag":"v2.0.0-RC.1"'),
+  });
+});
 test.each(['owner', 'mutable', 'sha', 'subpath', 'addition'])(
   'immutable %s Actions occurrences produce only contracted inventory findings',
   async (mode) => {

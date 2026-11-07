@@ -154,3 +154,12 @@ test.each([124, 125])(
     ).rejects.toThrow('{"kind":"unavailable","reason":"budget"}');
   },
 );
+test('uv members sharing one lockfile read it once per side', async () => {
+  const r = await policySignalScenario({ inventory: { uvVariants: true, uvArtifacts: true } });
+  const uv = r.result.changes.filter((c) => c.ecosystem === 'uv' && !('basis' in c));
+  expect(uv.length).toBeGreaterThan(1);
+  expect(r.lockReads).toEqual([
+    { side: 'base', path: 'uv.lock' },
+    { side: 'head', path: 'uv.lock' },
+  ]);
+});

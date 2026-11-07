@@ -27,6 +27,12 @@ test('npm exact-version publishing facts exclude email and retain independent me
   expect(f.trustedPublishing).toEqual({ kind: 'known', value: false });
   expect(JSON.stringify(f)).not.toContain('example.invalid');
 });
+test('a long deprecation reason never splits a surrogate pair', () => {
+  const f = npmPublishingFacts({ deprecated: 'x'.repeat(349) + '\u{1F600} tail' });
+  if (f.deprecated.kind !== 'known' || !f.deprecated.value) throw new Error('deprecated');
+  expect(f.deprecated.value.reason).toBe('x'.repeat(349) + ' [reason truncated]');
+  expect(/\p{Cs}/u.test(f.deprecated.value.reason)).toBe(false);
+});
 test('trusted publisher uses provider/configuration identity rather than its display name', () => {
   const f = npmPublishingFacts({
     _npmUser: {
@@ -58,9 +64,9 @@ test.each([
   expect(f.provenance).toMatchObject({ kind: 'unchecked' });
   expect(f.account.kind).toBe('known');
 });
-test('missing supported records mean absent trust, not known publishing identity', () => {
+test('an unexposed publishing user leaves trusted publishing unknown, not absent', () => {
   const f = npmPublishingFacts({ dist: {} });
-  expect(f.trustedPublishing).toEqual({ kind: 'known', value: false });
+  expect(f.trustedPublishing).toEqual({ kind: 'unchecked', reason: 'missing' });
   expect(f.provenance).toEqual({ kind: 'known', value: false });
   expect(f.account).toMatchObject({ kind: 'unchecked' });
   expect(f.maintainers).toMatchObject({ kind: 'unchecked' });
@@ -73,6 +79,7 @@ test.each([
   'kind-change',
   'maintainer-change',
   'long-maintainers',
+  'head-unexposed',
 ])('real exact npm metadata preserves %s policy facts and chronology attribution', async (mode) => {
   const f = await upstreamScenario();
   const ur = createUpstreamReader(upstreamTestLimits, { now: () => 0, fetch: f.fetch });
@@ -89,18 +96,22 @@ test.each([
       const trusted =
         mode === 'kind-change'
           ? version === '2.0.0'
-          : ['downgrade', 'base-failed', 'rollback'].includes(mode) && version === '1.0.0';
+          : ['downgrade', 'base-failed', 'rollback', 'head-unexposed'].includes(mode) &&
+            version === '1.0.0';
+      const unexposed = mode === 'head-unexposed' && version === '2.0.0';
       return Response.json({
         ...data,
-        _npmUser: trusted
-          ? {
-              name: 'GitHub Actions',
-              trustedPublisher: { id: 'github', oidcConfigId: 'fixture-configuration' },
-            }
-          : {
-              name: mode === 'long-maintainers' && version === '2.0.0' ? 'bob' : 'alice',
-              email: 'never-output@example.invalid',
-            },
+        _npmUser: unexposed
+          ? undefined
+          : trusted
+            ? {
+                name: 'GitHub Actions',
+                trustedPublisher: { id: 'github', oidcConfigId: 'fixture-configuration' },
+              }
+            : {
+                name: mode === 'long-maintainers' && version === '2.0.0' ? 'bob' : 'alice',
+                email: 'never-output@example.invalid',
+              },
         maintainers:
           mode === 'long-maintainers'
             ? Array.from({ length: 24 }, (_, i) => ({
@@ -159,6 +170,8 @@ test.each([
         (c) => c.evidence.trust.status === 'partial' && c.evidence.publisher.status === 'partial',
       ),
     ).toBe(true);
+  if (mode === 'head-unexposed')
+    expect(changes.every((c) => c.evidence.trust.status === 'partial')).toBe(true);
   if (mode === 'absent')
     expect(changes.every((c) => c.evidence.trust.status === 'available')).toBe(true);
   expect(JSON.stringify(out)).not.toContain('never-output@example.invalid');

@@ -4,6 +4,7 @@ import { observeRef, matchingReleases, recheck } from './upstream-actions.js';
 import { resolveUpstreamRef, publicRepository, releaseIdentity } from './upstream-github.js';
 import { requireUpstream, upstreamFailureReason, type UpstreamReader } from './upstream-read.js';
 import { publishTimestamp } from './npm-publish-times.js';
+import { byCodeUnit } from './common.js';
 import {
   recordSignal,
   attachSignalCoverage,
@@ -67,7 +68,7 @@ async function releaseTime(input: PolicySignalInput, change: PacketChange, reade
     requireUpstream(publishedAt !== null, 'conflict');
     return { ...release, publishedAt };
   });
-  dated.sort((a, b) => a.publishedAt - b.publishedAt || a.tag.localeCompare(b.tag));
+  dated.sort((a, b) => a.publishedAt - b.publishedAt || byCodeUnit(a.tag, b.tag));
   const selected = dated[0];
   const proof = await resolveUpstreamRef(repository, 'tags/' + selected.tag, reader);
   requireUpstream(proof.status === 'available' && proof.sha === observed.sha, 'conflict');

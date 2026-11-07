@@ -15,6 +15,7 @@ export {
   retainSignalSource,
   signalId,
   signalBounds,
+  boundedReason,
 } from './policy-signals-evidence.js';
 export type { OptionalCategory } from './policy-signals-evidence.js';
 import { isDeepStrictEqual } from 'node:util';
@@ -32,7 +33,12 @@ import { collectNpmPolicySignals, type NpmPolicyReader } from './policy-signals-
 import { collectPyPIReleaseSignals } from './policy-signals-pypi.js';
 import type { PolicyMetadataReader } from './policy-signals-read.js';
 import type { GithubReadSession } from '../github-read.js';
-import { artifactLimits, type ArtifactLimits } from './policy-signals-uv-artifacts.js';
+import {
+  artifactLimits,
+  cacheLockfileReads,
+  type ArtifactLimits,
+  type LockfileReader,
+} from './policy-signals-uv-artifacts.js';
 import { collectActionsPolicySignals } from './policy-signals-actions.js';
 import type { UpstreamReader } from './upstream-read.js';
 import { collectLicenseSignals } from './policy-signals-licenses.js';
@@ -177,11 +183,21 @@ function validSignalInput(input: PolicySignalInput): boolean {
   }
   return true;
 }
+function licenseSides(
+  sides: Partial<
+    Record<'base' | 'head', { facts: { license: Observation<string | null> }; url: string | null }>
+  >,
+) {
+  return Object.fromEntries(
+    Object.entries(sides).map(([side, s]) => [side, { license: s.facts.license, url: s.url }]),
+  );
+}
 async function collectOptionalMember(
   input: PolicySignalInput,
   output: SignalEnrichment,
   change: PacketChange,
   dependencies: SignalDependencies,
+  lockfiles?: LockfileReader,
 ) {
   if (change.ecosystem === 'npm' && !('basis' in change)) {
     const times = await collectNpmTimes(input, output, change, dependencies.publishTimeReader);
@@ -192,14 +208,7 @@ async function collectOptionalMember(
       times,
       dependencies.npmReader,
     );
-    collectLicenseSignals(
-      input,
-      output,
-      change,
-      Object.fromEntries(
-        Object.entries(sides).map(([side, s]) => [side, { license: s.facts.license, url: s.url }]),
-      ),
-    );
+    collectLicenseSignals(input, output, change, licenseSides(sides));
   }
   if (change.ecosystem === 'uv') {
     const sides = await collectPyPIReleaseSignals(
@@ -207,16 +216,9 @@ async function collectOptionalMember(
       output,
       change,
       dependencies.metadataReader,
-      dependencies.artifactSession,
+      lockfiles,
     );
-    collectLicenseSignals(
-      input,
-      output,
-      change,
-      Object.fromEntries(
-        Object.entries(sides).map(([side, s]) => [side, { license: s.facts.license, url: s.url }]),
-      ),
-    );
+    collectLicenseSignals(input, output, change, licenseSides(sides));
   }
   if (change.ecosystem === 'actions') {
     await collectActionsPolicySignals(input, output, change, dependencies.upstreamReader);
@@ -250,10 +252,12 @@ export async function enrichPolicySignals(
       signalBounds(input, output);
     }
     reserveOptionalSignals(input, output);
+    const lockfiles =
+      dependencies.artifactSession && cacheLockfileReads(dependencies.artifactSession);
     for (const change of output.changes) {
       if ('basis' in change) continue;
       await runOptionalSignals(input, output, change, async () => {
-        await collectOptionalMember(input, output, change, dependencies);
+        await collectOptionalMember(input, output, change, dependencies, lockfiles);
       });
     }
     return freeze(output);
