@@ -76,6 +76,15 @@ gaps and an introduced vulnerability before parity is claimed.
   on `main` in `review-config` for C3 #7; [verification and integration limits](https://github.com/andrewpucci/dependency-update-advisor/issues/52)
   remain separate from downstream collector, provider, renderer, and workflow gates.
 - [Shared workflow](SPEC-shared-review.md) — approved for planning.
+- [Upstream range evidence](SPEC-upstream-evidence.md) — implemented for
+  S2 #20 and #183–#192 in `shared-review`, pending review and merge.
+  Exact npm/PyPI proofs, attributable release/comparison/range/changelog
+  evidence, explicit bounded fallback outcomes, and proven Actions mappings
+  feed S1 without changing inventory or packet schemas. The user approved
+  the specification, plan, dependency pins, and automatic execution on
+  2026-11-07, with one closing PR. [Verification #192](https://github.com/andrewpucci/dependency-update-advisor/issues/192)
+  retains live transport, workflow diagnostics/budgets, downstream analysis,
+  publication, packaging, adoption, parity, and cutover gates.
 - [Applicable vulnerability advisories](SPEC-advisory-lookup.md) — S1 #19 and
   #173–#181 implemented; #19 tracks review and merge. Exact public-identity
   proofs, Actions mappings and separate lookup outcomes preserve T4/T5/C3

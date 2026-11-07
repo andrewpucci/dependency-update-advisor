@@ -177,6 +177,27 @@ for the exported interface and retained-source identities, and
 [verification #169](https://github.com/andrewpucci/dependency-update-advisor/issues/169)
 for exact-revision results and review disposition.
 
+## S2 Upstream Fixtures
+
+`upstream.ts` creates invented immutable npm, Actions and uv files plus fixed-host
+HTTP responses. Adjacent S2 integration tests run actual D1/N1/N2/X1/U1/U2,
+S2, S1, T4, T5 and C3 exports. Public npm/PyPI identities and Actions version
+mappings come from S2 reads and validation, not pre-filled proof records.
+Registry integrity, Git blob hashes, manifest correspondence and exact refs
+are checked without executing dependency code or performing live research.
+
+Cases include independent comparison 403s, introduced vulnerabilities beside
+failed PyPI research, uv marker/local-version variants, grouped member failures,
+unsupported Actions subpaths, additions/removals and declaration-only changes.
+Only unrelated malware coverage is explicit synthetic S3 scaffolding; it does
+not certify S3, model analysis, workflow publication, adoption or cutover.
+
+The 128/129 combined-change fixture uses N1 and N2 relationship output before
+lifecycle enrichment to isolate S2's change ceiling. Other mixed fixtures use
+full N2 lifecycle enrichment. No collected finding is dropped to fit. A full
+packet with 128 changes may independently exceed the existing source/byte caps;
+the boundary fixture does not claim that all such packets fit every ceiling.
+
 ## S1 Advisory Fixtures
 
 `advisories.ts` creates invented public identity/mapping proofs and GitHub-shaped

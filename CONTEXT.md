@@ -19,8 +19,10 @@ No shared workflow exists; the old reviewer stays active.
 
 ## Next action
 
-[S1 #19](docs/specs/SPEC-advisory-lookup.md) is implemented; #19 tracks
-review/merge, and #181 holds verification and remaining integration gates.
+[S2 #20](docs/specs/SPEC-upstream-evidence.md) is implemented, pending review/merge;
+[verification #192](https://github.com/andrewpucci/dependency-update-advisor/issues/192)
+retains remaining gates.
+[S1 #19](docs/specs/SPEC-advisory-lookup.md) awaits review/merge; evidence #181.
 [U2 #18](docs/specs/SPEC-uv-relationships.md) awaits review/merge; #169 holds evidence.
 [N2 #15](docs/specs/SPEC-npm-relationships.md) is implemented on
 `issue-15`, pending review/merge; #140 holds verification. #93 stays separate.
@@ -32,8 +34,6 @@ supplies evidence, [M2](https://github.com/andrewpucci/dependency-update-advisor
 validates assessments, [O1](https://github.com/andrewpucci/dependency-update-advisor/issues/23)
 renders results, and T2/T3/W2 own publication. C2 handoffs remain gates;
 packaging remains A1. Unit tests do not certify these integrations or cutover.
-
-## Where details live
 
 - The [capability map](docs/specs/README.md) indexes module and contract status.
 - The [ADR guide](docs/adr/README.md) indexes durable architecture decisions.
