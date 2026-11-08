@@ -154,3 +154,86 @@ test('dispatches two batches in a wave and retains results in inventory order', 
     inventory.units.map((unit) => unit.id),
   );
 });
+
+test('splits only recognized length truncations down to successful single units', async () => {
+  const { input } = await analysisScenario();
+  const sizes: number[] = [];
+  const result = await analyzeDecisionUnits(
+    input,
+    { apiKey: 'test-key', deadlineMs: 700_000 },
+    {
+      now: () => 0,
+      analyze: (batch, options) => {
+        sizes.push(batch.unitIds.length);
+        return analyzeMistralBatch(batch, options, {
+          now: () => 0,
+          fetch: async () =>
+            Response.json({
+              choices: [
+                {
+                  index: 0,
+                  finish_reason: batch.unitIds.length > 1 ? 'length' : 'stop',
+                  message: { role: 'assistant', content: JSON.stringify(analysisDocument(batch)) },
+                },
+              ],
+            }),
+        });
+      },
+    },
+  );
+  expect(result.ok).toBe(true);
+  if (!result.ok) throw new Error('fixture failed');
+  expect(sizes[0]).toBeGreaterThan(1);
+  expect(sizes.filter((size) => size === 1)).toHaveLength(input.unitIds.length);
+  expect(result.records.every((record) => record.state.state === 'assessed')).toBe(true);
+});
+
+test('cancellation settles even if transport ignores the signal', async () => {
+  const { input } = await analysisScenario();
+  const controller = new AbortController();
+  const running = analyzeDecisionUnits(
+    input,
+    { apiKey: 'test-key', deadlineMs: 700_000, signal: controller.signal },
+    {
+      now: () => 0,
+      analyze: () => new Promise(() => {}),
+    },
+  );
+  controller.abort();
+  const result = await running;
+  expect(result.ok).toBe(true);
+  if (!result.ok) throw new Error('fixture failed');
+  expect(
+    result.records.every((record) => record.state.state === 'unavailable' && record.attempted),
+  ).toBe(true);
+});
+
+test('rejects a mismatched inventory before any request', async () => {
+  const { input } = await analysisScenario();
+  const analyze = vi.fn();
+  const result = await analyzeDecisionUnits(
+    { ...input, inventory: { ...input.inventory, units: [] } },
+    { apiKey: 'test-key', deadlineMs: 700_000 },
+    { now: () => 0, analyze },
+  );
+  expect(result).toMatchObject({ ok: false, category: 'input' });
+  expect(analyze).not.toHaveBeenCalled();
+});
+
+test('a thrown transport exception is classified without exposing the error', async () => {
+  const { input } = await analysisScenario();
+  const result = await analyzeDecisionUnits(
+    input,
+    { apiKey: 'test-key', deadlineMs: 700_000 },
+    {
+      now: () => 0,
+      analyze: async () => {
+        throw new Error('PRIVATE-SENTINEL');
+      },
+    },
+  );
+  expect(result.ok).toBe(true);
+  if (!result.ok) throw new Error('fixture failed');
+  expect(result.records.every((record) => record.state.state === 'unavailable')).toBe(true);
+  expect(JSON.stringify(result)).not.toContain('PRIVATE-SENTINEL');
+});

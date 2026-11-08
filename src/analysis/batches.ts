@@ -1,8 +1,10 @@
+import { isDeepStrictEqual } from 'node:util';
 import type { ConfigResult } from '../config.js';
 import type { AssessmentState } from '../policy.js';
-import { summarizeDecisionCoverage, type UnitInventory } from '../units.js';
+import { formDecisionUnits, summarizeDecisionCoverage, type UnitInventory } from '../units.js';
 import { ANALYSIS_LIMITS, prepareAnalysisBatch, type ValidatedAssessment } from './contract.js';
 import { analyzeMistralBatch, type MistralOptions, type MistralResult } from './mistral.js';
+import { snapshotData } from './projection.js';
 
 export type BatchInput = Readonly<{
   inventory: UnitInventory;
@@ -28,7 +30,17 @@ export async function analyzeDecisionUnits(
   options: MistralOptions,
   dependencies: Partial<Dependencies> = {},
 ) {
-  const snapshot = structuredClone(input);
+  let snapshot: BatchInput;
+  try {
+    snapshot = snapshotData(input) as BatchInput;
+    if (
+      !Number.isFinite(snapshot.evaluatedAt) ||
+      !isDeepStrictEqual(formDecisionUnits(snapshot.inventory.packet), snapshot.inventory)
+    )
+      return { ok: false as const, category: 'input' as const };
+  } catch {
+    return { ok: false as const, category: 'input' as const };
+  }
   const now = dependencies.now ?? (() => performance.now());
   const analyze = dependencies.analyze ?? analyzeMistralBatch;
   const unitIds = snapshot.inventory.units.map((unit) => unit.id);
@@ -39,7 +51,11 @@ export async function analyzeDecisionUnits(
   const records: UnitRecord[] = [];
   let calls = 0;
   while (queue.length) {
-    const wave: Array<{ ids: string[]; batchId: string; pending: Promise<MistralResult> }> = [];
+    const wave: Array<{
+      ids: string[];
+      batchId: string;
+      pending: Promise<MistralResult | 'cancelled' | 'deadline' | 'transport'>;
+    }> = [];
     let preparationFailure: string | undefined;
     while (
       wave.length < 2 &&
@@ -71,12 +87,28 @@ export async function analyzeDecisionUnits(
       wave.push({
         ids,
         batchId: prepared.batch.batchId,
-        pending: analyze(prepared.batch, { ...options, deadlineMs }),
+        pending: boundedCall(prepared.batch, { ...options, deadlineMs }, analyze, now),
       });
     }
     const results = await Promise.all(wave.map((item) => item.pending));
-    for (let index = 0; index < wave.length; index++)
-      records.push(...mapResult(wave[index].ids, wave[index].batchId, results[index]));
+    const children: string[][] = [];
+    for (let index = 0; index < wave.length; index++) {
+      const { ids, batchId } = wave[index];
+      const result = results[index];
+      if (typeof result === 'string') {
+        records.push(...unresolved(ids, 'unavailable', true, result, batchId));
+      } else if (
+        result.kind === 'truncated' &&
+        result.category === 'length' &&
+        ids.length > 1 &&
+        result.batchId === batchId &&
+        JSON.stringify(result.unitIds) === JSON.stringify(ids)
+      ) {
+        const midpoint = Math.floor(ids.length / 2);
+        children.push(ids.slice(0, midpoint), ids.slice(midpoint));
+      } else records.push(...mapResult(ids, batchId, result));
+    }
+    queue.unshift(...children);
     if (preparationFailure || !wave.length) {
       const category =
         preparationFailure ??
@@ -156,4 +188,36 @@ function mapResult(ids: readonly string[], batchId: string, result: MistralResul
         ? 'unattempted'
         : 'unavailable';
   return unresolved(ids, state, attempted, category, batchId);
+}
+
+async function boundedCall(
+  batch: Parameters<typeof analyzeMistralBatch>[0],
+  options: MistralOptions,
+  analyze: typeof analyzeMistralBatch,
+  now: () => number,
+): Promise<MistralResult | 'cancelled' | 'deadline' | 'transport'> {
+  const controller = new AbortController();
+  let stop: (reason: 'cancelled' | 'deadline') => void = () => {};
+  const stopped = new Promise<'cancelled' | 'deadline'>((resolve) => {
+    stop = (reason) => {
+      resolve(reason);
+      controller.abort();
+    };
+  });
+  const cancel = () => stop('cancelled');
+  options.signal?.addEventListener('abort', cancel, { once: true });
+  const timer = setTimeout(() => stop('deadline'), Math.max(0, options.deadlineMs - now()));
+  try {
+    if (options.signal?.aborted) cancel();
+    const pending = Promise.resolve()
+      .then(() => analyze(batch, { ...options, signal: controller.signal }))
+      .catch(() => 'transport' as const);
+    const result = await Promise.race([pending, stopped]);
+    if (typeof result !== 'string' && now() >= options.deadlineMs) return 'deadline';
+    return result;
+  } finally {
+    clearTimeout(timer);
+    options.signal?.removeEventListener('abort', cancel);
+    controller.abort();
+  }
 }
