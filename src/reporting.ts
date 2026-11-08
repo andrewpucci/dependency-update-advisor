@@ -428,7 +428,7 @@ function renderNonempty(input: DecisionBriefInput, binding: ReviewBinding): Deci
     if (outcome.kind !== 'advice') return 'No merge recommendation.';
     if (outcome.verdict === 'do_not_merge') return 'Hold; verified blockers require action.';
     if (outcome.verdict === 'merge_with_followups') return 'Merge with follow-ups.';
-    return 'Advisory recommendation: merge.';
+    return 'Merge.';
   }
   function nextAction(firstUnresolved: (typeof input.records)[number] | undefined): string {
     if (outcome.kind === 'advice' && outcome.verdict === 'do_not_merge')
@@ -440,7 +440,7 @@ function renderNonempty(input: DecisionBriefInput, binding: ReviewBinding): Deci
       return evidenceGap(units[firstGapIndex], summary.units[firstGapIndex].gaps[0].sourceId);
     const firstFollowup = input.records.flatMap((record) => record.assessment?.followups ?? [])[0];
     if (firstFollowup) return text(firstFollowup.description);
-    return 'Merge after reviewing the evidence and assessments below.';
+    return 'Review the evidence, then merge.';
   }
   function opening() {
     const gaps = summary.units.flatMap((unit) => unit.gaps);
@@ -469,7 +469,7 @@ function renderNonempty(input: DecisionBriefInput, binding: ReviewBinding): Deci
       '',
       `**Recommendation:** ${recommendation}${input.analysisUnavailable ? ' Analysis is unavailable.' : ''}`,
       `**Next action:** ${next}${input.analysisUnavailable && outcome.kind === 'advice' && firstUnresolved ? ` ${recovery(firstUnresolved.category)}` : ''}`,
-      `**Evidence coverage:** ${incomplete ? 'Incomplete.' : 'Complete.'}`,
+      `Required evidence: ${incomplete ? 'Incomplete.' : 'Complete.'}`,
       '',
       `Reviewed head: [${binding.headSha}](https://github.com/${owner}/${name}/commit/${binding.headSha})`,
       `Generated: ${input.generatedAt}`,
@@ -604,17 +604,30 @@ function renderNonempty(input: DecisionBriefInput, binding: ReviewBinding): Deci
       const assessment = input.records[index].assessment;
       if (!assessment) continue;
       const evaluation = summary.units[index];
-      const names = unit.members
-        .map(
-          (member) =>
-            `${text(member.name)} ${text(member.currentVersion ?? 'unknown')} → ${text(member.proposedVersion ?? 'unknown')}`,
-        )
-        .join(', ');
+      if (unit.kind === 'direct_group') {
+        lines.push(
+          `- **Direct-update group** (${unit.ecosystem}; ${plural(unit.memberCount, 'changed update')})`,
+        );
+        for (const member of unit.members)
+          lines.push(
+            `  - ${text(member.name)}: ${text(member.currentVersion ?? 'unknown')} → ${text(member.proposedVersion ?? 'unknown')}`,
+          );
+      } else {
+        const member = unit.members[0];
+        const role =
+          input.coverage.inventory.packet.changes.find((change) =>
+            unit.memberIds.includes(change.id),
+          )?.role ?? 'unknown';
+        lines.push(
+          `- **${text(member.name)}** (${unit.ecosystem}, ${text(role)}): ${text(member.currentVersion ?? 'unknown')} → ${text(member.proposedVersion ?? 'unknown')}`,
+        );
+      }
       const citations = assessment.reason.references.map((ref) => reference(ref, unit, input));
       const upstream = assessmentSource(unit, input);
       if (upstream && !citations.includes(upstream)) citations.push(upstream);
+      lines.push(`  - Assessment: ${text(assessment.reason.text)}`);
       lines.push(
-        `- ${names} (${unit.kind === 'direct_group' ? 'direct group' : text(input.coverage.inventory.packet.changes.find((change) => unit.memberIds.includes(change.id))?.role ?? 'unknown')}): ${text(assessment.reason.text)} Policy: ${readableLabel(evaluation.effectiveCeiling)}. Evidence: ${evaluation.gaps.length ? 'partial' : 'complete'}. ${citations.join(' ')}`,
+        `  - Policy: ${readableLabel(evaluation.effectiveCeiling)}; evidence: ${evaluation.gaps.length ? 'partial' : 'complete'}. ${citations.join(' ')}`,
       );
     }
   }
@@ -706,6 +719,20 @@ function renderNonempty(input: DecisionBriefInput, binding: ReviewBinding): Deci
   }
   const appendCapabilitiesError = appendCapabilities();
   if (appendCapabilitiesError) return appendCapabilitiesError;
+  function uncheckedQualifier(member: DecisionUnit['members'][number]): string {
+    const duplicates = units
+      .flatMap((unit) => unit.members)
+      .filter((item) => item.name === member.name && item.ecosystem === member.ecosystem);
+    if (duplicates.length < 2) return member.ecosystem;
+    const change = input.coverage.inventory.packet.changes.find((item) => item.id === member.id);
+    const side = change?.to ?? change?.from;
+    if (!side) throw new InvalidReference();
+    const location =
+      'root' in side
+        ? `root ${side.root}`
+        : `${side.workflow}, ${side.jobId}, step ${side.stepIndex ?? 'unknown'}`;
+    return `${member.ecosystem}, ${text(location)}, ${text(member.proposedVersion ?? member.currentVersion ?? 'unknown')}`;
+  }
   function appendUnchecked(): DecisionBriefResult | undefined {
     const licenseFailures = input.signalAttempts.filter(
       (attempt) => attempt.category === 'license' && attempt.outcome !== 'available',
@@ -713,26 +740,40 @@ function renderNonempty(input: DecisionBriefInput, binding: ReviewBinding): Deci
     const unchecked = summary.units.flatMap((unit, index) =>
       unit.uncheckedSignals.map((signal) => ({ unit: units[index], signal })),
     );
-    if (licenseFailures.length || unchecked.length) {
-      lines.push('', '## Unchecked signals', '');
-      for (const { unit, signal } of unchecked) {
-        const link = unit.evidenceLinks.find((entry) => entry.id === signal.sourceId);
-        const member = unit.members.find((entry) => entry.id === link?.memberId);
-        if (!link || !member) return { ok: false, category: 'reference' };
-        lines.push(
-          `- ${text(member.name)} ${readableLabel(signal.signal)}: ${readableLabel(signal.reason)}; ${readableLabel(link.status)}.`,
-        );
+    if (!licenseFailures.length && !unchecked.length) return undefined;
+    type Member = DecisionUnit['members'][number];
+    const groups = new Map<string, { member: Member; details: Map<string, string[]> }>();
+    function add(member: Member, label: string, detail: string) {
+      let group = groups.get(member.id);
+      if (!group) {
+        group = { member, details: new Map() };
+        groups.set(member.id, group);
       }
-      for (const attempt of licenseFailures) {
-        const unit = units.find((candidate) => candidate.memberIds.includes(attempt.memberId));
-        const member = unit?.members.find((candidate) => candidate.id === attempt.memberId);
-        if (!member) return { ok: false, category: 'reference' };
-        lines.push(
-          `- License lookup for ${text(member.name)} (${text(attempt.side)}): ${attempt.reasons.map(text).join(', ') || 'not checked'}.`,
-        );
-      }
-      optional.push(lines.splice(0));
+      const labels = group.details.get(detail) ?? [];
+      labels.push(label);
+      group.details.set(detail, labels);
     }
+    for (const { unit, signal } of unchecked) {
+      const link = unit.evidenceLinks.find((entry) => entry.id === signal.sourceId);
+      const member = unit.members.find((entry) => entry.id === link?.memberId);
+      if (!link || !member) return { ok: false, category: 'reference' };
+      const reasons = link.reasons.map(readableLabel).join(', ') || readableLabel(signal.reason);
+      add(member, readableLabel(signal.signal), `${reasons}; ${readableLabel(link.status)}`);
+    }
+    for (const attempt of licenseFailures) {
+      const unit = units.find((candidate) => candidate.memberIds.includes(attempt.memberId));
+      const member = unit?.members.find((candidate) => candidate.id === attempt.memberId);
+      if (!member) return { ok: false, category: 'reference' };
+      const side = attempt.side === 'head' ? 'proposed' : 'base';
+      const reasons = attempt.reasons.map(readableLabel).join(', ') || 'not checked';
+      add(member, `license (${side})`, `${reasons}; ${readableLabel(attempt.outcome)}`);
+    }
+    lines.push('', '## Unchecked signals', '');
+    for (const { member, details } of groups.values()) {
+      lines.push(`- **${text(member.name)}** (${uncheckedQualifier(member)})`);
+      for (const [detail, labels] of details) lines.push(`  - ${labels.join(', ')}: ${detail}.`);
+    }
+    optional.push(lines.splice(0));
     return undefined;
   }
   const appendUncheckedError = appendUnchecked();
@@ -791,7 +832,7 @@ export function renderDecisionBrief(input: DecisionBriefInput): DecisionBriefRes
       '',
       '**Next action:** No dependency action is needed.',
       '',
-      'Evidence coverage: complete; 0 changed updates, 0 assessed decision units, 0 unresolved decision units.',
+      'Required evidence: Complete; 0 changed updates, 0 assessed decision units, 0 unresolved decision units.',
       '',
       `Reviewed head: [${binding.headSha}](https://github.com/${owner}/${name}/commit/${binding.headSha})`,
       `Generated: ${input.generatedAt}`,

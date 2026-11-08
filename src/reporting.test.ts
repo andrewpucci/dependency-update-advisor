@@ -255,21 +255,171 @@ test('renders assessed decision units without treating required evidence gaps as
   expect(result.body).toContain('Proposed repository file evidence');
   expect(result.body).not.toContain('releaseMetadata');
   expect(result.body).not.toContain('publishTime');
-  expect(result.body).toContain('Merge after reviewing the evidence');
+  expect(result.body).toContain('**Recommendation:** Merge.');
+  expect(result.body).toContain('**Next action:** Review the evidence, then merge.');
+  expect(result.body).toContain('Required evidence: Complete.');
   const assessments = result.body
     .split('## Package assessments')[1]
     .split('## Unchecked signals')[0];
-  const assessmentLines = assessments.split('\n').filter((line) => line.startsWith('- '));
-  expect(assessmentLines).toHaveLength(input.inventory.units.length);
-  expect(assessmentLines.every((line) => line.includes('](<https://'))).toBe(true);
-  expect(assessmentLines[0]).toContain('https://github.com/fixture/action/releases/tag/v2.0.0');
-  expect(assessmentLines[1]).toContain(
+  const assessmentBlocks = assessments.split(/\n(?=- )/u).filter((block) => block.startsWith('- '));
+  expect(assessmentBlocks).toHaveLength(input.inventory.units.length);
+  expect(assessmentBlocks.every((block) => block.includes('  - Assessment:'))).toBe(true);
+  expect(assessmentBlocks.every((block) => block.includes('  - Policy:'))).toBe(true);
+  expect(assessmentBlocks.every((block) => block.includes('](<https://'))).toBe(true);
+  expect(assessmentBlocks[0]).toContain('https://github.com/fixture/action/releases/tag/v2.0.0');
+  expect(assessmentBlocks[1]).toContain(
     'https://github.com/fixture/npm-child-0/releases/tag/v2.0.0',
   );
-  expect(assessmentLines[2]).toContain('https://github.com/fixture/py-orbit/releases/tag/v2.0.0');
+  expect(assessmentBlocks[2]).toContain('https://github.com/fixture/py-orbit/releases/tag/v2.0.0');
+  expect(assessmentBlocks[2]).toContain('**orbit** (uv, direct): 1.0.0 → 2.0.0');
+  const groupedUnit = input.inventory.units[1];
+  expect(groupedUnit.members.length).toBeGreaterThan(1);
+  for (const member of groupedUnit.members)
+    expect(assessmentBlocks[1]).toContain(
+      `${member.name}: ${member.currentVersion} → ${member.proposedVersion}`,
+    );
+  const unchecked = result.body.split('## Unchecked signals')[1];
+  expect(unchecked).toContain('- **fixture/action** (actions)');
+  expect(unchecked).toContain('- **orbit** (uv)');
+  expect(unchecked.match(/- \*\*fixture\/action\*\*/gu)).toHaveLength(1);
+  expect(unchecked).toContain('deprecation, publisher, trust: unsupported; unavailable.');
+  const members = input.inventory.units.flatMap((unit) => unit.members);
+  const npmOrbit = members.find((member) => member.name === 'orbit' && member.ecosystem === 'npm');
+  const uvOrbit = members.find((member) => member.name === 'orbit' && member.ecosystem === 'uv');
+  if (!npmOrbit || !uvOrbit) throw new Error('missing same-name package fixtures');
+  const signals = renderDecisionBrief({
+    binding: input.inventory.packet.binding,
+    generatedAt: '2026-11-08T00:00:00.000Z',
+    coverage: analysis.coverage,
+    records: analysis.records,
+    analysisUnavailable: analysis.analysisUnavailable,
+    signalAttempts: [
+      ...scenario.result.attempts,
+      {
+        memberId: npmOrbit.id,
+        side: 'base',
+        category: 'license',
+        url: null,
+        outcome: 'unavailable',
+        reasons: ['timeout'],
+        sourceIds: [],
+        truncated: false,
+      },
+      {
+        memberId: uvOrbit.id,
+        side: 'head',
+        category: 'license',
+        url: null,
+        outcome: 'unavailable',
+        reasons: ['permission'],
+        sourceIds: [],
+        truncated: false,
+      },
+    ],
+    signalBinding: scenario.result.binding,
+  });
+  if (!signals.ok) throw new Error('render failed');
+  const signalSection = signals.body.split('## Unchecked signals')[1];
+  const npmSignals = signalSection.split('- **orbit** (npm)')[1].split('\n- **')[0];
+  const uvSignals = signalSection.split('- **orbit** (uv)')[1].split('\n- **')[0];
+  expect(npmSignals).toContain('license (base): timeout; unavailable.');
+  expect(npmSignals).not.toContain('license (proposed): permission');
+  expect(uvSignals).toContain('license (proposed): permission; unavailable.');
+  expect(uvSignals).not.toContain('license (base): timeout');
   if (process.env.O1_GROUPED_PREVIEW) {
     const fs = await import('node:fs/promises');
     await fs.writeFile(process.env.O1_GROUPED_PREVIEW, result.body);
+  }
+});
+
+test('distinguishes unchecked signals for same-name packages in different roots', async () => {
+  const { analysisScenario } = await import('../tests/parity/analysis.js');
+  const { analyzeDecisionUnits } = await import('./analysis/batches.js');
+  const { input: original, scenario } = await analysisScenario({ inventory: { uvVariants: true } });
+  const originalVariants = original.inventory.units
+    .flatMap((unit) => unit.members)
+    .filter((member) => member.name === 'orbit' && member.ecosystem === 'uv');
+  expect(originalVariants).toHaveLength(2);
+  const moved = original.inventory.packet.changes.find(
+    (change) => change.id === originalVariants[1].id && change.ecosystem === 'uv',
+  );
+  if (!moved || moved.ecosystem !== 'uv' || !moved.from || !moved.to)
+    throw new Error('missing uv variant fixture');
+  const inventorySources = (['from', 'to'] as const).map((side) => {
+    const source = original.inventory.packet.sources.find(
+      (item) => item.id === moved[side]!.sourceId,
+    );
+    if (!source || source.provenance.kind !== 'file') throw new Error('missing inventory source');
+    return {
+      ...source,
+      id: `other-root-${side}`,
+      memberIds: [moved.id],
+      provenance: { ...source.provenance, path: 'packages/other/uv.lock' },
+    };
+  });
+  const packet = {
+    ...original.inventory.packet,
+    sources: [...original.inventory.packet.sources, ...inventorySources],
+    changes: original.inventory.packet.changes.map((change) =>
+      change.id === originalVariants[1].id && change.ecosystem === 'uv'
+        ? {
+            ...change,
+            from: change.from && {
+              ...change.from,
+              root: 'packages/other',
+              sourceId: 'other-root-from',
+            },
+            to: change.to && { ...change.to, root: 'packages/other', sourceId: 'other-root-to' },
+          }
+        : change,
+    ),
+  };
+  const validated = validateReviewPacket(packet, {
+    binding: packet.binding,
+    baseSha: packet.baseSha,
+    contextRevision: packet.contextRevision,
+    context: packet.context,
+  });
+  if (!validated.ok)
+    throw new Error(`invalid different-root fixture: ${JSON.stringify(validated.error)}`);
+  const inventory = formDecisionUnits(validated.packet);
+  const input = { ...original, inventory, unitIds: inventory.units.map((unit) => unit.id) };
+  const analysis = await analyzeDecisionUnits(input, { deadlineMs: 700_000 }, { now: () => 0 });
+  if (!analysis.ok) throw new Error('analysis fixture failed');
+  const variants = input.inventory.units
+    .flatMap((unit) => unit.members)
+    .filter((member) => member.name === 'orbit' && member.ecosystem === 'uv');
+  expect(variants).toHaveLength(2);
+  const result = renderDecisionBrief({
+    binding: input.inventory.packet.binding,
+    generatedAt: '2026-11-08T00:00:00.000Z',
+    coverage: analysis.coverage,
+    records: analysis.records,
+    analysisUnavailable: analysis.analysisUnavailable,
+    signalAttempts: [
+      ...scenario.result.attempts,
+      ...variants.map((member, index) => ({
+        memberId: member.id,
+        side: 'head' as const,
+        category: 'license',
+        url: null,
+        outcome: 'unavailable' as const,
+        reasons: [index === 0 ? ('timeout' as const) : ('permission' as const)],
+        sourceIds: [],
+        truncated: false,
+      })),
+    ],
+    signalBinding: scenario.result.binding,
+  });
+  if (!result.ok) throw new Error('render failed');
+  const unchecked = result.body.split('## Unchecked signals')[1];
+  for (const [index, member] of variants.entries()) {
+    const root = member.id === originalVariants[1].id ? 'packages/other' : '.';
+    const heading = `- **orbit** (uv, root ${root}, ${member.proposedVersion})`;
+    const block = unchecked.split(heading)[1]?.split('\n- **')[0];
+    expect(block).toContain(
+      `license (proposed): ${index === 0 ? 'timeout' : 'permission'}; unavailable.`,
+    );
   }
 });
 
@@ -347,7 +497,13 @@ test('shows a failed exact-version license lookup without inventing license info
     .flatMap((unit) => unit.members)
     .find((item) => item.id === attempt.memberId);
   if (!member) throw new Error('missing member fixture');
-  expect(result.body).toContain(`License lookup for ${member.name} (${attempt.side}): timeout.`);
+  const unchecked = result.body.split('## Unchecked signals')[1];
+  const memberBlock = unchecked
+    .split(`- **${member.name}** (${member.ecosystem})`)[1]
+    .split('\n- **')[0];
+  expect(memberBlock).toContain(
+    `license (${attempt.side === 'head' ? 'proposed' : 'base'}): timeout; unavailable.`,
+  );
 });
 
 test('renders a validated actionable capability with local context and upstream evidence', async () => {
@@ -780,7 +936,7 @@ test('retains the exact next action for assessed evidence gaps and relaxed advic
   expect(result.ok).toBe(true);
   if (!result.ok) throw new Error('render failed');
   expect(result.body).toContain('Merge with follow-ups');
-  expect(result.body).toContain('Evidence coverage:** Incomplete');
+  expect(result.body).toContain('Required evidence: Incomplete');
   expect(result.body).toContain('Non-blocking follow-ups');
   expect(result.body).toContain('malware evidence');
   const gapUnit = analysis.coverage.policyProvenance.assessments.units.find((unit) =>
@@ -792,6 +948,12 @@ test('retains the exact next action for assessed evidence gaps and relaxed advic
   );
   if (!gapUnit) throw new Error('missing malware gap');
   const unit = input.inventory.units.find((candidate) => candidate.id === gapUnit.id)!;
+  const assessmentIndex = input.inventory.units.findIndex(
+    (candidate) => candidate.id === gapUnit.id,
+  );
+  const assessments = result.body.split('## Package assessments')[1].split('## ')[0];
+  const assessmentBlocks = assessments.split(/\n(?=- )/u).filter((block) => block.startsWith('- '));
+  expect(assessmentBlocks[assessmentIndex]).toContain('evidence: partial.');
   const link = unit.evidenceLinks.find(
     (entry) =>
       entry.category === 'malware' && gapUnit.gaps.some((gap) => gap.sourceId === entry.id),
@@ -1048,7 +1210,7 @@ test('retains assessed and unresolved units together without recommending merge'
   expect(queueItems[0]).toContain(input.inventory.units[0].members[0].name);
   expect(queueItems[0]).toContain('Rerun CI to retry dependency analysis.');
   const assessments = rendered.body.split('## Package assessments')[1].split('## ')[0];
-  const assessmentItems = assessments.split('\n').filter((line) => line.startsWith('- '));
+  const assessmentItems = assessments.split(/\n(?=- )/u).filter((block) => block.startsWith('- '));
   expect(assessmentItems).toHaveLength(input.inventory.units.length - 1);
   for (const [index, unit] of input.inventory.units.slice(1).entries())
     expect(assessmentItems[index]).toContain(unit.members[0].name);
