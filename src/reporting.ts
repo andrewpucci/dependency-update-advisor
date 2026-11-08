@@ -164,41 +164,50 @@ function reference(ref: ResolvedReference, unit: DecisionUnit, input: DecisionBr
   return `[${sourceTitle(source.provenance.title)}](<${url.href.replace(/[<>]/gu, '')}>)`;
 }
 
-function assessmentSource(unit: DecisionUnit, input: DecisionBriefInput): string | null {
+function assessmentSourceForSide(
+  unit: DecisionUnit,
+  link: DecisionUnit['evidenceLinks'][number],
+  side: 'head' | 'base',
+  input: DecisionBriefInput,
+): string | null {
   const packet = input.coverage.inventory.packet;
+  const change = packet.changes.find((item) => item.id === link.memberId);
+  const version = side === 'head' ? change?.to : change?.from;
+  if (!version) return null;
+  const value = 'ref' in version ? version.ref : 'version' in version ? version.version : null;
+  for (const id of link.sourceIds) {
+    const source = packet.sources.find((item) => item.id === id);
+    if (!source || source.status === 'unavailable' || source.provenance.kind !== 'upstream')
+      continue;
+    if (
+      !source.provenance.subjects.some(
+        (subject) =>
+          subject.memberId === link.memberId && subject.side === side && subject.value === value,
+      )
+    )
+      continue;
+    return reference(
+      {
+        kind: 'source',
+        sourceId: id,
+        memberId: link.memberId,
+        side,
+        category: link.category,
+        url: source.provenance.url,
+      },
+      unit,
+      input,
+    );
+  }
+  return null;
+}
+
+function assessmentSource(unit: DecisionUnit, input: DecisionBriefInput): string | null {
   for (const link of unit.evidenceLinks) {
     if (link.category !== 'upstream' || link.status === 'unavailable') continue;
-    const change = packet.changes.find((item) => item.id === link.memberId);
     for (const side of ['head', 'base'] as const) {
-      const version = side === 'head' ? change?.to : change?.from;
-      if (!version) continue;
-      const value = 'ref' in version ? version.ref : 'version' in version ? version.version : null;
-      for (const id of link.sourceIds) {
-        const source = packet.sources.find((item) => item.id === id);
-        if (!source || source.status === 'unavailable' || source.provenance.kind !== 'upstream')
-          continue;
-        if (
-          !source.provenance.subjects.some(
-            (subject) =>
-              subject.memberId === link.memberId &&
-              subject.side === side &&
-              subject.value === value,
-          )
-        )
-          continue;
-        return reference(
-          {
-            kind: 'source',
-            sourceId: id,
-            memberId: link.memberId,
-            side,
-            category: link.category,
-            url: source.provenance.url,
-          },
-          unit,
-          input,
-        );
-      }
+      const source = assessmentSourceForSide(unit, link, side, input);
+      if (source) return source;
     }
   }
   return null;
@@ -589,25 +598,24 @@ function renderNonempty(input: DecisionBriefInput, binding: ReviewBinding): Deci
   const head = [...lines];
   lines.length = 0;
   function appendAssessments(): void {
-    if (counts.assessedUnits) {
-      lines.push('', '## Package assessments', '');
-      for (const [index, unit] of units.entries()) {
-        const assessment = input.records[index].assessment;
-        if (!assessment) continue;
-        const evaluation = summary.units[index];
-        const names = unit.members
-          .map(
-            (member) =>
-              `${text(member.name)} ${text(member.currentVersion ?? 'unknown')} → ${text(member.proposedVersion ?? 'unknown')}`,
-          )
-          .join(', ');
-        const citations = assessment.reason.references.map((ref) => reference(ref, unit, input));
-        const upstream = assessmentSource(unit, input);
-        if (upstream && !citations.includes(upstream)) citations.push(upstream);
-        lines.push(
-          `- ${names} (${unit.kind === 'direct_group' ? 'direct group' : text(input.coverage.inventory.packet.changes.find((change) => unit.memberIds.includes(change.id))?.role ?? 'unknown')}): ${text(assessment.reason.text)} Policy: ${readableLabel(evaluation.effectiveCeiling)}. Evidence: ${evaluation.gaps.length ? 'partial' : 'complete'}. ${citations.join(' ')}`,
-        );
-      }
+    if (!counts.assessedUnits) return;
+    lines.push('', '## Package assessments', '');
+    for (const [index, unit] of units.entries()) {
+      const assessment = input.records[index].assessment;
+      if (!assessment) continue;
+      const evaluation = summary.units[index];
+      const names = unit.members
+        .map(
+          (member) =>
+            `${text(member.name)} ${text(member.currentVersion ?? 'unknown')} → ${text(member.proposedVersion ?? 'unknown')}`,
+        )
+        .join(', ');
+      const citations = assessment.reason.references.map((ref) => reference(ref, unit, input));
+      const upstream = assessmentSource(unit, input);
+      if (upstream && !citations.includes(upstream)) citations.push(upstream);
+      lines.push(
+        `- ${names} (${unit.kind === 'direct_group' ? 'direct group' : text(input.coverage.inventory.packet.changes.find((change) => unit.memberIds.includes(change.id))?.role ?? 'unknown')}): ${text(assessment.reason.text)} Policy: ${readableLabel(evaluation.effectiveCeiling)}. Evidence: ${evaluation.gaps.length ? 'partial' : 'complete'}. ${citations.join(' ')}`,
+      );
     }
   }
   appendAssessments();
