@@ -987,3 +987,34 @@ test('rejects a policy summary that drops a required unit evidence gap', async (
     }),
   ).toEqual({ ok: false, category: 'content' });
 });
+
+test('rejects a policy summary that drops unchecked optional signals', async () => {
+  const { analysisScenario } = await import('../tests/parity/analysis.js');
+  const { analyzeDecisionUnits } = await import('./analysis/batches.js');
+  const { input, scenario } = await analysisScenario();
+  const analysis = await analyzeDecisionUnits(input, { deadlineMs: 700_000 }, { now: () => 0 });
+  if (!analysis.ok) throw new Error('analysis fixture failed');
+  const summary = analysis.coverage.policyProvenance.assessments;
+  expect(summary.units.some((unit) => unit.uncheckedSignals.length)).toBe(true);
+  const coverage = {
+    ...analysis.coverage,
+    policyProvenance: {
+      ...analysis.coverage.policyProvenance,
+      assessments: {
+        ...summary,
+        units: summary.units.map((unit) => ({ ...unit, uncheckedSignals: [] })),
+      },
+    },
+  };
+  expect(
+    renderDecisionBrief({
+      binding: input.inventory.packet.binding,
+      generatedAt: '2026-11-08T00:00:00.000Z',
+      coverage,
+      records: analysis.records,
+      analysisUnavailable: analysis.analysisUnavailable,
+      signalAttempts: scenario.result.attempts,
+      signalBinding: scenario.result.binding,
+    }),
+  ).toEqual({ ok: false, category: 'content' });
+});
