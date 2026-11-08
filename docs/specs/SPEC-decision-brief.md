@@ -3,6 +3,8 @@
 Status: approved for execution, 2026-11-08. The user's `as-plan` invocation
 approved the reviewed draft for planning; the user then approved the plan and
 invoked `as-build auto`. Live publication remains outside this approval.
+The renderer and focused integration tests are implemented; visual and human
+review gates remain open.
 Module: `shared-review` in the [capability map](README.md). Scope:
 [O1 #23](https://github.com/andrewpucci/dependency-update-advisor/issues/23).
 The approved [comment experience](SPEC-comment-experience.md) remains the
@@ -138,6 +140,31 @@ lines.push(`**Next action:** ${escape(action)}`);
 ```
 
 This illustrates the existing style contract, not a complete escaping method.
+
+## Implementation handoff
+
+[`renderDecisionBrief`](../../src/reporting.ts) accepts the T1 binding, a UTC
+generation timestamp, an optional digest, T5 coverage, M2 unit records and
+analysis-unavailable flag, and S3 attempt records with their bound identity.
+S1 and S2 evidence reaches it through the validated packet. It returns either
+an attributed body or a bounded failure; W2 establishes provenance and decides
+T3 publication readiness. It does not publish a comment or status.
+
+The renderer checks the supplied identity, inventory, unit and assessment
+accounting, required and optional evidence gaps, and reference attribution.
+It preserves the T5 outcome rather than deciding policy. It escapes external
+text and neutralizes GitHub autolinks, accepts only vetted HTTPS source URLs,
+and applies the 50,000-string-unit ceiling to the final body. It omits
+lower-priority sections with a notice when necessary and fails if required
+decision content cannot fit. The renderer relies on trusted orchestration for
+the provenance of the supplied T5/M2/S3 results; shape consistency alone does
+not prove that an arbitrary caller supplied authentic results.
+
+The synthetic grouped fixture runs the actual collectors and analysis
+handoffs, then supplies the rendered body to T3 with mocked GitHub transport.
+It does not prove live provider behavior, workflow ownership or publication,
+GitHub body round-tripping, adoption, parity, or cutover. The old reviewer
+remains active until those separate gates pass.
 
 ## Verification and acceptance
 
