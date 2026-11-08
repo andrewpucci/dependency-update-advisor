@@ -307,8 +307,11 @@ test('shows a failed exact-version license lookup without inventing license info
   });
   expect(result.ok).toBe(true);
   if (!result.ok) throw new Error('render failed');
-  expect(result.body).toContain('License lookup');
-  expect(result.body).toContain('timeout');
+  const member = input.inventory.units
+    .flatMap((unit) => unit.members)
+    .find((item) => item.id === attempt.memberId);
+  if (!member) throw new Error('missing member fixture');
+  expect(result.body).toContain(`License lookup for ${member.name} (${attempt.side}): timeout.`);
 });
 
 test('renders a validated actionable capability with local context and upstream evidence', async () => {
