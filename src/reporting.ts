@@ -220,19 +220,26 @@ function renderNonempty(input: DecisionBriefInput, binding: ReviewBinding): Deci
   )
     return { ok: false, category: 'content' };
   const { owner, name } = binding.repository;
-  if (
-    input.signalAttempts.some(
-      (attempt) =>
-        !input.coverage.inventory.packet.changes.some((change) => change.id === attempt.memberId) ||
-        attempt.sourceIds.some(
-          (id) =>
-            !input.coverage.inventory.packet.sources.some(
-              (source) => source.id === id && source.memberIds.includes(attempt.memberId),
-            ),
-        ),
+  function validateSignals(): DecisionBriefResult | undefined {
+    if (
+      input.signalAttempts.some(
+        (attempt) =>
+          !input.coverage.inventory.packet.changes.some(
+            (change) => change.id === attempt.memberId,
+          ) ||
+          attempt.sourceIds.some(
+            (id) =>
+              !input.coverage.inventory.packet.sources.some(
+                (source) => source.id === id && source.memberIds.includes(attempt.memberId),
+              ),
+          ),
+      )
     )
-  )
-    return { ok: false, category: 'reference' };
+      return { ok: false, category: 'reference' };
+    return undefined;
+  }
+  const validateSignalsError = validateSignals();
+  if (validateSignalsError) return validateSignalsError;
   const holds = summary.units.flatMap((unit) =>
     unit.rules
       .filter((rule) => rule.findingId && rule.effectiveVerdict === 'do_not_merge')
@@ -246,55 +253,64 @@ function renderNonempty(input: DecisionBriefInput, binding: ReviewBinding): Deci
         blocker,
       })) ?? [],
   );
-  if (
-    modelHolds.some(
-      ({ unit, policy, blocker }) =>
-        !policy.rules.some(
-          (rule) =>
-            rule.effectiveVerdict === 'do_not_merge' &&
-            blocker.holdId ===
-              JSON.stringify([unit.id, rule.rule, rule.findingId ?? null, rule.sourceId ?? null]),
-        ),
+  function validateHolds(): DecisionBriefResult | undefined {
+    if (
+      modelHolds.some(
+        ({ unit, policy, blocker }) =>
+          !policy.rules.some(
+            (rule) =>
+              rule.effectiveVerdict === 'do_not_merge' &&
+              blocker.holdId ===
+                JSON.stringify([unit.id, rule.rule, rule.findingId ?? null, rule.sourceId ?? null]),
+          ),
+      )
     )
-  )
-    return { ok: false, category: 'reference' };
-  if (
-    outcome.kind === 'advice' &&
-    outcome.verdict === 'do_not_merge' &&
-    (!(holds.length || modelHolds.length) || holds.some((hold) => !hold.finding))
-  )
-    return { ok: false, category: 'content' };
-  if (holds.length && (outcome.kind !== 'advice' || outcome.verdict !== 'do_not_merge'))
-    return { ok: false, category: 'content' };
-  const gaps = summary.units.flatMap((unit) => unit.gaps);
-  const incomplete =
-    input.analysisUnavailable ||
-    counts.unresolvedUnits > 0 ||
-    inventoryGaps.length > 0 ||
-    gaps.length > 0;
-  const recommendation =
-    outcome.kind !== 'advice'
-      ? 'No merge recommendation.'
-      : outcome.verdict === 'do_not_merge'
-        ? 'Hold; verified blockers require action.'
-        : outcome.verdict === 'merge_with_followups'
-          ? 'Merge with follow-ups.'
-          : 'Advisory recommendation: merge.';
-  const firstUnresolved = input.records.find((record) => record.state.state !== 'assessed');
-  const firstGapIndex = summary.units.findIndex((unit) => unit.gaps.length > 0);
-  const firstFollowup = input.records.flatMap((record) => record.assessment?.followups ?? [])[0];
-  const next =
-    outcome.kind === 'advice' && outcome.verdict === 'do_not_merge'
-      ? text(holds[0]?.finding?.remediation[0] ?? modelHolds[0]?.blocker.remediation[0] ?? '')
-      : firstUnresolved
-        ? recovery(firstUnresolved.category)
-        : inventoryGaps.length
-          ? text(inventoryGaps[0].nextActions[0] ?? '')
-          : firstGapIndex >= 0
-            ? evidenceGap(units[firstGapIndex], summary.units[firstGapIndex].gaps[0].sourceId)
-            : firstFollowup
-              ? text(firstFollowup.description)
-              : 'Review the assessments below.';
+      return { ok: false, category: 'reference' };
+    if (
+      outcome.kind === 'advice' &&
+      outcome.verdict === 'do_not_merge' &&
+      (!(holds.length || modelHolds.length) || holds.some((hold) => !hold.finding))
+    )
+      return { ok: false, category: 'content' };
+    if (holds.length && (outcome.kind !== 'advice' || outcome.verdict !== 'do_not_merge'))
+      return { ok: false, category: 'content' };
+    return undefined;
+  }
+  const validateHoldsError = validateHolds();
+  if (validateHoldsError) return validateHoldsError;
+  function opening() {
+    const gaps = summary.units.flatMap((unit) => unit.gaps);
+    const incomplete =
+      input.analysisUnavailable ||
+      counts.unresolvedUnits > 0 ||
+      inventoryGaps.length > 0 ||
+      gaps.length > 0;
+    const recommendation =
+      outcome.kind !== 'advice'
+        ? 'No merge recommendation.'
+        : outcome.verdict === 'do_not_merge'
+          ? 'Hold; verified blockers require action.'
+          : outcome.verdict === 'merge_with_followups'
+            ? 'Merge with follow-ups.'
+            : 'Advisory recommendation: merge.';
+    const firstUnresolved = input.records.find((record) => record.state.state !== 'assessed');
+    const firstGapIndex = summary.units.findIndex((unit) => unit.gaps.length > 0);
+    const firstFollowup = input.records.flatMap((record) => record.assessment?.followups ?? [])[0];
+    const next =
+      outcome.kind === 'advice' && outcome.verdict === 'do_not_merge'
+        ? text(holds[0]?.finding?.remediation[0] ?? modelHolds[0]?.blocker.remediation[0] ?? '')
+        : firstUnresolved
+          ? recovery(firstUnresolved.category)
+          : inventoryGaps.length
+            ? text(inventoryGaps[0].nextActions[0] ?? '')
+            : firstGapIndex >= 0
+              ? evidenceGap(units[firstGapIndex], summary.units[firstGapIndex].gaps[0].sourceId)
+              : firstFollowup
+                ? text(firstFollowup.description)
+                : 'Review the assessments below.';
+    return { incomplete, recommendation, firstUnresolved, next };
+  }
+  const { incomplete, recommendation, firstUnresolved, next } = opening();
   if (!next) return { ok: false, category: 'content' };
   const lines = [
     '<!-- dependabot-intelligent-review -->',
@@ -310,49 +326,52 @@ function renderNonempty(input: DecisionBriefInput, binding: ReviewBinding): Deci
     `Reviewed head: [${binding.headSha}](https://github.com/${owner}/${name}/commit/${binding.headSha})`,
     `Generated: ${input.generatedAt}`,
   ];
+  function verifiedLinks(finding: NonNullable<(typeof holds)[number]['finding']>): string[] | null {
+    const sources = finding.references.map((id) =>
+      input.coverage.inventory.packet.sources.find(
+        (source) => source.id === id && source.memberIds.includes(finding.memberId),
+      ),
+    );
+    if (sources.some((source) => !source || source.status === 'unavailable')) return null;
+    const links: string[] = [];
+    for (const source of sources) {
+      if (source?.provenance.kind !== 'upstream') continue;
+      const url = new URL(source.provenance.url);
+      if (
+        url.protocol !== 'https:' ||
+        url.username ||
+        url.password ||
+        unsafeUrl(source.provenance.url)
+      )
+        return null;
+      links.push(`[${text(source.provenance.title)}](<${url.href.replace(/[<>]/gu, '')}>)`);
+    }
+    return links;
+  }
   function appendBlockers(): DecisionBriefResult | undefined {
-    if (holds.length || modelHolds.length) {
-      lines.push('', '## Reasons not to merge', '');
-      for (const { unit, finding } of holds) {
-        if (!finding || !finding.remediation.length || !finding.validation.length)
-          return { ok: false, category: 'content' };
-        const sources = finding.references.map((id) =>
-          input.coverage.inventory.packet.sources.find(
-            (source) => source.id === id && source.memberIds.includes(finding.memberId),
-          ),
-        );
-        if (sources.some((source) => !source || source.status === 'unavailable'))
-          return { ok: false, category: 'reference' };
-        const links: string[] = [];
-        for (const source of sources) {
-          if (source?.provenance.kind !== 'upstream') continue;
-          const url = new URL(source.provenance.url);
-          if (
-            url.protocol !== 'https:' ||
-            url.username ||
-            url.password ||
-            unsafeUrl(source.provenance.url)
-          )
-            return { ok: false, category: 'reference' };
-          links.push(`[${text(source.provenance.title)}](<${url.href.replace(/[<>]/gu, '')}>)`);
-        }
-        lines.push(
-          `- ${text(unit.members.find((member) => member.id === finding.memberId)?.name ?? '')}: ${text(finding.rationale)} Impact: this finding requires a hold. Remediation: ${finding.remediation.map(text).join(' ')} Validation: ${finding.validation.map(text).join(' ')} ${links.join(' ')}`,
-        );
-      }
-      for (const { unit, blocker } of modelHolds) {
-        const evidence = blocker.evidence
-          .map(
-            (claim) =>
-              `${text(claim.text)} ${claim.references.map((ref) => reference(ref, unit, input)).join(' ')}`,
-          )
-          .join(' ');
-        if (!blocker.remediation.length || !blocker.validation.length)
-          return { ok: false, category: 'content' };
-        lines.push(
-          `- ${text(unit.members.map((member) => member.name).join(', '))}: ${text(blocker.reason)} Impact: ${text(blocker.impact)} Evidence: ${evidence || 'The policy requires action on the identified evidence gap.'} Remediation: ${blocker.remediation.map(text).join(' ')} Validation: ${blocker.validation.map(text).join(' ')}`,
-        );
-      }
+    if (!holds.length && !modelHolds.length) return undefined;
+    lines.push('', '## Reasons not to merge', '');
+    for (const { unit, finding } of holds) {
+      if (!finding || !finding.remediation.length || !finding.validation.length)
+        return { ok: false, category: 'content' };
+      const links = verifiedLinks(finding);
+      if (!links) return { ok: false, category: 'reference' };
+      lines.push(
+        `- ${text(unit.members.find((member) => member.id === finding.memberId)?.name ?? '')}: ${text(finding.rationale)} Impact: this finding requires a hold. Remediation: ${finding.remediation.map(text).join(' ')} Validation: ${finding.validation.map(text).join(' ')} ${links.join(' ')}`,
+      );
+    }
+    for (const { unit, blocker } of modelHolds) {
+      const evidence = blocker.evidence
+        .map(
+          (claim) =>
+            `${text(claim.text)} ${claim.references.map((ref) => reference(ref, unit, input)).join(' ')}`,
+        )
+        .join(' ');
+      if (!blocker.remediation.length || !blocker.validation.length)
+        return { ok: false, category: 'content' };
+      lines.push(
+        `- ${text(unit.members.map((member) => member.name).join(', '))}: ${text(blocker.reason)} Impact: ${text(blocker.impact)} Evidence: ${evidence || 'The policy requires action on the identified evidence gap.'} Remediation: ${blocker.remediation.map(text).join(' ')} Validation: ${blocker.validation.map(text).join(' ')}`,
+      );
     }
     return undefined;
   }
@@ -470,6 +489,43 @@ function renderNonempty(input: DecisionBriefInput, binding: ReviewBinding): Deci
   appendFollowups();
   const requiredFollowups = lines.splice(0);
   const optional: string[][] = [];
+  function appendCapability(
+    capability: NonNullable<UnitRecord['assessment']>['newFunctionality'][number],
+    unit: DecisionUnit,
+  ): DecisionBriefResult | undefined {
+    if (unit.kind === 'direct_group' && capability.memberId !== unit.anchorId)
+      return { ok: false, category: 'reference' };
+    const source = reference(
+      {
+        kind: 'source',
+        sourceId: capability.sourceId,
+        memberId: capability.memberId,
+        side: 'head',
+        category: 'upstream',
+        url: capability.sourceUrl,
+      },
+      unit,
+      input,
+    );
+    let context = '';
+    if (capability.contextId && capability.contextPath)
+      context = reference(
+        {
+          kind: 'context',
+          contextId: capability.contextId,
+          memberId: capability.memberId,
+          path: capability.contextPath,
+        },
+        unit,
+        input,
+      );
+    if (capability.usefulness !== 'not_relevant' && (!capability.action || !context))
+      return { ok: false, category: 'content' };
+    lines.push(
+      `- ${text(capability.feature)} ${capability.action ? text(capability.action) : ''} ${text(capability.rationale)} ${context} ${source}`,
+    );
+    return undefined;
+  }
   function appendCapabilities(): DecisionBriefResult | undefined {
     const capabilities = input.records.flatMap(
       (record, index) =>
@@ -489,37 +545,8 @@ function renderNonempty(input: DecisionBriefInput, binding: ReviewBinding): Deci
         lines.push('', '<details>', '<summary>Not relevant</summary>', '');
       else lines.push('', `## ${heading}`, '');
       for (const { capability, unit } of entries) {
-        if (unit.kind === 'direct_group' && capability.memberId !== unit.anchorId)
-          return { ok: false, category: 'reference' };
-        const source = reference(
-          {
-            kind: 'source',
-            sourceId: capability.sourceId,
-            memberId: capability.memberId,
-            side: 'head',
-            category: 'upstream',
-            url: capability.sourceUrl,
-          },
-          unit,
-          input,
-        );
-        let context = '';
-        if (capability.contextId && capability.contextPath)
-          context = reference(
-            {
-              kind: 'context',
-              contextId: capability.contextId,
-              memberId: capability.memberId,
-              path: capability.contextPath,
-            },
-            unit,
-            input,
-          );
-        if (kind !== 'not_relevant' && (!capability.action || !context))
-          return { ok: false, category: 'content' };
-        lines.push(
-          `- ${text(capability.feature)} ${capability.action ? text(capability.action) : ''} ${text(capability.rationale)} ${context} ${source}`,
-        );
+        const error = appendCapability(capability, unit);
+        if (error) return error;
       }
       if (kind === 'not_relevant') lines.push('', '</details>');
       optional.push(lines.splice(0));
