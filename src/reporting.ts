@@ -341,20 +341,23 @@ function renderNonempty(input: DecisionBriefInput, binding: ReviewBinding): Deci
   }
   const { incomplete, recommendation, firstUnresolved, next } = opening();
   if (!next) return { ok: false, category: 'content' };
-  const lines = [
-    '<!-- dependabot-intelligent-review -->',
-    `<!-- reviewed-head: ${binding.headSha} -->`,
-    ...(input.reviewDigest ? [`<!-- review-digest: ${input.reviewDigest} -->`] : []),
-    '',
-    `# Dependabot review: ${owner}/${name} PR ${binding.pullNumber}`,
-    '',
-    `**Recommendation:** ${recommendation}${input.analysisUnavailable ? ' Analysis is unavailable.' : ''}`,
-    `**Next action:** ${next}${input.analysisUnavailable && outcome.kind === 'advice' && firstUnresolved ? ` ${recovery(firstUnresolved.category)}` : ''}`,
-    `**Evidence coverage:** ${incomplete ? 'Incomplete.' : 'Complete.'}`,
-    '',
-    `Reviewed head: [${binding.headSha}](https://github.com/${owner}/${name}/commit/${binding.headSha})`,
-    `Generated: ${input.generatedAt}`,
-  ];
+  function header(): string[] {
+    return [
+      '<!-- dependabot-intelligent-review -->',
+      `<!-- reviewed-head: ${binding.headSha} -->`,
+      ...(input.reviewDigest ? [`<!-- review-digest: ${input.reviewDigest} -->`] : []),
+      '',
+      `# Dependabot review: ${owner}/${name} PR ${binding.pullNumber}`,
+      '',
+      `**Recommendation:** ${recommendation}${input.analysisUnavailable ? ' Analysis is unavailable.' : ''}`,
+      `**Next action:** ${next}${input.analysisUnavailable && outcome.kind === 'advice' && firstUnresolved ? ` ${recovery(firstUnresolved.category)}` : ''}`,
+      `**Evidence coverage:** ${incomplete ? 'Incomplete.' : 'Complete.'}`,
+      '',
+      `Reviewed head: [${binding.headSha}](https://github.com/${owner}/${name}/commit/${binding.headSha})`,
+      `Generated: ${input.generatedAt}`,
+    ];
+  }
+  const lines = header();
   function verifiedLinks(finding: NonNullable<(typeof holds)[number]['finding']>): string[] | null {
     const sources = finding.references.map((id) =>
       input.coverage.inventory.packet.sources.find(
