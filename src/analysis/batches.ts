@@ -32,51 +32,32 @@ export async function analyzeDecisionUnits(
   const now = dependencies.now ?? (() => performance.now());
   const analyze = dependencies.analyze ?? analyzeMistralBatch;
   const unitIds = snapshot.inventory.units.map((unit) => unit.id);
-  if (unitIds.length > ANALYSIS_LIMITS.maxUnits)
-    return { ok: false as const, category: 'input' as const };
-  let records: UnitRecord[] = [];
-  if (unitIds.length) {
-    const prepared = prepareAnalysisBatch({ ...snapshot, unitIds, limits: ANALYSIS_LIMITS });
+  const deadlineMs = Math.min(options.deadlineMs - 60_000, now() + 600_000);
+  const queue: string[][] = [];
+  for (let index = 0; index < unitIds.length; index += ANALYSIS_LIMITS.maxUnits)
+    queue.push(unitIds.slice(index, index + ANALYSIS_LIMITS.maxUnits));
+  const records: UnitRecord[] = [];
+  while (queue.length) {
+    const ids = queue.shift()!;
+    const prepared = prepareAnalysisBatch({ ...snapshot, unitIds: ids, limits: ANALYSIS_LIMITS });
     if (prepared.kind !== 'prepared') {
-      records = unresolved(unitIds, 'unavailable', false, prepared.category, null);
-    } else {
-      const result: MistralResult = await analyze(prepared.batch, {
-        ...options,
-        deadlineMs: Math.min(options.deadlineMs - 60_000, now() + 600_000),
-      });
-      const bound =
-        'batchId' in result &&
-        result.batchId === prepared.batch.batchId &&
-        'unitIds' in result &&
-        JSON.stringify(result.unitIds) === JSON.stringify(unitIds);
-      if (!bound)
-        records = unresolved(unitIds, 'rejected', true, 'reference', prepared.batch.batchId);
-      else if (
-        result.kind === 'validated' &&
-        result.assessments.length === unitIds.length &&
-        result.assessments.every((assessment, index) => assessment.unitId === unitIds[index])
-      ) {
-        records = result.assessments.map((assessment) => ({
-          unitId: assessment.unitId,
-          state: { state: 'assessed', verdict: assessment.verdict },
-          attempted: true,
-          category: null,
-          batchId: prepared.batch.batchId,
-          assessment,
-        }));
+      if (prepared.category === 'budget' && ids.length > 1) {
+        const midpoint = Math.floor(ids.length / 2);
+        queue.unshift(ids.slice(0, midpoint), ids.slice(midpoint));
       } else {
-        const category = result.kind === 'validated' ? 'reference' : result.category;
-        const attempted = result.kind === 'validated' ? true : result.attempted;
-        const state =
-          attempted && ['envelope', 'json', 'schema', 'reference', 'policy'].includes(category)
-            ? 'rejected'
-            : !attempted && ['cancelled', 'deadline'].includes(category)
-              ? 'unattempted'
-              : 'unavailable';
-        records = unresolved(unitIds, state, attempted, category, prepared.batch.batchId);
+        records.push(...unresolved(ids, 'unavailable', false, prepared.category, null));
+        if (prepared.category !== 'budget') {
+          for (const remaining of queue)
+            records.push(...unresolved(remaining, 'unavailable', false, prepared.category, null));
+          break;
+        }
       }
+      continue;
     }
+    const result: MistralResult = await analyze(prepared.batch, { ...options, deadlineMs });
+    records.push(...mapResult(ids, prepared.batch.batchId, result));
   }
+  records.sort((a, b) => unitIds.indexOf(a.unitId) - unitIds.indexOf(b.unitId));
   const states = Object.fromEntries(records.map((record) => [record.unitId, record.state]));
   const coverage = summarizeDecisionCoverage(
     snapshot.inventory,
@@ -114,4 +95,35 @@ function unresolved(
     batchId,
     assessment: null,
   }));
+}
+
+function mapResult(ids: readonly string[], batchId: string, result: MistralResult): UnitRecord[] {
+  const bound =
+    'batchId' in result &&
+    result.batchId === batchId &&
+    'unitIds' in result &&
+    JSON.stringify(result.unitIds) === JSON.stringify(ids);
+  if (!bound) return unresolved(ids, 'rejected', true, 'reference', batchId);
+  if (
+    result.kind === 'validated' &&
+    result.assessments.length === ids.length &&
+    result.assessments.every((assessment, index) => assessment.unitId === ids[index])
+  )
+    return result.assessments.map((assessment) => ({
+      unitId: assessment.unitId,
+      state: { state: 'assessed', verdict: assessment.verdict },
+      attempted: true,
+      category: null,
+      batchId,
+      assessment,
+    }));
+  const category = result.kind === 'validated' ? 'reference' : result.category;
+  const attempted = result.kind === 'validated' ? true : result.attempted;
+  const state =
+    attempted && ['envelope', 'json', 'schema', 'reference', 'policy'].includes(category)
+      ? 'rejected'
+      : !attempted && ['cancelled', 'deadline'].includes(category)
+        ? 'unattempted'
+        : 'unavailable';
+  return unresolved(ids, state, attempted, category, batchId);
 }

@@ -76,3 +76,42 @@ test('malformed provider content is rejected without exposing it', async () => {
   ).toBe(true);
   expect(JSON.stringify(result)).not.toContain('SECRET-SENTINEL');
 });
+
+test('packs a large inventory into bounded batches without losing units', async () => {
+  const { input } = await analysisScenario({ inventory: { children: 12 } });
+  const packet = { ...input.inventory.packet, relationships: [] };
+  const { formDecisionUnits } = await import('../units.js');
+  const inventory = formDecisionUnits(packet);
+  expect(inventory.units.length).toBeGreaterThan(8);
+  const batches: number[] = [];
+  const result = await analyzeDecisionUnits(
+    { ...input, inventory },
+    { apiKey: 'test-key', deadlineMs: 700_000 },
+    {
+      now: () => 0,
+      analyze: (batch, options) => {
+        batches.push(batch.unitIds.length);
+        return analyzeMistralBatch(batch, options, {
+          now: () => 0,
+          fetch: async () =>
+            Response.json({
+              choices: [
+                {
+                  index: 0,
+                  finish_reason: 'stop',
+                  message: { role: 'assistant', content: JSON.stringify(analysisDocument(batch)) },
+                },
+              ],
+            }),
+        });
+      },
+    },
+  );
+  expect(result.ok).toBe(true);
+  if (!result.ok) throw new Error('fixture failed');
+  expect(batches.every((length) => length <= 8)).toBe(true);
+  expect(result.records.map((record) => record.unitId)).toEqual(
+    inventory.units.map((unit) => unit.id),
+  );
+  expect(result.records.every((record) => record.state.state === 'assessed')).toBe(true);
+});
