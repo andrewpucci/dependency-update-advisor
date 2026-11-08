@@ -89,6 +89,13 @@ function unsafeUrl(value: string): boolean {
   );
 }
 
+function utcTimestamp(value: string): boolean {
+  const match = /^(\d{4}-\d\d-\d\dT\d\d:\d\d:\d\d)(?:\.(\d{1,3}))?(?:Z|\+00:00)$/u.exec(value);
+  if (!match) return false;
+  const canonical = `${match[1]}.${(match[2] ?? '').padEnd(3, '0')}Z`;
+  return new Date(value).toISOString() === canonical;
+}
+
 function contextReference(
   ref: Extract<ResolvedReference, { kind: 'context' }>,
   input: DecisionBriefInput,
@@ -692,8 +699,7 @@ export function renderDecisionBrief(input: DecisionBriefInput): DecisionBriefRes
         formDecisionUnits(input.coverage.inventory.packet),
         input.coverage.inventory,
       ) ||
-      !/^\d{4}-\d\d-\d\dT\d\d:\d\d:\d\d\.\d{3}Z$/u.test(input.generatedAt) ||
-      new Date(input.generatedAt).toISOString() !== input.generatedAt ||
+      !utcTimestamp(input.generatedAt) ||
       (input.reviewDigest !== undefined && !/^[a-f\d]{64}$/u.test(input.reviewDigest))
     )
       return { ok: false, category: 'input' };

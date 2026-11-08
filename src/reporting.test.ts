@@ -1023,3 +1023,22 @@ test('rejects a policy summary that drops unchecked optional signals', async () 
     }),
   ).toEqual({ ok: false, category: 'content' });
 });
+
+test('accepts valid UTC generation times with and without fractional seconds', () => {
+  const input = emptyBrief();
+  for (const generatedAt of [
+    '2026-11-08T00:00:00Z',
+    '2026-11-08T00:00:00.5Z',
+    '2026-11-08T00:00:00.000Z',
+    '2026-11-08T00:00:00+00:00',
+  ]) {
+    const result = renderDecisionBrief({ ...input, generatedAt });
+    expect(result.ok).toBe(true);
+    if (!result.ok) throw new Error(generatedAt);
+    expect(result.body).toContain(`Generated: ${generatedAt}`);
+  }
+  expect(renderDecisionBrief({ ...input, generatedAt: '2026-02-30T00:00:00Z' })).toEqual({
+    ok: false,
+    category: 'input',
+  });
+});
