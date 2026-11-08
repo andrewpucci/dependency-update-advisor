@@ -19,6 +19,10 @@ export type UnitRecord = Readonly<{
   batchId: string | null;
   assessment: ValidatedAssessment | null;
 }>;
+const MAX_CALLS = 32;
+const MAX_CONCURRENT_CALLS = 2;
+const MAX_ANALYSIS_MS = 600_000;
+const PUBLICATION_RESERVE_MS = 60_000;
 type Dependencies = Readonly<{
   now: () => number;
   analyze: typeof analyzeMistralBatch;
@@ -67,7 +71,10 @@ export async function analyzeDecisionUnits(
       ? (parsedConfig.config.analysis?.model ?? null)
       : null;
   const unitIds = snapshot.inventory.units.map((unit) => unit.id);
-  const deadlineMs = Math.min(selectedOptions.deadlineMs - 60_000, start + 600_000);
+  const deadlineMs = Math.min(
+    selectedOptions.deadlineMs - PUBLICATION_RESERVE_MS,
+    start + MAX_ANALYSIS_MS,
+  );
   const { records, dispatched, splits } = await scheduleBatches(
     snapshot,
     { ...selectedOptions, deadlineMs },
@@ -75,7 +82,10 @@ export async function analyzeDecisionUnits(
     now,
     unitIds,
   );
-  records.sort((a, b) => unitIds.indexOf(a.unitId) - unitIds.indexOf(b.unitId));
+  const order = new Map(unitIds.map((id, index) => [id, index]));
+  records.sort((a, b) => order.get(a.unitId)! - order.get(b.unitId)!);
+  const stateCounts = { assessed: 0, unavailable: 0, rejected: 0, unattempted: 0 };
+  for (const record of records) stateCounts[record.state.state]++;
   const states = Object.fromEntries(records.map((record) => [record.unitId, record.state]));
   const coverage = summarizeDecisionCoverage(
     snapshot.inventory,
@@ -96,18 +106,12 @@ export async function analyzeDecisionUnits(
       memberCount: snapshot.inventory.packet.changes.length,
       callsDispatched: dispatched,
       truncationSplits: splits,
-      stateCounts: {
-        assessed: records.filter((record) => record.state.state === 'assessed').length,
-        unavailable: records.filter((record) => record.state.state === 'unavailable').length,
-        rejected: records.filter((record) => record.state.state === 'rejected').length,
-        unattempted: records.filter((record) => record.state.state === 'unattempted').length,
-      },
+      stateCounts,
       failureCategories: [
         ...new Set(records.flatMap((record) => (record.category ? [record.category] : []))),
       ].sort(),
     },
-    analysisUnavailable:
-      records.length > 0 && records.every((record) => record.state.state !== 'assessed'),
+    analysisUnavailable: records.length > 0 && stateCounts.assessed === 0,
   };
 }
 
@@ -151,9 +155,9 @@ function prepareWave(
 ) {
   const wave: WaveEntry[] = [];
   while (
-    wave.length < 2 &&
+    wave.length < MAX_CONCURRENT_CALLS &&
     state.queue.length &&
-    state.calls < 32 &&
+    state.calls < MAX_CALLS &&
     now() < options.deadlineMs &&
     !options.signal?.aborted
   ) {
@@ -201,13 +205,21 @@ async function collectWave(state: ScheduleState, wave: WaveEntry[]) {
   state.queue.unshift(...children);
 }
 
+function isBound(result: MistralResult, ids: readonly string[], batchId: string) {
+  return (
+    'batchId' in result &&
+    result.batchId === batchId &&
+    'unitIds' in result &&
+    isDeepStrictEqual(result.unitIds, ids)
+  );
+}
+
 function isSplittable(result: MistralResult, ids: string[], batchId: string) {
   return (
     result.kind === 'truncated' &&
     result.category === 'length' &&
     ids.length > 1 &&
-    result.batchId === batchId &&
-    JSON.stringify(result.unitIds) === JSON.stringify(ids)
+    isBound(result, ids, batchId)
   );
 }
 
@@ -253,12 +265,8 @@ function unresolved(
 }
 
 function mapResult(ids: readonly string[], batchId: string, result: MistralResult): UnitRecord[] {
-  const bound =
-    'batchId' in result &&
-    result.batchId === batchId &&
-    'unitIds' in result &&
-    JSON.stringify(result.unitIds) === JSON.stringify(ids);
-  if (!bound) return unresolved(ids, 'rejected', true, 'reference', batchId);
+  if (!isBound(result, ids, batchId))
+    return unresolved(ids, 'rejected', true, 'reference', batchId);
   if (
     result.kind === 'validated' &&
     result.assessments.length === ids.length &&
@@ -288,7 +296,7 @@ async function boundedCall(
   options: MistralOptions,
   analyze: typeof analyzeMistralBatch,
   now: () => number,
-): Promise<MistralResult | 'cancelled' | 'deadline' | 'transport'> {
+): Promise<BatchOutcome> {
   const controller = new AbortController();
   let stop: (reason: 'cancelled' | 'deadline') => void = () => {};
   const stopped = new Promise<'cancelled' | 'deadline'>((resolve) => {
