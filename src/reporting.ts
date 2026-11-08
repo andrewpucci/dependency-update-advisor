@@ -19,6 +19,10 @@ export type DecisionBriefResult =
   | Readonly<{ ok: true; body: string }>
   | Readonly<{ ok: false; category: 'input' | 'reference' | 'content' | 'size' }>;
 
+/** Renderer-owned constant; describes shared defaults, not a consumer's settings. */
+const POLICY_GUIDE_URL =
+  'https://github.com/andrewpucci/dependency-update-advisor/blob/main/docs/policy-guide.md';
+
 class InvalidReference extends Error {}
 
 function text(value: string): string {
@@ -627,7 +631,7 @@ function renderNonempty(input: DecisionBriefInput, binding: ReviewBinding): Deci
       if (upstream && !citations.includes(upstream)) citations.push(upstream);
       lines.push(`  - Assessment: ${text(assessment.reason.text)}`);
       lines.push(
-        `  - Policy: ${readableLabel(evaluation.effectiveCeiling)}; evidence: ${evaluation.gaps.length ? 'partial' : 'complete'}. ${citations.join(' ')}`,
+        `  - [Policy](<${POLICY_GUIDE_URL}>): ${readableLabel(evaluation.effectiveCeiling)}; evidence: ${evaluation.gaps.length ? 'partial' : 'complete'}. ${citations.join(' ')}`,
       );
     }
   }

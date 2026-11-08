@@ -107,7 +107,10 @@ is a planning choice.
    required evidence gap appears in Non-blocking follow-ups with its package
    and exact next action. Assessments distinguish local context from upstream
    evidence, and identify role, policy, and evidence status without
-   presenting unknowns as facts.
+   presenting unknowns as facts. The `Policy` label links to the shared
+   [policy guide](../policy-guide.md) through a renderer-owned constant URL;
+   the guide describes defaults, and the displayed result stays specific to
+   the review and its overrides.
 5. Only show actionable, supported Use now items; place Consider later after
    decision-relevant material and Not relevant rationale in controlled
    `<details>`. Keep long remediation prompts and research handoffs below the

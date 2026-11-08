@@ -264,7 +264,16 @@ test('renders assessed decision units without treating required evidence gaps as
   const assessmentBlocks = assessments.split(/\n(?=- )/u).filter((block) => block.startsWith('- '));
   expect(assessmentBlocks).toHaveLength(input.inventory.units.length);
   expect(assessmentBlocks.every((block) => block.includes('  - Assessment:'))).toBe(true);
-  expect(assessmentBlocks.every((block) => block.includes('  - Policy:'))).toBe(true);
+  const guide =
+    'https://github.com/andrewpucci/dependency-update-advisor/blob/main/docs/policy-guide.md';
+  expect(
+    assessmentBlocks.every((block) =>
+      /\n {2}- \[Policy\]\(<https:\/\/github\.com\/andrewpucci\/dependency-update-advisor\/blob\/main\/docs\/policy-guide\.md>\): [a-z ]+; evidence: (complete|partial)\./u.test(
+        block,
+      ),
+    ),
+  ).toBe(true);
+  expect(result.body.split(guide)).toHaveLength(assessmentBlocks.length + 1);
   expect(assessmentBlocks.every((block) => block.includes('](<https://'))).toBe(true);
   expect(assessmentBlocks[0]).toContain('https://github.com/fixture/action/releases/tag/v2.0.0');
   expect(assessmentBlocks[1]).toContain(
@@ -1541,4 +1550,16 @@ test('neutralizes hostile finding and upstream source titles from a validated pa
     const fs = await import('node:fs/promises');
     await fs.writeFile(process.env.O1_FINDING_PROBE, rendered.body);
   }
+});
+
+test('policy guide linked from assessments lists every default rule and verdict', async () => {
+  const fs = await import('node:fs/promises');
+  const { DEFAULT_VERDICTS } = await import('./config.js');
+  const guide = await fs.readFile(new URL('../docs/policy-guide.md', import.meta.url), 'utf8');
+  for (const [rule, verdict] of Object.entries(DEFAULT_VERDICTS)) {
+    const row = guide.split('\n').find((line) => line.startsWith(`| \`${rule}\``));
+    expect(row, rule).toBeDefined();
+    expect(row, rule).toContain(`\`${verdict}\``);
+  }
+  expect(guide).toContain('.github/dependabot-review.json');
 });
