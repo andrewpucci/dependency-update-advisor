@@ -19,21 +19,19 @@ No shared workflow exists; the old reviewer stays active.
 
 ## Next action
 
-[S2 #20](docs/specs/SPEC-upstream-evidence.md) is implemented, pending review/merge;
-[verification #192](https://github.com/andrewpucci/dependency-update-advisor/issues/192)
-retains remaining gates.
-[S1 #19](docs/specs/SPEC-advisory-lookup.md) awaits review/merge; evidence #181.
+[S1](docs/specs/SPEC-advisory-lookup.md), [S2](docs/specs/SPEC-upstream-evidence.md),
+[S3](docs/specs/SPEC-policy-signals.md), M1 and M2 are merged; their separate
+integration gates remain open.
 [U2 #18](docs/specs/SPEC-uv-relationships.md) awaits review/merge; #169 holds evidence.
 [N2 #15](docs/specs/SPEC-npm-relationships.md) is implemented on
 `issue-15`, pending review/merge; #140 holds verification. #93 stays separate.
 [#110 snapshot reuse](docs/specs/SPEC-pr-freshness-snapshot.md) awaits review/merge;
 [verification #113](https://github.com/andrewpucci/dependency-update-advisor/issues/113)
 retains remaining gates. W1/W2 must supply bounded reads and exclusive claims
-before T2/T3 writes. [S3 #53](docs/specs/SPEC-policy-signals.md) is implemented;
-[final review #207](https://github.com/andrewpucci/dependency-update-advisor/issues/207)
-records verification and resolved review findings, pending review/merge.
-[M1 #21](docs/specs/SPEC-mistral-transport.md) implemented; #218 holds verification.
-M2/O1/W2, C2 handoffs, A1, adoption, parity, and cutover need integration proof.
+before T2/T3 writes.
+[O1 #23](docs/specs/SPEC-decision-brief.md) implemented; human check review and
+[verification #232](https://github.com/andrewpucci/dependency-update-advisor/issues/232)
+remain open. W2, C2 handoffs, A1, adoption, parity, and cutover need proof.
 
 - The [capability map](docs/specs/README.md) indexes module and contract status.
 - The [ADR guide](docs/adr/README.md) indexes durable architecture decisions.

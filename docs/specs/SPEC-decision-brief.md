@@ -3,8 +3,9 @@
 Status: approved for execution, 2026-11-08. The user's `as-plan` invocation
 approved the reviewed draft for planning; the user then approved the plan and
 invoked `as-build auto`. Live publication remains outside this approval.
-The renderer and focused integration tests are implemented; visual and human
-review gates remain open.
+The renderer and focused integration tests are implemented. User-provided
+desktop and narrow GitHub previews were inspected before the approved
+reader-friendly label changes; human review of behavior checks remains open.
 Module: `shared-review` in the [capability map](README.md). Scope:
 [O1 #23](https://github.com/andrewpucci/dependency-update-advisor/issues/23).
 The approved [comment experience](SPEC-comment-experience.md) remains the

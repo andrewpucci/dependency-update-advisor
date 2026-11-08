@@ -204,7 +204,8 @@ gaps and an introduced vulnerability before parity is claimed.
 - [Repository adoption](SPEC-repo-adoption.md) — approved for planning.
 - [Comment experience](SPEC-comment-experience.md) — approved supporting contract.
 - [Decision brief rendering](SPEC-decision-brief.md) — approved for execution
-  for O1 #23; renderer implementation is awaiting visual and human review.
+  for O1 #23; renderer implementation is awaiting human review of its checks.
+  Desktop and narrow previews preceded the approved label changes.
   Live publication remains a separate gate.
 - [Parity and cutover](SPEC-parity-cutover.md) — approved for planning.
 - [Extraction baseline](SPEC-extraction-baseline.md) — completed B1 #2
