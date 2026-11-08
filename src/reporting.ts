@@ -208,17 +208,45 @@ function consistentInventoryGaps(input: DecisionBriefInput): boolean {
   });
 }
 
+function consistentReview(input: DecisionBriefInput): boolean {
+  return (
+    consistentOutcome(input) &&
+    consistentCounts(input) &&
+    consistentUnits(input) &&
+    consistentInventoryGaps(input)
+  );
+}
+
+function fitComment(
+  head: string[],
+  assessments: string[],
+  requiredFollowups: string[],
+  optional: string[][],
+): DecisionBriefResult {
+  const sections = [assessments, ...optional];
+  let omitted = false;
+  for (let remaining = sections.length; remaining >= 0; remaining--) {
+    const body = [
+      ...head,
+      ...sections[0],
+      ...requiredFollowups,
+      ...sections.slice(1).flat(),
+      ...(omitted ? ['', 'Some lower-priority detail was omitted to fit the comment.'] : []),
+    ].join('\n');
+    if (body.length <= 50_000) return { ok: true, body };
+    const last = sections.findLastIndex((section) => section.length > 0);
+    if (last < 0) return { ok: false, category: 'size' };
+    sections[last] = [];
+    omitted = true;
+  }
+  return { ok: false, category: 'size' };
+}
+
 function renderNonempty(input: DecisionBriefInput, binding: ReviewBinding): DecisionBriefResult {
   const { counts, inventoryGaps, outcome } = input.coverage;
   const units = input.coverage.inventory.units;
   const summary = input.coverage.policyProvenance.assessments;
-  if (
-    !consistentOutcome(input) ||
-    !consistentCounts(input) ||
-    !consistentUnits(input) ||
-    !consistentInventoryGaps(input)
-  )
-    return { ok: false, category: 'content' };
+  if (!consistentReview(input)) return { ok: false, category: 'content' };
   const { owner, name } = binding.repository;
   function validateSignals(): DecisionBriefResult | undefined {
     if (
@@ -278,6 +306,24 @@ function renderNonempty(input: DecisionBriefInput, binding: ReviewBinding): Deci
   }
   const validateHoldsError = validateHolds();
   if (validateHoldsError) return validateHoldsError;
+  function recommendationText(): string {
+    if (outcome.kind !== 'advice') return 'No merge recommendation.';
+    if (outcome.verdict === 'do_not_merge') return 'Hold; verified blockers require action.';
+    if (outcome.verdict === 'merge_with_followups') return 'Merge with follow-ups.';
+    return 'Advisory recommendation: merge.';
+  }
+  function nextAction(firstUnresolved: (typeof input.records)[number] | undefined): string {
+    if (outcome.kind === 'advice' && outcome.verdict === 'do_not_merge')
+      return text(holds[0]?.finding?.remediation[0] ?? modelHolds[0]?.blocker.remediation[0] ?? '');
+    if (firstUnresolved) return recovery(firstUnresolved.category);
+    if (inventoryGaps.length) return text(inventoryGaps[0].nextActions[0] ?? '');
+    const firstGapIndex = summary.units.findIndex((unit) => unit.gaps.length > 0);
+    if (firstGapIndex >= 0)
+      return evidenceGap(units[firstGapIndex], summary.units[firstGapIndex].gaps[0].sourceId);
+    const firstFollowup = input.records.flatMap((record) => record.assessment?.followups ?? [])[0];
+    if (firstFollowup) return text(firstFollowup.description);
+    return 'Review the assessments below.';
+  }
   function opening() {
     const gaps = summary.units.flatMap((unit) => unit.gaps);
     const incomplete =
@@ -285,30 +331,13 @@ function renderNonempty(input: DecisionBriefInput, binding: ReviewBinding): Deci
       counts.unresolvedUnits > 0 ||
       inventoryGaps.length > 0 ||
       gaps.length > 0;
-    const recommendation =
-      outcome.kind !== 'advice'
-        ? 'No merge recommendation.'
-        : outcome.verdict === 'do_not_merge'
-          ? 'Hold; verified blockers require action.'
-          : outcome.verdict === 'merge_with_followups'
-            ? 'Merge with follow-ups.'
-            : 'Advisory recommendation: merge.';
     const firstUnresolved = input.records.find((record) => record.state.state !== 'assessed');
-    const firstGapIndex = summary.units.findIndex((unit) => unit.gaps.length > 0);
-    const firstFollowup = input.records.flatMap((record) => record.assessment?.followups ?? [])[0];
-    const next =
-      outcome.kind === 'advice' && outcome.verdict === 'do_not_merge'
-        ? text(holds[0]?.finding?.remediation[0] ?? modelHolds[0]?.blocker.remediation[0] ?? '')
-        : firstUnresolved
-          ? recovery(firstUnresolved.category)
-          : inventoryGaps.length
-            ? text(inventoryGaps[0].nextActions[0] ?? '')
-            : firstGapIndex >= 0
-              ? evidenceGap(units[firstGapIndex], summary.units[firstGapIndex].gaps[0].sourceId)
-              : firstFollowup
-                ? text(firstFollowup.description)
-                : 'Review the assessments below.';
-    return { incomplete, recommendation, firstUnresolved, next };
+    return {
+      incomplete,
+      recommendation: recommendationText(),
+      firstUnresolved,
+      next: nextAction(firstUnresolved),
+    };
   }
   const { incomplete, recommendation, firstUnresolved, next } = opening();
   if (!next) return { ok: false, category: 'content' };
@@ -586,23 +615,7 @@ function renderNonempty(input: DecisionBriefInput, binding: ReviewBinding): Deci
   }
   const appendUncheckedError = appendUnchecked();
   if (appendUncheckedError) return appendUncheckedError;
-  const sections = [assessments, ...optional];
-  let omitted = false;
-  for (let remaining = sections.length; remaining >= 0; remaining--) {
-    const body = [
-      ...head,
-      ...sections[0],
-      ...requiredFollowups,
-      ...sections.slice(1).flat(),
-      ...(omitted ? ['', 'Some lower-priority detail was omitted to fit the comment.'] : []),
-    ].join('\n');
-    if (body.length <= 50_000) return { ok: true, body };
-    const last = sections.findLastIndex((section) => section.length > 0);
-    if (last < 0) return { ok: false, category: 'size' };
-    sections[last] = [];
-    omitted = true;
-  }
-  return { ok: false, category: 'size' };
+  return fitComment(head, assessments, requiredFollowups, optional);
 }
 
 /** Render an attributed review body; publication readiness is decided by the caller. */
