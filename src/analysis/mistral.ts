@@ -1,4 +1,3 @@
-import { types } from 'node:util';
 import { freeze, isPlainObject } from '../evidence/common.js';
 import {
   preparedSnapshot,
@@ -43,11 +42,25 @@ export type MistralDiagnostics = Readonly<{
 type Outcome =
   | AnalysisResult
   | Readonly<{
-      kind: 'invalid' | 'unavailable' | 'failed' | 'truncated';
+      kind: 'failed';
       category: MistralCategory;
-      attempted: boolean;
-      batchId?: string;
-      unitIds?: readonly string[];
+      attempted: true;
+      batchId: string;
+      unitIds: readonly string[];
+    }>
+  | Readonly<{
+      kind: 'truncated';
+      category: 'length';
+      attempted: true;
+      batchId: string;
+      unitIds: readonly string[];
+    }>
+  | Readonly<{
+      kind: 'unavailable';
+      category: MistralCategory;
+      attempted: false;
+      batchId: string;
+      unitIds: readonly string[];
     }>;
 export type MistralResult = Outcome & Readonly<{ diagnostics: MistralDiagnostics }>;
 
@@ -60,7 +73,7 @@ function requireValue(value: unknown, category: MistralCategory): asserts value 
   if (!value) throw new MistralFailure(category);
 }
 function preflight(options: MistralOptions, deps: MistralDependencies) {
-  requireValue(isPlainObject(options) && !types.isProxy(options), 'configuration');
+  requireValue(isPlainObject(options), 'configuration');
   for (const key of Reflect.ownKeys(options)) {
     const field = Object.getOwnPropertyDescriptor(options, key)!;
     requireValue(
@@ -123,6 +136,8 @@ function lifecycle(
     signal: controller.signal,
     check,
     async race<T>(pending: Promise<T>): Promise<T> {
+      // The pre-await clock check can fail after a read has already rejected.
+      void pending.catch(() => {});
       check();
       const value = await Promise.race([pending, aborted]);
       check();
@@ -234,13 +249,17 @@ function failure(
   category: MistralCategory,
   attempted: boolean,
 ): MistralResult {
+  const identity = { batchId: snapshot.batchId, unitIds: snapshot.selected.map((unit) => unit.id) };
+  if (!attempted)
+    return result({ ...identity, kind: 'unavailable', category, attempted: false }, snapshot);
+  if (category === 'length')
+    return result({ ...identity, kind: 'truncated', category, attempted: true }, snapshot);
   return result(
     {
-      kind: attempted ? (category === 'length' ? 'truncated' : 'failed') : 'unavailable',
+      ...identity,
+      kind: 'failed',
       category,
-      attempted,
-      batchId: snapshot.batchId,
-      unitIds: snapshot.selected.map((unit) => unit.id),
+      attempted: true,
     },
     snapshot,
   );
