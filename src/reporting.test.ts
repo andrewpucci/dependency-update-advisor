@@ -236,6 +236,12 @@ test('renders assessed decision units without treating required evidence gaps as
   expect(result.body).not.toContain('releaseMetadata');
   expect(result.body).not.toContain('publishTime');
   expect(result.body).toContain('Merge after reviewing the evidence');
+  const assessments = result.body
+    .split('## Package assessments')[1]
+    .split('## Unchecked signals')[0];
+  const assessmentLines = assessments.split('\n').filter((line) => line.startsWith('- '));
+  expect(assessmentLines).toHaveLength(input.inventory.units.length);
+  expect(assessmentLines.every((line) => line.includes('](<https://'))).toBe(true);
   if (process.env.O1_GROUPED_PREVIEW) {
     const fs = await import('node:fs/promises');
     await fs.writeFile(process.env.O1_GROUPED_PREVIEW, result.body);
