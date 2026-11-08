@@ -205,7 +205,7 @@ gaps and an introduced vulnerability before parity is claimed.
 - [Comment experience](SPEC-comment-experience.md) — approved supporting contract.
 - [Decision brief rendering](SPEC-decision-brief.md) — approved for execution
   for O1 #23; renderer implementation is pending overall review and merge.
-  The refreshed narrow preview includes the label and link changes.
+  No desktop or narrow preview yet includes the policy guide link.
   Live publication remains a separate gate.
 - [Parity and cutover](SPEC-parity-cutover.md) — approved for planning.
 - [Extraction baseline](SPEC-extraction-baseline.md) — completed B1 #2
