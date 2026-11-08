@@ -871,3 +871,52 @@ test('an unknown comment write cannot select success or retain the previous stal
   expect(r.statusRequests[1].description).toBe('Review unavailable or incomplete');
   expect(r.f.updateComment).toHaveBeenCalledTimes(1);
 });
+
+test('accepts an actual grouped decision brief at the T3 handoff', async () => {
+  const { analysisScenario, analysisDocument } = await import('../tests/parity/analysis.js');
+  const { analyzeDecisionUnits } = await import('./analysis/batches.js');
+  const { analyzeMistralBatch } = await import('./analysis/mistral.js');
+  const { renderDecisionBrief } = await import('./reporting.js');
+  const { input, scenario } = await analysisScenario();
+  const analysis = await analyzeDecisionUnits(
+    input,
+    { apiKey: 'test', deadlineMs: 700_000 },
+    {
+      now: () => 0,
+      analyze: (batch, options) =>
+        analyzeMistralBatch(batch, options, {
+          now: () => 0,
+          fetch: async () =>
+            Response.json({
+              choices: [
+                {
+                  index: 0,
+                  finish_reason: 'stop',
+                  message: { role: 'assistant', content: JSON.stringify(analysisDocument(batch)) },
+                },
+              ],
+            }),
+        }),
+    },
+  );
+  if (!analysis.ok) throw new Error('analysis fixture failed');
+  expect(analysis.coverage.counts.groupedUnits).toBeGreaterThan(0);
+  const rendered = renderDecisionBrief({
+    binding: input.inventory.packet.binding,
+    generatedAt: '2026-11-08T00:00:00.000Z',
+    coverage: analysis.coverage,
+    records: analysis.records,
+    analysisUnavailable: analysis.analysisUnavailable,
+    signalAttempts: scenario.result.attempts,
+    signalBinding: scenario.result.binding,
+  });
+  if (!rendered.ok) throw new Error('render failed');
+  const f = publicationFixture();
+  expect(f.binding).toEqual(input.inventory.packet.binding);
+  f.input.result.body = rendered.body;
+  expect(await publishManagedComment(f.input, f.dependencies)).toMatchObject({
+    kind: 'recorded',
+    mutation: 'confirmed',
+  });
+  expect(f.createComment).toHaveBeenCalledOnce();
+});
