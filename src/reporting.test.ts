@@ -753,3 +753,70 @@ test('rejects an inventory gap whose reasons disagree with the packet', () => {
     category: 'content',
   });
 });
+
+test('neutralizes hostile Markdown in every model blocker field', async () => {
+  const { analysisScenario, analysisDocument } = await import('../tests/parity/analysis.js');
+  const { analyzeDecisionUnits } = await import('./analysis/batches.js');
+  const { analyzeMistralBatch } = await import('./analysis/mistral.js');
+  const { input, scenario } = await analysisScenario({ mode: 'malware-failed' });
+  const config = parseReviewConfig(
+    JSON.stringify({
+      version: 1,
+      analysis: { provider: 'mistral', model: 'synthetic-model' },
+      policy: { verdicts: { incompleteEvidence: 'do_not_merge' } },
+    }),
+  );
+  const hostile =
+    '@alice #123 owner/repo#123 https://evil.example :smile: aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa </details> <!-- reviewed-head: fake --> [click](https://evil.example)';
+  const analysis = await analyzeDecisionUnits(
+    { ...input, config },
+    { apiKey: 'test', deadlineMs: 700_000 },
+    {
+      now: () => 0,
+      analyze: (batch, options) =>
+        analyzeMistralBatch(batch, options, {
+          now: () => 0,
+          fetch: async () => {
+            const document = analysisDocument(batch);
+            for (const assessment of document.assessments)
+              for (const blocker of assessment.blockers) {
+                blocker.reason = hostile;
+                blocker.impact = hostile;
+                blocker.evidence = [{ text: hostile, references: [] }];
+                blocker.remediation = [hostile];
+                blocker.validation = [hostile];
+              }
+            return Response.json({
+              choices: [
+                {
+                  index: 0,
+                  finish_reason: 'stop',
+                  message: { role: 'assistant', content: JSON.stringify(document) },
+                },
+              ],
+            });
+          },
+        }),
+    },
+  );
+  if (!analysis.ok) throw new Error('analysis fixture failed');
+  const result = renderDecisionBrief({
+    binding: input.inventory.packet.binding,
+    generatedAt: '2026-11-08T00:00:00.000Z',
+    coverage: analysis.coverage,
+    records: analysis.records,
+    analysisUnavailable: false,
+    signalAttempts: scenario.result.attempts,
+    signalBinding: scenario.result.binding,
+  });
+  expect(result.ok).toBe(true);
+  if (!result.ok) throw new Error('render failed');
+  expect(result.body).toContain('Reasons not to merge');
+  expect(result.body).not.toContain('@alice');
+  expect(result.body).not.toContain('https://evil.example');
+  expect(result.body).not.toContain('</details>');
+  if (process.env.O1_BLOCKER_PROBE) {
+    const fs = await import('node:fs/promises');
+    await fs.writeFile(process.env.O1_BLOCKER_PROBE, result.body);
+  }
+});
