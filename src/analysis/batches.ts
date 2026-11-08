@@ -32,30 +32,51 @@ export async function analyzeDecisionUnits(
   const now = dependencies.now ?? (() => performance.now());
   const analyze = dependencies.analyze ?? analyzeMistralBatch;
   const unitIds = snapshot.inventory.units.map((unit) => unit.id);
-  if (!unitIds.length || unitIds.length > ANALYSIS_LIMITS.maxUnits)
+  if (unitIds.length > ANALYSIS_LIMITS.maxUnits)
     return { ok: false as const, category: 'input' as const };
-  const prepared = prepareAnalysisBatch({ ...snapshot, unitIds, limits: ANALYSIS_LIMITS });
-  if (prepared.kind !== 'prepared') return { ok: false as const, category: prepared.category };
-  const result: MistralResult = await analyze(prepared.batch, {
-    ...options,
-    deadlineMs: Math.min(options.deadlineMs - 60_000, now() + 600_000),
-  });
-  if (
-    result.kind !== 'validated' ||
-    result.batchId !== prepared.batch.batchId ||
-    JSON.stringify(result.unitIds) !== JSON.stringify(unitIds) ||
-    result.assessments.length !== unitIds.length ||
-    result.assessments.some((assessment, index) => assessment.unitId !== unitIds[index])
-  )
-    return { ok: false as const, category: 'reference' as const };
-  const records: UnitRecord[] = result.assessments.map((assessment) => ({
-    unitId: assessment.unitId,
-    state: { state: 'assessed', verdict: assessment.verdict },
-    attempted: true,
-    category: null,
-    batchId: prepared.batch.batchId,
-    assessment,
-  }));
+  let records: UnitRecord[] = [];
+  if (unitIds.length) {
+    const prepared = prepareAnalysisBatch({ ...snapshot, unitIds, limits: ANALYSIS_LIMITS });
+    if (prepared.kind !== 'prepared') {
+      records = unresolved(unitIds, 'unavailable', false, prepared.category, null);
+    } else {
+      const result: MistralResult = await analyze(prepared.batch, {
+        ...options,
+        deadlineMs: Math.min(options.deadlineMs - 60_000, now() + 600_000),
+      });
+      const bound =
+        'batchId' in result &&
+        result.batchId === prepared.batch.batchId &&
+        'unitIds' in result &&
+        JSON.stringify(result.unitIds) === JSON.stringify(unitIds);
+      if (!bound)
+        records = unresolved(unitIds, 'rejected', true, 'reference', prepared.batch.batchId);
+      else if (
+        result.kind === 'validated' &&
+        result.assessments.length === unitIds.length &&
+        result.assessments.every((assessment, index) => assessment.unitId === unitIds[index])
+      ) {
+        records = result.assessments.map((assessment) => ({
+          unitId: assessment.unitId,
+          state: { state: 'assessed', verdict: assessment.verdict },
+          attempted: true,
+          category: null,
+          batchId: prepared.batch.batchId,
+          assessment,
+        }));
+      } else {
+        const category = result.kind === 'validated' ? 'reference' : result.category;
+        const attempted = result.kind === 'validated' ? true : result.attempted;
+        const state =
+          attempted && ['envelope', 'json', 'schema', 'reference', 'policy'].includes(category)
+            ? 'rejected'
+            : !attempted && ['cancelled', 'deadline'].includes(category)
+              ? 'unattempted'
+              : 'unavailable';
+        records = unresolved(unitIds, state, attempted, category, prepared.batch.batchId);
+      }
+    }
+  }
   const states = Object.fromEntries(records.map((record) => [record.unitId, record.state]));
   const coverage = summarizeDecisionCoverage(
     snapshot.inventory,
@@ -64,5 +85,33 @@ export async function analyzeDecisionUnits(
     states,
   );
   if (!coverage.ok) return { ok: false as const, category: 'configuration' as const };
-  return { ok: true as const, records, coverage };
+  return {
+    ok: true as const,
+    records,
+    coverage,
+    analysisUnavailable:
+      records.length > 0 && records.every((record) => record.state.state !== 'assessed'),
+  };
+}
+
+function unresolved(
+  unitIds: readonly string[],
+  state: 'unavailable' | 'unattempted' | 'rejected',
+  attempted: boolean,
+  category: string,
+  batchId: string | null,
+): UnitRecord[] {
+  return unitIds.map((unitId) => ({
+    unitId,
+    state: {
+      state,
+      reason: 'Analysis did not produce a validated assessment.',
+      nextAction: 'Re-run dependency analysis.',
+      coverageLimits: ['Model assessment unavailable.'],
+    },
+    attempted,
+    category,
+    batchId,
+    assessment: null,
+  }));
 }

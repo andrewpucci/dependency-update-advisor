@@ -33,3 +33,46 @@ test('retains assessments from an owned M1 batch in inventory order', async () =
   expect(result.records.every((record) => record.assessment?.unitId === record.unitId)).toBe(true);
   expect(result.coverage.counts.assessedUnits).toBe(input.unitIds.length);
 });
+
+test('missing credentials yield unavailable records without discarding policy coverage', async () => {
+  const { input } = await analysisScenario();
+  const result = await analyzeDecisionUnits(input, { deadlineMs: 700_000 }, { now: () => 0 });
+  expect(result.ok).toBe(true);
+  if (!result.ok) throw new Error('fixture failed');
+  expect(
+    result.records.every((record) => record.state.state === 'unavailable' && !record.attempted),
+  ).toBe(true);
+  expect(result.analysisUnavailable).toBe(true);
+  expect(result.coverage.counts.unresolvedUnits).toBe(input.unitIds.length);
+});
+
+test('malformed provider content is rejected without exposing it', async () => {
+  const { input } = await analysisScenario();
+  const result = await analyzeDecisionUnits(
+    input,
+    { apiKey: 'test-key', deadlineMs: 700_000 },
+    {
+      now: () => 0,
+      analyze: (batch, options) =>
+        analyzeMistralBatch(batch, options, {
+          now: () => 0,
+          fetch: async () =>
+            Response.json({
+              choices: [
+                {
+                  index: 0,
+                  finish_reason: 'stop',
+                  message: { role: 'assistant', content: 'SECRET-SENTINEL' },
+                },
+              ],
+            }),
+        }),
+    },
+  );
+  expect(result.ok).toBe(true);
+  if (!result.ok) throw new Error('fixture failed');
+  expect(
+    result.records.every((record) => record.state.state === 'rejected' && record.attempted),
+  ).toBe(true);
+  expect(JSON.stringify(result)).not.toContain('SECRET-SENTINEL');
+});
