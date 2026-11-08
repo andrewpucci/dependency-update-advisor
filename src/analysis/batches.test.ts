@@ -355,7 +355,13 @@ test('request cap leaves split children explicit and retains earlier work', asyn
   expect(calls).toBe(32);
   expect(result.diagnostics.callsDispatched).toBe(32);
   expect(result.records.some((record) => record.state.state === 'assessed')).toBe(true);
-  expect(result.records.some((record) => record.state.state === 'unattempted')).toBe(true);
+  const unattempted = result.records.filter((record) => record.state.state === 'unattempted');
+  expect(unattempted.length).toBeGreaterThan(0);
+  expect(
+    unattempted.every((record) => !record.attempted && record.category === 'call_budget'),
+  ).toBe(true);
+  expect(result.diagnostics.failureCategories).toContain('call_budget');
+  expect(result.diagnostics.failureCategories).not.toContain('budget');
   expect(result.records.map((record) => record.unitId)).toEqual(
     inventory.units.map((unit) => unit.id),
   );
@@ -452,6 +458,34 @@ test('preparation budget re-packs locally without spending a model call', async 
     expect(spy.mock.calls.length).toBeGreaterThan(calls);
     expect(calls).toBe(input.unitIds.length);
     expect(result.records.every((record) => record.state.state === 'assessed')).toBe(true);
+  } finally {
+    spy.mockRestore();
+  }
+});
+
+test('a unit too large to prepare alone reports budget without a call', async () => {
+  const { input } = await analysisScenario();
+  const contract = await import('./contract.js');
+  const spy = vi
+    .spyOn(contract, 'prepareAnalysisBatch')
+    .mockReturnValue({ kind: 'invalid', category: 'budget', attempted: false });
+  const analyze = vi.fn();
+  try {
+    const result = await analyzeDecisionUnits(
+      input,
+      { apiKey: 'test-key', deadlineMs: 700_000 },
+      { now: () => 0, analyze },
+    );
+    expect(result.ok).toBe(true);
+    if (!result.ok) throw new Error('fixture failed');
+    expect(analyze).not.toHaveBeenCalled();
+    expect(
+      result.records.every(
+        (record) =>
+          record.state.state === 'unavailable' && !record.attempted && record.category === 'budget',
+      ),
+    ).toBe(true);
+    expect(result.diagnostics.failureCategories).toEqual(['budget']);
   } finally {
     spy.mockRestore();
   }

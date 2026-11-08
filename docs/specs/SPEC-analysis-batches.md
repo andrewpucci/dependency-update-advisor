@@ -10,6 +10,11 @@ Review revision accepted by the user, 2026-11-07: a multi-unit `budget`
 preparation failure may be re-prepared as smaller batches without a model
 call. The reviewed revisions are included in the planning approval above.
 
+Review revision accepted by the user, 2026-11-07: units left
+undispatched because the request budget ran out carry the M2 category
+`call_budget`, not M1's `budget`. M1's `budget` keeps its meaning of a unit or
+request too large to prepare, so diagnostics can tell the two apart.
+
 ## Objective and assumptions
 
 Give maintainers a complete, trustworthy accounting of model analysis for a
@@ -122,7 +127,9 @@ fixed reason, next action, and coverage limits.
 | Any other category                                                                                       | `unavailable`                      | as reported |
 
 A `budget` preparation failure for a multi-unit batch is re-packed under
-item 3 and has no final state of its own.
+item 3 and has no final state of its own. A unit not dispatched after
+request-budget exhaustion carries category `call_budget`; this is the only
+category M2 adds to M1's set.
 
 ## Structure and style
 
@@ -167,6 +174,8 @@ as well as scheduler isolation. At minimum verify:
 - Reordered completion timing with the same per-batch outcomes yields the
   same dispatched batches and final states, including under budget
   exhaustion; the deadline and `evaluatedAt` clocks are never interchanged.
+- Units left after request-budget exhaustion report `call_budget`, and an
+  oversized single unit reports `budget`; the categories never collide.
 - Duplicate, omitted, unknown, wrong-head, wrong-group, and cross-batch
   assessments cannot become accepted states; mutation cannot change binding.
 - A verified blocker alongside failed or unattempted units stays visible;

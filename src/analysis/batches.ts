@@ -236,7 +236,11 @@ function finishQueue(
 ) {
   const category =
     preparationFailure ??
-    (options.signal?.aborted ? 'cancelled' : now() >= options.deadlineMs ? 'deadline' : 'budget');
+    (options.signal?.aborted
+      ? 'cancelled'
+      : now() >= options.deadlineMs
+        ? 'deadline'
+        : 'call_budget');
   const status = preparationFailure ? 'unavailable' : 'unattempted';
   for (const remaining of state.queue)
     state.records.push(...unresolved(remaining, status, false, category, null));
