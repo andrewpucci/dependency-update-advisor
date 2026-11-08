@@ -116,43 +116,66 @@ test('packs a large inventory into bounded batches without losing units', async 
   expect(result.records.every((record) => record.state.state === 'assessed')).toBe(true);
 });
 
-test('dispatches two batches in a wave and retains results in inventory order', async () => {
-  const { input } = await analysisScenario({ inventory: { children: 12 } });
+test('completion order does not change dispatched batches, concurrency, or final states', async () => {
+  const { input } = await analysisScenario({ inventory: { children: 20 } });
   const { formDecisionUnits } = await import('../units.js');
   const inventory = formDecisionUnits({ ...input.inventory.packet, relationships: [] });
-  const release: Array<() => void> = [];
-  const running = analyzeDecisionUnits(
-    { ...input, inventory },
-    { apiKey: 'test-key', deadlineMs: 700_000 },
-    {
-      now: () => 0,
-      analyze: async (batch, options) => {
-        await new Promise<void>((resolve) => release.push(resolve));
-        return analyzeMistralBatch(batch, options, {
-          now: () => 0,
-          fetch: async () =>
-            Response.json({
-              choices: [
-                {
-                  index: 0,
-                  finish_reason: 'stop',
-                  message: { role: 'assistant', content: JSON.stringify(analysisDocument(batch)) },
-                },
-              ],
-            }),
-        });
+  expect(inventory.units.length).toBeGreaterThan(16);
+  const run = async (order: 'forward' | 'reverse') => {
+    const dispatched: string[] = [];
+    const pending: Array<() => void> = [];
+    let maxInFlight = 0;
+    let done = false;
+    const running = analyzeDecisionUnits(
+      { ...input, inventory },
+      { apiKey: 'test-key', deadlineMs: 700_000 },
+      {
+        now: () => 0,
+        analyze: async (batch, options) => {
+          dispatched.push(batch.batchId);
+          await new Promise<void>((resolve) => pending.push(resolve));
+          return analyzeMistralBatch(batch, options, {
+            now: () => 0,
+            fetch: async () =>
+              Response.json({
+                choices: [
+                  {
+                    index: 0,
+                    finish_reason: 'stop',
+                    message: {
+                      role: 'assistant',
+                      content: JSON.stringify(analysisDocument(batch)),
+                    },
+                  },
+                ],
+              }),
+          });
+        },
       },
-    },
-  );
-  await vi.waitFor(() => expect(release).toHaveLength(2), { timeout: 500 });
-  release[1]();
-  release[0]();
-  const result = await running;
-  expect(result.ok).toBe(true);
-  if (!result.ok) throw new Error('fixture failed');
-  expect(result.records.map((record) => record.unitId)).toEqual(
+    ).finally(() => {
+      done = true;
+    });
+    while (!done) {
+      await new Promise((resolve) => setTimeout(resolve, 0));
+      maxInFlight = Math.max(maxInFlight, pending.length);
+      const wave = pending.splice(0);
+      (order === 'forward' ? wave : wave.reverse()).forEach((release) => release());
+    }
+    const result = await running;
+    if (!result.ok) throw new Error('fixture failed');
+    return { dispatched, maxInFlight, records: result.records };
+  };
+  const forward = await run('forward');
+  const reverse = await run('reverse');
+  expect(forward.dispatched.length).toBeGreaterThan(2);
+  expect(forward.maxInFlight).toBe(2);
+  expect(reverse.maxInFlight).toBe(2);
+  expect(reverse.dispatched).toEqual(forward.dispatched);
+  expect(reverse.records).toEqual(forward.records);
+  expect(forward.records.map((record) => record.unitId)).toEqual(
     inventory.units.map((unit) => unit.id),
   );
+  expect(forward.records.every((record) => record.state.state === 'assessed')).toBe(true);
 });
 
 test('splits only recognized length truncations down to successful single units', async () => {
