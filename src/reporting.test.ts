@@ -1562,4 +1562,8 @@ test('policy guide linked from assessments lists every default rule and verdict'
     expect(row, rule).toContain(`\`${verdict}\``);
   }
   expect(guide).toContain('.github/dependabot-review.json');
+  const defaults = parseReviewConfig('{"version":1}');
+  if (!defaults.ok) throw new Error('default config failed');
+  expect(defaults.config.policy.minimumReleaseAgeDays).toBe(1);
+  expect(guide).toContain('minimum release age (default one day)');
 });

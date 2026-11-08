@@ -23,7 +23,11 @@ export type DecisionBriefResult =
 const POLICY_GUIDE_URL =
   'https://github.com/andrewpucci/dependency-update-advisor/blob/main/docs/policy-guide.md';
 
-class InvalidReference extends Error {}
+class RenderFailure extends Error {
+  constructor(readonly category: 'input' | 'reference' | 'content' | 'size') {
+    super(category);
+  }
+}
 
 function text(value: string): string {
   return value
@@ -82,7 +86,7 @@ function recovery(category: string | null): string {
 function evidenceGap(unit: DecisionUnit, sourceId: string): string {
   const link = unit.evidenceLinks.find((entry) => entry.id === sourceId);
   const member = unit.members.find((entry) => entry.id === link?.memberId);
-  if (!link || !member) throw new InvalidReference();
+  if (!link || !member) throw new RenderFailure('reference');
   return `${text(member.name)}: ${readableLabel(link.category)} evidence is ${readableLabel(link.status)} (${link.reasons.map(readableLabel).join(', ')}). Review the ${readableLabel(link.category)} evidence for ${text(member.name)} and rerun CI.`;
 }
 
@@ -111,7 +115,7 @@ function contextReference(
     (fact, i) =>
       JSON.stringify([ref.memberId, fact.path, i]) === ref.contextId && fact.path === ref.path,
   );
-  if (index === undefined || index < 0) throw new InvalidReference();
+  if (index === undefined || index < 0) throw new RenderFailure('reference');
   return `Repository context: ${text(ref.path)}`;
 }
 
@@ -119,14 +123,14 @@ function fileReference(
   ref: Extract<ResolvedReference, { kind: 'source' }>,
   revision: 'base' | 'head' | 'context',
 ): string {
-  if (revision !== ref.side || ref.url !== null) throw new InvalidReference();
+  if (revision !== ref.side || ref.url !== null) throw new RenderFailure('reference');
   return ref.side === 'base'
     ? 'Base repository file evidence'
     : 'Proposed repository file evidence';
 }
 
 function reference(ref: ResolvedReference, unit: DecisionUnit, input: DecisionBriefInput): string {
-  if (!unit.memberIds.includes(ref.memberId)) throw new InvalidReference();
+  if (!unit.memberIds.includes(ref.memberId)) throw new RenderFailure('reference');
   const packet = input.coverage.inventory.packet;
   if (ref.kind === 'context') return contextReference(ref, input);
   const source = packet.sources.find((item) => item.id === ref.sourceId);
@@ -138,7 +142,7 @@ function reference(ref: ResolvedReference, unit: DecisionUnit, input: DecisionBr
     !source.memberIds.includes(ref.memberId) ||
     !side
   )
-    throw new InvalidReference();
+    throw new RenderFailure('reference');
   const linked =
     change?.evidence[ref.category]?.sourceIds.includes(source.id) ||
     unit.findings.some(
@@ -150,10 +154,10 @@ function reference(ref: ResolvedReference, unit: DecisionUnit, input: DecisionBr
     (source.provenance.kind === 'file' &&
       source.id === side.sourceId &&
       ref.category === source.kind);
-  if (!linked) throw new InvalidReference();
+  if (!linked) throw new RenderFailure('reference');
   if (source.provenance.kind === 'file') return fileReference(ref, source.provenance.revision);
   if (source.provenance.kind !== 'upstream' || source.provenance.url !== ref.url)
-    throw new InvalidReference();
+    throw new RenderFailure('reference');
   const version = 'ref' in side ? side.ref : 'version' in side ? side.version : null;
   if (
     !source.provenance.subjects.some(
@@ -161,10 +165,10 @@ function reference(ref: ResolvedReference, unit: DecisionUnit, input: DecisionBr
         subject.memberId === ref.memberId && subject.side === ref.side && subject.value === version,
     )
   )
-    throw new InvalidReference();
+    throw new RenderFailure('reference');
   const url = new URL(ref.url);
   if (url.protocol !== 'https:' || url.username || url.password || unsafeUrl(ref.url))
-    throw new InvalidReference();
+    throw new RenderFailure('reference');
   return `[${sourceTitle(source.provenance.title)}](<${url.href.replace(/[<>]/gu, '')}>)`;
 }
 
@@ -347,7 +351,7 @@ function fitComment(
 ): DecisionBriefResult {
   const sections = [assessments, ...optional];
   let omitted = false;
-  for (let remaining = sections.length; remaining >= 0; remaining--) {
+  for (;;) {
     const body = [
       ...head,
       ...sections[0],
@@ -361,35 +365,20 @@ function fitComment(
     sections[last] = [];
     omitted = true;
   }
-  return { ok: false, category: 'size' };
 }
 
-function renderNonempty(input: DecisionBriefInput, binding: ReviewBinding): DecisionBriefResult {
-  const { counts, inventoryGaps, outcome } = input.coverage;
-  const units = input.coverage.inventory.units;
-  const summary = input.coverage.policyProvenance.assessments;
-  if (!consistentReview(input)) return { ok: false, category: 'content' };
-  const { owner, name } = binding.repository;
-  function validateSignals(): DecisionBriefResult | undefined {
-    if (
-      input.signalAttempts.some(
-        (attempt) =>
-          !input.coverage.inventory.packet.changes.some(
-            (change) => change.id === attempt.memberId,
-          ) ||
-          attempt.sourceIds.some(
-            (id) =>
-              !input.coverage.inventory.packet.sources.some(
-                (source) => source.id === id && source.memberIds.includes(attempt.memberId),
-              ),
-          ),
-      )
-    )
-      return { ok: false, category: 'reference' };
-    return undefined;
-  }
-  const validateSignalsError = validateSignals();
-  if (validateSignalsError) return validateSignalsError;
+type Summary = DecisionCoverage['policyProvenance']['assessments'];
+type Review = Readonly<{
+  input: DecisionBriefInput;
+  binding: ReviewBinding;
+  units: readonly DecisionUnit[];
+  summary: Summary;
+  holds: ReturnType<typeof collectHolds>['holds'];
+  modelHolds: ReturnType<typeof collectHolds>['modelHolds'];
+}>;
+type Hold = Review['holds'][number];
+
+function collectHolds(input: DecisionBriefInput, units: readonly DecisionUnit[], summary: Summary) {
   const holds = summary.units.flatMap((unit) =>
     unit.rules
       .filter((rule) => rule.findingId && rule.effectiveVerdict === 'do_not_merge')
@@ -403,386 +392,426 @@ function renderNonempty(input: DecisionBriefInput, binding: ReviewBinding): Deci
         blocker,
       })) ?? [],
   );
-  function validateHolds(): DecisionBriefResult | undefined {
-    if (
-      modelHolds.some(
-        ({ unit, policy, blocker }) =>
-          !policy.rules.some(
-            (rule) =>
-              rule.effectiveVerdict === 'do_not_merge' &&
-              blocker.holdId ===
-                JSON.stringify([unit.id, rule.rule, rule.findingId ?? null, rule.sourceId ?? null]),
-          ),
-      )
+  return { holds, modelHolds };
+}
+
+function validateSignals(input: DecisionBriefInput): void {
+  const { changes, sources } = input.coverage.inventory.packet;
+  if (
+    input.signalAttempts.some(
+      (attempt) =>
+        !changes.some((change) => change.id === attempt.memberId) ||
+        attempt.sourceIds.some(
+          (id) =>
+            !sources.some(
+              (source) => source.id === id && source.memberIds.includes(attempt.memberId),
+            ),
+        ),
     )
-      return { ok: false, category: 'reference' };
-    if (
-      outcome.kind === 'advice' &&
-      outcome.verdict === 'do_not_merge' &&
-      (!(holds.length || modelHolds.length) || holds.some((hold) => !hold.finding))
+  )
+    throw new RenderFailure('reference');
+}
+
+function validateHolds({ input, holds, modelHolds }: Review): void {
+  const { outcome } = input.coverage;
+  if (
+    modelHolds.some(
+      ({ unit, policy, blocker }) =>
+        !policy.rules.some(
+          (rule) =>
+            rule.effectiveVerdict === 'do_not_merge' &&
+            blocker.holdId ===
+              JSON.stringify([unit.id, rule.rule, rule.findingId ?? null, rule.sourceId ?? null]),
+        ),
     )
-      return { ok: false, category: 'content' };
-    if (holds.length && (outcome.kind !== 'advice' || outcome.verdict !== 'do_not_merge'))
-      return { ok: false, category: 'content' };
-    return undefined;
+  )
+    throw new RenderFailure('reference');
+  if (
+    outcome.kind === 'advice' &&
+    outcome.verdict === 'do_not_merge' &&
+    (!(holds.length || modelHolds.length) || holds.some((hold) => !hold.finding))
+  )
+    throw new RenderFailure('content');
+  if (holds.length && (outcome.kind !== 'advice' || outcome.verdict !== 'do_not_merge'))
+    throw new RenderFailure('content');
+}
+
+function recommendationText(outcome: DecisionCoverage['outcome']): string {
+  if (outcome.kind !== 'advice') return 'No merge recommendation.';
+  if (outcome.verdict === 'do_not_merge') return 'Hold; verified blockers require action.';
+  if (outcome.verdict === 'merge_with_followups') return 'Merge with follow-ups.';
+  return 'Merge.';
+}
+
+function nextAction(
+  { input, summary, units, holds, modelHolds }: Review,
+  firstUnresolved?: UnitRecord,
+): string {
+  const { inventoryGaps, outcome } = input.coverage;
+  if (outcome.kind === 'advice' && outcome.verdict === 'do_not_merge')
+    return text(holds[0]?.finding?.remediation[0] ?? modelHolds[0]?.blocker.remediation[0] ?? '');
+  if (firstUnresolved) return recovery(firstUnresolved.category);
+  if (inventoryGaps.length) return text(inventoryGaps[0].nextActions[0] ?? '');
+  const firstGapIndex = summary.units.findIndex((unit) => unit.gaps.length > 0);
+  if (firstGapIndex >= 0)
+    return evidenceGap(units[firstGapIndex], summary.units[firstGapIndex].gaps[0].sourceId);
+  const firstFollowup = input.records.flatMap((record) => record.assessment?.followups ?? [])[0];
+  if (firstFollowup) return text(firstFollowup.description);
+  return 'Review the evidence, then merge.';
+}
+
+function headerLines(r: Review): string[] {
+  const { input, binding, summary } = r;
+  const { counts, inventoryGaps, outcome } = input.coverage;
+  const incomplete =
+    input.analysisUnavailable ||
+    counts.unresolvedUnits > 0 ||
+    inventoryGaps.length > 0 ||
+    summary.units.some((unit) => unit.gaps.length > 0);
+  const firstUnresolved = input.records.find((record) => record.state.state !== 'assessed');
+  const next = nextAction(r, firstUnresolved);
+  if (!next) throw new RenderFailure('content');
+  const { owner, name } = binding.repository;
+  return [
+    '<!-- dependabot-intelligent-review -->',
+    `<!-- reviewed-head: ${binding.headSha} -->`,
+    ...(input.reviewDigest ? [`<!-- review-digest: ${input.reviewDigest} -->`] : []),
+    '',
+    `# Dependabot review: ${owner}/${name} PR ${binding.pullNumber}`,
+    '',
+    `**Recommendation:** ${recommendationText(outcome)}${input.analysisUnavailable ? ' Analysis is unavailable.' : ''}`,
+    `**Next action:** ${next}${input.analysisUnavailable && outcome.kind === 'advice' && firstUnresolved ? ` ${recovery(firstUnresolved.category)}` : ''}`,
+    `Required evidence: ${incomplete ? 'Incomplete.' : 'Complete.'}`,
+    '',
+    `Reviewed head: [${binding.headSha}](https://github.com/${owner}/${name}/commit/${binding.headSha})`,
+    `Generated: ${input.generatedAt}`,
+  ];
+}
+
+function verifiedLinks({ input }: Review, finding: NonNullable<Hold['finding']>): string[] {
+  const sources = finding.references.map((id) =>
+    input.coverage.inventory.packet.sources.find(
+      (source) => source.id === id && source.memberIds.includes(finding.memberId),
+    ),
+  );
+  if (sources.some((source) => !source || source.status === 'unavailable'))
+    throw new RenderFailure('reference');
+  const links: string[] = [];
+  for (const source of sources) {
+    if (source?.provenance.kind !== 'upstream') continue;
+    const url = new URL(source.provenance.url);
+    if (
+      url.protocol !== 'https:' ||
+      url.username ||
+      url.password ||
+      unsafeUrl(source.provenance.url)
+    )
+      throw new RenderFailure('reference');
+    links.push(`[${sourceTitle(source.provenance.title)}](<${url.href.replace(/[<>]/gu, '')}>)`);
   }
-  const validateHoldsError = validateHolds();
-  if (validateHoldsError) return validateHoldsError;
-  function recommendationText(): string {
-    if (outcome.kind !== 'advice') return 'No merge recommendation.';
-    if (outcome.verdict === 'do_not_merge') return 'Hold; verified blockers require action.';
-    if (outcome.verdict === 'merge_with_followups') return 'Merge with follow-ups.';
-    return 'Merge.';
-  }
-  function nextAction(firstUnresolved: (typeof input.records)[number] | undefined): string {
-    if (outcome.kind === 'advice' && outcome.verdict === 'do_not_merge')
-      return text(holds[0]?.finding?.remediation[0] ?? modelHolds[0]?.blocker.remediation[0] ?? '');
-    if (firstUnresolved) return recovery(firstUnresolved.category);
-    if (inventoryGaps.length) return text(inventoryGaps[0].nextActions[0] ?? '');
-    const firstGapIndex = summary.units.findIndex((unit) => unit.gaps.length > 0);
-    if (firstGapIndex >= 0)
-      return evidenceGap(units[firstGapIndex], summary.units[firstGapIndex].gaps[0].sourceId);
-    const firstFollowup = input.records.flatMap((record) => record.assessment?.followups ?? [])[0];
-    if (firstFollowup) return text(firstFollowup.description);
-    return 'Review the evidence, then merge.';
-  }
-  function opening() {
-    const gaps = summary.units.flatMap((unit) => unit.gaps);
-    const incomplete =
-      input.analysisUnavailable ||
-      counts.unresolvedUnits > 0 ||
-      inventoryGaps.length > 0 ||
-      gaps.length > 0;
-    const firstUnresolved = input.records.find((record) => record.state.state !== 'assessed');
-    return {
-      incomplete,
-      recommendation: recommendationText(),
-      firstUnresolved,
-      next: nextAction(firstUnresolved),
-    };
-  }
-  const { incomplete, recommendation, firstUnresolved, next } = opening();
-  if (!next) return { ok: false, category: 'content' };
-  function header(): string[] {
-    return [
-      '<!-- dependabot-intelligent-review -->',
-      `<!-- reviewed-head: ${binding.headSha} -->`,
-      ...(input.reviewDigest ? [`<!-- review-digest: ${input.reviewDigest} -->`] : []),
-      '',
-      `# Dependabot review: ${owner}/${name} PR ${binding.pullNumber}`,
-      '',
-      `**Recommendation:** ${recommendation}${input.analysisUnavailable ? ' Analysis is unavailable.' : ''}`,
-      `**Next action:** ${next}${input.analysisUnavailable && outcome.kind === 'advice' && firstUnresolved ? ` ${recovery(firstUnresolved.category)}` : ''}`,
-      `Required evidence: ${incomplete ? 'Incomplete.' : 'Complete.'}`,
-      '',
-      `Reviewed head: [${binding.headSha}](https://github.com/${owner}/${name}/commit/${binding.headSha})`,
-      `Generated: ${input.generatedAt}`,
-    ];
-  }
-  const lines = header();
-  function verifiedLinks(finding: NonNullable<(typeof holds)[number]['finding']>): string[] | null {
-    const sources = finding.references.map((id) =>
-      input.coverage.inventory.packet.sources.find(
-        (source) => source.id === id && source.memberIds.includes(finding.memberId),
-      ),
+  return links;
+}
+
+function blockerLines(r: Review): string[] {
+  const { input, holds, modelHolds } = r;
+  if (!holds.length && !modelHolds.length) return [];
+  const lines = ['', '## Reasons not to merge', ''];
+  for (const { unit, finding } of holds) {
+    if (!finding || !finding.remediation.length || !finding.validation.length)
+      throw new RenderFailure('content');
+    const links = verifiedLinks(r, finding);
+    lines.push(
+      `- ${text(unit.members.find((member) => member.id === finding.memberId)?.name ?? '')}: ${text(finding.rationale)} Impact: this finding requires a hold. Remediation: ${finding.remediation.map(text).join(' ')} Validation: ${finding.validation.map(text).join(' ')} ${links.join(' ')}`,
     );
-    if (sources.some((source) => !source || source.status === 'unavailable')) return null;
-    const links: string[] = [];
-    for (const source of sources) {
-      if (source?.provenance.kind !== 'upstream') continue;
-      const url = new URL(source.provenance.url);
-      if (
-        url.protocol !== 'https:' ||
-        url.username ||
-        url.password ||
-        unsafeUrl(source.provenance.url)
+  }
+  for (const { unit, blocker } of modelHolds) {
+    const evidence = blocker.evidence
+      .map(
+        (claim) =>
+          `${text(claim.text)} ${claim.references.map((ref) => reference(ref, unit, input)).join(' ')}`,
       )
-        return null;
-      links.push(`[${sourceTitle(source.provenance.title)}](<${url.href.replace(/[<>]/gu, '')}>)`);
-    }
-    return links;
+      .join(' ');
+    if (!blocker.remediation.length || !blocker.validation.length)
+      throw new RenderFailure('content');
+    lines.push(
+      `- ${text(unit.members.map((member) => member.name).join(', '))}: ${text(blocker.reason)} Impact: ${text(blocker.impact)} Evidence: ${evidence || 'The policy requires action on the identified evidence gap.'} Remediation: ${blocker.remediation.map(text).join(' ')} Validation: ${blocker.validation.map(text).join(' ')}`,
+    );
   }
-  function appendBlockers(): DecisionBriefResult | undefined {
-    if (!holds.length && !modelHolds.length) return undefined;
-    lines.push('', '## Reasons not to merge', '');
-    for (const { unit, finding } of holds) {
-      if (!finding || !finding.remediation.length || !finding.validation.length)
-        return { ok: false, category: 'content' };
-      const links = verifiedLinks(finding);
-      if (!links) return { ok: false, category: 'reference' };
-      lines.push(
-        `- ${text(unit.members.find((member) => member.id === finding.memberId)?.name ?? '')}: ${text(finding.rationale)} Impact: this finding requires a hold. Remediation: ${finding.remediation.map(text).join(' ')} Validation: ${finding.validation.map(text).join(' ')} ${links.join(' ')}`,
-      );
-    }
-    for (const { unit, blocker } of modelHolds) {
-      const evidence = blocker.evidence
-        .map(
-          (claim) =>
-            `${text(claim.text)} ${claim.references.map((ref) => reference(ref, unit, input)).join(' ')}`,
-        )
-        .join(' ');
-      if (!blocker.remediation.length || !blocker.validation.length)
-        return { ok: false, category: 'content' };
-      lines.push(
-        `- ${text(unit.members.map((member) => member.name).join(', '))}: ${text(blocker.reason)} Impact: ${text(blocker.impact)} Evidence: ${evidence || 'The policy requires action on the identified evidence gap.'} Remediation: ${blocker.remediation.map(text).join(' ')} Validation: ${blocker.validation.map(text).join(' ')}`,
-      );
-    }
-    return undefined;
+  return lines;
+}
+
+function queueLines({ input, units, summary }: Review): string[] {
+  const lines: string[] = [];
+  if (input.coverage.counts.unresolvedUnits) lines.push('', '## Decision queue', '');
+  for (const [index, unit] of units.entries()) {
+    const record = input.records[index];
+    if (record.state.state === 'assessed') continue;
+    const unresolved = summary.unresolvedUnits.find((entry) => entry.unitId === unit.id);
+    if (!unresolved || unresolved.unitId !== unit.id) throw new RenderFailure('content');
+    lines.push(
+      `- ${text(unit.members.map((member) => member.name).join(', '))} (${plural(unit.memberCount, 'changed update')}): ${text(record.state.reason)} ${recovery(record.category)} ${summary.units[index].gaps.map((gap) => evidenceGap(unit, gap.sourceId)).join(' ')}`,
+    );
   }
-  const appendBlockersError = appendBlockers();
-  if (appendBlockersError) return appendBlockersError;
-  function appendQueue(): DecisionBriefResult | undefined {
-    if (counts.unresolvedUnits) lines.push('', '## Decision queue', '');
-    for (const [index, unit] of units.entries()) {
-      const record = input.records[index];
-      if (record.state.state === 'assessed') continue;
-      const unresolved = summary.unresolvedUnits.find((entry) => entry.unitId === unit.id);
-      if (!unresolved || unresolved.unitId !== unit.id) return { ok: false, category: 'content' };
-      lines.push(
-        `- ${text(unit.members.map((member) => member.name).join(', '))} (${plural(unit.memberCount, 'changed update')}): ${text(record.state.reason)} ${recovery(record.category)} ${summary.units[index].gaps.map((gap) => evidenceGap(unit, gap.sourceId)).join(' ')}`,
-      );
-    }
-    return undefined;
-  }
-  const appendQueueError = appendQueue();
-  if (appendQueueError) return appendQueueError;
-  lines.push(
+  return lines;
+}
+
+function coverageLines({ input }: Review): string[] {
+  const { counts, inventoryGaps } = input.coverage;
+  return [
     '',
     '## Decision coverage',
     '',
     `${plural(counts.changedMembers, 'changed update')}; ${plural(counts.assessedUnits, 'assessed decision unit')}; ${plural(counts.unresolvedUnits, 'unresolved decision unit')}.`,
-  );
-  if (counts.groupedUnits)
-    lines.push(
-      'A direct-update group is assessed as one unit, not as separately researched members.',
-    );
-  for (const gap of inventoryGaps)
-    lines.push(
-      `- ${text(gap.ecosystem)}: ${gap.reasons.map(text).join(', ')}. ${gap.nextActions.map(text).join(' ')}`,
-    );
-  function appendFindings(): DecisionBriefResult | undefined {
-    for (const unit of units) {
-      for (const finding of unit.findings) {
-        const member = unit.members.find((item) => item.id === finding.memberId);
-        if (!member || !finding.references.length) return { ok: false, category: 'reference' };
-        const citations = finding.references.map((id) => {
-          const source = input.coverage.inventory.packet.sources.find((item) => item.id === id);
-          if (!source || !source.memberIds.includes(finding.memberId)) throw new InvalidReference();
-          const side =
-            source.provenance.kind === 'file'
-              ? source.provenance.revision
-              : source.provenance.kind === 'upstream'
-                ? source.provenance.subjects.find(
-                    (subject) => subject.memberId === finding.memberId,
-                  )?.side
-                : undefined;
-          if (side !== 'base' && side !== 'head') throw new InvalidReference();
-          return reference(
-            {
-              kind: 'source',
-              sourceId: id,
-              memberId: member.id,
-              side,
-              category: source.kind,
-              url: source.provenance.kind === 'upstream' ? source.provenance.url : null,
-            },
-            unit,
-            input,
-          );
-        });
-        lines.push(
-          `- ${text(member.name)} — ${readableLabel(finding.kind)}: ${text(finding.rationale)} ${'applicability' in finding ? readableLabel(finding.applicability) : ''} ${'severity' in finding && finding.severity ? text(finding.severity) : ''} ${citations.join(' ')}`,
+    ...(counts.groupedUnits
+      ? ['A direct-update group is assessed as one unit, not as separately researched members.']
+      : []),
+    ...inventoryGaps.map(
+      (gap) =>
+        `- ${text(gap.ecosystem)}: ${gap.reasons.map(text).join(', ')}. ${gap.nextActions.map(text).join(' ')}`,
+    ),
+  ];
+}
+
+function findingLines({ input, units }: Review): string[] {
+  const lines: string[] = [];
+  for (const unit of units) {
+    for (const finding of unit.findings) {
+      const member = unit.members.find((item) => item.id === finding.memberId);
+      if (!member || !finding.references.length) throw new RenderFailure('reference');
+      const citations = finding.references.map((id) => {
+        const source = input.coverage.inventory.packet.sources.find((item) => item.id === id);
+        if (!source || !source.memberIds.includes(finding.memberId))
+          throw new RenderFailure('reference');
+        const side =
+          source.provenance.kind === 'file'
+            ? source.provenance.revision
+            : source.provenance.kind === 'upstream'
+              ? source.provenance.subjects.find((subject) => subject.memberId === finding.memberId)
+                  ?.side
+              : undefined;
+        if (side !== 'base' && side !== 'head') throw new RenderFailure('reference');
+        return reference(
+          {
+            kind: 'source',
+            sourceId: id,
+            memberId: member.id,
+            side,
+            category: source.kind,
+            url: source.provenance.kind === 'upstream' ? source.provenance.url : null,
+          },
+          unit,
+          input,
         );
-      }
-    }
-    return undefined;
-  }
-  const appendFindingsError = appendFindings();
-  if (appendFindingsError) return appendFindingsError;
-  const head = [...lines];
-  lines.length = 0;
-  function appendAssessments(): void {
-    if (!counts.assessedUnits) return;
-    lines.push('', '## Package assessments', '');
-    for (const [index, unit] of units.entries()) {
-      const assessment = input.records[index].assessment;
-      if (!assessment) continue;
-      const evaluation = summary.units[index];
-      if (unit.kind === 'direct_group') {
-        lines.push(
-          `- **Direct-update group** (${unit.ecosystem}; ${plural(unit.memberCount, 'changed update')})`,
-        );
-        for (const member of unit.members)
-          lines.push(
-            `  - ${text(member.name)}: ${text(member.currentVersion ?? 'unknown')} → ${text(member.proposedVersion ?? 'unknown')}`,
-          );
-      } else {
-        const member = unit.members[0];
-        const role =
-          input.coverage.inventory.packet.changes.find((change) =>
-            unit.memberIds.includes(change.id),
-          )?.role ?? 'unknown';
-        lines.push(
-          `- **${text(member.name)}** (${unit.ecosystem}, ${text(role)}): ${text(member.currentVersion ?? 'unknown')} → ${text(member.proposedVersion ?? 'unknown')}`,
-        );
-      }
-      const citations = assessment.reason.references.map((ref) => reference(ref, unit, input));
-      const upstream = assessmentSource(unit, input);
-      if (upstream && !citations.includes(upstream)) citations.push(upstream);
-      lines.push(`  - Assessment: ${text(assessment.reason.text)}`);
+      });
       lines.push(
-        `  - [Policy](<${POLICY_GUIDE_URL}>): ${readableLabel(evaluation.effectiveCeiling)}; evidence: ${evaluation.gaps.length ? 'partial' : 'complete'}. ${citations.join(' ')}`,
+        `- ${text(member.name)} — ${readableLabel(finding.kind)}: ${text(finding.rationale)} ${'applicability' in finding ? readableLabel(finding.applicability) : ''} ${'severity' in finding && finding.severity ? text(finding.severity) : ''} ${citations.join(' ')}`,
       );
     }
   }
-  appendAssessments();
-  const assessments = lines.splice(0);
-  function appendFollowups(): void {
-    const assessedGaps = summary.units.flatMap((unit, index) =>
-      input.records[index].assessment ? unit.gaps.map((gap) => ({ unit: units[index], gap })) : [],
-    );
-    const followups = input.records.flatMap(
-      (record, index) =>
-        record.assessment?.followups.map((followup) => ({ followup, unit: units[index] })) ?? [],
-    );
-    if (assessedGaps.length || followups.length) {
-      lines.push('', '## Non-blocking follow-ups', '');
-      for (const { unit, gap } of assessedGaps) lines.push(`- ${evidenceGap(unit, gap.sourceId)}`);
-      for (const { unit, followup } of followups)
+  return lines;
+}
+
+function assessmentLines({ input, units, summary }: Review): string[] {
+  if (!input.coverage.counts.assessedUnits) return [];
+  const lines = ['', '## Package assessments', ''];
+  for (const [index, unit] of units.entries()) {
+    const assessment = input.records[index].assessment;
+    if (!assessment) continue;
+    const evaluation = summary.units[index];
+    if (unit.kind === 'direct_group') {
+      lines.push(
+        `- **Direct-update group** (${unit.ecosystem}; ${plural(unit.memberCount, 'changed update')})`,
+      );
+      for (const member of unit.members)
         lines.push(
-          `- ${text(unit.members.map((member) => member.name).join(', '))}: ${text(followup.description)} ${followup.references.map((ref) => reference(ref, unit, input)).join(' ')}`,
+          `  - ${text(member.name)}: ${text(member.currentVersion ?? 'unknown')} → ${text(member.proposedVersion ?? 'unknown')}`,
         );
-    }
-  }
-  appendFollowups();
-  const requiredFollowups = lines.splice(0);
-  const optional: string[][] = [];
-  function appendCapability(
-    capability: NonNullable<UnitRecord['assessment']>['newFunctionality'][number],
-    unit: DecisionUnit,
-  ): DecisionBriefResult | undefined {
-    if (unit.kind === 'direct_group' && capability.memberId !== unit.anchorId)
-      return { ok: false, category: 'reference' };
-    const source = reference(
-      {
-        kind: 'source',
-        sourceId: capability.sourceId,
-        memberId: capability.memberId,
-        side: 'head',
-        category: 'upstream',
-        url: capability.sourceUrl,
-      },
-      unit,
-      input,
-    );
-    let context = '';
-    if (capability.contextId && capability.contextPath)
-      context = reference(
-        {
-          kind: 'context',
-          contextId: capability.contextId,
-          memberId: capability.memberId,
-          path: capability.contextPath,
-        },
-        unit,
-        input,
+    } else {
+      const member = unit.members[0];
+      const role =
+        input.coverage.inventory.packet.changes.find((change) => unit.memberIds.includes(change.id))
+          ?.role ?? 'unknown';
+      lines.push(
+        `- **${text(member.name)}** (${unit.ecosystem}, ${text(role)}): ${text(member.currentVersion ?? 'unknown')} → ${text(member.proposedVersion ?? 'unknown')}`,
       );
-    if (capability.usefulness !== 'not_relevant' && (!capability.action || !context))
-      return { ok: false, category: 'content' };
+    }
+    const citations = assessment.reason.references.map((ref) => reference(ref, unit, input));
+    const upstream = assessmentSource(unit, input);
+    if (upstream && !citations.includes(upstream)) citations.push(upstream);
+    lines.push(`  - Assessment: ${text(assessment.reason.text)}`);
     lines.push(
-      `- ${text(capability.feature)} ${capability.action ? text(capability.action) : ''} ${text(capability.rationale)} ${context} ${source}`,
+      `  - [Policy](<${POLICY_GUIDE_URL}>): ${readableLabel(evaluation.effectiveCeiling)}; evidence: ${evaluation.gaps.length ? 'partial' : 'complete'}. ${citations.join(' ')}`,
     );
-    return undefined;
   }
-  function appendCapabilities(): DecisionBriefResult | undefined {
-    const capabilities = input.records.flatMap(
-      (record, index) =>
-        record.assessment?.newFunctionality.map((capability) => ({
-          capability,
-          unit: units[index],
-        })) ?? [],
-    );
-    for (const [kind, heading] of [
-      ['use_now', 'New capabilities to adopt now'],
-      ['consider_later', 'Consider later'],
-      ['not_relevant', 'Not relevant'],
-    ] as const) {
-      const entries = capabilities.filter(({ capability }) => capability.usefulness === kind);
-      if (!entries.length) continue;
-      if (kind === 'not_relevant')
-        lines.push('', '<details>', '<summary>Not relevant</summary>', '');
-      else lines.push('', `## ${heading}`, '');
-      for (const { capability, unit } of entries) {
-        const error = appendCapability(capability, unit);
-        if (error) return error;
-      }
-      if (kind === 'not_relevant') lines.push('', '</details>');
-      optional.push(lines.splice(0));
-    }
-    return undefined;
+  return lines;
+}
+
+function followupLines({ input, units, summary }: Review): string[] {
+  const assessedGaps = summary.units.flatMap((unit, index) =>
+    input.records[index].assessment ? unit.gaps.map((gap) => ({ unit: units[index], gap })) : [],
+  );
+  const followups = input.records.flatMap(
+    (record, index) =>
+      record.assessment?.followups.map((followup) => ({ followup, unit: units[index] })) ?? [],
+  );
+  if (!assessedGaps.length && !followups.length) return [];
+  return [
+    '',
+    '## Non-blocking follow-ups',
+    '',
+    ...assessedGaps.map(({ unit, gap }) => `- ${evidenceGap(unit, gap.sourceId)}`),
+    ...followups.map(
+      ({ unit, followup }) =>
+        `- ${text(unit.members.map((member) => member.name).join(', '))}: ${text(followup.description)} ${followup.references.map((ref) => reference(ref, unit, input)).join(' ')}`,
+    ),
+  ];
+}
+
+function capabilityLine(
+  { input }: Review,
+  capability: NonNullable<UnitRecord['assessment']>['newFunctionality'][number],
+  unit: DecisionUnit,
+): string {
+  if (unit.kind === 'direct_group' && capability.memberId !== unit.anchorId)
+    throw new RenderFailure('reference');
+  const source = reference(
+    {
+      kind: 'source',
+      sourceId: capability.sourceId,
+      memberId: capability.memberId,
+      side: 'head',
+      category: 'upstream',
+      url: capability.sourceUrl,
+    },
+    unit,
+    input,
+  );
+  const context =
+    capability.contextId && capability.contextPath
+      ? reference(
+          {
+            kind: 'context',
+            contextId: capability.contextId,
+            memberId: capability.memberId,
+            path: capability.contextPath,
+          },
+          unit,
+          input,
+        )
+      : '';
+  if (capability.usefulness !== 'not_relevant' && (!capability.action || !context))
+    throw new RenderFailure('content');
+  return `- ${text(capability.feature)} ${capability.action ? text(capability.action) : ''} ${text(capability.rationale)} ${context} ${source}`;
+}
+
+function capabilitySections(r: Review): string[][] {
+  const { input, units } = r;
+  const capabilities = input.records.flatMap(
+    (record, index) =>
+      record.assessment?.newFunctionality.map((capability) => ({
+        capability,
+        unit: units[index],
+      })) ?? [],
+  );
+  const sections: string[][] = [];
+  for (const [kind, heading] of [
+    ['use_now', 'New capabilities to adopt now'],
+    ['consider_later', 'Consider later'],
+    ['not_relevant', 'Not relevant'],
+  ] as const) {
+    const entries = capabilities.filter(({ capability }) => capability.usefulness === kind);
+    if (!entries.length) continue;
+    sections.push([
+      ...(kind === 'not_relevant'
+        ? ['', '<details>', '<summary>Not relevant</summary>', '']
+        : ['', `## ${heading}`, '']),
+      ...entries.map(({ capability, unit }) => capabilityLine(r, capability, unit)),
+      ...(kind === 'not_relevant' ? ['', '</details>'] : []),
+    ]);
   }
-  const appendCapabilitiesError = appendCapabilities();
-  if (appendCapabilitiesError) return appendCapabilitiesError;
-  function uncheckedQualifier(member: DecisionUnit['members'][number]): string {
-    const duplicates = units
-      .flatMap((unit) => unit.members)
-      .filter((item) => item.name === member.name && item.ecosystem === member.ecosystem);
-    if (duplicates.length < 2) return member.ecosystem;
-    const change = input.coverage.inventory.packet.changes.find((item) => item.id === member.id);
-    const side = change?.to ?? change?.from;
-    if (!side) throw new InvalidReference();
-    const location =
-      'root' in side
-        ? `root ${side.root}`
-        : `${side.workflow}, ${side.jobId}, step ${side.stepIndex ?? 'unknown'}`;
-    return `${member.ecosystem}, ${text(location)}, ${text(member.proposedVersion ?? member.currentVersion ?? 'unknown')}`;
+  return sections;
+}
+
+function uncheckedQualifier(
+  { input, units }: Review,
+  member: DecisionUnit['members'][number],
+): string {
+  const duplicates = units
+    .flatMap((unit) => unit.members)
+    .filter((item) => item.name === member.name && item.ecosystem === member.ecosystem);
+  if (duplicates.length < 2) return member.ecosystem;
+  const change = input.coverage.inventory.packet.changes.find((item) => item.id === member.id);
+  const side = change?.to ?? change?.from;
+  if (!side) throw new RenderFailure('reference');
+  const location =
+    'root' in side
+      ? `root ${side.root}`
+      : `${side.workflow}, ${side.jobId}, step ${side.stepIndex ?? 'unknown'}`;
+  return `${member.ecosystem}, ${text(location)}, ${text(member.proposedVersion ?? member.currentVersion ?? 'unknown')}`;
+}
+
+function uncheckedSections(r: Review): string[][] {
+  const { input, units, summary } = r;
+  const licenseFailures = input.signalAttempts.filter(
+    (attempt) => attempt.category === 'license' && attempt.outcome !== 'available',
+  );
+  const unchecked = summary.units.flatMap((unit, index) =>
+    unit.uncheckedSignals.map((signal) => ({ unit: units[index], signal })),
+  );
+  if (!licenseFailures.length && !unchecked.length) return [];
+  type Member = DecisionUnit['members'][number];
+  const groups = new Map<string, { member: Member; details: Map<string, string[]> }>();
+  function add(member: Member, label: string, detail: string) {
+    let group = groups.get(member.id);
+    if (!group) {
+      group = { member, details: new Map() };
+      groups.set(member.id, group);
+    }
+    const labels = group.details.get(detail) ?? [];
+    labels.push(label);
+    group.details.set(detail, labels);
   }
-  function appendUnchecked(): DecisionBriefResult | undefined {
-    const licenseFailures = input.signalAttempts.filter(
-      (attempt) => attempt.category === 'license' && attempt.outcome !== 'available',
-    );
-    const unchecked = summary.units.flatMap((unit, index) =>
-      unit.uncheckedSignals.map((signal) => ({ unit: units[index], signal })),
-    );
-    if (!licenseFailures.length && !unchecked.length) return undefined;
-    type Member = DecisionUnit['members'][number];
-    const groups = new Map<string, { member: Member; details: Map<string, string[]> }>();
-    function add(member: Member, label: string, detail: string) {
-      let group = groups.get(member.id);
-      if (!group) {
-        group = { member, details: new Map() };
-        groups.set(member.id, group);
-      }
-      const labels = group.details.get(detail) ?? [];
-      labels.push(label);
-      group.details.set(detail, labels);
-    }
-    for (const { unit, signal } of unchecked) {
-      const link = unit.evidenceLinks.find((entry) => entry.id === signal.sourceId);
-      const member = unit.members.find((entry) => entry.id === link?.memberId);
-      if (!link || !member) return { ok: false, category: 'reference' };
-      const reasons = link.reasons.map(readableLabel).join(', ') || readableLabel(signal.reason);
-      add(member, readableLabel(signal.signal), `${reasons}; ${readableLabel(link.status)}`);
-    }
-    for (const attempt of licenseFailures) {
-      const unit = units.find((candidate) => candidate.memberIds.includes(attempt.memberId));
-      const member = unit?.members.find((candidate) => candidate.id === attempt.memberId);
-      if (!member) return { ok: false, category: 'reference' };
-      const side = attempt.side === 'head' ? 'proposed' : 'base';
-      const reasons = attempt.reasons.map(readableLabel).join(', ') || 'not checked';
-      add(member, `license (${side})`, `${reasons}; ${readableLabel(attempt.outcome)}`);
-    }
-    lines.push('', '## Unchecked signals', '');
-    for (const { member, details } of groups.values()) {
-      lines.push(`- **${text(member.name)}** (${uncheckedQualifier(member)})`);
-      for (const [detail, labels] of details) lines.push(`  - ${labels.join(', ')}: ${detail}.`);
-    }
-    optional.push(lines.splice(0));
-    return undefined;
+  for (const { unit, signal } of unchecked) {
+    const link = unit.evidenceLinks.find((entry) => entry.id === signal.sourceId);
+    const member = unit.members.find((entry) => entry.id === link?.memberId);
+    if (!link || !member) throw new RenderFailure('reference');
+    const reasons = link.reasons.map(readableLabel).join(', ') || readableLabel(signal.reason);
+    add(member, readableLabel(signal.signal), `${reasons}; ${readableLabel(link.status)}`);
   }
-  const appendUncheckedError = appendUnchecked();
-  if (appendUncheckedError) return appendUncheckedError;
-  return fitComment(head, assessments, requiredFollowups, optional);
+  for (const attempt of licenseFailures) {
+    const unit = units.find((candidate) => candidate.memberIds.includes(attempt.memberId));
+    const member = unit?.members.find((candidate) => candidate.id === attempt.memberId);
+    if (!member) throw new RenderFailure('reference');
+    const side = attempt.side === 'head' ? 'proposed' : 'base';
+    const reasons = attempt.reasons.map(readableLabel).join(', ') || 'not checked';
+    add(member, `license (${side})`, `${reasons}; ${readableLabel(attempt.outcome)}`);
+  }
+  const lines = ['', '## Unchecked signals', ''];
+  for (const { member, details } of groups.values()) {
+    lines.push(`- **${text(member.name)}** (${uncheckedQualifier(r, member)})`);
+    for (const [detail, labels] of details) lines.push(`  - ${labels.join(', ')}: ${detail}.`);
+  }
+  return [lines];
+}
+
+function renderNonempty(input: DecisionBriefInput, binding: ReviewBinding): DecisionBriefResult {
+  if (!consistentReview(input)) throw new RenderFailure('content');
+  const units = input.coverage.inventory.units;
+  const summary = input.coverage.policyProvenance.assessments;
+  validateSignals(input);
+  const r: Review = { input, binding, units, summary, ...collectHolds(input, units, summary) };
+  validateHolds(r);
+  const head = [
+    ...headerLines(r),
+    ...blockerLines(r),
+    ...queueLines(r),
+    ...coverageLines(r),
+    ...findingLines(r),
+  ];
+  return fitComment(head, assessmentLines(r), followupLines(r), [
+    ...capabilitySections(r),
+    ...uncheckedSections(r),
+  ]);
 }
 
 /** Render an attributed review body; publication readiness is decided by the caller. */
@@ -806,7 +835,6 @@ export function renderDecisionBrief(input: DecisionBriefInput): DecisionBriefRes
     const { counts, inventoryGaps, outcome } = input.coverage;
     if (outcome.kind !== 'empty_inventory') return renderNonempty(input, binding);
     if (
-      outcome.kind !== 'empty_inventory' ||
       input.analysisUnavailable ||
       input.records.length !== 0 ||
       input.signalAttempts.length !== 0 ||
@@ -843,6 +871,6 @@ export function renderDecisionBrief(input: DecisionBriefInput): DecisionBriefRes
     ].join('\n');
     return body.length <= 50_000 ? { ok: true, body } : { ok: false, category: 'size' };
   } catch (error) {
-    return { ok: false, category: error instanceof InvalidReference ? 'reference' : 'input' };
+    return { ok: false, category: error instanceof RenderFailure ? error.category : 'input' };
   }
 }
