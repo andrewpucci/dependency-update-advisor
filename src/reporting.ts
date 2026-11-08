@@ -37,6 +37,21 @@ function plural(count: number, label: string): string {
   return `${count} ${label}${count === 1 ? '' : 's'}`;
 }
 
+function readableLabel(value: string): string {
+  return text(
+    value
+      .replace(
+        /([a-z])([A-Z])/gu,
+        (_, lower: string, upper: string) => `${lower} ${upper.toLowerCase()}`,
+      )
+      .replaceAll('_', ' '),
+  );
+}
+
+function sourceTitle(value: string): string {
+  return text(value.replaceAll('publishTime', 'publication time'));
+}
+
 function recovery(category: string | null): string {
   if (category === 'configuration')
     return 'Correct the provider configuration or credential, then rerun CI.';
@@ -64,7 +79,7 @@ function evidenceGap(unit: DecisionUnit, sourceId: string): string {
   const link = unit.evidenceLinks.find((entry) => entry.id === sourceId);
   const member = unit.members.find((entry) => entry.id === link?.memberId);
   if (!link || !member) throw new InvalidReference();
-  return `${text(member.name)}: ${text(link.category)} evidence is ${text(link.status)} (${link.reasons.map(text).join(', ')}). Review the ${text(link.category)} evidence for ${text(member.name)} and rerun CI.`;
+  return `${text(member.name)}: ${readableLabel(link.category)} evidence is ${readableLabel(link.status)} (${link.reasons.map(readableLabel).join(', ')}). Review the ${readableLabel(link.category)} evidence for ${text(member.name)} and rerun CI.`;
 }
 
 function unsafeUrl(value: string): boolean {
@@ -117,7 +132,9 @@ function reference(ref: ResolvedReference, unit: DecisionUnit, input: DecisionBr
   if (!linked) throw new InvalidReference();
   if (source.provenance.kind === 'file') {
     if (source.provenance.revision !== ref.side || ref.url !== null) throw new InvalidReference();
-    return 'Repository file evidence';
+    return ref.side === 'base'
+      ? 'Base repository file evidence'
+      : 'Proposed repository file evidence';
   }
   if (source.provenance.kind !== 'upstream' || source.provenance.url !== ref.url)
     throw new InvalidReference();
@@ -132,7 +149,7 @@ function reference(ref: ResolvedReference, unit: DecisionUnit, input: DecisionBr
   const url = new URL(ref.url);
   if (url.protocol !== 'https:' || url.username || url.password || unsafeUrl(ref.url))
     throw new InvalidReference();
-  return `[${text(source.provenance.title)}](<${url.href.replace(/[<>]/gu, '')}>)`;
+  return `[${sourceTitle(source.provenance.title)}](<${url.href.replace(/[<>]/gu, '')}>)`;
 }
 
 function consistentOutcome(input: DecisionBriefInput): boolean {
@@ -416,7 +433,7 @@ function renderNonempty(input: DecisionBriefInput, binding: ReviewBinding): Deci
         unsafeUrl(source.provenance.url)
       )
         return null;
-      links.push(`[${text(source.provenance.title)}](<${url.href.replace(/[<>]/gu, '')}>)`);
+      links.push(`[${sourceTitle(source.provenance.title)}](<${url.href.replace(/[<>]/gu, '')}>)`);
     }
     return links;
   }
@@ -509,7 +526,7 @@ function renderNonempty(input: DecisionBriefInput, binding: ReviewBinding): Deci
           );
         });
         lines.push(
-          `- ${text(member.name)} — ${text(finding.kind)}: ${text(finding.rationale)} ${'applicability' in finding ? text(finding.applicability) : ''} ${'severity' in finding && finding.severity ? text(finding.severity) : ''} ${citations.join(' ')}`,
+          `- ${text(member.name)} — ${readableLabel(finding.kind)}: ${text(finding.rationale)} ${'applicability' in finding ? readableLabel(finding.applicability) : ''} ${'severity' in finding && finding.severity ? text(finding.severity) : ''} ${citations.join(' ')}`,
         );
       }
     }
@@ -534,7 +551,7 @@ function renderNonempty(input: DecisionBriefInput, binding: ReviewBinding): Deci
           .join(', ');
         const citations = assessment.reason.references.map((ref) => reference(ref, unit, input));
         lines.push(
-          `- ${names} (${unit.kind === 'direct_group' ? 'direct group' : text(input.coverage.inventory.packet.changes.find((change) => unit.memberIds.includes(change.id))?.role ?? 'unknown')}): ${text(assessment.reason.text)} Policy: ${text(evaluation.effectiveCeiling)}. Evidence: ${evaluation.gaps.length ? 'partial' : 'complete'}. ${citations.join(' ')}`,
+          `- ${names} (${unit.kind === 'direct_group' ? 'direct group' : text(input.coverage.inventory.packet.changes.find((change) => unit.memberIds.includes(change.id))?.role ?? 'unknown')}): ${text(assessment.reason.text)} Policy: ${readableLabel(evaluation.effectiveCeiling)}. Evidence: ${evaluation.gaps.length ? 'partial' : 'complete'}. ${citations.join(' ')}`,
         );
       }
     }
@@ -641,7 +658,7 @@ function renderNonempty(input: DecisionBriefInput, binding: ReviewBinding): Deci
         const member = unit.members.find((entry) => entry.id === link?.memberId);
         if (!link || !member) return { ok: false, category: 'reference' };
         lines.push(
-          `- ${text(member.name)} ${text(signal.signal)}: ${text(signal.reason)}; ${text(link.status)}.`,
+          `- ${text(member.name)} ${readableLabel(signal.signal)}: ${readableLabel(signal.reason)}; ${readableLabel(link.status)}.`,
         );
       }
       for (const attempt of licenseFailures) {

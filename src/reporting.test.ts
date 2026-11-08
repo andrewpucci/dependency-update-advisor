@@ -229,7 +229,12 @@ test('renders assessed decision units without treating required evidence gaps as
   if (!result.ok) throw new Error('render failed');
   expect(result.body).toContain('Package assessments');
   expect(result.body).toContain('Decision coverage');
-  expect(result.body).toContain('releaseMetadata');
+  expect(result.body).toContain('release metadata');
+  expect(result.body).toContain('publication time observation');
+  expect(result.body).toContain('Base repository file evidence');
+  expect(result.body).toContain('Proposed repository file evidence');
+  expect(result.body).not.toContain('releaseMetadata');
+  expect(result.body).not.toContain('publishTime');
   expect(result.body).toContain('Merge after reviewing the evidence');
   if (process.env.O1_GROUPED_PREVIEW) {
     const fs = await import('node:fs/promises');
