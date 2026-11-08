@@ -90,13 +90,14 @@ test('renders an attributable empty inventory without a merge verdict', () => {
   expect(result.body).toContain(
     `https://github.com/example/consumer/commit/${input.binding.headSha}`,
   );
-  expect(result.body).not.toMatch(/\bmerge recommendation\b/i);
+  expect(result.body).not.toMatch(/\bmerge\b/i);
 });
 
 test('rejects a binding for a different reviewed head', () => {
   const input = emptyBrief();
   const headSha = 'd'.repeat(40);
-  expect(renderDecisionBrief({ ...input, binding: { ...input.binding, headSha } })).toEqual({
+  const binding = { ...input.binding, headSha, identity: [101, 301, 401, 1, 42, headSha] as const };
+  expect(renderDecisionBrief({ ...input, binding, signalBinding: binding })).toEqual({
     ok: false,
     category: 'input',
   });
@@ -162,7 +163,15 @@ test('reports every unavailable unit and configuration recovery', async () => {
   if (!result.ok) throw new Error('render failed');
   expect(result.body).toContain('Decision queue');
   expect(result.body).toContain('provider configuration or credential');
-  for (const unit of input.inventory.units) expect(result.body).toContain(unit.members[0].name);
+  const queue = result.body.split('## Decision queue')[1].split('## Decision coverage')[0];
+  const items = queue.split('\n').filter((line) => line.startsWith('- '));
+  expect(items).toHaveLength(input.inventory.units.length);
+  for (const [index, unit] of input.inventory.units.entries()) {
+    expect(items[index]).toContain(unit.members[0].name);
+    expect(items[index]).toContain(
+      'Correct the provider configuration or credential, then rerun CI.',
+    );
+  }
 });
 
 test('shows a verified malware hold before unavailable analysis', async () => {
@@ -187,6 +196,17 @@ test('shows a verified malware hold before unavailable analysis', async () => {
     result.body.indexOf('Decision queue'),
   );
   expect(result.body).toContain('provider configuration or credential');
+  const blockerSection = result.body
+    .split('## Reasons not to merge')[1]
+    .split('## Decision queue')[0];
+  expect(blockerSection).toContain('child-0');
+  expect(blockerSection).toContain('Impact: this finding requires a hold.');
+  expect(blockerSection).toContain(
+    'The cited active malware advisory affects this exact proposed target.',
+  );
+  expect(blockerSection).toContain('Do not merge this version; select an unaffected version.');
+  expect(blockerSection).toContain('Re-run the exact malware lookup before reconsidering.');
+  expect(blockerSection).toContain('https://github.com/advisories/');
 });
 
 test('renders assessed decision units without treating required evidence gaps as complete', async () => {
@@ -242,6 +262,11 @@ test('renders assessed decision units without treating required evidence gaps as
   const assessmentLines = assessments.split('\n').filter((line) => line.startsWith('- '));
   expect(assessmentLines).toHaveLength(input.inventory.units.length);
   expect(assessmentLines.every((line) => line.includes('](<https://'))).toBe(true);
+  expect(assessmentLines[0]).toContain('https://github.com/fixture/action/releases/tag/v2.0.0');
+  expect(assessmentLines[1]).toContain(
+    'https://github.com/fixture/npm-child-0/releases/tag/v2.0.0',
+  );
+  expect(assessmentLines[2]).toContain('https://github.com/fixture/py-orbit/releases/tag/v2.0.0');
   if (process.env.O1_GROUPED_PREVIEW) {
     const fs = await import('node:fs/promises');
     await fs.writeFile(process.env.O1_GROUPED_PREVIEW, result.body);
@@ -371,6 +396,22 @@ test('renders a validated actionable capability with local context and upstream 
   expect(rendered.body).toContain('New capabilities to adopt now');
   expect(rendered.body).toContain('Adopt the helper');
   expect(rendered.body).toContain('Repository context');
+  const capability = result.records.flatMap(
+    (record) => record.assessment?.newFunctionality ?? [],
+  )[0];
+  if (!capability) throw new Error('missing capability fixture');
+  const capabilitySection = rendered.body
+    .split('## New capabilities to adopt now')[1]
+    .split('## ')[0];
+  expect(capabilitySection).toContain(`](<${capability.sourceUrl}>)`);
+  const otherSource = snapshot.inventory.packet.sources.find(
+    (source) =>
+      source.provenance.kind === 'upstream' &&
+      source.status !== 'unavailable' &&
+      !source.memberIds.includes(capability.memberId),
+  );
+  if (!otherSource || otherSource.provenance.kind !== 'upstream')
+    throw new Error('missing other source fixture');
   const records = result.records.map((record) => {
     if (!record.assessment?.newFunctionality.length) return record;
     return {
@@ -379,7 +420,8 @@ test('renders a validated actionable capability with local context and upstream 
         ...record.assessment,
         newFunctionality: record.assessment.newFunctionality.map((capability) => ({
           ...capability,
-          sourceUrl: 'https://evil.example/',
+          sourceId: otherSource.id,
+          sourceUrl: otherSource.provenance.kind === 'upstream' ? otherSource.provenance.url : '',
         })),
       },
     };
@@ -544,8 +586,23 @@ test('retains every unresolved action at exactly 50,000 string units and rejects
   expect(exact.body).toContain('Decision queue');
   expect(exact.body).toContain('&lt;');
   expect(exact.body).toContain(`<!-- review-digest: ${'c'.repeat(64)} -->`);
+  const verifyQueue = (body: string) => {
+    const queue = body.split('## Decision queue')[1].split('## Decision coverage')[0];
+    const items = queue.split('\n').filter((line) => line.startsWith('- '));
+    expect(items).toHaveLength(input.inventory.units.length);
+    for (const [index, unit] of input.inventory.units.entries()) {
+      expect(items[index]).toContain(unit.members[0].name);
+      expect(items[index]).toContain(`${unit.memberCount} changed update`);
+      expect(items[index]).toContain(
+        'Correct the provider configuration or credential, then rerun CI.',
+      );
+    }
+  };
+  verifyQueue(exact.body);
   const overflow = renderDecisionBrief(make('é'.repeat(length + 1) + '<'));
   expect(overflow.ok && overflow.body).toContain('omitted');
+  if (!overflow.ok) throw new Error('overflow rendering failed');
+  verifyQueue(overflow.body);
   expect(renderDecisionBrief(make('é'.repeat(length + 5_000) + '<'))).toEqual({
     ok: false,
     category: 'size',
@@ -558,7 +615,7 @@ test('neutralizes external Markdown, HTML and GitHub autolinks in assessment tex
   const { analyzeMistralBatch } = await import('./analysis/mistral.js');
   const { input, scenario } = await analysisScenario();
   const hostile =
-    '@alice #123 owner/repo#123 https://evil.example :smile: aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa </details> <!-- reviewed-head: fake --> [click](https://evil.example)';
+    '@alice @acme/team #123 owner/repo#123 https://evil.example :smile: ffffffffffffffffffffffffffffffffffffffff </details> <!-- reviewed-head: fake --> [click](https://evil.example)';
   const analysis = await analyzeDecisionUnits(
     input,
     { apiKey: 'test', deadlineMs: 700_000 },
@@ -596,6 +653,11 @@ test('neutralizes external Markdown, HTML and GitHub autolinks in assessment tex
   expect(result.ok).toBe(true);
   if (!result.ok) throw new Error('render failed');
   expect(result.body).not.toContain('@alice');
+  expect(result.body).not.toContain('@acme/team');
+  expect(result.body).not.toContain('#123');
+  expect(result.body).not.toContain('owner/repo#123');
+  expect(result.body).not.toContain(':smile:');
+  expect(result.body).not.toContain('ffffffffffffffffffffffffffffffffffffffff');
   expect(result.body).not.toContain('https://evil.example');
   expect(result.body).not.toContain('</details>');
   expect(result.body).not.toContain('<!-- reviewed-head: fake -->');
@@ -648,6 +710,10 @@ test('maps every M2 failure category to its applicable recovery action', async (
     expect(result.ok).toBe(true);
     if (!result.ok) throw new Error(category);
     expect(result.body).toContain(expected);
+    const queue = result.body.split('## Decision queue')[1].split('## Decision coverage')[0];
+    const items = queue.split('\n').filter((line) => line.startsWith('- '));
+    expect(items).toHaveLength(input.inventory.units.length);
+    for (const item of items) expect(item).toContain(expected);
   }
 });
 
@@ -717,6 +783,22 @@ test('retains the exact next action for assessed evidence gaps and relaxed advic
   expect(result.body).toContain('Evidence coverage:** Incomplete');
   expect(result.body).toContain('Non-blocking follow-ups');
   expect(result.body).toContain('malware evidence');
+  const gapUnit = analysis.coverage.policyProvenance.assessments.units.find((unit) =>
+    unit.gaps.some((gap) =>
+      input.inventory.units
+        .find((candidate) => candidate.id === unit.id)
+        ?.evidenceLinks.some((link) => link.id === gap.sourceId && link.category === 'malware'),
+    ),
+  );
+  if (!gapUnit) throw new Error('missing malware gap');
+  const unit = input.inventory.units.find((candidate) => candidate.id === gapUnit.id)!;
+  const link = unit.evidenceLinks.find(
+    (entry) =>
+      entry.category === 'malware' && gapUnit.gaps.some((gap) => gap.sourceId === entry.id),
+  )!;
+  const member = unit.members.find((entry) => entry.id === link.memberId)!;
+  const gapAction = `${member.name}: malware evidence is ${link.status} (${link.reasons.join(', ')}). Review the malware evidence for ${member.name} and rerun CI.`;
+  expect(result.body).toContain(gapAction);
   const records = analysis.records.map((record, index) =>
     index || !record.assessment
       ? record
@@ -742,6 +824,7 @@ test('retains the exact next action for assessed evidence gaps and relaxed advic
   expect(boundary.body).toContain('omitted');
   expect(boundary.body).toContain('malware evidence');
   expect(boundary.body).toContain('Non-blocking follow-ups');
+  expect(boundary.body).toContain(gapAction);
 });
 
 test('rejects an inventory gap whose reasons disagree with the packet', () => {
@@ -784,7 +867,7 @@ test('neutralizes hostile Markdown in every model blocker field', async () => {
     }),
   );
   const hostile =
-    '@alice #123 owner/repo#123 https://evil.example :smile: aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa </details> <!-- reviewed-head: fake --> [click](https://evil.example)';
+    '@alice @acme/team #123 owner/repo#123 https://evil.example :smile: ffffffffffffffffffffffffffffffffffffffff </details> <!-- reviewed-head: fake --> [click](https://evil.example)';
   const analysis = await analyzeDecisionUnits(
     { ...input, config },
     { apiKey: 'test', deadlineMs: 700_000 },
@@ -830,6 +913,11 @@ test('neutralizes hostile Markdown in every model blocker field', async () => {
   if (!result.ok) throw new Error('render failed');
   expect(result.body).toContain('Reasons not to merge');
   expect(result.body).not.toContain('@alice');
+  expect(result.body).not.toContain('@acme/team');
+  expect(result.body).not.toContain('#123');
+  expect(result.body).not.toContain('owner/repo#123');
+  expect(result.body).not.toContain(':smile:');
+  expect(result.body).not.toContain('ffffffffffffffffffffffffffffffffffffffff');
   expect(result.body).not.toContain('https://evil.example');
   expect(result.body).not.toContain('</details>');
   if (process.env.O1_BLOCKER_PROBE) {
@@ -884,7 +972,13 @@ test.each(['rejected', 'unattempted'] as const)(
     expect(rendered.body).toContain('No merge recommendation');
     expect(rendered.body).toContain(`${input.inventory.units.length} unresolved decision units`);
     expect(rendered.body).toContain('Rerun CI');
-    for (const unit of input.inventory.units) expect(rendered.body).toContain(unit.members[0].name);
+    const queue = rendered.body.split('## Decision queue')[1].split('## Decision coverage')[0];
+    const items = queue.split('\n').filter((line) => line.startsWith('- '));
+    expect(items).toHaveLength(input.inventory.units.length);
+    for (const [index, unit] of input.inventory.units.entries()) {
+      expect(items[index]).toContain(unit.members[0].name);
+      expect(items[index]).toContain('Rerun CI to retry dependency analysis.');
+    }
   },
 );
 
@@ -946,6 +1040,16 @@ test('retains assessed and unresolved units together without recommending merge'
   expect(rendered.body).toContain('Decision queue');
   expect(rendered.body).toContain('Package assessments');
   expect(rendered.body).toContain('1 unresolved decision unit.');
+  const queue = rendered.body.split('## Decision queue')[1].split('## Decision coverage')[0];
+  const queueItems = queue.split('\n').filter((line) => line.startsWith('- '));
+  expect(queueItems).toHaveLength(1);
+  expect(queueItems[0]).toContain(input.inventory.units[0].members[0].name);
+  expect(queueItems[0]).toContain('Rerun CI to retry dependency analysis.');
+  const assessments = rendered.body.split('## Package assessments')[1].split('## ')[0];
+  const assessmentItems = assessments.split('\n').filter((line) => line.startsWith('- '));
+  expect(assessmentItems).toHaveLength(input.inventory.units.length - 1);
+  for (const [index, unit] of input.inventory.units.slice(1).entries())
+    expect(assessmentItems[index]).toContain(unit.members[0].name);
 });
 
 test('rejects a policy summary that drops a required unit evidence gap', async () => {
