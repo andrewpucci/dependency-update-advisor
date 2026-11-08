@@ -13,6 +13,8 @@ import {
   validateAnalysisReply,
   preparedSnapshot,
   prepareAnalysisBatch,
+  prepareAnalysisRun,
+  prepareRunBatch,
   ANALYSIS_LIMITS,
   type PreparedAnalysisBatch,
 } from './contract.js';
@@ -320,13 +322,51 @@ test('batch identity and request bytes stay pinned for fixed selections', async 
     ],
   ] as const;
   expect(input.unitIds).toHaveLength(3);
+  const { inventory, config, evaluatedAt } = input;
+  const run = prepareAnalysisRun({ inventory, config, evaluatedAt, limits: ANALYSIS_LIMITS });
+  if (run.kind !== 'ready') throw new Error('fixture failed');
   for (const [unitIds, digest, requestBytes, requestHash] of pinned) {
-    const result = prepareAnalysisBatch({ ...input, unitIds, limits: ANALYSIS_LIMITS });
-    if (result.kind !== 'prepared') throw new Error('fixture failed');
-    expect(result.batch.batchId).toBe('v1:' + digest);
-    expect(result.batch.requestBytes).toBe(requestBytes);
-    expect(createHash('sha256').update(JSON.stringify(result.batch.request)).digest('hex')).toBe(
-      requestHash,
-    );
+    for (const result of [
+      prepareAnalysisBatch({ ...input, unitIds, limits: ANALYSIS_LIMITS }),
+      prepareRunBatch(run.run, [...unitIds]),
+    ]) {
+      if (result.kind !== 'prepared') throw new Error('fixture failed');
+      expect(result.batch.batchId).toBe('v1:' + digest);
+      expect(result.batch.requestBytes).toBe(requestBytes);
+      expect(createHash('sha256').update(JSON.stringify(result.batch.request)).digest('hex')).toBe(
+        requestHash,
+      );
+    }
   }
+});
+
+test('a run handle is owned, detached from its caller, and checks each selection', async () => {
+  const { input } = await analysisScenario();
+  const { config, evaluatedAt } = input;
+  const inventory = structuredClone(input.inventory);
+  const run = prepareAnalysisRun({ inventory, config, evaluatedAt, limits: ANALYSIS_LIMITS });
+  if (run.kind !== 'ready') throw new Error('fixture failed');
+  const [first] = input.unitIds;
+  expect(prepareRunBatch({}, [first])).toEqual({
+    kind: 'invalid',
+    category: 'reference',
+    attempted: false,
+  });
+  expect(prepareRunBatch(run.run, []).kind).toBe('invalid');
+  expect(prepareRunBatch(run.run, [first, first]).kind).toBe('invalid');
+  expect(prepareRunBatch(run.run, ['unknown-unit']).kind).toBe('invalid');
+  const before = prepareRunBatch(run.run, [first]);
+  (inventory.units as unknown[]).length = 0;
+  const after = prepareRunBatch(run.run, [first]);
+  if (before.kind !== 'prepared' || after.kind !== 'prepared') throw new Error('fixture failed');
+  expect(after.batch.batchId).toBe(before.batch.batchId);
+  expect(
+    prepareAnalysisRun({
+      inventory,
+      config,
+      evaluatedAt,
+      unitIds: [first],
+      limits: ANALYSIS_LIMITS,
+    }).kind,
+  ).toBe('invalid');
 });

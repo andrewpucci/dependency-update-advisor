@@ -2,7 +2,13 @@ import { isDeepStrictEqual } from 'node:util';
 import { parseReviewConfig, type ConfigResult } from '../config.js';
 import type { AssessmentState } from '../policy.js';
 import { formDecisionUnits, summarizeDecisionCoverage, type UnitInventory } from '../units.js';
-import { ANALYSIS_LIMITS, prepareAnalysisBatch, type ValidatedAssessment } from './contract.js';
+import {
+  ANALYSIS_LIMITS,
+  prepareAnalysisRun,
+  prepareRunBatch,
+  type PreparationResult,
+  type ValidatedAssessment,
+} from './contract.js';
 import { analyzeMistralBatch, type MistralOptions, type MistralResult } from './mistral.js';
 import { snapshotData } from './projection.js';
 
@@ -123,6 +129,7 @@ type ScheduleState = {
   calls: number;
   dispatched: number;
   splits: number;
+  run?: ReturnType<typeof prepareAnalysisRun>;
 };
 
 async function scheduleBatches(
@@ -162,9 +169,9 @@ function prepareWave(
     !options.signal?.aborted
   ) {
     const ids = state.queue.shift()!;
-    const prepared = prepareAnalysisBatch({ ...snapshot, unitIds: ids, limits: ANALYSIS_LIMITS });
+    const prepared = prepareBatch(state, snapshot, ids);
     if (prepared.kind !== 'prepared') {
-      if (prepared.category === 'budget' && ids.length > 1) {
+      if (prepared.category === 'budget' && ids.length > 1 && !prepared.runWide) {
         state.queue.unshift(...splitUnits(ids));
       } else {
         state.records.push(...unresolved(ids, 'unavailable', false, prepared.category, null));
@@ -184,6 +191,19 @@ function prepareWave(
     });
   }
   return { wave, preparationFailure: undefined };
+}
+
+// Run-wide checks happen on first use, so expired or empty work never reports a preparation failure.
+function prepareBatch(
+  state: ScheduleState,
+  snapshot: BatchInput,
+  ids: string[],
+): PreparationResult & { runWide?: true } {
+  const { inventory, config, evaluatedAt } = snapshot;
+  state.run ??= prepareAnalysisRun({ inventory, config, evaluatedAt, limits: ANALYSIS_LIMITS });
+  return state.run.kind === 'ready'
+    ? prepareRunBatch(state.run.run, ids)
+    : { ...state.run, runWide: true };
 }
 
 async function collectWave(state: ScheduleState, wave: WaveEntry[]) {

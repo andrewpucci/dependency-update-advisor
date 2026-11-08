@@ -418,12 +418,12 @@ test('HTTP failure never splits a batch', async () => {
 test('preparation budget re-packs locally without spending a model call', async () => {
   const { input } = await analysisScenario();
   const contract = await import('./contract.js');
-  const prepare = contract.prepareAnalysisBatch;
-  const spy = vi.spyOn(contract, 'prepareAnalysisBatch').mockImplementation((value) => {
-    const ids = (value as { unitIds: string[] }).unitIds;
+  const prepare = contract.prepareRunBatch;
+  const spy = vi.spyOn(contract, 'prepareRunBatch').mockImplementation((run, value) => {
+    const ids = value as string[];
     return ids.length > 1
       ? { kind: 'invalid', category: 'budget', attempted: false }
-      : prepare(value);
+      : prepare(run, value);
   });
   let calls = 0;
   try {
@@ -467,7 +467,7 @@ test('a unit too large to prepare alone reports budget without a call', async ()
   const { input } = await analysisScenario();
   const contract = await import('./contract.js');
   const spy = vi
-    .spyOn(contract, 'prepareAnalysisBatch')
+    .spyOn(contract, 'prepareRunBatch')
     .mockReturnValue({ kind: 'invalid', category: 'budget', attempted: false });
   const analyze = vi.fn();
   try {
@@ -659,4 +659,58 @@ test('single-unit length failures remain unavailable without another retry', asy
     ),
   ).toBe(true);
   expect(result.analysisUnavailable).toBe(true);
+});
+
+test('run-wide preparation checks happen once regardless of batch count', async () => {
+  const { input } = await analysisScenario({ inventory: { children: 20 } });
+  const units = await import('../units.js');
+  const inventory = units.formDecisionUnits({ ...input.inventory.packet, relationships: [] });
+  const spy = vi.spyOn(units, 'evaluateUnitPolicy');
+  const analyze = vi.fn(async () => ({ kind: 'unavailable', category: 'http' }) as never);
+  try {
+    const result = await analyzeDecisionUnits(
+      { ...input, inventory },
+      { apiKey: 'test-key', deadlineMs: 700_000 },
+      { now: () => 0, analyze },
+    );
+    expect(result.ok).toBe(true);
+    expect(analyze.mock.calls.length).toBeGreaterThan(2);
+    expect(spy).toHaveBeenCalledTimes(1);
+  } finally {
+    spy.mockRestore();
+  }
+});
+
+test('a run-wide budget failure prepares once and leaves every unit unavailable without a call', async () => {
+  const { input } = await analysisScenario({ inventory: { children: 20 } });
+  const units = await import('../units.js');
+  const inventory = units.formDecisionUnits({ ...input.inventory.packet, relationships: [] });
+  const contract = await import('./contract.js');
+  const run = vi
+    .spyOn(contract, 'prepareAnalysisRun')
+    .mockReturnValue({ kind: 'invalid', category: 'budget', attempted: false });
+  const batch = vi.spyOn(contract, 'prepareRunBatch');
+  const analyze = vi.fn();
+  try {
+    const result = await analyzeDecisionUnits(
+      { ...input, inventory },
+      { apiKey: 'test-key', deadlineMs: 700_000 },
+      { now: () => 0, analyze },
+    );
+    expect(result.ok).toBe(true);
+    if (!result.ok) throw new Error('fixture failed');
+    expect(run).toHaveBeenCalledTimes(1);
+    expect(batch).not.toHaveBeenCalled();
+    expect(analyze).not.toHaveBeenCalled();
+    expect(result.records).toHaveLength(inventory.units.length);
+    expect(
+      result.records.every(
+        (record) =>
+          record.state.state === 'unavailable' && !record.attempted && record.category === 'budget',
+      ),
+    ).toBe(true);
+  } finally {
+    run.mockRestore();
+    batch.mockRestore();
+  }
 });
