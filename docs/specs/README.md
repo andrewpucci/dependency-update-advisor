@@ -135,6 +135,21 @@ gaps and an introduced vulnerability before parity is claimed.
   [#107](https://github.com/andrewpucci/dependency-update-advisor/issues/107)
   tracks it.
 - [Analysis providers](SPEC-analysis-providers.md) — approved for planning.
+- [Mistral transport and single-batch validation](SPEC-mistral-transport.md) —
+  approved for execution for M1 #21 in `analysis-providers`, 2026-11-07,
+  after the user's edits, plan review, and `as-build auto`.
+  M1 owns projection, common
+  validation, and transport; M2 retains scheduling, splits, and aggregation.
+  The approved plan includes a live `model_length` spike and initial
+  resource/interface choices; #210–#218 are ordered sub-issues of #21 on the
+  implementation project. After the inconclusive spike, the user approved
+  ordinary-failure handling for `model_length` and continued execution.
+  #210–#218 are implemented locally, pending review and merge.
+  [Verification #218](https://github.com/andrewpucci/dependency-update-advisor/issues/218)
+  records exact-revision results and review disposition. The
+  [implemented handoff](SPEC-mistral-transport.md#implemented-interface-and-handoff)
+  preserves separate M2, workflow, packaging, provider/consumer trial,
+  adoption, parity, and cutover gates.
 - [Immutable GitHub evidence reads](SPEC-github-read.md) — implemented for
   D1 #13 and #101–#107 in `shared-review`, merged into `main`. Caller-supplied
   budgets cover discovery, immutable file bytes, and independent comparison

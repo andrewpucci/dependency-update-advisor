@@ -215,3 +215,32 @@ unknown. Synthetic proof scaffolding is not evidence of live public-identity
 or Actions mapping acquisition. See the [S1 handoff](../../docs/specs/SPEC-advisory-lookup.md#implemented-interface-and-handoff)
 and [verification #181](https://github.com/andrewpucci/dependency-update-advisor/issues/181)
 for the implemented scope and remaining integration gates.
+
+## M1 Analysis Fixtures
+
+`analysis.ts` extends the invented `policy-signals.ts` and `upstream.ts` scenarios
+through actual collectors, S2/S1/S3, trusted C1 parsing, T4 validation, T5 units
+and C3 evaluation. It supplies valid aliased reply documents for common validation
+and mocked HTTP round trips. No consumer response, repository file, credential,
+or raw live model payload supplies a committed fixture.
+
+The C2 helper creates and removes only its own temporary synthetic checkout.
+Independent expected context reaches T4 before preparation; available, disabled,
+unmatched and truncated usage facts are inspected in the actual POST. The
+Actions node-budget option produces a real collector inventory gap beside
+independent npm/uv analysis, rather than fabricating complete collector output.
+
+`src/analysis/*.test.ts` cover exact alias/member/source/context attribution,
+policy holds, whole-batch rejection, resource boundaries, diagnostics and
+deadline/cancellation cleanup. The integration suites pass successful/failed M1
+states to real C3/T5 summaries without implementing M2 scheduling. Mutation
+checks and revision-specific results belong in
+[verification #218](https://github.com/andrewpucci/dependency-update-advisor/issues/218).
+
+The maximum-response fixture uses synthetic whitespace plus sixfold JSON
+escaping and bounded metadata to reach the recorded response allowance; it
+does not claim to measure tokenizer behavior. The paid spike's incomplete
+evidence and approved conservative finish decision remain in #210. Provider
+compatibility, M2, workflow, publication, packaging, consumer/adoption, parity
+and cutover need separate evidence. See the
+[M1 handoff](../../docs/specs/SPEC-mistral-transport.md#implemented-interface-and-handoff).

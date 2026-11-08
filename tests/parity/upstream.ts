@@ -34,6 +34,7 @@ type Options = {
   actionsSubpath?: boolean;
   failedAdvisoryChild?: boolean;
   uvArtifacts?: boolean;
+  partialActionsInventory?: boolean;
   actionChange?: 'owner' | 'mutable';
 };
 function packageNode(name: string, version: string) {
@@ -241,7 +242,7 @@ export async function upstreamScenario(options: Options = {}) {
         limits: {
           maxFileBytes: 100_000,
           maxWorkflows: 20,
-          maxYamlNodes: 100_000,
+          maxYamlNodes: options.partialActionsInventory ? 1 : 100_000,
           maxYamlDepth: 32,
           maxAliasExpansions: 100,
           maxOccurrences: 1000,
