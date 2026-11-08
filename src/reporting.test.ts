@@ -1154,3 +1154,223 @@ test('accepts valid UTC generation times with and without fractional seconds', (
     category: 'input',
   });
 });
+
+test('neutralizes hostile text in model follow-ups', async () => {
+  const { analysisScenario, analysisDocument } = await import('../tests/parity/analysis.js');
+  const { analyzeDecisionUnits } = await import('./analysis/batches.js');
+  const { analyzeMistralBatch } = await import('./analysis/mistral.js');
+  const { input, scenario } = await analysisScenario({ mode: 'malware-failed' });
+  const hostile =
+    '@alice @acme/team #123 owner/repo#123 https://evil.example :smile: ffffffffffffffffffffffffffffffffffffffff </details> <!-- reviewed-head: fake -->';
+  const analysis = await analyzeDecisionUnits(
+    input,
+    { apiKey: 'test', deadlineMs: 700_000 },
+    {
+      now: () => 0,
+      analyze: (batch, options) =>
+        analyzeMistralBatch(batch, options, {
+          now: () => 0,
+          fetch: async () => {
+            const document = analysisDocument(batch);
+            for (const row of document.assessments)
+              for (const followup of row.followups) followup.description = hostile;
+            return Response.json({
+              choices: [
+                {
+                  index: 0,
+                  finish_reason: 'stop',
+                  message: { role: 'assistant', content: JSON.stringify(document) },
+                },
+              ],
+            });
+          },
+        }),
+    },
+  );
+  if (!analysis.ok) throw new Error('analysis fixture failed');
+  const rendered = renderDecisionBrief({
+    binding: input.inventory.packet.binding,
+    generatedAt: '2026-11-08T00:00:00.000Z',
+    coverage: analysis.coverage,
+    records: analysis.records,
+    analysisUnavailable: analysis.analysisUnavailable,
+    signalAttempts: scenario.result.attempts,
+    signalBinding: scenario.result.binding,
+  });
+  expect(rendered.ok).toBe(true);
+  if (!rendered.ok) throw new Error('render failed');
+  const section = rendered.body.split('## Non-blocking follow-ups')[1].split('\n## ')[0];
+  expect(section).toContain('@\u200balice');
+  for (const value of [
+    '@alice',
+    '@acme/team',
+    '#123',
+    'https://evil.example',
+    ':smile:',
+    'f'.repeat(40),
+    '</details>',
+    '<!-- reviewed-head: fake -->',
+  ])
+    expect(section).not.toContain(value);
+  if (process.env.O1_FOLLOWUP_PROBE) {
+    const fs = await import('node:fs/promises');
+    await fs.writeFile(process.env.O1_FOLLOWUP_PROBE, rendered.body);
+  }
+});
+
+test('neutralizes hostile capability text while retaining its vetted source and context', async () => {
+  const { analysisWithContext, capabilityDocument } = await import('../tests/parity/analysis.js');
+  const { preparedSnapshot } = await import('./analysis/contract.js');
+  const { analyzeDecisionUnits } = await import('./analysis/batches.js');
+  const { analyzeMistralBatch } = await import('./analysis/mistral.js');
+  const { batch } = await analysisWithContext('available');
+  const snapshot = preparedSnapshot(batch)!;
+  const hostile =
+    '@alice @acme/team #123 owner/repo#123 https://evil.example :smile: ffffffffffffffffffffffffffffffffffffffff </details> <!-- reviewed-head: fake -->';
+  const analysis = await analyzeDecisionUnits(
+    { inventory: snapshot.inventory, config: snapshot.config, evaluatedAt: snapshot.evaluatedAt },
+    { apiKey: 'test', deadlineMs: 700_000 },
+    {
+      now: () => 0,
+      analyze: (prepared, options) =>
+        analyzeMistralBatch(prepared, options, {
+          now: () => 0,
+          fetch: async () => {
+            const { document, feature } = capabilityDocument(prepared);
+            const row = document.assessments.find((entry) => entry.newFunctionality.length);
+            if (!row) throw new Error('missing capability fixture');
+            row.newFunctionality = [
+              { ...feature, feature: hostile, action: hostile, rationale: hostile },
+            ];
+            return Response.json({
+              choices: [
+                {
+                  index: 0,
+                  finish_reason: 'stop',
+                  message: { role: 'assistant', content: JSON.stringify(document) },
+                },
+              ],
+            });
+          },
+        }),
+    },
+  );
+  if (!analysis.ok) throw new Error('analysis fixture failed');
+  const rendered = renderDecisionBrief({
+    binding: snapshot.inventory.packet.binding,
+    generatedAt: '2026-11-08T00:00:00.000Z',
+    coverage: analysis.coverage,
+    records: analysis.records,
+    analysisUnavailable: analysis.analysisUnavailable,
+    signalAttempts: [],
+    signalBinding: snapshot.inventory.packet.binding,
+  });
+  expect(rendered.ok).toBe(true);
+  if (!rendered.ok) throw new Error('render failed');
+  const section = rendered.body.split('## New capabilities to adopt now')[1].split('\n## ')[0];
+  expect(section).toContain('Repository context');
+  expect(section).toContain('](<https://');
+  expect(section).toContain('@\u200balice');
+  for (const value of [
+    '@alice',
+    '@acme/team',
+    '#123',
+    'https://evil.example',
+    ':smile:',
+    'f'.repeat(40),
+    '</details>',
+    '<!-- reviewed-head: fake -->',
+  ])
+    expect(section).not.toContain(value);
+  if (process.env.O1_CAPABILITY_PROBE) {
+    const fs = await import('node:fs/promises');
+    await fs.writeFile(process.env.O1_CAPABILITY_PROBE, rendered.body);
+  }
+});
+
+test('neutralizes hostile finding and upstream source titles from a validated packet', async () => {
+  const { analysisScenario, analysisDocument } = await import('../tests/parity/analysis.js');
+  const { analyzeDecisionUnits } = await import('./analysis/batches.js');
+  const { analyzeMistralBatch } = await import('./analysis/mistral.js');
+  const { input, scenario } = await analysisScenario();
+  const packet = input.inventory.packet;
+  const hostile =
+    '@alice @acme/team #123 owner/repo#123 https://evil.example :smile: ffffffffffffffffffffffffffffffffffffffff </details> <!-- reviewed-head: fake -->';
+  const candidate = {
+    ...packet,
+    changes: packet.changes.map((change) =>
+      change.ecosystem === 'actions'
+        ? {
+            ...change,
+            from: change.from ? { ...change.from, action: 'fixture/#123' } : null,
+            to: change.to ? { ...change.to, action: 'fixture/#123' } : null,
+          }
+        : change,
+    ),
+    findings: packet.findings.map((finding) => ({ ...finding, rationale: hostile })),
+    sources: packet.sources.map((source) =>
+      source.provenance.kind === 'upstream'
+        ? { ...source, provenance: { ...source.provenance, title: hostile } }
+        : source,
+    ),
+  };
+  const validated = validateReviewPacket(candidate, {
+    binding: packet.binding,
+    baseSha: packet.baseSha,
+    contextRevision: packet.contextRevision,
+    context: packet.context,
+  });
+  if (!validated.ok) throw new Error('hostile packet fixture rejected');
+  const inventory = formDecisionUnits(validated.packet);
+  const analysis = await analyzeDecisionUnits(
+    { ...input, inventory },
+    { apiKey: 'test', deadlineMs: 700_000 },
+    {
+      now: () => 0,
+      analyze: (batch, options) =>
+        analyzeMistralBatch(batch, options, {
+          now: () => 0,
+          fetch: async () =>
+            Response.json({
+              choices: [
+                {
+                  index: 0,
+                  finish_reason: 'stop',
+                  message: { role: 'assistant', content: JSON.stringify(analysisDocument(batch)) },
+                },
+              ],
+            }),
+        }),
+    },
+  );
+  if (!analysis.ok) throw new Error('analysis fixture failed');
+  const rendered = renderDecisionBrief({
+    binding: packet.binding,
+    generatedAt: '2026-11-08T00:00:00.000Z',
+    coverage: analysis.coverage,
+    records: analysis.records,
+    analysisUnavailable: analysis.analysisUnavailable,
+    signalAttempts: scenario.result.attempts,
+    signalBinding: scenario.result.binding,
+  });
+  expect(rendered.ok).toBe(true);
+  if (!rendered.ok) throw new Error('render failed');
+  const coverage = rendered.body.split('## Decision coverage')[1].split('\n## ')[0];
+  expect(coverage).toContain('@\u200balice');
+  expect(rendered.body).toContain('fixture/#\u200b123');
+  for (const value of [
+    '@alice',
+    '@acme/team',
+    '#123',
+    'https://evil.example',
+    ':smile:',
+    'f'.repeat(40),
+    '</details>',
+    '<!-- reviewed-head: fake -->',
+  ])
+    expect(coverage).not.toContain(value);
+  if (process.env.O1_FINDING_PROBE) {
+    const fs = await import('node:fs/promises');
+    await fs.writeFile(process.env.O1_FINDING_PROBE, rendered.body);
+  }
+});
