@@ -186,6 +186,37 @@ test('options that are not an object are rejected before dispatch', async () => 
   expect(analyze).not.toHaveBeenCalled();
 });
 
+test('an unsent request that settles after the deadline stays unattempted by the provider', async () => {
+  const { input } = await analysisScenario();
+  let time = 0;
+  const result = await analyzeDecisionUnits(
+    input,
+    { deadlineMs: 700_000 },
+    {
+      now: () => time,
+      analyze: async (batch, options) => {
+        const outcome = await analyzeMistralBatch(batch, options, {
+          now: () => 0,
+          fetch: vi.fn(),
+        });
+        time = 1_000_000;
+        return outcome;
+      },
+    },
+  );
+  expect(result.ok).toBe(true);
+  if (!result.ok) throw new Error('fixture failed');
+  expect(
+    result.records.every(
+      (record) =>
+        record.state.state === 'unavailable' &&
+        !record.attempted &&
+        record.category === 'configuration',
+    ),
+  ).toBe(true);
+  expect(result.diagnostics.callsDispatched).toBe(0);
+});
+
 test('splits only recognized length truncations down to successful single units', async () => {
   const { input } = await analysisScenario();
   const sizes: number[] = [];

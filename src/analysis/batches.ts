@@ -311,7 +311,13 @@ async function boundedCall(
       return 'transport';
     }
     const result = await Promise.race([pending, stopped]);
-    if (typeof result !== 'string' && now() >= options.deadlineMs) return 'deadline';
+    // A late result is ignored unless it reports that no request was sent.
+    if (
+      typeof result !== 'string' &&
+      (result.kind === 'validated' || result.attempted) &&
+      now() >= options.deadlineMs
+    )
+      return 'deadline';
     return result;
   } finally {
     clearTimeout(timer);
