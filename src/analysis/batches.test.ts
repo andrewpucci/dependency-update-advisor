@@ -178,6 +178,14 @@ test('completion order does not change dispatched batches, concurrency, or final
   expect(forward.records.every((record) => record.state.state === 'assessed')).toBe(true);
 });
 
+test('options that are not an object are rejected before dispatch', async () => {
+  const { input } = await analysisScenario();
+  const analyze = vi.fn();
+  const result = await analyzeDecisionUnits(input, undefined as never, { now: () => 0, analyze });
+  expect(result).toMatchObject({ ok: false, category: 'configuration' });
+  expect(analyze).not.toHaveBeenCalled();
+});
+
 test('splits only recognized length truncations down to successful single units', async () => {
   const { input } = await analysisScenario();
   const sizes: number[] = [];

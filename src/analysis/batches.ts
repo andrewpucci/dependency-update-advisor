@@ -34,6 +34,8 @@ export async function analyzeDecisionUnits(
   const analyze = dependencies.analyze ?? analyzeMistralBatch;
   const start = now();
   if (
+    typeof options !== 'object' ||
+    options === null ||
     !Number.isFinite(start) ||
     !Number.isFinite(options.deadlineMs) ||
     (options.signal !== undefined && !(options.signal instanceof AbortSignal))
