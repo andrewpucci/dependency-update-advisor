@@ -607,6 +607,73 @@ test('handles a stream rejection that races deadline exhaustion without an unhan
   expect(stream.locked).toBe(false);
 });
 
+test('reports a pre-request body over budget as invalid preparation, like projection does', async () => {
+  const { batch } = await preparedAnalysis();
+  const body = JSON.stringify(batch.request);
+  const byteLength = Buffer.byteLength;
+  const spy = vi
+    .spyOn(Buffer, 'byteLength')
+    .mockImplementation((value, encoding) =>
+      value === body ? Number.MAX_SAFE_INTEGER : byteLength(value, encoding),
+    );
+  const fetch = vi.fn(async () => completion(batch));
+  try {
+    expect(await analyzeMistralBatch(batch, options, { fetch, now: () => 0 })).toMatchObject({
+      kind: 'invalid',
+      category: 'budget',
+      attempted: false,
+      batchId: batch.batchId,
+      unitIds: batch.unitIds,
+    });
+  } finally {
+    spy.mockRestore();
+  }
+  expect(fetch).not.toHaveBeenCalled();
+});
+
+test.each(['headers-abort', 'headers-timeout', 'body-abort', 'body-timeout'] as const)(
+  'keeps the stop category when a signal-honoring transport rejects inside abort (%s)',
+  async (mode) => {
+    const { batch } = await preparedAnalysis();
+    vi.useFakeTimers();
+    let now = 0;
+    // Like undici: the abort listener rejects the pending fetch or errors the body synchronously.
+    const fetch = vi.fn((_url: string, init: RequestInit) => {
+      const signal = init.signal!;
+      if (mode.startsWith('headers'))
+        return new Promise<Response>((_, reject) =>
+          signal.addEventListener('abort', () => reject(signal.reason)),
+        );
+      const body = new ReadableStream<Uint8Array>({
+        start(controller) {
+          controller.enqueue(new TextEncoder().encode('{'));
+          signal.addEventListener('abort', () => controller.error(signal.reason));
+        },
+      });
+      return Promise.resolve(
+        new Response(body, { headers: { 'content-type': 'application/json' } }),
+      );
+    });
+    const caller = new AbortController();
+    const task = analyzeMistralBatch(
+      batch,
+      { ...options, deadlineMs: 50, signal: caller.signal },
+      { fetch, now: () => now },
+    );
+    await vi.advanceTimersByTimeAsync(0);
+    if (mode.endsWith('abort')) caller.abort();
+    else {
+      now = 50;
+      await vi.advanceTimersByTimeAsync(50);
+    }
+    expect(await task).toMatchObject({
+      kind: 'failed',
+      attempted: true,
+      category: mode.endsWith('abort') ? 'cancelled' : 'deadline',
+    });
+  },
+);
+
 test('hostile upstream instructions cannot change model, endpoint, headers or validation', async () => {
   const { input, scenario } = await analysisScenario();
   const instruction =

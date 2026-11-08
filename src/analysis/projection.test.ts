@@ -19,7 +19,25 @@ test('projects actual mixed collector units with short aliases and independent c
   );
   expect(Object.keys(projection.coverage)).toEqual(['npm', 'actions', 'uv']);
   expect(batch.requestBytes).toBe(Buffer.byteLength(JSON.stringify(batch.request)));
-  for (const id of input.unitIds) expect(JSON.stringify(batch.request)).not.toContain(id);
+  const { packet } = input.inventory;
+  const rawIds = [
+    ...input.unitIds,
+    ...packet.changes.map((change) => change.id),
+    ...packet.sources.map((source) => source.id),
+    ...packet.findings.map((finding) => finding.id),
+  ];
+  // Compare decoded leaves: quoted unit IDs never match the escaped wire text.
+  const leaves: string[] = [];
+  const collect = (value: unknown): void => {
+    if (typeof value === 'string') leaves.push(value);
+    else if (value && typeof value === 'object')
+      for (const [key, item] of Object.entries(value)) {
+        leaves.push(key);
+        collect(item);
+      }
+  };
+  collect(projection);
+  expect(rawIds.filter((id) => leaves.some((leaf) => leaf.includes(id)))).toEqual([]);
   expect(Object.isFrozen(batch)).toBe(true);
   expect(Object.isFrozen(batch.request.messages)).toBe(true);
 });
@@ -179,18 +197,30 @@ test('exposes no unrelated members through shared source subjects in a subset', 
   expect(preparedSnapshot({ ...result.batch })).toBeUndefined();
 });
 
-test('retains a partial coverage reference without disclosing an unrelated upstream excerpt', async () => {
+test('retains a partial coverage reference without disclosing unrelated upstream text', async () => {
   const { input, scenario } = await analysisScenario();
-  const unrelated = input.inventory.packet.sources.find(
+  const upstream = input.inventory.packet.sources.filter(
     (source) => source.ecosystems.includes('uv') && source.provenance.kind === 'upstream',
   );
+  const unrelated =
+    upstream.find((source) => source.provenance.kind === 'upstream' && source.provenance.range) ??
+    upstream[0];
   if (!unrelated || unrelated.provenance.kind !== 'upstream') throw new Error('fixture source');
   const sentinel = 'UNRELATED_COVERAGE_EXCERPT_SENTINEL';
   const candidate = {
     ...input.inventory.packet,
     sources: input.inventory.packet.sources.map((source) =>
       source.id === unrelated.id
-        ? { ...source, provenance: { ...unrelated.provenance, excerpt: sentinel } }
+        ? {
+            ...source,
+            provenance: {
+              ...unrelated.provenance,
+              title: sentinel + '_TITLE',
+              excerpt: sentinel,
+              advisoryId: sentinel + '_ADVISORY',
+              affectedRange: sentinel + '_RANGE',
+            },
+          }
         : source,
     ),
     coverage: {
@@ -213,11 +243,21 @@ test('retains a partial coverage reference without disclosing an unrelated upstr
   const source = wire.sources.find(
     (item: { id: string }) => item.id === wire.coverage.uv.sourceIds[0],
   );
-  expect(source).toMatchObject({
-    provenance: { kind: 'upstream', excerpt: '', excerptTruncated: true },
+  expect(source.provenance).toEqual({
+    kind: 'upstream',
+    url: unrelated.provenance.url,
+    title: '',
+    excerpt: '',
+    excerptTruncated: true,
+    subjects: [],
+    range: null,
   });
-  expect(source.provenance.url).toBe(unrelated.provenance.url);
   expect(JSON.stringify(prepared.batch.request)).not.toContain(sentinel);
+  const related = wire.sources.find(
+    (item: { memberIds: string[]; provenance: { kind: string } }) =>
+      item.memberIds.length && item.provenance.kind === 'upstream',
+  );
+  expect(related.provenance.title).not.toBe('');
 });
 
 test('enforces the final escaped UTF-8 request boundary, and truncates only source text', async () => {

@@ -164,10 +164,7 @@ function sourceReference(
     url,
   };
 }
-function contextReference(
-  value: unknown,
-  scope: Scope,
-): Extract<ResolvedReference, { kind: 'context' }> {
+function contextFact(value: unknown, scope: Scope) {
   const ref = object(value, ['kind', 'contextId', 'memberId']);
   const change = member(scope, ref.memberId);
   const fact = scope.snapshot.contexts.find((entry) => entry.alias === ref.contextId);
@@ -177,7 +174,19 @@ function contextReference(
       ['available', 'partial'].includes(fact.value.status),
     'reference',
   );
-  return { kind: 'context', contextId: fact.id, memberId: change.id, path: fact.value.path };
+  return fact;
+}
+function contextReference(
+  value: unknown,
+  scope: Scope,
+): Extract<ResolvedReference, { kind: 'context' }> {
+  const fact = contextFact(value, scope);
+  return {
+    kind: 'context',
+    contextId: fact.id,
+    memberId: fact.value.memberId,
+    path: fact.value.path,
+  };
 }
 function references(value: unknown, scope: Scope): ResolvedReference[] {
   return unique(
@@ -281,20 +290,18 @@ function capability(value: unknown, scope: Scope): ValidatedCapability {
     },
     scope,
   );
-  check(source.kind === 'source' && source.url !== null, 'reference');
+  check(source.url !== null, 'reference');
   const action = entry.action === null ? null : text(entry.action, scope.snapshot.limits.textBytes);
-  const context =
+  const fact =
     entry.contextId === null
       ? null
-      : contextReference(
+      : contextFact(
           { kind: 'context', contextId: entry.contextId, memberId: entry.memberId },
           scope,
         );
-  check(!context || context.kind === 'context', 'reference');
-  if (entry.usefulness !== 'not_relevant') check(action && context, 'reference');
+  if (entry.usefulness !== 'not_relevant') check(action && fact, 'reference');
   const contextState = scope.snapshot.inventory.packet.context;
   const dependency = contextState.dependencies.find((item) => item.id === change.id);
-  const fact = scope.snapshot.contexts.find((item) => item.alias === entry.contextId);
   return {
     kind: 'new_capability',
     memberId: change.id,
@@ -303,8 +310,8 @@ function capability(value: unknown, scope: Scope): ValidatedCapability {
     sourceUrl: source.url,
     usefulness: entry.usefulness,
     action,
-    contextId: context?.contextId ?? null,
-    contextPath: context?.path ?? null,
+    contextId: fact?.id ?? null,
+    contextPath: fact?.value.path ?? null,
     contextStatus:
       dependency?.status ?? (contextState.status === 'disabled' ? 'disabled' : 'unavailable'),
     contextReasons: dependency?.reasons ?? contextState.reasons,

@@ -1,7 +1,7 @@
 import { createHash } from 'node:crypto';
 import { isDeepStrictEqual, types } from 'node:util';
 import { parseReviewConfig, type ConfigResult } from '../config.js';
-import { freeze, isPlainObject } from '../evidence/common.js';
+import { byCodeUnit, freeze, isPlainObject } from '../evidence/common.js';
 import {
   formDecisionUnits,
   evaluateUnitPolicy,
@@ -43,6 +43,7 @@ export type BatchSnapshot = Readonly<{
   holds: readonly Alias<Hold>[];
   contexts: readonly Alias<ContextFact>[];
   request: AnalysisRequest;
+  requestBytes: number;
 }>;
 class ProjectionError extends Error {
   constructor(readonly category: AnalysisCategory) {
@@ -109,7 +110,7 @@ function canonical(value: unknown): unknown {
   if (value && typeof value === 'object')
     return Object.fromEntries(
       Object.entries(value)
-        .sort(([a], [b]) => (a < b ? -1 : a > b ? 1 : 0))
+        .sort(([a], [b]) => byCodeUnit(a, b))
         .map(([key, item]) => [key, canonical(item)]),
     );
   return value;
@@ -244,22 +245,48 @@ function aliasFor(entries: readonly Alias<unknown>[], id: unknown): string {
   requireValue(entry, 'projection');
   return entry.alias;
 }
-function remap(value: unknown, maps: Aliases, key = ''): unknown {
-  if (typeof value === 'string') {
-    if (['sourceId', 'sourceIds', 'references'].includes(key)) return aliasFor(maps.sources, value);
-    if (['memberId', 'memberIds', 'fromId', 'toId', 'anchorId'].includes(key))
-      return aliasFor(maps.members, value);
-    return value;
-  }
-  if (Array.isArray(value)) return value.map((item) => remap(item, maps, key));
-  if (value && typeof value === 'object')
-    return Object.fromEntries(
-      Object.entries(value).map(([field, item]) => [field, remap(item, maps, field)]),
-    );
-  return value;
+const ids = (entries: readonly Alias<unknown>[], values: readonly string[]) =>
+  values.map((id) => aliasFor(entries, id));
+// Each packet type names its ID fields explicitly; an unmapped ID fails the leak test.
+function wireSide<T extends Readonly<{ sourceId: string }>>(side: T | null, maps: Aliases) {
+  return side && { ...side, sourceId: aliasFor(maps.sources, side.sourceId) };
 }
-function named(value: object, alias: string, maps: Aliases): Record<string, unknown> {
-  return { ...(remap(value, maps) as Record<string, unknown>), id: alias };
+function wireEvidence<T extends Readonly<{ sourceIds: readonly string[] }>>(
+  entry: T,
+  maps: Aliases,
+) {
+  return { ...entry, sourceIds: ids(maps.sources, entry.sourceIds) };
+}
+function wireChange(change: Packet['changes'][number], alias: string, maps: Aliases) {
+  return {
+    ...change,
+    id: alias,
+    evidence: Object.fromEntries(
+      Object.entries(change.evidence).map(([category, entry]) => [
+        category,
+        wireEvidence(entry, maps),
+      ]),
+    ),
+    from: wireSide(change.from, maps),
+    to: wireSide(change.to, maps),
+  };
+}
+function wireFinding(finding: Finding, alias: string, maps: Aliases) {
+  return {
+    ...finding,
+    id: alias,
+    memberId: aliasFor(maps.members, finding.memberId),
+    references: ids(maps.sources, finding.references),
+  };
+}
+function wireRelationship(proof: Packet['relationships'][number], maps: Aliases) {
+  return {
+    ...proof,
+    fromId: aliasFor(maps.members, proof.fromId),
+    toId: aliasFor(maps.members, proof.toId),
+    sourceId: aliasFor(maps.sources, proof.sourceId),
+    path: proof.path.map((side) => wireSide(side, maps)),
+  };
 }
 function shorten(value: string, bytes: number): string {
   if (Buffer.byteLength(value) <= bytes) return value;
@@ -278,9 +305,20 @@ function wireSources(input: ReturnType<typeof preparedInput>, maps: Aliases) {
       maps.members.some((member) => member.id === id),
     );
     let provenance = value.provenance;
-    if (provenance.kind === 'upstream') {
+    if (provenance.kind === 'upstream' && !memberIds.length) {
+      // A coverage-only source keeps its locator; its upstream text and ranges stay out.
+      provenance = {
+        kind: 'upstream',
+        url: provenance.url,
+        title: '',
+        excerpt: '',
+        excerptTruncated: true,
+        subjects: [],
+        range: null,
+      };
+    } else if (provenance.kind === 'upstream') {
       const p = provenance;
-      const excerpt = memberIds.length ? shorten(p.excerpt, input.limits.sourceBytes) : '';
+      const excerpt = shorten(p.excerpt, input.limits.sourceBytes);
       provenance = {
         ...p,
         subjects: p.subjects.filter((subject) => memberIds.includes(subject.memberId)),
@@ -288,7 +326,21 @@ function wireSources(input: ReturnType<typeof preparedInput>, maps: Aliases) {
         excerpt,
       };
     }
-    return named({ ...value, memberIds, provenance }, alias, maps);
+    return {
+      ...value,
+      id: alias,
+      memberIds: ids(maps.members, memberIds),
+      provenance:
+        provenance.kind === 'upstream'
+          ? {
+              ...provenance,
+              subjects: provenance.subjects.map((subject) => ({
+                ...subject,
+                memberId: aliasFor(maps.members, subject.memberId),
+              })),
+            }
+          : provenance,
+    };
   });
 }
 function wireUnit(
@@ -302,7 +354,7 @@ function wireUnit(
     const entry = unit.evidenceLinks.find((item) => item.id === sourceId);
     requireValue(entry, 'projection');
     const { id: _id, ...facts } = entry;
-    return remap(facts, maps);
+    return { ...wireEvidence(facts, maps), memberId: aliasFor(maps.members, facts.memberId) };
   };
   const trace = (entry: RuleTrace) => {
     const { unitId: _unitId, sourceId, findingId, ...facts } = entry;
@@ -324,14 +376,13 @@ function wireUnit(
     memberIds: unit.memberIds.map((id) => aliasFor(maps.members, id)),
     members: maps.members
       .filter((entry) => unit.memberIds.includes(entry.id))
-      .map((entry) => named(entry.value, entry.alias, maps)),
+      .map((entry) => wireChange(entry.value, entry.alias, maps)),
     relationship: unit.relationship,
-    relationships: remap(
-      input.inventory.packet.relationships.filter(
+    relationships: input.inventory.packet.relationships
+      .filter(
         (proof) => unit.memberIds.includes(proof.fromId) && unit.memberIds.includes(proof.toId),
-      ),
-      maps,
-    ),
+      )
+      .map((proof) => wireRelationship(proof, maps)),
     evidence: unit.evidenceLinks.map((entry) => link(entry.id)),
     findingIds: unit.findings.map((finding) => aliasFor(maps.findings, finding.id)),
     policy: {
@@ -355,7 +406,7 @@ function wireProjection(input: ReturnType<typeof preparedInput>, maps: Aliases) 
     id: entry.alias,
     memberId: aliasFor(maps.members, entry.value.memberId),
   }));
-  const findings = maps.findings.map((entry) => named(entry.value, entry.alias, maps));
+  const findings = maps.findings.map((entry) => wireFinding(entry.value, entry.alias, maps));
   const dependencies = maps.members.map((member) => {
     const dependency = input.inventory.packet.context.dependencies.find(
       (entry) => entry.id === member.id,
@@ -391,7 +442,12 @@ function wireProjection(input: ReturnType<typeof preparedInput>, maps: Aliases) 
   });
   return {
     version: 1,
-    coverage: remap(input.inventory.packet.coverage, maps),
+    coverage: Object.fromEntries(
+      Object.entries(input.inventory.packet.coverage).map(([ecosystem, entry]) => [
+        ecosystem,
+        wireEvidence(entry, maps),
+      ]),
+    ),
     units,
     sources,
     findings,
@@ -425,10 +481,11 @@ export function projectBatch(
         { role: 'user', content: JSON.stringify(projection) },
       ],
     };
-    requireValue(Buffer.byteLength(JSON.stringify(request)) <= input.limits.requestBytes, 'budget');
+    const requestBytes = Buffer.byteLength(JSON.stringify(request));
+    requireValue(requestBytes <= input.limits.requestBytes, 'budget');
     const identity = canonical({ version: 1, ...input, projection });
     const batchId = 'v1:' + createHash('sha256').update(JSON.stringify(identity)).digest('hex');
-    return freeze({ ...input, ...maps, batchId, request });
+    return freeze({ ...input, ...maps, batchId, request, requestBytes });
   } catch (error) {
     const category = error instanceof ProjectionError ? error.category : 'input';
     return {

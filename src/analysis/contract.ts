@@ -61,7 +61,7 @@ export function prepareAnalysisBatch(value: unknown): PreparationResult {
   const batch = freeze({
     batchId: result.batchId,
     unitIds: result.selected.map((unit) => unit.id),
-    requestBytes: Buffer.byteLength(JSON.stringify(result.request)),
+    requestBytes: result.requestBytes,
     request: result.request,
   });
   snapshots.set(batch, result);

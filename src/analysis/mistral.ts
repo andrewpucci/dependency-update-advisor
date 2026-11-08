@@ -56,7 +56,7 @@ type Outcome =
       unitIds: readonly string[];
     }>
   | Readonly<{
-      kind: 'unavailable';
+      kind: 'invalid' | 'unavailable';
       category: MistralCategory;
       attempted: false;
       batchId: string;
@@ -119,9 +119,11 @@ function lifecycle(
     reject = fail;
   });
   void aborted.catch(() => {});
+  // Reject first: a signal-honoring fetch/body rejects synchronously inside abort(), and the
+  // race must settle with this category rather than that AbortError.
   const stop = (category: MistralCategory) => {
-    controller.abort();
     reject(new MistralFailure(category));
+    controller.abort();
   };
   const cancel = () => stop('cancelled');
   options.signal?.addEventListener('abort', cancel, { once: true });
@@ -250,8 +252,13 @@ function failure(
   attempted: boolean,
 ): MistralResult {
   const identity = { batchId: snapshot.batchId, unitIds: snapshot.selected.map((unit) => unit.id) };
+  // Preparation-shaped failures stay invalid, as in projectBatch; credentials and stops are unavailable.
+  const invalid = ['input', 'projection', 'budget'].includes(category);
   if (!attempted)
-    return result({ ...identity, kind: 'unavailable', category, attempted: false }, snapshot);
+    return result(
+      { ...identity, kind: invalid ? 'invalid' : 'unavailable', category, attempted: false },
+      snapshot,
+    );
   if (category === 'length')
     return result({ ...identity, kind: 'truncated', category, attempted: true }, snapshot);
   return result(
