@@ -798,7 +798,9 @@ test('retains the exact next action for assessed evidence gaps and relaxed advic
   )!;
   const member = unit.members.find((entry) => entry.id === link.memberId)!;
   const gapAction = `${member.name}: malware evidence is ${link.status} (${link.reasons.join(', ')}). Review the malware evidence for ${member.name} and rerun CI.`;
-  expect(result.body).toContain(gapAction);
+  const followupSection = (body: string) =>
+    body.split('## Non-blocking follow-ups')[1].split('\n## ')[0];
+  expect(followupSection(result.body)).toContain(gapAction);
   const records = analysis.records.map((record, index) =>
     index || !record.assessment
       ? record
@@ -824,7 +826,7 @@ test('retains the exact next action for assessed evidence gaps and relaxed advic
   expect(boundary.body).toContain('omitted');
   expect(boundary.body).toContain('malware evidence');
   expect(boundary.body).toContain('Non-blocking follow-ups');
-  expect(boundary.body).toContain(gapAction);
+  expect(followupSection(boundary.body)).toContain(gapAction);
 });
 
 test('rejects an inventory gap whose reasons disagree with the packet', () => {
