@@ -826,3 +826,113 @@ test('neutralizes hostile Markdown in every model blocker field', async () => {
     await fs.writeFile(process.env.O1_BLOCKER_PROBE, result.body);
   }
 });
+
+test.each(['rejected', 'unattempted'] as const)(
+  'retains every %s unit when analysis is unavailable',
+  async (kind) => {
+    const { analysisScenario } = await import('../tests/parity/analysis.js');
+    const { analyzeDecisionUnits } = await import('./analysis/batches.js');
+    const { analyzeMistralBatch } = await import('./analysis/mistral.js');
+    const { input, scenario } = await analysisScenario();
+    const controller = new AbortController();
+    if (kind === 'unattempted') controller.abort();
+    const analysis = await analyzeDecisionUnits(
+      input,
+      { apiKey: 'test', deadlineMs: 700_000, signal: controller.signal },
+      {
+        now: () => 0,
+        analyze: (batch, options) =>
+          analyzeMistralBatch(batch, options, {
+            now: () => 0,
+            fetch: async () =>
+              Response.json({
+                choices: [
+                  {
+                    index: 0,
+                    finish_reason: 'stop',
+                    message: { role: 'assistant', content: 'invalid-json' },
+                  },
+                ],
+              }),
+          }),
+      },
+    );
+    if (!analysis.ok) throw new Error('analysis fixture failed');
+    expect(analysis.records.every((record) => record.state.state === kind)).toBe(true);
+    const rendered = renderDecisionBrief({
+      binding: input.inventory.packet.binding,
+      generatedAt: '2026-11-08T00:00:00.000Z',
+      coverage: analysis.coverage,
+      records: analysis.records,
+      analysisUnavailable: analysis.analysisUnavailable,
+      signalAttempts: scenario.result.attempts,
+      signalBinding: scenario.result.binding,
+    });
+    expect(rendered.ok).toBe(true);
+    if (!rendered.ok) throw new Error('render failed');
+    expect(rendered.body).toContain('No merge recommendation');
+    expect(rendered.body).toContain(`${input.inventory.units.length} unresolved decision units`);
+    expect(rendered.body).toContain('Rerun CI');
+    for (const unit of input.inventory.units) expect(rendered.body).toContain(unit.members[0].name);
+  },
+);
+
+test('retains assessed and unresolved units together without recommending merge', async () => {
+  const { analysisScenario, analysisDocument } = await import('../tests/parity/analysis.js');
+  const { analyzeDecisionUnits } = await import('./analysis/batches.js');
+  const { analyzeMistralBatch } = await import('./analysis/mistral.js');
+  const { input, scenario } = await analysisScenario();
+  const result = await analyzeDecisionUnits(
+    input,
+    { apiKey: 'test', deadlineMs: 700_000 },
+    {
+      now: () => 0,
+      analyze: (batch, options) =>
+        analyzeMistralBatch(batch, options, {
+          now: () => 0,
+          fetch: async () =>
+            Response.json({
+              choices: [
+                {
+                  index: 0,
+                  finish_reason: 'stop',
+                  message: { role: 'assistant', content: JSON.stringify(analysisDocument(batch)) },
+                },
+              ],
+            }),
+        }),
+    },
+  );
+  if (!result.ok) throw new Error('analysis fixture failed');
+  const state = {
+    state: 'unavailable' as const,
+    reason: 'Analysis did not produce a validated assessment.',
+    nextAction: 'Re-run dependency analysis.',
+    coverageLimits: ['Model assessment unavailable.'],
+  };
+  const records = result.records.map((record, index) =>
+    index ? record : { ...record, state, category: 'transport', assessment: null },
+  );
+  const coverage = summarizeDecisionCoverage(
+    input.inventory,
+    input.config,
+    input.evaluatedAt,
+    Object.fromEntries(records.map((record) => [record.unitId, record.state])),
+  );
+  if (!coverage.ok) throw new Error('coverage fixture failed');
+  const rendered = renderDecisionBrief({
+    binding: input.inventory.packet.binding,
+    generatedAt: '2026-11-08T00:00:00.000Z',
+    coverage,
+    records,
+    analysisUnavailable: false,
+    signalAttempts: scenario.result.attempts,
+    signalBinding: scenario.result.binding,
+  });
+  expect(rendered.ok).toBe(true);
+  if (!rendered.ok) throw new Error('render failed');
+  expect(rendered.body).toContain('No merge recommendation');
+  expect(rendered.body).toContain('Decision queue');
+  expect(rendered.body).toContain('Package assessments');
+  expect(rendered.body).toContain('1 unresolved decision unit.');
+});

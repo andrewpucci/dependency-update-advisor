@@ -33,6 +33,10 @@ function text(value: string): string {
     .replace(/[\r\n]+/gu, ' ');
 }
 
+function plural(count: number, label: string): string {
+  return `${count} ${label}${count === 1 ? '' : 's'}`;
+}
+
 function recovery(category: string | null): string {
   if (category === 'configuration')
     return 'Correct the provider configuration or credential, then rerun CI.';
@@ -427,7 +431,7 @@ function renderNonempty(input: DecisionBriefInput, binding: ReviewBinding): Deci
       const unresolved = summary.unresolvedUnits.find((entry) => entry.unitId === unit.id);
       if (!unresolved || unresolved.unitId !== unit.id) return { ok: false, category: 'content' };
       lines.push(
-        `- ${text(unit.members.map((member) => member.name).join(', '))} (${unit.memberCount} changed updates): ${text(record.state.reason)} ${recovery(record.category)} ${summary.units[index].gaps.map((gap) => evidenceGap(unit, gap.sourceId)).join(' ')}`,
+        `- ${text(unit.members.map((member) => member.name).join(', '))} (${plural(unit.memberCount, 'changed update')}): ${text(record.state.reason)} ${recovery(record.category)} ${summary.units[index].gaps.map((gap) => evidenceGap(unit, gap.sourceId)).join(' ')}`,
       );
     }
     return undefined;
@@ -438,7 +442,7 @@ function renderNonempty(input: DecisionBriefInput, binding: ReviewBinding): Deci
     '',
     '## Decision coverage',
     '',
-    `${counts.changedMembers} changed updates; ${counts.assessedUnits} assessed decision units; ${counts.unresolvedUnits} unresolved decision units.`,
+    `${plural(counts.changedMembers, 'changed update')}; ${plural(counts.assessedUnits, 'assessed decision unit')}; ${plural(counts.unresolvedUnits, 'unresolved decision unit')}.`,
   );
   if (counts.groupedUnits)
     lines.push(
