@@ -904,6 +904,7 @@ test('accepts an actual grouped decision brief at the T3 handoff', async () => {
   const rendered = renderDecisionBrief({
     binding: input.inventory.packet.binding,
     generatedAt: '2026-11-08T00:00:00.000Z',
+    reviewDigest: 'c'.repeat(64),
     coverage: analysis.coverage,
     records: analysis.records,
     analysisUnavailable: analysis.analysisUnavailable,
@@ -914,9 +915,17 @@ test('accepts an actual grouped decision brief at the T3 handoff', async () => {
   const f = publicationFixture();
   expect(f.binding).toEqual(input.inventory.packet.binding);
   f.input.result.body = rendered.body;
+  f.input.result.reviewDigest = 'c'.repeat(64);
   expect(await publishManagedComment(f.input, f.dependencies)).toMatchObject({
     kind: 'recorded',
     mutation: 'confirmed',
   });
   expect(f.createComment).toHaveBeenCalledOnce();
+  f.createComment.mockClear();
+  f.input.result.reviewDigest = 'd'.repeat(64);
+  expect(await publishManagedComment(f.input, f.dependencies)).toMatchObject({
+    kind: 'error',
+    category: 'input',
+  });
+  expect(f.createComment).not.toHaveBeenCalled();
 });
