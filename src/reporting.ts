@@ -199,11 +199,21 @@ function consistentUnits(input: DecisionBriefInput): boolean {
 
 function consistentInventoryGaps(input: DecisionBriefInput): boolean {
   const { inventory, inventoryGaps } = input.coverage;
+  const expected = Object.values(inventory.packet.coverage).filter(
+    (coverage) => coverage.status === 'partial' || coverage.status === 'unavailable',
+  ).length;
+  if (inventoryGaps.length !== expected) return false;
   return (['npm', 'actions', 'uv'] as const).every((ecosystem) => {
-    const status = inventory.packet.coverage[ecosystem].status;
+    const coverage = inventory.packet.coverage[ecosystem];
+    const gaps = inventoryGaps.filter((gap) => gap.ecosystem === ecosystem);
+    if (coverage.status !== 'partial' && coverage.status !== 'unavailable')
+      return gaps.length === 0;
+    if (gaps.length !== 1 || gaps[0].status !== coverage.status) return false;
     return (
-      (status === 'partial' || status === 'unavailable') ===
-      inventoryGaps.some((gap) => gap.ecosystem === ecosystem && gap.status === status)
+      isDeepStrictEqual([...gaps[0].reasons].sort(), [...coverage.reasons].sort()) &&
+      isDeepStrictEqual([...gaps[0].sourceIds].sort(), [...coverage.sourceIds].sort()) &&
+      gaps[0].nextActions.length === coverage.reasons.length &&
+      gaps[0].nextActions.every(Boolean)
     );
   });
 }
@@ -322,7 +332,7 @@ function renderNonempty(input: DecisionBriefInput, binding: ReviewBinding): Deci
       return evidenceGap(units[firstGapIndex], summary.units[firstGapIndex].gaps[0].sourceId);
     const firstFollowup = input.records.flatMap((record) => record.assessment?.followups ?? [])[0];
     if (firstFollowup) return text(firstFollowup.description);
-    return 'Review the assessments below.';
+    return 'Merge after reviewing the evidence and assessments below.';
   }
   function opening() {
     const gaps = summary.units.flatMap((unit) => unit.gaps);

@@ -230,6 +230,7 @@ test('renders assessed decision units without treating required evidence gaps as
   expect(result.body).toContain('Package assessments');
   expect(result.body).toContain('Decision coverage');
   expect(result.body).toContain('releaseMetadata');
+  expect(result.body).toContain('Merge after reviewing the evidence');
   if (process.env.O1_GROUPED_PREVIEW) {
     const fs = await import('node:fs/promises');
     await fs.writeFile(process.env.O1_GROUPED_PREVIEW, result.body);
@@ -724,4 +725,31 @@ test('retains the exact next action for assessed evidence gaps and relaxed advic
   expect(boundary.body).toContain('omitted');
   expect(boundary.body).toContain('malware evidence');
   expect(boundary.body).toContain('Non-blocking follow-ups');
+});
+
+test('rejects an inventory gap whose reasons disagree with the packet', () => {
+  const input = emptyBrief();
+  const original = input.coverage.inventory.packet;
+  const packet = {
+    ...original,
+    coverage: {
+      ...original.coverage,
+      uv: { status: 'unavailable' as const, reasons: ['timeout' as const], sourceIds: [] },
+    },
+  };
+  const coverage = summarizeDecisionCoverage(
+    formDecisionUnits(packet),
+    parseReviewConfig('{"version":1}'),
+    0,
+    {},
+  );
+  if (!coverage.ok) throw new Error('invalid fixture');
+  const changed = {
+    ...coverage,
+    inventoryGaps: coverage.inventoryGaps.map((gap) => ({ ...gap, reasons: [] })),
+  };
+  expect(renderDecisionBrief({ ...input, coverage: changed })).toEqual({
+    ok: false,
+    category: 'content',
+  });
 });
