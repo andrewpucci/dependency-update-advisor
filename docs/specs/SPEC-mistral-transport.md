@@ -31,6 +31,11 @@ M1.2–M1.4 may proceed while M1.1 awaits the separately required paid-call,
 model, and credential-source decisions. Transport remains blocked on M1.1.
 Publication and merge are not authorized by this execution approval.
 
+Amendment approved 2026-11-07 (PR #219 review): a coverage-only source cited by
+no batch member keeps its alias, kind, status, reasons, and vetted URL. Its
+title, excerpt, subjects, ranges, advisory identity, and affected range are
+withheld, so item 4 governs where item 5 would otherwise retain them.
+
 Working handoff: `tasks/plan.md` indexes M1.1–M1.9 as
 [#210–#218 under #21](https://github.com/andrewpucci/dependency-update-advisor/issues/21),
 in plan order on the implementation project. Issues record current status.
@@ -230,12 +235,15 @@ policy vocabularies. M2's future `batches.ts` is outside M1.
    limits even when a batch contains one ecosystem. An unrelated ecosystem's
    complete evidence cannot conceal an inventory gap. Do not project unrelated
    source text or unrelated units merely because they share a source URL.
-5. Retain source IDs, vetted URLs, titles, exact subjects/ranges, source
-   status/reasons, and existing truncation flags. Shorten only eligible text
-   fields with explicit truncation metadata. Never shorten or drop identity,
-   source destinations, findings, required reference bindings, coverage
-   status, or policy ceilings to make a request fit. If required structure
-   cannot fit, fail projection without sending a partial request.
+5. For sources cited by a batch member, retain source IDs, vetted URLs,
+   titles, exact subjects/ranges, source status/reasons, and existing
+   truncation flags. A coverage-only source keeps its ID, vetted URL, and
+   status/reasons, with its text and ranges withheld and marked truncated.
+   Shorten only eligible text fields with explicit truncation metadata.
+   Never shorten or drop identity, source destinations, findings, required
+   reference bindings, coverage status, or policy ceilings to make a request
+   fit. If required structure cannot fit, fail projection without sending a
+   partial request.
 6. Bound text per source, per unit, and across the serialized projection.
    Measure the final UTF-8 JSON bytes, including escaping and prompt/envelope
    overhead, rather than estimating with string length or `Content-Length`.
