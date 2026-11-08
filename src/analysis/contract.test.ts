@@ -1,3 +1,4 @@
+import { createHash } from 'node:crypto';
 import { expect, test, vi } from 'vite-plus/test';
 import {
   analysisDocument,
@@ -281,4 +282,51 @@ test('permits exact immutable inventory-file references without requiring an ups
   expect(
     validateAnalysisReply(batch, await receiveAnalysisReply(batch, async () => document)).kind,
   ).toBe('validated');
+});
+
+test('batch identity and request bytes stay pinned for fixed selections', async () => {
+  const { input } = await analysisScenario();
+  const [a, b, c] = input.unitIds;
+  const pinned = [
+    [
+      [a, b, c],
+      '61281f5d3eafa26ca245635ca6d6aa95fa3730d13533d38468aa304e06dced24',
+      54_813,
+      '5fb34036ac9e8a8a7c22e5e59416ffafd6032c746a88912128e9f7e3963cf5c8',
+    ],
+    [
+      [a],
+      'bfce67342c15a15413bb3a066a6e21bcd2d6f1fb04027127d0021bce93fb495a',
+      15_788,
+      'fdecb7ec4b66b9f5d63edfcf8bb296e98b594f836a1c52b3e21363f5f99a0133',
+    ],
+    [
+      [b],
+      'db0f07c8f9015321d4eba063653f9c5045ae56ac28ae0a0766a1aa68b54c289e',
+      34_688,
+      'a95a255daa4317d950e14429b232fbd607d9f0900264fabe39bb4bd889d411ba',
+    ],
+    [
+      [c],
+      '71b4f80051b1c73fd3f111da51ac60d37d8cc87b638b61166546b370f0bf1391',
+      15_579,
+      '0e84bb19023f3d53649cc0934001587a58873d99f08047d038d54667299f88ea',
+    ],
+    [
+      [a, c],
+      'f76c27bd90233ddfe3cc9e4e8557064623d68e4fc542b536167d9a204be2a5e4',
+      25_699,
+      'ea0210d93df8c8bb1e49535151c82c261ba94f0ca63574fec9a1db842900baac',
+    ],
+  ] as const;
+  expect(input.unitIds).toHaveLength(3);
+  for (const [unitIds, digest, requestBytes, requestHash] of pinned) {
+    const result = prepareAnalysisBatch({ ...input, unitIds, limits: ANALYSIS_LIMITS });
+    if (result.kind !== 'prepared') throw new Error('fixture failed');
+    expect(result.batch.batchId).toBe('v1:' + digest);
+    expect(result.batch.requestBytes).toBe(requestBytes);
+    expect(createHash('sha256').update(JSON.stringify(result.batch.request)).digest('hex')).toBe(
+      requestHash,
+    );
+  }
 });
