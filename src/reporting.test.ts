@@ -936,3 +936,54 @@ test('retains assessed and unresolved units together without recommending merge'
   expect(rendered.body).toContain('Package assessments');
   expect(rendered.body).toContain('1 unresolved decision unit.');
 });
+
+test('rejects a policy summary that drops a required unit evidence gap', async () => {
+  const { analysisScenario, analysisDocument } = await import('../tests/parity/analysis.js');
+  const { analyzeDecisionUnits } = await import('./analysis/batches.js');
+  const { analyzeMistralBatch } = await import('./analysis/mistral.js');
+  const { input, scenario } = await analysisScenario({ mode: 'malware-failed' });
+  const analysis = await analyzeDecisionUnits(
+    input,
+    { apiKey: 'test', deadlineMs: 700_000 },
+    {
+      now: () => 0,
+      analyze: (batch, options) =>
+        analyzeMistralBatch(batch, options, {
+          now: () => 0,
+          fetch: async () =>
+            Response.json({
+              choices: [
+                {
+                  index: 0,
+                  finish_reason: 'stop',
+                  message: { role: 'assistant', content: JSON.stringify(analysisDocument(batch)) },
+                },
+              ],
+            }),
+        }),
+    },
+  );
+  if (!analysis.ok) throw new Error('analysis fixture failed');
+  expect(
+    analysis.coverage.policyProvenance.assessments.units.some((unit) => unit.gaps.length),
+  ).toBe(true);
+  const summary = analysis.coverage.policyProvenance.assessments;
+  const altered = {
+    ...analysis.coverage,
+    policyProvenance: {
+      ...analysis.coverage.policyProvenance,
+      assessments: { ...summary, units: summary.units.map((unit) => ({ ...unit, gaps: [] })) },
+    },
+  };
+  expect(
+    renderDecisionBrief({
+      binding: input.inventory.packet.binding,
+      generatedAt: '2026-11-08T00:00:00.000Z',
+      coverage: altered,
+      records: analysis.records,
+      analysisUnavailable: false,
+      signalAttempts: scenario.result.attempts,
+      signalBinding: scenario.result.binding,
+    }),
+  ).toEqual({ ok: false, category: 'content' });
+});

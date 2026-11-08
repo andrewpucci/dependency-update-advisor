@@ -174,6 +174,31 @@ function consistentRecord(record: UnitRecord, unit: DecisionUnit): boolean {
   );
 }
 
+function consistentEvidence(
+  unit: DecisionUnit,
+  evaluation: DecisionCoverage['policyProvenance']['assessments']['units'][number],
+): boolean {
+  const missing = unit.sources.filter(
+    (source) => source.status !== 'available' && source.status !== 'group_backed',
+  );
+  const gap = (source: (typeof missing)[number]) => ({
+    id: JSON.stringify([unit.id, source.id]),
+    unitId: unit.id,
+    sourceId: source.id,
+    status: source.status,
+    reason: source.reason,
+    coverageLimits: source.coverageLimits,
+  });
+  const required = missing.filter((source) => source.signal === undefined).map(gap);
+  const unchecked = missing
+    .filter((source) => source.signal !== undefined)
+    .map((source) => ({ ...gap(source), signal: source.signal }));
+  return (
+    isDeepStrictEqual(evaluation.gaps, required) &&
+    isDeepStrictEqual(evaluation.uncheckedSignals, unchecked)
+  );
+}
+
 function consistentUnits(input: DecisionBriefInput): boolean {
   const { inventory, counts, policyProvenance } = input.coverage;
   const units = inventory.units,
@@ -195,6 +220,7 @@ function consistentUnits(input: DecisionBriefInput): boolean {
       isDeepStrictEqual(evaluation.findings, unit.findings) &&
       isDeepStrictEqual(evaluation.sources, unit.sources) &&
       isDeepStrictEqual(evaluation.coverageLimits, unit.coverageLimits) &&
+      consistentEvidence(unit, evaluation) &&
       unitId === unit.id &&
       isDeepStrictEqual(state, input.records[index].state)
     );
