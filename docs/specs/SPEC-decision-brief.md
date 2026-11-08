@@ -6,7 +6,9 @@ invoked `as-build auto`. Live publication remains outside this approval.
 The renderer and focused integration tests are implemented, pending overall
 review and merge. A fresh-context reviewer checked the new behavior tests.
 The user-provided desktop preview preceded the approved label and link changes;
-the refreshed narrow preview included them.
+the refreshed narrow preview included them. The user approved linking each
+assessment's `Policy` label to the shared policy guide on 2026-11-08; no
+desktop or narrow preview yet includes that link.
 Module: `shared-review` in the [capability map](README.md). Scope:
 [O1 #23](https://github.com/andrewpucci/dependency-update-advisor/issues/23).
 The approved [comment experience](SPEC-comment-experience.md) remains the
