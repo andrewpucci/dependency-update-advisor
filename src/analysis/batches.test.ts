@@ -448,3 +448,94 @@ test('a proven empty inventory makes no call and is not analysis unavailable', a
   expect(result.coverage.outcome).toEqual({ kind: 'empty_inventory' });
   expect(result.analysisUnavailable).toBe(false);
 });
+
+test.each([
+  ['envelope', true, 'rejected'],
+  ['json', true, 'rejected'],
+  ['schema', true, 'rejected'],
+  ['reference', true, 'rejected'],
+  ['policy', true, 'rejected'],
+  ['transport', true, 'unavailable'],
+  ['http', true, 'unavailable'],
+  ['media-type', true, 'unavailable'],
+  ['response-size', true, 'unavailable'],
+  ['encoding', true, 'unavailable'],
+  ['deadline', true, 'unavailable'],
+  ['cancelled', true, 'unavailable'],
+  ['configuration', false, 'unavailable'],
+  ['deadline', false, 'unattempted'],
+  ['cancelled', false, 'unattempted'],
+] as const)('maps %s attempted=%s to %s', async (category, attempted, expected) => {
+  const { input } = await analysisScenario();
+  const result = await analyzeDecisionUnits(
+    input,
+    { apiKey: 'test-key', deadlineMs: 700_000 },
+    {
+      now: () => 0,
+      analyze: async (batch) =>
+        ({
+          kind: attempted ? 'failed' : 'unavailable',
+          category,
+          attempted,
+          batchId: batch.batchId,
+          unitIds: batch.unitIds,
+          diagnostics: {
+            provider: 'mistral',
+            model: 'synthetic-model',
+            headSha: input.inventory.packet.binding.headSha,
+            unitCount: batch.unitIds.length,
+            memberCount: input.inventory.packet.changes.length,
+            attempted,
+            category,
+          },
+        }) as import('./mistral.js').MistralResult,
+    },
+  );
+  expect(result.ok).toBe(true);
+  if (!result.ok) throw new Error('fixture failed');
+  expect(
+    result.records.every(
+      (record) =>
+        record.state.state === expected &&
+        record.attempted === attempted &&
+        record.category === category,
+    ),
+  ).toBe(true);
+});
+
+test('single-unit length failures remain unavailable without another retry', async () => {
+  const { input } = await analysisScenario();
+  let calls = 0;
+  const result = await analyzeDecisionUnits(
+    input,
+    { apiKey: 'test-key', deadlineMs: 700_000 },
+    {
+      now: () => 0,
+      analyze: (batch, options) =>
+        analyzeMistralBatch(batch, options, {
+          now: () => 0,
+          fetch: async () => {
+            calls++;
+            return Response.json({
+              choices: [
+                {
+                  index: 0,
+                  finish_reason: 'length',
+                  message: { role: 'assistant', content: '{}' },
+                },
+              ],
+            });
+          },
+        }),
+    },
+  );
+  expect(result.ok).toBe(true);
+  if (!result.ok) throw new Error('fixture failed');
+  expect(calls).toBe(2 * input.unitIds.length - 1);
+  expect(
+    result.records.every(
+      (record) => record.state.state === 'unavailable' && record.category === 'length',
+    ),
+  ).toBe(true);
+  expect(result.analysisUnavailable).toBe(true);
+});
