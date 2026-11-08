@@ -48,7 +48,13 @@ the Mistral API credential from 1Password instead. Use scoped CLI injection
 into the probe's environment; never print the key or write a plaintext keyfile.
 This changes only credential acquisition, not model, endpoint, or paid-call limits.
 
-## Implemented Independent Analysis Handoff
+## Implemented Interface and Handoff
+
+M1 is implemented locally, pending review and merge.
+[Verification #218](https://github.com/andrewpucci/dependency-update-advisor/issues/218)
+records exact-revision checks, review findings, and retained integration gates.
+The [alias decision](../adr/0005-batch-local-analysis-aliases.md) explains the
+short-reference and local-ownership tradeoff.
 
 M1.2–M1.4 supply the preparation and validation path in `src/analysis/`.
 `prepareAnalysisBatch` returns a frozen owned handle whose `request` is the
@@ -71,8 +77,68 @@ for the accepted packet plus T5 expansion. Reply-copy entries/string bytes
 are bounded by the selected response ceiling. These are work/retention limits,
 not expanded T4/C2 wire allowances or measured performance thresholds.
 
-No Mistral transport, deadline lifecycle, live provider compatibility, M2
-scheduling/splits, publication, adoption, or cutover is certified by this path.
+`analyzeMistralBatch` in `mistral.ts` accepts that authentic prepared handle,
+separate `{ apiKey, deadlineMs, signal? }`, and optional native-compatible
+`{ fetch, now }` dependencies. It reads neither environment variables nor files.
+W2 must supply the named consumer secret; provider credentials do not enter
+preparation, the binding digest, or the JSON body. The adapter sends one
+fixed-endpoint POST using the prepared model/options and never retries.
+
+`deadlineMs` and `now()` are monotonic milliseconds, normally based on
+`performance.now()`. `evaluatedAt` is UTC epoch milliseconds for C3; it is a
+different clock. The adapter clips its timeout to remaining analysis time,
+races headers and each body read against abort/deadline, and checks the clock
+after synchronous parsing and validation. Every exit requests abort/body
+cancellation and releases timers, listeners, and owned readers without
+awaiting stalled cleanup. Late headers are cancelled and never accepted.
+M2/W2 still own cumulative budgets and publication reserve.
+
+The result carries a frozen `diagnostics` object with exactly `provider`,
+`model`, `headSha`, `unitCount`, `memberCount`, `attempted`, and `category`.
+The selected trusted model is reported; returned provider model metadata is
+discarded. An unowned handle has null model/head and zero counts. After
+preparation, failures retain the local `batchId` and original `unitIds`.
+No failure has assessments, raw provider text, exception details, or headers.
+
+M2 must check the expected local binding before converting results to the
+existing C3 `AssessmentState` contract:
+
+| M1 result                           | M2 handoff                                                                                                                       |
+| ----------------------------------- | -------------------------------------------------------------------------------------------------------------------------------- |
+| `validated`                         | Map each original `unitId` to `{ state: 'assessed', verdict }` using the normalized assessment.                                  |
+| `failed`, output validation         | Map every affected unit to `rejected`, with fixed reason/next-action text and explicit coverage limits.                          |
+| `failed`, transport/HTTP/deadline   | Map every affected unit to `unavailable`; preserve independent successful batches.                                               |
+| `truncated`, category `length`      | No usable assessment. M2 may split a multi-unit batch within its own budget; a single-unit truncation remains unavailable.       |
+| `invalid` or pre-call `unavailable` | No HTTP attempt. Preserve each affected unit as unresolved, including `unattempted` for exhausted or cancelled pre-request work. |
+
+Call `summarizeDecisionCoverage(inventory, config, evaluatedAt, states)` with
+the same trusted inventory/config/time. An explicit empty states map means
+post-analysis omissions, rather than pre-analysis. Keep findings and policy
+outside model ownership: a deterministic hold survives failed calls, and an
+ordinary unresolved unit prevents merge advice. Neither a validated batch nor
+a `do_not_merge` recommendation is a claim of completed current-head execution.
+
+Focused synthetic checks are available through:
+
+```sh
+npm test -- --run src/analysis
+```
+
+The four repository implementation checks and advisory complexity report
+remain the final verification commands. Default tests use only invented
+files/HTTP data and mocked Mistral; no credential or paid request is needed.
+The full-response boundary fixture admits exactly 3,211,264 bytes, including
+the recorded completion-byte allowance, worst-case JSON escaping and metadata.
+That synthetic allowance is not a universal tokenizer guarantee.
+
+M2 must separately prove packing, concurrency, request counts, recursive length
+splits, every-unit accounting, and PR aggregation. O1/W1/W2 must prove rendering,
+bounded acquisition, ownership, freshness, publication, and named-secret wiring;
+A1 must prove packaging/reproducible builds. The four-call spike did not settle
+`model_length` behavior; the approved ordinary-failure decision and incomplete
+evidence remain in #210. Broader provider compatibility, consumer trials,
+adoption, parity (including fenced-JSON rejection), and cutover remain open.
+The existing reviewer stays active. No publication or merge is implied.
 
 ## Objective and Scope
 
