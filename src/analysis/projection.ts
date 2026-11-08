@@ -280,7 +280,7 @@ function wireSources(input: ReturnType<typeof preparedInput>, maps: Aliases) {
     let provenance = value.provenance;
     if (provenance.kind === 'upstream') {
       const p = provenance;
-      const excerpt = shorten(p.excerpt, input.limits.sourceBytes);
+      const excerpt = memberIds.length ? shorten(p.excerpt, input.limits.sourceBytes) : '';
       provenance = {
         ...p,
         subjects: p.subjects.filter((subject) => memberIds.includes(subject.memberId)),

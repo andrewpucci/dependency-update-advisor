@@ -179,6 +179,47 @@ test('exposes no unrelated members through shared source subjects in a subset', 
   expect(preparedSnapshot({ ...result.batch })).toBeUndefined();
 });
 
+test('retains a partial coverage reference without disclosing an unrelated upstream excerpt', async () => {
+  const { input, scenario } = await analysisScenario();
+  const unrelated = input.inventory.packet.sources.find(
+    (source) => source.ecosystems.includes('uv') && source.provenance.kind === 'upstream',
+  );
+  if (!unrelated || unrelated.provenance.kind !== 'upstream') throw new Error('fixture source');
+  const sentinel = 'UNRELATED_COVERAGE_EXCERPT_SENTINEL';
+  const candidate = {
+    ...input.inventory.packet,
+    sources: input.inventory.packet.sources.map((source) =>
+      source.id === unrelated.id
+        ? { ...source, provenance: { ...unrelated.provenance, excerpt: sentinel } }
+        : source,
+    ),
+    coverage: {
+      ...input.inventory.packet.coverage,
+      uv: { status: 'partial', reasons: ['unknown'], sourceIds: [unrelated.id] },
+    },
+  };
+  const packet = validateReviewPacket(candidate, scenario.fixture.expected);
+  if (!packet.ok) throw new Error('fixture packet: ' + JSON.stringify(packet));
+  const inventory = formDecisionUnits(packet.packet);
+  const npm = inventory.units.find((unit) => unit.ecosystem === 'npm')!;
+  const prepared = prepareAnalysisBatch({
+    ...input,
+    inventory,
+    unitIds: [npm.id],
+    limits: ANALYSIS_LIMITS,
+  });
+  if (prepared.kind !== 'prepared') throw new Error('preparation: ' + JSON.stringify(prepared));
+  const wire = JSON.parse(prepared.batch.request.messages[1].content);
+  const source = wire.sources.find(
+    (item: { id: string }) => item.id === wire.coverage.uv.sourceIds[0],
+  );
+  expect(source).toMatchObject({
+    provenance: { kind: 'upstream', excerpt: '', excerptTruncated: true },
+  });
+  expect(source.provenance.url).toBe(unrelated.provenance.url);
+  expect(JSON.stringify(prepared.batch.request)).not.toContain(sentinel);
+});
+
 test('enforces the final escaped UTF-8 request boundary, and truncates only source text', async () => {
   const { input } = await analysisScenario();
   const result = prepareAnalysisBatch({
