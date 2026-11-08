@@ -111,6 +111,16 @@ function contextReference(
   return `Repository context: ${text(ref.path)}`;
 }
 
+function fileReference(
+  ref: Extract<ResolvedReference, { kind: 'source' }>,
+  revision: 'base' | 'head' | 'context',
+): string {
+  if (revision !== ref.side || ref.url !== null) throw new InvalidReference();
+  return ref.side === 'base'
+    ? 'Base repository file evidence'
+    : 'Proposed repository file evidence';
+}
+
 function reference(ref: ResolvedReference, unit: DecisionUnit, input: DecisionBriefInput): string {
   if (!unit.memberIds.includes(ref.memberId)) throw new InvalidReference();
   const packet = input.coverage.inventory.packet;
@@ -137,12 +147,7 @@ function reference(ref: ResolvedReference, unit: DecisionUnit, input: DecisionBr
       source.id === side.sourceId &&
       ref.category === source.kind);
   if (!linked) throw new InvalidReference();
-  if (source.provenance.kind === 'file') {
-    if (source.provenance.revision !== ref.side || ref.url !== null) throw new InvalidReference();
-    return ref.side === 'base'
-      ? 'Base repository file evidence'
-      : 'Proposed repository file evidence';
-  }
+  if (source.provenance.kind === 'file') return fileReference(ref, source.provenance.revision);
   if (source.provenance.kind !== 'upstream' || source.provenance.url !== ref.url)
     throw new InvalidReference();
   const version = 'ref' in side ? side.ref : 'version' in side ? side.version : null;
