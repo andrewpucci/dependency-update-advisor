@@ -512,6 +512,7 @@ test('retains every unresolved action at exactly 50,000 string units and rejects
     return {
       binding: input.inventory.packet.binding,
       generatedAt: '2026-11-08T00:00:00.000Z',
+      reviewDigest: 'c'.repeat(64),
       coverage,
       records,
       analysisUnavailable: true,
@@ -519,17 +520,19 @@ test('retains every unresolved action at exactly 50,000 string units and rejects
       signalBinding: input.inventory.packet.binding,
     };
   };
-  const baseline = renderDecisionBrief(make('é'));
+  const baseline = renderDecisionBrief(make('é<'));
   if (!baseline.ok) throw new Error('render fixture');
   const length = 50_000 - baseline.body.length + 1;
-  const exact = renderDecisionBrief(make('é'.repeat(length)));
+  const exact = renderDecisionBrief(make('é'.repeat(length) + '<'));
   expect(exact.ok).toBe(true);
   if (!exact.ok) throw new Error('exact boundary failed');
   expect(exact.body.length).toBe(50_000);
   expect(exact.body).toContain('Decision queue');
-  const overflow = renderDecisionBrief(make('é'.repeat(length + 1)));
+  expect(exact.body).toContain('&lt;');
+  expect(exact.body).toContain(`<!-- review-digest: ${'c'.repeat(64)} -->`);
+  const overflow = renderDecisionBrief(make('é'.repeat(length + 1) + '<'));
   expect(overflow.ok && overflow.body).toContain('omitted');
-  expect(renderDecisionBrief(make('é'.repeat(length + 5_000)))).toEqual({
+  expect(renderDecisionBrief(make('é'.repeat(length + 5_000) + '<'))).toEqual({
     ok: false,
     category: 'size',
   });
