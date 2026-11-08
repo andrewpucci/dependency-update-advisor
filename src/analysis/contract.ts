@@ -1,5 +1,12 @@
 import { freeze } from '../evidence/common.js';
-import { projectBatch, snapshotData, type BatchSnapshot } from './projection.js';
+import {
+  prepareRun,
+  projectBatch,
+  projectRunBatch,
+  snapshotData,
+  type BatchSnapshot,
+  type PreparedRun,
+} from './projection.js';
 import { parseAssessments, rejectedAnalysis, type AnalysisResult } from './validation.js';
 export type { AnalysisResult, ValidatedAssessment, ResolvedReference } from './validation.js';
 
@@ -56,7 +63,30 @@ const snapshots = new WeakMap<PreparedAnalysisBatch, BatchSnapshot>();
 
 /** Caller establishes T4/C1 provenance; preparation owns policy, aliases and a detached snapshot. */
 export function prepareAnalysisBatch(value: unknown): PreparationResult {
-  const result = projectBatch(value, ANALYSIS_LIMITS);
+  return ownedBatch(projectBatch(value, ANALYSIS_LIMITS));
+}
+
+export type PreparedAnalysisRun = Readonly<object>;
+const runs = new WeakMap<PreparedAnalysisRun, PreparedRun>();
+
+/** Validate an inventory once for many batches; the handle is owned like a prepared batch. */
+export function prepareAnalysisRun(
+  value: unknown,
+): { kind: 'ready'; run: PreparedAnalysisRun } | AnalysisFailure {
+  const result = prepareRun(value, ANALYSIS_LIMITS);
+  if ('kind' in result) return result;
+  const run = Object.freeze({});
+  runs.set(run, result);
+  return { kind: 'ready', run };
+}
+
+export function prepareRunBatch(run: PreparedAnalysisRun, unitIds: unknown): PreparationResult {
+  const prepared = runs.get(run);
+  if (!prepared) return { kind: 'invalid', category: 'reference', attempted: false };
+  return ownedBatch(projectRunBatch(prepared, unitIds));
+}
+
+function ownedBatch(result: BatchSnapshot | AnalysisFailure): PreparationResult {
   if ('kind' in result) return result;
   const batch = freeze({
     batchId: result.batchId,

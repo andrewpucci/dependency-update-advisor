@@ -53,6 +53,13 @@ the Mistral API credential from 1Password instead. Use scoped CLI injection
 into the probe's environment; never print the key or write a plaintext keyfile.
 This changes only credential acquisition, not model, endpoint, or paid-call limits.
 
+Amendment approved 2026-11-07 (PR #226 review):
+split preparation so run-wide checks happen once per M2 run instead of once
+per batch. The new exports are listed under
+[exported operations](#exported-operations-and-closed-wire-fields).
+`prepareAnalysisBatch` keeps its signature and results, and `batchId`
+derivation is unchanged.
+
 ## Implemented Interface and Handoff
 
 M1 is implemented locally, pending review and merge.
@@ -635,6 +642,20 @@ usable handle. `config` is the trusted C1 result; `evaluatedAt` is epoch
 milliseconds. Re-form T5 units from the accepted packet to check supplied
 inventory consistency, and call C3 internally. The trusted caller still
 establishes T4 provenance; comparing a packet with itself cannot establish it.
+
+`prepareAnalysisRun` takes `{ inventory, config, evaluatedAt, limits }` and
+performs those run-wide checks once: detaching the input, parsing the config,
+re-forming T5 units, checking limits, and evaluating C3. It returns
+`{ kind: 'ready', run }` or the same safe failure shape, where `configuration`
+is `unavailable` and every other category is `invalid`. The run handle is
+sealed with the same module-private ownership as batch handles, so a
+structural lookalike fails as `reference`. `prepareRunBatch(run, unitIds)`
+detaches and checks only the unit selection, then projects and returns the
+same result as `prepareAnalysisBatch`. For equal inputs both paths produce
+the same `batchId`, request, and request bytes. `prepareAnalysisBatch` is now
+equivalent to `prepareAnalysisRun` followed by `prepareRunBatch`. M2 prepares
+one run per inventory. A run-wide failure, including `budget`, makes every
+unit `unavailable` without a call; only a per-batch `budget` failure re-packs.
 
 `analyzeMistralBatch(batch, options, dependencies)` accepts only a locally
 prepared handle. Options contain the separate `apiKey`, monotonic `deadlineMs`,
