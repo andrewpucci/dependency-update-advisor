@@ -37,25 +37,55 @@ export async function analyzeDecisionUnits(
   for (let index = 0; index < unitIds.length; index += ANALYSIS_LIMITS.maxUnits)
     queue.push(unitIds.slice(index, index + ANALYSIS_LIMITS.maxUnits));
   const records: UnitRecord[] = [];
+  let calls = 0;
   while (queue.length) {
-    const ids = queue.shift()!;
-    const prepared = prepareAnalysisBatch({ ...snapshot, unitIds: ids, limits: ANALYSIS_LIMITS });
-    if (prepared.kind !== 'prepared') {
-      if (prepared.category === 'budget' && ids.length > 1) {
-        const midpoint = Math.floor(ids.length / 2);
-        queue.unshift(ids.slice(0, midpoint), ids.slice(midpoint));
-      } else {
-        records.push(...unresolved(ids, 'unavailable', false, prepared.category, null));
-        if (prepared.category !== 'budget') {
-          for (const remaining of queue)
-            records.push(...unresolved(remaining, 'unavailable', false, prepared.category, null));
-          break;
+    const wave: Array<{ ids: string[]; batchId: string; pending: Promise<MistralResult> }> = [];
+    let preparationFailure: string | undefined;
+    while (
+      wave.length < 2 &&
+      queue.length &&
+      calls < 32 &&
+      now() < deadlineMs &&
+      !options.signal?.aborted
+    ) {
+      const ids = queue.shift()!;
+      const prepared = prepareAnalysisBatch({ ...snapshot, unitIds: ids, limits: ANALYSIS_LIMITS });
+      if (prepared.kind !== 'prepared') {
+        if (prepared.category === 'budget' && ids.length > 1) {
+          const midpoint = Math.floor(ids.length / 2);
+          queue.unshift(ids.slice(0, midpoint), ids.slice(midpoint));
+        } else {
+          records.push(...unresolved(ids, 'unavailable', false, prepared.category, null));
+          if (prepared.category !== 'budget') {
+            preparationFailure = prepared.category;
+            break;
+          }
         }
+        continue;
       }
-      continue;
+      if (now() >= deadlineMs || options.signal?.aborted) {
+        queue.unshift(ids);
+        break;
+      }
+      calls++;
+      wave.push({
+        ids,
+        batchId: prepared.batch.batchId,
+        pending: analyze(prepared.batch, { ...options, deadlineMs }),
+      });
     }
-    const result: MistralResult = await analyze(prepared.batch, { ...options, deadlineMs });
-    records.push(...mapResult(ids, prepared.batch.batchId, result));
+    const results = await Promise.all(wave.map((item) => item.pending));
+    for (let index = 0; index < wave.length; index++)
+      records.push(...mapResult(wave[index].ids, wave[index].batchId, results[index]));
+    if (preparationFailure || !wave.length) {
+      const category =
+        preparationFailure ??
+        (options.signal?.aborted ? 'cancelled' : now() >= deadlineMs ? 'deadline' : 'budget');
+      const state = preparationFailure ? 'unavailable' : 'unattempted';
+      for (const remaining of queue)
+        records.push(...unresolved(remaining, state, false, category, null));
+      break;
+    }
   }
   records.sort((a, b) => unitIds.indexOf(a.unitId) - unitIds.indexOf(b.unitId));
   const states = Object.fromEntries(records.map((record) => [record.unitId, record.state]));

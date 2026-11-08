@@ -1,4 +1,4 @@
-import { expect, test } from 'vite-plus/test';
+import { expect, test, vi } from 'vite-plus/test';
 import { analysisDocument, analysisScenario } from '../../tests/parity/analysis.js';
 import { analyzeMistralBatch } from './mistral.js';
 import { analyzeDecisionUnits } from './batches.js';
@@ -114,4 +114,43 @@ test('packs a large inventory into bounded batches without losing units', async 
     inventory.units.map((unit) => unit.id),
   );
   expect(result.records.every((record) => record.state.state === 'assessed')).toBe(true);
+});
+
+test('dispatches two batches in a wave and retains results in inventory order', async () => {
+  const { input } = await analysisScenario({ inventory: { children: 12 } });
+  const { formDecisionUnits } = await import('../units.js');
+  const inventory = formDecisionUnits({ ...input.inventory.packet, relationships: [] });
+  const release: Array<() => void> = [];
+  const running = analyzeDecisionUnits(
+    { ...input, inventory },
+    { apiKey: 'test-key', deadlineMs: 700_000 },
+    {
+      now: () => 0,
+      analyze: async (batch, options) => {
+        await new Promise<void>((resolve) => release.push(resolve));
+        return analyzeMistralBatch(batch, options, {
+          now: () => 0,
+          fetch: async () =>
+            Response.json({
+              choices: [
+                {
+                  index: 0,
+                  finish_reason: 'stop',
+                  message: { role: 'assistant', content: JSON.stringify(analysisDocument(batch)) },
+                },
+              ],
+            }),
+        });
+      },
+    },
+  );
+  await vi.waitFor(() => expect(release).toHaveLength(2), { timeout: 500 });
+  release[1]();
+  release[0]();
+  const result = await running;
+  expect(result.ok).toBe(true);
+  if (!result.ok) throw new Error('fixture failed');
+  expect(result.records.map((record) => record.unitId)).toEqual(
+    inventory.units.map((unit) => unit.id),
+  );
 });
