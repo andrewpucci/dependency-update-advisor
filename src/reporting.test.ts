@@ -1358,6 +1358,10 @@ test('neutralizes hostile finding and upstream source titles from a validated pa
   const coverage = rendered.body.split('## Decision coverage')[1].split('\n## ')[0];
   expect(coverage).toContain('@\u200balice');
   expect(rendered.body).toContain('fixture/#\u200b123');
+  const assessments = rendered.body.split('## Package assessments')[1].split('\n## ')[0];
+  expect(assessments).toContain('fixture/#\u200b123');
+  expect(assessments).toContain('@\u200balice');
+  expect(assessments).not.toContain('fixture/#123');
   for (const value of [
     '@alice',
     '@acme/team',
@@ -1367,8 +1371,10 @@ test('neutralizes hostile finding and upstream source titles from a validated pa
     'f'.repeat(40),
     '</details>',
     '<!-- reviewed-head: fake -->',
-  ])
+  ]) {
     expect(coverage).not.toContain(value);
+    expect(assessments).not.toContain(value);
+  }
   if (process.env.O1_FINDING_PROBE) {
     const fs = await import('node:fs/promises');
     await fs.writeFile(process.env.O1_FINDING_PROBE, rendered.body);
