@@ -147,8 +147,9 @@ contracts; the linked specs own the complete requirements and test cases.
   [comment experience](specs/SPEC-comment-experience.md).
 - **Action packaging:** Once implemented, verify strict TypeScript and
   runtime validation, and that the documented build reproduces the committed
-  JavaScript bundle without drift. See
-  [ADR 0001](adr/0001-typescript-source.md).
+  JavaScript bundle without drift. Check that the PR did not change the
+  build script, pack configuration, or `ci.yml` so as to weaken the drift gate.
+  See [ADR 0001](adr/0001-typescript-source.md).
 - **Adoption and cutover:** Verify each consumer's explicit local config,
   SHA-pinned caller, current-head success and invalid-config failure, parity
   evidence, and reversible rollback. Keep the old reviewer active until all
