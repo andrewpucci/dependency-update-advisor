@@ -136,7 +136,7 @@ gaps and an introduced vulnerability before parity is claimed.
   tracks it.
 - [Analysis providers](SPEC-analysis-providers.md) — approved for planning.
 - [Bounded decision-unit analysis](SPEC-analysis-batches.md) — approved for
-  planning for M2 #22; execution approval remains separate.
+  execution for M2 #22 after plan approval, 2026-11-07.
 - [Mistral transport and single-batch validation](SPEC-mistral-transport.md) —
   approved for execution for M1 #21 in `analysis-providers`, 2026-11-07,
   after the user's edits, plan review, and `as-build auto`.

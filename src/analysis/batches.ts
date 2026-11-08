@@ -1,5 +1,5 @@
 import { isDeepStrictEqual } from 'node:util';
-import type { ConfigResult } from '../config.js';
+import { parseReviewConfig, type ConfigResult } from '../config.js';
 import type { AssessmentState } from '../policy.js';
 import { formDecisionUnits, summarizeDecisionCoverage, type UnitInventory } from '../units.js';
 import { ANALYSIS_LIMITS, prepareAnalysisBatch, type ValidatedAssessment } from './contract.js';
@@ -30,26 +30,49 @@ export async function analyzeDecisionUnits(
   options: MistralOptions,
   dependencies: Partial<Dependencies> = {},
 ) {
+  const now = dependencies.now ?? (() => performance.now());
+  const analyze = dependencies.analyze ?? analyzeMistralBatch;
+  const start = now();
+  if (
+    !Number.isFinite(start) ||
+    !Number.isFinite(options.deadlineMs) ||
+    (options.signal !== undefined && !(options.signal instanceof AbortSignal))
+  )
+    return { ok: false as const, category: 'configuration' as const };
+  const selectedOptions = {
+    apiKey: options.apiKey,
+    deadlineMs: options.deadlineMs,
+    signal: options.signal,
+  };
   let snapshot: BatchInput;
   try {
     snapshot = snapshotData(input) as BatchInput;
     if (
-      !Number.isFinite(snapshot.evaluatedAt) ||
+      !Number.isSafeInteger(snapshot.evaluatedAt) ||
       !isDeepStrictEqual(formDecisionUnits(snapshot.inventory.packet), snapshot.inventory)
     )
       return { ok: false as const, category: 'input' as const };
   } catch {
     return { ok: false as const, category: 'input' as const };
   }
-  const now = dependencies.now ?? (() => performance.now());
-  const analyze = dependencies.analyze ?? analyzeMistralBatch;
+  const parsedConfig = snapshot.config.ok
+    ? parseReviewConfig(JSON.stringify(snapshot.config.config))
+    : snapshot.config;
+  const model =
+    parsedConfig.ok &&
+    snapshot.config.ok &&
+    isDeepStrictEqual(parsedConfig.config, snapshot.config.config)
+      ? (parsedConfig.config.analysis?.model ?? null)
+      : null;
   const unitIds = snapshot.inventory.units.map((unit) => unit.id);
-  const deadlineMs = Math.min(options.deadlineMs - 60_000, now() + 600_000);
+  const deadlineMs = Math.min(selectedOptions.deadlineMs - 60_000, start + 600_000);
   const queue: string[][] = [];
   for (let index = 0; index < unitIds.length; index += ANALYSIS_LIMITS.maxUnits)
     queue.push(unitIds.slice(index, index + ANALYSIS_LIMITS.maxUnits));
   const records: UnitRecord[] = [];
-  let calls = 0;
+  let calls = 0,
+    dispatched = 0,
+    splits = 0;
   while (queue.length) {
     const wave: Array<{
       ids: string[];
@@ -62,7 +85,7 @@ export async function analyzeDecisionUnits(
       queue.length &&
       calls < 32 &&
       now() < deadlineMs &&
-      !options.signal?.aborted
+      !selectedOptions.signal?.aborted
     ) {
       const ids = queue.shift()!;
       const prepared = prepareAnalysisBatch({ ...snapshot, unitIds: ids, limits: ANALYSIS_LIMITS });
@@ -79,7 +102,7 @@ export async function analyzeDecisionUnits(
         }
         continue;
       }
-      if (now() >= deadlineMs || options.signal?.aborted) {
+      if (now() >= deadlineMs || selectedOptions.signal?.aborted) {
         queue.unshift(ids);
         break;
       }
@@ -87,7 +110,7 @@ export async function analyzeDecisionUnits(
       wave.push({
         ids,
         batchId: prepared.batch.batchId,
-        pending: boundedCall(prepared.batch, { ...options, deadlineMs }, analyze, now),
+        pending: boundedCall(prepared.batch, { ...selectedOptions, deadlineMs }, analyze, now),
       });
     }
     const results = await Promise.all(wave.map((item) => item.pending));
@@ -95,7 +118,10 @@ export async function analyzeDecisionUnits(
     for (let index = 0; index < wave.length; index++) {
       const { ids, batchId } = wave[index];
       const result = results[index];
+      if (typeof result !== 'string' && (result.kind === 'validated' || result.attempted))
+        dispatched++;
       if (typeof result === 'string') {
+        dispatched++;
         records.push(...unresolved(ids, 'unavailable', true, result, batchId));
       } else if (
         result.kind === 'truncated' &&
@@ -104,6 +130,7 @@ export async function analyzeDecisionUnits(
         result.batchId === batchId &&
         JSON.stringify(result.unitIds) === JSON.stringify(ids)
       ) {
+        splits++;
         const midpoint = Math.floor(ids.length / 2);
         children.push(ids.slice(0, midpoint), ids.slice(midpoint));
       } else records.push(...mapResult(ids, batchId, result));
@@ -112,7 +139,11 @@ export async function analyzeDecisionUnits(
     if (preparationFailure || !wave.length) {
       const category =
         preparationFailure ??
-        (options.signal?.aborted ? 'cancelled' : now() >= deadlineMs ? 'deadline' : 'budget');
+        (selectedOptions.signal?.aborted
+          ? 'cancelled'
+          : now() >= deadlineMs
+            ? 'deadline'
+            : 'budget');
       const state = preparationFailure ? 'unavailable' : 'unattempted';
       for (const remaining of queue)
         records.push(...unresolved(remaining, state, false, category, null));
@@ -132,6 +163,24 @@ export async function analyzeDecisionUnits(
     ok: true as const,
     records,
     coverage,
+    diagnostics: {
+      provider: 'mistral' as const,
+      model,
+      headSha: snapshot.inventory.packet.binding.headSha,
+      unitCount: unitIds.length,
+      memberCount: snapshot.inventory.packet.changes.length,
+      callsDispatched: dispatched,
+      truncationSplits: splits,
+      stateCounts: {
+        assessed: records.filter((record) => record.state.state === 'assessed').length,
+        unavailable: records.filter((record) => record.state.state === 'unavailable').length,
+        rejected: records.filter((record) => record.state.state === 'rejected').length,
+        unattempted: records.filter((record) => record.state.state === 'unattempted').length,
+      },
+      failureCategories: [
+        ...new Set(records.flatMap((record) => (record.category ? [record.category] : []))),
+      ].sort(),
+    },
     analysisUnavailable:
       records.length > 0 && records.every((record) => record.state.state !== 'assessed'),
   };
@@ -208,10 +257,15 @@ async function boundedCall(
   options.signal?.addEventListener('abort', cancel, { once: true });
   const timer = setTimeout(() => stop('deadline'), Math.max(0, options.deadlineMs - now()));
   try {
-    if (options.signal?.aborted) cancel();
-    const pending = Promise.resolve()
-      .then(() => analyze(batch, { ...options, signal: controller.signal }))
-      .catch(() => 'transport' as const);
+    if (options.signal?.aborted) return 'cancelled';
+    let pending: Promise<MistralResult | 'transport'>;
+    try {
+      pending = Promise.resolve(analyze(batch, { ...options, signal: controller.signal })).catch(
+        () => 'transport' as const,
+      );
+    } catch {
+      return 'transport';
+    }
     const result = await Promise.race([pending, stopped]);
     if (typeof result !== 'string' && now() >= options.deadlineMs) return 'deadline';
     return result;

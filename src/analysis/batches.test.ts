@@ -237,3 +237,214 @@ test('a thrown transport exception is classified without exposing the error', as
   expect(result.records.every((record) => record.state.state === 'unavailable')).toBe(true);
   expect(JSON.stringify(result)).not.toContain('PRIVATE-SENTINEL');
 });
+
+test('a verified malware hold survives all unavailable model batches', async () => {
+  const { input } = await analysisScenario({ mode: 'malware' });
+  const result = await analyzeDecisionUnits(input, { deadlineMs: 700_000 }, { now: () => 0 });
+  expect(result.ok).toBe(true);
+  if (!result.ok) throw new Error('fixture failed');
+  expect(result.analysisUnavailable).toBe(true);
+  expect(result.coverage.outcome).toEqual({ kind: 'advice', verdict: 'do_not_merge' });
+  expect(result.coverage.counts.unresolvedUnits).toBe(input.unitIds.length);
+});
+
+test('non-finite deadlines are rejected before dispatch', async () => {
+  const { input } = await analysisScenario();
+  const analyze = vi.fn();
+  const result = await analyzeDecisionUnits(
+    input,
+    { apiKey: 'test-key', deadlineMs: NaN },
+    { now: () => 0, analyze },
+  );
+  expect(result).toMatchObject({ ok: false, category: 'configuration' });
+  expect(analyze).not.toHaveBeenCalled();
+});
+
+test('request cap leaves split children explicit and retains earlier work', async () => {
+  const { input } = await analysisScenario({ inventory: { children: 20 } });
+  const { formDecisionUnits } = await import('../units.js');
+  const inventory = formDecisionUnits({ ...input.inventory.packet, relationships: [] });
+  let calls = 0;
+  const result = await analyzeDecisionUnits(
+    { ...input, inventory },
+    { apiKey: 'test-key', deadlineMs: 700_000 },
+    {
+      now: () => 0,
+      analyze: (batch, options) => {
+        calls++;
+        return analyzeMistralBatch(batch, options, {
+          now: () => 0,
+          fetch: async () =>
+            Response.json({
+              choices: [
+                {
+                  index: 0,
+                  finish_reason: batch.unitIds.length > 1 ? 'length' : 'stop',
+                  message: { role: 'assistant', content: JSON.stringify(analysisDocument(batch)) },
+                },
+              ],
+            }),
+        });
+      },
+    },
+  );
+  expect(result.ok).toBe(true);
+  if (!result.ok) throw new Error('fixture failed');
+  expect(calls).toBe(32);
+  expect(result.diagnostics.callsDispatched).toBe(32);
+  expect(result.records.some((record) => record.state.state === 'assessed')).toBe(true);
+  expect(result.records.some((record) => record.state.state === 'unattempted')).toBe(true);
+  expect(result.records.map((record) => record.unitId)).toEqual(
+    inventory.units.map((unit) => unit.id),
+  );
+});
+
+test('expired budget does not dispatch and reports unattempted work', async () => {
+  const { input } = await analysisScenario();
+  const analyze = vi.fn();
+  const result = await analyzeDecisionUnits(
+    input,
+    { apiKey: 'test-key', deadlineMs: 60_000 },
+    { now: () => 0, analyze },
+  );
+  expect(result.ok).toBe(true);
+  if (!result.ok) throw new Error('fixture failed');
+  expect(analyze).not.toHaveBeenCalled();
+  expect(
+    result.records.every(
+      (record) => record.state.state === 'unattempted' && record.category === 'deadline',
+    ),
+  ).toBe(true);
+  expect(result.diagnostics.callsDispatched).toBe(0);
+});
+
+test('HTTP failure never splits a batch', async () => {
+  const { input } = await analysisScenario();
+  let calls = 0;
+  const result = await analyzeDecisionUnits(
+    input,
+    { apiKey: 'test-key', deadlineMs: 700_000 },
+    {
+      now: () => 0,
+      analyze: (batch, options) =>
+        analyzeMistralBatch(batch, options, {
+          now: () => 0,
+          fetch: async () => {
+            calls++;
+            return Response.json({ error: 'model_length' }, { status: 400 });
+          },
+        }),
+    },
+  );
+  expect(result.ok).toBe(true);
+  if (!result.ok) throw new Error('fixture failed');
+  expect(calls).toBe(1);
+  expect(
+    result.records.every(
+      (record) => record.state.state === 'unavailable' && record.category === 'http',
+    ),
+  ).toBe(true);
+  expect(result.diagnostics.truncationSplits).toBe(0);
+});
+
+test('preparation budget re-packs locally without spending a model call', async () => {
+  const { input } = await analysisScenario();
+  const contract = await import('./contract.js');
+  const prepare = contract.prepareAnalysisBatch;
+  const spy = vi.spyOn(contract, 'prepareAnalysisBatch').mockImplementation((value) => {
+    const ids = (value as { unitIds: string[] }).unitIds;
+    return ids.length > 1
+      ? { kind: 'invalid', category: 'budget', attempted: false }
+      : prepare(value);
+  });
+  let calls = 0;
+  try {
+    const result = await analyzeDecisionUnits(
+      input,
+      { apiKey: 'test-key', deadlineMs: 700_000 },
+      {
+        now: () => 0,
+        analyze: (batch, options) => {
+          calls++;
+          return analyzeMistralBatch(batch, options, {
+            now: () => 0,
+            fetch: async () =>
+              Response.json({
+                choices: [
+                  {
+                    index: 0,
+                    finish_reason: 'stop',
+                    message: {
+                      role: 'assistant',
+                      content: JSON.stringify(analysisDocument(batch)),
+                    },
+                  },
+                ],
+              }),
+          });
+        },
+      },
+    );
+    expect(result.ok).toBe(true);
+    if (!result.ok) throw new Error('fixture failed');
+    expect(spy.mock.calls.length).toBeGreaterThan(calls);
+    expect(calls).toBe(input.unitIds.length);
+    expect(result.records.every((record) => record.state.state === 'assessed')).toBe(true);
+  } finally {
+    spy.mockRestore();
+  }
+});
+
+test('a stale response cannot attach an assessment to the current batch', async () => {
+  const { input } = await analysisScenario();
+  const result = await analyzeDecisionUnits(
+    input,
+    { apiKey: 'test-key', deadlineMs: 700_000 },
+    {
+      now: () => 0,
+      analyze: async (batch, options) => {
+        const result = await analyzeMistralBatch(batch, options, {
+          now: () => 0,
+          fetch: async () =>
+            Response.json({
+              choices: [
+                {
+                  index: 0,
+                  finish_reason: 'stop',
+                  message: { role: 'assistant', content: JSON.stringify(analysisDocument(batch)) },
+                },
+              ],
+            }),
+        });
+        if (result.kind !== 'validated') throw new Error('fixture failed');
+        return { ...result, batchId: 'other-batch' };
+      },
+    },
+  );
+  expect(result.ok).toBe(true);
+  if (!result.ok) throw new Error('fixture failed');
+  expect(
+    result.records.every(
+      (record) => record.state.state === 'rejected' && record.assessment === null,
+    ),
+  ).toBe(true);
+});
+
+test('a proven empty inventory makes no call and is not analysis unavailable', async () => {
+  const { input } = await analysisScenario();
+  const { formDecisionUnits } = await import('../units.js');
+  const packet = { ...input.inventory.packet, changes: [], relationships: [], findings: [] };
+  const inventory = formDecisionUnits(packet);
+  const analyze = vi.fn();
+  const result = await analyzeDecisionUnits(
+    { ...input, inventory },
+    { deadlineMs: 700_000 },
+    { now: () => 0, analyze },
+  );
+  expect(result.ok).toBe(true);
+  if (!result.ok) throw new Error('fixture failed');
+  expect(analyze).not.toHaveBeenCalled();
+  expect(result.records).toEqual([]);
+  expect(result.coverage.outcome).toEqual({ kind: 'empty_inventory' });
+  expect(result.analysisUnavailable).toBe(false);
+});

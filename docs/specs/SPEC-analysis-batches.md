@@ -213,3 +213,25 @@ interface and M2 record field names. W2 decides whether a missing credential
 fails execution when the inventory is proven empty. These are not evidence
 of measured provider performance. No product scope change or numeric
 threshold is approved by this draft.
+
+## Execution selections and handoff
+
+The user approved the M2 plan and `as-build auto` on 2026-11-07. Initial
+ceilings are 32 reserved calls, two concurrent calls, 600,000 ms analysis,
+and a 60,000 ms publication reserve. A supplied workflow deadline clips the
+analysis deadline. These are operational limits, not measured provider
+performance; W2 must reconcile them with its own deadline and wiring.
+
+`analyzeDecisionUnits` accepts the inventory, trusted config, evaluation time,
+credential and monotonic deadline. It returns ordered records, T5 coverage,
+a separate analysis-unavailable flag, and bounded diagnostics. Each record
+retains its C3 state and any validated M1 assessment. Work runs in deterministic
+waves; local preparation-budget failures and response-length truncations use
+ordered midpoint subdivision. Cancellation and deadlines preserve accepted
+independent results and leave other work explicit. M1 validates each response;
+T5 and C3 retain the authoritative outcome. The injected adapter is a trusted
+test seam, not an interface for binding arbitrary provider replies.
+
+M2 does not establish live provider behavior, current-head publication,
+workflow credential wiring, packaging, adoption, parity, or cutover. The old
+reviewer remains active until those separate gates pass.
