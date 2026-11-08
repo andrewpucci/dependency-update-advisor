@@ -62,6 +62,9 @@ export type Finding = FindingFacts &
   );
 type OptionalSignal = 'publishTime' | 'deprecation' | 'trust' | 'publisher';
 const optionalSignals: readonly string[] = ['publishTime', 'deprecation', 'trust', 'publisher'];
+export function isOptionalSignal(value: unknown): value is OptionalSignal {
+  return typeof value === 'string' && optionalSignals.includes(value);
+}
 export type EvidenceSource = Readonly<{
   id: string;
   status: string;
@@ -174,6 +177,28 @@ function validateAdvisory(finding: Finding): void {
   }
 }
 
+/** Unusable sources: a recognized optional signal is unchecked; any other source is a required gap. */
+export function evidenceGaps(
+  unit: PolicyUnit,
+): Readonly<{ gaps: EvidenceGap[]; uncheckedSignals: UncheckedSignal[] }> {
+  const gaps: EvidenceGap[] = [];
+  const uncheckedSignals: UncheckedSignal[] = [];
+  for (const source of unit.sources) {
+    if (source.status === 'available' || source.status === 'group_backed') continue;
+    const gap: EvidenceGap = {
+      id: JSON.stringify([unit.id, source.id]),
+      unitId: unit.id,
+      sourceId: source.id,
+      status: source.status,
+      reason: source.reason,
+      coverageLimits: source.coverageLimits,
+    };
+    if (isOptionalSignal(source.signal)) uncheckedSignals.push({ ...gap, signal: source.signal });
+    else gaps.push(gap);
+  }
+  return { gaps, uncheckedSignals };
+}
+
 function evaluateUnit(
   input: PolicyUnit,
   policy: PolicyEvaluation['policy'],
@@ -181,8 +206,7 @@ function evaluateUnit(
 ): EvaluatedUnit {
   const unit = structuredClone(input);
   const rules: RuleTrace[] = [];
-  const gaps: EvidenceGap[] = [];
-  const uncheckedSignals: UncheckedSignal[] = [];
+  const { gaps, uncheckedSignals } = evidenceGaps(unit);
   const releaseExemptions: EvaluatedUnit['releaseExemptions'][number][] = [];
   function apply(
     rule: RuleTrace['rule'],
@@ -203,23 +227,7 @@ function evaluateUnit(
       fixed,
     });
   }
-  for (const source of unit.sources) {
-    if (source.status === 'available' || source.status === 'group_backed') continue;
-    const gap: EvidenceGap = {
-      id: JSON.stringify([unit.id, source.id]),
-      unitId: unit.id,
-      sourceId: source.id,
-      status: source.status,
-      reason: source.reason,
-      coverageLimits: source.coverageLimits,
-    };
-    if (source.signal !== undefined && optionalSignals.includes(source.signal))
-      uncheckedSignals.push({ ...gap, signal: source.signal });
-    else {
-      gaps.push(gap);
-      apply('incompleteEvidence', { sourceId: source.id });
-    }
-  }
+  for (const gap of gaps) apply('incompleteEvidence', { sourceId: gap.sourceId });
   function applyReleaseMetadata(finding: Extract<Finding, { kind: 'releaseMetadata' }>) {
     const identity = { findingId: finding.id };
     const fixes = unit.findings.filter(

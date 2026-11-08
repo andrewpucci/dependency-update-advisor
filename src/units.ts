@@ -1,8 +1,8 @@
 import type { Ecosystem, EvidenceReason, PacketResult } from './schema.js';
 import {
   evaluatePolicy,
+  isOptionalSignal,
   summarizePolicy,
-  type EvidenceSource,
   type PolicyUnit,
   type PolicySummary,
   type AssessmentState,
@@ -33,8 +33,6 @@ const reasonRanks = {
   conflict: 8,
   unknown: 9,
 } satisfies Record<EvidenceReason, number>;
-type OptionalSignal = NonNullable<EvidenceSource['signal']>;
-const optionalSignals: readonly string[] = ['publishTime', 'deprecation', 'trust', 'publisher'];
 export type EvidenceLink = Readonly<{
   id: string;
   memberId: string;
@@ -177,7 +175,7 @@ function projectMembers(
     coverageLimits: link.reasons.map((reason) =>
       JSON.stringify([link.memberId, link.category, link.status, reason]),
     ),
-    ...(optionalSignals.includes(link.category) ? { signal: link.category as OptionalSignal } : {}),
+    ...(isOptionalSignal(link.category) ? { signal: link.category } : {}),
   }));
   return {
     evidenceLinks,
