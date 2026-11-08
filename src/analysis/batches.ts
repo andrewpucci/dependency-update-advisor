@@ -269,8 +269,9 @@ function unresolved(
 }
 
 function mapResult(ids: readonly string[], batchId: string, result: MistralResult): UnitRecord[] {
+  const attempted = result.kind === 'validated' || result.attempted;
   if (!isBound(result, ids, batchId))
-    return unresolved(ids, 'rejected', true, 'reference', batchId);
+    return unresolved(ids, 'rejected', attempted, 'reference', batchId);
   if (
     result.kind === 'validated' &&
     result.assessments.length === ids.length &&
@@ -285,7 +286,6 @@ function mapResult(ids: readonly string[], batchId: string, result: MistralResul
       assessment,
     }));
   const category = result.kind === 'validated' ? 'reference' : result.category;
-  const attempted = result.kind === 'validated' ? true : result.attempted;
   const state =
     attempted && ['envelope', 'json', 'schema', 'reference', 'policy'].includes(category)
       ? 'rejected'

@@ -15,6 +15,11 @@ undispatched because the request budget ran out carry the M2 category
 `call_budget`, not M1's `budget`. M1's `budget` keeps its meaning of a unit or
 request too large to prepare, so diagnostics can tell the two apart.
 
+Review revision accepted by the user, 2026-11-07: a result not
+bound to its prepared batch stays `rejected` with `reference`, and its
+attempted flag follows the result as reported, `validated` counting as
+attempted. Records and calls dispatched then agree.
+
 ## Objective and assumptions
 
 Give maintainers a complete, trustworthy accounting of model analysis for a
@@ -124,6 +129,7 @@ fixed reason, next action, and coverage limits.
 | `truncated` for a single unit                                                                            | `unavailable`                      | yes         |
 | `invalid` preparation of a single unit, or pre-call `unavailable` with `configuration`                   | `unavailable`                      | no          |
 | Pre-call `unavailable` with `cancelled` or `deadline`, or not dispatched after request-budget exhaustion | `unattempted`                      | no          |
+| Result not bound to its prepared batch                                                                   | `rejected` with `reference`        | as reported |
 | Any other category                                                                                       | `unavailable`                      | as reported |
 
 A `budget` preparation failure for a multi-unit batch is re-packed under

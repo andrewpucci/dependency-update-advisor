@@ -526,6 +526,31 @@ test('a stale response cannot attach an assessment to the current batch', async 
   ).toBe(true);
 });
 
+test('an unbound result keeps its reported attempted flag', async () => {
+  const { input } = await analysisScenario();
+  const result = await analyzeDecisionUnits(
+    input,
+    { apiKey: 'test-key', deadlineMs: 700_000 },
+    {
+      now: () => 0,
+      analyze: async (batch) => {
+        const result = await analyzeMistralBatch(batch, { deadlineMs: 700_000 });
+        if (result.kind !== 'unavailable' || result.attempted) throw new Error('fixture failed');
+        return { ...result, batchId: 'other-batch' };
+      },
+    },
+  );
+  expect(result.ok).toBe(true);
+  if (!result.ok) throw new Error('fixture failed');
+  expect(result.diagnostics.callsDispatched).toBe(0);
+  expect(
+    result.records.every(
+      (record) =>
+        record.state.state === 'rejected' && !record.attempted && record.category === 'reference',
+    ),
+  ).toBe(true);
+});
+
 test('a proven empty inventory makes no call and is not analysis unavailable', async () => {
   const { input } = await analysisScenario();
   const { formDecisionUnits } = await import('../units.js');
