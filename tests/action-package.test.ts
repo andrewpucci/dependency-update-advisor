@@ -1,19 +1,35 @@
 import { builtinModules } from 'node:module';
 import { existsSync, readdirSync, readFileSync } from 'node:fs';
 import { expect, test } from 'vite-plus/test';
-import { parseDocument } from 'yaml';
+import { isScalar, parseDocument, visit } from 'yaml';
 
 const actionDir = new URL('../.github/actions/dependabot-review/', import.meta.url);
 const distDir = new URL('dist/', actionDir);
 const bundlePath = new URL('index.js', distDir);
 const packageJson = JSON.parse(readFileSync(new URL('../package.json', import.meta.url), 'utf8'));
 const bundle = existsSync(bundlePath) ? readFileSync(bundlePath, 'utf8') : '';
+const workflowPath = new URL('../.github/workflows/dependabot-review.yml', import.meta.url);
 
 test('declares the complete reviewer action interface and committed node24 bundle', () => {
   const document = parseDocument(readFileSync(new URL('action.yml', actionDir), 'utf8'), {
     uniqueKeys: true,
   });
+  const anchors: unknown[] = [];
+  const aliases: unknown[] = [];
+  const mergeKeys: unknown[] = [];
+  visit(document, {
+    Alias: (_key, node) => void aliases.push(node),
+    Node: (_key, node) => {
+      if ('anchor' in node && node.anchor) anchors.push(node);
+    },
+    Pair: (_key, pair) => {
+      if (isScalar(pair.key) && pair.key.value === '<<') mergeKeys.push(pair);
+    },
+  });
   expect(document.errors).toEqual([]);
+  expect(anchors).toEqual([]);
+  expect(aliases).toEqual([]);
+  expect(mergeKeys).toEqual([]);
   expect(document.toJS()).toEqual({
     name: 'Dependabot review',
     description: 'Advisory dependency update review for Dependabot pull requests.',
@@ -39,6 +55,17 @@ test('declares the complete reviewer action interface and committed node24 bundl
       using: 'node24',
       main: 'dist/index.js',
     },
+  });
+  const workflow = parseDocument(readFileSync(workflowPath, 'utf8'), {
+    uniqueKeys: true,
+  }).toJS() as {
+    jobs: { review: { steps: Array<{ with?: unknown }> } };
+  };
+  expect(workflow.jobs.review.steps[1]?.with).toEqual({
+    'github-token': '${{ github.token }}',
+    'app-token': '${{ steps.app-token.outputs.token }}',
+    'llm-api-key': '${{ secrets.llm_api_key }}',
+    'ci-workflow': '${{ inputs.ci_workflow }}',
   });
 });
 

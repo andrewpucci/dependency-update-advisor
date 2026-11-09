@@ -217,7 +217,7 @@ gaps and an introduced vulnerability before parity is claimed.
 - [Action package](SPEC-action-package.md) — supporting contract for A1 #24
   and #234–#238 in `shared-review`; merged into `main`. Committed Node.js 24 bundle,
   license notices, startup test, and CI drift gate; the entry is a fail-closed
-  stub. Orchestration and the reusable workflow stay W2.
+  stub. W2 owns orchestration.
 - [Reusable workflow](SPEC-reusable-workflow.md) — implemented for W1 #25
   and tasks #240–#248; supporting contract for
   W1 #25 in `shared-review`. Pinned `workflow_call`

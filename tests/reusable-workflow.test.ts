@@ -174,6 +174,7 @@ test('R6 pins the GitHub App-token action with a version comment', () => {
 
 test('R7 scopes every named secret to its one allowed action input', () => {
   const workflow = parseWorkflow().toJS();
+  expect(keysNamed(workflow, 'env')).toEqual([]);
   expect(stringsIn(workflow).filter(({ value }) => /secrets(?:\.|\[)/.test(value))).toEqual([
     {
       path: 'jobs.review.steps.0.with.client-id',
@@ -217,15 +218,20 @@ test('R9 permits only the six declared expressions and no if key', () => {
 
 test('R13 rejects malformed, duplicate, aliased, and merged YAML', () => {
   const document = parseWorkflow();
+  const anchors: unknown[] = [];
   const aliases: unknown[] = [];
   const mergeKeys: unknown[] = [];
   visit(document, {
     Alias: (_key, node) => void aliases.push(node),
+    Node: (_key, node) => {
+      if ('anchor' in node && node.anchor) anchors.push(node);
+    },
     Pair: (_key, pair) => {
       if (isScalar(pair.key) && pair.key.value === '<<') mergeKeys.push(pair);
     },
   });
   expect(document.errors).toEqual([]);
+  expect(anchors).toEqual([]);
   expect(aliases).toEqual([]);
   expect(mergeKeys).toEqual([]);
 });
