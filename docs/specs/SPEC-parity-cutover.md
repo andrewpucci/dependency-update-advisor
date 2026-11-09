@@ -54,7 +54,7 @@ source repo: .github/actions-scripts/dependabot-review/ → retiring baseline
 ## Code Style and Rollout Contract
 
 Keep each caller small and explicit. Map only named `llm_api_key`,
-`review_app_id`, and `review_app_private_key` secrets and pin the shared
+`review_app_client_id`, and `review_app_private_key` secrets and pin the shared
 workflow to a full commit SHA. Record the exact revision and test evidence
 used to cut over each repository. The shared workflow's own reviewer action
 resolves at the called workflow's commit; callers do not select a moving tag.

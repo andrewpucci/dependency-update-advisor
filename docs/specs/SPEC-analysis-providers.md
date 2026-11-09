@@ -81,8 +81,10 @@ validated result, never raw provider text.
    Dependabot text, and model responses are data, not instructions.
 2. Select a provider only from trusted configuration. V1 accepts `mistral`
    with a bounded model ID; an unknown provider, missing model, or missing
-   credential is an unavailable analysis result and makes current-head review
-   execution fail. Never silently choose another provider or model.
+   empty runtime credential is an unavailable analysis result and makes
+   current-head review execution fail. A caller that omits the required secret
+   mapping fails at workflow startup before this adapter runs. Never silently
+   choose another provider or model.
 3. Fix the Mistral HTTPS endpoint in the adapter. Send the secret only to
    that endpoint. Validate response status, content type, body size, choice
    count, finish reason, JSON shape, and all review-specific fields. Do not

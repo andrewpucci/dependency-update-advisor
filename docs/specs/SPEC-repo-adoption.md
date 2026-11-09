@@ -56,11 +56,13 @@ consumer: local adoption record                → private configuration and tri
 
 Keep the caller declarative and small. Pin the shared workflow to a full
 commit SHA, set explicit minimum `GITHUB_TOKEN` permissions, and map only
-`llm_api_key`, `review_app_id`, and `review_app_private_key` secrets. Do not
+`llm_api_key`, `review_app_client_id`, and `review_app_private_key` secrets.
+Do not
 use `secrets: inherit`, a moving ref, a PR checkout, an artifact, or a cache
-in the privileged job. The caller names the intended completed CI workflow;
-the shared reviewer verifies its identity, run attempt, PR, actor, and head
-again before any write.
+in the privileged job. The caller passes the intended completed CI workflow as
+a literal repository-relative file path through `ci_workflow`, never an
+expression; the shared reviewer verifies its identity, run attempt, PR, actor,
+and head again before any write.
 
 The config parser, not the caller, decides provider, model, excerpt scope,
 and advisory rules. A changed config in the PR head cannot affect that run.
