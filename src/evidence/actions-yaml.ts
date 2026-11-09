@@ -24,7 +24,7 @@ export type WorkflowRead =
   | { kind: 'unavailable'; reason: EvidenceReason }
   | { kind: 'parsed'; jobs: WorkflowJob[]; gaps: YamlGap[] };
 
-class YamlFailure extends Error {
+export class YamlFailure extends Error {
   constructor(readonly reason: EvidenceReason) {
     super(reason);
   }
@@ -47,7 +47,7 @@ function debit(budget: YamlBudget, key: keyof YamlBudget, limit: number) {
 }
 
 // CST inspection precedes the library's recursive composition; aliases are still unexpanded.
-function preflight(value: unknown, limits: YamlLimits, budget: YamlBudget) {
+export function preflight(value: unknown, limits: YamlLimits, budget: YamlBudget) {
   const stack = [{ value, depth: 0 }];
   while (stack.length) {
     const { value: item, depth } = stack.pop()!;
