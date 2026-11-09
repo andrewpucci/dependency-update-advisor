@@ -251,3 +251,50 @@ test('refuses the request after the transport share and stops at its byte share'
     Math.ceil(W2_GITHUB_LIMITS.maxTotalBytes / W2_GITHUB_LIMITS.maxResponseBytes),
   );
 });
+
+test('reads runs, pull requests, comparisons, and workflows by ID from the fixed origin', async () => {
+  const fetch = vi.fn(async (_url: string, _init: RequestInit) => new Response('{"ok":true}'));
+  const transport = createGithubTransport({ token: 'read-token', now: () => 0, fetch });
+  const odd = { id: 101, owner: 'space name', name: 'consumer/name' };
+  await transport.readRun(odd, 401);
+  await transport.readPullRequest(odd, 42);
+  await transport.readComparison(odd, 'a'.repeat(40), 'b'.repeat(40));
+  await transport.readWorkflowById(odd, 301);
+  expect(fetch.mock.calls.map(([url]) => url)).toEqual([
+    'https://api.github.com/repos/space%20name/consumer%2Fname/actions/runs/401',
+    'https://api.github.com/repos/space%20name/consumer%2Fname/pulls/42',
+    `https://api.github.com/repos/space%20name/consumer%2Fname/compare/${'a'.repeat(40)}...${'b'.repeat(40)}`,
+    'https://api.github.com/repos/space%20name/consumer%2Fname/actions/workflows/301',
+  ]);
+});
+
+test.each([
+  ['a refspec', 'main', 'b'.repeat(40)],
+  ['a path escape', '../x', 'b'.repeat(40)],
+  ['an uppercase SHA', 'A'.repeat(40), 'b'.repeat(40)],
+])('rejects a comparison with %s before any request', async (_label, base, head) => {
+  const fetch = vi.fn(async () => new Response('{}'));
+  const transport = createGithubTransport({ token: 'read-token', now: () => 0, fetch });
+  await expect(transport.readComparison(repo, base, head)).resolves.toEqual({
+    kind: 'unavailable',
+    reason: 'malformed',
+  });
+  expect(fetch).not.toHaveBeenCalled();
+});
+
+test.each([
+  ['a run ID of zero', (t: ReturnType<typeof createGithubTransport>) => t.readRun(repo, 0)],
+  [
+    'a fractional pull number',
+    (t: ReturnType<typeof createGithubTransport>) => t.readPullRequest(repo, 1.5),
+  ],
+  [
+    'a negative workflow ID',
+    (t: ReturnType<typeof createGithubTransport>) => t.readWorkflowById(repo, -1),
+  ],
+])('rejects %s before any request', async (_label, read) => {
+  const fetch = vi.fn(async () => new Response('{}'));
+  const transport = createGithubTransport({ token: 'read-token', now: () => 0, fetch });
+  await expect(read(transport)).resolves.toEqual({ kind: 'unavailable', reason: 'malformed' });
+  expect(fetch).not.toHaveBeenCalled();
+});

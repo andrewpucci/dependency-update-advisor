@@ -24,6 +24,14 @@ export type GithubRead =
   | Readonly<{ kind: 'unavailable'; reason: EvidenceReason }>;
 export type GithubTransport = Readonly<{
   readWorkflow: (repository: RepositoryIdentity, file: string) => Promise<GithubRead>;
+  readWorkflowById: (repository: RepositoryIdentity, workflowId: number) => Promise<GithubRead>;
+  readRun: (repository: RepositoryIdentity, runId: number) => Promise<GithubRead>;
+  readPullRequest: (repository: RepositoryIdentity, pullNumber: number) => Promise<GithubRead>;
+  readComparison: (
+    repository: RepositoryIdentity,
+    base: string,
+    head: string,
+  ) => Promise<GithubRead>;
   readRepository: (repository: RepositoryIdentity, signal?: AbortSignal) => Promise<GithubRead>;
   readCommit: (
     repository: RepositoryIdentity,
@@ -197,7 +205,36 @@ export function createGithubTransport(dependencies: TransportDependencies): Gith
     }
   };
 
+  const malformed = (): Promise<GithubRead> =>
+    Promise.resolve({ kind: 'unavailable', reason: 'malformed' });
+  const sha = (value: string) => /^[a-f\d]{40}$/u.test(value);
+
   return Object.freeze({
+    readWorkflowById: (repository, workflowId) =>
+      positiveId(workflowId)
+        ? read(
+            route(
+              'repos',
+              repository.owner,
+              repository.name,
+              'actions',
+              'workflows',
+              String(workflowId),
+            ),
+          )
+        : malformed(),
+    readRun: (repository, runId) =>
+      positiveId(runId)
+        ? read(route('repos', repository.owner, repository.name, 'actions', 'runs', String(runId)))
+        : malformed(),
+    readPullRequest: (repository, pullNumber) =>
+      positiveId(pullNumber)
+        ? read(route('repos', repository.owner, repository.name, 'pulls', String(pullNumber)))
+        : malformed(),
+    readComparison: (repository, base, head) =>
+      sha(base) && sha(head)
+        ? read(route('repos', repository.owner, repository.name, 'compare', `${base}...${head}`))
+        : malformed(),
     readWorkflow: (repository, file) =>
       read(route('repos', repository.owner, repository.name, 'actions', 'workflows', file)),
     readRepository: (repository, signal) =>
