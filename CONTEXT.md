@@ -16,7 +16,7 @@ and [T5 evidence](https://github.com/andrewpucci/dependency-update-advisor/issue
 record exact-revision checks and remaining integration gates.
 [Advisory complexity review](docs/specs/SPEC-complexity-review.md) is merged.
 The shared workflow is implemented with a fail-closed stub; W2 orchestration
-and the old reviewer stay active.
+is pending, and the old reviewer stays active.
 
 ## Next action
 
