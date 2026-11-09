@@ -6,11 +6,12 @@ type Session = Readonly<{ close: () => void }>;
 export type PacketAssemblyResult =
   | Readonly<{ kind: 'ready'; packet: Extract<PacketResult, { ok: true }>['packet'] }>
   | Readonly<{ kind: 'incomplete' | 'stale' | 'internal-failure' }>;
-export type PacketAssemblyInput = Readonly<{
+export type PacketAssemblyInput<S extends Session = Session> = Readonly<{
   trusted: unknown;
   isCurrent: () => boolean;
-  openSession: () => Promise<Session>;
-  collectors: Readonly<Record<Ecosystem, (session: Session) => Promise<unknown>>>;
+  openSession: () => Promise<S>;
+  collectors: Readonly<Record<Ecosystem, (session: S) => Promise<unknown>>>;
+  /** Optional shared source; collectors normally carry their own, including not-applicable proofs. */
   inventorySource: unknown;
 }>;
 
@@ -46,10 +47,10 @@ function fragment(value: unknown, ecosystem: Ecosystem): Fragment | null {
 }
 
 /** Owns one read session and delegates all structural acceptance to T4 validation. */
-export async function assembleReviewPacket(
-  input: PacketAssemblyInput,
+export async function assembleReviewPacket<S extends Session>(
+  input: PacketAssemblyInput<S>,
 ): Promise<PacketAssemblyResult> {
-  let session: Session | undefined;
+  let session: S | undefined;
   try {
     if (!input.isCurrent()) return { kind: 'stale' };
     session = await input.openSession();
@@ -72,7 +73,12 @@ export async function assembleReviewPacket(
         context: input.trusted.context,
         coverage: Object.fromEntries(fragments.map((item) => [item.ecosystem, item.coverage])),
         changes: fragments.flatMap((item) => item.changes),
-        sources: [input.inventorySource, ...fragments.flatMap((item) => item.sources)],
+        sources: [
+          ...(input.inventorySource === null || input.inventorySource === undefined
+            ? []
+            : [input.inventorySource]),
+          ...fragments.flatMap((item) => item.sources),
+        ],
         findings: fragments.flatMap((item) => item.findings),
         relationships: fragments.flatMap((item) => item.relationships),
       },
