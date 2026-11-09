@@ -35,6 +35,10 @@ before T2/T3 writes.
 tracks its remaining gates. W2, C2, adoption, parity and cutover need proof.
 [A1 #24](docs/specs/SPEC-action-package.md) is merged into `main`.
 [W1 #25](docs/specs/SPEC-reusable-workflow.md) is implemented, pending review.
+[W2 #26 review orchestration](docs/specs/SPEC-review-orchestration.md) is
+approved for planning; execution awaits plan approval. Publication, shared PyPI
+observations (#209), and bounded-reader consolidation remain separate
+supporting contracts.
 
 - The [capability map](docs/specs/README.md) indexes module and contract status.
 - The [ADR guide](docs/adr/README.md) indexes durable architecture decisions.
