@@ -138,6 +138,12 @@ receives `process.env` or a general fetch function.
    count, bytes, and elapsed time. Cancellation/close aborts work and releases
    bodies. Existing distinctions, including permission/feature versus rate-limit
    403, are preserved.
+
+   Approved execution envelope, 2026-11-08: 512 total requests, 1 MiB per
+   response, 32 MiB total response bytes, a 15,000 ms request timeout, and a
+   240,000 ms total deadline. Exceeding any bound is a fail-closed unavailable
+   outcome; it does not replace an individual reader's approved limits.
+
 3. **Credential separation.** `github-token` performs GitHub reads;
    `app-token` is reserved for later publication. Collectors, source context,
    public registries, and M1/M2 never receive the App token; collectors and
@@ -287,8 +293,5 @@ fresh-context reviewer must assess these behavior checks before M/L execution.
 
 1. `review-publication` must select the production claim backend, trusted
    provenance, retention, and consumer configuration before live writes.
-2. Planning must reconcile W2 transport limits with every existing reader and
-   M2's 600,000 ms analysis ceiling plus 60,000 ms publication reserve; no
-   numeric W2 limits are approved here.
-3. Planning must verify called-workflow repository context and GitHub's
+2. Planning must verify called-workflow repository context and GitHub's
    workflow REST selector behavior from official documentation.

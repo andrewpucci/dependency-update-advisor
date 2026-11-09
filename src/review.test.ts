@@ -10,7 +10,14 @@ import {
 const head = 'a'.repeat(40);
 const nextHead = 'b'.repeat(40);
 
-const attempt = (runAttempt: number, sha = head): ReviewIdentity => [101, 301, 401, runAttempt, 42, sha];
+const attempt = (runAttempt: number, sha = head): ReviewIdentity => [
+  101,
+  301,
+  401,
+  runAttempt,
+  42,
+  sha,
+];
 
 function owned(value: ClaimResult): OwnedClaim {
   expect(value.kind).toBe('owned');
