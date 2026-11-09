@@ -15,8 +15,10 @@
 and [T5 evidence](https://github.com/andrewpucci/dependency-update-advisor/issues/99)
 record exact-revision checks and remaining integration gates.
 [Advisory complexity review](docs/specs/SPEC-complexity-review.md) is merged.
-The shared workflow is implemented with a fail-closed stub; W2 orchestration
-is pending, and the old reviewer stays active.
+The shared workflow remains fail closed and the old reviewer stays active.
+W2 orchestration is implemented on the working branch as a no-write rehearsal;
+it awaits fresh-context review and merge before any adoption, publication, or
+claim-backend work.
 
 ## Next action
 
@@ -35,10 +37,10 @@ before T2/T3 writes.
 tracks its remaining gates. W2, C2, adoption, parity and cutover need proof.
 [A1 #24](docs/specs/SPEC-action-package.md) is merged into `main`.
 [W1 #25](docs/specs/SPEC-reusable-workflow.md) is implemented, pending review.
-[W2 #26 review orchestration](docs/specs/SPEC-review-orchestration.md) is
-approved for planning; execution awaits plan approval. Publication, shared PyPI
-observations (#209), and bounded-reader consolidation remain separate
-supporting contracts.
+[W2 #26 review orchestration](docs/specs/SPEC-review-orchestration.md) has its
+approved plan implemented as the no-write rehearsal on this branch. Production
+claim storage, live publication, shared PyPI observations (#209), and
+bounded-reader consolidation remain separate supporting contracts.
 
 - The [capability map](docs/specs/README.md) indexes module and contract status.
 - The [ADR guide](docs/adr/README.md) indexes durable architecture decisions.
