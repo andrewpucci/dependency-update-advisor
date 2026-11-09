@@ -71,12 +71,13 @@ mint credentials, implement replay storage, or supply the privileged workflow.
   run in the T1 binding. Neither CI conclusion nor local verdict authorizes
   reviewer success.
 - The [reusable workflow (W1)](https://github.com/andrewpucci/dependency-update-advisor/issues/25)
-  must supply bounded GitHub transport and a repository-scoped App token with
+  supplies a repository-scoped App token with
   the approved `Commit statuses: write` permission. These are integration
   requirements, not implemented T2 transport or credentials.
 - [End-to-end orchestration (W2)](https://github.com/andrewpucci/dependency-update-advisor/issues/26)
   must supply exclusive ownership checks for the exact review identity and
-  coordinate T2 with [managed comments (T3)](https://github.com/andrewpucci/dependency-update-advisor/issues/10).
+  coordinate T2 with [managed comments (T3)](https://github.com/andrewpucci/dependency-update-advisor/issues/10)
+  and bounded GitHub transport.
 - Isolated implementation may use injected reads, writes, and ownership
   checks. Live writes require the approved W1/W2 integration, including the
   unresolved durable claim mechanism. Mocks do not establish those gates.
@@ -233,8 +234,8 @@ fails, or the runner is lost, the head may keep `pending` with a failed job.
 That is an accepted v1 limit of the advisory, non-required status.
 
 Before live publication, W2 must have an approved coordination and recovery
-contract, with exclusive durable claims, ownership transfer, and prevention
-of older-owner writes. W1 must supply bounded transport and trusted execution.
+contract, with exclusive durable claims, ownership transfer, prevention of
+older-owner writes, and bounded transport. W1 supplies trusted execution.
 Consumer adoption must separately prove App status permissions. These are
 integration prerequisites, not additional storage or workflow scope for T2.
 
@@ -305,7 +306,7 @@ request fields or diagnostics. Invalid or uncloneable input returns an error.
   tuple and `state` of `owned` or `lost`. Other responses or read failures are
   ownership errors. T2 provides a frozen copy of the identity; W2 implements
   real cross-job exclusion behind the injected check.
-- `createStatus(request)`: performs one authenticated create through W1's
+- `createStatus(request)`: performs one authenticated create through W2's
   bounded transport and returns unknown `{ status, data }`. `status` is the
   HTTP response code; `data` is the decoded commit-status body. Rejecting with
   `{ kind: 'timeout' }` identifies a known timeout; other exceptions are
@@ -451,7 +452,7 @@ The approved T2 choices are listed in
 deferred; [Integration Gates](#integration-gates) states their obligations:
 
 - W2: durable claim storage, trusted provenance, ownership transfer, and recovery.
-- W1: bounded transport limits.
+- W2: bounded transport limits.
 - T3/W2: write ordering and the always-run failure step.
 
 This contract does not select those mechanisms or authorize live writes.

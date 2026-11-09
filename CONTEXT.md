@@ -15,7 +15,8 @@
 and [T5 evidence](https://github.com/andrewpucci/dependency-update-advisor/issues/99)
 record exact-revision checks and remaining integration gates.
 [Advisory complexity review](docs/specs/SPEC-complexity-review.md) is merged.
-No shared workflow exists; the old reviewer stays active.
+The shared workflow is implemented with a fail-closed stub; W2 orchestration
+is pending, and the old reviewer stays active.
 
 ## Next action
 
@@ -32,7 +33,8 @@ before T2/T3 writes.
 [O1 #23](docs/specs/SPEC-decision-brief.md) implemented, pending review/merge;
 [verification #232](https://github.com/andrewpucci/dependency-update-advisor/issues/232)
 tracks its remaining gates. W2, C2, adoption, parity and cutover need proof.
-[A1 #24](docs/specs/SPEC-action-package.md) is implemented, pending review/merge.
+[A1 #24](docs/specs/SPEC-action-package.md) is merged into `main`.
+[W1 #25](docs/specs/SPEC-reusable-workflow.md) is implemented, pending review.
 
 - The [capability map](docs/specs/README.md) indexes module and contract status.
 - The [ADR guide](docs/adr/README.md) indexes durable architecture decisions.

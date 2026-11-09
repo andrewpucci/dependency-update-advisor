@@ -148,8 +148,10 @@ named `llm_api_key`. The shared reviewer sends it only to the selected
 provider's fixed HTTPS endpoint. The file never contains a credential or
 custom endpoint. An absent `analysis` section makes no model request and
 reports analysis as unavailable, without implying that the dependency review
-was complete. An unknown provider or missing credential is a configuration
-error and never falls back to Mistral or another provider.
+was complete. An unknown provider or empty runtime credential is a configuration
+error and never falls back to Mistral or another provider. A caller that omits
+the required secret mapping fails at workflow startup before W2 can publish a
+status.
 
 ### Advisory policy
 

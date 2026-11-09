@@ -1,19 +1,72 @@
 import { builtinModules } from 'node:module';
 import { existsSync, readdirSync, readFileSync } from 'node:fs';
 import { expect, test } from 'vite-plus/test';
+import { isScalar, parseDocument, visit } from 'yaml';
 
 const actionDir = new URL('../.github/actions/dependabot-review/', import.meta.url);
 const distDir = new URL('dist/', actionDir);
 const bundlePath = new URL('index.js', distDir);
 const packageJson = JSON.parse(readFileSync(new URL('../package.json', import.meta.url), 'utf8'));
 const bundle = existsSync(bundlePath) ? readFileSync(bundlePath, 'utf8') : '';
+const workflowPath = new URL('../.github/workflows/dependabot-review.yml', import.meta.url);
 
-test('declares a node24 action that runs the committed bundle', () => {
-  const action = readFileSync(new URL('action.yml', actionDir), 'utf8');
-  expect(action).toMatch(/^name: .+$/m);
-  expect(action).toMatch(/^description: .+$/m);
-  expect(action).toMatch(/^runs:\n {2}using: node24\n {2}main: dist\/index\.js$/m);
-  expect(action).not.toMatch(/^inputs:/m);
+test('declares the complete reviewer action interface and committed node24 bundle', () => {
+  const document = parseDocument(readFileSync(new URL('action.yml', actionDir), 'utf8'), {
+    uniqueKeys: true,
+  });
+  const anchors: unknown[] = [];
+  const aliases: unknown[] = [];
+  const mergeKeys: unknown[] = [];
+  visit(document, {
+    Alias: (_key, node) => void aliases.push(node),
+    Node: (_key, node) => {
+      if ('anchor' in node && node.anchor) anchors.push(node);
+    },
+    Pair: (_key, pair) => {
+      if (isScalar(pair.key) && pair.key.value === '<<') mergeKeys.push(pair);
+    },
+  });
+  expect(document.errors).toEqual([]);
+  expect(anchors).toEqual([]);
+  expect(aliases).toEqual([]);
+  expect(mergeKeys).toEqual([]);
+  expect(document.toJS()).toEqual({
+    name: 'Dependabot review',
+    description: 'Advisory dependency update review for Dependabot pull requests.',
+    inputs: {
+      'github-token': {
+        description: 'Read-only GitHub token for repository and workflow reads.',
+        required: true,
+      },
+      'app-token': {
+        description: 'GitHub App token for managed comments and commit statuses.',
+        required: true,
+      },
+      'llm-api-key': {
+        description: 'API key for the configured language-model provider.',
+        required: true,
+      },
+      'ci-workflow': {
+        description: 'Repository-relative file path of the intended CI workflow.',
+        required: true,
+      },
+    },
+    runs: {
+      using: 'node24',
+      main: 'dist/index.js',
+    },
+  });
+  const workflow = parseDocument(readFileSync(workflowPath, 'utf8'), {
+    uniqueKeys: true,
+  }).toJS() as {
+    jobs: { review: { steps: Array<{ with?: unknown }> } };
+  };
+  expect(workflow.jobs.review.steps[1]?.with).toEqual({
+    'github-token': '${{ github.token }}',
+    'app-token': '${{ steps.app-token.outputs.token }}',
+    'llm-api-key': '${{ secrets.llm_api_key }}',
+    'ci-workflow': '${{ inputs.ci_workflow }}',
+  });
 });
 
 test('commits only the bundle and its license notices in the action dist directory', () => {

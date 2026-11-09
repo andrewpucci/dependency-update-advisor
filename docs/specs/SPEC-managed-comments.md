@@ -46,7 +46,7 @@ fresh and owned. A complete `do_not_merge` brief can accompany execution success
 - [T2](SPEC-execution-status.md) supplies the status boundary, merged into
   `main`. T3 must not treat that source as completed workflow integration.
 - [W1 #25](https://github.com/andrewpucci/dependency-update-advisor/issues/25)
-  supplies bounded GitHub transport and the repository-scoped installation
+  supplies the repository-scoped installation
   token with the already approved `Issues: write` permission. No broader
   publication permission or token access for analysis is proposed.
 - [W2 #26](https://github.com/andrewpucci/dependency-update-advisor/issues/26)
@@ -76,8 +76,8 @@ before its first asynchronous read and rejects any violation as an input error.
 | `result.kind`         | `complete` or `incomplete`. T3 rejects any other readiness state but does not use or prove completeness.                                                                         |
 | `result.body`         | Rendered string that satisfies the metadata and size rules below.                                                                                                                |
 | `result.reviewDigest` | Optional 64-character lowercase hexadecimal SHA-256. When present, the body's digest line must carry this value; when absent, the body must have no digest line.                 |
-| `publisher.appId`     | Positive safe integer from W1/W2 trusted App metadata.                                                                                                                           |
-| `publisher.botUserId` | Positive safe integer from W1/W2 trusted App metadata.                                                                                                                           |
+| `publisher.appId`     | Positive safe integer from W2 trusted App metadata.                                                                                                                              |
+| `publisher.botUserId` | Positive safe integer from W2 trusted App metadata.                                                                                                                              |
 | `pending`             | T2 `StatusReceipt` with `state: 'pending'`, `context: 'dependabot-review'`, `headSha` equal to the binding's head, and a positive `statusId`. W2 attributes it to this identity. |
 
 The read-only discovery operation accepts only `binding` and `publisher`.
@@ -112,7 +112,7 @@ empty, invalid, or oversized bodies before writes and never truncates them.
 O1 must fit all required decision content or fail rendering.
 
 The trusted expected publisher contains positive safe-integer App and bot-user
-IDs. W1/W2 must establish their relationship from trusted App metadata, not
+IDs. W2 must establish their relationship from trusted App metadata, not
 PR content or a discovered comment. An owned comment requires its API-read
 `user.id` to match the designated bot-user ID, `user.type` to be `Bot`, and a
 body whose first line, ending at the first `\n`, is exactly the managed marker.
@@ -137,11 +137,11 @@ the immutable consumer repository and bound PR number. GitHub documents
 [creating](https://docs.github.com/en/rest/issues/comments#create-an-issue-comment),
 and [updating](https://docs.github.com/en/rest/issues/comments#update-an-issue-comment).
 
-W1's injected listing operation must return a complete, bounded collection
+W2's injected listing operation must return a complete, bounded collection
 for this PR, including all pages. A truncated list, exhausted budget,
 unavailable page, or failed/invalid response is a discovery error, never an
 empty collection. T3 validates the response and explicit completion signal
-before selecting a target. W1 separately proves pagination and finite request,
+before selecting a target. W2 separately proves pagination and finite request,
 byte, and time budgets; T3 tests incomplete and flattened multi-page results.
 
 Classify only validated API comment data. Require numeric comment/user IDs
@@ -329,7 +329,7 @@ above and returns `Promise<CommentResult>`. Its `CommentDependencies` are:
 | `readOwnership` | Frozen exact review identity; unknown `{ identity, state: 'owned' }` or `{ identity, state: 'lost' }`. Anything else is an ownership error. |
 
 `repository` is the validated consumer `RepositoryIdentity`. The module
-supplies structured targets; W1 must encode path segments on GitHub's fixed
+supplies structured targets; W2 must encode path segments on GitHub's fixed
 API origin. The collection's completion flag is a transport assertion; T3
 does not perform or certify pagination. Each comment response is validated
 against the ownership, raw body, numeric ID, and membership rules above.
@@ -389,8 +389,9 @@ comment writes. No live token, model call, or new coverage threshold is needed.
 | Caller mutation across awaits, hostile URLs/accessors, or secret-like exceptions                                                               | Fixed copied targets and safe diagnostics; no untrusted value leaks.                                                        |
 
 Passing T3 fixtures establishes the isolated ownership and publication
-boundary. W1 must separately prove complete bounded pagination, token scope,
-and App-to-bot identity. W1 or adoption must also show, with a recorded or
+boundary. W2 must separately prove complete bounded pagination and App-to-bot
+identity. W1 proves the App-token scope. W2 or adoption must also show, with a
+recorded or
 live response, that GitHub returns created, updated, and reread bodies
 byte-identical to the request; exact-body acknowledgement, reread, and
 identical-body checks depend on it and synthetic mocks cannot prove it.

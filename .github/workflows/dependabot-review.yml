@@ -1,0 +1,41 @@
+name: Dependabot review
+
+on:
+  workflow_call:
+    inputs:
+      ci_workflow:
+        description: Repository-relative file path of the intended CI workflow.
+        type: string
+        required: true
+    secrets:
+      llm_api_key:
+        required: true
+      review_app_client_id:
+        required: true
+      review_app_private_key:
+        required: true
+
+permissions:
+  actions: read
+  contents: read
+  pull-requests: read
+
+jobs:
+  review:
+    name: Dependabot review
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - id: app-token
+        uses: actions/create-github-app-token@64ab729a6294000f5aa4a4bc0b73d1f32bc45510 # v3.3.0
+        with:
+          client-id: ${{ secrets.review_app_client_id }}
+          private-key: ${{ secrets.review_app_private_key }}
+          permission-issues: write
+          permission-statuses: write
+      - uses: $/.github/actions/dependabot-review
+        with:
+          github-token: ${{ github.token }}
+          app-token: ${{ steps.app-token.outputs.token }}
+          llm-api-key: ${{ secrets.llm_api_key }}
+          ci-workflow: ${{ inputs.ci_workflow }}

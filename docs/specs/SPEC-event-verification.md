@@ -259,7 +259,8 @@ and freshness results:
 | --------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | W2 orchestration                              | Retrieve durable replay state, claim identities exclusively, and recheck ownership before each write. Prevent simultaneous claims and publication by an older owner after a newer attempt takes over.           |
 | T2 status publication and T3 managed comments | Check freshness immediately before every external write, including pending and failure statuses. Stop on obsolete/error results or a lost claim; retain exact SHA attribution and test post-write head changes. |
-| W1 reusable workflow                          | Establish trusted execution and bounded API transport with the documented read permissions. Propagate bounded-read failures to T1.                                                                              |
+| W1 reusable workflow                          | Establish trusted execution with the documented read permissions.                                                                                                                                               |
+| W2 orchestration                              | Provide bounded API transport and propagate bounded-read failures to T1.                                                                                                                                        |
 
 A process-local set or an unserialized read-then-write replay check is
 insufficient. The concrete W2 state mechanism must be specified and approved
@@ -374,7 +375,7 @@ otherwise unchanged.
 Unverified: whether a base-repository comparison resolves a fork head SHA.
 Dependabot heads normally share the base repository; until verified, a fork
 comparison failure stays `error: read`. The comparison response is T1's
-largest read and falls under W1's transport bounds.
+largest read and falls under W2's transport bounds.
 
 ## Boundaries
 

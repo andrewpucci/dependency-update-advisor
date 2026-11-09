@@ -4,7 +4,7 @@ Status: approved for planning, 2026-11-08. The user approved the reviewed
 draft, including the Opus reviewer's findings, and invoked `as-plan`. Plan
 and execution approval remain separate gates. The user then approved the
 plan and `as-build auto` (one closing PR). Implemented for #234–#238 and
-A1 #24, pending review and merge; the evidence is on #24. Supporting contract for
+A1 #24, merged into `main`; the evidence is on #24. Supporting contract for
 `shared-review` in [the capability map](README.md), scoped to
 [A1 #24](https://github.com/andrewpucci/dependency-update-advisor/issues/24).
 The approved [shared-review contract](SPEC-shared-review.md),
@@ -20,8 +20,8 @@ TypeScript loader and no dependency install. CI fails when the committed
 bundle differs from a clean build of the same revision.
 
 A1 delivers the packaging mechanism and its integrity gate. It does not
-deliver review orchestration, the reusable workflow, or any write path. W2
-owns orchestration and the workflow; the old reviewer stays active.
+deliver review orchestration or any write path. W1 delivers the reusable
+workflow; W2 owns orchestration and the old reviewer stays active.
 
 ## Assumptions to confirm
 
@@ -116,7 +116,7 @@ so Git normalization cannot hide CRLF output.
 ## Requirements
 
 1. `action.yml` declares `runs.using: node24` and `runs.main: dist/index.js`,
-   with name and description. A1 declares no inputs; W2 adds them.
+   with name, description, and the four W1 action inputs.
 2. The bundle inlines every runtime dependency. It has no bare-specifier
    imports other than `node:` built-ins and needs no `node_modules`.
 3. The build is reproducible: no timestamps, absolute paths, or environment

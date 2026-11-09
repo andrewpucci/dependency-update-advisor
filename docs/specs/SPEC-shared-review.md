@@ -67,7 +67,8 @@ shared repo: src/index.ts                            → action entry point
 shared repo: src/event.ts                            → CI run and PR-head binding
 shared repo: src/status.ts                           → current-head review status
 shared repo: src/review.ts                           → orchestration and comment handoff
-shared repo: src/*.test.ts                            → event, status, and workflow tests
+shared repo: src/*.test.ts                            → event and status tests
+shared repo: tests/reusable-workflow.test.ts          → reusable workflow tests
 shared repo: .github/actions/dependabot-review/dist/index.js → committed action bundle
 consumer: .github/workflows/dependabot-review.yml   → minimal workflow_run caller
 ```
@@ -113,10 +114,9 @@ Never load the action from a moving branch or from a PR checkout.
    shared action uses the `$/.github/actions/...` syntax so it resolves at
    the called workflow's own commit. A release updates callers through a
    reviewed SHA change.
-4. Set the built-in `GITHUB_TOKEN` permissions to `contents: read` and
-   `pull-requests: read`, adding another read permission only if a documented
-   endpoint requires it. Pass only individually
-   named `llm_api_key`, `review_app_id`, and `review_app_private_key` secrets;
+4. Set the built-in `GITHUB_TOKEN` permissions to `actions: read`,
+   `contents: read`, and `pull-requests: read`. Pass only individually
+   named `llm_api_key`, `review_app_client_id`, and `review_app_private_key` secrets;
    never use `secrets: inherit`. Mint a short-lived App token limited to the
    caller repository with `Issues: write` for the managed timeline comment
    and `Commit statuses: write` for the head status. Do not pass the App token
@@ -124,7 +124,10 @@ Never load the action from a moving branch or from a PR checkout.
    [issue-comment](https://docs.github.com/en/rest/issues/comments) and
    [commit-status](https://docs.github.com/en/rest/commits/statuses)
    permissions separately.
-5. Publish a `dependabot-review` commit status on the verified PR head. Use
+5. Publish a `dependabot-review` commit status on the verified PR head. A caller
+   that omits the required `llm_api_key` mapping fails before the job starts and
+   therefore publishes no status; W2 reports an empty runtime value as a failed
+   current-head review. Use
    `pending` while a current-head review is running, `success` only after a
    complete current-head result is recorded, and `failure` when config,
    credentials, model analysis, required evidence, or publication leaves the
