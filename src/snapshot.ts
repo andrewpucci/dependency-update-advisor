@@ -1,9 +1,10 @@
 import fs from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { dirname, join, relative, sep } from 'node:path';
-import { loadTrustedReviewConfig, type ConfigResult } from './config.js';
+import { loadTrustedReviewConfig, MAX_CONFIG_BYTES, type ConfigResult } from './config.js';
 import {
   collectSourceContext,
+  MAX_SOURCE_FILE_BYTES,
   validateSourceContextInput,
   type SourceContextResult,
 } from './context.js';
@@ -17,11 +18,13 @@ const CONFIG_PATH = '.github/dependabot-review.json';
 type SnapshotRead<T> = { kind: 'available'; value: T } | { kind: 'unavailable' };
 type SnapshotRepository = { visibility: 'public' | 'private'; defaultBranch: string };
 type SnapshotCommit = { sha: string; treeSha: string };
+/** One direct child of a listed directory; `path` is its name within that directory. */
 export type SnapshotTreeEntry = Readonly<{
   path: string;
   mode: string;
   type: string;
   sha: string;
+  size?: number;
 }>;
 export type SnapshotReads = {
   readRepository: (
@@ -143,7 +146,13 @@ export function createGithubSnapshotReads(transport: GithubTransport): SnapshotR
           typeof item.sha !== 'string'
         )
           return unavailable();
-        entries.push({ path: item.path, mode: item.mode, type: item.type, sha: item.sha });
+        entries.push({
+          path: item.path,
+          mode: item.mode,
+          type: item.type,
+          sha: item.sha,
+          ...(typeof item.size === 'number' ? { size: item.size } : {}),
+        });
       }
       return available(entries);
     },
@@ -177,29 +186,88 @@ function validRef(value: unknown): value is string {
   );
 }
 
+function validName(name: unknown): name is string {
+  return (
+    typeof name === 'string' &&
+    name.length > 0 &&
+    name !== '.' &&
+    name !== '..' &&
+    !name.includes('/') &&
+    !name.includes('\\')
+  );
+}
+
 function classifyEntry(value: SnapshotTreeEntry): TreeEntry | null {
   if (!validPath(value.path) || !validSha(value.sha)) return null;
-  if (value.mode === '040000' && value.type === 'tree') return { ...value, kind: 'tree' };
-  if ((value.mode === '100644' || value.mode === '100755') && value.type === 'blob')
-    return { ...value, kind: 'file' };
-  if (value.mode === '120000' && value.type === 'blob') return { ...value, kind: 'link' };
+  // A checkout without submodules leaves each gitlink as an empty directory.
+  if (
+    (value.mode === '040000' && value.type === 'tree') ||
+    (value.mode === '160000' && value.type === 'commit')
+  )
+    return { ...value, kind: 'tree' };
+  if (value.type !== 'blob' || !Number.isSafeInteger(value.size) || (value.size ?? -1) < 0)
+    return null;
+  if (value.mode === '100644' || value.mode === '100755') return { ...value, kind: 'file' };
+  if (value.mode === '120000') return { ...value, kind: 'link' };
   return null;
 }
 
-function treeIndex(entries: readonly SnapshotTreeEntry[]): Map<string, TreeEntry> {
-  if (entries.length > MAX_TREE_ENTRIES) throw new Unavailable();
-  const index = new Map<string, TreeEntry>();
-  for (const value of entries) {
-    const entry = classifyEntry(value);
-    if (!entry || index.has(entry.path)) throw new Unavailable();
-    index.set(entry.path, entry);
+/** Lists only the directories a requested path passes through, one bounded response each. */
+class Tree {
+  readonly entries = new Map<string, TreeEntry>();
+  private readonly listings = new Map<string, Promise<void>>();
+  private count = 0;
+
+  constructor(
+    private readonly rootSha: string,
+    private readonly read: (sha: string) => Promise<SnapshotRead<readonly SnapshotTreeEntry[]>>,
+    private readonly active: () => void,
+  ) {}
+
+  private list(directory: string, sha: string): Promise<void> {
+    let listing = this.listings.get(directory);
+    if (!listing) {
+      listing = this.load(directory, sha);
+      this.listings.set(directory, listing);
+    }
+    return listing;
   }
-  for (const entry of index.values()) {
-    for (let parent = dirname(entry.path); parent !== '.'; parent = dirname(parent)) {
-      if (index.get(parent)?.kind !== 'tree') throw new Unavailable();
+
+  private async load(directory: string, sha: string): Promise<void> {
+    this.active();
+    const result = await this.read(sha);
+    this.active();
+    if (result.kind !== 'available') throw new Unavailable();
+    this.count += result.value.length;
+    if (this.count > MAX_TREE_ENTRIES) throw new Unavailable();
+    const names = new Set<string>();
+    for (const value of result.value) {
+      if (!validName(value.path) || names.has(value.path)) throw new Unavailable();
+      names.add(value.path);
+      const entry = classifyEntry({
+        ...value,
+        path: directory ? `${directory}/${value.path}` : value.path,
+      });
+      if (!entry) throw new Unavailable();
+      this.entries.set(entry.path, entry);
     }
   }
-  return index;
+
+  /** Undefined when the path, or a prefix that must be a listable directory, is absent. */
+  async get(path: string): Promise<TreeEntry | undefined> {
+    const parts = path.split('/');
+    let directory = '';
+    let sha = this.rootSha;
+    for (let index = 0; ; index += 1) {
+      await this.list(directory, sha);
+      const current = parts.slice(0, index + 1).join('/');
+      const entry = this.entries.get(current);
+      if (!entry || index === parts.length - 1) return entry;
+      if (entry.kind !== 'tree' || entry.type === 'commit') return undefined;
+      directory = current;
+      sha = entry.sha;
+    }
+  }
 }
 
 function contained(root: string, target: string): boolean {
@@ -231,7 +299,7 @@ class Materializer {
     private readonly reads: SnapshotReads,
     private readonly signal: AbortSignal | undefined,
     private readonly active: () => void,
-    private readonly entries: Map<string, TreeEntry>,
+    private readonly tree: Tree,
   ) {}
 
   private path(path: string): string {
@@ -241,12 +309,22 @@ class Materializer {
   }
 
   private async bytes(entry: TreeEntry): Promise<Uint8Array> {
+    if ((entry.size ?? Infinity) > MAX_BLOB_BYTES) throw new Unavailable();
     this.active();
     const result = await this.reads.readBlob(this.repository, entry.sha, this.signal);
     this.active();
-    if (result.kind !== 'available' || result.value.byteLength > MAX_BLOB_BYTES)
+    if (result.kind !== 'available' || result.value.byteLength !== entry.size)
       throw new Unavailable();
     return result.value;
+  }
+
+  /**
+   * A file past its reader's limit is replaced, unfetched, by a placeholder one byte longer than
+   * that limit. C1/C2 stop reading there and report their own limit; the bytes are never decoded.
+   */
+  private async payload(entry: TreeEntry, limit: number): Promise<Uint8Array> {
+    if ((entry.size ?? Infinity) > limit) return new Uint8Array(limit + 1);
+    return this.bytes(entry);
   }
 
   private async linkTarget(entry: TreeEntry): Promise<string> {
@@ -255,7 +333,7 @@ class Materializer {
 
   private async parents(path: string): Promise<void> {
     for (let parent = dirname(path); parent !== '.'; parent = dirname(parent)) {
-      const entry = this.entries.get(parent);
+      const entry = this.tree.entries.get(parent);
       if (!entry || entry.kind !== 'tree') throw new Unavailable();
       await fs.mkdir(this.path(parent), { recursive: true, mode: 0o700 });
     }
@@ -264,9 +342,9 @@ class Materializer {
   async materialize(
     path: string,
     content: 'payload' | 'placeholder' = 'placeholder',
-    linkTarget?: string,
+    options: Readonly<{ linkTarget?: string; limit?: number }> = {},
   ): Promise<boolean> {
-    const entry = this.entries.get(path);
+    const entry = await this.tree.get(path);
     if (!entry) return false;
     await this.parents(path);
     const destination = this.path(path);
@@ -277,13 +355,29 @@ class Materializer {
     if (!(await missing(destination)) && !(entry.kind === 'file' && content === 'payload'))
       return true;
     if (entry.kind === 'link') {
-      const target = content === 'payload' ? (linkTarget ?? (await this.linkTarget(entry))) : '.';
+      const target =
+        content === 'payload' ? (options.linkTarget ?? (await this.linkTarget(entry))) : '.';
       await fs.symlink(target, destination);
       return true;
     }
-    const bytes = content === 'payload' ? await this.bytes(entry) : new Uint8Array();
+    const bytes =
+      content === 'payload'
+        ? await this.payload(entry, options.limit ?? MAX_SOURCE_FILE_BYTES)
+        : new Uint8Array();
     await fs.writeFile(destination, bytes, { mode: entry.mode === '100755' ? 0o700 : 0o600 });
     return true;
+  }
+
+  /** Stops at the first link or file prefix so C2 sees the same blocking entry a checkout has. */
+  async materializePrefixes(path: string): Promise<void> {
+    const parts = path.split('/');
+    for (let index = 1; index <= parts.length; index += 1) {
+      const current = parts.slice(0, index).join('/');
+      const entry = await this.tree.get(current);
+      if (!entry) return;
+      await this.materialize(current);
+      if (entry.kind !== 'tree') return;
+    }
   }
 
   async materializeConfig(path = CONFIG_PATH, seen = new Set<string>()): Promise<void> {
@@ -292,11 +386,11 @@ class Materializer {
     const parts = path.split('/');
     for (let index = 0; index < parts.length; index += 1) {
       const current = parts.slice(0, index + 1).join('/');
-      const entry = this.entries.get(current);
+      const entry = await this.tree.get(current);
       if (!entry) return;
       if (entry.kind === 'link') {
         const target = await this.linkTarget(entry);
-        await this.materialize(current, 'payload', target);
+        await this.materialize(current, 'payload', { linkTarget: target });
         const resolved = targetPath(current, target);
         if (!resolved) return;
         const suffix = parts.slice(index + 1).join('/');
@@ -305,13 +399,14 @@ class Materializer {
       await this.materialize(
         current,
         entry.kind === 'file' && index === parts.length - 1 ? 'payload' : 'placeholder',
+        { limit: MAX_CONFIG_BYTES },
       );
     }
   }
 }
 
-function inventory(entries: Map<string, TreeEntry>): readonly string[] {
-  return [...entries.values()]
+function inventory(tree: Tree): readonly string[] {
+  return [...tree.entries.values()]
     .filter((entry) => entry.kind === 'file' || entry.kind === 'link')
     .map((entry) => entry.path)
     .sort();
@@ -336,6 +431,7 @@ export async function withTrustedSnapshot<T>(
   use: (snapshot: TrustedSnapshot) => Promise<T>,
 ): Promise<SnapshotResult<T>> {
   let root: string | undefined;
+  let callbackFailure: { error: unknown } | undefined;
   const active = () => {
     if (request.signal?.aborted || request.isCurrent?.() === false) throw new Unavailable();
   };
@@ -362,14 +458,11 @@ export async function withTrustedSnapshot<T>(
     )
       throw new Unavailable();
     const revision = commit.value.sha.toLowerCase();
-    const tree = await request.reads.readTree(
-      request.repository,
+    const tree = new Tree(
       commit.value.treeSha.toLowerCase(),
-      request.signal,
+      (sha) => request.reads.readTree(request.repository, sha, request.signal),
+      active,
     );
-    active();
-    if (tree.kind !== 'available') throw new Unavailable();
-    const entries = treeIndex(tree.value);
     root = await (request.temporaryRoot?.() ?? fs.mkdtemp(join(tmpdir(), 'review-snapshot-')));
     if (!root) throw new Unavailable();
     const snapshotRoot = root;
@@ -379,14 +472,13 @@ export async function withTrustedSnapshot<T>(
       request.reads,
       request.signal,
       active,
-      entries,
+      tree,
     );
     await materializer.materializeConfig();
     active();
     const config = await loadTrustedReviewConfig(snapshotRoot);
     active();
     if (!config.ok) return { kind: 'invalid-config', config };
-    const files = inventory(entries);
     const snapshot: TrustedSnapshot = {
       contextRevision: Object.freeze({ repository: request.repository, sha: revision }),
       visibility: repository.value.visibility,
@@ -397,8 +489,9 @@ export async function withTrustedSnapshot<T>(
             ...config.config.context.sourceRoots,
             ...config.config.context.excerptFiles,
           ])
-            await materializer.materialize(path);
+            await materializer.materializePrefixes(path);
           active();
+          const files = inventory(tree);
           const input = {
             config,
             checkoutRoot: snapshotRoot,
@@ -408,7 +501,8 @@ export async function withTrustedSnapshot<T>(
           };
           const validation = await validateSourceContextInput(input);
           if (!validation.ok || validation.state !== 'ready') return collectSourceContext(input);
-          for (const path of validation.files) await materializer.materialize(path, 'payload');
+          for (const path of validation.files)
+            await materializer.materialize(path, 'payload', { limit: MAX_SOURCE_FILE_BYTES });
           active();
           return await collectSourceContext({ ...input, trackedFiles: trackedFiles(files) });
         } catch (error) {
@@ -417,10 +511,15 @@ export async function withTrustedSnapshot<T>(
         }
       },
     };
-    const value = await use(Object.freeze(snapshot));
+    const value = await use(Object.freeze(snapshot)).catch((error: unknown) => {
+      if (!(error instanceof Unavailable)) callbackFailure = { error };
+      throw error;
+    });
     active();
     return { kind: 'ready', value };
   } catch {
+    // Callback defects stay visible to the caller; only snapshot failures become unavailable.
+    if (callbackFailure) throw callbackFailure.error;
     return { kind: 'unavailable' };
   } finally {
     if (root) await fs.rm(root, { recursive: true, force: true });

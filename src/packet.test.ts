@@ -79,3 +79,18 @@ test('never turns an unavailable collector into an empty complete packet', async
   });
   expect(result).toEqual({ kind: 'incomplete' });
 });
+
+test('keeps the computed result when closing the session fails', async () => {
+  const result = await assembleReviewPacket({
+    trusted,
+    isCurrent: () => true,
+    openSession: async () => ({
+      close: () => {
+        throw new Error('close failed');
+      },
+    }),
+    collectors: { npm: async () => null, actions: collector('actions'), uv: collector('uv') },
+    inventorySource: null,
+  });
+  expect(result).toEqual({ kind: 'incomplete' });
+});

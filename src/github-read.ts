@@ -135,7 +135,7 @@ function parseLimits(value: unknown): GithubReadLimits | null {
 function repoPath(repo: RepositoryIdentity): string {
   return `/repos/${encodeURIComponent(repo.owner)}/${encodeURIComponent(repo.name)}`;
 }
-function httpReason(response: Response, body: unknown): EvidenceReason {
+export function httpReason(response: Response, body: unknown): EvidenceReason {
   const remaining = response.headers.get('x-ratelimit-remaining');
   const retry = response.headers.get('retry-after');
   if (

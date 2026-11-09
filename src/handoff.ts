@@ -42,21 +42,36 @@ export async function createReviewHandoff(
   };
 }
 
+export type RehearsalTrace = Readonly<{
+  kind: ReviewOutcomeKind;
+  identity: OwnedClaim['identity'];
+  generation: number;
+  status: ReviewHandoff['status'];
+  comment: ReviewHandoff['comment'];
+}>;
 export type RehearsalSink = Readonly<{
   record: (handoff: ReviewHandoff) => boolean;
-  traces: () => readonly Readonly<{ kind: ReviewOutcomeKind; status: string; comment: string }>[];
+  traces: () => readonly RehearsalTrace[];
 }>;
 
 /** A bounded local sink deliberately rejects every usable App token and has no client fallback. */
 export function createRehearsalSink(appToken: string | null): RehearsalSink | null {
   if (appToken) return null;
-  const traces: { kind: ReviewOutcomeKind; status: string; comment: string }[] = [];
+  const traces: RehearsalTrace[] = [];
   return Object.freeze({
     record: (handoff) => {
       if (traces.length >= 32) return false;
-      traces.push({ kind: handoff.kind, status: handoff.status, comment: handoff.comment });
+      traces.push(
+        Object.freeze({
+          kind: handoff.kind,
+          identity: Object.freeze([...handoff.identity]) as OwnedClaim['identity'],
+          generation: handoff.generation,
+          status: handoff.status,
+          comment: handoff.comment,
+        }),
+      );
       return true;
     },
-    traces: () => Object.freeze(traces.map((trace) => Object.freeze({ ...trace }))),
+    traces: () => Object.freeze([...traces]),
   });
 }

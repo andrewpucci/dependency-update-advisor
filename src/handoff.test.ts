@@ -24,5 +24,13 @@ test('records only bounded redacted intent and rejects a lost claim', async () =
   const sink = createRehearsalSink(null);
   if (!sink) throw new Error('expected sink');
   expect(sink.record(result.handoff)).toBe(true);
-  expect(sink.traces()).toEqual([{ kind: 'complete', status: 'success', comment: 'eligible' }]);
+  expect(sink.traces()).toEqual([
+    {
+      kind: 'complete',
+      identity: [101, 301, 402, 1, 42, 'b'.repeat(40)],
+      generation: 2,
+      status: 'success',
+      comment: 'eligible',
+    },
+  ]);
 });

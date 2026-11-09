@@ -82,6 +82,10 @@ export async function assembleReviewPacket(
   } catch {
     return { kind: 'internal-failure' };
   } finally {
-    session?.close();
+    try {
+      session?.close();
+    } catch {
+      // A close failure cannot revive or replace the result already computed.
+    }
   }
 }

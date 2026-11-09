@@ -1,4 +1,6 @@
 import { positiveId, record, type RepositoryIdentity, type WorkflowIdentity } from './event.js';
+import { httpReason } from './github-read.js';
+import type { EvidenceReason } from './schema.js';
 
 export const W2_GITHUB_LIMITS = Object.freeze({
   maxRequests: 512,
@@ -18,7 +20,7 @@ export type Runtime = Readonly<{
 }>;
 export type GithubRead =
   | Readonly<{ kind: 'available'; value: unknown }>
-  | Readonly<{ kind: 'unavailable'; reason: 'budget' | 'rate_limit' | 'timeout' | 'unknown' }>;
+  | Readonly<{ kind: 'unavailable'; reason: EvidenceReason }>;
 export type GithubTransport = Readonly<{
   readWorkflow: (repository: RepositoryIdentity, file: string) => Promise<GithubRead>;
   readRepository: (repository: RepositoryIdentity, signal?: AbortSignal) => Promise<GithubRead>;
@@ -100,10 +102,45 @@ function route(...segments: string[]): string {
   );
 }
 
-function unavailable(response: Response): GithubRead {
-  if (response.status === 403 && response.headers.get('x-ratelimit-remaining') === '0')
-    return { kind: 'unavailable', reason: 'rate_limit' };
-  return { kind: 'unavailable', reason: 'unknown' };
+class BodyAborted extends Error {}
+
+/** Reads at most `limit` bytes; `body` is null as soon as the response would exceed it. */
+async function boundedBody(
+  response: Response,
+  limit: number,
+  signal: AbortSignal,
+): Promise<{ body: Uint8Array | null; size: number }> {
+  if (!response.body) return { body: new Uint8Array(), size: 0 };
+  const reader = response.body.getReader();
+  let stop = () => {};
+  const aborted = new Promise<never>((_resolve, reject) => {
+    stop = () => reject(new BodyAborted());
+    if (signal.aborted) stop();
+    else signal.addEventListener('abort', stop, { once: true });
+  });
+  aborted.catch(() => {});
+  const chunks: Uint8Array[] = [];
+  let size = 0;
+  try {
+    for (;;) {
+      const { done, value } = await Promise.race([reader.read(), aborted]);
+      if (done) return { body: Buffer.concat(chunks), size };
+      size += value.byteLength;
+      if (size > limit) return { body: null, size };
+      chunks.push(value);
+    }
+  } finally {
+    signal.removeEventListener('abort', stop);
+    void reader.cancel().catch(() => {});
+  }
+}
+
+function json(body: Uint8Array): unknown {
+  try {
+    return JSON.parse(new TextDecoder('utf-8', { fatal: true }).decode(body));
+  } catch {
+    return undefined;
+  }
 }
 
 export function createGithubTransport(dependencies: TransportDependencies): GithubTransport {
@@ -121,7 +158,11 @@ export function createGithubTransport(dependencies: TransportDependencies): Gith
     const controller = new AbortController();
     const cancel = () => controller.abort();
     signal?.addEventListener('abort', cancel, { once: true });
-    const timer = setTimeout(() => controller.abort(), W2_GITHUB_LIMITS.requestTimeoutMs);
+    const remaining = W2_GITHUB_LIMITS.totalTimeoutMs - (dependencies.now() - started);
+    const timer = setTimeout(
+      () => controller.abort(),
+      Math.min(W2_GITHUB_LIMITS.requestTimeoutMs, remaining),
+    );
     try {
       const response = await dependencies.fetch(url, {
         method: 'GET',
@@ -133,20 +174,20 @@ export function createGithubTransport(dependencies: TransportDependencies): Gith
         },
         signal: controller.signal,
       });
-      if (response.status !== 200) return unavailable(response);
-      const text = await response.text();
-      const responseBytes = new TextEncoder().encode(text).byteLength;
-      bytes += responseBytes;
-      if (
-        responseBytes > W2_GITHUB_LIMITS.maxResponseBytes ||
-        bytes > W2_GITHUB_LIMITS.maxTotalBytes
-      )
-        return { kind: 'unavailable', reason: 'budget' };
-      try {
-        return { kind: 'available', value: JSON.parse(text) };
-      } catch {
-        return { kind: 'unavailable', reason: 'unknown' };
-      }
+      const { body, size } = await boundedBody(
+        response,
+        Math.min(W2_GITHUB_LIMITS.maxResponseBytes, W2_GITHUB_LIMITS.maxTotalBytes - bytes),
+        controller.signal,
+      );
+      bytes += size;
+      if (!body) return { kind: 'unavailable', reason: 'budget' };
+      const value = json(body);
+      // Error bodies feed github-read's classifier so permission, missing, and rate limits stay distinct.
+      if (response.status !== 200)
+        return { kind: 'unavailable', reason: httpReason(response, value ?? null) };
+      return value === undefined
+        ? { kind: 'unavailable', reason: 'malformed' }
+        : { kind: 'available', value };
     } catch {
       return { kind: 'unavailable', reason: controller.signal.aborted ? 'timeout' : 'unknown' };
     } finally {
@@ -163,10 +204,7 @@ export function createGithubTransport(dependencies: TransportDependencies): Gith
     readCommit: (repository, ref, signal) =>
       read(route('repos', repository.owner, repository.name, 'commits', ref), signal),
     readTree: (repository, sha, signal) =>
-      read(
-        route('repos', repository.owner, repository.name, 'git', 'trees', sha) + '?recursive=1',
-        signal,
-      ),
+      read(route('repos', repository.owner, repository.name, 'git', 'trees', sha), signal),
     readBlob: (repository, sha, signal) =>
       read(route('repos', repository.owner, repository.name, 'git', 'blobs', sha), signal),
   });
