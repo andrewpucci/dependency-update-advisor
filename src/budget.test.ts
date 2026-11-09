@@ -1,7 +1,7 @@
 import { expect, test } from 'vite-plus/test';
 import { W2_ALLOCATION, W2_ENVELOPE } from './budget.js';
 
-test('records the approved W2 envelope', () => {
+test('records the W2 evidence envelope', () => {
   expect(W2_ENVELOPE).toEqual({
     maxRequests: 512,
     maxResponseBytes: 1024 * 1024,
@@ -11,7 +11,7 @@ test('records the approved W2 envelope', () => {
   });
 });
 
-test('splits the envelope as approved, with nothing unallocated or over-allocated', () => {
+test('splits the envelope with nothing unallocated or over-allocated', () => {
   const MiB = 1024 * 1024;
   expect(W2_ALLOCATION).toEqual({
     transport: { maxRequests: 64, maxTotalBytes: 4 * MiB },

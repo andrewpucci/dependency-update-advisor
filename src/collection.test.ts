@@ -99,7 +99,7 @@ test("carries each collector's own not-applicable proof, with no shared source",
   expect(result.packet.sources.some((source) => source.id.startsWith('uv:source:'))).toBe(true);
 });
 
-test('gives the collectors the snapshot revision, exact roots, and the approved limits', async () => {
+test('gives the collectors the snapshot revision, exact roots, and the configured limits', async () => {
   vi.mocked(npmModule.collectNpmInventory).mockClear();
   vi.mocked(uvModule.collectUvMetadata).mockClear();
   const fixture = uvMetadataScenario('empty');
@@ -389,7 +389,7 @@ test.each([
   ['the time left before the deadline', 100_000, 40_000, 60_000],
   ['the full 240,000 ms when more than that remains', 900_000, 0, 240_000],
 ])(
-  'limits registry enrichment to %s and the approved registry allocation',
+  'limits registry enrichment to %s and the registry allocation',
   async (_label, deadline, now, expected) => {
     const fixture = npmScenario(2, false, 'empty', true);
     const opened = await openEvidenceSession({

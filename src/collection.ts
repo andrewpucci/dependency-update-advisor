@@ -10,7 +10,7 @@ import { createGithubReadSession, type GithubReadSession } from './github-read.j
 import type { Ecosystem, EvidenceReason } from './schema.js';
 
 /**
- * Reader limits inside the approved envelope split (see `W2_ALLOCATION`); every reader's time is
+ * Reader limits inside the envelope split (see `W2_ALLOCATION`); every reader's time is
  * what remains of the 240,000 ms total. Parse and retention limits reuse the values the reader
  * integration tests use.
  */
@@ -98,7 +98,7 @@ type Collector = (session: GithubReadSession) => Promise<Fragment | Unavailable>
 const remaining = (input: Pick<CollectionInput, 'now' | 'deadline'>) =>
   Math.max(1, Math.floor(input.deadline - input.now()));
 
-/** Opens the owner-bound GitHub evidence session inside the approved envelope. */
+/** Opens the owner-bound GitHub evidence session inside the envelope. */
 export async function openEvidenceSession(
   input: Pick<CollectionInput, 'binding' | 'now' | 'deadline'> &
     Readonly<{ fetch: (url: string, init: RequestInit) => Promise<Response> }>,
@@ -152,7 +152,7 @@ function gapFragment(
 }
 
 /**
- * Adapts the approved N1/N2, X1, and U2 collectors to T4 fragments. A collector that produces no
+ * Adapts the N1/N2, X1, and U2 collectors to T4 fragments. A collector that produces no
  * usable inventory yields `unavailable`, which assembly reports as incomplete; it is never mapped
  * to an empty or complete fragment.
  */

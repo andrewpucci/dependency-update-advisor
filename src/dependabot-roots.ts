@@ -3,7 +3,7 @@ import type { RepositoryIdentity } from './event.js';
 import { preflight, YamlFailure } from './evidence/actions-yaml.js';
 import type { EvidenceReason } from './schema.js';
 
-/** Approved limits for C4, 2026-11-08. */
+/** Bounds on the Dependabot configuration file and the roots read from it. */
 export const DEPENDABOT_ROOT_LIMITS = Object.freeze({
   maxFileBytes: 65_536,
   maxYamlNodes: 20_000,

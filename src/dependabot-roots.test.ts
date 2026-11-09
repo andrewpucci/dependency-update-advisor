@@ -214,7 +214,7 @@ test('returns a deeply frozen result', () => {
   expect(Object.isFrozen(result.npm.roots)).toBe(true);
 });
 
-test('exposes the approved limits', () => {
+test('exposes the parsing limits', () => {
   expect(DEPENDABOT_ROOT_LIMITS).toEqual({
     maxFileBytes: 65_536,
     maxYamlNodes: 20_000,

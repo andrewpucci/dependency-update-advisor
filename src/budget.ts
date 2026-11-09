@@ -1,6 +1,6 @@
 const MiB = 1024 * 1024;
 
-/** The approved W2 pre-analysis evidence envelope. Time is shared; every reader gets what remains. */
+/** Bounds for all pre-analysis evidence reads. Time is shared; every reader gets what remains. */
 export const W2_ENVELOPE = Object.freeze({
   maxRequests: 512,
   maxResponseBytes: MiB,
@@ -10,7 +10,7 @@ export const W2_ENVELOPE = Object.freeze({
 });
 
 /**
- * Approved split of the envelope, 2026-11-09. A larger pull request exhausts a share and ends
+ * How the envelope is divided between readers. A larger pull request exhausts a share and ends
  * incomplete with a `budget` reason; no reader borrows from another.
  */
 export const W2_ALLOCATION = Object.freeze({
