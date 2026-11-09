@@ -1,4 +1,5 @@
 import { Composer, Parser, visit, isMap, isSeq } from 'yaml';
+import type { RepositoryIdentity } from './event.js';
 import { preflight, YamlFailure } from './evidence/actions-yaml.js';
 import type { EvidenceReason } from './schema.js';
 
@@ -13,6 +14,8 @@ export const DEPENDABOT_ROOT_LIMITS = Object.freeze({
 });
 
 const MAX_PATH_BYTES = 1_024;
+
+type Revision = Readonly<{ repository: RepositoryIdentity; sha: string }>;
 
 export type EcosystemRoots =
   | Readonly<{ kind: 'roots'; roots: readonly string[] }>
@@ -133,4 +136,30 @@ export function parseDependabotRoots(bytes: Uint8Array): DependabotRoots {
     const reason = error instanceof YamlFailure ? error.reason : 'malformed';
     return Object.freeze({ kind: 'unavailable', reason });
   }
+}
+
+/** The snapshot's result: parsed roots attributed to its revision, confirmed absence, or a failure. */
+export type DependabotRootsOutcome =
+  | Readonly<{ kind: 'roots'; revision: Revision; npm: EcosystemRoots; uv: EcosystemRoots }>
+  | Readonly<{ kind: 'absent'; revision: Revision }>
+  | Readonly<{ kind: 'unavailable'; reason: EvidenceReason }>;
+export type CollectorRoots =
+  | Readonly<{ kind: 'roots'; roots: readonly string[]; configRevision: Revision }>
+  | Readonly<{ kind: 'unavailable'; reason: EvidenceReason }>;
+
+/**
+ * What a collector may be given. Absence or an unconfigured ecosystem passes no configured roots,
+ * so the collector reports its own ownership gaps; a failure never becomes an empty list.
+ */
+export function collectorRoots(
+  outcome: DependabotRootsOutcome,
+  ecosystem: Ecosystem,
+): CollectorRoots {
+  if (outcome.kind === 'unavailable') return outcome;
+  if (outcome.kind === 'absent')
+    return { kind: 'roots', roots: [], configRevision: outcome.revision };
+  const configured = outcome[ecosystem];
+  return configured.kind === 'roots'
+    ? { kind: 'roots', roots: configured.roots, configRevision: outcome.revision }
+    : configured;
 }

@@ -570,5 +570,228 @@ test('rejects a truncated directory listing from GitHub', async () => {
   );
   await expect(reader.readTree(repository, treeRevision)).resolves.toEqual({
     kind: 'unavailable',
+    reason: 'truncated',
   });
+});
+
+const dependabotBlob = '4'.repeat(40);
+const dependabotFile = [
+  'version: 2',
+  'updates:',
+  '  - package-ecosystem: npm',
+  '    directory: "/web"',
+  '  - package-ecosystem: uv',
+  '    directories: ["/py", "/"]',
+  '',
+].join('\n');
+const githubTree = entry('.github', '040000', 'e'.repeat(40), 'tree');
+
+function dependabotReader(
+  files: readonly SnapshotTreeEntry[],
+  blobs: Readonly<Record<string, string>> = {},
+) {
+  return reads([githubTree, ...files], {
+    [dependabotBlob]: dependabotFile,
+    [configBlob]: '{"version":1}',
+    ...blobs,
+  });
+}
+
+const roots = (reader: SnapshotReads, options: { isCurrent?: () => boolean } = {}) =>
+  withTrustedSnapshot(
+    { repository, reads: reader, temporaryRoot: tempRoot(), ...options },
+    (snapshot) => snapshot.dependabotRoots(),
+  );
+
+test.each(['dependabot.yml', 'dependabot.yaml'])(
+  'reads exact roots from .github/%s at the pinned revision',
+  async (name) => {
+    const reader = dependabotReader([entry(`.github/${name}`, '100644', dependabotBlob)]);
+    const result = await withTrustedSnapshot(
+      { repository, reads: reader, temporaryRoot: tempRoot() },
+      async (snapshot) => ({
+        revision: snapshot.contextRevision,
+        roots: await snapshot.dependabotRoots(),
+      }),
+    );
+    expect(result).toEqual({
+      kind: 'ready',
+      value: {
+        revision: { repository, sha: revision },
+        roots: {
+          kind: 'roots',
+          revision: { repository, sha: revision },
+          npm: { kind: 'roots', roots: ['web'] },
+          uv: { kind: 'roots', roots: ['.', 'py'] },
+        },
+      },
+    });
+    expect(reader.calls).toEqual([
+      'repository:101',
+      'commit:main',
+      `tree:${treeRevision}`,
+      `tree:${'e'.repeat(40)}`,
+      `blob:${dependabotBlob}`,
+    ]);
+  },
+);
+
+test.each([
+  ['no Dependabot file', [entry('.github/other.yml', '100644', configBlob)]],
+  ['no .github directory', []],
+])('reports confirmed absence for %s without reading a blob', async (_label, files) => {
+  const reader = files.length ? dependabotReader(files) : reads([], {});
+  const result = await roots(reader);
+  expect(result).toEqual({
+    kind: 'ready',
+    value: { kind: 'absent', revision: { repository, sha: revision } },
+  });
+  expect(reader.calls.filter((call) => call.startsWith('blob:'))).toEqual([]);
+});
+
+test.each([
+  [
+    'both names',
+    [
+      entry('.github/dependabot.yml', '100644', dependabotBlob),
+      entry('.github/dependabot.yaml', '100644', dependabotBlob),
+    ],
+  ],
+  ['a symlink', [entry('.github/dependabot.yml', '120000', dependabotBlob)]],
+  ['a directory', [entry('.github/dependabot.yml', '040000', '5'.repeat(40), 'tree')]],
+  ['a submodule', [entry('.github/dependabot.yml', '160000', '5'.repeat(40), 'commit')]],
+])('reports %s as unsupported without reading a blob', async (_label, files) => {
+  const reader = dependabotReader(files);
+  await expect(roots(reader)).resolves.toEqual({
+    kind: 'ready',
+    value: { kind: 'unavailable', reason: 'unsupported' },
+  });
+  expect(reader.calls.filter((call) => call.startsWith('blob:'))).toEqual([]);
+});
+
+test('reports a .github submodule as unsupported, never absent', async () => {
+  const reader = reads([entry('.github', '160000', 'e'.repeat(40), 'commit')], {});
+  await expect(roots(reader)).resolves.toEqual({
+    kind: 'ready',
+    value: { kind: 'unavailable', reason: 'unsupported' },
+  });
+});
+
+test('rejects an oversized file from its tree size without fetching it', async () => {
+  const reader = dependabotReader([
+    { ...entry('.github/dependabot.yml', '100644', dependabotBlob), size: 65_537 },
+  ]);
+  await expect(roots(reader)).resolves.toEqual({
+    kind: 'ready',
+    value: { kind: 'unavailable', reason: 'budget' },
+  });
+  expect(reader.calls).not.toContain(`blob:${dependabotBlob}`);
+});
+
+test('keeps a failed read distinct from absence and from an empty root list', async () => {
+  const reader = dependabotReader([entry('.github/dependabot.yml', '100644', dependabotBlob)]);
+  const base = reader.readBlob;
+  reader.readBlob = async (repo, sha, signal) =>
+    sha === dependabotBlob
+      ? { kind: 'unavailable', reason: 'rate_limit' }
+      : base(repo, sha, signal);
+  await expect(roots(reader)).resolves.toEqual({
+    kind: 'ready',
+    value: { kind: 'unavailable', reason: 'rate_limit' },
+  });
+});
+
+test('carries the transport reason of a failed blob read', async () => {
+  const fetch = vi.fn(async (url: string) => {
+    if (url.endsWith('/commits/main'))
+      return new Response(
+        JSON.stringify({ sha: revision, commit: { tree: { sha: treeRevision } } }),
+      );
+    if (url.endsWith(`/git/trees/${treeRevision}`))
+      return new Response(
+        JSON.stringify({
+          truncated: false,
+          tree: [{ path: '.github', mode: '040000', type: 'tree', sha: 'e'.repeat(40) }],
+        }),
+      );
+    if (url.endsWith(`/git/trees/${'e'.repeat(40)}`))
+      return new Response(
+        JSON.stringify({
+          truncated: false,
+          tree: [
+            {
+              path: 'dependabot.yml',
+              mode: '100644',
+              type: 'blob',
+              sha: dependabotBlob,
+              size: 10,
+            },
+          ],
+        }),
+      );
+    if (url.includes('/git/blobs/'))
+      return new Response(JSON.stringify({ message: 'Resource not accessible by integration' }), {
+        status: 403,
+      });
+    return new Response(JSON.stringify({ private: false, default_branch: 'main' }));
+  });
+  const reader = createGithubSnapshotReads(
+    createGithubTransport({ token: 'read-token', now: () => 0, fetch }),
+  );
+  await expect(roots(reader)).resolves.toEqual({
+    kind: 'ready',
+    value: { kind: 'unavailable', reason: 'permission' },
+  });
+});
+
+test('reports bytes that disagree with the listed size as unavailable', async () => {
+  const reader = dependabotReader([
+    { ...entry('.github/dependabot.yml', '100644', dependabotBlob), size: 5 },
+  ]);
+  await expect(roots(reader)).resolves.toEqual({
+    kind: 'ready',
+    value: { kind: 'unavailable', reason: 'malformed' },
+  });
+});
+
+test('reports unparseable configuration as unavailable, never as empty roots', async () => {
+  const reader = dependabotReader([entry('.github/dependabot.yml', '100644', dependabotBlob)], {
+    [dependabotBlob]: 'version: 1\nupdates: []\n',
+  });
+  await expect(roots(reader)).resolves.toEqual({
+    kind: 'ready',
+    value: { kind: 'unavailable', reason: 'malformed' },
+  });
+});
+
+test('ends the snapshot as unavailable when the owner goes stale during the read', async () => {
+  const reader = dependabotReader([entry('.github/dependabot.yml', '100644', dependabotBlob)]);
+  let current = true;
+  const base = reader.readBlob;
+  reader.readBlob = async (repo, sha, signal) => {
+    const result = await base(repo, sha, signal);
+    if (sha === dependabotBlob) current = false;
+    return result;
+  };
+  let continued = false;
+  await expect(
+    withTrustedSnapshot(
+      { repository, reads: reader, temporaryRoot: tempRoot(), isCurrent: () => current },
+      async (snapshot) => {
+        await snapshot.dependabotRoots();
+        continued = true;
+      },
+    ),
+  ).resolves.toEqual({ kind: 'unavailable' });
+  expect(continued).toBe(false);
+});
+
+test('reads Dependabot roots only from the pinned default-branch tree', async () => {
+  const reader = dependabotReader([entry('.github/dependabot.yml', '100644', dependabotBlob)]);
+  await roots(reader);
+  expect(reader.calls.filter((call) => call.startsWith('tree:'))).toEqual([
+    `tree:${treeRevision}`,
+    `tree:${'e'.repeat(40)}`,
+  ]);
+  expect(reader.calls).toContain('commit:main');
 });

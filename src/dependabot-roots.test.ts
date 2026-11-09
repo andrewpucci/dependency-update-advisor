@@ -1,5 +1,9 @@
 import { expect, test } from 'vite-plus/test';
-import { DEPENDABOT_ROOT_LIMITS, parseDependabotRoots } from './dependabot-roots.js';
+import {
+  collectorRoots,
+  DEPENDABOT_ROOT_LIMITS,
+  parseDependabotRoots,
+} from './dependabot-roots.js';
 
 const encode = (text: string) => new TextEncoder().encode(text);
 const sentinel = 'SENTINEL-IGNORED-VALUE';
@@ -217,5 +221,63 @@ test('exposes the approved limits', () => {
     maxAliasExpansions: 0,
     maxUpdates: 256,
     maxRoots: 256,
+  });
+});
+
+const revision = { repository: { id: 1, owner: 'example', name: 'consumer' }, sha: 'a'.repeat(40) };
+
+test('hands exact roots and the snapshot revision to a collector', () => {
+  const outcome = {
+    kind: 'roots',
+    revision,
+    npm: { kind: 'roots', roots: ['web'] },
+    uv: { kind: 'roots', roots: ['.'] },
+  } as const;
+  expect(collectorRoots(outcome, 'npm')).toEqual({
+    kind: 'roots',
+    roots: ['web'],
+    configRevision: revision,
+  });
+  expect(collectorRoots(outcome, 'uv')).toEqual({
+    kind: 'roots',
+    roots: ['.'],
+    configRevision: revision,
+  });
+});
+
+test('passes no configured roots when the file is absent or the ecosystem is unconfigured', () => {
+  expect(collectorRoots({ kind: 'absent', revision }, 'npm')).toEqual({
+    kind: 'roots',
+    roots: [],
+    configRevision: revision,
+  });
+  expect(
+    collectorRoots(
+      {
+        kind: 'roots',
+        revision,
+        npm: { kind: 'roots', roots: [] },
+        uv: { kind: 'roots', roots: [] },
+      },
+      'uv',
+    ),
+  ).toEqual({ kind: 'roots', roots: [], configRevision: revision });
+});
+
+test('reports unavailable coverage instead of an empty root list for a failed ecosystem or file', () => {
+  expect(
+    collectorRoots(
+      {
+        kind: 'roots',
+        revision,
+        npm: { kind: 'unavailable', reason: 'unsupported' },
+        uv: { kind: 'roots', roots: ['py'] },
+      },
+      'npm',
+    ),
+  ).toEqual({ kind: 'unavailable', reason: 'unsupported' });
+  expect(collectorRoots({ kind: 'unavailable', reason: 'rate_limit' }, 'uv')).toEqual({
+    kind: 'unavailable',
+    reason: 'rate_limit',
   });
 });

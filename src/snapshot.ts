@@ -9,13 +9,21 @@ import {
   type SourceContextResult,
 } from './context.js';
 import { record, type RepositoryIdentity } from './event.js';
+import {
+  DEPENDABOT_ROOT_LIMITS,
+  parseDependabotRoots,
+  type DependabotRootsOutcome,
+} from './dependabot-roots.js';
 import type { GithubRead, GithubTransport } from './runtime.js';
+import type { EvidenceReason } from './schema.js';
 
 const MAX_BLOB_BYTES = 1024 * 1024;
 const MAX_TREE_ENTRIES = 10_000;
 const CONFIG_PATH = '.github/dependabot-review.json';
 
-type SnapshotRead<T> = { kind: 'available'; value: T } | { kind: 'unavailable' };
+type SnapshotRead<T> =
+  | { kind: 'available'; value: T }
+  | { kind: 'unavailable'; reason?: EvidenceReason };
 type SnapshotRepository = { visibility: 'public' | 'private'; defaultBranch: string };
 type SnapshotCommit = { sha: string; treeSha: string };
 /** One direct child of a listed directory; `path` is its name within that directory. */
@@ -55,6 +63,7 @@ export type TrustedSnapshot = Readonly<{
   collectContext: (
     dependencies: readonly { id: string; name: string }[],
   ) => Promise<SourceContextResult>;
+  dependabotRoots: () => Promise<DependabotRootsOutcome>;
 }>;
 export type SnapshotRequest = Readonly<{
   repository: RepositoryIdentity;
@@ -70,18 +79,27 @@ export type SnapshotResult<T> =
 
 type TreeEntry = SnapshotTreeEntry & { kind: 'tree' | 'file' | 'link' };
 
-class Unavailable extends Error {}
+class Unavailable extends Error {
+  constructor(readonly reason: EvidenceReason = 'unknown') {
+    super(reason);
+  }
+}
 
 function available<T>(value: T): SnapshotRead<T> {
   return { kind: 'available', value };
 }
 
-function unavailable<T>(): SnapshotRead<T> {
-  return { kind: 'unavailable' };
+function unavailable<T>(reason?: EvidenceReason): SnapshotRead<T> {
+  return reason ? { kind: 'unavailable', reason } : { kind: 'unavailable' };
 }
 
 function rawValue(read: GithubRead): unknown | null {
   return read.kind === 'available' ? read.value : null;
+}
+
+/** A transport failure keeps its reason; a response that fails validation is malformed. */
+function readFailure<T>(read: GithubRead): SnapshotRead<T> {
+  return unavailable(read.kind === 'unavailable' ? read.reason : 'malformed');
 }
 
 function decodedBlob(value: unknown): Uint8Array | null {
@@ -101,20 +119,22 @@ function decodedBlob(value: unknown): Uint8Array | null {
 export function createGithubSnapshotReads(transport: GithubTransport): SnapshotReads {
   return {
     readRepository: async (repository, signal) => {
-      const value = rawValue(await transport.readRepository(repository, signal));
+      const read = await transport.readRepository(repository, signal);
+      const value = rawValue(read);
       if (
         !record(value, ['private', 'default_branch']) ||
         typeof value.private !== 'boolean' ||
         !validRef(value.default_branch)
       )
-        return unavailable();
+        return readFailure(read);
       return available({
         visibility: value.private ? 'private' : 'public',
         defaultBranch: value.default_branch,
       });
     },
     readCommit: async (repository, ref, signal) => {
-      const value = rawValue(await transport.readCommit(repository, ref, signal));
+      const read = await transport.readCommit(repository, ref, signal);
+      const value = rawValue(read);
       if (
         !record(value, ['sha', 'commit']) ||
         !validSha(value.sha) ||
@@ -122,20 +142,23 @@ export function createGithubSnapshotReads(transport: GithubTransport): SnapshotR
         !record(value.commit.tree, ['sha']) ||
         !validSha(value.commit.tree.sha)
       )
-        return unavailable();
+        return readFailure(read);
       return available({
         sha: value.sha.toLowerCase(),
         treeSha: value.commit.tree.sha.toLowerCase(),
       });
     },
     readTree: async (repository, sha, signal) => {
-      const value = rawValue(await transport.readTree(repository, sha, signal));
+      const read = await transport.readTree(repository, sha, signal);
+      const value = rawValue(read);
       if (
         !record(value, ['truncated', 'tree']) ||
         value.truncated !== false ||
         !Array.isArray(value.tree)
       )
-        return unavailable();
+        return record(value, ['truncated']) && value.truncated === true
+          ? unavailable('truncated')
+          : readFailure(read);
       const entries: SnapshotTreeEntry[] = [];
       for (const item of value.tree) {
         if (
@@ -145,7 +168,7 @@ export function createGithubSnapshotReads(transport: GithubTransport): SnapshotR
           typeof item.type !== 'string' ||
           typeof item.sha !== 'string'
         )
-          return unavailable();
+          return readFailure(read);
         entries.push({
           path: item.path,
           mode: item.mode,
@@ -157,8 +180,9 @@ export function createGithubSnapshotReads(transport: GithubTransport): SnapshotR
       return available(entries);
     },
     readBlob: async (repository, sha, signal) => {
-      const bytes = decodedBlob(rawValue(await transport.readBlob(repository, sha, signal)));
-      return bytes ? available(bytes) : unavailable();
+      const read = await transport.readBlob(repository, sha, signal);
+      const bytes = decodedBlob(rawValue(read));
+      return bytes ? available(bytes) : readFailure(read);
     },
   };
 }
@@ -237,7 +261,7 @@ class Tree {
     this.active();
     const result = await this.read(sha);
     this.active();
-    if (result.kind !== 'available') throw new Unavailable();
+    if (result.kind !== 'available') throw new Unavailable(result.reason);
     this.count += result.value.length;
     if (this.count > MAX_TREE_ENTRIES) throw new Unavailable();
     const names = new Set<string>();
@@ -308,13 +332,13 @@ class Materializer {
     return target;
   }
 
-  private async bytes(entry: TreeEntry): Promise<Uint8Array> {
-    if ((entry.size ?? Infinity) > MAX_BLOB_BYTES) throw new Unavailable();
+  async bytes(entry: TreeEntry): Promise<Uint8Array> {
+    if ((entry.size ?? Infinity) > MAX_BLOB_BYTES) throw new Unavailable('budget');
     this.active();
     const result = await this.reads.readBlob(this.repository, entry.sha, this.signal);
     this.active();
-    if (result.kind !== 'available' || result.value.byteLength !== entry.size)
-      throw new Unavailable();
+    if (result.kind !== 'available') throw new Unavailable(result.reason);
+    if (result.value.byteLength !== entry.size) throw new Unavailable('malformed');
     return result.value;
   }
 
@@ -418,6 +442,44 @@ function trackedFiles(files: readonly string[]): AsyncIterable<string> {
   })();
 }
 
+const DEPENDABOT_NAMES = ['dependabot.yml', 'dependabot.yaml'] as const;
+
+/**
+ * Reads the Dependabot configuration at the pinned revision. A failed read is never absence:
+ * only a listing that proves both names missing is `absent`.
+ */
+async function readDependabotRoots(
+  tree: Tree,
+  materializer: Materializer,
+  revision: ContextRevision,
+  active: () => void,
+): Promise<DependabotRootsOutcome> {
+  const unusable = (reason: EvidenceReason): DependabotRootsOutcome => ({
+    kind: 'unavailable',
+    reason,
+  });
+  try {
+    const github = await tree.get('.github');
+    if (!github) return { kind: 'absent', revision };
+    if (github.kind !== 'tree' || github.type === 'commit') return unusable('unsupported');
+    const found: TreeEntry[] = [];
+    for (const name of DEPENDABOT_NAMES) {
+      const entry = await tree.get(`.github/${name}`);
+      if (entry) found.push(entry);
+    }
+    if (found.length === 0) return { kind: 'absent', revision };
+    const [file] = found;
+    if (found.length > 1 || file.kind !== 'file') return unusable('unsupported');
+    if ((file.size ?? Infinity) > DEPENDABOT_ROOT_LIMITS.maxFileBytes) return unusable('budget');
+    const parsed = parseDependabotRoots(await materializer.bytes(file));
+    return parsed.kind === 'roots' ? { ...parsed, revision } : parsed;
+  } catch (error) {
+    // Cancellation and staleness end the snapshot; any other failure is an explicit reason.
+    active();
+    return unusable(error instanceof Unavailable ? error.reason : 'unknown');
+  }
+}
+
 function sourceFailure(): SourceContextResult {
   return {
     ok: false,
@@ -483,6 +545,8 @@ export async function withTrustedSnapshot<T>(
       contextRevision: Object.freeze({ repository: request.repository, sha: revision }),
       visibility: repository.value.visibility,
       config,
+      dependabotRoots: () =>
+        readDependabotRoots(tree, materializer, snapshot.contextRevision, active),
       collectContext: async (dependencies) => {
         try {
           for (const path of [
