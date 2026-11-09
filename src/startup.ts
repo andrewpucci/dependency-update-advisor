@@ -4,6 +4,7 @@ import { createNpmPublishTimeReader } from './evidence/npm-publish-times.js';
 import { canonicalLicense } from './evidence/policy-signals-licenses.js';
 import { readToml } from './evidence/uv-toml.js';
 import { compareUpstreamVersions } from './evidence/upstream-version.js';
+import { parseRuntime } from './runtime.js';
 
 /** Distinct from 1, which Node uses when the bundle itself fails to load. */
 export const NOT_WIRED_EXIT_CODE = 78;
@@ -59,8 +60,11 @@ export async function selfCheck() {
   };
 }
 
-/** Review orchestration belongs to W2; until then the action fails closed without side effects. */
-export async function runStartup(writeError: (line: string) => void): Promise<number> {
+/** The W2 action validates startup inputs but intentionally has no production claim or write adapter. */
+export async function runStartup(
+  writeError: (line: string) => void,
+  environment: Readonly<Record<string, string | undefined>> = process.env,
+): Promise<number> {
   const passed = await selfCheck().then(
     (checks) => Object.values(checks).every(Boolean),
     () => false,
@@ -69,6 +73,10 @@ export async function runStartup(writeError: (line: string) => void): Promise<nu
     writeError('dependabot-review: startup self-check failed; no review ran.');
     return SELF_CHECK_EXIT_CODE;
   }
-  writeError('dependabot-review: review orchestration is not wired; no review ran.');
+  if (!parseRuntime(environment)) {
+    writeError('dependabot-review: runtime configuration invalid; no review ran.');
+    return NOT_WIRED_EXIT_CODE;
+  }
+  writeError('dependabot-review: no-write rehearsal completed; no review ran.');
   return NOT_WIRED_EXIT_CODE;
 }

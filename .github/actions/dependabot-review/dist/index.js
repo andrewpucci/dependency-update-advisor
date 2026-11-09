@@ -8873,6 +8873,11 @@ function readWorkflow(bytes, limits, budget = {
 	}
 }
 
+// src/event.ts
+function positiveId(value) {
+	return typeof value === "number" && Number.isSafeInteger(value) && value > 0;
+}
+
 // src/schema.ts
 const PACKET_LIMITS = Object.freeze({
 	bytes: 1048576,
@@ -13226,6 +13231,57 @@ function canonicalLicense(value, limits) {
 	});
 }
 
+// src/runtime.ts
+const W2_GITHUB_LIMITS = Object.freeze({
+	maxRequests: 512,
+	maxResponseBytes: 1048576,
+	maxTotalBytes: 33554432,
+	requestTimeoutMs: 15e3,
+	totalTimeoutMs: 24e4
+});
+function plainText(value) {
+	return typeof value === "string" && value.length > 0 && !Array.from(value).some((character) => {
+		const code = character.charCodeAt(0);
+		return code < 32 || code === 127;
+	});
+}
+function repository(value, id) {
+	if (!plainText(value) || !plainText(id)) return null;
+	const pieces = value.split("/");
+	const numericId = Number(id);
+	if (pieces.length !== 2 || !pieces.every((piece) => plainText(piece) && !/[\s/]/u.test(piece)) || !positiveId(numericId) || !/^\d+$/u.test(id)) return null;
+	return Object.freeze({
+		id: numericId,
+		owner: pieces[0],
+		name: pieces[1]
+	});
+}
+function workflow(value) {
+	if (!plainText(value)) return null;
+	const match = /^\.github\/workflows\/([^/]+\.(?:ya?ml))$/u.exec(value);
+	if (!match || !plainText(match[1])) return null;
+	return Object.freeze({
+		path: value,
+		file: match[1]
+	});
+}
+function parseRuntime(value) {
+	const githubToken = value.INPUT_GITHUB_TOKEN;
+	const appToken = value.INPUT_APP_TOKEN;
+	const repo = repository(value.GITHUB_REPOSITORY, value.GITHUB_REPOSITORY_ID);
+	const selectedWorkflow = workflow(value.INPUT_CI_WORKFLOW);
+	if (!plainText(githubToken) || !plainText(appToken) || !repo || !selectedWorkflow) return null;
+	const llmApiKey = plainText(value.INPUT_LLM_API_KEY) ? value.INPUT_LLM_API_KEY : null;
+	return Object.freeze({
+		githubToken,
+		appToken,
+		llmApiKey,
+		repository: repo,
+		workflowPath: selectedWorkflow.path,
+		workflowFile: selectedWorkflow.file
+	});
+}
+
 // src/startup.ts
 /** Distinct from 1, which Node uses when the bundle itself fails to load. */
 const NOT_WIRED_EXIT_CODE = 78;
@@ -13281,13 +13337,17 @@ async function selfCheck() {
 		streamJson: await streamJsonParses()
 	};
 }
-/** Review orchestration belongs to W2; until then the action fails closed without side effects. */
-async function runStartup(writeError) {
+/** The W2 action validates startup inputs but intentionally has no production claim or write adapter. */
+async function runStartup(writeError, environment = process.env) {
 	if (!await selfCheck().then((checks) => Object.values(checks).every(Boolean), () => false)) {
 		writeError("dependabot-review: startup self-check failed; no review ran.");
 		return 79;
 	}
-	writeError("dependabot-review: review orchestration is not wired; no review ran.");
+	if (!parseRuntime(environment)) {
+		writeError("dependabot-review: runtime configuration invalid; no review ran.");
+		return 78;
+	}
+	writeError("dependabot-review: no-write rehearsal completed; no review ran.");
 	return 78;
 }
 
