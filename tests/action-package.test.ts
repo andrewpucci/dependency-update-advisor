@@ -16,8 +16,8 @@ test('declares a node24 action that runs the committed bundle', () => {
   expect(action).not.toMatch(/^inputs:/m);
 });
 
-test('commits only the bundle file in the action dist directory', () => {
-  expect(readdirSync(distDir)).toEqual(['index.js']);
+test('commits only the bundle and its license notices in the action dist directory', () => {
+  expect(readdirSync(distDir).sort()).toEqual(['THIRD_PARTY_LICENSES.txt', 'index.js']);
 });
 
 test('inlines every dependency so the runner needs no node_modules', () => {
@@ -35,5 +35,27 @@ test('contains code from every production dependency', () => {
   // The unminified bundle keeps a region comment for each module it includes.
   for (const name of Object.keys(packageJson.dependencies)) {
     expect(bundle, name).toContain(`node_modules/${name}/`);
+  }
+});
+
+test('notices carry the license text of every inlined package', () => {
+  const notices = readFileSync(new URL('THIRD_PARTY_LICENSES.txt', distDir), 'utf8');
+  const roots = new Set(
+    [...bundle.matchAll(/^\/\/ (\S*node_modules\/(?:@[^/\s]+\/)?[^/\s]+)\//gm)].map((m) => m[1]!),
+  );
+  expect(roots.size).toBeGreaterThan(Object.keys(packageJson.dependencies).length - 1);
+  for (const root of roots) {
+    const dir = new URL(`../${root.replace(/^(\.\.\/)+/, '')}/`, import.meta.url);
+    const pkg = JSON.parse(readFileSync(new URL('package.json', dir), 'utf8'));
+    const files = readdirSync(dir).filter((name) => /^licen[cs]e/i.test(name));
+    expect(notices, pkg.name).toContain(`## ${pkg.name}@${pkg.version}\nLicense: ${pkg.license}`);
+    if (files.length === 0)
+      expect(notices, `${pkg.name} declaration`).toContain(
+        `No license file ships with this package. Declared license: ${pkg.license}.`,
+      );
+    for (const file of files)
+      expect(notices, `${pkg.name} ${file}`).toContain(
+        readFileSync(new URL(file, dir), 'utf8').trim(),
+      );
   }
 });
