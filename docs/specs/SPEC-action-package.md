@@ -3,9 +3,8 @@
 Status: approved for planning, 2026-11-08. The user approved the reviewed
 draft, including the Opus reviewer's findings, and invoked `as-plan`. Plan
 and execution approval remain separate gates. The user then approved the
-plan and `as-build auto` (one closing PR). Implemented on
-`marseille/1nkw3` for #234–#238 and A1 #24, pending review and merge; the
-evidence is on #24. Supporting contract for
+plan and `as-build auto` (one closing PR). Implemented for #234–#238 and
+A1 #24, pending review and merge; the evidence is on #24. Supporting contract for
 `shared-review` in [the capability map](README.md), scoped to
 [A1 #24](https://github.com/andrewpucci/dependency-update-advisor/issues/24).
 The approved [shared-review contract](SPEC-shared-review.md),
