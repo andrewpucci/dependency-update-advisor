@@ -1,13 +1,14 @@
+import { W2_ALLOCATION, W2_ENVELOPE } from './budget.js';
 import { positiveId, record, type RepositoryIdentity, type WorkflowIdentity } from './event.js';
 import { httpReason } from './github-read.js';
 import type { EvidenceReason } from './schema.js';
 
 export const W2_GITHUB_LIMITS = Object.freeze({
-  maxRequests: 512,
-  maxResponseBytes: 1024 * 1024,
-  maxTotalBytes: 32 * 1024 * 1024,
-  requestTimeoutMs: 15_000,
-  totalTimeoutMs: 240_000,
+  maxRequests: W2_ALLOCATION.transport.maxRequests,
+  maxResponseBytes: W2_ENVELOPE.maxResponseBytes,
+  maxTotalBytes: W2_ALLOCATION.transport.maxTotalBytes,
+  requestTimeoutMs: W2_ENVELOPE.requestTimeoutMs,
+  totalTimeoutMs: W2_ENVELOPE.totalTimeoutMs,
 });
 
 export type Runtime = Readonly<{

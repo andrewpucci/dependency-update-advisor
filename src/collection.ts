@@ -1,3 +1,4 @@
+import { W2_ALLOCATION, W2_ENVELOPE } from './budget.js';
 import { collectorRoots, type DependabotRootsOutcome } from './dependabot-roots.js';
 import type { ReviewBinding } from './event.js';
 import { collectActionsInventory } from './evidence/actions.js';
@@ -9,22 +10,21 @@ import { createGithubReadSession, type GithubReadSession } from './github-read.j
 import type { Ecosystem, EvidenceReason } from './schema.js';
 
 /**
- * Approved allocation of the W2 evidence envelope, 2026-11-09: the GitHub evidence session may use
- * 256 requests and 16 MiB, registry reads 96 requests and 5 MiB (the rest of the 160-request,
- * 10 MiB research share stays for later lookups), and every reader's time is what remains of the
- * 240,000 ms total. Parse and retention limits reuse the values the reader integration tests use.
+ * Reader limits inside the approved envelope split (see `W2_ALLOCATION`); every reader's time is
+ * what remains of the 240,000 ms total. Parse and retention limits reuse the values the reader
+ * integration tests use.
  */
 export const W2_EVIDENCE_LIMITS = Object.freeze({
   session: Object.freeze({
-    maxRequests: 256,
+    maxRequests: W2_ALLOCATION.session.maxRequests,
     maxPages: 10,
     maxFiles: 1_000,
     maxJsonEntries: 200_000,
-    maxResponseBytes: 1024 * 1024,
+    maxResponseBytes: W2_ENVELOPE.maxResponseBytes,
     maxFileBytes: 500_000,
-    maxTotalBytes: 16 * 1024 * 1024,
+    maxTotalBytes: W2_ALLOCATION.session.maxTotalBytes,
     maxRetainedBytes: 2_000_000,
-    requestTimeoutMs: 15_000,
+    requestTimeoutMs: W2_ENVELOPE.requestTimeoutMs,
   }),
   npm: Object.freeze({
     maxFileBytes: 500_000,
@@ -57,14 +57,14 @@ export const W2_EVIDENCE_LIMITS = Object.freeze({
   }),
   graph: Object.freeze({ maxGraphWork: 500_000, maxRetainedBytes: 2_000_000 }),
   registry: Object.freeze({
-    maxRequests: 96,
-    maxResponseBytes: 1024 * 1024,
-    maxTotalBytes: 5 * 1024 * 1024,
+    maxRequests: W2_ALLOCATION.registry.maxRequests,
+    maxResponseBytes: W2_ENVELOPE.maxResponseBytes,
+    maxTotalBytes: W2_ALLOCATION.registry.maxTotalBytes,
     maxJsonEntries: 100_000,
     maxJsonDepth: 32,
-    requestTimeoutMs: 15_000,
+    requestTimeoutMs: W2_ENVELOPE.requestTimeoutMs,
   }),
-  totalTimeoutMs: 240_000,
+  totalTimeoutMs: W2_ENVELOPE.totalTimeoutMs,
 });
 
 type Clock = () => number;

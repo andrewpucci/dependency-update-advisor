@@ -103,9 +103,9 @@ test('fails closed on a rate limit, redirect, or aggregate request budget', asyn
   });
 
   expect(W2_GITHUB_LIMITS).toEqual({
-    maxRequests: 512,
+    maxRequests: 64,
     maxResponseBytes: 1024 * 1024,
-    maxTotalBytes: 32 * 1024 * 1024,
+    maxTotalBytes: 4 * 1024 * 1024,
     requestTimeoutMs: 15_000,
     totalTimeoutMs: 240_000,
   });
@@ -219,4 +219,35 @@ test('limits a late request to the time left in the total deadline', async () =>
   } finally {
     vi.useRealTimers();
   }
+});
+
+test('refuses the request after the transport share and stops at its byte share', async () => {
+  const ok = createGithubTransport({
+    token: 'read-token',
+    now: () => 0,
+    fetch: async () => new Response('{}'),
+  });
+  for (let index = 0; index < W2_GITHUB_LIMITS.maxRequests; index += 1)
+    await expect(ok.readRepository(repo)).resolves.toMatchObject({ kind: 'available' });
+  await expect(ok.readRepository(repo)).resolves.toEqual({ kind: 'unavailable', reason: 'budget' });
+
+  const chunk = JSON.stringify({ pad: 'x'.repeat(W2_GITHUB_LIMITS.maxResponseBytes - 32) });
+  const heavy = createGithubTransport({
+    token: 'read-token',
+    now: () => 0,
+    fetch: async () => new Response(chunk),
+  });
+  let reads = 0;
+  for (;;) {
+    const result = await heavy.readRepository(repo);
+    if (result.kind === 'unavailable') {
+      expect(result).toEqual({ kind: 'unavailable', reason: 'budget' });
+      break;
+    }
+    reads += 1;
+    expect(reads).toBeLessThan(10);
+  }
+  expect(reads).toBeLessThanOrEqual(
+    Math.ceil(W2_GITHUB_LIMITS.maxTotalBytes / W2_GITHUB_LIMITS.maxResponseBytes),
+  );
 });

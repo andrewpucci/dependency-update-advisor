@@ -284,18 +284,6 @@ test('maps a failed or exhausted session to unavailable instead of throwing', as
   ).resolves.toEqual({ kind: 'unavailable' });
 });
 
-test('approved envelope allocation stays inside the 512-request, 32 MiB total', () => {
-  const requests =
-    96 + W2_EVIDENCE_LIMITS.session.maxRequests + W2_EVIDENCE_LIMITS.registry.maxRequests;
-  const bytes =
-    6 * 1024 * 1024 +
-    W2_EVIDENCE_LIMITS.session.maxTotalBytes +
-    W2_EVIDENCE_LIMITS.registry.maxTotalBytes;
-  expect(requests).toBeLessThanOrEqual(512 - 64);
-  expect(bytes).toBeLessThanOrEqual(32 * 1024 * 1024 - 5 * 1024 * 1024);
-  expect(W2_EVIDENCE_LIMITS.totalTimeoutMs).toBe(240_000);
-});
-
 async function readySession() {
   const fixture = uvMetadataScenario('empty');
   const opened = await openEvidenceSession({
@@ -389,8 +377,8 @@ test.each([
     expect.objectContaining({
       limits: expect.objectContaining({
         totalTimeoutMs: expected,
-        maxRequests: 256,
-        maxTotalBytes: 16 * 1024 * 1024,
+        maxRequests: 160,
+        maxTotalBytes: 12 * 1024 * 1024,
       }),
     }),
     expect.anything(),
@@ -425,8 +413,8 @@ test.each([
       expect.objectContaining({
         limits: expect.objectContaining({
           totalTimeoutMs: expected,
-          maxRequests: 96,
-          maxTotalBytes: 5 * 1024 * 1024,
+          maxRequests: 64,
+          maxTotalBytes: 4 * 1024 * 1024,
         }),
       }),
       expect.anything(),
