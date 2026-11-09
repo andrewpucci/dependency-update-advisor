@@ -72,6 +72,9 @@ gaps and an introduced vulnerability before parity is claimed.
 - [Bounded source context](SPEC-source-context.md) — approved for C2 execution
   in `review-config`, scoped to issue #6; implemented on `main`, with
   [verification evidence](https://github.com/andrewpucci/dependency-update-advisor/issues/47).
+- [Trusted Dependabot roots](SPEC-dependabot-roots.md) — C4 in
+  `review-config`, approved for planning 2026-11-08; supplies W2's trusted npm
+  and uv roots.
 - [Advisory policy rules and overrides](SPEC-advisory-policy.md) — implemented
   on `main` in `review-config` for C3 #7; [verification and integration limits](https://github.com/andrewpucci/dependency-update-advisor/issues/52)
   remain separate from downstream collector, provider, renderer, and workflow gates.
