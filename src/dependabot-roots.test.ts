@@ -112,7 +112,10 @@ test('reports a malformed path ahead of an unsupported glob in the same ecosyste
 });
 
 test.each([
-  ['invalid UTF-8', new Uint8Array([0x76, 0xff, 0x3a])],
+  [
+    'invalid UTF-8 inside an otherwise valid file',
+    new Uint8Array([...encode(`${file(update('npm', '/'))}# `), 0xff, ...encode('\n')]),
+  ],
   ['invalid YAML', encode('version: 2\nupdates: [')],
   ['a wrong version', encode(file(update('npm', '/')).replace('version: 2', 'version: 1'))],
   ['a missing version', encode(file(update('npm', '/')).replace('version: 2\n', ''))],
@@ -161,10 +164,8 @@ test.each([
     encode('version: 2\nx: &a ["/"]\nupdates:\n  - package-ecosystem: npm\n    directories: *a\n'),
   ],
   [
-    'YAML nodes',
-    encode(
-      `version: 2\nupdates: [${Array.from({ length: DEPENDABOT_ROOT_LIMITS.maxYamlNodes }, () => '1').join(',')}]\n`,
-    ),
+    'YAML nodes in an ignored key',
+    encode(`${file(update('npm', '/'))}x: [${'1,'.repeat(10_001)}]\n`),
   ],
   [
     'YAML depth',
@@ -280,4 +281,32 @@ test('reports unavailable coverage instead of an empty root list for a failed ec
     kind: 'unavailable',
     reason: 'rate_limit',
   });
+});
+
+test('accepts values exactly at each limit', () => {
+  const longest = `/${'a'.repeat(1_024)}`;
+  expect(parseDependabotRoots(encode(file(update('npm', longest))))).toMatchObject({
+    npm: { kind: 'roots', roots: [longest.slice(1)] },
+  });
+  const entries = Array.from({ length: DEPENDABOT_ROOT_LIMITS.maxUpdates }, () =>
+    update('cargo', '/'),
+  );
+  expect(parseDependabotRoots(encode(file(...entries)))).toMatchObject({ kind: 'roots' });
+  const padding = `#${'x'.repeat(DEPENDABOT_ROOT_LIMITS.maxFileBytes - 'version: 2\nupdates: []\n#\n'.length)}\n`;
+  const atLimit = encode(`version: 2\nupdates: []\n${padding}`);
+  expect(atLimit.byteLength).toBe(DEPENDABOT_ROOT_LIMITS.maxFileBytes);
+  expect(parseDependabotRoots(atLimit)).toMatchObject({ kind: 'roots' });
+  expect(parseDependabotRoots(new Uint8Array([...atLimit, 10]))).toEqual({
+    kind: 'unavailable',
+    reason: 'budget',
+  });
+});
+
+test('puts no ignored value in a failure result', () => {
+  for (const bytes of [
+    encode(`version: 1\nsecret: ${sentinel}\nupdates: []\n`),
+    encode(`${file(update('npm', '/a/../b', `    token: ${sentinel}\n`))}`),
+    encode(`version: 2\nsecret: ${sentinel}\nupdates: {`),
+  ])
+    expect(JSON.stringify(parseDependabotRoots(bytes))).not.toContain(sentinel);
 });

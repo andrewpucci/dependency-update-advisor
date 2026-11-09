@@ -454,25 +454,23 @@ async function readDependabotRoots(
   revision: ContextRevision,
   active: () => void,
 ): Promise<DependabotRootsOutcome> {
-  const unusable = (reason: EvidenceReason): DependabotRootsOutcome => ({
-    kind: 'unavailable',
-    reason,
-  });
+  const unusable = (reason: EvidenceReason): DependabotRootsOutcome =>
+    Object.freeze({ kind: 'unavailable', reason });
   try {
     const github = await tree.get('.github');
-    if (!github) return { kind: 'absent', revision };
+    if (!github) return Object.freeze({ kind: 'absent', revision });
     if (github.kind !== 'tree' || github.type === 'commit') return unusable('unsupported');
     const found: TreeEntry[] = [];
     for (const name of DEPENDABOT_NAMES) {
       const entry = await tree.get(`.github/${name}`);
       if (entry) found.push(entry);
     }
-    if (found.length === 0) return { kind: 'absent', revision };
+    if (found.length === 0) return Object.freeze({ kind: 'absent', revision });
     const [file] = found;
     if (found.length > 1 || file.kind !== 'file') return unusable('unsupported');
     if ((file.size ?? Infinity) > DEPENDABOT_ROOT_LIMITS.maxFileBytes) return unusable('budget');
     const parsed = parseDependabotRoots(await materializer.bytes(file));
-    return parsed.kind === 'roots' ? { ...parsed, revision } : parsed;
+    return Object.freeze(parsed.kind === 'roots' ? { ...parsed, revision } : parsed);
   } catch (error) {
     // Cancellation and staleness end the snapshot; any other failure is an explicit reason.
     active();

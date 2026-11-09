@@ -636,6 +636,22 @@ test.each(['dependabot.yml', 'dependabot.yaml'])(
   },
 );
 
+test('returns a frozen outcome for every kind', async () => {
+  const outcomes = await Promise.all([
+    roots(dependabotReader([entry('.github/dependabot.yml', '100644', dependabotBlob)])),
+    roots(reads([], {})),
+    roots(
+      dependabotReader([
+        { ...entry('.github/dependabot.yml', '100644', dependabotBlob), size: 65_537 },
+      ]),
+    ),
+  ]);
+  for (const outcome of outcomes) {
+    if (outcome.kind !== 'ready') throw new Error('fixture must be ready');
+    expect(Object.isFrozen(outcome.value)).toBe(true);
+  }
+});
+
 test.each([
   ['no Dependabot file', [entry('.github/other.yml', '100644', configBlob)]],
   ['no .github directory', []],
