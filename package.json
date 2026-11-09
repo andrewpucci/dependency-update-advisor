@@ -3,6 +3,7 @@
   "private": true,
   "type": "module",
   "scripts": {
+    "build": "vp pack",
     "complexity": "node scripts/complexity/report.mjs",
     "test:complexity": "node --test scripts/complexity/report.test.mjs",
     "check": "tsc --project tsconfig.json --noEmit",

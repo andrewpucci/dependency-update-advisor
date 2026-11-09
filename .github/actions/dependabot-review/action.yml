@@ -1,0 +1,5 @@
+name: Dependabot review
+description: Advisory dependency update review for Dependabot pull requests.
+runs:
+  using: node24
+  main: dist/index.js
