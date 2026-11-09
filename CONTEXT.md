@@ -32,7 +32,7 @@ before T2/T3 writes.
 [O1 #23](docs/specs/SPEC-decision-brief.md) implemented, pending review/merge;
 [verification #232](https://github.com/andrewpucci/dependency-update-advisor/issues/232)
 tracks its remaining gates. W2, C2, adoption, parity and cutover need proof.
-[A1 #24](docs/specs/SPEC-action-package.md) spec approved; tasks #234–#238 filed.
+[A1 #24](docs/specs/SPEC-action-package.md) is implemented, pending review/merge.
 
 - The [capability map](docs/specs/README.md) indexes module and contract status.
 - The [ADR guide](docs/adr/README.md) indexes durable architecture decisions.

@@ -25,6 +25,11 @@ B3 enforces B2's toolchain; it does not extract reviewer code or introduce
 new tooling. A1 adds the action build and committed-bundle integrity gate
 once the action entry point exists. The old reviewer remains active.
 
+Update: A1 [#234–#238](https://github.com/andrewpucci/dependency-update-advisor/issues/24)
+added the `npm run build` and drift steps under the
+[action package spec](SPEC-action-package.md). The statements below describe B3
+as approved and implemented; the CI step list now has three more steps.
+
 ## Known Inputs and Assumptions
 
 - The attachment and live issue #4 agree on scope and verification. GitHub

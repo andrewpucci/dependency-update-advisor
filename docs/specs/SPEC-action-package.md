@@ -2,7 +2,10 @@
 
 Status: approved for planning, 2026-11-08. The user approved the reviewed
 draft, including the Opus reviewer's findings, and invoked `as-plan`. Plan
-and execution approval remain separate gates. Supporting contract for
+and execution approval remain separate gates. The user then approved the
+plan and `as-build auto` (one closing PR). Implemented on
+`marseille/1nkw3` for #234–#238 and A1 #24, pending review and merge; the
+evidence is on #24. Supporting contract for
 `shared-review` in [the capability map](README.md), scoped to
 [A1 #24](https://github.com/andrewpucci/dependency-update-advisor/issues/24).
 The approved [shared-review contract](SPEC-shared-review.md),
@@ -208,3 +211,29 @@ Tests are Node tests under `tests/`, run by `npm test -- --run`.
    approved the reviewer's refinement: if the bundler cannot emit it, a
    repository script reads the installed licenses, because the lockfile holds
    no license text.
+
+## Implementation notes
+
+Decisions made while implementing, within the approved scope:
+
+- `vp pack` (tsdown/rolldown) met every need: one unminified ESM file, all
+  dependencies inlined with `deps.alwaysBundle`, `fixedExtension: false` for
+  a `.js` name, no source map, byte-identical rebuilds. It has no license
+  feature, so `scripts/license-notices.mjs` writes `THIRD_PARTY_LICENSES.txt`.
+  Packages without a license file (`spdx-exceptions`, `spdx-license-ids`) get
+  their declared license and source instead of a build failure.
+- Production dependencies are the six in `package.json` `dependencies`. `ajv`
+  is a dev dependency used only by tests, so it is not bundled.
+- The bundle uses `createRequire(import.meta.url)` and requires Node
+  built-ins such as `process` and `buffer` without a `node:` prefix. The shape
+  test therefore allows any built-in name, with or without the prefix.
+- Node 24 has no `--allow-net`, so the permission model cannot deny network
+  access. The startup test asserts the filesystem confinement and that an
+  environment secret never appears in output; network silence is unproven.
+- The startup test copies `git ls-files --cached --others --exclude-standard`
+  from the working tree instead of using `git archive`, so it tests the same
+  layout without depending on what is committed.
+- The drift mutations were run locally with the exact CI commands rather than
+  on scratch pull requests; only the clean run is observed in CI. A build that
+  deletes and regenerates `dist/` removes an untracked stray file there, so
+  that case passes; a committed stray file fails as tracked drift.
