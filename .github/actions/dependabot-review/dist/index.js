@@ -13231,13 +13231,54 @@ function canonicalLicense(value, limits) {
 	});
 }
 
-// src/runtime.ts
-const W2_GITHUB_LIMITS = Object.freeze({
+// src/budget.ts
+const MiB = 1048576;
+/** Bounds for all pre-analysis evidence reads. Time is shared; every reader gets what remains. */
+const W2_ENVELOPE = Object.freeze({
 	maxRequests: 512,
-	maxResponseBytes: 1048576,
-	maxTotalBytes: 33554432,
+	maxResponseBytes: MiB,
+	maxTotalBytes: 32 * MiB,
 	requestTimeoutMs: 15e3,
 	totalTimeoutMs: 24e4
+});
+/**
+* How the envelope is divided between readers. A larger pull request exhausts a share and ends
+* incomplete with a `budget` reason; no reader borrows from another.
+*/
+const W2_ALLOCATION = Object.freeze({
+	transport: Object.freeze({
+		maxRequests: 64,
+		maxTotalBytes: 4 * MiB
+	}),
+	session: Object.freeze({
+		maxRequests: 160,
+		maxTotalBytes: 12 * MiB
+	}),
+	registry: Object.freeze({
+		maxRequests: 64,
+		maxTotalBytes: 4 * MiB
+	}),
+	upstream: Object.freeze({
+		maxRequests: 96,
+		maxTotalBytes: 6 * MiB
+	}),
+	advisory: Object.freeze({
+		maxRequests: 64,
+		maxTotalBytes: 4 * MiB
+	}),
+	signals: Object.freeze({
+		maxRequests: 64,
+		maxTotalBytes: 2 * MiB
+	})
+});
+
+// src/runtime.ts
+const W2_GITHUB_LIMITS = Object.freeze({
+	maxRequests: W2_ALLOCATION.transport.maxRequests,
+	maxResponseBytes: W2_ENVELOPE.maxResponseBytes,
+	maxTotalBytes: W2_ALLOCATION.transport.maxTotalBytes,
+	requestTimeoutMs: W2_ENVELOPE.requestTimeoutMs,
+	totalTimeoutMs: W2_ENVELOPE.totalTimeoutMs
 });
 function plainText(value) {
 	return typeof value === "string" && value.length > 0 && !Array.from(value).some((character) => {
