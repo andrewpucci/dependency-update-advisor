@@ -111,6 +111,8 @@ contracts; the linked specs own the complete requirements and test cases.
 
 - **Workflow and publication:** Verify the intended CI run, repository,
   Dependabot PR, and current head, including a head recheck before writes.
+  For W1, require the exact one-job/two-step workflow shape: no checkout,
+  artifact, cache, `run:`, `if`, `env`, or additional action.
   Privileged execution uses trusted code and config, full-SHA pins, named
   secrets, and minimum permissions; it never executes PR-head code or
   consumes untrusted artifacts or caches. Obsolete or duplicate events
