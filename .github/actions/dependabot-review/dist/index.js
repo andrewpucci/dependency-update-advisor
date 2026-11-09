@@ -13283,12 +13283,7 @@ async function selfCheck() {
 }
 /** Review orchestration belongs to W2; until then the action fails closed without side effects. */
 async function runStartup(writeError) {
-	try {
-		if (!Object.values(await selfCheck()).every(Boolean)) {
-			writeError("dependabot-review: startup self-check failed; no review ran.");
-			return 79;
-		}
-	} catch {
+	if (!await selfCheck().then((checks) => Object.values(checks).every(Boolean), () => false)) {
 		writeError("dependabot-review: startup self-check failed; no review ran.");
 		return 79;
 	}

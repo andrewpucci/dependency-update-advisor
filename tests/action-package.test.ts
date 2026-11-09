@@ -23,7 +23,8 @@ test('commits only the bundle and its license notices in the action dist directo
 test('inlines every dependency so the runner needs no node_modules', () => {
   const builtins = new Set(builtinModules.flatMap((name) => [name, `node:${name}`]));
   const specifiers = [
-    ...bundle.matchAll(/^(?:import|export)\s[^'"\n]*?from\s+["']([^"']+)["']/gm),
+    // Covers side-effect imports and import lists that span several lines.
+    ...bundle.matchAll(/^(?:import|export)\s*(?:[\w$*{}\s,]+?\s*from\s*)?["']([^"']+)["']/gm),
     ...bundle.matchAll(/(?<![\w.])(?:__require|require|import)\(\s*["']([^"']+)["']\s*\)/g),
   ].map((match) => match[1]!);
   expect(specifiers.length).toBeGreaterThan(0);
@@ -43,11 +44,11 @@ test('notices carry the license text of every inlined package', () => {
   const roots = new Set(
     [...bundle.matchAll(/^\/\/ (\S*node_modules\/(?:@[^/\s]+\/)?[^/\s]+)\//gm)].map((m) => m[1]!),
   );
-  expect(roots.size).toBeGreaterThan(Object.keys(packageJson.dependencies).length - 1);
+  expect(roots.size).toBeGreaterThanOrEqual(Object.keys(packageJson.dependencies).length);
   for (const root of roots) {
     const dir = new URL(`../${root.replace(/^(\.\.\/)+/, '')}/`, import.meta.url);
     const pkg = JSON.parse(readFileSync(new URL('package.json', dir), 'utf8'));
-    const files = readdirSync(dir).filter((name) => /^licen[cs]e/i.test(name));
+    const files = readdirSync(dir).filter((name) => /^(?:licen[cs]e|notice|authors)/i.test(name));
     expect(notices, pkg.name).toContain(`## ${pkg.name}@${pkg.version}\nLicense: ${pkg.license}`);
     if (files.length === 0)
       expect(notices, `${pkg.name} declaration`).toContain(

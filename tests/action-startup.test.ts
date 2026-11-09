@@ -11,9 +11,10 @@ import {
 } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
+import { fileURLToPath } from 'node:url';
 import { afterAll, beforeAll, expect, test } from 'vite-plus/test';
 
-const repo = new URL('..', import.meta.url).pathname;
+const repo = fileURLToPath(new URL('..', import.meta.url));
 const entry = '.github/actions/dependabot-review/dist/index.js';
 const sentinel = 'startup-test-sentinel-secret';
 let shipped = '';

@@ -1,7 +1,8 @@
 import { readdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 
-// Writes the license text of every package inlined into the action bundle.
+// Writes the license text, plus any NOTICE or AUTHORS file the license refers to, of every
+// package inlined into the action bundle.
 // Rolldown leaves a `// <path>/node_modules/<package>/...` region comment per included module.
 const distDir = process.argv[2];
 if (!distDir) throw new Error('usage: license-notices.mjs <action-dist-dir>');
@@ -19,7 +20,7 @@ const entries = roots.map((root) => {
   if (typeof pkg.license !== 'string')
     throw new Error(`${pkg.name}@${pkg.version} declares no license`);
   const files = readdirSync(dir)
-    .filter((name) => /^licen[cs]e/i.test(name))
+    .filter((name) => /^(?:licen[cs]e|notice|authors)/i.test(name))
     .sort();
   const repository = typeof pkg.repository === 'string' ? pkg.repository : pkg.repository?.url;
   // Some packages ship data under a declared license without a license file; record the

@@ -263,6 +263,11 @@ No license file ships with this package. Declared license: CC-BY-3.0. Source: ke
 ## spdx-expression-parse@5.0.0
 License: MIT
 
+C. Scott Ananian <cscott@cscott.net> (http://cscott.net)
+Kyle E. Mitchell <kyle@kemitchell.com> (https://kemitchell.com)
+Shinnosuke Watanabe <snnskwtnb@gmail.com>
+Antoine Motet <antoine.motet@gmail.com>
+
 The MIT License
 
 Copyright (c) 2015 Kyle E. Mitchell & other authors listed in AUTHORS

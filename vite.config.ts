@@ -20,13 +20,25 @@ export default defineConfig({
     include: ['src/**/*.test.ts', 'tests/**/*.test.ts'],
   },
   lint: {
-    ignorePatterns: ['.context/**', 'node_modules/**', 'coverage/**', '**/dist/**'],
+    ignorePatterns: [
+      '.context/**',
+      'node_modules/**',
+      'coverage/**',
+      'dist/**',
+      '.github/actions/dependabot-review/dist/**',
+    ],
     options: {
       denyWarnings: true,
     },
   },
   fmt: {
-    ignorePatterns: ['.context/**', 'node_modules/**', 'coverage/**', '**/dist/**'],
+    ignorePatterns: [
+      '.context/**',
+      'node_modules/**',
+      'coverage/**',
+      'dist/**',
+      '.github/actions/dependabot-review/dist/**',
+    ],
     proseWrap: 'preserve',
     singleQuote: true,
   },
