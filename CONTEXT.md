@@ -16,9 +16,10 @@ and [T5 evidence](https://github.com/andrewpucci/dependency-update-advisor/issue
 record exact-revision checks and remaining integration gates.
 [Advisory complexity review](docs/specs/SPEC-complexity-review.md) is merged.
 The shared workflow remains fail closed and the old reviewer stays active.
-W2 orchestration is implemented on the working branch as a no-write rehearsal;
-it awaits fresh-context review and merge before any adoption, publication, or
-claim-backend work.
+W2 orchestration is implemented on the working branch as a no-write rehearsal,
+with [C4 Dependabot roots](docs/specs/SPEC-dependabot-roots.md) supplying the
+collectors' trusted roots; it awaits fresh-context review and merge before any
+adoption, publication, or claim-backend work.
 
 ## Next action
 
