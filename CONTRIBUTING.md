@@ -61,6 +61,7 @@ npm run check
 npm test -- --run
 npm run build
 git diff --exit-code
+test -z "$(git status --porcelain --ignored --untracked-files=all | grep -v '^!! node_modules/')"
 ```
 
 `npm ci` installs the committed lockfile. `npm run lint` runs code and
