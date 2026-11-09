@@ -1,0 +1,2 @@
+# Generated action bundle: collapse in review and never normalize line endings.
+.github/actions/dependabot-review/dist/* linguist-generated=true -text

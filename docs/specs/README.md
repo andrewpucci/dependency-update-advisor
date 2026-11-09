@@ -214,6 +214,11 @@ gaps and an introduced vulnerability before parity is claimed.
   in `shared-review`; [verification evidence](https://github.com/andrewpucci/dependency-update-advisor/issues/3).
 - [CI enforcement](SPEC-ci-enforcement.md) — implemented on `main` for B3 #4
   in `shared-review`; [verification evidence](https://github.com/andrewpucci/dependency-update-advisor/issues/37).
+- [Action package](SPEC-action-package.md) — supporting contract for A1 #24
+  and #234–#238 in `shared-review`; approved 2026-11-08, implemented,
+  pending review and merge. Committed Node.js 24 bundle,
+  license notices, startup test, and CI drift gate; the entry is a fail-closed
+  stub. Orchestration and the reusable workflow stay W2.
 - [Advisory complexity review](SPEC-complexity-review.md) — user-requested
   supporting repository tooling contract; implemented and merged into `main`
   in [PR #65](https://github.com/andrewpucci/dependency-update-advisor/pull/65).

@@ -67,16 +67,20 @@ npm run lint
 npm run format:check
 npm run check
 npm test -- --run
+npm run build
+git diff --exit-code
 ```
 
 These commands install the pinned toolchain, lint code and Markdown, check
 formatting, strictly type-check TypeScript source and tests without emitting
-files, and run Node tests once. Use `npm run lint:md` for Markdown alone.
+files, run Node tests once, and rebuild the committed action bundle and fail
+if it changed. Use `npm run lint:md` for Markdown alone.
 `npm run format:check` checks Markdown, config, and code without changing
 files; use `npm run format` to apply formatting locally.
 
-The action build and committed-bundle integrity gate arrive with A1 once an
-action entry point exists. No build command is available yet.
+`npm run build` packages the action entry point into a committed Node.js 24
+bundle; CI rejects drift. See [CONTRIBUTING.md](CONTRIBUTING.md#action-bundle).
+The bundle is a fail-closed stub until review orchestration lands.
 
 Oxfmt formats Markdown syntax while preserving prose line breaks.
 Markdown linting checks document structure, links, image alt text, code-fence

@@ -59,6 +59,9 @@ npm run lint
 npm run format:check
 npm run check
 npm test -- --run
+npm run build
+git diff --exit-code
+test -z "$(git status --porcelain --ignored --untracked-files=all | grep -v '^!! node_modules/')"
 ```
 
 `npm ci` installs the committed lockfile. `npm run lint` runs code and
@@ -67,6 +70,8 @@ files. `npm run check` invokes the strict TypeScript compiler with `noEmit`
 over source, tests, and tool configuration. `npm test -- --run` executes
 the TypeScript test suite once through Vite+; `--run` avoids watch mode. These
 four validation commands do not repair or rewrite tracked files.
+`npm run build` is the exception: it deletes and regenerates the committed
+action bundle, so CI follows it with the drift checks described below.
 
 For changes to complexity tooling, also run `npm run test:complexity`.
 Those adapter tests run separately from the Vite+ suite, as described in
@@ -93,11 +98,24 @@ tables and code blocks.
 Markdown linting includes hidden directories and scans `**/*.md`, excluding
 `.context/**` and `node_modules/**`. Keep these checks non-mutating.
 
-No build command is available yet. A1 adds `npm run build` once the action
-entry point exists, along with CI enforcement that a fresh build reproduces
-the committed JavaScript bundle without drift. Until then, run the focused
-tests and other checks named by the relevant approved spec, without invoking
-an unavailable build command.
+### Action bundle
+
+`npm run build` bundles `src/index.ts` with `vp pack` into
+`.github/actions/dependabot-review/dist/index.js`, inlining every dependency
+so the action runs under `runs.using: node24` with no TypeScript loader and no
+install. It also writes `THIRD_PARTY_LICENSES.txt` beside the bundle. Never
+edit these files by hand; change the source and rebuild.
+
+CI runs the build, then fails on `git diff --exit-code` (tracked drift) and on
+any untracked or ignored file other than `node_modules/` (stray output). To fix
+a drift failure, run `npm run build` and commit the result. This includes
+Dependabot PRs that change dependencies or the toolchain: rebuild on the PR
+branch before merging.
+
+Pull-request CI checks the merge commit, so two PRs that pass alone can still
+merge into a drifted `main`. Release or pin only a SHA whose push-to-`main` CI
+run passed. Until W2 lands, the bundle is a fail-closed stub that runs no
+review; see the [action package spec](docs/specs/SPEC-action-package.md).
 
 ### Complexity review
 
