@@ -66,7 +66,7 @@ test('validates the returned workflow ID and exact path', async () => {
     kind: 'available',
     value: { id: 301, path: '.github/workflows/ci.yml' },
   };
-  const transport: GithubTransport = { readWorkflow: async () => response };
+  const transport: Pick<GithubTransport, 'readWorkflow'> = { readWorkflow: async () => response };
   await expect(resolveWorkflow(runtime, transport)).resolves.toEqual({
     id: 301,
     path: '.github/workflows/ci.yml',

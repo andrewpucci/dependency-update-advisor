@@ -21,6 +21,22 @@ export type GithubRead =
   | Readonly<{ kind: 'unavailable'; reason: 'budget' | 'rate_limit' | 'timeout' | 'unknown' }>;
 export type GithubTransport = Readonly<{
   readWorkflow: (repository: RepositoryIdentity, file: string) => Promise<GithubRead>;
+  readRepository: (repository: RepositoryIdentity, signal?: AbortSignal) => Promise<GithubRead>;
+  readCommit: (
+    repository: RepositoryIdentity,
+    ref: string,
+    signal?: AbortSignal,
+  ) => Promise<GithubRead>;
+  readTree: (
+    repository: RepositoryIdentity,
+    sha: string,
+    signal?: AbortSignal,
+  ) => Promise<GithubRead>;
+  readBlob: (
+    repository: RepositoryIdentity,
+    sha: string,
+    signal?: AbortSignal,
+  ) => Promise<GithubRead>;
 }>;
 type RuntimeEnvironment = Readonly<Record<string, string | undefined>>;
 type TransportDependencies = Readonly<{
@@ -95,55 +111,70 @@ export function createGithubTransport(dependencies: TransportDependencies): Gith
   let bytes = 0;
   const started = dependencies.now();
 
-  return Object.freeze({
-    readWorkflow: async (repository, file) => {
+  const read = async (url: string, signal?: AbortSignal): Promise<GithubRead> => {
+    if (
+      signal?.aborted ||
+      ++requests > W2_GITHUB_LIMITS.maxRequests ||
+      dependencies.now() - started >= W2_GITHUB_LIMITS.totalTimeoutMs
+    )
+      return { kind: 'unavailable', reason: 'budget' };
+    const controller = new AbortController();
+    const cancel = () => controller.abort();
+    signal?.addEventListener('abort', cancel, { once: true });
+    const timer = setTimeout(() => controller.abort(), W2_GITHUB_LIMITS.requestTimeoutMs);
+    try {
+      const response = await dependencies.fetch(url, {
+        method: 'GET',
+        redirect: 'manual',
+        credentials: 'omit',
+        headers: {
+          accept: 'application/vnd.github+json',
+          authorization: 'Bearer ' + dependencies.token,
+        },
+        signal: controller.signal,
+      });
+      if (response.status !== 200) return unavailable(response);
+      const text = await response.text();
+      const responseBytes = new TextEncoder().encode(text).byteLength;
+      bytes += responseBytes;
       if (
-        ++requests > W2_GITHUB_LIMITS.maxRequests ||
-        dependencies.now() - started >= W2_GITHUB_LIMITS.totalTimeoutMs
+        responseBytes > W2_GITHUB_LIMITS.maxResponseBytes ||
+        bytes > W2_GITHUB_LIMITS.maxTotalBytes
       )
         return { kind: 'unavailable', reason: 'budget' };
-      const controller = new AbortController();
-      const timer = setTimeout(() => controller.abort(), W2_GITHUB_LIMITS.requestTimeoutMs);
       try {
-        const response = await dependencies.fetch(
-          route('repos', repository.owner, repository.name, 'actions', 'workflows', file),
-          {
-            method: 'GET',
-            redirect: 'manual',
-            credentials: 'omit',
-            headers: {
-              accept: 'application/vnd.github+json',
-              authorization: 'Bearer ' + dependencies.token,
-            },
-            signal: controller.signal,
-          },
-        );
-        if (response.status !== 200) return unavailable(response);
-        const text = await response.text();
-        const responseBytes = new TextEncoder().encode(text).byteLength;
-        bytes += responseBytes;
-        if (
-          responseBytes > W2_GITHUB_LIMITS.maxResponseBytes ||
-          bytes > W2_GITHUB_LIMITS.maxTotalBytes
-        )
-          return { kind: 'unavailable', reason: 'budget' };
-        try {
-          return { kind: 'available', value: JSON.parse(text) };
-        } catch {
-          return { kind: 'unavailable', reason: 'unknown' };
-        }
+        return { kind: 'available', value: JSON.parse(text) };
       } catch {
-        return { kind: 'unavailable', reason: controller.signal.aborted ? 'timeout' : 'unknown' };
-      } finally {
-        clearTimeout(timer);
+        return { kind: 'unavailable', reason: 'unknown' };
       }
-    },
+    } catch {
+      return { kind: 'unavailable', reason: controller.signal.aborted ? 'timeout' : 'unknown' };
+    } finally {
+      clearTimeout(timer);
+      signal?.removeEventListener('abort', cancel);
+    }
+  };
+
+  return Object.freeze({
+    readWorkflow: (repository, file) =>
+      read(route('repos', repository.owner, repository.name, 'actions', 'workflows', file)),
+    readRepository: (repository, signal) =>
+      read(route('repos', repository.owner, repository.name), signal),
+    readCommit: (repository, ref, signal) =>
+      read(route('repos', repository.owner, repository.name, 'commits', ref), signal),
+    readTree: (repository, sha, signal) =>
+      read(
+        route('repos', repository.owner, repository.name, 'git', 'trees', sha) + '?recursive=1',
+        signal,
+      ),
+    readBlob: (repository, sha, signal) =>
+      read(route('repos', repository.owner, repository.name, 'git', 'blobs', sha), signal),
   });
 }
 
 export async function resolveWorkflow(
   runtime: Runtime,
-  transport: GithubTransport,
+  transport: Pick<GithubTransport, 'readWorkflow'>,
 ): Promise<WorkflowIdentity | null> {
   const result = await transport.readWorkflow(runtime.repository, runtime.workflowFile);
   if (
