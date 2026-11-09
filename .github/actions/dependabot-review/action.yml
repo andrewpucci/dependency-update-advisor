@@ -1,5 +1,18 @@
 name: Dependabot review
 description: Advisory dependency update review for Dependabot pull requests.
+inputs:
+  github-token:
+    description: Read-only GitHub token for repository and workflow reads.
+    required: true
+  app-token:
+    description: GitHub App token for managed comments and commit statuses.
+    required: true
+  llm-api-key:
+    description: API key for the configured language-model provider.
+    required: true
+  ci-workflow:
+    description: Repository-relative file path of the intended CI workflow.
+    required: true
 runs:
   using: node24
   main: dist/index.js
