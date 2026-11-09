@@ -8,6 +8,41 @@ function parseWorkflow() {
   return parseDocument(readFileSync(workflowPath, 'utf8'), { uniqueKeys: true });
 }
 
+type LocatedText = { path: string; value: string };
+
+function stringsIn(value: unknown, path: string[] = []): LocatedText[] {
+  if (typeof value === 'string') return [{ path: path.join('.'), value }];
+  if (Array.isArray(value))
+    return value.flatMap((entry, index) => stringsIn(entry, [...path, String(index)]));
+  if (value && typeof value === 'object') {
+    return Object.entries(value).flatMap(([key, entry]) => [
+      { path: [...path, '<key>'].join('.'), value: key },
+      ...stringsIn(entry, [...path, key]),
+    ]);
+  }
+  return [];
+}
+
+function expressionsIn(value: unknown): LocatedText[] {
+  return stringsIn(value).flatMap(({ path, value: text }) =>
+    [...text.matchAll(/\$\{\{\s*([^}]+?)\s*\}\}/g)].map((match) => ({
+      path,
+      value: match[1]!,
+    })),
+  );
+}
+
+function keysNamed(value: unknown, name: string): string[] {
+  if (Array.isArray(value)) return value.flatMap((entry) => keysNamed(entry, name));
+  if (value && typeof value === 'object') {
+    return Object.entries(value).flatMap(([key, entry]) => [
+      ...(key === name ? [key] : []),
+      ...keysNamed(entry, name),
+    ]);
+  }
+  return [];
+}
+
 test('R1 trigger permits only workflow_call', () => {
   const workflow = parseWorkflow().toJS() as { on: unknown };
   expect(workflow.on).toEqual({ workflow_call: expect.any(Object) });
@@ -128,6 +163,56 @@ test('R10 bounds execution without concurrency or ignored failures', () => {
     expect(step.concurrency).toBeUndefined();
     expect(step['continue-on-error']).toBeUndefined();
   }
+});
+
+test('R6 pins the GitHub App-token action with a version comment', () => {
+  const workflow = readFileSync(workflowPath, 'utf8');
+  expect(workflow).toMatch(
+    /^        uses: actions\/create-github-app-token@[0-9a-f]{40} # v\d+(?:\.\d+)*$/m,
+  );
+});
+
+test('R7 scopes every named secret to its one allowed action input', () => {
+  const workflow = parseWorkflow().toJS();
+  expect(stringsIn(workflow).filter(({ value }) => /secrets(?:\.|\[)/.test(value))).toEqual([
+    {
+      path: 'jobs.review.steps.0.with.client-id',
+      value: '${{ secrets.review_app_client_id }}',
+    },
+    {
+      path: 'jobs.review.steps.0.with.private-key',
+      value: '${{ secrets.review_app_private_key }}',
+    },
+    {
+      path: 'jobs.review.steps.1.with.llm-api-key',
+      value: '${{ secrets.llm_api_key }}',
+    },
+  ]);
+});
+
+test('R8 mints the App token with exactly its two required permissions', () => {
+  const workflow = parseWorkflow().toJS() as {
+    jobs: { review: { steps: Array<{ with?: unknown }> } };
+  };
+  expect(workflow.jobs.review.steps[0]?.with).toEqual({
+    'client-id': '${{ secrets.review_app_client_id }}',
+    'private-key': '${{ secrets.review_app_private_key }}',
+    'permission-issues': 'write',
+    'permission-statuses': 'write',
+  });
+});
+
+test('R9 permits only the six declared expressions and no if key', () => {
+  const workflow = parseWorkflow().toJS();
+  expect(expressionsIn(workflow)).toEqual([
+    { path: 'jobs.review.steps.0.with.client-id', value: 'secrets.review_app_client_id' },
+    { path: 'jobs.review.steps.0.with.private-key', value: 'secrets.review_app_private_key' },
+    { path: 'jobs.review.steps.1.with.github-token', value: 'github.token' },
+    { path: 'jobs.review.steps.1.with.app-token', value: 'steps.app-token.outputs.token' },
+    { path: 'jobs.review.steps.1.with.llm-api-key', value: 'secrets.llm_api_key' },
+    { path: 'jobs.review.steps.1.with.ci-workflow', value: 'inputs.ci_workflow' },
+  ]);
+  expect(keysNamed(workflow, 'if')).toEqual([]);
 });
 
 test('R13 rejects malformed, duplicate, aliased, and merged YAML', () => {
