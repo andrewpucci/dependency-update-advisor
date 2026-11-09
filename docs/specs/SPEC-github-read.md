@@ -344,7 +344,7 @@ provider-ready content.
 Mocked cancellation tests prove signal/body cancellation and rejection of
 late results. An abort-ignoring transport cannot prove its underlying I/O
 stopped; D1 disables the session and cancels any eventual response body.
-W1/W2 must verify the real adapter's credentials, decompression, cancellation,
+W2 must verify the real adapter's credentials, decompression, cancellation,
 and numeric limits before live execution.
 
 ## Commands and Testing Strategy
@@ -420,7 +420,7 @@ records exact-revision commands and remaining integration gates.
 
 The interview selected retained comparison prefixes, ambiguous 403s as
 `unknown`, and a required separate `maxRetainedBytes` budget. Numeric live
-budgets and read-only credentials remain trusted W1/W2 integration choices.
+budgets and read-only credentials remain trusted W2 integration choices.
 Collector reconciliation and packet construction, live transport, M2/O1,
 publication, adoption, parity, and cutover remain separate. The old reviewer
 stays active.

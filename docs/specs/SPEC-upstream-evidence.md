@@ -93,7 +93,7 @@ stays active.
 7. Orchestration supplies S2 proofs and sources to S1, merges independent
    S3 evidence, assembles all ecosystem slots and C2 context, and invokes
    T4 before T5/C3 and model analysis. S2 neither validates the final packet
-   nor declares execution successful. W1/W2 must carry bounded fallback
+   nor declares execution successful. W2 must carry bounded fallback
    diagnostics to later consumers rather than silently discarding them.
 
 The implemented entry points are `enrichUpstream(value, { reader })` in
