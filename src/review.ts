@@ -28,7 +28,13 @@ export type ClaimState =
       identity: ReviewIdentity;
       generation: number;
     }>;
+export type ReplayState = Readonly<{
+  identity: ReviewIdentity;
+  state: 'unseen' | 'claimed' | 'completed';
+}>;
 export type ClaimStore = Readonly<{
+  /** Reports whether this exact attempt was already seen, without claiming it. */
+  replay: (identity: ReviewIdentity) => Promise<ReplayState>;
   claim: (identity: ReviewIdentity) => Promise<ClaimResult>;
   read: (claim: OwnedClaim) => Promise<ClaimState>;
   abandon: (claim: OwnedClaim) => Promise<void>;
@@ -93,6 +99,14 @@ export function createTestClaimStore(): ClaimStore {
   };
 
   return Object.freeze({
+    replay: async (value) => {
+      const identity = copyIdentity(value);
+      const record = records.get(identityKey(identity));
+      return {
+        identity,
+        state: !record ? 'unseen' : record.state === 'completed' ? 'completed' : 'claimed',
+      };
+    },
     claim: async (value) => {
       const identity = copyIdentity(value);
       const key = identityKey(identity);

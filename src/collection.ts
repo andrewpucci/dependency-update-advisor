@@ -79,6 +79,8 @@ export type CollectionInput = Readonly<{
   /** Credential-free registry fetch; never receives the GitHub token. */
   registryFetch: (url: string, init: RequestInit) => Promise<Response>;
   now: Clock;
+  /** Receives the authentic npm inventory, which upstream research needs for npm identity proofs. */
+  onNpmInventory?: (inventory: unknown) => void;
   /** Absolute time, in `now` units, by which pre-analysis evidence must be finished. */
   deadline: number;
   signal?: AbortSignal;
@@ -174,6 +176,7 @@ export function createEvidenceCollectors(
       { session },
     );
     if (inventory.kind !== 'inventory') return { kind: 'unavailable' };
+    input.onNpmInventory?.(inventory);
     const total = remaining(input);
     const enriched = await enrichNpmEvidence(
       {

@@ -78,3 +78,25 @@ test.each([
 ] as const)('%s has the contracted status and comment eligibility', (kind, status, comment) => {
   expect(reviewOutcome(kind)).toEqual({ kind, status, comment });
 });
+
+test('reports replay state for T1 without claiming', async () => {
+  const claims = createTestClaimStore();
+  await expect(claims.replay(attempt(1))).resolves.toEqual({
+    identity: attempt(1),
+    state: 'unseen',
+  });
+  await expect(claims.claim(attempt(1))).resolves.toMatchObject({ kind: 'owned' });
+  const first = owned(await claims.claim(attempt(2)));
+  await expect(claims.replay(attempt(1))).resolves.toEqual({
+    identity: attempt(1),
+    state: 'claimed',
+  });
+  await claims.complete(first);
+  await expect(claims.replay(attempt(2))).resolves.toEqual({
+    identity: attempt(2),
+    state: 'completed',
+  });
+  // Looking must not create a claim.
+  await expect(claims.replay(attempt(3))).resolves.toMatchObject({ state: 'unseen' });
+  await expect(claims.claim(attempt(3))).resolves.toMatchObject({ kind: 'owned', generation: 3 });
+});

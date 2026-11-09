@@ -5,9 +5,14 @@ type Ecosystem = 'npm' | 'actions' | 'uv';
 type Session = Readonly<{ close: () => void }>;
 export type PacketAssemblyResult =
   | Readonly<{ kind: 'ready'; packet: Extract<PacketResult, { ok: true }>['packet'] }>
-  | Readonly<{ kind: 'incomplete' | 'stale' | 'internal-failure' }>;
+  | Readonly<{ kind: 'incomplete' | 'stale' | 'internal-failure' }>
+  /** C2 could not produce a usable context; `category` is C2's own failure category. */
+  | Readonly<{ kind: 'context-failure'; category: string }>;
 export type PacketAssemblyInput<S extends Session = Session> = Readonly<{
+  /** Binding, base SHA, and context revision; `context` too unless `collectContext` supplies it. */
   trusted: unknown;
+  /** Collects C2 context for the changes the collectors found, before the packet is validated. */
+  collectContext?: (changes: readonly unknown[]) => Promise<unknown>;
   isCurrent: () => boolean;
   openSession: () => Promise<S>;
   collectors: Readonly<Record<Ecosystem, (session: S) => Promise<unknown>>>;
@@ -62,15 +67,29 @@ export async function assembleReviewPacket<S extends Session>(
         return input.isCurrent() ? { kind: 'incomplete' } : { kind: 'stale' };
       fragments.push(value);
     }
-    if (!record(input.trusted, ['binding', 'baseSha', 'contextRevision', 'context']))
+    if (!record(input.trusted, ['binding', 'baseSha', 'contextRevision']))
       return { kind: 'internal-failure' };
+    let trusted: Record<string, unknown> = input.trusted;
+    if (input.collectContext) {
+      const context = await input.collectContext(fragments.flatMap((item) => item.changes));
+      if (!input.isCurrent()) return { kind: 'stale' };
+      if (!record(context, ['ok'])) return { kind: 'internal-failure' };
+      if (context.ok !== true)
+        return {
+          kind: 'context-failure',
+          category: record(context.error, ['category'])
+            ? String(context.error.category)
+            : 'unknown',
+        };
+      trusted = { ...trusted, context };
+    } else if (!Object.hasOwn(trusted, 'context')) return { kind: 'internal-failure' };
     const packet = validateReviewPacket(
       {
         version: 1,
         binding: input.trusted.binding,
         baseSha: input.trusted.baseSha,
-        contextRevision: input.trusted.contextRevision,
-        context: input.trusted.context,
+        contextRevision: trusted.contextRevision,
+        context: trusted.context,
         coverage: Object.fromEntries(fragments.map((item) => [item.ecosystem, item.coverage])),
         changes: fragments.flatMap((item) => item.changes),
         sources: [
@@ -82,7 +101,7 @@ export async function assembleReviewPacket<S extends Session>(
         findings: fragments.flatMap((item) => item.findings),
         relationships: fragments.flatMap((item) => item.relationships),
       },
-      input.trusted,
+      trusted,
     );
     return packet.ok ? { kind: 'ready', packet: packet.packet } : { kind: 'incomplete' };
   } catch {

@@ -421,3 +421,27 @@ test.each([
     );
   },
 );
+
+test('hands the authentic npm inventory to the caller for upstream research', async () => {
+  const fixture = npmScenario(2, false, 'empty', true);
+  const opened = await openEvidenceSession({
+    binding: fixture.binding,
+    fetch: fixture.fetch,
+    now: () => 0,
+    deadline: W2_EVIDENCE_LIMITS.totalTimeoutMs,
+  });
+  if (opened.kind !== 'ready') throw new Error('expected a D1 session');
+  const configRevision = fixture.expected.contextRevision;
+  const seen: unknown[] = [];
+  const collectors = createEvidenceCollectors({
+    binding: fixture.binding,
+    dependabot: configured(configRevision),
+    registryFetch: async () => new Response('{}'),
+    onNpmInventory: (inventory) => seen.push(inventory),
+    now: () => 0,
+    deadline: W2_EVIDENCE_LIMITS.totalTimeoutMs,
+  });
+  await collectors.npm(opened.session);
+  expect(seen).toHaveLength(1);
+  expect(seen[0]).toMatchObject({ kind: 'inventory', binding: fixture.binding });
+});
