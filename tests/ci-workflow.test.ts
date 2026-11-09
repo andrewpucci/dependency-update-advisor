@@ -6,7 +6,7 @@ const quality = workflow.match(/^ {2}quality:\n((?: {4}[^\n]*\n|\n)*)/m)?.[1] ??
 const steps = quality.split(/(?=^ {6}- )/m).slice(1);
 const runSteps = steps.filter((step) => /^ {8}run:/m.test(step));
 
-test('runs every non-mutating check in order in the quality job', () => {
+test('runs every check in order, then builds and rejects bundle drift', () => {
   expect(runSteps.map((step) => step.match(/^ {8}run: (.+)$/m)?.[1])).toEqual([
     '|',
     'npm ci',
@@ -14,6 +14,9 @@ test('runs every non-mutating check in order in the quality job', () => {
     'npm run format:check',
     'npm run check',
     'npm test -- --run',
+    'npm run build',
+    'git diff --exit-code',
+    `test -z "$(git status --porcelain --ignored --untracked-files=all | grep -v '^!! node_modules/')"`,
   ]);
   expect(quality).not.toMatch(/^ {4,}(?:if|continue-on-error|shell|permissions|defaults):/m);
   expect(workflow).not.toMatch(/^defaults:/m);
@@ -56,6 +59,6 @@ test('uses pinned setup with read-only access and default event checkout', () =>
     '- uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0\n' +
       "        with:\n          node-version: '24'\n          package-manager-cache: false",
   );
-  expect(steps).toHaveLength(8);
+  expect(steps).toHaveLength(11);
   expect(quality).not.toMatch(/\$\{\{\s*secrets(?:\.|\[)/);
 });

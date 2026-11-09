@@ -42,3 +42,9 @@ jobs:
         run: npm run check
       - name: Run tests
         run: npm test -- --run
+      - name: Build action bundle
+        run: npm run build
+      - name: Reject tracked bundle drift
+        run: git diff --exit-code
+      - name: Reject untracked or ignored build output
+        run: test -z "$(git status --porcelain --ignored --untracked-files=all | grep -v '^!! node_modules/')"
