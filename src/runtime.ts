@@ -3,13 +3,19 @@ import { positiveId, record, type RepositoryIdentity, type WorkflowIdentity } fr
 import { httpReason } from './github-read.js';
 import type { EvidenceReason } from './schema.js';
 
+/**
+ * Snapshot reads (repository, commit, trees, blobs) and freshness reads (workflow, run, pull
+ * request, comparison) draw on separate shares, so a heavy snapshot cannot starve the checks that
+ * keep a finished review valid. Time is one shared deadline.
+ */
 export const W2_GITHUB_LIMITS = Object.freeze({
-  maxRequests: W2_ALLOCATION.transport.maxRequests,
+  snapshot: W2_ALLOCATION.transport.snapshot,
+  freshness: W2_ALLOCATION.transport.freshness,
   maxResponseBytes: W2_ENVELOPE.maxResponseBytes,
-  maxTotalBytes: W2_ALLOCATION.transport.maxTotalBytes,
   requestTimeoutMs: W2_ENVELOPE.requestTimeoutMs,
   totalTimeoutMs: W2_ENVELOPE.totalTimeoutMs,
 });
+type Share = 'snapshot' | 'freshness';
 
 export type Runtime = Readonly<{
   githubToken: string;
@@ -153,14 +159,18 @@ function json(body: Uint8Array): unknown {
 }
 
 export function createGithubTransport(dependencies: TransportDependencies): GithubTransport {
-  let requests = 0;
-  let bytes = 0;
+  const used = {
+    snapshot: { requests: 0, bytes: 0 },
+    freshness: { requests: 0, bytes: 0 },
+  };
   const started = dependencies.now();
 
-  const read = async (url: string, signal?: AbortSignal): Promise<GithubRead> => {
+  const read = async (share: Share, url: string, signal?: AbortSignal): Promise<GithubRead> => {
+    const limits = W2_GITHUB_LIMITS[share];
+    const spent = used[share];
     if (
       signal?.aborted ||
-      ++requests > W2_GITHUB_LIMITS.maxRequests ||
+      ++spent.requests > limits.maxRequests ||
       dependencies.now() - started >= W2_GITHUB_LIMITS.totalTimeoutMs
     )
       return { kind: 'unavailable', reason: 'budget' };
@@ -185,10 +195,10 @@ export function createGithubTransport(dependencies: TransportDependencies): Gith
       });
       const { body, size } = await boundedBody(
         response,
-        Math.min(W2_GITHUB_LIMITS.maxResponseBytes, W2_GITHUB_LIMITS.maxTotalBytes - bytes),
+        Math.min(W2_GITHUB_LIMITS.maxResponseBytes, limits.maxTotalBytes - spent.bytes),
         controller.signal,
       );
-      bytes += size;
+      spent.bytes += size;
       if (!body) return { kind: 'unavailable', reason: 'budget' };
       const value = json(body);
       // Error bodies feed github-read's classifier so permission, missing, and rate limits stay distinct.
@@ -213,6 +223,7 @@ export function createGithubTransport(dependencies: TransportDependencies): Gith
     readWorkflowById: (repository, workflowId) =>
       positiveId(workflowId)
         ? read(
+            'freshness',
             route(
               'repos',
               repository.owner,
@@ -225,26 +236,46 @@ export function createGithubTransport(dependencies: TransportDependencies): Gith
         : malformed(),
     readRun: (repository, runId) =>
       positiveId(runId)
-        ? read(route('repos', repository.owner, repository.name, 'actions', 'runs', String(runId)))
+        ? read(
+            'freshness',
+            route('repos', repository.owner, repository.name, 'actions', 'runs', String(runId)),
+          )
         : malformed(),
     readPullRequest: (repository, pullNumber) =>
       positiveId(pullNumber)
-        ? read(route('repos', repository.owner, repository.name, 'pulls', String(pullNumber)))
+        ? read(
+            'freshness',
+            route('repos', repository.owner, repository.name, 'pulls', String(pullNumber)),
+          )
         : malformed(),
     readComparison: (repository, base, head) =>
       sha(base) && sha(head)
-        ? read(route('repos', repository.owner, repository.name, 'compare', `${base}...${head}`))
+        ? read(
+            'freshness',
+            route('repos', repository.owner, repository.name, 'compare', `${base}...${head}`),
+          )
         : malformed(),
     readWorkflow: (repository, file) =>
-      read(route('repos', repository.owner, repository.name, 'actions', 'workflows', file)),
+      read(
+        'freshness',
+        route('repos', repository.owner, repository.name, 'actions', 'workflows', file),
+      ),
     readRepository: (repository, signal) =>
-      read(route('repos', repository.owner, repository.name), signal),
+      read('snapshot', route('repos', repository.owner, repository.name), signal),
     readCommit: (repository, ref, signal) =>
-      read(route('repos', repository.owner, repository.name, 'commits', ref), signal),
+      read('snapshot', route('repos', repository.owner, repository.name, 'commits', ref), signal),
     readTree: (repository, sha, signal) =>
-      read(route('repos', repository.owner, repository.name, 'git', 'trees', sha), signal),
+      read(
+        'snapshot',
+        route('repos', repository.owner, repository.name, 'git', 'trees', sha),
+        signal,
+      ),
     readBlob: (repository, sha, signal) =>
-      read(route('repos', repository.owner, repository.name, 'git', 'blobs', sha), signal),
+      read(
+        'snapshot',
+        route('repos', repository.owner, repository.name, 'git', 'blobs', sha),
+        signal,
+      ),
   });
 }
 

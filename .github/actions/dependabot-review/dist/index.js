@@ -13623,9 +13623,16 @@ function finding$1(change, record, ref) {
 		...record.range ? { affectedRange: record.range } : {},
 		references: [ref],
 		rationale: record.withdrawn ? "The cited advisory was withdrawn." : "The cited reviewed advisory affects the exact proposed target.",
-		remediation: [],
-		validation: []
+		remediation: remediation(change, record),
+		validation: [record.withdrawn ? "Confirm the advisory is still withdrawn when the review is re-run." : "Re-run CI and the advisory lookup on the changed version and confirm this advisory no longer applies."]
 	};
+}
+/** The steps are generic by design: they name the package and range, never a guessed fixed version. */
+function remediation(change, record) {
+	const instance = change.to ?? change.from;
+	const name = instance && "name" in instance ? instance.name : instance && "action" in instance ? instance.action : "the dependency";
+	if (record.withdrawn) return [`No change is needed for ${name}; the cited advisory was withdrawn.`];
+	return [`Use a version of ${name} outside the affected range${record.range ? ` (${record.range})` : ""}, or keep the current version.`];
 }
 function samePackage(base, head) {
 	return !!base?.target && !!head?.target && base.target.ecosystem === head.target.ecosystem && base.target.name === head.target.name;
@@ -22184,9 +22191,9 @@ async function reviewPacket(input) {
 const MiB = 1048576;
 /** Bounds for all pre-analysis evidence reads. Time is shared; every reader gets what remains. */
 const W2_ENVELOPE = Object.freeze({
-	maxRequests: 512,
+	maxRequests: 672,
 	maxResponseBytes: MiB,
-	maxTotalBytes: 32 * MiB,
+	maxTotalBytes: 40 * MiB,
 	requestTimeoutMs: 15e3,
 	totalTimeoutMs: 24e4
 });
@@ -22196,8 +22203,16 @@ const W2_ENVELOPE = Object.freeze({
 */
 const W2_ALLOCATION = Object.freeze({
 	transport: Object.freeze({
-		maxRequests: 64,
-		maxTotalBytes: 4 * MiB
+		maxRequests: 224,
+		maxTotalBytes: 12 * MiB,
+		snapshot: Object.freeze({
+			maxRequests: 200,
+			maxTotalBytes: 9 * MiB
+		}),
+		freshness: Object.freeze({
+			maxRequests: 24,
+			maxTotalBytes: 3 * MiB
+		})
 	}),
 	session: Object.freeze({
 		maxRequests: 160,
@@ -29294,10 +29309,15 @@ async function evaluateEvidence(input, binding, started, state, recheck) {
 }
 
 // src/runtime.ts
+/**
+* Snapshot reads (repository, commit, trees, blobs) and freshness reads (workflow, run, pull
+* request, comparison) draw on separate shares, so a heavy snapshot cannot starve the checks that
+* keep a finished review valid. Time is one shared deadline.
+*/
 const W2_GITHUB_LIMITS = Object.freeze({
-	maxRequests: W2_ALLOCATION.transport.maxRequests,
+	snapshot: W2_ALLOCATION.transport.snapshot,
+	freshness: W2_ALLOCATION.transport.freshness,
 	maxResponseBytes: W2_ENVELOPE.maxResponseBytes,
-	maxTotalBytes: W2_ALLOCATION.transport.maxTotalBytes,
 	requestTimeoutMs: W2_ENVELOPE.requestTimeoutMs,
 	totalTimeoutMs: W2_ENVELOPE.totalTimeoutMs
 });
@@ -29390,11 +29410,21 @@ function json(body) {
 	}
 }
 function createGithubTransport(dependencies) {
-	let requests = 0;
-	let bytes = 0;
+	const used = {
+		snapshot: {
+			requests: 0,
+			bytes: 0
+		},
+		freshness: {
+			requests: 0,
+			bytes: 0
+		}
+	};
 	const started = dependencies.now();
-	const read = async (url, signal) => {
-		if (signal?.aborted || ++requests > W2_GITHUB_LIMITS.maxRequests || dependencies.now() - started >= W2_GITHUB_LIMITS.totalTimeoutMs) return {
+	const read = async (share, url, signal) => {
+		const limits = W2_GITHUB_LIMITS[share];
+		const spent = used[share];
+		if (signal?.aborted || ++spent.requests > limits.maxRequests || dependencies.now() - started >= W2_GITHUB_LIMITS.totalTimeoutMs) return {
 			kind: "unavailable",
 			reason: "budget"
 		};
@@ -29414,8 +29444,8 @@ function createGithubTransport(dependencies) {
 				},
 				signal: controller.signal
 			});
-			const { body, size } = await boundedBody(response, Math.min(W2_GITHUB_LIMITS.maxResponseBytes, W2_GITHUB_LIMITS.maxTotalBytes - bytes), controller.signal);
-			bytes += size;
+			const { body, size } = await boundedBody(response, Math.min(W2_GITHUB_LIMITS.maxResponseBytes, limits.maxTotalBytes - spent.bytes), controller.signal);
+			spent.bytes += size;
 			if (!body) return {
 				kind: "unavailable",
 				reason: "budget"
@@ -29448,15 +29478,15 @@ function createGithubTransport(dependencies) {
 	});
 	const sha = (value) => /^[a-f\d]{40}$/u.test(value);
 	return Object.freeze({
-		readWorkflowById: (repository, workflowId) => positiveId(workflowId) ? read(route("repos", repository.owner, repository.name, "actions", "workflows", String(workflowId))) : malformed(),
-		readRun: (repository, runId) => positiveId(runId) ? read(route("repos", repository.owner, repository.name, "actions", "runs", String(runId))) : malformed(),
-		readPullRequest: (repository, pullNumber) => positiveId(pullNumber) ? read(route("repos", repository.owner, repository.name, "pulls", String(pullNumber))) : malformed(),
-		readComparison: (repository, base, head) => sha(base) && sha(head) ? read(route("repos", repository.owner, repository.name, "compare", `${base}...${head}`)) : malformed(),
-		readWorkflow: (repository, file) => read(route("repos", repository.owner, repository.name, "actions", "workflows", file)),
-		readRepository: (repository, signal) => read(route("repos", repository.owner, repository.name), signal),
-		readCommit: (repository, ref, signal) => read(route("repos", repository.owner, repository.name, "commits", ref), signal),
-		readTree: (repository, sha, signal) => read(route("repos", repository.owner, repository.name, "git", "trees", sha), signal),
-		readBlob: (repository, sha, signal) => read(route("repos", repository.owner, repository.name, "git", "blobs", sha), signal)
+		readWorkflowById: (repository, workflowId) => positiveId(workflowId) ? read("freshness", route("repos", repository.owner, repository.name, "actions", "workflows", String(workflowId))) : malformed(),
+		readRun: (repository, runId) => positiveId(runId) ? read("freshness", route("repos", repository.owner, repository.name, "actions", "runs", String(runId))) : malformed(),
+		readPullRequest: (repository, pullNumber) => positiveId(pullNumber) ? read("freshness", route("repos", repository.owner, repository.name, "pulls", String(pullNumber))) : malformed(),
+		readComparison: (repository, base, head) => sha(base) && sha(head) ? read("freshness", route("repos", repository.owner, repository.name, "compare", `${base}...${head}`)) : malformed(),
+		readWorkflow: (repository, file) => read("freshness", route("repos", repository.owner, repository.name, "actions", "workflows", file)),
+		readRepository: (repository, signal) => read("snapshot", route("repos", repository.owner, repository.name), signal),
+		readCommit: (repository, ref, signal) => read("snapshot", route("repos", repository.owner, repository.name, "commits", ref), signal),
+		readTree: (repository, sha, signal) => read("snapshot", route("repos", repository.owner, repository.name, "git", "trees", sha), signal),
+		readBlob: (repository, sha, signal) => read("snapshot", route("repos", repository.owner, repository.name, "git", "blobs", sha), signal)
 	});
 }
 async function resolveWorkflow(runtime, transport) {

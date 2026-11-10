@@ -139,10 +139,29 @@ receives `process.env` or a general fetch function.
    bodies. Existing distinctions, including permission/feature versus rate-limit
    403, are preserved.
 
-   Approved execution envelope, 2026-11-08: 512 total requests, 1 MiB per
-   response, 32 MiB total response bytes, a 15,000 ms request timeout, and a
-   240,000 ms total deadline. Exceeding any bound is a fail-closed unavailable
-   outcome; it does not replace an individual reader's approved limits.
+   Approved execution envelope, amended 2026-11-09: 672 total requests, 1 MiB
+   per response, 40 MiB total response bytes, a 15,000 ms request timeout, and
+   a 240,000 ms total deadline. Exceeding any bound is a fail-closed
+   unavailable outcome; it does not replace an individual reader's approved
+   limits.
+
+   The requests and bytes are divided between readers; one reader never
+   borrows from another. The time limit is one shared deadline.
+
+   | Reader                                    | Requests | Bytes  |
+   | ----------------------------------------- | -------- | ------ |
+   | Snapshot reads (repository, commit, tree) | 200      | 9 MiB  |
+   | Freshness reads (workflow, run, PR)       | 24       | 3 MiB  |
+   | GitHub evidence session                   | 160      | 12 MiB |
+   | npm registry details                      | 64       | 4 MiB  |
+   | Upstream evidence                         | 96       | 6 MiB  |
+   | Advisory lookup                           | 64       | 4 MiB  |
+   | Policy signals (five readers)             | 64       | 2 MiB  |
+
+   The snapshot share covers C1's 128 excerpt files with their directories.
+   Freshness reads are reserved separately so a heavy snapshot cannot prevent
+   the checks that keep a finished review valid. A failed freshness read is
+   an internal failure, never a stale head.
 
 3. **Credential separation.** `github-token` performs GitHub reads;
    `app-token` is reserved for later publication. Collectors, source context,

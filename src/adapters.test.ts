@@ -1,6 +1,7 @@
 import { expect, test, vi } from 'vite-plus/test';
 import { authenticatedFetch, createEventReads, publicFetch } from './adapters.js';
-import { createGithubTransport } from './runtime.js';
+import { createGithubTransport, W2_GITHUB_LIMITS } from './runtime.js';
+import { createGithubSnapshotReads } from './snapshot.js';
 import { createTestClaimStore } from './review.js';
 
 const repository = { id: 101, owner: 'example', name: 'consumer' };
@@ -96,4 +97,19 @@ test('never lets a credential reach a public source', async () => {
 test('fails without echoing the token in the error', async () => {
   const authed = authenticatedFetch('sentinel-read-token', async () => new Response('{}'));
   await expect(authed('https://example.com/', {})).rejects.toThrow(/^(?!.*sentinel-read-token)/u);
+});
+
+test('keeps event verification reads available after the snapshot share is exhausted', async () => {
+  const transport = transportFor(() => new Response('{"ok":true}'));
+  const reads = createEventReads(transport, createTestClaimStore());
+  const snapshot = createGithubSnapshotReads(transport);
+  for (let index = 0; index < W2_GITHUB_LIMITS.snapshot.maxRequests; index += 1)
+    await snapshot.readBlob(repository, 'a'.repeat(40));
+  await expect(snapshot.readBlob(repository, 'a'.repeat(40))).resolves.toEqual({
+    kind: 'unavailable',
+    reason: 'budget',
+  });
+  for (let index = 0; index < W2_GITHUB_LIMITS.freshness.maxRequests; index += 1)
+    await expect(reads.readRun(repository, 401)).resolves.toEqual({ ok: true });
+  await expect(reads.readRun(repository, 401)).rejects.toThrow();
 });

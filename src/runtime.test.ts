@@ -103,9 +103,9 @@ test('fails closed on a rate limit, redirect, or aggregate request budget', asyn
   });
 
   expect(W2_GITHUB_LIMITS).toEqual({
-    maxRequests: 64,
+    snapshot: { maxRequests: 200, maxTotalBytes: 9 * 1024 * 1024 },
+    freshness: { maxRequests: 24, maxTotalBytes: 3 * 1024 * 1024 },
     maxResponseBytes: 1024 * 1024,
-    maxTotalBytes: 4 * 1024 * 1024,
     requestTimeoutMs: 15_000,
     totalTimeoutMs: 240_000,
   });
@@ -221,36 +221,112 @@ test('limits a late request to the time left in the total deadline', async () =>
   }
 });
 
-test('refuses the request after the transport share and stops at its byte share', async () => {
-  const ok = createGithubTransport({
+type Transport = ReturnType<typeof createGithubTransport>;
+const snapshotRead = (transport: Transport) => transport.readBlob(repo, 'a'.repeat(40));
+const freshnessRead = (transport: Transport) => transport.readRun(repo, 401);
+const budget = { kind: 'unavailable', reason: 'budget' } as const;
+
+test.each([
+  ['snapshot', snapshotRead, 'snapshot', 200],
+  ['freshness', freshnessRead, 'freshness', 24],
+] as const)(
+  'refuses a %s read after its own request share',
+  async (_name, read, share, requests) => {
+    expect(W2_GITHUB_LIMITS[share].maxRequests).toBe(requests);
+    const transport = createGithubTransport({
+      token: 'read-token',
+      now: () => 0,
+      fetch: async () => new Response('{}'),
+    });
+    for (let index = 0; index < requests; index += 1)
+      await expect(read(transport)).resolves.toMatchObject({ kind: 'available' });
+    await expect(read(transport)).resolves.toEqual(budget);
+  },
+);
+
+test('an exhausted snapshot share cannot starve freshness reads, and the reverse', async () => {
+  const transport = createGithubTransport({
     token: 'read-token',
     now: () => 0,
     fetch: async () => new Response('{}'),
   });
-  for (let index = 0; index < W2_GITHUB_LIMITS.maxRequests; index += 1)
-    await expect(ok.readRepository(repo)).resolves.toMatchObject({ kind: 'available' });
-  await expect(ok.readRepository(repo)).resolves.toEqual({ kind: 'unavailable', reason: 'budget' });
-
-  const chunk = JSON.stringify({ pad: 'x'.repeat(W2_GITHUB_LIMITS.maxResponseBytes - 32) });
-  const heavy = createGithubTransport({
-    token: 'read-token',
-    now: () => 0,
-    fetch: async () => new Response(chunk),
-  });
-  let reads = 0;
-  for (;;) {
-    const result = await heavy.readRepository(repo);
-    if (result.kind === 'unavailable') {
-      expect(result).toEqual({ kind: 'unavailable', reason: 'budget' });
-      break;
-    }
-    reads += 1;
-    expect(reads).toBeLessThan(10);
-  }
-  expect(reads).toBeLessThanOrEqual(
-    Math.ceil(W2_GITHUB_LIMITS.maxTotalBytes / W2_GITHUB_LIMITS.maxResponseBytes),
-  );
+  for (let index = 0; index < W2_GITHUB_LIMITS.snapshot.maxRequests; index += 1)
+    await snapshotRead(transport);
+  await expect(snapshotRead(transport)).resolves.toEqual(budget);
+  for (let index = 0; index < W2_GITHUB_LIMITS.freshness.maxRequests; index += 1)
+    await expect(freshnessRead(transport)).resolves.toMatchObject({ kind: 'available' });
+  await expect(freshnessRead(transport)).resolves.toEqual(budget);
+  await expect(snapshotRead(transport)).resolves.toEqual(budget);
 });
+
+test('puts every freshness endpoint on the reserve and every snapshot endpoint on the snapshot share', async () => {
+  const sha = 'a'.repeat(40);
+  const reads = {
+    freshness: [
+      (t: Transport) => t.readWorkflow(repo, 'ci.yml'),
+      (t: Transport) => t.readWorkflowById(repo, 301),
+      (t: Transport) => t.readRun(repo, 401),
+      (t: Transport) => t.readPullRequest(repo, 42),
+      (t: Transport) => t.readComparison(repo, sha, sha),
+    ],
+    snapshot: [
+      (t: Transport) => t.readRepository(repo),
+      (t: Transport) => t.readCommit(repo, 'main'),
+      (t: Transport) => t.readTree(repo, sha),
+      (t: Transport) => t.readBlob(repo, sha),
+    ],
+  };
+  for (const [share, other] of [
+    ['freshness', 'snapshot'],
+    ['snapshot', 'freshness'],
+  ] as const) {
+    for (const read of reads[share]) {
+      const transport = createGithubTransport({
+        token: 'read-token',
+        now: () => 0,
+        fetch: async () => new Response('{}'),
+      });
+      // Spend this share to zero through a different endpoint of the same class, then read.
+      for (let index = 0; index < W2_GITHUB_LIMITS[share].maxRequests; index += 1)
+        await (share === 'snapshot' ? snapshotRead : freshnessRead)(transport);
+      await expect(read(transport)).resolves.toEqual(budget);
+      // The other share is untouched.
+      await expect(
+        (other === 'snapshot' ? snapshotRead : freshnessRead)(transport),
+      ).resolves.toMatchObject({ kind: 'available' });
+    }
+  }
+});
+
+test.each([
+  ['snapshot', snapshotRead],
+  ['freshness', freshnessRead],
+] as const)(
+  "stops a %s read at that share's byte limit and leaves the other share alone",
+  async (share, read) => {
+    const chunk = JSON.stringify({ pad: 'x'.repeat(W2_GITHUB_LIMITS.maxResponseBytes - 32) });
+    const transport = createGithubTransport({
+      token: 'read-token',
+      now: () => 0,
+      fetch: async () => new Response(chunk),
+    });
+    let reads = 0;
+    for (;;) {
+      const result = await read(transport);
+      if (result.kind === 'unavailable') {
+        expect(result).toEqual(budget);
+        break;
+      }
+      reads += 1;
+      expect(reads).toBeLessThan(20);
+    }
+    expect(reads).toBeLessThanOrEqual(
+      Math.ceil(W2_GITHUB_LIMITS[share].maxTotalBytes / W2_GITHUB_LIMITS.maxResponseBytes),
+    );
+    const other = share === 'snapshot' ? freshnessRead : snapshotRead;
+    await expect(other(transport)).resolves.toMatchObject({ kind: 'available' });
+  },
+);
 
 test('reads runs, pull requests, comparisons, and workflows by ID from the fixed origin', async () => {
   const fetch = vi.fn(async (_url: string, _init: RequestInit) => new Response('{"ok":true}'));
