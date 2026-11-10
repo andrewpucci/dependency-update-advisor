@@ -12502,20 +12502,6 @@ function freeze$2(value) {
 	}
 	return value;
 }
-/** Node clamps oversized delays; schedule long caller deadlines in platform-sized intervals. */
-function timer(duration, expire) {
-	let remaining = duration, handle;
-	const schedule = () => {
-		const interval = Math.min(remaining, 2 ** 31 - 1);
-		handle = setTimeout(() => {
-			remaining -= interval;
-			if (remaining > 0) schedule();
-			else expire();
-		}, interval);
-	};
-	schedule();
-	return () => clearTimeout(handle);
-}
 function statusReason(status) {
 	if (status >= 300 && status < 400) return "unsupported";
 	if (status === 401 || status === 403) return "permission";
@@ -12533,26 +12519,22 @@ var RegistryReader = class {
 	retained = 0;
 	busy = false;
 	stopped = null;
-	started;
-	last;
+	clock;
 	constructor(limits, deps) {
 		this.limits = limits;
 		this.deps = deps;
-		this.started = this.last = deps.now();
-		requireMetadata(Number.isFinite(this.started), "unknown");
+		this.clock = new BoundedClock(limits.totalTimeoutMs, deps);
 	}
 	remaining() {
 		if (this.deps.signal?.aborted) this.stopped ??= "unknown";
 		if (this.stopped) throw new RegistryFailure(this.stopped);
-		const time = this.deps.now();
-		requireMetadata(Number.isFinite(time) && time >= this.last, "unknown");
-		this.last = time;
-		const remaining = this.limits.totalTimeoutMs - (time - this.started);
-		if (remaining <= 0) {
-			this.stopped = "timeout";
-			throw new RegistryFailure("timeout");
+		try {
+			return this.clock.remaining(this.stopped);
+		} catch (error) {
+			const reason = error instanceof AdvisoryFailure ? error.reason : "unknown";
+			if (reason === "timeout") this.stopped = reason;
+			throw new RegistryFailure(reason);
 		}
-		return remaining;
 	}
 	consume(amount, field, maximum) {
 		this[field] += amount;
@@ -12626,45 +12608,24 @@ var RegistryReader = class {
 		}
 	}
 	async fetchDocument(r) {
-		const duration = Math.min(this.limits.requestTimeoutMs, this.remaining());
-		const controller = new AbortController();
-		let rejectAbort = () => {};
-		const aborted = new Promise((_, reject) => {
-			rejectAbort = reject;
-		});
-		const stop = (reason) => {
-			rejectAbort(new RegistryFailure(reason));
-			controller.abort();
-		};
-		const cancel = () => {
-			this.stopped = "unknown";
-			stop("unknown");
-		};
-		const clear = timer(duration, () => stop("timeout"));
-		this.deps.signal?.addEventListener("abort", cancel, { once: true });
 		const url = `https://registry.npmjs.org/${encodeURIComponent(r.name)}/${encodeURIComponent(r.version)}`;
-		let response;
 		try {
-			this.remaining();
-			response = await Promise.race([this.deps.fetch(url, {
-				method: "GET",
-				redirect: "manual",
-				credentials: "omit",
-				headers: { accept: "application/json" },
-				signal: controller.signal
-			}), aborted]);
-			requireMetadata(!response.redirected && (!response.url || response.url === url), "unsupported");
-			if (response.status === 429) this.stopped = "rate_limit";
-			requireMetadata(response.status === 200, statusReason(response.status));
-			requireMetadata(/^application\/json(?:\s*;|$)/iu.test(response.headers.get("content-type") ?? ""), "unsupported");
-			const bytes = await this.body(response, aborted);
-			this.remaining();
-			return this.parse(bytes, r, url);
-		} finally {
-			clear();
-			this.deps.signal?.removeEventListener("abort", cancel);
-			controller.abort();
-			if (response?.body && !response.body.locked) response.body.cancel().catch(() => {});
+			return await boundedGet(this.deps, {
+				url,
+				accept: "application/json",
+				timeoutMs: Math.min(this.limits.requestTimeoutMs, this.remaining())
+			}, () => {}, async (response, aborted) => {
+				requireMetadata(!response.redirected && (!response.url || response.url === url), "unsupported");
+				if (response.status === 429) this.stopped = "rate_limit";
+				requireMetadata(response.status === 200, statusReason(response.status));
+				requireMetadata(/^application\/json(?:\s*;|$)/iu.test(response.headers.get("content-type") ?? ""), "unsupported");
+				const bytes = await this.body(response, aborted);
+				this.remaining();
+				return this.parse(bytes, r, url);
+			});
+		} catch (error) {
+			if (error instanceof AdvisoryFailure) throw new RegistryFailure(error.reason);
+			throw error;
 		}
 	}
 	cacheFailure(key, error) {
