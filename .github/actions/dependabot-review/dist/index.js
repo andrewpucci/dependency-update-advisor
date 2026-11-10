@@ -22188,12 +22188,20 @@ async function reviewPacket(input) {
 			analysisUnavailable: false,
 			signalAttempts: input.signalAttempts
 		});
-		return rendered.ok ? {
-			kind: input.researchIncomplete ? "incomplete-evidence" : assessed.kind,
-			body: rendered.body
+		if (!rendered.ok) return rendered.category === "size" ? {
+			kind: "internal-failure",
+			body: null,
+			gaps: [{
+				source: "brief",
+				reason: "budget"
+			}]
 		} : {
 			kind: "internal-failure",
 			body: null
+		};
+		return {
+			kind: input.researchIncomplete ? "incomplete-evidence" : assessed.kind,
+			body: rendered.body
 		};
 	} catch {
 		return {

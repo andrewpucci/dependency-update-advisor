@@ -10,7 +10,7 @@ type Ecosystem = 'npm' | 'actions' | 'uv';
 type Session = Readonly<{ close: () => void }>;
 /** Which source gave no usable evidence, and a fixed reason; never error text. */
 export type PacketGap = Readonly<{
-  source: Ecosystem | 'packet';
+  source: Ecosystem | 'packet' | 'brief';
   reason: EvidenceReason;
 }>;
 

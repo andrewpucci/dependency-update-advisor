@@ -163,3 +163,22 @@ test('does not report success when research could not establish its evidence', a
   expect(result.kind).toBe('incomplete-evidence');
   expect(result.body).toEqual(expect.stringContaining(review.packet.binding.headSha));
 });
+
+test('names an oversized brief as a budget gap, and no other renderer failure', async () => {
+  const { review, complete } = await fixture();
+  const render = vi.spyOn(reportingModule, 'renderDecisionBrief');
+  render.mockReturnValueOnce({ ok: false, category: 'size' });
+  await expect(reviewPacket({ ...review, model: complete })).resolves.toEqual({
+    kind: 'internal-failure',
+    body: null,
+    gaps: [{ source: 'brief', reason: 'budget' }],
+  });
+  for (const category of ['input', 'reference', 'content'] as const) {
+    render.mockReturnValueOnce({ ok: false, category });
+    await expect(reviewPacket({ ...review, model: complete })).resolves.toEqual({
+      kind: 'internal-failure',
+      body: null,
+    });
+  }
+  render.mockRestore();
+});

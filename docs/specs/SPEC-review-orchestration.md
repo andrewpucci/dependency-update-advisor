@@ -213,7 +213,9 @@ receives `process.env` or a general fetch function.
    comment-ready body. The handoff states whether a body exists, separately
    from what the outcome may eventually do. When no packet could be assembled,
    it also names each source that gave no usable evidence (an ecosystem or the
-   packet) with one fixed evidence reason, never error text. Only a complete
+   packet) with one fixed evidence reason, never error text. A group too large
+   for the brief to render without truncating a required item is a failure
+   with a `brief` gap and reason `budget`, not a defect. Only a complete
    result is eligible for eventual success, after publication confirms the
    current-head comment was recorded.
    Skipped, stale, unverified, or unowned outcomes authorize neither status nor

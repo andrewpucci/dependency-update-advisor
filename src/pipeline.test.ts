@@ -121,6 +121,8 @@ function snapshot(
 type Overrides = Partial<PipelineInput> & {
   /** `changes` serves npm, Actions, and uv updates; the default repository has nothing changed. */
   evidence?: 'unchanged' | 'changes' | 'vulnerable' | 'uv-unsupported';
+  /** Extra npm packages in a `changes` repository, to build a large group. */
+  children?: number;
   pullRequestHeads?: string[];
   runFails?: boolean;
   /** Freshness reads for the run fail from this call (0-based) onward. */
@@ -142,6 +144,7 @@ async function setup(overrides: Overrides = {}) {
     visibility: _visibility,
     source: _source,
     evidence: _evidence,
+    children: _children,
     ...rest
   } = overrides;
   const { event, run, pullRequest } = t1();
@@ -151,7 +154,10 @@ async function setup(overrides: Overrides = {}) {
   const kind = overrides.evidence ?? 'unchanged';
   const changes =
     kind === 'changes' || kind === 'vulnerable'
-      ? await upstreamScenario({ vulnerableNpm: kind === 'vulnerable' })
+      ? await upstreamScenario({
+          vulnerableNpm: kind === 'vulnerable',
+          ...(overrides.children === undefined ? {} : { children: overrides.children }),
+        } as never)
       : null;
   const evidence = uvMetadataScenario('empty', {
     files: kind === 'unchanged' ? { base: unchanged, head: unchanged } : {},
@@ -866,4 +872,34 @@ test.each([
   const { input } = await setup(overrides);
   const result = await runReview(input);
   expect(result).toMatchObject({ kind: 'handed-off', handoff: { body: 'absent', gaps: [] } });
+});
+
+test.each([
+  ['a large group', 40],
+  ['a group near the largest the brief can render', 60],
+])('renders %s, listing every unit, within the body ceiling', async (_label, children) => {
+  const { input } = await setup({ evidence: 'changes', children });
+  const result = await runReview(input);
+  expect(result).toMatchObject({ kind: 'handed-off', handoff: { body: 'present', gaps: [] } });
+  if (result.kind !== 'handed-off') return;
+  expect(result.outcome).not.toBe('internal-failure');
+  expect(result.body?.length).toBeLessThanOrEqual(50_000);
+});
+
+test('hands a group too large to render off as a failure that says so, never as a defect', async () => {
+  const { input, sink } = await setup({ evidence: 'changes', children: 100 });
+  const result = await runReview(input);
+  // The brief must not truncate a required unit, so it fails; the prior comment is preserved.
+  expect(result).toMatchObject({
+    kind: 'handed-off',
+    outcome: 'internal-failure',
+    body: null,
+    handoff: {
+      status: 'failure',
+      comment: 'none',
+      body: 'absent',
+      gaps: [{ source: 'brief', reason: 'budget' }],
+    },
+  });
+  expect(sink.traces()[0]).toMatchObject({ gaps: [{ source: 'brief', reason: 'budget' }] });
 });

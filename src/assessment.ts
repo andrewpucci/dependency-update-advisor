@@ -2,6 +2,7 @@ import { analyzeDecisionUnits, type UnitRecord } from './analysis/batches.js';
 import { analyzeMistralBatch } from './analysis/mistral.js';
 import type { ConfigResult } from './config.js';
 import type { SignalAttempt } from './evidence/policy-signals.js';
+import type { PacketGap } from './packet.js';
 import { renderDecisionBrief } from './reporting.js';
 import type { PacketResult } from './schema.js';
 import { formDecisionUnits, type DecisionCoverage } from './units.js';
@@ -66,6 +67,8 @@ export type ReviewResult = Readonly<{
   kind: 'complete' | 'incomplete-evidence' | 'model-unavailable' | 'internal-failure';
   /** A comment-ready body, present only when the renderer accepted a valid assessment. */
   body: string | null;
+  /** Set when the brief was too large to render, which is a limit, not a defect. */
+  gaps?: readonly PacketGap[];
 }>;
 export type ReviewInput = AssessmentInput &
   Readonly<{
@@ -91,12 +94,14 @@ export async function reviewPacket(input: ReviewInput): Promise<ReviewResult> {
       analysisUnavailable: false,
       signalAttempts: input.signalAttempts,
     } as never);
-    return rendered.ok
-      ? {
-          kind: input.researchIncomplete ? 'incomplete-evidence' : assessed.kind,
-          body: rendered.body,
-        }
-      : { kind: 'internal-failure', body: null };
+    if (!rendered.ok)
+      return rendered.category === 'size'
+        ? { kind: 'internal-failure', body: null, gaps: [{ source: 'brief', reason: 'budget' }] }
+        : { kind: 'internal-failure', body: null };
+    return {
+      kind: input.researchIncomplete ? 'incomplete-evidence' : assessed.kind,
+      body: rendered.body,
+    };
   } catch {
     return { kind: 'internal-failure', body: null };
   }
