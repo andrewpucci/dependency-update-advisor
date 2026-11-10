@@ -72,6 +72,21 @@ function settle(collected: Collected): EcosystemRoots {
   return Object.freeze({ kind: 'roots', roots: Object.freeze([...collected.roots].sort()) });
 }
 
+function collectEntry(entry: unknown, collected: Record<Ecosystem, Collected>): void {
+  if (!(entry instanceof Map)) fail('malformed');
+  const ecosystem: unknown = entry.get('package-ecosystem');
+  if (typeof ecosystem !== 'string') fail('malformed');
+  // Entries for other ecosystems are never interpreted, so their other keys cannot fail the file.
+  if (ecosystem !== 'npm' && ecosystem !== 'uv') return;
+  const target = collected[ecosystem];
+  for (const directory of directoriesOf(entry)) {
+    const path = canonicalPath(directory);
+    if (path.kind === 'bad') target.malformed = true;
+    else if (path.kind === 'glob') target.unsupported = true;
+    else target.roots.add(path.path);
+  }
+}
+
 function extract(document: unknown): DependabotRoots {
   if (!(document instanceof Map) || document.get('version') !== 2) fail('malformed');
   const updates: unknown = document.get('updates');
@@ -81,20 +96,7 @@ function extract(document: unknown): DependabotRoots {
     npm: { roots: new Set(), malformed: false, unsupported: false },
     uv: { roots: new Set(), malformed: false, unsupported: false },
   };
-  for (const entry of updates) {
-    if (!(entry instanceof Map)) fail('malformed');
-    const ecosystem: unknown = entry.get('package-ecosystem');
-    if (typeof ecosystem !== 'string') fail('malformed');
-    // Entries for other ecosystems are never interpreted, so their other keys cannot fail the file.
-    if (ecosystem !== 'npm' && ecosystem !== 'uv') continue;
-    const target = collected[ecosystem];
-    for (const directory of directoriesOf(entry)) {
-      const path = canonicalPath(directory);
-      if (path.kind === 'bad') target.malformed = true;
-      else if (path.kind === 'glob') target.unsupported = true;
-      else target.roots.add(path.path);
-    }
-  }
+  for (const entry of updates) collectEntry(entry, collected);
   return Object.freeze({ kind: 'roots', npm: settle(collected.npm), uv: settle(collected.uv) });
 }
 
