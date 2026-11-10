@@ -25,6 +25,19 @@ export type AssessmentInput = Readonly<{
   model?: Readonly<{ now: () => number; analyze: typeof analyzeMistralBatch }>;
 }>;
 
+/**
+ * Required evidence is complete only when nothing is unresolved and no inventory or per-unit gap
+ * remains. This is the same condition the review body states, so the two cannot disagree.
+ */
+function evidenceComplete(coverage: DecisionCoverage): boolean {
+  return (
+    coverage.outcome.kind !== 'decision_incomplete' &&
+    coverage.counts.unresolvedUnits === 0 &&
+    coverage.inventoryGaps.length === 0 &&
+    !coverage.policyProvenance.assessments.units.some((unit) => unit.gaps.length > 0)
+  );
+}
+
 /** Uses the established M2 batching contract; no raw model data crosses this boundary. */
 export async function assessReviewPacket(input: AssessmentInput): Promise<AssessmentResult> {
   if (!input.config.ok) return { kind: 'internal-failure' };
@@ -42,8 +55,7 @@ export async function assessReviewPacket(input: AssessmentInput): Promise<Assess
     );
     if (!result.ok) return { kind: 'internal-failure' };
     if (result.analysisUnavailable) return { kind: 'model-unavailable' };
-    const kind =
-      result.coverage.outcome.kind === 'decision_incomplete' ? 'incomplete-evidence' : 'complete';
+    const kind = evidenceComplete(result.coverage) ? 'complete' : 'incomplete-evidence';
     return { kind, records: result.records, coverage: result.coverage };
   } catch {
     return { kind: 'internal-failure' };
@@ -55,7 +67,12 @@ export type ReviewResult = Readonly<{
   /** A comment-ready body, present only when the renderer accepted a valid assessment. */
   body: string | null;
 }>;
-export type ReviewInput = AssessmentInput & Readonly<{ signalAttempts: readonly SignalAttempt[] }>;
+export type ReviewInput = AssessmentInput &
+  Readonly<{
+    signalAttempts: readonly SignalAttempt[];
+    /** True when a research stage could not be established; success is then impossible. */
+    researchIncomplete?: boolean;
+  }>;
 
 /**
  * Assesses the packet and renders its review body. The renderer runs only for a valid assessment;
@@ -75,7 +92,10 @@ export async function reviewPacket(input: ReviewInput): Promise<ReviewResult> {
       signalAttempts: input.signalAttempts,
     } as never);
     return rendered.ok
-      ? { kind: assessed.kind, body: rendered.body }
+      ? {
+          kind: input.researchIncomplete ? 'incomplete-evidence' : assessed.kind,
+          body: rendered.body,
+        }
       : { kind: 'internal-failure', body: null };
   } catch {
     return { kind: 'internal-failure', body: null };

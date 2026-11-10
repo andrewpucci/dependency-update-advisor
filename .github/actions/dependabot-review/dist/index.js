@@ -22109,6 +22109,13 @@ function renderDecisionBrief(input) {
 }
 
 // src/assessment.ts
+/**
+* Required evidence is complete only when nothing is unresolved and no inventory or per-unit gap
+* remains. This is the same condition the review body states, so the two cannot disagree.
+*/
+function evidenceComplete(coverage) {
+	return coverage.outcome.kind !== "decision_incomplete" && coverage.counts.unresolvedUnits === 0 && coverage.inventoryGaps.length === 0 && !coverage.policyProvenance.assessments.units.some((unit) => unit.gaps.length > 0);
+}
 /** Uses the established M2 batching contract; no raw model data crosses this boundary. */
 async function assessReviewPacket(input) {
 	if (!input.config.ok) return { kind: "internal-failure" };
@@ -22130,7 +22137,7 @@ async function assessReviewPacket(input) {
 		if (!result.ok) return { kind: "internal-failure" };
 		if (result.analysisUnavailable) return { kind: "model-unavailable" };
 		return {
-			kind: result.coverage.outcome.kind === "decision_incomplete" ? "incomplete-evidence" : "complete",
+			kind: evidenceComplete(result.coverage) ? "complete" : "incomplete-evidence",
 			records: result.records,
 			coverage: result.coverage
 		};
@@ -22159,7 +22166,7 @@ async function reviewPacket(input) {
 			signalAttempts: input.signalAttempts
 		});
 		return rendered.ok ? {
-			kind: assessed.kind,
+			kind: input.researchIncomplete ? "incomplete-evidence" : assessed.kind,
 			body: rendered.body
 		} : {
 			kind: "internal-failure",
@@ -29095,13 +29102,19 @@ async function withTrustedSnapshot(request, use) {
 // src/pipeline.ts
 /** The job's wall-clock limit; analysis and publication reserve their own time inside it. */
 const JOB_BUDGET_MS = 9e5;
-/** C2 matches imports by package name; Actions are never imported, so they carry no identity. */
+function stopped(state) {
+	return {
+		kind: state === "stale" ? "stale" : "internal-failure",
+		body: null
+	};
+}
+/** T4 requires exactly one context entry per change, so every change is named, Actions included. */
 function dependencyIdentities(changes) {
 	const identities = [];
 	for (const change of changes) {
 		const value = change;
-		if (value.ecosystem !== "npm" && value.ecosystem !== "uv") continue;
-		const name = (value.to ?? value.from)?.name;
+		const instance = value.to ?? value.from;
+		const name = instance?.name ?? instance?.action;
 		if (typeof value.id === "string" && typeof name === "string") identities.push({
 			id: value.id,
 			name
@@ -29132,15 +29145,14 @@ async function runReview(input) {
 		reason: "duplicate"
 	};
 	const claim = claimed;
-	let gone = false;
+	let state = "current";
 	/** Ownership and the PR head must both still hold before anything may be handed off. */
 	const stillCurrent = async () => {
 		const owner = await input.claims.read(claim);
-		if (owner.kind !== "owned" || owner.owner !== claim.owner || owner.generation !== claim.generation) return gone = true, "stale";
+		if (owner.kind !== "owned" || owner.owner !== claim.owner || owner.generation !== claim.generation) return state = "stale";
 		const fresh = await reverifyReviewBinding(binding, input.eventReads);
-		if (fresh.kind === "fresh") return "current";
-		gone = true;
-		return fresh.kind === "obsolete" ? "stale" : "error";
+		if (fresh.kind === "fresh") return state = "current";
+		return state = fresh.kind === "obsolete" ? "stale" : "error";
 	};
 	const evaluate = async () => {
 		const entry = await stillCurrent();
@@ -29152,7 +29164,7 @@ async function runReview(input) {
 			kind: "model-unavailable",
 			body: null
 		};
-		return evaluateEvidence(input, binding, started, () => !gone, async () => await stillCurrent() === "current");
+		return evaluateEvidence(input, binding, started, () => state, stillCurrent);
 	};
 	let outcome;
 	try {
@@ -29163,10 +29175,10 @@ async function runReview(input) {
 			body: null
 		};
 	}
-	if (outcome.kind !== "stale" && await stillCurrent().catch(() => "error") !== "current") outcome = {
-		kind: gone ? "stale" : "internal-failure",
-		body: null
-	};
+	if (outcome.kind !== "stale") {
+		const final = await stillCurrent().catch(() => "error");
+		if (final !== "current") outcome = stopped(final);
+	}
 	const handoff = await createReviewHandoff(input.claims, claim, outcome.kind);
 	if (handoff.kind !== "ready") return {
 		kind: "not-eligible",
@@ -29180,7 +29192,8 @@ async function runReview(input) {
 		recorded: input.sink.record(handoff.handoff)
 	};
 }
-async function evaluateEvidence(input, binding, started, isCurrent, recheck) {
+async function evaluateEvidence(input, binding, started, state, recheck) {
+	const isCurrent = () => state() === "current";
 	let evidenceSession = "ready";
 	let npmInventory = null;
 	const evidenceDeadline = started + W2_ENVELOPE.totalTimeoutMs;
@@ -29237,10 +29250,8 @@ async function evaluateEvidence(input, binding, started, isCurrent, recheck) {
 			kind: evidenceSession === "obsolete" ? "stale" : "internal-failure",
 			body: null
 		};
-		if (!await recheck()) return {
-			kind: "stale",
-			body: null
-		};
+		const beforeResearch = await recheck();
+		if (beforeResearch !== "current") return stopped(beforeResearch);
 		const researched = await runResearch({
 			packet: assembled.packet,
 			trusted: {
@@ -29258,10 +29269,8 @@ async function evaluateEvidence(input, binding, started, isCurrent, recheck) {
 			kind: "internal-failure",
 			body: null
 		};
-		if (!await recheck()) return {
-			kind: "stale",
-			body: null
-		};
+		const beforeModel = await recheck();
+		if (beforeModel !== "current") return stopped(beforeModel);
 		return await reviewPacket({
 			packet: researched.packet,
 			config: trusted.config,
@@ -29269,6 +29278,7 @@ async function evaluateEvidence(input, binding, started, isCurrent, recheck) {
 			evaluatedAt: input.evaluationTime,
 			deadlineMs: started + JOB_BUDGET_MS,
 			signalAttempts: researched.signalAttempts,
+			researchIncomplete: researched.unavailable.length > 0,
 			model: input.model
 		});
 	});
@@ -29278,7 +29288,7 @@ async function evaluateEvidence(input, binding, started, isCurrent, recheck) {
 		body: null
 	};
 	return {
-		kind: isCurrent() ? "internal-failure" : "stale",
+		kind: state() === "stale" ? "stale" : "internal-failure",
 		body: null
 	};
 }

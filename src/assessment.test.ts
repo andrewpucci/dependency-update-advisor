@@ -156,3 +156,10 @@ test('invalid config never reaches model analysis', async () => {
   ).resolves.toEqual({ kind: 'internal-failure', body: null });
   expect(analyze).not.toHaveBeenCalled();
 });
+
+test('does not report success when research could not establish its evidence', async () => {
+  const { review, complete } = await fixture();
+  const result = await reviewPacket({ ...review, researchIncomplete: true, model: complete });
+  expect(result.kind).toBe('incomplete-evidence');
+  expect(result.body).toEqual(expect.stringContaining(review.packet.binding.headSha));
+});

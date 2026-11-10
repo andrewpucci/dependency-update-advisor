@@ -57,18 +57,24 @@ export type PipelineResult =
 
 type Outcome = Readonly<{ kind: ReviewOutcomeKind; body: string | null }>;
 
-/** C2 matches imports by package name; Actions are never imported, so they carry no identity. */
+/** `stale` proves the head moved or ownership ended; `error` only means it could not be verified. */
+type Freshness = 'current' | 'stale' | 'error';
+
+function stopped(state: 'stale' | 'error'): Outcome {
+  return { kind: state === 'stale' ? 'stale' : 'internal-failure', body: null };
+}
+
+/** T4 requires exactly one context entry per change, so every change is named, Actions included. */
 function dependencyIdentities(changes: readonly unknown[]): { id: string; name: string }[] {
   const identities: { id: string; name: string }[] = [];
   for (const change of changes) {
     const value = change as {
       id?: unknown;
-      ecosystem?: unknown;
-      to?: { name?: unknown } | null;
-      from?: { name?: unknown } | null;
+      to?: { name?: unknown; action?: unknown } | null;
+      from?: { name?: unknown; action?: unknown } | null;
     };
-    if (value.ecosystem !== 'npm' && value.ecosystem !== 'uv') continue;
-    const name = (value.to ?? value.from)?.name;
+    const instance = value.to ?? value.from;
+    const name = instance?.name ?? instance?.action;
     if (typeof value.id === 'string' && typeof name === 'string')
       identities.push({ id: value.id, name });
   }
@@ -91,20 +97,19 @@ export async function runReview(input: PipelineInput): Promise<PipelineResult> {
   if (claimed.kind === 'duplicate') return { kind: 'skipped', reason: 'duplicate' };
   const claim: OwnedClaim = claimed;
 
-  let gone = false;
+  let state: Freshness = 'current';
   /** Ownership and the PR head must both still hold before anything may be handed off. */
-  const stillCurrent = async (): Promise<'current' | 'stale' | 'error'> => {
+  const stillCurrent = async (): Promise<Freshness> => {
     const owner = await input.claims.read(claim);
     if (
       owner.kind !== 'owned' ||
       owner.owner !== claim.owner ||
       owner.generation !== claim.generation
     )
-      return ((gone = true), 'stale');
+      return (state = 'stale');
     const fresh = await reverifyReviewBinding(binding, input.eventReads);
-    if (fresh.kind === 'fresh') return 'current';
-    gone = true;
-    return fresh.kind === 'obsolete' ? 'stale' : 'error';
+    if (fresh.kind === 'fresh') return (state = 'current');
+    return (state = fresh.kind === 'obsolete' ? 'stale' : 'error');
   };
 
   const evaluate = async (): Promise<Outcome> => {
@@ -113,13 +118,7 @@ export async function runReview(input: PipelineInput): Promise<PipelineResult> {
       return { kind: entry === 'stale' ? 'stale' : 'internal-failure', body: null };
     // With no model configured, no snapshot, collector, or model request is made.
     if (!input.llmApiKey) return { kind: 'model-unavailable', body: null };
-    return evaluateEvidence(
-      input,
-      binding,
-      started,
-      () => !gone,
-      async () => (await stillCurrent()) === 'current',
-    );
+    return evaluateEvidence(input, binding, started, () => state, stillCurrent);
   };
 
   let outcome: Outcome;
@@ -128,12 +127,12 @@ export async function runReview(input: PipelineInput): Promise<PipelineResult> {
   } catch {
     outcome = { kind: 'internal-failure', body: null };
   }
-  // A result is only publishable if the attempt is still the owner's, on the same PR head.
-  if (
-    outcome.kind !== 'stale' &&
-    (await stillCurrent().catch(() => 'error' as const)) !== 'current'
-  )
-    outcome = { kind: gone ? 'stale' : 'internal-failure', body: null };
+  // A result is only publishable if the attempt is still the owner's, on the same PR head. A
+  // freshness read that fails is a failure to verify, not proof the head moved.
+  if (outcome.kind !== 'stale') {
+    const final = await stillCurrent().catch(() => 'error' as const);
+    if (final !== 'current') outcome = stopped(final);
+  }
 
   const handoff = await createReviewHandoff(input.claims, claim, outcome.kind);
   if (handoff.kind !== 'ready') return { kind: 'not-eligible', reason: 'ownership' };
@@ -150,10 +149,11 @@ async function evaluateEvidence(
   input: PipelineInput,
   binding: ReviewBinding,
   started: number,
-  isCurrent: () => boolean,
-  /** Re-reads ownership and the PR head; false means this attempt must stop. */
-  recheck: () => Promise<boolean>,
+  state: () => Freshness,
+  /** Re-reads ownership and the PR head; anything but `current` means this attempt must stop. */
+  recheck: () => Promise<Freshness>,
 ): Promise<Outcome> {
+  const isCurrent = () => state() === 'current';
   let evidenceSession: EvidenceSessionResult['kind'] = 'ready';
   let npmInventory: unknown = null;
   const evidenceDeadline = started + W2_ENVELOPE.totalTimeoutMs;
@@ -211,7 +211,8 @@ async function evaluateEvidence(
         return { kind: evidenceSession === 'obsolete' ? 'stale' : 'internal-failure', body: null };
 
       // Public research is only worth starting while this attempt still owns the current head.
-      if (!(await recheck())) return { kind: 'stale', body: null };
+      const beforeResearch = await recheck();
+      if (beforeResearch !== 'current') return stopped(beforeResearch);
       const researched = await runResearch({
         packet: assembled.packet,
         trusted: { ...base, context: assembled.packet.context as never },
@@ -224,7 +225,8 @@ async function evaluateEvidence(
       });
       if (researched.kind !== 'ready') return { kind: 'internal-failure', body: null };
       // The model is only called while the attempt is still the owner's.
-      if (!(await recheck())) return { kind: 'stale', body: null };
+      const beforeModel = await recheck();
+      if (beforeModel !== 'current') return stopped(beforeModel);
 
       const reviewed = await reviewPacket({
         packet: researched.packet,
@@ -233,6 +235,7 @@ async function evaluateEvidence(
         evaluatedAt: input.evaluationTime,
         deadlineMs: started + JOB_BUDGET_MS,
         signalAttempts: researched.signalAttempts,
+        researchIncomplete: researched.unavailable.length > 0,
         model: input.model,
       });
       return reviewed;
@@ -240,5 +243,5 @@ async function evaluateEvidence(
   );
   if (snapshot.kind === 'ready') return snapshot.value;
   if (snapshot.kind === 'invalid-config') return { kind: 'invalid-config', body: null };
-  return { kind: isCurrent() ? 'internal-failure' : 'stale', body: null };
+  return { kind: state() === 'stale' ? 'stale' : 'internal-failure', body: null };
 }

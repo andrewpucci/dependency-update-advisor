@@ -1,6 +1,9 @@
 import { expect, test, vi } from 'vite-plus/test';
 import { upstreamScenario } from '../tests/parity/upstream.js';
 import * as advisoryModule from './evidence/advisories.js';
+import * as npmRegistryModule from './evidence/npm-registry.js';
+import * as publishTimesModule from './evidence/npm-publish-times.js';
+import * as signalReadModule from './evidence/policy-signals-read.js';
 import * as advisoryReadModule from './evidence/advisory-read.js';
 import * as upstreamReadModule from './evidence/upstream-read.js';
 import { runResearch } from './research.js';
@@ -10,6 +13,18 @@ import { validateReviewPacket } from './schema.js';
 vi.mock('./evidence/advisories.js', async (original) => {
   const actual = await original<typeof import('./evidence/advisories.js')>();
   return { ...actual, enrichAdvisories: vi.fn(actual.enrichAdvisories) };
+});
+vi.mock('./evidence/npm-registry.js', async (original) => {
+  const actual = await original<typeof import('./evidence/npm-registry.js')>();
+  return { ...actual, createNpmRegistryReader: vi.fn(actual.createNpmRegistryReader) };
+});
+vi.mock('./evidence/npm-publish-times.js', async (original) => {
+  const actual = await original<typeof import('./evidence/npm-publish-times.js')>();
+  return { ...actual, createNpmPublishTimeReader: vi.fn(actual.createNpmPublishTimeReader) };
+});
+vi.mock('./evidence/policy-signals-read.js', async (original) => {
+  const actual = await original<typeof import('./evidence/policy-signals-read.js')>();
+  return { ...actual, createPolicySignalReader: vi.fn(actual.createPolicySignalReader) };
 });
 const closed: string[] = [];
 vi.mock('./evidence/advisory-read.js', async (original) => {
@@ -192,17 +207,56 @@ test('sends no credentials to any public source', async () => {
   for (const sent of headers) expect(sent).not.toHaveProperty('authorization');
 });
 
-test('stays inside the allocated request counts', async () => {
+test('caps every reader at its share, so the readers together stay inside the envelope', async () => {
   const { fixture, packet } = await scenario();
-  let count = 0;
-  await runResearch({
-    ...base(fixture, packet),
-    fetch: async (url, init) => {
-      count += 1;
-      return fixture.fetch(url, init);
-    },
-  });
-  expect(count).toBeLessThanOrEqual(96 + 64 + 64);
+  for (const mock of [
+    upstreamReadModule.createUpstreamReader,
+    advisoryReadModule.createAdvisoryReader,
+    advisoryReadModule.createMalwareReader,
+    npmRegistryModule.createNpmRegistryReader,
+    publishTimesModule.createNpmPublishTimeReader,
+    signalReadModule.createPolicySignalReader,
+  ])
+    vi.mocked(mock).mockClear();
+  await runResearch(base(fixture, packet));
+  const MiB = 1024 * 1024;
+  type Limits = { maxRequests: number; maxTotalBytes: number; maxResponseBytes: number };
+  const limits = (mock: unknown) =>
+    vi.mocked(mock as (value: unknown) => unknown).mock.calls.map(([value]) => value as Limits);
+  const upstream = limits(upstreamReadModule.createUpstreamReader);
+  const advisory = limits(advisoryReadModule.createAdvisoryReader);
+  const signal = [
+    ...limits(upstreamReadModule.createUpstreamReader).slice(1),
+    ...limits(advisoryReadModule.createMalwareReader),
+    // Each S2 reader builds an inner registry reader through its own bounded fetch, so the calls are
+    // [S2 inner, S3 registry, S3 upstream inner]; only the middle one is ours.
+    ...limits(npmRegistryModule.createNpmRegistryReader).slice(1, 2),
+    ...limits(publishTimesModule.createNpmPublishTimeReader),
+    ...limits(signalReadModule.createPolicySignalReader),
+  ];
+  expect(upstream).toHaveLength(2);
+  expect(advisory).toHaveLength(1);
+  expect(signal).toHaveLength(5);
+  const shareBytes = Math.floor((2 * MiB) / 5);
+  for (const each of signal)
+    expect(each).toMatchObject({
+      maxRequests: 12,
+      maxTotalBytes: shareBytes,
+      maxResponseBytes: Math.min(MiB, shareBytes),
+    });
+  expect(upstream[0]).toMatchObject({ maxRequests: 96, maxResponseBytes: MiB });
+  expect(advisory[0]).toMatchObject({ maxRequests: 64, maxResponseBytes: MiB });
+  const requests = [upstream[0], advisory[0], ...signal].reduce(
+    (sum, each) => sum + each.maxRequests,
+    0,
+  );
+  const bytes = [upstream[0], advisory[0], ...signal].reduce(
+    (sum, each) => sum + each.maxTotalBytes,
+    0,
+  );
+  // Transport (64), evidence session (160), and registry (64) hold the rest of 512 and 32 MiB.
+  expect(requests).toBeLessThanOrEqual(512 - 64 - 160 - 64);
+  expect(bytes).toBeLessThanOrEqual(32 * MiB - 4 * MiB - 12 * MiB - 4 * MiB);
 });
 
 test('reports an internal failure rather than a research result when a reader throws', async () => {

@@ -195,3 +195,27 @@ test('is stale when ownership ends while context is collected', async () => {
   });
   expect(result).toEqual({ kind: 'stale' });
 });
+
+test('passes the collected changes, in collector order, to context collection', async () => {
+  const seen: unknown[] = [];
+  const withChange = (ecosystem: 'npm' | 'actions' | 'uv', id: string) => async () => ({
+    ...(await collector(ecosystem)()),
+    changes: [{ id }],
+  });
+  await assembleReviewPacket({
+    trusted: trustedWithoutContext,
+    collectContext: async (changes) => {
+      seen.push(changes);
+      return { ok: true, status: 'disabled', dependencies: [], reasons: [] };
+    },
+    isCurrent: () => true,
+    openSession: async () => ({ close: () => undefined }),
+    collectors: {
+      npm: withChange('npm', 'n'),
+      actions: withChange('actions', 'a'),
+      uv: withChange('uv', 'u'),
+    },
+    inventorySource: null,
+  });
+  expect(seen).toEqual([[{ id: 'n' }, { id: 'a' }, { id: 'u' }]]);
+});

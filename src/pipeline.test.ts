@@ -1,5 +1,7 @@
 import { expect, test, vi } from 'vite-plus/test';
+import * as assessmentModule from './assessment.js';
 import * as npmModule from './evidence/npm.js';
+import * as researchModule from './research.js';
 import { analysisDocument } from '../tests/parity/analysis.js';
 import { snapshotReads, treeEntry } from '../tests/parity/snapshot-reads.js';
 import { upstreamScenario } from '../tests/parity/upstream.js';
@@ -10,12 +12,22 @@ import { createRehearsalSink } from './handoff.js';
 import { runReview, type PipelineInput } from './pipeline.js';
 import { createTestClaimStore } from './review.js';
 
+vi.mock('./research.js', async (original) => {
+  const actual = await original<typeof import('./research.js')>();
+  return { ...actual, runResearch: vi.fn(actual.runResearch) };
+});
+vi.mock('./assessment.js', async (original) => {
+  const actual = await original<typeof import('./assessment.js')>();
+  return { ...actual, reviewPacket: vi.fn(actual.reviewPacket) };
+});
 vi.mock('./evidence/npm.js', async (original) => {
   const actual = await original<typeof import('./evidence/npm.js')>();
   return { ...actual, collectNpmInventory: vi.fn(actual.collectNpmInventory) };
 });
 
 const HEAD = 'a'.repeat(40);
+/** A default-branch revision distinct from every PR SHA, so substitution is visible. */
+const DEFAULT_BRANCH = 'f'.repeat(40);
 const BASE = 'b'.repeat(40);
 const NEXT = 'c'.repeat(40);
 const sentinel = 'sentinel-model-key';
@@ -77,15 +89,32 @@ const providerConfig = JSON.stringify({
   analysis: { provider: 'mistral', model: 'synthetic-model' },
 });
 
-function snapshot(config = providerConfig, visibility: 'public' | 'private' = 'public') {
+const sourceTree = 'd'.repeat(40);
+const sourceBlob = '3'.repeat(40);
+
+function snapshot(
+  config = providerConfig,
+  visibility: 'public' | 'private' = 'public',
+  source?: string,
+) {
   return snapshotReads(
     [
       treeEntry('.github', '040000', githubTree, 'tree'),
       treeEntry('.github/dependabot-review.json', '100644', configBlob),
       treeEntry('.github/dependabot.yml', '100644', dependabotBlob),
+      ...(source === undefined
+        ? []
+        : [
+            treeEntry('src', '040000', sourceTree, 'tree'),
+            treeEntry('src/app.ts', '100644', sourceBlob),
+          ]),
     ],
-    { [configBlob]: config, [dependabotBlob]: dependabotYaml },
-    { visibility },
+    {
+      [configBlob]: config,
+      [dependabotBlob]: dependabotYaml,
+      ...(source === undefined ? {} : { [sourceBlob]: source }),
+    },
+    { visibility, revision: DEFAULT_BRANCH },
   );
 }
 
@@ -94,8 +123,12 @@ type Overrides = Partial<PipelineInput> & {
   evidence?: 'unchanged' | 'changes' | 'uv-unsupported';
   pullRequestHeads?: string[];
   runFails?: boolean;
+  /** Freshness reads for the run fail from this call (0-based) onward. */
+  runFailsFrom?: number;
   config?: string;
   visibility?: 'public' | 'private';
+  /** Contents of src/app.ts in the default branch. */
+  source?: string;
 };
 
 const unchanged = { 'pyproject.toml': null, 'uv.lock': null };
@@ -104,8 +137,10 @@ async function setup(overrides: Overrides = {}) {
   const {
     pullRequestHeads: _heads,
     runFails: _fails,
+    runFailsFrom: _failsFrom,
     config: _config,
     visibility: _visibility,
+    source: _source,
     evidence: _evidence,
     ...rest
   } = overrides;
@@ -123,10 +158,16 @@ async function setup(overrides: Overrides = {}) {
   const modelCalls: unknown[] = [];
   const heads = overrides.pullRequestHeads ?? [HEAD];
   let pullReads = 0;
+  let runReads = 0;
   const eventReads: EventReads = {
     readWorkflow: async () => ({ id: 301, path: '.github/workflows/ci.yml' }),
     readRun: async () => {
-      if (overrides.runFails) throw new Error(sentinel);
+      const call = runReads++;
+      if (
+        overrides.runFails ||
+        (overrides.runFailsFrom !== undefined && call >= overrides.runFailsFrom)
+      )
+        throw new Error(sentinel);
       return run;
     },
     readPullRequest: async () => pullRequest(heads[Math.min(pullReads++, heads.length - 1)]),
@@ -136,7 +177,8 @@ async function setup(overrides: Overrides = {}) {
     }),
     readReplay: (identity: ReviewIdentity) => claims.replay(identity),
   };
-  const reads = overrides.snapshotReads ?? snapshot(overrides.config, overrides.visibility);
+  const reads =
+    overrides.snapshotReads ?? snapshot(overrides.config, overrides.visibility, overrides.source);
   const model = {
     now: () => 0,
     analyze: ((batch: Parameters<typeof analyzeMistralBatch>[0], options: never) => {
@@ -503,4 +545,122 @@ test('never hands off a finished review when the head moves only at the very end
     handoff: { status: 'none', comment: 'none' },
   });
   expect(sink.traces().map((trace) => trace.kind)).toEqual(['stale']);
+});
+
+test.each([
+  ['a failing status', async () => new Response(null, { status: 500 })],
+  [
+    'a thrown error',
+    async () => {
+      throw new Error(sentinel);
+    },
+  ],
+  [
+    'a rate limit',
+    async () => new Response(null, { status: 403, headers: { 'x-ratelimit-remaining': '0' } }),
+  ],
+])('never reports success when every public source fails with %s', async (_label, failing) => {
+  const { input, sink } = await setup({ evidence: 'changes', publicFetch: failing });
+  const result = await runReview(input);
+  expect(result).toMatchObject({
+    kind: 'handed-off',
+    outcome: 'incomplete-evidence',
+    handoff: { status: 'failure', comment: 'eligible' },
+  });
+  if (result.kind !== 'handed-off') return;
+  expect(result.body).toEqual(expect.stringContaining('Required evidence: Incomplete'));
+  expect(sink.traces()[0]).toMatchObject({ kind: 'incomplete-evidence', status: 'failure' });
+  expect(JSON.stringify(result)).not.toContain(sentinel);
+});
+
+test('reports success only when the review body itself says required evidence is complete', async () => {
+  const { input } = await setup({ evidence: 'changes' });
+  const result = await runReview(input);
+  if (result.kind !== 'handed-off') throw new Error('expected a handoff');
+  expect(result.outcome === 'complete').toBe(
+    result.body?.includes('Required evidence: Complete') === true,
+  );
+});
+
+test('gives every change, including a GitHub Action, one source-context entry when excerpts are opted in', async () => {
+  const config = JSON.stringify({
+    version: 1,
+    analysis: { provider: 'mistral', model: 'synthetic-model' },
+    context: { sendSourceExcerptsToModel: true, excerptFiles: ['src/app.ts'] },
+  });
+  const { input, modelCalls } = await setup({
+    evidence: 'changes',
+    config,
+    source: "import orbit from 'orbit';\n",
+  });
+  const result = await runReview(input);
+  expect(result.kind).toBe('handed-off');
+  if (result.kind !== 'handed-off') return;
+  expect(result.outcome).not.toBe('internal-failure');
+  expect(result.body).not.toBeNull();
+  expect(JSON.stringify(modelCalls)).toContain("import orbit from 'orbit'");
+});
+
+test.each([
+  ['right after claiming', 1],
+  ['before research', 2],
+  ['before the model', 3],
+  ['at the final check', 4],
+])(
+  'hands off a failed freshness read %s as a failure, not as stale or success',
+  async (_label, from) => {
+    const { input, sink, modelCalls } = await setup({ evidence: 'changes', runFailsFrom: from });
+    const result = await runReview(input);
+    expect(result).toMatchObject({
+      kind: 'handed-off',
+      outcome: 'internal-failure',
+      body: null,
+      handoff: { status: 'failure', comment: 'none' },
+    });
+    expect(sink.traces()[0]).toMatchObject({ kind: 'internal-failure', status: 'failure' });
+    if (from < 4) expect(modelCalls).toEqual([]);
+  },
+);
+
+test('builds the collectors and context from the default-branch revision, never a PR SHA', async () => {
+  vi.mocked(npmModule.collectNpmInventory).mockClear();
+  vi.mocked(researchModule.runResearch).mockClear();
+  const { input } = await setup();
+  await runReview(input);
+  const [call] = vi.mocked(npmModule.collectNpmInventory).mock.calls;
+  expect((call[0] as { configRevision: { sha: string } }).configRevision.sha).toBe(DEFAULT_BRANCH);
+  expect(DEFAULT_BRANCH).not.toBe(HEAD);
+  expect(DEFAULT_BRANCH).not.toBe(BASE);
+  // The validated packet, which research receives, carries the same revision.
+  expect(researchModule.runResearch).toHaveBeenCalledWith(
+    expect.objectContaining({
+      packet: expect.objectContaining({ contextRevision: { repository, sha: DEFAULT_BRANCH } }),
+      trusted: expect.objectContaining({ contextRevision: { repository, sha: DEFAULT_BRANCH } }),
+    }),
+  );
+});
+
+test('wires the clock, model key, signal attempts, and npm inventory into research and review', async () => {
+  vi.mocked(researchModule.runResearch).mockClear();
+  vi.mocked(assessmentModule.reviewPacket).mockClear();
+  const { input } = await setup({ evidence: 'changes' });
+  const result = await runReview(input);
+  const evaluationTime = Date.parse('2026-11-07T00:00:00Z');
+  expect(researchModule.runResearch).toHaveBeenCalledWith(
+    expect.objectContaining({
+      evaluationTime,
+      deadline: 240_000,
+      npmInventory: expect.objectContaining({ kind: 'inventory' }),
+    }),
+  );
+  expect(assessmentModule.reviewPacket).toHaveBeenCalledWith(
+    expect.objectContaining({
+      apiKey: sentinel,
+      evaluatedAt: evaluationTime,
+      deadlineMs: 900_000,
+      signalAttempts: expect.arrayContaining([expect.anything()]),
+    }),
+  );
+  if (result.kind === 'handed-off')
+    expect(result.body).toEqual(expect.stringContaining('Generated: 2026-11-07T00:00:00.000Z'));
 });
