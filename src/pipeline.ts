@@ -20,6 +20,8 @@ import { withTrustedSnapshot, type SnapshotReads } from './snapshot.js';
 
 /** The job's wall-clock limit; analysis and publication reserve their own time inside it. */
 const JOB_BUDGET_MS = 15 * 60 * 1_000;
+/** How often a pending request is checked against ownership; shorter than any request timeout. */
+const OWNERSHIP_WATCH_MS = 2_000;
 
 export type PipelineInput = Readonly<{
   /** The trusted workflow_run event with its expected repository and workflow. */
@@ -41,6 +43,8 @@ export type PipelineInput = Readonly<{
   /** Epoch milliseconds used for policy evaluation and the review timestamp. */
   evaluationTime: number;
   temporaryRoot?: () => Promise<string>;
+  /** How often a pending request is checked against ownership; defaults to two seconds. */
+  ownershipWatchMs?: number;
 }>;
 export type PipelineResult =
   | Readonly<{ kind: 'skipped'; reason: 'ineligible' | 'obsolete' | 'duplicate' }>
@@ -98,19 +102,37 @@ export async function runReview(input: PipelineInput): Promise<PipelineResult> {
   const claim: OwnedClaim = claimed;
 
   let state: Freshness = 'current';
+  /** Ends every request of this attempt, including ones already in flight. */
+  const attempt = new AbortController();
+  /** Ownership alone is a cheap read, so it is checked before each request and on a timer. */
+  const owns = async (): Promise<boolean> => {
+    const owner = await input.claims.read(claim);
+    const mine =
+      owner.kind === 'owned' &&
+      owner.owner === claim.owner &&
+      owner.generation === claim.generation;
+    if (!mine) {
+      state = 'stale';
+      attempt.abort();
+    }
+    return mine;
+  };
   /** Ownership and the PR head must both still hold before anything may be handed off. */
   const stillCurrent = async (): Promise<Freshness> => {
-    const owner = await input.claims.read(claim);
-    if (
-      owner.kind !== 'owned' ||
-      owner.owner !== claim.owner ||
-      owner.generation !== claim.generation
-    )
-      return (state = 'stale');
+    if (!(await owns())) return 'stale';
     const fresh = await reverifyReviewBinding(binding, input.eventReads);
     if (fresh.kind === 'fresh') return (state = 'current');
-    return (state = fresh.kind === 'obsolete' ? 'stale' : 'error');
+    state = fresh.kind === 'obsolete' ? 'stale' : 'error';
+    attempt.abort();
+    return state;
   };
+  const guard =
+    (fetch: PipelineInput['githubFetch']): PipelineInput['githubFetch'] =>
+    async (url, init) => {
+      if (attempt.signal.aborted || !(await owns())) throw new Error('attempt ended');
+      const signal = init.signal ? AbortSignal.any([init.signal, attempt.signal]) : attempt.signal;
+      return fetch(url, { ...init, signal });
+    };
 
   const evaluate = async (): Promise<Outcome> => {
     const entry = await stillCurrent();
@@ -118,14 +140,29 @@ export async function runReview(input: PipelineInput): Promise<PipelineResult> {
       return { kind: entry === 'stale' ? 'stale' : 'internal-failure', body: null };
     // With no model configured, no snapshot, collector, or model request is made.
     if (!input.llmApiKey) return { kind: 'model-unavailable', body: null };
-    return evaluateEvidence(input, binding, started, () => state, stillCurrent);
+    return evaluateEvidence(
+      { ...input, githubFetch: guard(input.githubFetch), publicFetch: guard(input.publicFetch) },
+      binding,
+      started,
+      attempt.signal,
+      () => state,
+      stillCurrent,
+    );
   };
 
   let outcome: Outcome;
+  // Ownership is also watched while a request is pending, so a lost attempt stops its work.
+  const watcher = setInterval(
+    () => void owns().catch(() => undefined),
+    input.ownershipWatchMs ?? OWNERSHIP_WATCH_MS,
+  );
+  watcher.unref();
   try {
     outcome = await evaluate();
   } catch {
     outcome = { kind: 'internal-failure', body: null };
+  } finally {
+    clearInterval(watcher);
   }
   // A result is only publishable if the attempt is still the owner's, on the same PR head. A
   // freshness read that fails is a failure to verify, not proof the head moved.
@@ -149,6 +186,7 @@ async function evaluateEvidence(
   input: PipelineInput,
   binding: ReviewBinding,
   started: number,
+  signal: AbortSignal,
   state: () => Freshness,
   /** Re-reads ownership and the PR head; anything but `current` means this attempt must stop. */
   recheck: () => Promise<Freshness>,
@@ -161,6 +199,7 @@ async function evaluateEvidence(
     {
       repository: input.repository,
       reads: input.snapshotReads,
+      signal,
       isCurrent,
       temporaryRoot: input.temporaryRoot,
     },
@@ -170,6 +209,7 @@ async function evaluateEvidence(
         dependabot: await trusted.dependabotRoots(),
         registryFetch: input.publicFetch,
         onNpmInventory: (inventory) => (npmInventory = inventory),
+        signal,
         now: input.now,
         deadline: evidenceDeadline,
       });
@@ -222,6 +262,7 @@ async function evaluateEvidence(
         now: input.now,
         deadline: evidenceDeadline,
         evaluationTime: input.evaluationTime,
+        signal,
       });
       if (researched.kind !== 'ready') return { kind: 'internal-failure', body: null };
       // The model is only called while the attempt is still the owner's.
@@ -236,6 +277,7 @@ async function evaluateEvidence(
         deadlineMs: started + JOB_BUDGET_MS,
         signalAttempts: researched.signalAttempts,
         researchIncomplete: researched.unavailable.length > 0,
+        signal,
         model: input.model,
       });
       return reviewed;

@@ -713,3 +713,118 @@ test('hands off a moved head seen only by the evidence session as stale, not as 
     handoff: { status: 'none', comment: 'none' },
   });
 });
+
+test('starts no further request once ownership is lost during collection', async () => {
+  const claims = createTestClaimStore();
+  const { input, githubCalls, publicCalls, modelCalls } = await setup({
+    claims,
+    evidence: 'changes',
+  });
+  const base = input.githubFetch;
+  let replaced = false;
+  const result = await runReview({
+    ...input,
+    githubFetch: async (url, init) => {
+      if (!replaced) {
+        replaced = true;
+        await claims.claim([101, 301, 402, 1, 42, NEXT]);
+      }
+      return base(url, init);
+    },
+  });
+  expect(result.kind).not.toBe('handed-off');
+  // Only the request that was already in progress when ownership ended reached the network.
+  expect(githubCalls).toHaveLength(1);
+  expect(publicCalls).toEqual([]);
+  expect(modelCalls).toEqual([]);
+});
+
+test('aborts a request that is still pending when ownership is lost', async () => {
+  const claims = createTestClaimStore();
+  const { input } = await setup({ claims });
+  let signal: AbortSignal | undefined;
+  let started: () => void = () => undefined;
+  const pendingFetch = new Promise<void>((resolve) => (started = resolve));
+  const running = runReview({
+    ...input,
+    ownershipWatchMs: 10,
+    githubFetch: (_url, init) =>
+      new Promise<Response>((_resolve, reject) => {
+        signal = init.signal ?? undefined;
+        init.signal?.addEventListener('abort', () => reject(new Error('aborted')));
+        started();
+      }),
+  });
+  await pendingFetch;
+  expect(signal?.aborted).toBe(false);
+  await claims.claim([101, 301, 402, 1, 42, NEXT]);
+  await expect(running).resolves.toEqual({ kind: 'not-eligible', reason: 'ownership' });
+  expect(signal?.aborted).toBe(true);
+});
+
+test('gives every request of a healthy attempt a signal that is not aborted', async () => {
+  const { input } = await setup({ evidence: 'changes' });
+  const states: boolean[] = [];
+  const wrap =
+    (fetch: PipelineInput['githubFetch']): PipelineInput['githubFetch'] =>
+    async (url, init) => {
+      states.push(init.signal?.aborted ?? true);
+      return fetch(url, init);
+    };
+  const result = await runReview({
+    ...input,
+    githubFetch: wrap(input.githubFetch),
+    publicFetch: wrap(input.publicFetch),
+  });
+  expect(result.kind).toBe('handed-off');
+  expect(states.length).toBeGreaterThan(0);
+  expect(states.every((aborted) => aborted === false)).toBe(true);
+});
+
+test('gives the snapshot, research, and review the attempt signal', async () => {
+  vi.mocked(researchModule.runResearch).mockClear();
+  vi.mocked(assessmentModule.reviewPacket).mockClear();
+  const { input, reads } = await setup({ evidence: 'changes' });
+  const signals: (AbortSignal | undefined)[] = [];
+  const snapshotRead = reads.readRepository;
+  reads.readRepository = async (repo, signal) => {
+    signals.push(signal);
+    return snapshotRead(repo, signal);
+  };
+  await runReview(input);
+  expect(signals[0]).toBeInstanceOf(AbortSignal);
+  expect(signals[0]?.aborted).toBe(false);
+  expect(researchModule.runResearch).toHaveBeenCalledWith(
+    expect.objectContaining({ signal: expect.any(AbortSignal) }),
+  );
+  expect(assessmentModule.reviewPacket).toHaveBeenCalledWith(
+    expect.objectContaining({ signal: expect.any(AbortSignal) }),
+  );
+  // One signal for the whole attempt.
+  const [research] = vi.mocked(researchModule.runResearch).mock.calls;
+  const [review] = vi.mocked(assessmentModule.reviewPacket).mock.calls;
+  expect(research[0].signal).toBe(signals[0]);
+  expect(review[0].signal).toBe(signals[0]);
+});
+
+test('ends the attempt signal when the head moves, and stops the ownership watcher either way', async () => {
+  const clear = vi.spyOn(globalThis, 'clearInterval');
+  try {
+    const { input } = await setup({ pullRequestHeads: [HEAD, HEAD, NEXT] });
+    let signal: AbortSignal | undefined;
+    const base = input.githubFetch;
+    const result = await runReview({
+      ...input,
+      githubFetch: async (url, init) => {
+        signal ??= init.signal ?? undefined;
+        return base(url, init);
+      },
+    });
+    expect(result).toMatchObject({ kind: 'handed-off', outcome: 'stale' });
+    expect(clear).toHaveBeenCalledTimes(1);
+    // The head moved at the pre-research recheck, so the attempt's signal is aborted.
+    expect(signal?.aborted).toBe(true);
+  } finally {
+    clear.mockRestore();
+  }
+});

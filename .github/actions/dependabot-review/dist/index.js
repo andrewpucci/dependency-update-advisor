@@ -29125,6 +29125,8 @@ async function withTrustedSnapshot(request, use) {
 // src/pipeline.ts
 /** The job's wall-clock limit; analysis and publication reserve their own time inside it. */
 const JOB_BUDGET_MS = 9e5;
+/** How often a pending request is checked against ownership; shorter than any request timeout. */
+const OWNERSHIP_WATCH_MS = 2e3;
 function stopped(state) {
 	return {
 		kind: state === "stale" ? "stale" : "internal-failure",
@@ -29169,13 +29171,34 @@ async function runReview(input) {
 	};
 	const claim = claimed;
 	let state = "current";
+	/** Ends every request of this attempt, including ones already in flight. */
+	const attempt = new AbortController();
+	/** Ownership alone is a cheap read, so it is checked before each request and on a timer. */
+	const owns = async () => {
+		const owner = await input.claims.read(claim);
+		const mine = owner.kind === "owned" && owner.owner === claim.owner && owner.generation === claim.generation;
+		if (!mine) {
+			state = "stale";
+			attempt.abort();
+		}
+		return mine;
+	};
 	/** Ownership and the PR head must both still hold before anything may be handed off. */
 	const stillCurrent = async () => {
-		const owner = await input.claims.read(claim);
-		if (owner.kind !== "owned" || owner.owner !== claim.owner || owner.generation !== claim.generation) return state = "stale";
+		if (!await owns()) return "stale";
 		const fresh = await reverifyReviewBinding(binding, input.eventReads);
 		if (fresh.kind === "fresh") return state = "current";
-		return state = fresh.kind === "obsolete" ? "stale" : "error";
+		state = fresh.kind === "obsolete" ? "stale" : "error";
+		attempt.abort();
+		return state;
+	};
+	const guard = (fetch) => async (url, init) => {
+		if (attempt.signal.aborted || !await owns()) throw new Error("attempt ended");
+		const signal = init.signal ? AbortSignal.any([init.signal, attempt.signal]) : attempt.signal;
+		return fetch(url, {
+			...init,
+			signal
+		});
 	};
 	const evaluate = async () => {
 		const entry = await stillCurrent();
@@ -29187,9 +29210,15 @@ async function runReview(input) {
 			kind: "model-unavailable",
 			body: null
 		};
-		return evaluateEvidence(input, binding, started, () => state, stillCurrent);
+		return evaluateEvidence({
+			...input,
+			githubFetch: guard(input.githubFetch),
+			publicFetch: guard(input.publicFetch)
+		}, binding, started, attempt.signal, () => state, stillCurrent);
 	};
 	let outcome;
+	const watcher = setInterval(() => void owns().catch(() => void 0), input.ownershipWatchMs ?? OWNERSHIP_WATCH_MS);
+	watcher.unref();
 	try {
 		outcome = await evaluate();
 	} catch {
@@ -29197,6 +29226,8 @@ async function runReview(input) {
 			kind: "internal-failure",
 			body: null
 		};
+	} finally {
+		clearInterval(watcher);
 	}
 	if (outcome.kind !== "stale") {
 		const final = await stillCurrent().catch(() => "error");
@@ -29215,7 +29246,7 @@ async function runReview(input) {
 		recorded: input.sink.record(handoff.handoff)
 	};
 }
-async function evaluateEvidence(input, binding, started, state, recheck) {
+async function evaluateEvidence(input, binding, started, signal, state, recheck) {
 	const isCurrent = () => state() === "current";
 	let evidenceSession = "ready";
 	let npmInventory = null;
@@ -29223,6 +29254,7 @@ async function evaluateEvidence(input, binding, started, state, recheck) {
 	const snapshot = await withTrustedSnapshot({
 		repository: input.repository,
 		reads: input.snapshotReads,
+		signal,
 		isCurrent,
 		temporaryRoot: input.temporaryRoot
 	}, async (trusted) => {
@@ -29231,6 +29263,7 @@ async function evaluateEvidence(input, binding, started, state, recheck) {
 			dependabot: await trusted.dependabotRoots(),
 			registryFetch: input.publicFetch,
 			onNpmInventory: (inventory) => npmInventory = inventory,
+			signal,
 			now: input.now,
 			deadline: evidenceDeadline
 		});
@@ -29286,7 +29319,8 @@ async function evaluateEvidence(input, binding, started, state, recheck) {
 			fetch: input.publicFetch,
 			now: input.now,
 			deadline: evidenceDeadline,
-			evaluationTime: input.evaluationTime
+			evaluationTime: input.evaluationTime,
+			signal
 		});
 		if (researched.kind !== "ready") return {
 			kind: "internal-failure",
@@ -29302,6 +29336,7 @@ async function evaluateEvidence(input, binding, started, state, recheck) {
 			deadlineMs: started + JOB_BUDGET_MS,
 			signalAttempts: researched.signalAttempts,
 			researchIncomplete: researched.unavailable.length > 0,
+			signal,
 			model: input.model
 		});
 	});
