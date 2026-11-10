@@ -437,6 +437,22 @@ test('sends the read token only to api.github.com, never to a registry or any ot
   expect(JSON.stringify(github.headers)).not.toContain(sentinel);
 });
 
+test.each([
+  ['exactly the limit', Buffer.alloc(MAX_EVENT_BYTES, 'a'), true],
+  ['one byte over the limit', Buffer.alloc(MAX_EVENT_BYTES + 1, 'a'), false],
+  ['invalid UTF-8', Buffer.from([0x7b, 0xff, 0x7d]), false],
+])('reads an event file of %s as bounded text only when it is valid', async (_label, bytes, ok) => {
+  const directory = await fs.mkdtemp(join(tmpdir(), 'startup-event-'));
+  try {
+    const path = join(directory, 'event.json');
+    await fs.writeFile(path, bytes);
+    if (ok) await expect(readBoundedEvent(path)).resolves.toHaveLength(bytes.byteLength);
+    else await expect(readBoundedEvent(path)).rejects.toThrow();
+  } finally {
+    await fs.rm(directory, { recursive: true, force: true });
+  }
+});
+
 test('rejects a missing event file', async () => {
   await expect(
     readBoundedEvent(join(tmpdir(), 'startup-event-missing', 'event.json')),
