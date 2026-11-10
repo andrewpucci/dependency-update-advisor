@@ -275,3 +275,22 @@ test('does not raise unhandled errors when closing readers fails', async () => {
   spy.mockRestore();
   expect(result.kind).toBe('ready');
 });
+
+test('still runs, with request timeouts no longer than the time left, near the deadline', async () => {
+  const { fixture, packet } = await scenario();
+  vi.mocked(upstreamReadModule.createUpstreamReader).mockClear();
+  vi.mocked(advisoryReadModule.createAdvisoryReader).mockClear();
+  const result = await runResearch({ ...base(fixture, packet), now: () => 0, deadline: 5_000 });
+  expect(result.kind).toBe('ready');
+  if (result.kind !== 'ready') return;
+  expect(result.unavailable).toEqual([]);
+  const all = [
+    ...vi.mocked(upstreamReadModule.createUpstreamReader).mock.calls,
+    ...vi.mocked(advisoryReadModule.createAdvisoryReader).mock.calls,
+  ].map(([limits]) => limits as { requestTimeoutMs: number; totalTimeoutMs: number });
+  expect(all.length).toBeGreaterThan(0);
+  for (const limits of all) {
+    expect(limits.totalTimeoutMs).toBe(5_000);
+    expect(limits.requestTimeoutMs).toBeLessThanOrEqual(limits.totalTimeoutMs);
+  }
+});

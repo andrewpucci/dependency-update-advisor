@@ -445,3 +445,21 @@ test('hands the authentic npm inventory to the caller for upstream research', as
   expect(seen).toHaveLength(1);
   expect(seen[0]).toMatchObject({ kind: 'inventory', binding: fixture.binding });
 });
+
+test('opens the evidence session with a request timeout no longer than the time left', async () => {
+  vi.mocked(readModule.createGithubReadSession).mockClear();
+  const fixture = uvMetadataScenario('empty');
+  const opened = await openEvidenceSession({
+    binding: fixture.input.binding,
+    fetch: fixture.fetch,
+    now: () => 0,
+    deadline: 5_000,
+  });
+  expect(opened.kind).toBe('ready');
+  expect(readModule.createGithubReadSession).toHaveBeenCalledWith(
+    expect.objectContaining({
+      limits: expect.objectContaining({ totalTimeoutMs: 5_000, requestTimeoutMs: 5_000 }),
+    }),
+    expect.anything(),
+  );
+});

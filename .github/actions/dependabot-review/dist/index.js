@@ -27618,6 +27618,14 @@ const W2_EVIDENCE_LIMITS = Object.freeze({
 	}),
 	totalTimeoutMs: W2_ENVELOPE.totalTimeoutMs
 });
+/** A request may not be allowed longer than the whole read, so near the deadline both shrink. */
+function timeouts(requestTimeoutMs, left) {
+	const totalTimeoutMs = Math.min(W2_EVIDENCE_LIMITS.totalTimeoutMs, left);
+	return {
+		totalTimeoutMs,
+		requestTimeoutMs: Math.min(requestTimeoutMs, totalTimeoutMs)
+	};
+}
 const remaining$1 = (input) => Math.max(1, Math.floor(input.deadline - input.now()));
 /** Opens the owner-bound GitHub evidence session inside the envelope. */
 async function openEvidenceSession(input) {
@@ -27625,7 +27633,7 @@ async function openEvidenceSession(input) {
 		binding: input.binding,
 		limits: {
 			...W2_EVIDENCE_LIMITS.session,
-			totalTimeoutMs: Math.min(W2_EVIDENCE_LIMITS.totalTimeoutMs, remaining$1(input))
+			...timeouts(W2_EVIDENCE_LIMITS.session.requestTimeoutMs, remaining$1(input))
 		}
 	}, {
 		fetch: input.fetch,
@@ -27693,7 +27701,7 @@ function createEvidenceCollectors(input) {
 			limits: {
 				...W2_EVIDENCE_LIMITS.graph,
 				...W2_EVIDENCE_LIMITS.registry,
-				totalTimeoutMs: Math.min(W2_EVIDENCE_LIMITS.totalTimeoutMs, total)
+				...timeouts(W2_EVIDENCE_LIMITS.registry.requestTimeoutMs, total)
 			}
 		}, {
 			fetch: input.registryFetch,
@@ -28032,7 +28040,7 @@ function limits(share, input, parts = 1) {
 		maxRetainedBytes: MAX_RETAINED_BYTES,
 		maxAttempts: 512,
 		maxFindings: 512,
-		requestTimeoutMs: W2_ENVELOPE.requestTimeoutMs,
+		requestTimeoutMs: Math.min(W2_ENVELOPE.requestTimeoutMs, remaining(input)),
 		totalTimeoutMs: remaining(input)
 	};
 }
@@ -29559,7 +29567,7 @@ async function readBoundedEvent(path) {
 	try {
 		const buffer = Buffer.alloc(1048577);
 		const { bytesRead } = await handle.read(buffer, 0, buffer.length, 0);
-		if (bytesRead > MAX_EVENT_BYTES) throw new Error("event too large");
+		if (bytesRead > 1048576) throw new Error("event too large");
 		return new TextDecoder("utf-8", { fatal: true }).decode(buffer.subarray(0, bytesRead));
 	} finally {
 		await handle.close();
@@ -29610,7 +29618,7 @@ async function runStartup(writeError, environment = process.env, dependencies = 
 			writeError("dependabot-review: workflow could not be verified; no review ran.");
 			return 78;
 		}
-		const sink = createRehearsalSink(null);
+		const sink = dependencies.sink ?? createRehearsalSink(null);
 		if (!sink) throw new Error("sink");
 		const claims = dependencies.claims ?? createTestClaimStore();
 		const result = await runReview({
@@ -29634,7 +29642,8 @@ async function runStartup(writeError, environment = process.env, dependencies = 
 			now: dependencies.now,
 			evaluationTime: dependencies.evaluationTime()
 		});
-		if (result.kind === "handed-off") writeError(`dependabot-review: no-write rehearsal recorded ${result.outcome}; nothing was published.`);
+		if (result.kind === "handed-off" && !result.recorded) writeError("dependabot-review: no-write rehearsal could not record the handoff; nothing was published.");
+		else if (result.kind === "handed-off") writeError(`dependabot-review: no-write rehearsal recorded ${result.outcome}; nothing was published.`);
 		else if (result.kind === "skipped") writeError(`dependabot-review: event skipped (${result.reason}); nothing was published.`);
 		else writeError(`dependabot-review: no publishable handoff (${result.reason}); nothing was published.`);
 	} catch {

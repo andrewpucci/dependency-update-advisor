@@ -97,6 +97,12 @@ type Fragment = Readonly<{
 type Unavailable = Readonly<{ kind: 'unavailable' }>;
 type Collector = (session: GithubReadSession) => Promise<Fragment | Unavailable>;
 
+/** A request may not be allowed longer than the whole read, so near the deadline both shrink. */
+function timeouts(requestTimeoutMs: number, left: number) {
+  const totalTimeoutMs = Math.min(W2_EVIDENCE_LIMITS.totalTimeoutMs, left);
+  return { totalTimeoutMs, requestTimeoutMs: Math.min(requestTimeoutMs, totalTimeoutMs) };
+}
+
 const remaining = (input: Pick<CollectionInput, 'now' | 'deadline'>) =>
   Math.max(1, Math.floor(input.deadline - input.now()));
 
@@ -110,7 +116,7 @@ export async function openEvidenceSession(
       binding: input.binding,
       limits: {
         ...W2_EVIDENCE_LIMITS.session,
-        totalTimeoutMs: Math.min(W2_EVIDENCE_LIMITS.totalTimeoutMs, remaining(input)),
+        ...timeouts(W2_EVIDENCE_LIMITS.session.requestTimeoutMs, remaining(input)),
       },
     },
     { fetch: input.fetch, now: input.now },
@@ -185,7 +191,7 @@ export function createEvidenceCollectors(
         limits: {
           ...W2_EVIDENCE_LIMITS.graph,
           ...W2_EVIDENCE_LIMITS.registry,
-          totalTimeoutMs: Math.min(W2_EVIDENCE_LIMITS.totalTimeoutMs, total),
+          ...timeouts(W2_EVIDENCE_LIMITS.registry.requestTimeoutMs, total),
         },
       },
       { fetch: input.registryFetch, now: input.now, signal: input.signal },

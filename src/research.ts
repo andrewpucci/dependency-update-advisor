@@ -74,7 +74,8 @@ function limits(
     maxRetainedBytes: MAX_RETAINED_BYTES,
     maxAttempts: 512,
     maxFindings: 512,
-    requestTimeoutMs: W2_ENVELOPE.requestTimeoutMs,
+    // A request may not be allowed longer than the whole read, so near the deadline both shrink.
+    requestTimeoutMs: Math.min(W2_ENVELOPE.requestTimeoutMs, remaining(input)),
     totalTimeoutMs: remaining(input),
   };
 }
