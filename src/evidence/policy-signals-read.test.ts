@@ -1,5 +1,7 @@
 import { expect, test, vi } from 'vite-plus/test';
 import { createPolicySignalReader } from './policy-signals-read.js';
+import { PACKET_LIMITS } from '../schema.js';
+import { isPlainObject } from './common.js';
 const limits = {
   maxRequests: 10,
   maxResponseBytes: 20000,
@@ -124,6 +126,110 @@ test('coalesces identical in-flight release reads into one immutable result', as
   expect(fetch).toHaveBeenCalledTimes(1);
   resolve?.(Response.json({ info: { name: query.name, version: query.version }, urls: [] }));
   await expect(first).resolves.toEqual(await second);
+  r.close();
+});
+test.each(['close', 'retention'] as const)(
+  'returns a tagged %s failure to every coalesced caller',
+  async (mode) => {
+    let resolve: ((response: Response) => void) | undefined;
+    const r = createPolicySignalReader(
+      { ...limits, ...(mode === 'retention' ? { maxRetainedBytes: 1 } : {}) },
+      {
+        now: () => 0,
+        fetch: () =>
+          new Promise<Response>((done) => {
+            resolve = done;
+          }),
+      },
+    );
+    if (r.kind !== 'ready') throw new Error('reader');
+    const first = r.read(query);
+    await Promise.resolve();
+    const second = r.read(query);
+    if (mode === 'close') r.close();
+    else resolve?.(Response.json({ info: { name: query.name, version: query.version }, urls: [] }));
+    await expect(first).resolves.toEqual({
+      kind: 'unavailable',
+      reason: mode === 'close' ? 'unknown' : 'budget',
+    });
+    await expect(second).resolves.toEqual({
+      kind: 'unavailable',
+      reason: mode === 'close' ? 'unknown' : 'budget',
+    });
+    r.close();
+  },
+);
+test('retains only the PyPI release fields used by upstream and policy evidence', async () => {
+  const r = createPolicySignalReader(limits, {
+    now: () => 0,
+    fetch: async () =>
+      Response.json({
+        info: {
+          name: query.name,
+          version: query.version,
+          description: 'Release description' + 'x'.repeat(PACKET_LIMITS.textBytes),
+          repository: {
+            url: 'https://github.com/fixture/project',
+            directory: 'pkg',
+            arbitrary: 'must not be retained',
+          },
+          project_urls: {
+            Source: 'https://github.com/fixture/project',
+            Documentation: 'https://docs.example.test',
+          },
+          yanked: false,
+          license_expression: 'MIT',
+          author_email: 'fixture@example.test',
+        },
+        urls: [
+          {
+            filename: 'fixture-2.0rc1.tar.gz',
+            digests: { sha256: 'a'.repeat(64), md5: 'must not be retained' },
+            upload_time_iso_8601: '2026-11-07T00:00:00Z',
+            yanked: false,
+            url: 'https://files.pythonhosted.org/fixture-2.0rc1.tar.gz',
+          },
+        ],
+        arbitrary: { payload: 'must not be retained' },
+      }),
+  });
+  if (r.kind !== 'ready') throw new Error('reader');
+  const result = await r.read(query);
+  expect(result).toMatchObject({
+    kind: 'data',
+    data: {
+      info: {
+        name: query.name,
+        version: query.version,
+        description:
+          'Release description' +
+          'x'.repeat(PACKET_LIMITS.textBytes - 'Release description'.length),
+        project_urls: { Source: 'https://github.com/fixture/project' },
+      },
+      urls: [
+        {
+          filename: 'fixture-2.0rc1.tar.gz',
+          digests: { sha256: 'a'.repeat(64) },
+          upload_time_iso_8601: '2026-11-07T00:00:00Z',
+          yanked: false,
+        },
+      ],
+    },
+  });
+  if (result.kind !== 'data') throw new Error('metadata');
+  if (
+    !isPlainObject(result.data) ||
+    !isPlainObject(result.data.info) ||
+    !Array.isArray(result.data.urls)
+  )
+    throw new Error('projected metadata');
+  expect(result.data).not.toHaveProperty('arbitrary');
+  expect(result.data.info).not.toHaveProperty('author_email');
+  expect(result.data.info.project_urls).not.toHaveProperty('Documentation');
+  expect(result.data.info.repository).not.toHaveProperty('arbitrary');
+  expect(Buffer.byteLength(result.data.info.description as string)).toBe(PACKET_LIMITS.textBytes);
+  expect(result.data.urls[0]).not.toHaveProperty('url');
+  expect(result.data.urls[0].digests).not.toHaveProperty('md5');
   r.close();
 });
 test.each([

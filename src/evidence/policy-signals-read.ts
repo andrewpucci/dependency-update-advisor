@@ -89,6 +89,72 @@ function httpReason(response: Response): EvidenceReason {
   if (response.status === 404) return 'missing';
   return response.status >= 300 && response.status < 400 ? 'unsupported' : 'unknown';
 }
+function boundedDescription(value: unknown) {
+  if (typeof value !== 'string') return value;
+  const clean = value.replace(/[\p{Cc}\p{Cs}]/gu, (point) =>
+    ['\t', '\n', '\r'].includes(point) ? point : ' ',
+  );
+  let description = '',
+    bytes = 0;
+  for (const point of clean) {
+    const next = Buffer.byteLength(point);
+    if (bytes + next > PACKET_LIMITS.textBytes) break;
+    description += point;
+    bytes += next;
+  }
+  return description;
+}
+function releaseProjection(data: Record<string, unknown>) {
+  const info = data.info;
+  advisoryCheck(isPlainObject(info));
+  const releaseInfo = info as Record<string, unknown>;
+  const retainedInfo = Object.fromEntries(
+    ['name', 'version', 'description', 'yanked', 'yanked_reason', 'license_expression', 'license']
+      .filter((key) => Object.hasOwn(releaseInfo, key))
+      .map((key) => [
+        key,
+        key === 'description' ? boundedDescription(releaseInfo[key]) : releaseInfo[key],
+      ]),
+  );
+  const repository = releaseInfo.repository;
+  if (typeof repository === 'string') retainedInfo.repository = repository;
+  else if (isPlainObject(repository))
+    retainedInfo.repository = Object.fromEntries(
+      ['url', 'directory']
+        .filter((key) => Object.hasOwn(repository, key))
+        .map((key) => [key, repository[key]]),
+    );
+  if (isPlainObject(releaseInfo.project_urls)) {
+    const projectUrls = Object.fromEntries(
+      Object.entries(releaseInfo.project_urls).filter(([key]) =>
+        ['source', 'source code', 'repository'].includes(key.toLowerCase()),
+      ),
+    );
+    if (Object.keys(projectUrls).length) retainedInfo.project_urls = projectUrls;
+  }
+  const urls = Array.isArray(data.urls)
+    ? data.urls.map((entry) => {
+        if (!isPlainObject(entry)) return entry;
+        const retained = Object.fromEntries(
+          ['filename', 'upload_time_iso_8601', 'yanked', 'yanked_reason']
+            .filter((key) => Object.hasOwn(entry, key))
+            .map((key) => [key, entry[key]]),
+        );
+        const digests = entry.digests;
+        if (isPlainObject(digests))
+          retained.digests = Object.fromEntries(
+            ['sha256']
+              .filter((key) => Object.hasOwn(digests, key))
+              .map((key) => [key, digests[key]]),
+          );
+        return retained;
+      })
+    : data.urls;
+  return Object.freeze({
+    info: retainedInfo,
+    ...(urls === undefined ? {} : { urls }),
+  });
+}
 class MetadataReader {
   private requests = 0;
   private bytes = 0;
@@ -207,7 +273,11 @@ class MetadataReader {
               data.info.version === query.version,
             'conflict',
           );
-        return freeze({ kind: 'data', url, data });
+        return freeze({
+          kind: 'data',
+          url,
+          data: query.kind === 'pypi' ? releaseProjection(data) : data,
+        });
       },
     );
   }
@@ -218,7 +288,7 @@ class MetadataReader {
       const old = this.cache.get(url);
       if (old) return old;
       const inFlight = this.pending.get(url);
-      if (inFlight) return inFlight;
+      if (inFlight) return await inFlight;
       if (this.busy) return { kind: 'unavailable', reason: 'conflict' };
       this.busy = true;
       const pending = this.readFresh(query, url, this.generation);
@@ -241,21 +311,20 @@ class MetadataReader {
     url: string,
     generation: number,
   ): Promise<MetadataRead> {
-    let result: MetadataRead;
     try {
-      result = await this.fetch(query, url);
+      const result = await this.fetch(query, url);
+      advisoryCheck(generation === this.generation, 'unknown');
+      const size = Buffer.byteLength(url) + Buffer.byteLength(JSON.stringify(result));
+      advisoryCheck(this.retained + size <= this.limits.maxRetainedBytes, 'budget');
+      this.retained += size;
+      this.cache.set(url, result);
+      return result;
     } catch (error) {
-      result = {
+      return {
         kind: 'unavailable',
         reason: error instanceof AdvisoryFailure ? error.reason : 'unknown',
       };
     }
-    advisoryCheck(generation === this.generation, 'unknown');
-    const size = Buffer.byteLength(url) + Buffer.byteLength(JSON.stringify(result));
-    advisoryCheck(this.retained + size <= this.limits.maxRetainedBytes, 'budget');
-    this.retained += size;
-    this.cache.set(url, result);
-    return result;
   }
 }
 export function createPolicySignalReader(

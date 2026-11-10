@@ -82,8 +82,14 @@ function deadlineTimer(duration: number, expire: () => void) {
 export async function boundedGet<T>(
   deps: BoundedDependencies,
   request:
-    | { url: string; accept: string; timeoutMs: number; headers?: never }
-    | { url: string; headers: HeadersInit; timeoutMs: number; accept?: never },
+    | { url: string; accept: string; timeoutMs: number; headers?: never; signal?: AbortSignal }
+    | {
+        url: string;
+        headers: HeadersInit;
+        timeoutMs: number;
+        accept?: never;
+        signal?: AbortSignal;
+      },
   onCancel: (cancel: (() => void) | null) => void,
   consume: (response: Response, aborted: Promise<never>) => Promise<T>,
 ): Promise<T> {
@@ -93,15 +99,17 @@ export async function boundedGet<T>(
     reject = r;
   });
   const stop = (reason: EvidenceReason) => {
-    controller.abort();
     reject(new AdvisoryFailure(reason));
+    controller.abort();
   };
   const cancel = () => stop('unknown');
   onCancel(cancel);
-  deps.signal?.addEventListener('abort', cancel, { once: true });
+  const signals = [deps.signal, request.signal].filter((signal): signal is AbortSignal => !!signal);
+  for (const signal of signals) signal.addEventListener('abort', cancel, { once: true });
   const clear = deadlineTimer(request.timeoutMs, () => stop('timeout'));
   let response: Response | undefined;
   try {
+    if (signals.some((signal) => signal.aborted)) return await aborted;
     const pending = deps.fetch(request.url, {
       method: 'GET',
       redirect: 'manual',
@@ -120,7 +128,7 @@ export async function boundedGet<T>(
     return await consume(response, aborted);
   } finally {
     clear();
-    deps.signal?.removeEventListener('abort', cancel);
+    for (const signal of signals) signal.removeEventListener('abort', cancel);
     onCancel(null);
     controller.abort();
     if (response?.body && !response.body.locked) void response.body.cancel().catch(() => {});

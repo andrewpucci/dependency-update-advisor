@@ -365,6 +365,7 @@ class Reader {
           url,
           accept: 'application/json',
           timeoutMs: Math.min(this.remaining(), this.limits.requestTimeoutMs),
+          signal: _init.signal ?? undefined,
         },
         (cancel) => {
           this.active = cancel;
