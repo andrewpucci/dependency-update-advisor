@@ -41,10 +41,10 @@ tracks its remaining gates. W2, C2, adoption, parity and cutover need proof.
 [W2 #26 review orchestration](docs/specs/SPEC-review-orchestration.md) has its
 approved plan implemented as the no-write rehearsal on this branch. Production
 claim storage and live publication remain separate supporting contracts. #209
-has approved-for-planning [shared PyPI release observations](docs/specs/SPEC-shared-release-observations.md)
+has implemented [shared PyPI release observations](docs/specs/SPEC-shared-release-observations.md)
 and [bounded-reader consolidation](docs/specs/SPEC-bounded-reader-consolidation.md)
-contracts. The user approved #260–#264 and `as-build auto`; implementation is
-in progress on this branch.
+on `issue-209`. Its ordered #260–#264 tasks are pending fresh-context review
+and merge; publication, adoption, parity, and cutover remain separate gates.
 
 - The [capability map](docs/specs/README.md) indexes module and contract status.
 - The [ADR guide](docs/adr/README.md) indexes durable architecture decisions.

@@ -1,6 +1,7 @@
 # Spec: Shared PyPI Release Observations
 
-Status: approved for planning, 2026-11-09. Supporting contract for
+Status: implemented on `issue-209`, pending fresh-context review and merge,
+2026-11-09. Supporting contract for
 `shared-review`, scoped to
 [issue #209](https://github.com/andrewpucci/dependency-update-advisor/issues/209).
 It implements the approved `shared-release-observations` row in the
