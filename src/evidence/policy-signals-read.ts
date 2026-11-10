@@ -99,6 +99,7 @@ class MetadataReader {
   private active: (() => void) | null = null;
   private stopped: EvidenceReason | null = null;
   private busy = false;
+  private generation = 0;
   private cache = new Map<string, MetadataRead>();
   private pending = new Map<string, Promise<MetadataRead>>();
   constructor(
@@ -109,6 +110,7 @@ class MetadataReader {
   }
   close() {
     this.stopped = 'unknown';
+    this.generation++;
     this.active?.();
     this.cache.clear();
     this.pending.clear();
@@ -219,7 +221,7 @@ class MetadataReader {
       if (inFlight) return inFlight;
       if (this.busy) return { kind: 'unavailable', reason: 'conflict' };
       this.busy = true;
-      const pending = this.readFresh(query, url);
+      const pending = this.readFresh(query, url, this.generation);
       this.pending.set(url, pending);
       try {
         return await pending;
@@ -234,7 +236,11 @@ class MetadataReader {
       };
     }
   }
-  private async readFresh(query: MetadataQuery, url: string): Promise<MetadataRead> {
+  private async readFresh(
+    query: MetadataQuery,
+    url: string,
+    generation: number,
+  ): Promise<MetadataRead> {
     let result: MetadataRead;
     try {
       result = await this.fetch(query, url);
@@ -244,6 +250,7 @@ class MetadataReader {
         reason: error instanceof AdvisoryFailure ? error.reason : 'unknown',
       };
     }
+    advisoryCheck(generation === this.generation, 'unknown');
     const size = Buffer.byteLength(url) + Buffer.byteLength(JSON.stringify(result));
     advisoryCheck(this.retained + size <= this.limits.maxRetainedBytes, 'budget');
     this.retained += size;

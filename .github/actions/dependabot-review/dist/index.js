@@ -27927,6 +27927,7 @@ var MetadataReader = class {
 	active = null;
 	stopped = null;
 	busy = false;
+	generation = 0;
 	cache = /* @__PURE__ */ new Map();
 	pending = /* @__PURE__ */ new Map();
 	constructor(limits, deps) {
@@ -27936,6 +27937,7 @@ var MetadataReader = class {
 	}
 	close() {
 		this.stopped = "unknown";
+		this.generation++;
 		this.active?.();
 		this.cache.clear();
 		this.pending.clear();
@@ -28027,7 +28029,7 @@ var MetadataReader = class {
 				reason: "conflict"
 			};
 			this.busy = true;
-			const pending = this.readFresh(query, url);
+			const pending = this.readFresh(query, url, this.generation);
 			this.pending.set(url, pending);
 			try {
 				return await pending;
@@ -28042,7 +28044,7 @@ var MetadataReader = class {
 			};
 		}
 	}
-	async readFresh(query, url) {
+	async readFresh(query, url, generation) {
 		let result;
 		try {
 			result = await this.fetch(query, url);
@@ -28052,6 +28054,7 @@ var MetadataReader = class {
 				reason: error instanceof AdvisoryFailure ? error.reason : "unknown"
 			};
 		}
+		advisoryCheck(generation === this.generation, "unknown");
 		const size = Buffer.byteLength(url) + Buffer.byteLength(JSON.stringify(result));
 		advisoryCheck(this.retained + size <= this.limits.maxRetainedBytes, "budget");
 		this.retained += size;
