@@ -15,6 +15,15 @@ import { validateReviewPacket, type EvidenceReason } from './schema.js';
 
 type Packet = Extract<PacketResult, { ok: true }>['packet'];
 type NpmInventory = Extract<NpmInventoryResult, { kind: 'inventory' }>;
+type EnrichedEvidence = { changes: unknown; sources: unknown; findings: unknown };
+type ResearchProgress = EnrichedEvidence & {
+  publicIdentities: unknown;
+  actionVersions: unknown;
+  upstreamAttempts: readonly UpstreamAttempt[];
+  signalAttempts: readonly SignalAttempt[];
+};
+type Reader = { close: () => void };
+type Fail = (stage: ResearchStage, reason: EvidenceReason) => void;
 export type ResearchStage = 'upstream' | 'advisories' | 'signals' | 'revalidation';
 export type ResearchInput = Readonly<{
   packet: Packet;
@@ -77,6 +86,142 @@ function limits(
   };
 }
 
+function failure(result: { kind: string; reason?: EvidenceReason }): EvidenceReason {
+  return result.kind === 'unavailable' && result.reason ? result.reason : 'malformed';
+}
+
+function replaceEvidence(progress: ResearchProgress, evidence: EnrichedEvidence): void {
+  progress.changes = evidence.changes;
+  progress.sources = evidence.sources;
+  progress.findings = evidence.findings;
+}
+
+async function enrichUpstreamStage(
+  input: ResearchInput,
+  dependencies: Pick<ResearchInput, 'now' | 'fetch' | 'signal'>,
+  readers: Reader[],
+  progress: ResearchProgress,
+  fail: Fail,
+): Promise<void> {
+  const limitsForStage = limits(EVIDENCE_READ_ALLOCATION.upstream, input);
+  const opened = createUpstreamReader(limitsForStage, dependencies);
+  if (opened.kind !== 'ready') return fail('upstream', 'malformed');
+  readers.push(opened.reader);
+  const upstream = await enrichUpstream(
+    {
+      binding: input.packet.binding,
+      changes: progress.changes,
+      sources: progress.sources,
+      findings: progress.findings,
+      limits: limitsForStage,
+      ...(input.npmInventory ? { npmInventory: input.npmInventory } : {}),
+    },
+    { reader: opened.reader },
+  );
+  if (upstream.kind !== 'enriched') return fail('upstream', failure(upstream));
+  replaceEvidence(progress, upstream);
+  progress.publicIdentities = upstream.publicIdentities;
+  progress.actionVersions = upstream.actionVersions;
+  progress.upstreamAttempts = upstream.attempts;
+}
+
+async function enrichAdvisoryStage(
+  input: ResearchInput,
+  dependencies: Pick<ResearchInput, 'now' | 'fetch' | 'signal'>,
+  readers: Reader[],
+  progress: ResearchProgress,
+  fail: Fail,
+): Promise<void> {
+  const limitsForStage = limits(EVIDENCE_READ_ALLOCATION.advisory, input);
+  const opened = createAdvisoryReader(limitsForStage, dependencies);
+  if (opened.kind !== 'ready') return fail('advisories', 'malformed');
+  readers.push(opened);
+  const advisories = await enrichAdvisories(
+    {
+      binding: input.packet.binding,
+      changes: progress.changes,
+      sources: progress.sources,
+      findings: progress.findings,
+      publicIdentities: progress.publicIdentities,
+      actionVersions: progress.actionVersions,
+      limits: limitsForStage,
+      ...(input.comparison?.kind === 'available' ? { comparisons: [input.comparison] } : {}),
+    } as never,
+    { reader: opened },
+  );
+  if (advisories.kind !== 'enriched') return fail('advisories', failure(advisories));
+  replaceEvidence(progress, advisories);
+}
+
+async function enrichSignalsStage(
+  input: ResearchInput,
+  dependencies: Pick<ResearchInput, 'now' | 'fetch' | 'signal'>,
+  readers: Reader[],
+  progress: ResearchProgress,
+  fail: Fail,
+): Promise<void> {
+  const limitsForStage = limits(EVIDENCE_READ_ALLOCATION.signals, input);
+  const { readers: shares } = EVIDENCE_READ_ALLOCATION.signals;
+  const malware = createMalwareReader(limits(shares.malware, input), dependencies);
+  const registry = createNpmRegistryReader(limits(shares.registry, input), dependencies);
+  const times = createNpmPublishTimeReader(limits(shares.publishTimes, input), dependencies);
+  const metadata = createPolicySignalReader(limits(shares.metadata, input), dependencies);
+  const upstream = createUpstreamReader(limits(shares.upstream, input), dependencies);
+  // The npm registry reader holds no timers or listeners, so it has nothing to close.
+  for (const opened of [malware, times, metadata])
+    if (opened.kind === 'ready') readers.push(opened);
+  if (upstream.kind === 'ready') readers.push(upstream.reader);
+  if (
+    malware.kind !== 'ready' ||
+    registry.kind !== 'ready' ||
+    times.kind !== 'ready' ||
+    metadata.kind !== 'ready' ||
+    upstream.kind !== 'ready'
+  )
+    return fail('signals', 'malformed');
+  const signals = await enrichPolicySignals(
+    {
+      binding: input.packet.binding,
+      changes: progress.changes,
+      sources: progress.sources,
+      findings: progress.findings,
+      publicIdentities: progress.publicIdentities,
+      actionVersions: progress.actionVersions,
+      evaluationTime: input.evaluationTime,
+      limits: limitsForStage,
+    },
+    {
+      malwareReader: malware,
+      npmReader: registry,
+      publishTimeReader: times,
+      metadataReader: metadata,
+      upstreamReader: upstream.reader,
+    },
+  );
+  if (signals.kind !== 'enriched') return fail('signals', failure(signals));
+  replaceEvidence(progress, signals);
+  progress.signalAttempts = signals.attempts;
+}
+
+function revalidate(input: ResearchInput, progress: ResearchProgress) {
+  const { packet } = input;
+  return validateReviewPacket(
+    {
+      version: 1,
+      binding: packet.binding,
+      baseSha: packet.baseSha,
+      contextRevision: packet.contextRevision,
+      context: packet.context,
+      coverage: packet.coverage,
+      changes: progress.changes,
+      sources: progress.sources,
+      findings: progress.findings,
+      relationships: packet.relationships,
+    },
+    input.trusted,
+  );
+}
+
 /**
  * Runs upstream research, advisory lookup, and policy signals over a validated packet, feeding each
  * stage's proofs and sources to the next. A stage that cannot be established leaves the evidence as
@@ -86,140 +231,25 @@ function limits(
 export async function runResearch(input: ResearchInput): Promise<ResearchResult> {
   const dependencies = { now: input.now, fetch: input.fetch, signal: input.signal };
   const unavailable: { stage: ResearchStage; reason: EvidenceReason }[] = [];
-  const readers: { close: () => void }[] = [];
+  const readers: Reader[] = [];
   try {
     const { packet } = input;
-    let current: {
-      changes: unknown;
-      sources: unknown;
-      findings: unknown;
-    } = { changes: packet.changes, sources: packet.sources, findings: packet.findings };
-    let publicIdentities: unknown = [];
-    let actionVersions: unknown = [];
-    let upstreamAttempts: readonly UpstreamAttempt[] = [];
-    let signalAttempts: readonly SignalAttempt[] = [];
-
+    const progress: ResearchProgress = {
+      changes: packet.changes,
+      sources: packet.sources,
+      findings: packet.findings,
+      publicIdentities: [],
+      actionVersions: [],
+      upstreamAttempts: [],
+      signalAttempts: [],
+    };
     const fail = (stage: ResearchStage, reason: EvidenceReason) =>
       unavailable.push({ stage, reason });
-    const failure = (result: { kind: string; reason?: EvidenceReason }): EvidenceReason =>
-      result.kind === 'unavailable' && result.reason ? result.reason : 'malformed';
+    await enrichUpstreamStage(input, dependencies, readers, progress, fail);
+    await enrichAdvisoryStage(input, dependencies, readers, progress, fail);
+    await enrichSignalsStage(input, dependencies, readers, progress, fail);
 
-    const upstreamLimits = limits(EVIDENCE_READ_ALLOCATION.upstream, input);
-    const opened = createUpstreamReader(upstreamLimits, dependencies);
-    if (opened.kind === 'ready') {
-      readers.push(opened.reader);
-      const upstream = await enrichUpstream(
-        {
-          binding: packet.binding,
-          changes: current.changes,
-          sources: current.sources,
-          findings: current.findings,
-          limits: upstreamLimits,
-          ...(input.npmInventory ? { npmInventory: input.npmInventory } : {}),
-        },
-        { reader: opened.reader },
-      );
-      if (upstream.kind === 'enriched') {
-        current = {
-          changes: upstream.changes,
-          sources: upstream.sources,
-          findings: upstream.findings,
-        };
-        publicIdentities = upstream.publicIdentities;
-        actionVersions = upstream.actionVersions;
-        upstreamAttempts = upstream.attempts;
-      } else fail('upstream', failure(upstream));
-    } else fail('upstream', 'malformed');
-
-    const advisoryLimits = limits(EVIDENCE_READ_ALLOCATION.advisory, input);
-    const reviewed = createAdvisoryReader(advisoryLimits, dependencies);
-    if (reviewed.kind === 'ready') {
-      readers.push(reviewed);
-      const advisories = await enrichAdvisories(
-        {
-          binding: packet.binding,
-          changes: current.changes,
-          sources: current.sources,
-          findings: current.findings,
-          publicIdentities,
-          actionVersions,
-          limits: advisoryLimits,
-          ...(input.comparison?.kind === 'available' ? { comparisons: [input.comparison] } : {}),
-        } as never,
-        { reader: reviewed },
-      );
-      if (advisories.kind === 'enriched')
-        current = {
-          changes: advisories.changes,
-          sources: advisories.sources,
-          findings: advisories.findings,
-        };
-      else fail('advisories', failure(advisories));
-    } else fail('advisories', 'malformed');
-
-    // S3 drives five independent readers, each with its own share of the signals allocation.
-    const signalLimits = limits(EVIDENCE_READ_ALLOCATION.signals, input);
-    const { readers: shares } = EVIDENCE_READ_ALLOCATION.signals;
-    const malware = createMalwareReader(limits(shares.malware, input), dependencies);
-    const registry = createNpmRegistryReader(limits(shares.registry, input), dependencies);
-    const times = createNpmPublishTimeReader(limits(shares.publishTimes, input), dependencies);
-    const metadata = createPolicySignalReader(limits(shares.metadata, input), dependencies);
-    const research = createUpstreamReader(limits(shares.upstream, input), dependencies);
-    // The npm registry reader holds no timers or listeners, so it has nothing to close.
-    for (const opened of [malware, times, metadata])
-      if (opened.kind === 'ready') readers.push(opened);
-    if (research.kind === 'ready') readers.push(research.reader);
-    if (
-      malware.kind === 'ready' &&
-      registry.kind === 'ready' &&
-      times.kind === 'ready' &&
-      metadata.kind === 'ready' &&
-      research.kind === 'ready'
-    ) {
-      const signals = await enrichPolicySignals(
-        {
-          binding: packet.binding,
-          changes: current.changes,
-          sources: current.sources,
-          findings: current.findings,
-          publicIdentities,
-          actionVersions,
-          evaluationTime: input.evaluationTime,
-          limits: signalLimits,
-        },
-        {
-          malwareReader: malware,
-          npmReader: registry,
-          publishTimeReader: times,
-          metadataReader: metadata,
-          upstreamReader: research.reader,
-        },
-      );
-      if (signals.kind === 'enriched') {
-        current = {
-          changes: signals.changes,
-          sources: signals.sources,
-          findings: signals.findings,
-        };
-        signalAttempts = signals.attempts;
-      } else fail('signals', failure(signals));
-    } else fail('signals', 'malformed');
-
-    const candidate = validateReviewPacket(
-      {
-        version: 1,
-        binding: packet.binding,
-        baseSha: packet.baseSha,
-        contextRevision: packet.contextRevision,
-        context: packet.context,
-        coverage: packet.coverage,
-        changes: current.changes,
-        sources: current.sources,
-        findings: current.findings,
-        relationships: packet.relationships,
-      },
-      input.trusted,
-    );
+    const candidate = revalidate(input, progress);
     if (!candidate.ok) {
       fail('revalidation', 'malformed');
       return {
@@ -234,8 +264,8 @@ export async function runResearch(input: ResearchInput): Promise<ResearchResult>
       kind: 'ready',
       packet: candidate.packet,
       unavailable,
-      upstreamAttempts,
-      signalAttempts,
+      upstreamAttempts: progress.upstreamAttempts,
+      signalAttempts: progress.signalAttempts,
     };
   } catch {
     return { kind: 'internal-failure' };
