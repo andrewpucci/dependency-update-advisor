@@ -13,7 +13,7 @@ import {
   type ReviewBinding,
 } from './event.js';
 import { createReviewHandoff, type RehearsalSink, type ReviewHandoff } from './handoff.js';
-import { assembleReviewPacket } from './packet.js';
+import { assembleReviewPacket, type PacketGap } from './packet.js';
 import { runResearch } from './research.js';
 import type { ClaimStore, OwnedClaim, ReviewOutcomeKind } from './review.js';
 import { withTrustedSnapshot, type SnapshotReads } from './snapshot.js';
@@ -59,7 +59,12 @@ export type PipelineResult =
       recorded: boolean;
     }>;
 
-type Outcome = Readonly<{ kind: ReviewOutcomeKind; body: string | null }>;
+type Outcome = Readonly<{
+  kind: ReviewOutcomeKind;
+  body: string | null;
+  /** Sources that gave no usable evidence, when no packet could be rendered. */
+  gaps?: readonly PacketGap[];
+}>;
 
 /** `stale` proves the head moved or ownership ended; `error` only means it could not be verified. */
 type Freshness = 'current' | 'stale' | 'error';
@@ -171,7 +176,10 @@ export async function runReview(input: PipelineInput): Promise<PipelineResult> {
     if (final !== 'current') outcome = stopped(final);
   }
 
-  const handoff = await createReviewHandoff(input.claims, claim, outcome.kind);
+  const handoff = await createReviewHandoff(input.claims, claim, outcome.kind, {
+    body: outcome.body !== null,
+    gaps: outcome.gaps ?? [],
+  });
   if (handoff.kind !== 'ready') return { kind: 'not-eligible', reason: 'ownership' };
   return {
     kind: 'handed-off',
@@ -246,7 +254,8 @@ async function evaluateEvidence(
           body: null,
         };
       if (assembled.kind === 'stale') return { kind: 'stale', body: null };
-      if (assembled.kind === 'incomplete') return { kind: 'incomplete-evidence', body: null };
+      if (assembled.kind === 'incomplete')
+        return { kind: 'incomplete-evidence', body: null, gaps: assembled.gaps };
       if (assembled.kind !== 'ready')
         return { kind: evidenceSession === 'obsolete' ? 'stale' : 'internal-failure', body: null };
 

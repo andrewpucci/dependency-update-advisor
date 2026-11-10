@@ -1,11 +1,28 @@
 import { record } from './event.js';
-import { validateReviewPacket, type PacketResult } from './schema.js';
+import {
+  EVIDENCE_REASONS,
+  validateReviewPacket,
+  type EvidenceReason,
+  type PacketResult,
+} from './schema.js';
 
 type Ecosystem = 'npm' | 'actions' | 'uv';
 type Session = Readonly<{ close: () => void }>;
+/** Which source gave no usable evidence, and a fixed reason; never error text. */
+export type PacketGap = Readonly<{
+  source: Ecosystem | 'packet';
+  reason: EvidenceReason;
+}>;
+
+function gapReason(value: unknown): EvidenceReason {
+  if (!record(value, ['kind'])) return 'malformed';
+  if (value.kind !== 'unavailable') return 'malformed';
+  return EVIDENCE_REASONS.find((reason) => reason === value.reason) ?? 'unknown';
+}
 export type PacketAssemblyResult =
   | Readonly<{ kind: 'ready'; packet: Extract<PacketResult, { ok: true }>['packet'] }>
-  | Readonly<{ kind: 'incomplete' | 'stale' | 'internal-failure' }>
+  | Readonly<{ kind: 'incomplete'; gaps: readonly PacketGap[] }>
+  | Readonly<{ kind: 'stale' | 'internal-failure' }>
   /** C2 could not produce a usable context; `category` is C2's own failure category. */
   | Readonly<{ kind: 'context-failure'; category: string }>;
 export type PacketAssemblyInput<S extends Session = Session> = Readonly<{
@@ -62,9 +79,12 @@ export async function assembleReviewPacket<S extends Session>(
     const fragments: Fragment[] = [];
     for (const ecosystem of ['npm', 'actions', 'uv'] as const) {
       if (!input.isCurrent()) return { kind: 'stale' };
-      const value = fragment(await input.collectors[ecosystem](session), ecosystem);
+      const result = await input.collectors[ecosystem](session);
+      const value = fragment(result, ecosystem);
       if (!value || !input.isCurrent())
-        return input.isCurrent() ? { kind: 'incomplete' } : { kind: 'stale' };
+        return input.isCurrent()
+          ? { kind: 'incomplete', gaps: [{ source: ecosystem, reason: gapReason(result) }] }
+          : { kind: 'stale' };
       fragments.push(value);
     }
     if (!record(input.trusted, ['binding', 'baseSha', 'contextRevision']))
@@ -103,7 +123,13 @@ export async function assembleReviewPacket<S extends Session>(
       },
       trusted,
     );
-    return packet.ok ? { kind: 'ready', packet: packet.packet } : { kind: 'incomplete' };
+    if (packet.ok) return { kind: 'ready', packet: packet.packet };
+    return {
+      kind: 'incomplete',
+      gaps: [
+        { source: 'packet', reason: packet.error.category === 'budget' ? 'budget' : 'malformed' },
+      ],
+    };
   } catch {
     return { kind: 'internal-failure' };
   } finally {

@@ -94,13 +94,20 @@ type Fragment = Readonly<{
   findings: readonly unknown[];
   relationships: readonly unknown[];
 }>;
-type Unavailable = Readonly<{ kind: 'unavailable' }>;
+type Unavailable = Readonly<{ kind: 'unavailable'; reason: EvidenceReason }>;
 type Collector = (session: GithubReadSession) => Promise<Fragment | Unavailable>;
 
 /** A request may not be allowed longer than the whole read, so near the deadline both shrink. */
 function timeouts(requestTimeoutMs: number, left: number) {
   const totalTimeoutMs = Math.min(W2_EVIDENCE_LIMITS.totalTimeoutMs, left);
   return { totalTimeoutMs, requestTimeoutMs: Math.min(requestTimeoutMs, totalTimeoutMs) };
+}
+
+/** Why a reader produced no inventory: its own reason, malformed input, or evidence that moved. */
+function noInventory(result: { kind: string; reason?: EvidenceReason }): Unavailable {
+  if (result.kind === 'unavailable' && result.reason)
+    return { kind: 'unavailable', reason: result.reason };
+  return { kind: 'unavailable', reason: result.kind === 'obsolete' ? 'conflict' : 'malformed' };
 }
 
 const remaining = (input: Pick<CollectionInput, 'now' | 'deadline'>) =>
@@ -181,7 +188,7 @@ export function createEvidenceCollectors(
       },
       { session },
     );
-    if (inventory.kind !== 'inventory') return { kind: 'unavailable' };
+    if (inventory.kind !== 'inventory') return noInventory(inventory);
     input.onNpmInventory?.(inventory);
     const total = remaining(input);
     const enriched = await enrichNpmEvidence(
@@ -196,7 +203,7 @@ export function createEvidenceCollectors(
       },
       { fetch: input.registryFetch, now: input.now, signal: input.signal },
     );
-    if (enriched.kind !== 'inventory') return { kind: 'unavailable' };
+    if (enriched.kind !== 'inventory') return noInventory(enriched);
     return {
       kind: 'complete',
       ecosystem: 'npm',
@@ -213,7 +220,7 @@ export function createEvidenceCollectors(
       { binding, limits: { ...W2_EVIDENCE_LIMITS.actions } },
       { session },
     );
-    if (inventory.kind !== 'inventory') return { kind: 'unavailable' };
+    if (inventory.kind !== 'inventory') return noInventory(inventory);
     return {
       kind: 'complete',
       ecosystem: 'actions',
@@ -237,13 +244,13 @@ export function createEvidenceCollectors(
       },
       { session },
     );
-    if (metadata.kind !== 'metadata') return { kind: 'unavailable' };
+    if (metadata.kind !== 'metadata') return noInventory(metadata);
     const graph = reconcileUvGraph({
       binding,
       metadata,
       limits: { ...W2_EVIDENCE_LIMITS.graph },
     });
-    if (graph.kind !== 'inventory') return { kind: 'unavailable' };
+    if (graph.kind !== 'inventory') return noInventory(graph);
     return {
       kind: 'complete',
       ecosystem: 'uv',

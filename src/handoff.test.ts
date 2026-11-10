@@ -31,6 +31,8 @@ test('records only bounded redacted intent and rejects a lost claim', async () =
       generation: 2,
       status: 'success',
       comment: 'eligible',
+      body: 'absent',
+      gaps: [],
     },
   ]);
 });
@@ -46,4 +48,48 @@ test('bounds the rehearsal trace at 32 records and refuses the next', async () =
   for (let index = 0; index < 32; index += 1) expect(sink.record(result.handoff)).toBe(true);
   expect(sink.record(result.handoff)).toBe(false);
   expect(sink.traces()).toHaveLength(32);
+});
+
+test('records whether a body exists and which sources gave no usable evidence', async () => {
+  const claims = createTestClaimStore();
+  const claimed = await claims.claim([101, 301, 401, 1, 42, 'a'.repeat(40)]);
+  if (claimed.kind !== 'owned') throw new Error('fixture must own');
+  const gaps = [{ source: 'npm', reason: 'budget' }] as const;
+  const result = await createReviewHandoff(claims, claimed, 'incomplete-evidence', {
+    body: true,
+    gaps,
+  });
+  if (result.kind !== 'ready') throw new Error('expected handoff');
+  expect(result.handoff).toMatchObject({
+    kind: 'incomplete-evidence',
+    status: 'failure',
+    // What an outcome may eventually do stays the spec's table; the body is reported separately.
+    comment: 'eligible',
+    body: 'present',
+    gaps: [{ source: 'npm', reason: 'budget' }],
+  });
+  const sink = createRehearsalSink(null);
+  if (!sink) throw new Error('expected sink');
+  sink.record(result.handoff);
+  expect(sink.traces()[0]).toMatchObject({
+    body: 'present',
+    gaps: [{ source: 'npm', reason: 'budget' }],
+  });
+  expect(Object.isFrozen(result.handoff.gaps)).toBe(true);
+  expect(Object.isFrozen(sink.traces()[0].gaps)).toBe(true);
+});
+
+test('defaults to no body and no gaps, and keeps at most four gaps', async () => {
+  const claims = createTestClaimStore();
+  const claimed = await claims.claim([101, 301, 401, 1, 42, 'a'.repeat(40)]);
+  if (claimed.kind !== 'owned') throw new Error('fixture must own');
+  const plain = await createReviewHandoff(claims, claimed, 'stale');
+  if (plain.kind !== 'ready') throw new Error('expected handoff');
+  expect(plain.handoff).toMatchObject({ body: 'absent', gaps: [] });
+  const many = await createReviewHandoff(claims, claimed, 'incomplete-evidence', {
+    body: false,
+    gaps: Array.from({ length: 9 }, () => ({ source: 'uv' as const, reason: 'unknown' as const })),
+  });
+  if (many.kind !== 'ready') throw new Error('expected handoff');
+  expect(many.handoff.gaps).toHaveLength(4);
 });

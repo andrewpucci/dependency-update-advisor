@@ -1,3 +1,4 @@
+import type { PacketGap } from './packet.js';
 import {
   reviewOutcome,
   type ClaimStore,
@@ -10,8 +11,21 @@ export type ReviewHandoff = Readonly<{
   identity: OwnedClaim['identity'];
   generation: number;
   status: 'none' | 'failure' | 'success';
+  /** What the outcome may eventually do; whether a body exists is reported separately. */
   comment: 'none' | 'eligible';
+  body: 'present' | 'absent';
+  /** Which sources gave no usable evidence and why; never error text. */
+  gaps: readonly PacketGap[];
 }>;
+/** What the pipeline knows about the result beyond its outcome kind. */
+export type HandoffDetail = Readonly<{ body: boolean; gaps: readonly PacketGap[] }>;
+const MAX_GAPS = 4;
+
+function copyGaps(gaps: readonly PacketGap[]): readonly PacketGap[] {
+  return Object.freeze(
+    gaps.slice(0, MAX_GAPS).map(({ source, reason }) => Object.freeze({ source, reason })),
+  );
+}
 export type HandoffResult =
   | Readonly<{ kind: 'ready'; handoff: ReviewHandoff }>
   | Readonly<{ kind: 'stale' }>;
@@ -21,6 +35,7 @@ export async function createReviewHandoff(
   claims: ClaimStore,
   claim: OwnedClaim,
   kind: ReviewOutcomeKind,
+  detail: HandoffDetail = { body: false, gaps: [] },
 ): Promise<HandoffResult> {
   const state = await claims.read(claim);
   if (
@@ -38,6 +53,8 @@ export async function createReviewHandoff(
       generation: claim.generation,
       status: outcome.status,
       comment: outcome.comment,
+      body: detail.body ? 'present' : 'absent',
+      gaps: copyGaps(detail.gaps),
     }),
   };
 }
@@ -48,6 +65,8 @@ export type RehearsalTrace = Readonly<{
   generation: number;
   status: ReviewHandoff['status'];
   comment: ReviewHandoff['comment'];
+  body: ReviewHandoff['body'];
+  gaps: ReviewHandoff['gaps'];
 }>;
 export type RehearsalSink = Readonly<{
   record: (handoff: ReviewHandoff) => boolean;
@@ -68,6 +87,8 @@ export function createRehearsalSink(appToken: string | null): RehearsalSink | nu
           generation: handoff.generation,
           status: handoff.status,
           comment: handoff.comment,
+          body: handoff.body,
+          gaps: copyGaps(handoff.gaps),
         }),
       );
       return true;

@@ -9389,6 +9389,8 @@ const REASONS$1 = [
 	"conflict",
 	"unknown"
 ];
+/** The fixed set of reasons a source of evidence can be unavailable for. */
+const EVIDENCE_REASONS = REASONS$1;
 const SOURCE_KINDS = [
 	"file-list",
 	"file",
@@ -19610,8 +19612,18 @@ function createTestClaimStore() {
 }
 
 // src/handoff.ts
+const MAX_GAPS = 4;
+function copyGaps(gaps) {
+	return Object.freeze(gaps.slice(0, MAX_GAPS).map(({ source, reason }) => Object.freeze({
+		source,
+		reason
+	})));
+}
 /** Maps an owned outcome to publication intent without receiving a write capability. */
-async function createReviewHandoff(claims, claim, kind) {
+async function createReviewHandoff(claims, claim, kind, detail = {
+	body: false,
+	gaps: []
+}) {
 	const state = await claims.read(claim);
 	if (state.kind !== "owned" || state.owner !== claim.owner || state.generation !== claim.generation) return { kind: "stale" };
 	const outcome = reviewOutcome(kind);
@@ -19622,7 +19634,9 @@ async function createReviewHandoff(claims, claim, kind) {
 			identity: claim.identity,
 			generation: claim.generation,
 			status: outcome.status,
-			comment: outcome.comment
+			comment: outcome.comment,
+			body: detail.body ? "present" : "absent",
+			gaps: copyGaps(detail.gaps)
 		})
 	};
 }
@@ -19638,7 +19652,9 @@ function createRehearsalSink(appToken) {
 				identity: Object.freeze([...handoff.identity]),
 				generation: handoff.generation,
 				status: handoff.status,
-				comment: handoff.comment
+				comment: handoff.comment,
+				body: handoff.body,
+				gaps: copyGaps(handoff.gaps)
 			}));
 			return true;
 		},
@@ -27626,6 +27642,17 @@ function timeouts(requestTimeoutMs, left) {
 		requestTimeoutMs: Math.min(requestTimeoutMs, totalTimeoutMs)
 	};
 }
+/** Why a reader produced no inventory: its own reason, malformed input, or evidence that moved. */
+function noInventory(result) {
+	if (result.kind === "unavailable" && result.reason) return {
+		kind: "unavailable",
+		reason: result.reason
+	};
+	return {
+		kind: "unavailable",
+		reason: result.kind === "obsolete" ? "conflict" : "malformed"
+	};
+}
 const remaining$1 = (input) => Math.max(1, Math.floor(input.deadline - input.now()));
 /** Opens the owner-bound GitHub evidence session inside the envelope. */
 async function openEvidenceSession(input) {
@@ -27692,7 +27719,7 @@ function createEvidenceCollectors(input) {
 			configRevision: roots.configRevision,
 			limits: { ...W2_EVIDENCE_LIMITS.npm }
 		}, { session });
-		if (inventory.kind !== "inventory") return { kind: "unavailable" };
+		if (inventory.kind !== "inventory") return noInventory(inventory);
 		input.onNpmInventory?.(inventory);
 		const total = remaining$1(input);
 		const enriched = await enrichNpmEvidence({
@@ -27708,7 +27735,7 @@ function createEvidenceCollectors(input) {
 			now: input.now,
 			signal: input.signal
 		});
-		if (enriched.kind !== "inventory") return { kind: "unavailable" };
+		if (enriched.kind !== "inventory") return noInventory(enriched);
 		return {
 			kind: "complete",
 			ecosystem: "npm",
@@ -27724,7 +27751,7 @@ function createEvidenceCollectors(input) {
 			binding,
 			limits: { ...W2_EVIDENCE_LIMITS.actions }
 		}, { session });
-		if (inventory.kind !== "inventory") return { kind: "unavailable" };
+		if (inventory.kind !== "inventory") return noInventory(inventory);
 		return {
 			kind: "complete",
 			ecosystem: "actions",
@@ -27744,13 +27771,13 @@ function createEvidenceCollectors(input) {
 			configRevision: roots.configRevision,
 			limits: { ...W2_EVIDENCE_LIMITS.uv }
 		}, { session });
-		if (metadata.kind !== "metadata") return { kind: "unavailable" };
+		if (metadata.kind !== "metadata") return noInventory(metadata);
 		const graph = reconcileUvGraph({
 			binding,
 			metadata,
 			limits: { ...W2_EVIDENCE_LIMITS.graph }
 		});
-		if (graph.kind !== "inventory") return { kind: "unavailable" };
+		if (graph.kind !== "inventory") return noInventory(graph);
 		return {
 			kind: "complete",
 			ecosystem: "uv",
@@ -27769,6 +27796,11 @@ function createEvidenceCollectors(input) {
 }
 
 // src/packet.ts
+function gapReason(value) {
+	if (!record(value, ["kind"])) return "malformed";
+	if (value.kind !== "unavailable") return "malformed";
+	return EVIDENCE_REASONS.find((reason) => reason === value.reason) ?? "unknown";
+}
 function fragment(value, ecosystem) {
 	if (!record(value, [
 		"kind",
@@ -27794,8 +27826,15 @@ async function assembleReviewPacket(input) {
 			"uv"
 		]) {
 			if (!input.isCurrent()) return { kind: "stale" };
-			const value = fragment(await input.collectors[ecosystem](session), ecosystem);
-			if (!value || !input.isCurrent()) return input.isCurrent() ? { kind: "incomplete" } : { kind: "stale" };
+			const result = await input.collectors[ecosystem](session);
+			const value = fragment(result, ecosystem);
+			if (!value || !input.isCurrent()) return input.isCurrent() ? {
+				kind: "incomplete",
+				gaps: [{
+					source: ecosystem,
+					reason: gapReason(result)
+				}]
+			} : { kind: "stale" };
 			fragments.push(value);
 		}
 		if (!record(input.trusted, [
@@ -27829,10 +27868,17 @@ async function assembleReviewPacket(input) {
 			findings: fragments.flatMap((item) => item.findings),
 			relationships: fragments.flatMap((item) => item.relationships)
 		}, trusted);
-		return packet.ok ? {
+		if (packet.ok) return {
 			kind: "ready",
 			packet: packet.packet
-		} : { kind: "incomplete" };
+		};
+		return {
+			kind: "incomplete",
+			gaps: [{
+				source: "packet",
+				reason: packet.error.category === "budget" ? "budget" : "malformed"
+			}]
+		};
 	} catch {
 		return { kind: "internal-failure" };
 	} finally {
@@ -29233,7 +29279,10 @@ async function runReview(input) {
 		const final = await stillCurrent().catch(() => "error");
 		if (final !== "current") outcome = stopped(final);
 	}
-	const handoff = await createReviewHandoff(input.claims, claim, outcome.kind);
+	const handoff = await createReviewHandoff(input.claims, claim, outcome.kind, {
+		body: outcome.body !== null,
+		gaps: outcome.gaps ?? []
+	});
 	if (handoff.kind !== "ready") return {
 		kind: "not-eligible",
 		reason: "ownership"
@@ -29300,7 +29349,8 @@ async function evaluateEvidence(input, binding, started, signal, state, recheck)
 		};
 		if (assembled.kind === "incomplete") return {
 			kind: "incomplete-evidence",
-			body: null
+			body: null,
+			gaps: assembled.gaps
 		};
 		if (assembled.kind !== "ready") return {
 			kind: evidenceSession === "obsolete" ? "stale" : "internal-failure",

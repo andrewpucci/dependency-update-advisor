@@ -77,7 +77,39 @@ test('never turns an unavailable collector into an empty complete packet', async
     collectors: { npm: collector('npm'), actions: unavailable, uv: collector('uv') },
     inventorySource: null,
   });
-  expect(result).toEqual({ kind: 'incomplete' });
+  expect(result).toEqual({ kind: 'incomplete', gaps: [{ source: 'actions', reason: 'unknown' }] });
+});
+
+test.each([
+  ['a collector reason', async () => ({ kind: 'unavailable', reason: 'budget' }), 'budget'],
+  ['an unusable fragment', async () => ({ kind: 'complete', ecosystem: 'other' }), 'malformed'],
+  ['no result', async () => null, 'malformed'],
+  [
+    'a reason outside the fixed set',
+    async () => ({ kind: 'unavailable', reason: 'secret-text' }),
+    'unknown',
+  ],
+])('names the ecosystem and a fixed reason for %s', async (_label, uv, reason) => {
+  const result = await assembleReviewPacket({
+    trusted,
+    isCurrent: () => true,
+    openSession: async () => ({ close: () => undefined }),
+    collectors: { npm: collector('npm'), actions: collector('actions'), uv },
+    inventorySource: null,
+  });
+  expect(result).toEqual({ kind: 'incomplete', gaps: [{ source: 'uv', reason }] });
+});
+
+test('names the packet as the gap when validation rejects the assembled evidence', async () => {
+  const result = await assembleReviewPacket({
+    trusted,
+    isCurrent: () => true,
+    openSession: async () => ({ close: () => undefined }),
+    // Without the shared source, not-applicable coverage cites a source that does not exist.
+    collectors: { npm: collector('npm'), actions: collector('actions'), uv: collector('uv') },
+    inventorySource: null,
+  });
+  expect(result).toMatchObject({ kind: 'incomplete', gaps: [{ source: 'packet' }] });
 });
 
 test('keeps the computed result when closing the session fails', async () => {
@@ -92,7 +124,7 @@ test('keeps the computed result when closing the session fails', async () => {
     collectors: { npm: async () => null, actions: collector('actions'), uv: collector('uv') },
     inventorySource: null,
   });
-  expect(result).toEqual({ kind: 'incomplete' });
+  expect(result).toEqual({ kind: 'incomplete', gaps: [{ source: 'npm', reason: 'malformed' }] });
 });
 
 const { context: _context, ...trustedWithoutContext } = trusted;
@@ -169,7 +201,7 @@ test('does not collect context for an incomplete collector, and needs one source
       collectors: { ...sources([]).collectors, npm: unavailable },
       inventorySource: null,
     }),
-  ).resolves.toEqual({ kind: 'incomplete' });
+  ).resolves.toEqual({ kind: 'incomplete', gaps: [{ source: 'npm', reason: 'unknown' }] });
   expect(collectContext).not.toHaveBeenCalled();
   await expect(
     assembleReviewPacket({
@@ -218,4 +250,19 @@ test('passes the collected changes, in collector order, to context collection', 
     inventorySource: null,
   });
   expect(seen).toEqual([[{ id: 'n' }, { id: 'a' }, { id: 'u' }]]);
+});
+
+test('names a packet that exceeds its size limits as a budget gap', async () => {
+  const tooMany = async () => ({
+    ...(await collector('npm')()),
+    changes: Array.from({ length: 129 }, (_, index) => ({ id: `change-${index}` })),
+  });
+  const result = await assembleReviewPacket({
+    trusted,
+    isCurrent: () => true,
+    openSession: async () => ({ close: () => undefined }),
+    collectors: { npm: tooMany, actions: collector('actions'), uv: collector('uv') },
+    inventorySource: null,
+  });
+  expect(result).toEqual({ kind: 'incomplete', gaps: [{ source: 'packet', reason: 'budget' }] });
 });

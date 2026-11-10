@@ -246,6 +246,8 @@ test('runs a current review to a complete, exact-bound handoff recorded without 
       generation: 1,
       status: 'success',
       comment: 'eligible',
+      body: 'present',
+      gaps: [],
     },
   ]);
   expect(githubCalls.length).toBeGreaterThan(0);
@@ -827,4 +829,41 @@ test('ends the attempt signal when the head moves, and stops the ownership watch
   } finally {
     clear.mockRestore();
   }
+});
+
+test('records which source gave no inventory, with a fixed reason, when there is no body', async () => {
+  vi.mocked(npmModule.collectNpmInventory).mockResolvedValueOnce({ kind: 'invalid' });
+  const { input, sink } = await setup();
+  const result = await runReview(input);
+  expect(result).toMatchObject({
+    kind: 'handed-off',
+    outcome: 'incomplete-evidence',
+    body: null,
+    handoff: { body: 'absent', gaps: [{ source: 'npm', reason: 'malformed' }] },
+  });
+  expect(sink.traces()[0]).toMatchObject({
+    body: 'absent',
+    gaps: [{ source: 'npm', reason: 'malformed' }],
+  });
+  expect(JSON.stringify(result)).not.toContain(sentinel);
+});
+
+test('records a rendered incomplete review as having a body and no source gaps', async () => {
+  const { input } = await setup({ evidence: 'uv-unsupported' });
+  const result = await runReview(input);
+  expect(result).toMatchObject({
+    kind: 'handed-off',
+    outcome: 'incomplete-evidence',
+    handoff: { body: 'present', gaps: [] },
+  });
+});
+
+test.each([
+  ['an invalid config', { config: '{"version":2}' }],
+  ['a missing model key', { llmApiKey: null }],
+  ['a moved head', { pullRequestHeads: [HEAD, NEXT] }],
+])('records no body and no gaps for %s', async (_label, overrides) => {
+  const { input } = await setup(overrides);
+  const result = await runReview(input);
+  expect(result).toMatchObject({ kind: 'handed-off', handoff: { body: 'absent', gaps: [] } });
 });

@@ -199,8 +199,12 @@ receives `process.env` or a general fetch function.
    unusable analysis input, and renderer failure preserve the prior comment;
    they never require a fabricated packet or brief to request failure. A
    complete or accurately rendered incomplete result may also supply a
-   comment-ready body. Only a complete result is eligible for eventual
-   success, after publication confirms the current-head comment was recorded.
+   comment-ready body. The handoff states whether a body exists, separately
+   from what the outcome may eventually do. When no packet could be assembled,
+   it also names each source that gave no usable evidence (an ecosystem or the
+   packet) with one fixed evidence reason, never error text. Only a complete
+   result is eligible for eventual success, after publication confirms the
+   current-head comment was recorded.
    Skipped, stale, unverified, or unowned outcomes authorize neither status nor
    comment publication. This contract calls neither T2/T3 writer nor a real
    App-token request; the later publisher rechecks freshness and ownership.

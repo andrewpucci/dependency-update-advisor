@@ -190,8 +190,12 @@ test('never turns a collector without an inventory into an empty fragment', asyn
     readComparison: async () => ({ kind: 'unavailable' }),
     close: () => undefined,
   } as unknown as GithubReadSession;
+  // An obsolete read means the attempt's evidence moved underneath it, which is a conflict.
   for (const ecosystem of ['npm', 'actions', 'uv'] as const)
-    await expect(collectors[ecosystem](obsolete)).resolves.toEqual({ kind: 'unavailable' });
+    await expect(collectors[ecosystem](obsolete)).resolves.toEqual({
+      kind: 'unavailable',
+      reason: 'conflict',
+    });
   await expect(
     assembleReviewPacket({
       trusted: {
@@ -205,7 +209,7 @@ test('never turns a collector without an inventory into an empty fragment', asyn
       collectors,
       inventorySource: null,
     }),
-  ).resolves.toEqual({ kind: 'incomplete' });
+  ).resolves.toEqual({ kind: 'incomplete', gaps: [{ source: 'npm', reason: 'conflict' }] });
 });
 
 test('keeps the registry capability separate from the GitHub fetch', async () => {
@@ -334,7 +338,10 @@ test.each([
 ])('reports a %s graph result of %j as unavailable, not empty', async (_label, graph) => {
   const { session, collectors } = await readySession();
   vi.mocked(uvGraphModule.reconcileUvGraph).mockReturnValueOnce(graph as never);
-  await expect(collectors.uv(session)).resolves.toEqual({ kind: 'unavailable' });
+  await expect(collectors.uv(session)).resolves.toEqual({
+    kind: 'unavailable',
+    reason: (graph as { reason?: string }).reason ?? 'malformed',
+  });
 });
 
 test('reports an unusable N2 result as unavailable, not as the unenriched inventory', async () => {
@@ -358,7 +365,10 @@ test('reports an unusable N2 result as unavailable, not as the unenriched invent
     kind: 'unavailable',
     reason: 'budget',
   } as never);
-  await expect(collectors.npm(opened.session)).resolves.toEqual({ kind: 'unavailable' });
+  await expect(collectors.npm(opened.session)).resolves.toEqual({
+    kind: 'unavailable',
+    reason: 'budget',
+  });
 });
 
 test.each([
