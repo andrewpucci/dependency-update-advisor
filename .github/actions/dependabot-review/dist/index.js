@@ -10654,6 +10654,101 @@ function longestFittingPrefix(length, prefix, fits) {
 	return prefix(low);
 }
 
+// src/evidence/bounded-request.ts
+function boundedLimits(value) {
+	advisoryCheck(isPlainObject(value));
+	const keys = [
+		"maxRequests",
+		"maxResponseBytes",
+		"maxTotalBytes",
+		"maxJsonEntries",
+		"maxJsonDepth",
+		"maxWork",
+		"maxRetainedBytes",
+		"requestTimeoutMs",
+		"totalTimeoutMs"
+	];
+	advisoryCheck(keys.every((k) => Number.isSafeInteger(value[k]) && Number(value[k]) > 0));
+	advisoryCheck(Number(value.maxResponseBytes) <= Number(value.maxTotalBytes) && Number(value.requestTimeoutMs) <= Number(value.totalTimeoutMs) && Number(value.requestTimeoutMs) <= 2 ** 31 - 1);
+	return Object.fromEntries(keys.map((k) => [k, value[k]]));
+}
+/** Wall-clock budget shared by every request of one reader; a non-monotonic clock is unknown. */
+var BoundedClock = class {
+	totalTimeoutMs;
+	deps;
+	started;
+	last;
+	constructor(totalTimeoutMs, deps) {
+		this.totalTimeoutMs = totalTimeoutMs;
+		this.deps = deps;
+		this.started = this.last = deps.now();
+		advisoryCheck(Number.isFinite(this.started));
+	}
+	remaining(stopped) {
+		advisoryCheck(!stopped && !this.deps.signal?.aborted, stopped ?? "unknown");
+		const now = this.deps.now();
+		advisoryCheck(Number.isFinite(now) && now >= this.last, "unknown");
+		this.last = now;
+		const left = this.totalTimeoutMs - (now - this.started);
+		advisoryCheck(left > 0, "timeout");
+		return left;
+	}
+};
+/** Node clamps oversized delays, so long request deadlines must be scheduled in platform-sized parts. */
+function deadlineTimer(duration, expire) {
+	let remaining = duration, handle;
+	const schedule = () => {
+		const interval = Math.min(remaining, 2 ** 31 - 1);
+		handle = setTimeout(() => {
+			remaining -= interval;
+			if (remaining > 0) schedule();
+			else expire();
+		}, interval);
+	};
+	schedule();
+	return () => clearTimeout(handle);
+}
+/**
+* One credential-free GET raced against its timeout, the caller's signal, and `onCancel`
+* (registered for the reader's close). Every exit aborts the request and releases its body.
+*/
+async function boundedGet(deps, request, onCancel, consume) {
+	const controller = new AbortController();
+	let reject = () => {};
+	const aborted = new Promise((_, r) => {
+		reject = r;
+	});
+	const stop = (reason) => {
+		controller.abort();
+		reject(new AdvisoryFailure(reason));
+	};
+	const cancel = () => stop("unknown");
+	onCancel(cancel);
+	deps.signal?.addEventListener("abort", cancel, { once: true });
+	const clear = deadlineTimer(request.timeoutMs, () => stop("timeout"));
+	let response;
+	try {
+		const pending = deps.fetch(request.url, {
+			method: "GET",
+			redirect: "manual",
+			credentials: "omit",
+			headers: "headers" in request ? request.headers : { accept: request.accept },
+			signal: controller.signal
+		});
+		pending.then((late) => {
+			if (controller.signal.aborted && late.body && !late.body.locked) late.body.cancel().catch(() => {});
+		}, () => {});
+		response = await Promise.race([pending, aborted]);
+		return await consume(response, aborted);
+	} finally {
+		clear();
+		deps.signal?.removeEventListener("abort", cancel);
+		onCancel(null);
+		controller.abort();
+		if (response?.body && !response.body.locked) response.body.cancel().catch(() => {});
+	}
+}
+
 // src/evidence/advisory-read.ts
 var AdvisoryFailure = class extends Error {
 	reason;
@@ -10825,19 +10920,6 @@ function httpReason$3(response, data) {
 	if (response.status === 401 || response.status === 403 && ["Resource not accessible by integration", "Resource not accessible by personal access token"].includes(message)) return "permission";
 	return response.status === 404 ? "missing" : "unknown";
 }
-function deadlineTimer(duration, expire) {
-	let remaining = duration, handle;
-	const schedule = () => {
-		const interval = Math.min(remaining, 2 ** 31 - 1);
-		handle = setTimeout(() => {
-			remaining -= interval;
-			if (remaining > 0) schedule();
-			else expire();
-		}, interval);
-	};
-	schedule();
-	return () => clearTimeout(handle);
-}
 function continuation(link, original, seen) {
 	if (!link) return null;
 	let next = null;
@@ -10865,8 +10947,7 @@ var Reader$1 = class {
 	requests = 0;
 	bytes = 0;
 	work = { entries: 0 };
-	started;
-	last;
+	clock;
 	busy = false;
 	stopped = null;
 	active = null;
@@ -10874,8 +10955,7 @@ var Reader$1 = class {
 		this.limits = limits;
 		this.deps = deps;
 		this.kind = kind;
-		this.started = this.last = deps.now();
-		advisoryCheck(Number.isFinite(this.started));
+		this.clock = new BoundedClock(limits.totalTimeoutMs, deps);
 	}
 	close() {
 		this.stopped = "unknown";
@@ -10883,12 +10963,7 @@ var Reader$1 = class {
 	}
 	remaining() {
 		advisoryCheck(!this.deps.signal?.aborted && !this.stopped, this.stopped ?? "unknown");
-		const time = this.deps.now();
-		advisoryCheck(Number.isFinite(time) && time >= this.last, "unknown");
-		this.last = time;
-		const left = this.limits.totalTimeoutMs - (time - this.started);
-		advisoryCheck(left > 0, "timeout");
-		return left;
+		return this.clock.remaining(this.stopped);
 	}
 	async body(response, aborted) {
 		advisoryCheck(response.body);
@@ -10912,33 +10987,17 @@ var Reader$1 = class {
 	async page(url) {
 		this.remaining();
 		advisoryCheck(++this.requests <= Math.min(this.limits.maxRequests, this.limits.maxPages), "budget");
-		const duration = Math.min(this.remaining(), this.limits.requestTimeoutMs);
-		const controller = new AbortController();
-		let reject = () => {};
-		const aborted = new Promise((_, r) => {
-			reject = r;
-		});
-		const stop = (reason) => {
-			controller.abort();
-			reject(new AdvisoryFailure(reason));
-		};
-		const cancel = () => stop("unknown");
-		this.active = cancel;
-		this.deps.signal?.addEventListener("abort", cancel, { once: true });
-		const clear = deadlineTimer(duration, () => stop("timeout"));
-		let response;
-		try {
+		return boundedGet(this.deps, {
+			url,
+			headers: {
+				accept: "application/vnd.github+json",
+				"X-GitHub-Api-Version": "2026-03-10"
+			},
+			timeoutMs: Math.min(this.remaining(), this.limits.requestTimeoutMs)
+		}, (cancel) => {
+			this.active = cancel;
+		}, async (response, aborted) => {
 			this.remaining();
-			response = await Promise.race([this.deps.fetch(url, {
-				method: "GET",
-				credentials: "omit",
-				redirect: "manual",
-				headers: {
-					accept: "application/vnd.github+json",
-					"X-GitHub-Api-Version": "2026-03-10"
-				},
-				signal: controller.signal
-			}), aborted]);
 			advisoryCheck(!response.redirected && (!response.url || response.url === url), "unsupported");
 			advisoryCheck(response.status < 300 || response.status >= 400, "unsupported");
 			if (httpReason$3(response, null) === "rate_limit") {
@@ -10964,13 +11023,7 @@ var Reader$1 = class {
 				data,
 				link: response.headers.get("link")
 			};
-		} finally {
-			clear();
-			this.deps.signal?.removeEventListener("abort", cancel);
-			this.active = null;
-			controller.abort();
-			if (response?.body && !response.body.locked) response.body.cancel().catch(() => {});
-		}
+		});
 	}
 	async read(value) {
 		let t = {
@@ -11043,87 +11096,6 @@ function createAdvisoryReader(limits, dependencies) {
 }
 function createMalwareReader(limits, dependencies) {
 	return createReader(limits, dependencies, "malware");
-}
-
-// src/evidence/bounded-request.ts
-function boundedLimits(value) {
-	advisoryCheck(isPlainObject(value));
-	const keys = [
-		"maxRequests",
-		"maxResponseBytes",
-		"maxTotalBytes",
-		"maxJsonEntries",
-		"maxJsonDepth",
-		"maxWork",
-		"maxRetainedBytes",
-		"requestTimeoutMs",
-		"totalTimeoutMs"
-	];
-	advisoryCheck(keys.every((k) => Number.isSafeInteger(value[k]) && Number(value[k]) > 0));
-	advisoryCheck(Number(value.maxResponseBytes) <= Number(value.maxTotalBytes) && Number(value.requestTimeoutMs) <= Number(value.totalTimeoutMs) && Number(value.requestTimeoutMs) <= 2 ** 31 - 1);
-	return Object.fromEntries(keys.map((k) => [k, value[k]]));
-}
-/** Wall-clock budget shared by every request of one reader; a non-monotonic clock is unknown. */
-var BoundedClock = class {
-	totalTimeoutMs;
-	deps;
-	started;
-	last;
-	constructor(totalTimeoutMs, deps) {
-		this.totalTimeoutMs = totalTimeoutMs;
-		this.deps = deps;
-		this.started = this.last = deps.now();
-		advisoryCheck(Number.isFinite(this.started));
-	}
-	remaining(stopped) {
-		advisoryCheck(!stopped && !this.deps.signal?.aborted, stopped ?? "unknown");
-		const now = this.deps.now();
-		advisoryCheck(Number.isFinite(now) && now >= this.last, "unknown");
-		this.last = now;
-		const left = this.totalTimeoutMs - (now - this.started);
-		advisoryCheck(left > 0, "timeout");
-		return left;
-	}
-};
-/**
-* One credential-free GET raced against its timeout, the caller's signal, and `onCancel`
-* (registered for the reader's close). Every exit aborts the request and releases its body.
-*/
-async function boundedGet(deps, request, onCancel, consume) {
-	const controller = new AbortController();
-	let reject = () => {};
-	const aborted = new Promise((_, r) => {
-		reject = r;
-	});
-	const stop = (reason) => {
-		controller.abort();
-		reject(new AdvisoryFailure(reason));
-	};
-	const cancel = () => stop("unknown");
-	onCancel(cancel);
-	deps.signal?.addEventListener("abort", cancel, { once: true });
-	const timer = setTimeout(() => stop("timeout"), request.timeoutMs);
-	let response;
-	try {
-		const pending = deps.fetch(request.url, {
-			method: "GET",
-			redirect: "manual",
-			credentials: "omit",
-			headers: { accept: request.accept },
-			signal: controller.signal
-		});
-		pending.then((late) => {
-			if (controller.signal.aborted && late.body && !late.body.locked) late.body.cancel().catch(() => {});
-		}, () => {});
-		response = await Promise.race([pending, aborted]);
-		return await consume(response, aborted);
-	} finally {
-		clearTimeout(timer);
-		deps.signal?.removeEventListener("abort", cancel);
-		onCancel(null);
-		controller.abort();
-		if (response?.body && !response.body.locked) response.body.cancel().catch(() => {});
-	}
 }
 
 // src/evidence/npm-publish-times.ts
