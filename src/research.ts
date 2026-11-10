@@ -7,6 +7,7 @@ import { createNpmRegistryReader } from './evidence/npm-registry.js';
 import { enrichPolicySignals } from './evidence/policy-signals.js';
 import type { SignalAttempt } from './evidence/policy-signals.js';
 import { createPolicySignalReader } from './evidence/policy-signals-read.js';
+import type { PolicyMetadataReader } from './evidence/policy-signals-read.js';
 import { enrichUpstream, type UpstreamAttempt } from './evidence/upstream.js';
 import { createUpstreamReader } from './evidence/upstream-read.js';
 import type { NpmInventoryResult } from './evidence/npm.js';
@@ -102,6 +103,7 @@ async function enrichUpstreamStage(
   readers: Reader[],
   progress: ResearchProgress,
   fail: Fail,
+  pypiReader?: PolicyMetadataReader,
 ): Promise<void> {
   const limitsForStage = limits(EVIDENCE_READ_ALLOCATION.upstream, input);
   const opened = createUpstreamReader(limitsForStage, dependencies);
@@ -116,7 +118,7 @@ async function enrichUpstreamStage(
       limits: limitsForStage,
       ...(input.npmInventory ? { npmInventory: input.npmInventory } : {}),
     },
-    { reader: opened.reader },
+    { reader: opened.reader, ...(pypiReader ? { pypiReader } : {}) },
   );
   if (upstream.kind !== 'enriched') return fail('upstream', failure(upstream));
   replaceEvidence(progress, upstream);
@@ -159,23 +161,22 @@ async function enrichSignalsStage(
   readers: Reader[],
   progress: ResearchProgress,
   fail: Fail,
+  metadata: PolicyMetadataReader | null,
 ): Promise<void> {
   const limitsForStage = limits(EVIDENCE_READ_ALLOCATION.signals, input);
   const { readers: shares } = EVIDENCE_READ_ALLOCATION.signals;
   const malware = createMalwareReader(limits(shares.malware, input), dependencies);
   const registry = createNpmRegistryReader(limits(shares.registry, input), dependencies);
   const times = createNpmPublishTimeReader(limits(shares.publishTimes, input), dependencies);
-  const metadata = createPolicySignalReader(limits(shares.metadata, input), dependencies);
   const upstream = createUpstreamReader(limits(shares.upstream, input), dependencies);
   // The npm registry reader holds no timers or listeners, so it has nothing to close.
-  for (const opened of [malware, times, metadata])
-    if (opened.kind === 'ready') readers.push(opened);
+  for (const opened of [malware, times]) if (opened.kind === 'ready') readers.push(opened);
   if (upstream.kind === 'ready') readers.push(upstream.reader);
   if (
     malware.kind !== 'ready' ||
     registry.kind !== 'ready' ||
     times.kind !== 'ready' ||
-    metadata.kind !== 'ready' ||
+    !metadata ||
     upstream.kind !== 'ready'
   )
     return fail('signals', 'malformed');
@@ -245,9 +246,22 @@ export async function runResearch(input: ResearchInput): Promise<ResearchResult>
     };
     const fail = (stage: ResearchStage, reason: EvidenceReason) =>
       unavailable.push({ stage, reason });
-    await enrichUpstreamStage(input, dependencies, readers, progress, fail);
+    const metadata = createPolicySignalReader(
+      limits(EVIDENCE_READ_ALLOCATION.signals.readers.metadata, input),
+      dependencies,
+    );
+    const sharedMetadata = metadata.kind === 'ready' ? metadata : null;
+    if (sharedMetadata) readers.push(sharedMetadata);
+    await enrichUpstreamStage(
+      input,
+      dependencies,
+      readers,
+      progress,
+      fail,
+      sharedMetadata ?? undefined,
+    );
     await enrichAdvisoryStage(input, dependencies, readers, progress, fail);
-    await enrichSignalsStage(input, dependencies, readers, progress, fail);
+    await enrichSignalsStage(input, dependencies, readers, progress, fail, sharedMetadata);
 
     const candidate = revalidate(input, progress);
     if (!candidate.ok) {
