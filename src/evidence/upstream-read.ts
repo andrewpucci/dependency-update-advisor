@@ -2,6 +2,7 @@ import { createNpmRegistryReader } from './npm-registry.js';
 import { copyAdvisoryData, AdvisoryFailure, type AdvisoryLimits } from './advisory-read.js';
 import { freeze, isPlainObject, isEvidencePath } from './common.js';
 import type { EvidenceReason, PackageSource } from '../schema.js';
+import { BoundedClock, boundedGet } from './bounded-request.js';
 
 export type UpstreamLimits = Readonly<{
   maxRequests: number;
@@ -69,9 +70,6 @@ export class UpstreamFailure extends Error {
     super(reason);
   }
 }
-function cancelUnusedBody(response?: Response) {
-  if (response?.body && !response.body.locked) void response.body.cancel().catch(() => {});
-}
 export function upstreamFailureReason(error: unknown): EvidenceReason {
   return error instanceof UpstreamFailure || error instanceof AdvisoryFailure
     ? error.reason
@@ -115,20 +113,6 @@ export function upstreamLimits(value: unknown): UpstreamLimits {
 }
 export function upstreamCopy<T>(value: T, limits: UpstreamLimits, work = { entries: 0 }): T {
   return copyAdvisoryData(value, { ...limits, maxFindings: 1 } as AdvisoryLimits, work);
-}
-function timer(ms: number, expire: () => void) {
-  let remaining = ms,
-    handle: ReturnType<typeof setTimeout>;
-  const schedule = () => {
-    const part = Math.min(remaining, 2 ** 31 - 1);
-    handle = setTimeout(() => {
-      remaining -= part;
-      if (remaining > 0) schedule();
-      else expire();
-    }, part);
-  };
-  schedule();
-  return () => clearTimeout(handle);
 }
 function httpReason(response: Response, bytes: Buffer): EvidenceReason {
   let message = '';
@@ -261,13 +245,13 @@ class Reader {
   private requests = 0;
   private bytes = 0;
   private work = { entries: 0 };
-  private last: number;
-  private readonly start: number;
+  private readonly clock: BoundedClock;
   private closed = false;
   private busy = false;
   private stopped: EvidenceReason | null = null;
   private networkReason: EvidenceReason | null = null;
   private readonly controller = new AbortController();
+  private active: (() => void) | null = null;
   private readonly blocked = new Set<string>();
   private readonly cache = new Map<string, Readonly<Record<string, unknown>>>();
   private readonly cacheSizes = new Map<string, number>();
@@ -282,8 +266,7 @@ class Reader {
     readonly limits: UpstreamLimits,
     private readonly deps: UpstreamDependencies,
   ) {
-    this.start = this.last = deps.now();
-    requireUpstream(Number.isFinite(this.start));
+    this.clock = new BoundedClock(limits.totalTimeoutMs, deps);
     this.npm = createNpmRegistryReader(limits, {
       now: deps.now,
       signal: this.controller.signal,
@@ -293,6 +276,7 @@ class Reader {
   }
   close() {
     this.closed = true;
+    this.active?.();
     this.controller.abort();
     this.cache.clear();
     this.cacheSizes.clear();
@@ -333,13 +317,13 @@ class Reader {
   private remaining() {
     requireUpstream(!this.closed && !this.deps.signal?.aborted, 'unknown');
     requireUpstream(!this.stopped, this.stopped ?? 'unknown');
-    const now = this.deps.now();
-    requireUpstream(Number.isFinite(now) && now >= this.last, 'unknown');
-    this.last = now;
-    const left = this.limits.totalTimeoutMs - (now - this.start);
-    if (left <= 0) this.stopped = 'timeout';
-    requireUpstream(left > 0, 'timeout');
-    return left;
+    try {
+      return this.clock.remaining(this.stopped);
+    } catch (error) {
+      const reason = upstreamFailureReason(error);
+      if (reason === 'timeout') this.stopped = reason;
+      throw new UpstreamFailure(reason);
+    }
   }
   private dispatch(url: string) {
     this.remaining();
@@ -365,7 +349,7 @@ class Reader {
         chunks.push(chunk.value);
       }
     } catch (error) {
-      if (error instanceof UpstreamFailure) throw error;
+      if (error instanceof UpstreamFailure || error instanceof AdvisoryFailure) throw error;
       throw new UpstreamFailure(size ? 'truncated' : 'unknown');
     } finally {
       void reader.cancel().catch(() => {});
@@ -374,70 +358,47 @@ class Reader {
   }
   private async fetchBounded(url: string, _init: RequestInit): Promise<Response> {
     this.dispatch(url);
-    const controller = new AbortController();
-    let reject: (e: UpstreamFailure) => void = () => {};
-    const aborted = new Promise<never>((_, no) => {
-      reject = no;
-    });
-    const stop = (reason: EvidenceReason) => {
-      reject(new UpstreamFailure(reason));
-      controller.abort();
-    };
-    const cancel = () => stop('unknown');
-    const signals = [this.controller.signal, this.deps.signal, _init.signal].filter(
-      (s): s is AbortSignal => !!s,
-    );
-    for (const signal of signals) signal.addEventListener('abort', cancel, { once: true });
-    const clear = timer(Math.min(this.remaining(), this.limits.requestTimeoutMs), () =>
-      stop('timeout'),
-    );
-    let response: Response | undefined;
     try {
-      const request = this.deps.fetch(url, {
-        method: 'GET',
-        credentials: 'omit',
-        redirect: 'manual',
-        headers: { accept: 'application/json' },
-        signal: controller.signal,
-      });
-      void request.then(
-        (late) => {
-          if (controller.signal.aborted) cancelUnusedBody(late);
+      return await boundedGet(
+        this.deps,
+        {
+          url,
+          accept: 'application/json',
+          timeoutMs: Math.min(this.remaining(), this.limits.requestTimeoutMs),
+          signal: _init.signal ?? undefined,
         },
-        () => {},
+        (cancel) => {
+          this.active = cancel;
+        },
+        async (response, aborted) => {
+          requireUpstream(
+            !response.redirected && (!response.url || response.url === url),
+            'unsupported',
+          );
+          const immediate = httpReason(response, Buffer.alloc(0));
+          if (response.status !== 200 && immediate !== 'unknown') {
+            if (immediate === 'rate_limit') this.blocked.add(new URL(url).origin);
+            throw new UpstreamFailure(immediate);
+          }
+          const bytes = response.body ? await this.body(response, aborted) : Buffer.alloc(0);
+          if (response.status !== 200) {
+            const reason = httpReason(response, bytes);
+            if (reason === 'rate_limit') this.blocked.add(new URL(url).origin);
+            throw new UpstreamFailure(reason);
+          }
+          requireUpstream(
+            /^application\/(?:[\w.+-]*\+)?json(?:\s*;|$)/iu.test(
+              response.headers.get('content-type') ?? '',
+            ),
+            'unsupported',
+          );
+          this.remaining();
+          return new Response(bytes, { status: 200, headers: response.headers });
+        },
       );
-      response = await Promise.race([request, aborted]);
-      requireUpstream(
-        !response.redirected && (!response.url || response.url === url),
-        'unsupported',
-      );
-      const immediate = httpReason(response, Buffer.alloc(0));
-      if (response.status !== 200 && immediate !== 'unknown') {
-        if (immediate === 'rate_limit') this.blocked.add(new URL(url).origin);
-        throw new UpstreamFailure(immediate);
-      }
-      const bytes = response.body ? await this.body(response, aborted) : Buffer.alloc(0);
-      if (response.status !== 200) {
-        const reason = httpReason(response, bytes);
-        if (reason === 'rate_limit') this.blocked.add(new URL(url).origin);
-        throw new UpstreamFailure(reason);
-      }
-      requireUpstream(
-        /^application\/(?:[\w.+-]*\+)?json(?:\s*;|$)/iu.test(
-          response.headers.get('content-type') ?? '',
-        ),
-        'unsupported',
-      );
-      this.remaining();
-      return new Response(bytes, { status: 200, headers: response.headers });
     } catch (error) {
-      this.networkReason = error instanceof UpstreamFailure ? error.reason : 'unknown';
+      this.networkReason = upstreamFailureReason(error);
       throw error;
-    } finally {
-      clear();
-      controller.abort();
-      for (const signal of signals) signal.removeEventListener('abort', cancel);
-      cancelUnusedBody(response);
     }
   }
   private async pypi(t: MetadataTarget, url: string) {

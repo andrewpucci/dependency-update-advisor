@@ -194,6 +194,30 @@ test('closing the reader cancels a fetch that ignores its signal', async () => {
   f.reader.close();
   expect((await pending).status).toBe('unavailable');
 });
+test('nested npm cancellation aborts the upstream transport', async () => {
+  vi.useFakeTimers();
+  try {
+    let signal: AbortSignal | undefined;
+    const opened = createUpstreamReader(limits, {
+      now: () => {
+        vi.advanceTimersByTime(1);
+        return 0;
+      },
+      fetch: async (_url, init) => {
+        signal = init.signal as AbortSignal;
+        return new Promise<Response>(() => {});
+      },
+    });
+    if (opened.kind !== 'ready') throw new Error('reader');
+    const pending = opened.reader.read(target);
+    await vi.advanceTimersToNextTimerAsync();
+    expect((await pending).status).toBe('unavailable');
+    expect(signal?.aborted).toBe(true);
+    opened.reader.close();
+  } finally {
+    vi.useRealTimers();
+  }
+});
 test('an empty 429 body stops its host while independent registry research can succeed', async () => {
   const f = setup(async (url) =>
     new URL(url).hostname === 'pypi.org'

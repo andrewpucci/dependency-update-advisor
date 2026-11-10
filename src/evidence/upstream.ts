@@ -31,7 +31,9 @@ import {
   type UpstreamLookup,
   type UpstreamReader,
   type UpstreamTarget,
+  type MetadataTarget,
 } from './upstream-read.js';
+import type { PolicyMetadataReader } from './policy-signals-read.js';
 
 type Inventory = Extract<NpmInventoryResult, { kind: 'inventory' }>;
 type ReadonlyData<T> = T extends object ? { readonly [K in keyof T]: ReadonlyData<T[K]> } : T;
@@ -403,12 +405,15 @@ async function metadata(
   change: PacketChange,
   side: 'base' | 'head',
   reader: UpstreamReader,
+  pypiReader?: PolicyMetadataReader,
 ) {
   const instance = side === 'base' ? change.from : change.to;
   if (!instance) return;
   const target = metadataTarget(input, change, side);
   const lookup: UpstreamLookup = target
-    ? await reader.read(target)
+    ? target.kind === 'pypi' && pypiReader
+      ? await sharedPyPILookup(target, pypiReader)
+      : await reader.read(target)
     : { status: 'unavailable', fetched: false, url: null, data: null, reasons: ['unsupported'] };
   const sourceIds: string[] = [];
   if (lookup.status === 'available') {
@@ -429,6 +434,32 @@ async function metadata(
   metadataAttempt(output, change, side, lookup, sourceIds);
   metadataCoverage(change, side, lookup, sourceIds);
   return lookup;
+}
+async function sharedPyPILookup(target: MetadataTarget, reader: PolicyMetadataReader) {
+  const url = `https://pypi.org/pypi/${encodeURIComponent(target.name)}/${encodeURIComponent(target.version)}/json`;
+  const result = await reader.read({
+    kind: 'pypi',
+    name: target.name,
+    version: target.version,
+    source: target.source,
+  });
+  if (result.kind === 'data') {
+    requireUpstream(isPlainObject(result.data.info));
+    return {
+      status: 'available' as const,
+      fetched: true,
+      url: result.url,
+      data: result.data.info,
+      reasons: [],
+    };
+  }
+  return {
+    status: 'unavailable' as const,
+    fetched: result.kind !== 'unavailable' || result.reason !== 'unsupported',
+    url,
+    data: null,
+    reasons: [result.kind === 'unavailable' ? result.reason : 'missing'],
+  };
 }
 function researchSource(
   input: UpstreamInput,
@@ -726,6 +757,7 @@ async function enrichChange(
   output: UpstreamEnrichment,
   change: PacketChange,
   reader: UpstreamReader,
+  pypiReader?: PolicyMetadataReader,
 ) {
   if ('basis' in change) return;
   if (change.ecosystem === 'actions') {
@@ -737,7 +769,7 @@ async function enrichChange(
   }
   const lookups = new Map<string, UpstreamLookup>();
   for (const side of ['base', 'head'] as const) {
-    const lookup = await metadata(input, output, change, side, reader);
+    const lookup = await metadata(input, output, change, side, reader, pypiReader);
     if (lookup) lookups.set(side, lookup);
     bounds(output, input.limits, change);
   }
@@ -747,7 +779,7 @@ async function enrichChange(
 /** Enrich exact inventory identities; caller retains inventory coverage and relationships separately. */
 export async function enrichUpstream(
   value: unknown,
-  dependencies: { reader: UpstreamReader },
+  dependencies: { reader: UpstreamReader; pypiReader?: PolicyMetadataReader },
 ): Promise<UpstreamResult> {
   let input: UpstreamInput;
   try {
@@ -775,7 +807,7 @@ export async function enrichUpstream(
   try {
     bounds(output, input.limits);
     for (const change of output.changes)
-      await enrichChange(input, output, change, dependencies.reader);
+      await enrichChange(input, output, change, dependencies.reader, dependencies.pypiReader);
     return freeze(output);
   } catch (error) {
     return {

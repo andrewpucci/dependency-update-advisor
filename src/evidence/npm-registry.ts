@@ -11,6 +11,8 @@ import {
 } from '../schema.js';
 import type { NpmNode } from './npm.js';
 import type { Finding } from '../policy.js';
+import { BoundedClock, boundedGet } from './bounded-request.js';
+import { AdvisoryFailure } from './advisory-read.js';
 
 export type NpmRegistryLimits = Readonly<{
   maxRequests: number;
@@ -142,21 +144,6 @@ function freeze<T>(value: T): T {
   }
   return value;
 }
-/** Node clamps oversized delays; schedule long caller deadlines in platform-sized intervals. */
-function timer(duration: number, expire: () => void) {
-  let remaining = duration,
-    handle: ReturnType<typeof setTimeout>;
-  const schedule = () => {
-    const interval = Math.min(remaining, 2 ** 31 - 1);
-    handle = setTimeout(() => {
-      remaining -= interval;
-      if (remaining > 0) schedule();
-      else expire();
-    }, interval);
-  };
-  schedule();
-  return () => clearTimeout(handle);
-}
 function statusReason(status: number): EvidenceReason {
   if (status >= 300 && status < 400) return 'unsupported';
   if (status === 401 || status === 403) return 'permission';
@@ -172,27 +159,23 @@ class RegistryReader {
   private retained = 0;
   private busy = false;
   private stopped: EvidenceReason | null = null;
-  private readonly started: number;
-  private last: number;
+  private readonly clock: BoundedClock;
   constructor(
     private readonly limits: NpmRegistryLimits,
     private readonly deps: NpmRegistryDependencies,
   ) {
-    this.started = this.last = deps.now();
-    requireMetadata(Number.isFinite(this.started), 'unknown');
+    this.clock = new BoundedClock(limits.totalTimeoutMs, deps);
   }
   private remaining() {
     if (this.deps.signal?.aborted) this.stopped ??= 'unknown';
     if (this.stopped) throw new RegistryFailure(this.stopped);
-    const time = this.deps.now();
-    requireMetadata(Number.isFinite(time) && time >= this.last, 'unknown');
-    this.last = time;
-    const remaining = this.limits.totalTimeoutMs - (time - this.started);
-    if (remaining <= 0) {
-      this.stopped = 'timeout';
-      throw new RegistryFailure('timeout');
+    try {
+      return this.clock.remaining(this.stopped);
+    } catch (error) {
+      const reason = error instanceof AdvisoryFailure ? error.reason : 'unknown';
+      if (reason === 'timeout') this.stopped = reason;
+      throw new RegistryFailure(reason);
     }
-    return remaining;
   }
   private consume(amount: number, field: 'bytes' | 'entries' | 'retained', maximum: number) {
     this[field] += amount;
@@ -257,55 +240,36 @@ class RegistryReader {
     }
   }
   private async fetchDocument(r: Request): Promise<NpmMetadataDocument> {
-    const duration = Math.min(this.limits.requestTimeoutMs, this.remaining());
-    const controller = new AbortController();
-    let rejectAbort: (error: RegistryFailure) => void = () => {};
-    const aborted = new Promise<never>((_, reject) => {
-      rejectAbort = reject;
-    });
-    const stop = (reason: EvidenceReason) => {
-      rejectAbort(new RegistryFailure(reason));
-      controller.abort();
-    };
-    const cancel = () => {
-      this.stopped = 'unknown';
-      stop('unknown');
-    };
-    const clear = timer(duration, () => stop('timeout'));
-    this.deps.signal?.addEventListener('abort', cancel, { once: true });
     const url = `https://registry.npmjs.org/${encodeURIComponent(r.name)}/${encodeURIComponent(r.version)}`;
-    let response: Response | undefined;
     try {
-      this.remaining();
-      response = await Promise.race([
-        this.deps.fetch(url, {
-          method: 'GET',
-          redirect: 'manual',
-          credentials: 'omit',
-          headers: { accept: 'application/json' },
-          signal: controller.signal,
-        }),
-        aborted,
-      ]);
-      requireMetadata(
-        !response.redirected && (!response.url || response.url === url),
-        'unsupported',
+      return await boundedGet(
+        this.deps,
+        {
+          url,
+          accept: 'application/json',
+          timeoutMs: Math.min(this.limits.requestTimeoutMs, this.remaining()),
+        },
+        () => {},
+        async (response, aborted) => {
+          requireMetadata(
+            !response.redirected && (!response.url || response.url === url),
+            'unsupported',
+          );
+          // A throttling registry will refuse later reads too; stop rather than spend requests.
+          if (response.status === 429) this.stopped = 'rate_limit';
+          requireMetadata(response.status === 200, statusReason(response.status));
+          requireMetadata(
+            /^application\/json(?:\s*;|$)/iu.test(response.headers.get('content-type') ?? ''),
+            'unsupported',
+          );
+          const bytes = await this.body(response, aborted);
+          this.remaining();
+          return this.parse(bytes, r, url);
+        },
       );
-      // A throttling registry will refuse later reads too; stop rather than spend requests.
-      if (response.status === 429) this.stopped = 'rate_limit';
-      requireMetadata(response.status === 200, statusReason(response.status));
-      requireMetadata(
-        /^application\/json(?:\s*;|$)/iu.test(response.headers.get('content-type') ?? ''),
-        'unsupported',
-      );
-      const bytes = await this.body(response, aborted);
-      this.remaining();
-      return this.parse(bytes, r, url);
-    } finally {
-      clear();
-      this.deps.signal?.removeEventListener('abort', cancel);
-      controller.abort();
-      if (response?.body && !response.body.locked) void response.body.cancel().catch(() => {});
+    } catch (error) {
+      if (error instanceof AdvisoryFailure) throw new RegistryFailure(error.reason);
+      throw error;
     }
   }
   private cacheFailure(key: string, error: unknown): void {

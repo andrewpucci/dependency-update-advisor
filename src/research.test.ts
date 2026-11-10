@@ -124,6 +124,21 @@ test('feeds upstream proofs to advisory lookup and signals, and returns a revali
   expect(result.signalAttempts.length).toBeGreaterThan(0);
 });
 
+test('shares exact PyPI release reads between upstream evidence and policy signals', async () => {
+  const { fixture, packet } = await scenario();
+  const result = await runResearch(base(fixture, packet));
+  expect(result.kind).toBe('ready');
+  const releases = fixture.requests.filter((url) => {
+    const target = new URL(url);
+    return (
+      target.origin === 'https://pypi.org' && /^\/pypi\/[^/]+\/[^/]+\/json$/u.test(target.pathname)
+    );
+  });
+  expect(releases.length).toBeGreaterThan(0);
+  for (const url of new Set(releases))
+    expect(releases.filter((value) => value === url)).toHaveLength(1);
+});
+
 test('closes every reader it opened', async () => {
   const { fixture, packet } = await scenario();
   closed.length = 0;

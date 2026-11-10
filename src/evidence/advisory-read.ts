@@ -1,6 +1,7 @@
 import { types } from 'node:util';
 import { PACKET_LIMITS, type EvidenceReason, type EvidenceStatus } from '../schema.js';
 import { freeze, isPlainObject } from './common.js';
+import { BoundedClock, boundedGet } from './bounded-request.js';
 
 export type AdvisoryLimits = Readonly<{
   maxRequests: number;
@@ -229,20 +230,6 @@ function httpReason(response: Response, data: unknown): EvidenceReason {
     return 'permission';
   return response.status === 404 ? 'missing' : 'unknown';
 }
-function deadlineTimer(duration: number, expire: () => void) {
-  let remaining = duration,
-    handle: ReturnType<typeof setTimeout>;
-  const schedule = () => {
-    const interval = Math.min(remaining, 2 ** 31 - 1);
-    handle = setTimeout(() => {
-      remaining -= interval;
-      if (remaining > 0) schedule();
-      else expire();
-    }, interval);
-  };
-  schedule();
-  return () => clearTimeout(handle);
-}
 function continuation(link: string | null, original: string, seen: Set<string>): string | null {
   if (!link) return null;
   let next: string | null = null;
@@ -287,8 +274,7 @@ class Reader implements AdvisoryReader {
   private requests = 0;
   private bytes = 0;
   private work = { entries: 0 };
-  private started: number;
-  private last: number;
+  private readonly clock: BoundedClock;
   private busy = false;
   private stopped: EvidenceReason | null = null;
   private active: (() => void) | null = null;
@@ -297,8 +283,7 @@ class Reader implements AdvisoryReader {
     private deps: Dependencies,
     private kind: QueryKind,
   ) {
-    this.started = this.last = deps.now();
-    advisoryCheck(Number.isFinite(this.started));
+    this.clock = new BoundedClock(limits.totalTimeoutMs, deps);
   }
   close() {
     this.stopped = 'unknown';
@@ -306,12 +291,7 @@ class Reader implements AdvisoryReader {
   }
   private remaining() {
     advisoryCheck(!this.deps.signal?.aborted && !this.stopped, this.stopped ?? 'unknown');
-    const time = this.deps.now();
-    advisoryCheck(Number.isFinite(time) && time >= this.last, 'unknown');
-    this.last = time;
-    const left = this.limits.totalTimeoutMs - (time - this.started);
-    advisoryCheck(left > 0, 'timeout');
-    return left;
+    return this.clock.remaining(this.stopped);
   }
   private async body(response: Response, aborted: Promise<never>) {
     advisoryCheck(response.body);
@@ -342,69 +322,55 @@ class Reader implements AdvisoryReader {
       ++this.requests <= Math.min(this.limits.maxRequests, this.limits.maxPages),
       'budget',
     );
-    const duration = Math.min(this.remaining(), this.limits.requestTimeoutMs);
-    const controller = new AbortController();
-    let reject: (e: AdvisoryFailure) => void = () => {};
-    const aborted = new Promise<never>((_, r) => {
-      reject = r;
-    });
-    const stop = (reason: EvidenceReason) => {
-      controller.abort();
-      reject(new AdvisoryFailure(reason));
-    };
-    const cancel = () => stop('unknown');
-    this.active = cancel;
-    this.deps.signal?.addEventListener('abort', cancel, { once: true });
-    const clear = deadlineTimer(duration, () => stop('timeout'));
-    let response: Response | undefined;
-    try {
-      this.remaining();
-      response = await Promise.race([
-        this.deps.fetch(url, {
-          method: 'GET',
-          credentials: 'omit',
-          redirect: 'manual',
-          headers: { accept: 'application/vnd.github+json', 'X-GitHub-Api-Version': '2026-03-10' },
-          signal: controller.signal,
-        }),
-        aborted,
-      ]);
-      advisoryCheck(!response.redirected && (!response.url || response.url === url), 'unsupported');
-      advisoryCheck(response.status < 300 || response.status >= 400, 'unsupported');
-      if (httpReason(response, null) === 'rate_limit') {
-        this.stopped = 'rate_limit';
-        throw new AdvisoryFailure('rate_limit');
-      }
-      const bytes = await this.body(response, aborted);
-      let data: unknown;
-      try {
-        data = JSON.parse(new TextDecoder('utf-8', { fatal: true }).decode(bytes));
-      } catch {
-        throw new AdvisoryFailure(
-          response.status === 200 ? 'malformed' : httpReason(response, null),
+    return boundedGet(
+      this.deps,
+      {
+        url,
+        headers: {
+          accept: 'application/vnd.github+json',
+          'X-GitHub-Api-Version': '2026-03-10',
+        },
+        timeoutMs: Math.min(this.remaining(), this.limits.requestTimeoutMs),
+      },
+      (cancel) => {
+        this.active = cancel;
+      },
+      async (response, aborted) => {
+        this.remaining();
+        advisoryCheck(
+          !response.redirected && (!response.url || response.url === url),
+          'unsupported',
         );
-      }
-      if (response.status !== 200) {
-        const reason = httpReason(response, data);
-        if (reason === 'rate_limit') this.stopped = reason;
-        throw new AdvisoryFailure(reason);
-      }
-      advisoryCheck(
-        /^application\/(?:json|vnd.github\+json)(?:\s*;|$)/iu.test(
-          response.headers.get('content-type') ?? '',
-        ),
-        'unsupported',
-      );
-      data = copyAdvisoryData(data, this.limits, this.work);
-      this.remaining();
-      return { data, link: response.headers.get('link') };
-    } finally {
-      clear();
-      this.deps.signal?.removeEventListener('abort', cancel);
-      this.active = null;
-      controller.abort();
-      if (response?.body && !response.body.locked) void response.body.cancel().catch(() => {});
-    }
+        advisoryCheck(response.status < 300 || response.status >= 400, 'unsupported');
+        if (httpReason(response, null) === 'rate_limit') {
+          this.stopped = 'rate_limit';
+          throw new AdvisoryFailure('rate_limit');
+        }
+        const bytes = await this.body(response, aborted);
+        let data: unknown;
+        try {
+          data = JSON.parse(new TextDecoder('utf-8', { fatal: true }).decode(bytes));
+        } catch {
+          throw new AdvisoryFailure(
+            response.status === 200 ? 'malformed' : httpReason(response, null),
+          );
+        }
+        if (response.status !== 200) {
+          const reason = httpReason(response, data);
+          if (reason === 'rate_limit') this.stopped = reason;
+          throw new AdvisoryFailure(reason);
+        }
+        advisoryCheck(
+          /^application\/(?:json|vnd.github\+json)(?:\s*;|$)/iu.test(
+            response.headers.get('content-type') ?? '',
+          ),
+          'unsupported',
+        );
+        data = copyAdvisoryData(data, this.limits, this.work);
+        this.remaining();
+        return { data, link: response.headers.get('link') };
+      },
+    );
   }
   async read(value: unknown): Promise<AdvisoryLookup> {
     const invalid: AdvisoryTarget = { ecosystem: 'npm', name: '', version: '' };

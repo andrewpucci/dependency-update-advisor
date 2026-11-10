@@ -1,4 +1,5 @@
-import { expect, test } from 'vite-plus/test';
+import { expect, test, vi } from 'vite-plus/test';
+import { boundedGet } from './bounded-request.js';
 import { createNpmPublishTimeReader } from './npm-publish-times.js';
 import { createPolicySignalReader } from './policy-signals-read.js';
 
@@ -36,6 +37,61 @@ const readers = {
 const neverFetched = async (): Promise<Response> => {
   throw new Error('fetched');
 };
+
+test('releases a response that resolves after its request timeout', async () => {
+  vi.useFakeTimers();
+  try {
+    let resolve: ((response: Response) => void) | undefined;
+    let cancelled = false;
+    const task = boundedGet(
+      { now: () => 0, fetch: () => new Promise<Response>((done) => (resolve = done)) },
+      { url: 'https://example.test/data', accept: 'application/json', timeoutMs: 1 },
+      () => {},
+      async (response) => response.json(),
+    );
+    const timedOut = expect(task).rejects.toMatchObject({ reason: 'timeout' });
+    await vi.advanceTimersByTimeAsync(1);
+    await timedOut;
+    resolve?.(
+      new Response(
+        new ReadableStream({
+          cancel() {
+            cancelled = true;
+          },
+        }),
+      ),
+    );
+    await Promise.resolve();
+    expect(cancelled).toBe(true);
+  } finally {
+    vi.useRealTimers();
+  }
+});
+
+test('preserves a timeout when an abort-aware fetch rejects immediately', async () => {
+  vi.useFakeTimers();
+  try {
+    const task = boundedGet(
+      {
+        now: () => 0,
+        fetch: (_url, init) =>
+          new Promise<Response>((_resolve, reject) => {
+            init.signal?.addEventListener('abort', () => reject(new Error('aborted')), {
+              once: true,
+            });
+          }),
+      },
+      { url: 'https://example.test/data', accept: 'application/json', timeoutMs: 1 },
+      () => {},
+      async (response) => response.json(),
+    );
+    const timedOut = expect(task).rejects.toMatchObject({ reason: 'timeout' });
+    await vi.advanceTimersByTimeAsync(1);
+    await timedOut;
+  } finally {
+    vi.useRealTimers();
+  }
+});
 
 test.each(Object.keys(readers) as (keyof typeof readers)[])(
   '%s reader rejects incomplete or inconsistent limits',

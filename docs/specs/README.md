@@ -230,8 +230,13 @@ gaps and an introduced vulnerability before parity is claimed.
 - [Review orchestration](SPEC-review-orchestration.md) — approved for planning
   supporting contract for W2 #26 in `shared-review`, after the user approved
   its capability map and specification on 2026-11-08. It scopes the no-write,
-  injected-claim-store coordinator; separate drafts will cover publication,
-  shared PyPI release observations (#209), and bounded-reader consolidation.
+  injected-claim-store coordinator; publication remains separate. Its approved
+  map's #209 contracts are implemented on `issue-209`, pending fresh-context
+  review and merge: [shared PyPI release
+  observations](SPEC-shared-release-observations.md), charged to the existing
+  Signals: PyPI metadata allocation, and [bounded-reader
+  consolidation](SPEC-bounded-reader-consolidation.md). The ordered #260–#264
+  tasks preserve separate publication, adoption, parity, and cutover gates.
 - [Advisory complexity review](SPEC-complexity-review.md) — user-requested
   supporting repository tooling contract; implemented and merged into `main`
   in [PR #65](https://github.com/andrewpucci/dependency-update-advisor/pull/65).
