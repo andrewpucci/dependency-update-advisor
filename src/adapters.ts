@@ -50,3 +50,15 @@ export function publicFetch(fetchImpl: Fetch): Fetch {
     return fetchImpl(url, { ...init, headers, credentials: 'omit', redirect: 'manual' });
   };
 }
+
+/**
+ * Fetch for research readers: the read token goes to the GitHub API origin only, the same token and
+ * origin as the consumer reads. Registries and every other host stay credential-free, whatever the
+ * caller supplies.
+ */
+export function researchFetch(token: string, fetchImpl: Fetch): Fetch {
+  const authenticated = authenticatedFetch(token, fetchImpl);
+  const open = publicFetch(fetchImpl);
+  return async (url, init) =>
+    httpsUrl(url).origin === 'https://api.github.com' ? authenticated(url, init) : open(url, init);
+}

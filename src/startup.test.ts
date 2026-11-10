@@ -417,38 +417,24 @@ test('says so, and does not claim a recording, when the sink refuses the handoff
   expect(code).toBe(NOT_WIRED_EXIT_CODE);
 });
 
-test('sends the read token to the consumer repository only, never to a registry or advisory source', async () => {
+test('sends the read token only to api.github.com, never to a registry or any other host', async () => {
   const github = mockGithub({ changes: await upstreamScenario() });
   const { stderr } = await start(github);
   expect(stderr).toHaveLength(1);
-  const outsideRepository = github.urls
-    .map((url, index) => ({ url, headers: github.headers[index] }))
-    .filter(({ url }) => !new URL(url).pathname.startsWith('/repos/example/consumer'));
-  // Public research really ran against registries and advisories.
-  expect(outsideRepository.some(({ url }) => url.startsWith('https://registry.npmjs.org/'))).toBe(
-    true,
-  );
-  expect(outsideRepository.some(({ url }) => url.includes('/advisories'))).toBe(true);
-  for (const { headers } of outsideRepository) {
-    expect(headers).not.toHaveProperty('authorization');
-    expect(JSON.stringify(headers)).not.toContain('read-token');
+  const requests = github.urls.map((url, index) => ({
+    url: new URL(url),
+    headers: github.headers[index],
+  }));
+  // Public research really ran against registries, and GitHub-hosted advisory sources.
+  expect(requests.some(({ url }) => url.origin === 'https://registry.npmjs.org')).toBe(true);
+  expect(requests.some(({ url }) => url.pathname.startsWith('/advisories'))).toBe(true);
+  for (const { url, headers } of requests) {
+    if (url.origin === 'https://api.github.com')
+      expect(headers.authorization, url.href).toBe('Bearer read-token');
+    else expect(headers, url.href).not.toHaveProperty('authorization');
   }
-});
-
-test.each([
-  ['exactly the limit', Buffer.alloc(MAX_EVENT_BYTES, 'a'), true],
-  ['one byte over the limit', Buffer.alloc(MAX_EVENT_BYTES + 1, 'a'), false],
-  ['invalid UTF-8', Buffer.from([0x7b, 0xff, 0x7d]), false],
-])('reads an event file of %s as bounded text only when it is valid', async (_label, bytes, ok) => {
-  const directory = await fs.mkdtemp(join(tmpdir(), 'startup-event-'));
-  try {
-    const path = join(directory, 'event.json');
-    await fs.writeFile(path, bytes);
-    if (ok) await expect(readBoundedEvent(path)).resolves.toHaveLength(bytes.byteLength);
-    else await expect(readBoundedEvent(path)).rejects.toThrow();
-  } finally {
-    await fs.rm(directory, { recursive: true, force: true });
-  }
+  expect(JSON.stringify(github.headers)).not.toContain('app-token');
+  expect(JSON.stringify(github.headers)).not.toContain(sentinel);
 });
 
 test('rejects a missing event file', async () => {

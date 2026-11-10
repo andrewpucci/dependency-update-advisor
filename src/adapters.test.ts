@@ -1,5 +1,5 @@
 import { expect, test, vi } from 'vite-plus/test';
-import { authenticatedFetch, createEventReads, publicFetch } from './adapters.js';
+import { authenticatedFetch, createEventReads, publicFetch, researchFetch } from './adapters.js';
 import { createGithubTransport, W2_GITHUB_LIMITS } from './runtime.js';
 import { createGithubSnapshotReads } from './snapshot.js';
 import { createTestClaimStore } from './review.js';
@@ -113,4 +113,34 @@ test('keeps event verification reads available after the snapshot share is exhau
   for (let index = 0; index < W2_GITHUB_LIMITS.freshness.maxRequests; index += 1)
     await expect(reads.readRun(repository, 401)).resolves.toEqual({ ok: true });
   await expect(reads.readRun(repository, 401)).rejects.toThrow();
+});
+
+test('adds the read token to research requests for api.github.com only', async () => {
+  const fetch = vi.fn(async (_url: string, _init: RequestInit) => new Response('{}'));
+  const research = researchFetch('read-token', fetch);
+  await research('https://api.github.com/advisories?affects=a%401', {
+    headers: { accept: 'application/json' },
+  });
+  expect(Object.fromEntries(new Headers(fetch.mock.calls[0][1].headers))).toEqual({
+    accept: 'application/json',
+    authorization: 'Bearer read-token',
+  });
+  expect(fetch.mock.calls[0][1]).toMatchObject({ credentials: 'omit', redirect: 'manual' });
+
+  for (const url of [
+    'https://registry.npmjs.org/x',
+    'https://pypi.org/pypi/x/1/json',
+    'https://api.github.com.evil.example/x',
+    'https://github.com/example/repo',
+    'https://uploads.github.com/x',
+    'https://raw.githubusercontent.com/example/repo/main/x',
+  ]) {
+    fetch.mockClear();
+    await research(url, { headers: { Authorization: 'Bearer caller-supplied' } });
+    const sent = Object.fromEntries(new Headers(fetch.mock.calls[0][1].headers));
+    expect(sent, url).not.toHaveProperty('authorization');
+    expect(fetch.mock.calls[0][1]).toMatchObject({ credentials: 'omit', redirect: 'manual' });
+  }
+  await expect(research('http://api.github.com/x', {})).rejects.toThrow();
+  await expect(research('https://user@api.github.com/x', {})).rejects.toThrow();
 });

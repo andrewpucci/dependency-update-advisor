@@ -35,7 +35,7 @@ export type PipelineInput = Readonly<{
   sink: RehearsalSink;
   /** Authenticated fetch for the consumer repository; the only holder of the read token. */
   githubFetch: (url: string, init: RequestInit) => Promise<Response>;
-  /** Credential-free fetch for public registries and advisory sources. */
+  /** Fetch for public registries and advisory sources; only api.github.com carries a credential. */
   publicFetch: (url: string, init: RequestInit) => Promise<Response>;
   model?: AssessmentInput['model'];
   /** Monotonic milliseconds. */

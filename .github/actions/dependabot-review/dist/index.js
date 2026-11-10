@@ -19481,6 +19481,16 @@ function publicFetch(fetchImpl) {
 		});
 	};
 }
+/**
+* Fetch for research readers: the read token goes to the GitHub API origin only, the same token and
+* origin as the consumer reads. Registries and every other host stay credential-free, whatever the
+* caller supplies.
+*/
+function researchFetch(token, fetchImpl) {
+	const authenticated = authenticatedFetch(token, fetchImpl);
+	const open = publicFetch(fetchImpl);
+	return async (url, init) => httpsUrl(url).origin === "https://api.github.com" ? authenticated(url, init) : open(url, init);
+}
 
 // src/review.ts
 const outcomeEligibility = Object.freeze({
@@ -29752,7 +29762,7 @@ async function runStartup(writeError, environment = process.env, dependencies = 
 			claims,
 			sink,
 			githubFetch: authenticatedFetch(runtime.githubToken, dependencies.fetch),
-			publicFetch: publicFetch(dependencies.fetch),
+			publicFetch: researchFetch(runtime.githubToken, dependencies.fetch),
 			model: dependencies.model,
 			now: dependencies.now,
 			evaluationTime: dependencies.evaluationTime()

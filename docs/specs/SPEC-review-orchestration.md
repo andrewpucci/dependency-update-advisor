@@ -178,7 +178,11 @@ receives `process.env` or a general fetch function.
    `app-token` is reserved for later publication. Collectors, source context,
    public registries, and M1/M2 never receive the App token; collectors and
    GitHub transport never receive the LLM key. Registry requests omit
-   credentials and reject cross-origin continuation.
+   credentials and reject cross-origin continuation. Research requests to
+   `https://api.github.com` (advisories, releases, comparisons) carry the same
+   `github-token` as the consumer reads, because the unauthenticated limit of
+   60 requests an hour cannot cover a real group; that token is sent to no
+   other host, and every other research request stays credential-free.
 4. **Current binding.** Resolve the expected workflow from trusted context and
    `ci-workflow`, then call T1 with bounded reads and replay state. T1 skip,
    error, or stale freshness is terminal and is ineligible for publication.

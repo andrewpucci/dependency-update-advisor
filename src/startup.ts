@@ -5,7 +5,7 @@ import { canonicalLicense } from './evidence/policy-signals-licenses.js';
 import { readToml } from './evidence/uv-toml.js';
 import { compareUpstreamVersions } from './evidence/upstream-version.js';
 import fs from 'node:fs/promises';
-import { authenticatedFetch, createEventReads, publicFetch } from './adapters.js';
+import { authenticatedFetch, createEventReads, researchFetch } from './adapters.js';
 import { createRehearsalSink, type RehearsalSink } from './handoff.js';
 import { runReview, type PipelineInput } from './pipeline.js';
 import { createTestClaimStore, type ClaimStore } from './review.js';
@@ -167,7 +167,7 @@ export async function runStartup(
       claims,
       sink,
       githubFetch: authenticatedFetch(runtime.githubToken, dependencies.fetch),
-      publicFetch: publicFetch(dependencies.fetch),
+      publicFetch: researchFetch(runtime.githubToken, dependencies.fetch),
       model: dependencies.model,
       now: dependencies.now,
       evaluationTime: dependencies.evaluationTime(),
