@@ -23,7 +23,7 @@
     "yaml": "2.9.1"
   },
   "devDependencies": {
-    "@types/node": "24.19.1",
+    "@types/node": "26.6.6",
     "@types/semver": "7.8.0",
     "@types/spdx-expression-parse": "4.0.0",
     "ajv": "8.20.0",
