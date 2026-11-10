@@ -1,10 +1,21 @@
+import fs from 'node:fs/promises';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 import { expect, test } from 'vite-plus/test';
 import { analysisDocument } from '../tests/parity/analysis.js';
+import { upstreamScenario } from '../tests/parity/upstream.js';
 import { uvMetadataScenario } from '../tests/parity/uv-metadata.js';
 import { analyzeMistralBatch } from './analysis/mistral.js';
 import { createTestClaimStore } from './review.js';
 import type { StartupDependencies } from './startup.js';
-import { NOT_WIRED_EXIT_CODE, SELF_CHECK_EXIT_CODE, runStartup, selfCheck } from './startup.js';
+import {
+  MAX_EVENT_BYTES,
+  NOT_WIRED_EXIT_CODE,
+  SELF_CHECK_EXIT_CODE,
+  readBoundedEvent,
+  runStartup,
+  selfCheck,
+} from './startup.js';
 
 const environment = {
   INPUT_GITHUB_TOKEN: 'read-token',
@@ -111,8 +122,18 @@ function environmentFor(overrides: Record<string, string> = {}) {
 }
 
 /** One mocked GitHub: trusted reads, the default-branch snapshot, and consumer evidence. */
-function mockGithub(options: { config?: string; heads?: string[]; filesFail?: boolean } = {}) {
-  const evidence = uvMetadataScenario('empty', { files: { base: unchanged, head: unchanged } });
+function mockGithub(
+  options: {
+    config?: string;
+    heads?: string[];
+    filesFail?: boolean;
+    /** Serve npm, Actions, and uv updates, and the public registries they are researched in. */
+    changes?: Awaited<ReturnType<typeof upstreamScenario>>;
+  } = {},
+) {
+  const evidence = options.changes
+    ? { fetch: options.changes.consumerFetch }
+    : uvMetadataScenario('empty', { files: { base: unchanged, head: unchanged } });
   const heads = options.heads ?? [HEAD];
   let pulls = 0;
   const urls: string[] = [];
@@ -157,6 +178,9 @@ function mockGithub(options: { config?: string; heads?: string[]; filesFail?: bo
     urls.push(url);
     headers.push(Object.fromEntries(new Headers(init.headers)));
     const path = new URL(url).pathname.replace('/repos/example/consumer', '');
+    const inRepository = new URL(url).pathname.startsWith('/repos/example/consumer');
+    if (options.changes && !(new URL(url).origin === 'https://api.github.com' && inRepository))
+      return options.changes.fetch(url, init);
     if (new URL(url).origin !== 'https://api.github.com')
       return new Response(null, { status: 404 });
     // Every consumer-repository read needs the read token; GitHub rejects it otherwise.
@@ -379,4 +403,56 @@ test('reports an unexpected failure with a fixed message and no error text', asy
   expect(stderr).toEqual(['dependabot-review: rehearsal failed; nothing was published.']);
   expect(code).toBe(NOT_WIRED_EXIT_CODE);
   expect(stderr.join('')).not.toContain(sentinel);
+});
+
+test('says so, and does not claim a recording, when the sink refuses the handoff', async () => {
+  const sink = {
+    record: () => false,
+    traces: () => [],
+  };
+  const { stderr, code } = await start(mockGithub(), {}, { sink });
+  expect(stderr).toEqual([
+    'dependabot-review: no-write rehearsal could not record the handoff; nothing was published.',
+  ]);
+  expect(code).toBe(NOT_WIRED_EXIT_CODE);
+});
+
+test('sends the read token to the consumer repository only, never to a registry or advisory source', async () => {
+  const github = mockGithub({ changes: await upstreamScenario() });
+  const { stderr } = await start(github);
+  expect(stderr).toHaveLength(1);
+  const outsideRepository = github.urls
+    .map((url, index) => ({ url, headers: github.headers[index] }))
+    .filter(({ url }) => !new URL(url).pathname.startsWith('/repos/example/consumer'));
+  // Public research really ran against registries and advisories.
+  expect(outsideRepository.some(({ url }) => url.startsWith('https://registry.npmjs.org/'))).toBe(
+    true,
+  );
+  expect(outsideRepository.some(({ url }) => url.includes('/advisories'))).toBe(true);
+  for (const { headers } of outsideRepository) {
+    expect(headers).not.toHaveProperty('authorization');
+    expect(JSON.stringify(headers)).not.toContain('read-token');
+  }
+});
+
+test.each([
+  ['exactly the limit', Buffer.alloc(MAX_EVENT_BYTES, 'a'), true],
+  ['one byte over the limit', Buffer.alloc(MAX_EVENT_BYTES + 1, 'a'), false],
+  ['invalid UTF-8', Buffer.from([0x7b, 0xff, 0x7d]), false],
+])('reads an event file of %s as bounded text only when it is valid', async (_label, bytes, ok) => {
+  const directory = await fs.mkdtemp(join(tmpdir(), 'startup-event-'));
+  try {
+    const path = join(directory, 'event.json');
+    await fs.writeFile(path, bytes);
+    if (ok) await expect(readBoundedEvent(path)).resolves.toHaveLength(bytes.byteLength);
+    else await expect(readBoundedEvent(path)).rejects.toThrow();
+  } finally {
+    await fs.rm(directory, { recursive: true, force: true });
+  }
+});
+
+test('rejects a missing event file', async () => {
+  await expect(
+    readBoundedEvent(join(tmpdir(), 'startup-event-missing', 'event.json')),
+  ).rejects.toThrow();
 });

@@ -34,3 +34,16 @@ test('records only bounded redacted intent and rejects a lost claim', async () =
     },
   ]);
 });
+
+test('bounds the rehearsal trace at 32 records and refuses the next', async () => {
+  const claims = createTestClaimStore();
+  const sink = createRehearsalSink(null);
+  if (!sink) throw new Error('expected sink');
+  const claimed = await claims.claim([101, 301, 401, 1, 42, 'a'.repeat(40)]);
+  if (claimed.kind !== 'owned') throw new Error('fixture must own');
+  const result = await createReviewHandoff(claims, claimed, 'complete');
+  if (result.kind !== 'ready') throw new Error('expected handoff');
+  for (let index = 0; index < 32; index += 1) expect(sink.record(result.handoff)).toBe(true);
+  expect(sink.record(result.handoff)).toBe(false);
+  expect(sink.traces()).toHaveLength(32);
+});

@@ -678,3 +678,38 @@ test('renders a verified vulnerability as a reason not to merge instead of faili
   expect(result.body).toEqual(expect.stringContaining('Remediation:'));
   expect(result.body).toEqual(expect.stringContaining('Validation:'));
 });
+
+test('hands a failed snapshot off as a failure and starts no collector', async () => {
+  const reads = snapshot();
+  reads.readRepository = async () => ({ kind: 'unavailable', reason: 'rate_limit' });
+  const { input, githubCalls, modelCalls } = await setup({ snapshotReads: reads });
+  const result = await runReview(input);
+  expect(result).toMatchObject({
+    kind: 'handed-off',
+    outcome: 'internal-failure',
+    body: null,
+    handoff: { status: 'failure', comment: 'none' },
+  });
+  expect(githubCalls).toEqual([]);
+  expect(modelCalls).toEqual([]);
+});
+
+test('hands off a moved head seen only by the evidence session as stale, not as a failure', async () => {
+  const healthy = (await setup()).input.githubFetch;
+  const moved = async (url: string, init: RequestInit) => {
+    if (new URL(url).pathname.endsWith('/pulls/42')) {
+      const response = await healthy(url, init);
+      const body = (await response.json()) as { head: { sha: string } };
+      return Response.json({ ...body, head: { ...body.head, sha: NEXT } });
+    }
+    return healthy(url, init);
+  };
+  const { input } = await setup({ githubFetch: moved });
+  const result = await runReview(input);
+  expect(result).toMatchObject({
+    kind: 'handed-off',
+    outcome: 'stale',
+    body: null,
+    handoff: { status: 'none', comment: 'none' },
+  });
+});

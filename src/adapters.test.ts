@@ -79,6 +79,7 @@ test('never lets a credential reach a public source', async () => {
     headers: {
       Authorization: 'Bearer leaked',
       Cookie: 'a=b',
+      'Proxy-Authorization': 'Basic leaked',
       'X-Other': '1',
       accept: 'text/plain',
     },

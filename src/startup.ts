@@ -6,7 +6,7 @@ import { readToml } from './evidence/uv-toml.js';
 import { compareUpstreamVersions } from './evidence/upstream-version.js';
 import fs from 'node:fs/promises';
 import { authenticatedFetch, createEventReads, publicFetch } from './adapters.js';
-import { createRehearsalSink } from './handoff.js';
+import { createRehearsalSink, type RehearsalSink } from './handoff.js';
 import { runReview, type PipelineInput } from './pipeline.js';
 import { createTestClaimStore, type ClaimStore } from './review.js';
 import { createGithubTransport, parseRuntime, resolveWorkflow } from './runtime.js';
@@ -66,7 +66,7 @@ export async function selfCheck() {
   };
 }
 
-const MAX_EVENT_BYTES = 1024 * 1024;
+export const MAX_EVENT_BYTES = 1024 * 1024;
 
 export type StartupDependencies = Readonly<{
   /** The platform fetch; wrapped so only GitHub reads carry the read token. */
@@ -84,9 +84,11 @@ export type StartupDependencies = Readonly<{
    * rehearsal cannot own an attempt across runs.
    */
   claims?: ClaimStore;
+  /** Replaces the rehearsal sink; it must still be unable to write. */
+  sink?: RehearsalSink;
 }>;
 
-async function readBoundedEvent(path: string): Promise<string> {
+export async function readBoundedEvent(path: string): Promise<string> {
   const handle = await fs.open(path, 'r');
   try {
     const buffer = Buffer.alloc(MAX_EVENT_BYTES + 1);
@@ -153,7 +155,7 @@ export async function runStartup(
       return NOT_WIRED_EXIT_CODE;
     }
     // The sink is built without the App token, so nothing here can publish.
-    const sink = createRehearsalSink(null);
+    const sink = dependencies.sink ?? createRehearsalSink(null);
     if (!sink) throw new Error('sink');
     const claims = dependencies.claims ?? createTestClaimStore();
     const result = await runReview({
@@ -170,7 +172,11 @@ export async function runStartup(
       now: dependencies.now,
       evaluationTime: dependencies.evaluationTime(),
     });
-    if (result.kind === 'handed-off')
+    if (result.kind === 'handed-off' && !result.recorded)
+      writeError(
+        'dependabot-review: no-write rehearsal could not record the handoff; nothing was published.',
+      );
+    else if (result.kind === 'handed-off')
       writeError(
         `dependabot-review: no-write rehearsal recorded ${result.outcome}; nothing was published.`,
       );
