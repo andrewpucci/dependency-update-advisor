@@ -118,6 +118,10 @@ gaps and an introduced vulnerability before parity is claimed.
   and merged into `main` in [PR #100](https://github.com/andrewpucci/dependency-update-advisor/pull/100).
   [Verification #99](https://github.com/andrewpucci/dependency-update-advisor/issues/99)
   keeps collector/M2/O1/W2, publication, adoption, and cutover gates separate.
+- [Complete npm/uv reachability evidence](SPEC-reachability-evidence.md) —
+  approved for planning, 2026-11-10, for [#93](https://github.com/andrewpucci/dependency-update-advisor/issues/93).
+  Per-pair reachability verdicts, an in-place T4 v1 amendment, and multi-anchor
+  T5 grouping; the plan awaits approval, and it does not block T5, N2, or U2.
 - [Current-head execution status](SPEC-execution-status.md) — approved
   supporting contract for T2 #9 in `shared-review`; implemented and
   merged into `main`. [Verification evidence](https://github.com/andrewpucci/dependency-update-advisor/issues/69)
