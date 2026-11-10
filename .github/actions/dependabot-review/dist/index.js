@@ -28732,6 +28732,25 @@ async function trackedCandidates(trackedFiles, selected, result) {
 		paths: [...candidates].sort()
 	};
 }
+/** Lists the C2-eligible files before a snapshot acquires their bytes. */
+async function sourceContextCandidates(input) {
+	const validated = await validateSourceContextInput(input);
+	if (!validated.ok) return validated;
+	if (validated.state !== "ready") return {
+		ok: true,
+		state: validated.state,
+		paths: []
+	};
+	const result = emptyContext(validated.dependencies, validated.reasons);
+	const selected = selectSourceFiles(validated.files, validated.roots, result);
+	const candidates = await trackedCandidates(input.trackedFiles, selected, result);
+	if (!candidates.ok) return candidates;
+	return {
+		ok: true,
+		state: "ready",
+		paths: candidates.paths
+	};
+}
 function sourceExcerpt(trimmed) {
 	let excerpt = trimmed.slice(0, MAX_SOURCE_EXCERPT_CODE_UNITS);
 	const last = excerpt.charCodeAt(excerpt.length - 1);
@@ -28994,7 +29013,8 @@ function contained(root, target) {
 function targetPath(path, target) {
 	if (target.startsWith("/")) return null;
 	const candidate = join(dirname(path), target);
-	return contained(".", candidate) && validPath(candidate) ? candidate : null;
+	if (!contained(".", candidate)) return null;
+	return candidate === "." || validPath(candidate) ? candidate === "." ? "" : candidate : null;
 }
 async function missing(path) {
 	try {
@@ -29066,13 +29086,13 @@ var Materializer = class {
 			});
 			return true;
 		}
-		if (!await missing(destination) && !(entry.kind === "file" && content === "payload")) return true;
+		if (!await missing(destination) && content === "placeholder") return true;
 		if (entry.kind === "link") {
 			const target = content === "payload" ? options.linkTarget ?? await this.linkTarget(entry) : ".";
 			await fs.symlink(target, destination);
 			return true;
 		}
-		const bytes = content === "payload" ? await this.payload(entry, options.limit ?? 65536) : /* @__PURE__ */ new Uint8Array();
+		const bytes = content === "payload" ? await this.payload(entry, options.limit ?? 65536) : content === "limit-placeholder" ? new Uint8Array((options.limit ?? 0) + 1) : /* @__PURE__ */ new Uint8Array();
 		await fs.writeFile(destination, bytes, { mode: entry.mode === "100755" ? 448 : 384 });
 		return true;
 	}
@@ -29087,6 +29107,25 @@ var Materializer = class {
 			if (entry.kind !== "tree") return;
 		}
 	}
+	/**
+	* C2 reads at most its aggregate budget. Local placeholders preserve its limit result without
+	* downloading a source blob that C2 would never inspect.
+	*/
+	async materializeSourceFiles(paths) {
+		let remaining = MAX_TOTAL_SOURCE_READ_BYTES;
+		for (const path of paths) {
+			if (remaining === 0) return;
+			const entry = await this.tree.get(path);
+			if (!entry || entry.kind !== "file") continue;
+			const sourceReadBytes = Math.min(entry.size, MAX_SOURCE_FILE_BYTES + 1);
+			if (sourceReadBytes > remaining) {
+				await this.materialize(path, "limit-placeholder", { limit: remaining });
+				return;
+			}
+			await this.materialize(path, "payload", { limit: MAX_SOURCE_FILE_BYTES });
+			remaining -= sourceReadBytes;
+		}
+	}
 	async materializeConfig(path = CONFIG_PATH, seen = /* @__PURE__ */ new Set()) {
 		if (seen.has(path)) throw new Unavailable();
 		seen.add(path);
@@ -29099,9 +29138,11 @@ var Materializer = class {
 				const target = await this.linkTarget(entry);
 				await this.materialize(current, "payload", { linkTarget: target });
 				const resolved = targetPath(current, target);
-				if (!resolved) return;
+				if (resolved === null) return;
 				const suffix = parts.slice(index + 1).join("/");
-				return this.materializeConfig(suffix ? `${resolved}/${suffix}` : resolved, seen);
+				const next = resolved && suffix ? `${resolved}/${suffix}` : resolved || suffix;
+				if (next) return this.materializeConfig(next, seen);
+				return;
 			}
 			await this.materialize(current, entry.kind === "file" && index === parts.length - 1 ? "payload" : "placeholder", { limit: MAX_CONFIG_BYTES });
 		}
@@ -29215,7 +29256,12 @@ async function withTrustedSnapshot(request, use) {
 					};
 					const validation = await validateSourceContextInput(input);
 					if (!validation.ok || validation.state !== "ready") return collectSourceContext(input);
-					for (const path of validation.files) await materializer.materialize(path, "payload", { limit: MAX_SOURCE_FILE_BYTES });
+					const candidates = await sourceContextCandidates({
+						...input,
+						trackedFiles: trackedFiles(files)
+					});
+					if (!candidates.ok) return candidates;
+					await materializer.materializeSourceFiles(candidates.paths);
 					active();
 					return await collectSourceContext({
 						...input,
@@ -29513,12 +29559,13 @@ function workflow(value) {
 	});
 }
 function parseRuntime(value) {
-	const githubToken = value.INPUT_GITHUB_TOKEN;
-	const appToken = value.INPUT_APP_TOKEN;
+	const githubToken = value["INPUT_GITHUB-TOKEN"] ?? value.INPUT_GITHUB_TOKEN;
+	const appToken = value["INPUT_APP-TOKEN"] ?? value.INPUT_APP_TOKEN;
 	const repo = repository(value.GITHUB_REPOSITORY, value.GITHUB_REPOSITORY_ID);
-	const selectedWorkflow = workflow(value.INPUT_CI_WORKFLOW);
+	const selectedWorkflow = workflow(value["INPUT_CI-WORKFLOW"] ?? value.INPUT_CI_WORKFLOW);
 	if (!plainText(githubToken) || !plainText(appToken) || !repo || !selectedWorkflow) return null;
-	const llmApiKey = plainText(value.INPUT_LLM_API_KEY) ? value.INPUT_LLM_API_KEY : null;
+	const candidateLlmApiKey = value["INPUT_LLM-API-KEY"] ?? value.INPUT_LLM_API_KEY;
+	const llmApiKey = plainText(candidateLlmApiKey) ? candidateLlmApiKey : null;
 	return Object.freeze({
 		githubToken,
 		appToken,

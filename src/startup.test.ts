@@ -269,6 +269,36 @@ test('records a current success without publishing, and never exits as a live re
   expect(stderr.join('')).not.toContain(sentinel);
 });
 
+test('accepts the hyphenated input environment names supplied by GitHub Actions', async () => {
+  const github = mockGithub();
+  const environment = environmentFor();
+  const {
+    INPUT_GITHUB_TOKEN: _githubToken,
+    INPUT_APP_TOKEN: _appToken,
+    INPUT_LLM_API_KEY: _llmApiKey,
+    INPUT_CI_WORKFLOW: _workflow,
+    ...runnerEnvironment
+  } = environment;
+  const stderr: string[] = [];
+
+  const code = await runStartup(
+    (line) => stderr.push(line),
+    {
+      ...runnerEnvironment,
+      'INPUT_GITHUB-TOKEN': 'read-token',
+      'INPUT_APP-TOKEN': 'app-token',
+      'INPUT_LLM-API-KEY': sentinel,
+      'INPUT_CI-WORKFLOW': '.github/workflows/ci.yml',
+    },
+    dependenciesFor(github),
+  );
+
+  expect(code).toBe(NOT_WIRED_EXIT_CODE);
+  expect(stderr).toEqual([
+    'dependabot-review: no-write rehearsal recorded complete; nothing was published.',
+  ]);
+});
+
 test('uses only GET requests with the read token, and never the model key or app token', async () => {
   const github = mockGithub();
   const methods = new Set<string>();

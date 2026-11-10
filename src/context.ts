@@ -10,7 +10,7 @@ const MAX_SOURCE_CONTEXT_BYTES = 65_536;
 const MAX_TRACKED_PATH_ENTRIES = 10_000;
 const MAX_SOURCE_CANDIDATES = 128;
 export const MAX_SOURCE_FILE_BYTES = 65_536;
-const MAX_TOTAL_SOURCE_READ_BYTES = 1_048_576;
+export const MAX_TOTAL_SOURCE_READ_BYTES = 1_048_576;
 const MAX_SOURCE_EXCERPT_CODE_UNITS = 500;
 const MAX_SOURCE_FACTS_PER_DEPENDENCY = 20;
 const GENERATED_MARKER_SCAN_LINES = 20;
@@ -78,6 +78,13 @@ type SourceContextValidation =
       dependencies: DependencyIdentity[];
       reasons: ContextReason[];
     };
+export type SourceContextCandidates =
+  | SourceContextFailure
+  | Readonly<{
+      ok: true;
+      state: 'disabled' | 'unavailable' | 'ready';
+      paths: readonly string[];
+    }>;
 
 function failure(
   category: SourceContextFailure['error']['category'],
@@ -584,6 +591,20 @@ async function trackedCandidates(
   }
   if (candidates.size < selected.size) addReason(result, 'missing-source');
   return { ok: true, paths: [...candidates].sort() };
+}
+
+/** Lists the C2-eligible files before a snapshot acquires their bytes. */
+export async function sourceContextCandidates(
+  input: SourceContextInput,
+): Promise<SourceContextCandidates> {
+  const validated = await validateSourceContextInput(input);
+  if (!validated.ok) return validated;
+  if (validated.state !== 'ready') return { ok: true, state: validated.state, paths: [] };
+  const result = emptyContext(validated.dependencies, validated.reasons);
+  const selected = selectSourceFiles(validated.files, validated.roots, result);
+  const candidates = await trackedCandidates(input.trackedFiles, selected, result);
+  if (!candidates.ok) return candidates;
+  return { ok: true, state: 'ready', paths: candidates.paths };
 }
 
 function sourceExcerpt(trimmed: string): string {

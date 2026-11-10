@@ -28,6 +28,24 @@ test('accepts trusted caller context and preserves an empty LLM key for failure 
   });
 });
 
+test('accepts the hyphenated input names the GitHub runner supplies', () => {
+  const runnerEnvironment = {
+    'INPUT_GITHUB-TOKEN': 'read-token',
+    'INPUT_APP-TOKEN': 'app-token',
+    'INPUT_LLM-API-KEY': '',
+    'INPUT_CI-WORKFLOW': '.github/workflows/ci.yml',
+    GITHUB_REPOSITORY: 'example/consumer',
+    GITHUB_REPOSITORY_ID: '101',
+  };
+
+  expect(parseRuntime(runnerEnvironment)).toMatchObject({
+    githubToken: 'read-token',
+    appToken: 'app-token',
+    llmApiKey: null,
+    workflowPath: '.github/workflows/ci.yml',
+  });
+});
+
 test.each([
   ['INPUT_GITHUB_TOKEN', ''],
   ['INPUT_APP_TOKEN', ''],

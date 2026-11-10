@@ -95,12 +95,13 @@ function workflow(value: string | undefined): Readonly<{ path: string; file: str
 }
 
 export function parseRuntime(value: RuntimeEnvironment): Runtime | null {
-  const githubToken = value.INPUT_GITHUB_TOKEN;
-  const appToken = value.INPUT_APP_TOKEN;
+  const githubToken = value['INPUT_GITHUB-TOKEN'] ?? value.INPUT_GITHUB_TOKEN;
+  const appToken = value['INPUT_APP-TOKEN'] ?? value.INPUT_APP_TOKEN;
   const repo = repository(value.GITHUB_REPOSITORY, value.GITHUB_REPOSITORY_ID);
-  const selectedWorkflow = workflow(value.INPUT_CI_WORKFLOW);
+  const selectedWorkflow = workflow(value['INPUT_CI-WORKFLOW'] ?? value.INPUT_CI_WORKFLOW);
   if (!plainText(githubToken) || !plainText(appToken) || !repo || !selectedWorkflow) return null;
-  const llmApiKey = plainText(value.INPUT_LLM_API_KEY) ? value.INPUT_LLM_API_KEY : null;
+  const candidateLlmApiKey = value['INPUT_LLM-API-KEY'] ?? value.INPUT_LLM_API_KEY;
+  const llmApiKey = plainText(candidateLlmApiKey) ? candidateLlmApiKey : null;
   return Object.freeze({
     githubToken,
     appToken,

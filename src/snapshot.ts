@@ -5,6 +5,8 @@ import { loadTrustedReviewConfig, MAX_CONFIG_BYTES, type ConfigResult } from './
 import {
   collectSourceContext,
   MAX_SOURCE_FILE_BYTES,
+  MAX_TOTAL_SOURCE_READ_BYTES,
+  sourceContextCandidates,
   validateSourceContextInput,
   type SourceContextResult,
 } from './context.js';
@@ -302,7 +304,8 @@ function contained(root: string, target: string): boolean {
 function targetPath(path: string, target: string): string | null {
   if (target.startsWith('/')) return null;
   const candidate = join(dirname(path), target);
-  return contained('.', candidate) && validPath(candidate) ? candidate : null;
+  if (!contained('.', candidate)) return null;
+  return candidate === '.' || validPath(candidate) ? (candidate === '.' ? '' : candidate) : null;
 }
 
 async function missing(path: string): Promise<boolean> {
@@ -365,7 +368,7 @@ class Materializer {
 
   async materialize(
     path: string,
-    content: 'payload' | 'placeholder' = 'placeholder',
+    content: 'payload' | 'placeholder' | 'limit-placeholder' = 'placeholder',
     options: Readonly<{ linkTarget?: string; limit?: number }> = {},
   ): Promise<boolean> {
     const entry = await this.tree.get(path);
@@ -376,8 +379,7 @@ class Materializer {
       await fs.mkdir(destination, { recursive: true, mode: 0o700 });
       return true;
     }
-    if (!(await missing(destination)) && !(entry.kind === 'file' && content === 'payload'))
-      return true;
+    if (!(await missing(destination)) && content === 'placeholder') return true;
     if (entry.kind === 'link') {
       const target =
         content === 'payload' ? (options.linkTarget ?? (await this.linkTarget(entry))) : '.';
@@ -387,7 +389,9 @@ class Materializer {
     const bytes =
       content === 'payload'
         ? await this.payload(entry, options.limit ?? MAX_SOURCE_FILE_BYTES)
-        : new Uint8Array();
+        : content === 'limit-placeholder'
+          ? new Uint8Array((options.limit ?? 0) + 1)
+          : new Uint8Array();
     await fs.writeFile(destination, bytes, { mode: entry.mode === '100755' ? 0o700 : 0o600 });
     return true;
   }
@@ -404,6 +408,26 @@ class Materializer {
     }
   }
 
+  /**
+   * C2 reads at most its aggregate budget. Local placeholders preserve its limit result without
+   * downloading a source blob that C2 would never inspect.
+   */
+  async materializeSourceFiles(paths: readonly string[]): Promise<void> {
+    let remaining = MAX_TOTAL_SOURCE_READ_BYTES;
+    for (const path of paths) {
+      if (remaining === 0) return;
+      const entry = await this.tree.get(path);
+      if (!entry || entry.kind !== 'file') continue;
+      const sourceReadBytes = Math.min(entry.size!, MAX_SOURCE_FILE_BYTES + 1);
+      if (sourceReadBytes > remaining) {
+        await this.materialize(path, 'limit-placeholder', { limit: remaining });
+        return;
+      }
+      await this.materialize(path, 'payload', { limit: MAX_SOURCE_FILE_BYTES });
+      remaining -= sourceReadBytes;
+    }
+  }
+
   async materializeConfig(path = CONFIG_PATH, seen = new Set<string>()): Promise<void> {
     if (seen.has(path)) throw new Unavailable();
     seen.add(path);
@@ -416,9 +440,11 @@ class Materializer {
         const target = await this.linkTarget(entry);
         await this.materialize(current, 'payload', { linkTarget: target });
         const resolved = targetPath(current, target);
-        if (!resolved) return;
+        if (resolved === null) return;
         const suffix = parts.slice(index + 1).join('/');
-        return this.materializeConfig(suffix ? `${resolved}/${suffix}` : resolved, seen);
+        const next = resolved && suffix ? `${resolved}/${suffix}` : resolved || suffix;
+        if (next) return this.materializeConfig(next, seen);
+        return;
       }
       await this.materialize(
         current,
@@ -563,8 +589,12 @@ export async function withTrustedSnapshot<T>(
           };
           const validation = await validateSourceContextInput(input);
           if (!validation.ok || validation.state !== 'ready') return collectSourceContext(input);
-          for (const path of validation.files)
-            await materializer.materialize(path, 'payload', { limit: MAX_SOURCE_FILE_BYTES });
+          const candidates = await sourceContextCandidates({
+            ...input,
+            trackedFiles: trackedFiles(files),
+          });
+          if (!candidates.ok) return candidates;
+          await materializer.materializeSourceFiles(candidates.paths);
           active();
           return await collectSourceContext({ ...input, trackedFiles: trackedFiles(files) });
         } catch (error) {

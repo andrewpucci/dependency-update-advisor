@@ -213,6 +213,89 @@ test('loads a config through an in-repository link without changing its C1 path 
   expect(reader.calls).toContain(`blob:${linkedConfig}`);
 });
 
+test('follows a .github link to the repository root before reading the config', async () => {
+  const rootLink = '1'.repeat(40);
+  const reader = reads(
+    [entry('.github', '120000', rootLink), entry('dependabot-review.json', '100644', configBlob)],
+    { [rootLink]: '.', [configBlob]: '{"version":2}' },
+  );
+
+  await expect(
+    withTrustedSnapshot(
+      { repository, reads: reader, temporaryRoot: tempRoot() },
+      async () => 'unreachable',
+    ),
+  ).resolves.toMatchObject({ kind: 'invalid-config', config: { ok: false } });
+  expect(reader.calls).toContain(`blob:${configBlob}`);
+});
+
+test('does not fetch a configured source file C2 excludes before reading it', async () => {
+  const reader = reads(
+    [
+      entry('.github', '040000', 'e'.repeat(40), 'tree'),
+      entry('.github/dependabot-review.json', '100644', configBlob),
+      entry('src', '040000', 'f'.repeat(40), 'tree'),
+      entry('src/secrets.ts', '100644', sourceBlob),
+    ],
+    {
+      [configBlob]: JSON.stringify({
+        version: 1,
+        context: {
+          sendSourceExcerptsToModel: true,
+          sourceRoots: ['src'],
+          excerptFiles: ['src/secrets.ts'],
+        },
+      }),
+      [sourceBlob]: 'import examplePackage from "example-package";',
+    },
+  );
+
+  const result = await withTrustedSnapshot(
+    { repository, reads: reader, temporaryRoot: tempRoot() },
+    (snapshot) => snapshot.collectContext([{ id: 'unit-1', name: 'example-package' }]),
+  );
+
+  expect(result).toMatchObject({
+    kind: 'ready',
+    value: { ok: true, reasons: expect.arrayContaining(['excluded-source']) },
+  });
+  expect(reader.calls).not.toContain(`blob:${sourceBlob}`);
+});
+
+test('stops source payload reads at C2’s aggregate one MiB limit', async () => {
+  const sources = Array.from({ length: 17 }, (_, index) => `src/file-${index}.ts`);
+  const reader = reads(
+    [
+      entry('.github', '040000', 'e'.repeat(40), 'tree'),
+      entry('.github/dependabot-review.json', '100644', configBlob),
+      entry('src', '040000', 'f'.repeat(40), 'tree'),
+      ...sources.map((path) => ({ ...entry(path, '100644', sourceBlob), size: 65_536 })),
+    ],
+    {
+      [configBlob]: JSON.stringify({
+        version: 1,
+        context: {
+          sendSourceExcerptsToModel: true,
+          sourceRoots: ['src'],
+          excerptFiles: sources,
+        },
+      }),
+      [sourceBlob]: 'x'.repeat(65_536),
+    },
+  );
+
+  const result = await withTrustedSnapshot(
+    { repository, reads: reader, temporaryRoot: tempRoot() },
+    (snapshot) => snapshot.collectContext([{ id: 'unit-1', name: 'example-package' }]),
+  );
+
+  expect(result).toMatchObject({
+    kind: 'ready',
+    value: { ok: true, reasons: expect.arrayContaining(['total-read-limit']) },
+  });
+  expect(reader.calls.filter((call) => call === `blob:${sourceBlob}`)).toHaveLength(16);
+});
+
 test('rejects a private opt-in without exact files before reading source bytes', async () => {
   const reader = reads(
     [
