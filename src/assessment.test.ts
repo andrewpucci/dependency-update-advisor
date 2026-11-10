@@ -1,6 +1,7 @@
 import { expect, test, vi } from 'vite-plus/test';
 import { analyzeMistralBatch } from './analysis/mistral.js';
 import { assessReviewPacket, reviewPacket } from './assessment.js';
+import * as batchesModule from './analysis/batches.js';
 import * as reportingModule from './reporting.js';
 
 test('refuses an absent model credential before analysis input is constructed', async () => {
@@ -33,6 +34,11 @@ test('invalid config stays status-only without invoking model analysis', async (
   });
   expect(result).toEqual({ kind: 'internal-failure' });
   expect(JSON.stringify(result)).not.toContain('sentinel-model-key');
+});
+
+vi.mock('./analysis/batches.js', async (original) => {
+  const actual = await original<typeof import('./analysis/batches.js')>();
+  return { ...actual, analyzeDecisionUnits: vi.fn(actual.analyzeDecisionUnits) };
 });
 
 const sentinel = 'sentinel-model-key';
@@ -181,4 +187,85 @@ test('names an oversized brief as a budget gap, and no other renderer failure', 
     });
   }
   render.mockRestore();
+});
+
+test.each([
+  ['an unresolved unit', { counts: { unresolvedUnits: 1 } }],
+  ['an inventory gap', { inventoryGaps: [{ ecosystem: 'npm' }] }],
+])('is not complete with a do-not-merge verdict and %s', async (_label, change) => {
+  const { review, complete } = await fixture();
+  const actual =
+    await vi.importActual<typeof import('./analysis/batches.js')>('./analysis/batches.js');
+  vi.mocked(batchesModule.analyzeDecisionUnits).mockImplementationOnce(async (...args) => {
+    const real = await actual.analyzeDecisionUnits(...args);
+    if (!real.ok) return real;
+    return {
+      ...real,
+      coverage: {
+        ...real.coverage,
+        // The verdict alone says "advice", which used to be read as a finished review.
+        outcome: { kind: 'advice', verdict: 'do_not_merge' },
+        inventoryGaps:
+          'inventoryGaps' in change ? change.inventoryGaps : real.coverage.inventoryGaps,
+        counts: {
+          ...real.coverage.counts,
+          ...('counts' in change ? change.counts : {}),
+        },
+      },
+    } as never;
+  });
+  const result = await assessReviewPacket({ ...review, model: complete });
+  expect(result.kind).toBe('incomplete-evidence');
+});
+
+test('is complete with a do-not-merge verdict when nothing is unresolved and nothing is missing', async () => {
+  const { review, complete } = await fixture();
+  const actual =
+    await vi.importActual<typeof import('./analysis/batches.js')>('./analysis/batches.js');
+  vi.mocked(batchesModule.analyzeDecisionUnits).mockImplementationOnce(async (...args) => {
+    const real = await actual.analyzeDecisionUnits(...args);
+    if (!real.ok) return real;
+    return {
+      ...real,
+      coverage: {
+        ...real.coverage,
+        outcome: { kind: 'advice', verdict: 'do_not_merge' },
+        inventoryGaps: [],
+        counts: { ...real.coverage.counts, unresolvedUnits: 0 },
+      },
+    } as never;
+  });
+  const result = await assessReviewPacket({ ...review, model: complete });
+  expect(result.kind).toBe('complete');
+});
+
+test('is not complete with a do-not-merge verdict and a gap in one unit', async () => {
+  const { review, complete } = await fixture();
+  const actual =
+    await vi.importActual<typeof import('./analysis/batches.js')>('./analysis/batches.js');
+  vi.mocked(batchesModule.analyzeDecisionUnits).mockImplementationOnce(async (...args) => {
+    const real = await actual.analyzeDecisionUnits(...args);
+    if (!real.ok) return real;
+    const assessments = real.coverage.policyProvenance.assessments;
+    return {
+      ...real,
+      coverage: {
+        ...real.coverage,
+        outcome: { kind: 'advice', verdict: 'do_not_merge' },
+        inventoryGaps: [],
+        counts: { ...real.coverage.counts, unresolvedUnits: 0 },
+        policyProvenance: {
+          ...real.coverage.policyProvenance,
+          assessments: {
+            ...assessments,
+            units: assessments.units.map((unit, index) =>
+              index === 0 ? { ...unit, gaps: [{ category: 'vulnerability' }] } : unit,
+            ),
+          },
+        },
+      },
+    } as never;
+  });
+  const result = await assessReviewPacket({ ...review, model: complete });
+  expect(result.kind).toBe('incomplete-evidence');
 });

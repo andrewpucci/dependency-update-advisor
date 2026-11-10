@@ -1,20 +1,20 @@
 import { expect, test } from 'vite-plus/test';
-import { W2_ALLOCATION, W2_ENVELOPE } from './budget.js';
+import { EVIDENCE_READ_ALLOCATION, EVIDENCE_READ_ENVELOPE } from './budget.js';
 
 const MiB = 1024 * 1024;
 
-test('records the W2 evidence envelope', () => {
-  expect(W2_ENVELOPE).toEqual({
-    maxRequests: 896,
+test('records the evidence-read envelope', () => {
+  expect(EVIDENCE_READ_ENVELOPE).toEqual({
+    maxRequests: 944,
     maxResponseBytes: MiB,
-    maxTotalBytes: 51 * MiB,
+    maxTotalBytes: 54 * MiB,
     requestTimeoutMs: 15_000,
     totalTimeoutMs: 240_000,
   });
 });
 
 test('splits the envelope with nothing unallocated or over-allocated', () => {
-  expect(W2_ALLOCATION).toEqual({
+  expect(EVIDENCE_READ_ALLOCATION).toEqual({
     transport: {
       maxRequests: 224,
       maxTotalBytes: 12 * MiB,
@@ -23,7 +23,7 @@ test('splits the envelope with nothing unallocated or over-allocated', () => {
     },
     session: { maxRequests: 160, maxTotalBytes: 12 * MiB },
     registry: { maxRequests: 64, maxTotalBytes: 4 * MiB },
-    upstream: { maxRequests: 192, maxTotalBytes: 12 * MiB },
+    upstream: { maxRequests: 240, maxTotalBytes: 15 * MiB },
     advisory: { maxRequests: 80, maxTotalBytes: 5 * MiB },
     signals: {
       maxRequests: 176,
@@ -37,15 +37,17 @@ test('splits the envelope with nothing unallocated or over-allocated', () => {
       },
     },
   });
-  const shares = Object.values(W2_ALLOCATION);
-  expect(shares.reduce((sum, share) => sum + share.maxRequests, 0)).toBe(W2_ENVELOPE.maxRequests);
+  const shares = Object.values(EVIDENCE_READ_ALLOCATION);
+  expect(shares.reduce((sum, share) => sum + share.maxRequests, 0)).toBe(
+    EVIDENCE_READ_ENVELOPE.maxRequests,
+  );
   expect(shares.reduce((sum, share) => sum + share.maxTotalBytes, 0)).toBe(
-    W2_ENVELOPE.maxTotalBytes,
+    EVIDENCE_READ_ENVELOPE.maxTotalBytes,
   );
 });
 
 test('divides the transport share exactly between snapshot reads and freshness reads', () => {
-  const { transport } = W2_ALLOCATION;
+  const { transport } = EVIDENCE_READ_ALLOCATION;
   expect(transport.snapshot.maxRequests + transport.freshness.maxRequests).toBe(
     transport.maxRequests,
   );
@@ -55,7 +57,7 @@ test('divides the transport share exactly between snapshot reads and freshness r
 });
 
 test('divides the signals share exactly between its five readers', () => {
-  const { signals } = W2_ALLOCATION;
+  const { signals } = EVIDENCE_READ_ALLOCATION;
   const readers = Object.values(signals.readers);
   expect(readers).toHaveLength(5);
   expect(readers.reduce((sum, reader) => sum + reader.maxRequests, 0)).toBe(signals.maxRequests);

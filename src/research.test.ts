@@ -6,7 +6,7 @@ import * as publishTimesModule from './evidence/npm-publish-times.js';
 import * as signalReadModule from './evidence/policy-signals-read.js';
 import * as advisoryReadModule from './evidence/advisory-read.js';
 import * as upstreamReadModule from './evidence/upstream-read.js';
-import { W2_ALLOCATION, W2_ENVELOPE } from './budget.js';
+import { EVIDENCE_READ_ALLOCATION, EVIDENCE_READ_ENVELOPE } from './budget.js';
 import { runResearch } from './research.js';
 import * as schemaModule from './schema.js';
 import { validateReviewPacket } from './schema.js';
@@ -212,10 +212,10 @@ test('caps every reader at its share, so the readers together stay inside the en
   const registry = calls(npmRegistryModule.createNpmRegistryReader);
   expect(upstream).toHaveLength(2);
   expect(advisory).toHaveLength(1);
-  const { readers } = W2_ALLOCATION.signals;
+  const { readers } = EVIDENCE_READ_ALLOCATION.signals;
   const expected = [
-    ['S2 upstream', upstream[0], W2_ALLOCATION.upstream],
-    ['advisory', advisory[0], W2_ALLOCATION.advisory],
+    ['S2 upstream', upstream[0], EVIDENCE_READ_ALLOCATION.upstream],
+    ['advisory', advisory[0], EVIDENCE_READ_ALLOCATION.advisory],
     ['malware', calls(advisoryReadModule.createMalwareReader)[0], readers.malware],
     ['npm registry', registry[1], readers.registry],
     [
@@ -235,12 +235,16 @@ test('caps every reader at its share, so the readers together stay inside the en
   const used = expected.reduce((sum, [, actual]) => sum + actual.maxRequests, 0);
   const bytes = expected.reduce((sum, [, actual]) => sum + actual.maxTotalBytes, 0);
   // The transport, evidence session, and registry shares hold the rest of the envelope.
-  const others = [W2_ALLOCATION.transport, W2_ALLOCATION.session, W2_ALLOCATION.registry];
+  const others = [
+    EVIDENCE_READ_ALLOCATION.transport,
+    EVIDENCE_READ_ALLOCATION.session,
+    EVIDENCE_READ_ALLOCATION.registry,
+  ];
   expect(used + others.reduce((sum, share) => sum + share.maxRequests, 0)).toBe(
-    W2_ENVELOPE.maxRequests,
+    EVIDENCE_READ_ENVELOPE.maxRequests,
   );
   expect(bytes + others.reduce((sum, share) => sum + share.maxTotalBytes, 0)).toBe(
-    W2_ENVELOPE.maxTotalBytes,
+    EVIDENCE_READ_ENVELOPE.maxTotalBytes,
   );
 });
 
@@ -299,11 +303,15 @@ test('researches a group of 32 changed packages without exhausting any reader', 
   if (result.kind !== 'ready') return;
   expect(result.unavailable).toEqual([]);
   // Every package was looked up, and none was cut short by a share running out.
-  const { readers } = W2_ALLOCATION.signals;
+  const { readers } = EVIDENCE_READ_ALLOCATION.signals;
   expect(counts.malware).toBeGreaterThan(25);
   expect(counts.malware).toBeLessThanOrEqual(readers.malware.maxRequests);
   expect(counts.advisory).toBeGreaterThan(50);
-  expect(counts.advisory).toBeLessThanOrEqual(W2_ALLOCATION.advisory.maxRequests);
-  expect(JSON.stringify(result.packet.changes)).not.toContain('"reasons":["budget"]');
-  expect(JSON.stringify(result.packet.sources)).not.toContain('"reasons":["budget"]');
+  expect(counts.advisory).toBeLessThanOrEqual(EVIDENCE_READ_ALLOCATION.advisory.maxRequests);
+  // No stage of research ran out of any share, in the packet or in its own attempt records.
+  expect(JSON.stringify(result.packet)).not.toContain('budget');
+  expect(JSON.stringify(result.upstreamAttempts)).not.toContain('budget');
+  expect(JSON.stringify(result.signalAttempts)).not.toContain('budget');
+  expect(result.signalAttempts.length).toBeGreaterThan(0);
+  expect(result.upstreamAttempts.length).toBeGreaterThan(0);
 });

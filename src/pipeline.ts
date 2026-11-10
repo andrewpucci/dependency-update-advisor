@@ -1,5 +1,5 @@
 import { reviewPacket, type AssessmentInput } from './assessment.js';
-import { W2_ENVELOPE } from './budget.js';
+import { EVIDENCE_READ_ENVELOPE } from './budget.js';
 import {
   createEvidenceCollectors,
   openEvidenceSession,
@@ -13,6 +13,7 @@ import {
   type ReviewBinding,
 } from './event.js';
 import { createReviewHandoff, type RehearsalSink, type ReviewHandoff } from './handoff.js';
+import { guardedFetch } from './adapters.js';
 import { assembleReviewPacket, type PacketGap } from './packet.js';
 import { runResearch } from './research.js';
 import type { ClaimStore, OwnedClaim, ReviewOutcomeKind } from './review.js';
@@ -131,13 +132,7 @@ export async function runReview(input: PipelineInput): Promise<PipelineResult> {
     attempt.abort();
     return state;
   };
-  const guard =
-    (fetch: PipelineInput['githubFetch']): PipelineInput['githubFetch'] =>
-    async (url, init) => {
-      if (attempt.signal.aborted || !(await owns())) throw new Error('attempt ended');
-      const signal = init.signal ? AbortSignal.any([init.signal, attempt.signal]) : attempt.signal;
-      return fetch(url, { ...init, signal });
-    };
+  const guard = (fetch: PipelineInput['githubFetch']) => guardedFetch(fetch, attempt, owns);
 
   const evaluate = async (): Promise<Outcome> => {
     const entry = await stillCurrent();
@@ -202,7 +197,7 @@ async function evaluateEvidence(
   const isCurrent = () => state() === 'current';
   let evidenceSession: EvidenceSessionResult['kind'] = 'ready';
   let npmInventory: unknown = null;
-  const evidenceDeadline = started + W2_ENVELOPE.totalTimeoutMs;
+  const evidenceDeadline = started + EVIDENCE_READ_ENVELOPE.totalTimeoutMs;
   const snapshot = await withTrustedSnapshot(
     {
       repository: input.repository,

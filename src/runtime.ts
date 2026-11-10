@@ -1,4 +1,4 @@
-import { W2_ALLOCATION, W2_ENVELOPE } from './budget.js';
+import { EVIDENCE_READ_ALLOCATION, EVIDENCE_READ_ENVELOPE } from './budget.js';
 import { positiveId, record, type RepositoryIdentity, type WorkflowIdentity } from './event.js';
 import { httpReason } from './github-read.js';
 import type { EvidenceReason } from './schema.js';
@@ -9,11 +9,11 @@ import type { EvidenceReason } from './schema.js';
  * keep a finished review valid. Time is one shared deadline.
  */
 export const W2_GITHUB_LIMITS = Object.freeze({
-  snapshot: W2_ALLOCATION.transport.snapshot,
-  freshness: W2_ALLOCATION.transport.freshness,
-  maxResponseBytes: W2_ENVELOPE.maxResponseBytes,
-  requestTimeoutMs: W2_ENVELOPE.requestTimeoutMs,
-  totalTimeoutMs: W2_ENVELOPE.totalTimeoutMs,
+  snapshot: EVIDENCE_READ_ALLOCATION.transport.snapshot,
+  freshness: EVIDENCE_READ_ALLOCATION.transport.freshness,
+  maxResponseBytes: EVIDENCE_READ_ENVELOPE.maxResponseBytes,
+  requestTimeoutMs: EVIDENCE_READ_ENVELOPE.requestTimeoutMs,
+  totalTimeoutMs: EVIDENCE_READ_ENVELOPE.totalTimeoutMs,
 });
 type Share = 'snapshot' | 'freshness';
 

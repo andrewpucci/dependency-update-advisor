@@ -19491,6 +19491,25 @@ function researchFetch(token, fetchImpl) {
 	const open = publicFetch(fetchImpl);
 	return async (url, init) => httpsUrl(url).origin === "https://api.github.com" ? authenticated(url, init) : open(url, init);
 }
+/**
+* Binds every request to one attempt: nothing starts once the attempt has ended or ownership is
+* lost (which ends the attempt), and each request ends when either its own signal or the attempt's
+* does.
+*/
+function guardedFetch(fetchImpl, attempt, owns) {
+	return async (url, init) => {
+		if (attempt.signal.aborted) throw new Error("attempt ended");
+		if (!await owns()) {
+			attempt.abort();
+			throw new Error("attempt ended");
+		}
+		const signal = init.signal ? AbortSignal.any([init.signal, attempt.signal]) : attempt.signal;
+		return fetchImpl(url, {
+			...init,
+			signal
+		});
+	};
+}
 
 // src/review.ts
 const outcomeEligibility = Object.freeze({
@@ -22224,10 +22243,10 @@ async function reviewPacket(input) {
 // src/budget.ts
 const MiB = 1048576;
 /** Bounds for all pre-analysis evidence reads. Time is shared; every reader gets what remains. */
-const W2_ENVELOPE = Object.freeze({
-	maxRequests: 896,
+const EVIDENCE_READ_ENVELOPE = Object.freeze({
+	maxRequests: 944,
 	maxResponseBytes: MiB,
-	maxTotalBytes: 51 * MiB,
+	maxTotalBytes: 54 * MiB,
 	requestTimeoutMs: 15e3,
 	totalTimeoutMs: 24e4
 });
@@ -22235,7 +22254,7 @@ const W2_ENVELOPE = Object.freeze({
 * How the envelope is divided between readers. A larger pull request exhausts a share and ends
 * incomplete with a `budget` reason; no reader borrows from another.
 */
-const W2_ALLOCATION = Object.freeze({
+const EVIDENCE_READ_ALLOCATION = Object.freeze({
 	transport: Object.freeze({
 		maxRequests: 224,
 		maxTotalBytes: 12 * MiB,
@@ -22257,8 +22276,8 @@ const W2_ALLOCATION = Object.freeze({
 		maxTotalBytes: 4 * MiB
 	}),
 	upstream: Object.freeze({
-		maxRequests: 192,
-		maxTotalBytes: 12 * MiB
+		maxRequests: 240,
+		maxTotalBytes: 15 * MiB
 	}),
 	advisory: Object.freeze({
 		maxRequests: 80,
@@ -27615,21 +27634,21 @@ async function createGithubReadSession(input, dependencies) {
 
 // src/collection.ts
 /**
-* Reader limits inside the envelope split (see `W2_ALLOCATION`); every reader's time is
+* Reader limits inside the envelope split (see `EVIDENCE_READ_ALLOCATION`); every reader's time is
 * what remains of the 240,000 ms total. Parse and retention limits reuse the values the reader
 * integration tests use.
 */
 const W2_EVIDENCE_LIMITS = Object.freeze({
 	session: Object.freeze({
-		maxRequests: W2_ALLOCATION.session.maxRequests,
+		maxRequests: EVIDENCE_READ_ALLOCATION.session.maxRequests,
 		maxPages: 10,
 		maxFiles: 1e3,
 		maxJsonEntries: 2e5,
-		maxResponseBytes: W2_ENVELOPE.maxResponseBytes,
+		maxResponseBytes: EVIDENCE_READ_ENVELOPE.maxResponseBytes,
 		maxFileBytes: 5e5,
-		maxTotalBytes: W2_ALLOCATION.session.maxTotalBytes,
+		maxTotalBytes: EVIDENCE_READ_ALLOCATION.session.maxTotalBytes,
 		maxRetainedBytes: 2e6,
-		requestTimeoutMs: W2_ENVELOPE.requestTimeoutMs
+		requestTimeoutMs: EVIDENCE_READ_ENVELOPE.requestTimeoutMs
 	}),
 	npm: Object.freeze({
 		maxFileBytes: 5e5,
@@ -27665,14 +27684,14 @@ const W2_EVIDENCE_LIMITS = Object.freeze({
 		maxRetainedBytes: 2e6
 	}),
 	registry: Object.freeze({
-		maxRequests: W2_ALLOCATION.registry.maxRequests,
-		maxResponseBytes: W2_ENVELOPE.maxResponseBytes,
-		maxTotalBytes: W2_ALLOCATION.registry.maxTotalBytes,
+		maxRequests: EVIDENCE_READ_ALLOCATION.registry.maxRequests,
+		maxResponseBytes: EVIDENCE_READ_ENVELOPE.maxResponseBytes,
+		maxTotalBytes: EVIDENCE_READ_ALLOCATION.registry.maxTotalBytes,
 		maxJsonEntries: 1e5,
 		maxJsonDepth: 32,
-		requestTimeoutMs: W2_ENVELOPE.requestTimeoutMs
+		requestTimeoutMs: EVIDENCE_READ_ENVELOPE.requestTimeoutMs
 	}),
-	totalTimeoutMs: W2_ENVELOPE.totalTimeoutMs
+	totalTimeoutMs: EVIDENCE_READ_ENVELOPE.totalTimeoutMs
 });
 /** A request may not be allowed longer than the whole read, so near the deadline both shrink. */
 function timeouts(requestTimeoutMs, left) {
@@ -28108,7 +28127,7 @@ const MAX_JSON_ENTRIES = 2e5;
 const MAX_JSON_DEPTH = 32;
 const MAX_RETAINED_BYTES = 2e6;
 function remaining(input) {
-	return Math.max(1, Math.min(W2_ENVELOPE.totalTimeoutMs, Math.floor(input.deadline - input.now())));
+	return Math.max(1, Math.min(EVIDENCE_READ_ENVELOPE.totalTimeoutMs, Math.floor(input.deadline - input.now())));
 }
 function limits(share, input) {
 	const { maxRequests, maxTotalBytes } = share;
@@ -28117,7 +28136,7 @@ function limits(share, input) {
 		maxPages: maxRequests,
 		maxTagCandidates: 100,
 		maxTagDepth: 10,
-		maxResponseBytes: Math.min(W2_ENVELOPE.maxResponseBytes, maxTotalBytes),
+		maxResponseBytes: Math.min(EVIDENCE_READ_ENVELOPE.maxResponseBytes, maxTotalBytes),
 		maxTotalBytes,
 		maxJsonEntries: MAX_JSON_ENTRIES,
 		maxJsonDepth: MAX_JSON_DEPTH,
@@ -28125,7 +28144,7 @@ function limits(share, input) {
 		maxRetainedBytes: MAX_RETAINED_BYTES,
 		maxAttempts: 512,
 		maxFindings: 512,
-		requestTimeoutMs: Math.min(W2_ENVELOPE.requestTimeoutMs, remaining(input)),
+		requestTimeoutMs: Math.min(EVIDENCE_READ_ENVELOPE.requestTimeoutMs, remaining(input)),
 		totalTimeoutMs: remaining(input)
 	};
 }
@@ -28159,7 +28178,7 @@ async function runResearch(input) {
 			reason
 		});
 		const failure = (result) => result.kind === "unavailable" && result.reason ? result.reason : "malformed";
-		const upstreamLimits = limits(W2_ALLOCATION.upstream, input);
+		const upstreamLimits = limits(EVIDENCE_READ_ALLOCATION.upstream, input);
 		const opened = createUpstreamReader(upstreamLimits, dependencies);
 		if (opened.kind === "ready") {
 			readers.push(opened.reader);
@@ -28182,7 +28201,7 @@ async function runResearch(input) {
 				upstreamAttempts = upstream.attempts;
 			} else fail("upstream", failure(upstream));
 		} else fail("upstream", "malformed");
-		const advisoryLimits = limits(W2_ALLOCATION.advisory, input);
+		const advisoryLimits = limits(EVIDENCE_READ_ALLOCATION.advisory, input);
 		const reviewed = createAdvisoryReader(advisoryLimits, dependencies);
 		if (reviewed.kind === "ready") {
 			readers.push(reviewed);
@@ -28203,8 +28222,8 @@ async function runResearch(input) {
 			};
 			else fail("advisories", failure(advisories));
 		} else fail("advisories", "malformed");
-		const signalLimits = limits(W2_ALLOCATION.signals, input);
-		const { readers: shares } = W2_ALLOCATION.signals;
+		const signalLimits = limits(EVIDENCE_READ_ALLOCATION.signals, input);
+		const { readers: shares } = EVIDENCE_READ_ALLOCATION.signals;
 		const malware = createMalwareReader(limits(shares.malware, input), dependencies);
 		const registry = createNpmRegistryReader(limits(shares.registry, input), dependencies);
 		const times = createNpmPublishTimeReader(limits(shares.publishTimes, input), dependencies);
@@ -29278,14 +29297,7 @@ async function runReview(input) {
 		attempt.abort();
 		return state;
 	};
-	const guard = (fetch) => async (url, init) => {
-		if (attempt.signal.aborted || !await owns()) throw new Error("attempt ended");
-		const signal = init.signal ? AbortSignal.any([init.signal, attempt.signal]) : attempt.signal;
-		return fetch(url, {
-			...init,
-			signal
-		});
-	};
+	const guard = (fetch) => guardedFetch(fetch, attempt, owns);
 	const evaluate = async () => {
 		const entry = await stillCurrent();
 		if (entry !== "current") return {
@@ -29339,7 +29351,7 @@ async function evaluateEvidence(input, binding, started, signal, state, recheck)
 	const isCurrent = () => state() === "current";
 	let evidenceSession = "ready";
 	let npmInventory = null;
-	const evidenceDeadline = started + W2_ENVELOPE.totalTimeoutMs;
+	const evidenceDeadline = started + EVIDENCE_READ_ENVELOPE.totalTimeoutMs;
 	const snapshot = await withTrustedSnapshot({
 		repository: input.repository,
 		reads: input.snapshotReads,
@@ -29448,11 +29460,11 @@ async function evaluateEvidence(input, binding, started, signal, state, recheck)
 * keep a finished review valid. Time is one shared deadline.
 */
 const W2_GITHUB_LIMITS = Object.freeze({
-	snapshot: W2_ALLOCATION.transport.snapshot,
-	freshness: W2_ALLOCATION.transport.freshness,
-	maxResponseBytes: W2_ENVELOPE.maxResponseBytes,
-	requestTimeoutMs: W2_ENVELOPE.requestTimeoutMs,
-	totalTimeoutMs: W2_ENVELOPE.totalTimeoutMs
+	snapshot: EVIDENCE_READ_ALLOCATION.transport.snapshot,
+	freshness: EVIDENCE_READ_ALLOCATION.transport.freshness,
+	maxResponseBytes: EVIDENCE_READ_ENVELOPE.maxResponseBytes,
+	requestTimeoutMs: EVIDENCE_READ_ENVELOPE.requestTimeoutMs,
+	totalTimeoutMs: EVIDENCE_READ_ENVELOPE.totalTimeoutMs
 });
 function plainText(value) {
 	return typeof value === "string" && value.length > 0 && !Array.from(value).some((character) => {

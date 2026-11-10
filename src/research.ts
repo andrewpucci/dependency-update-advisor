@@ -1,4 +1,4 @@
-import { W2_ALLOCATION, W2_ENVELOPE } from './budget.js';
+import { EVIDENCE_READ_ALLOCATION, EVIDENCE_READ_ENVELOPE } from './budget.js';
 import type { GithubComparison } from './github-read.js';
 import { enrichAdvisories } from './evidence/advisories.js';
 import { createAdvisoryReader, createMalwareReader } from './evidence/advisory-read.js';
@@ -49,7 +49,7 @@ const MAX_RETAINED_BYTES = 2_000_000;
 function remaining(input: Pick<ResearchInput, 'now' | 'deadline'>): number {
   return Math.max(
     1,
-    Math.min(W2_ENVELOPE.totalTimeoutMs, Math.floor(input.deadline - input.now())),
+    Math.min(EVIDENCE_READ_ENVELOPE.totalTimeoutMs, Math.floor(input.deadline - input.now())),
   );
 }
 
@@ -63,7 +63,7 @@ function limits(
     maxPages: maxRequests,
     maxTagCandidates: 100,
     maxTagDepth: 10,
-    maxResponseBytes: Math.min(W2_ENVELOPE.maxResponseBytes, maxTotalBytes),
+    maxResponseBytes: Math.min(EVIDENCE_READ_ENVELOPE.maxResponseBytes, maxTotalBytes),
     maxTotalBytes,
     maxJsonEntries: MAX_JSON_ENTRIES,
     maxJsonDepth: MAX_JSON_DEPTH,
@@ -72,7 +72,7 @@ function limits(
     maxAttempts: 512,
     maxFindings: 512,
     // A request may not be allowed longer than the whole read, so near the deadline both shrink.
-    requestTimeoutMs: Math.min(W2_ENVELOPE.requestTimeoutMs, remaining(input)),
+    requestTimeoutMs: Math.min(EVIDENCE_READ_ENVELOPE.requestTimeoutMs, remaining(input)),
     totalTimeoutMs: remaining(input),
   };
 }
@@ -104,7 +104,7 @@ export async function runResearch(input: ResearchInput): Promise<ResearchResult>
     const failure = (result: { kind: string; reason?: EvidenceReason }): EvidenceReason =>
       result.kind === 'unavailable' && result.reason ? result.reason : 'malformed';
 
-    const upstreamLimits = limits(W2_ALLOCATION.upstream, input);
+    const upstreamLimits = limits(EVIDENCE_READ_ALLOCATION.upstream, input);
     const opened = createUpstreamReader(upstreamLimits, dependencies);
     if (opened.kind === 'ready') {
       readers.push(opened.reader);
@@ -131,7 +131,7 @@ export async function runResearch(input: ResearchInput): Promise<ResearchResult>
       } else fail('upstream', failure(upstream));
     } else fail('upstream', 'malformed');
 
-    const advisoryLimits = limits(W2_ALLOCATION.advisory, input);
+    const advisoryLimits = limits(EVIDENCE_READ_ALLOCATION.advisory, input);
     const reviewed = createAdvisoryReader(advisoryLimits, dependencies);
     if (reviewed.kind === 'ready') {
       readers.push(reviewed);
@@ -158,8 +158,8 @@ export async function runResearch(input: ResearchInput): Promise<ResearchResult>
     } else fail('advisories', 'malformed');
 
     // S3 drives five independent readers, each with its own share of the signals allocation.
-    const signalLimits = limits(W2_ALLOCATION.signals, input);
-    const { readers: shares } = W2_ALLOCATION.signals;
+    const signalLimits = limits(EVIDENCE_READ_ALLOCATION.signals, input);
+    const { readers: shares } = EVIDENCE_READ_ALLOCATION.signals;
     const malware = createMalwareReader(limits(shares.malware, input), dependencies);
     const registry = createNpmRegistryReader(limits(shares.registry, input), dependencies);
     const times = createNpmPublishTimeReader(limits(shares.publishTimes, input), dependencies);

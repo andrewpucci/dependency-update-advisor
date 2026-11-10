@@ -62,3 +62,24 @@ export function researchFetch(token: string, fetchImpl: Fetch): Fetch {
   return async (url, init) =>
     httpsUrl(url).origin === 'https://api.github.com' ? authenticated(url, init) : open(url, init);
 }
+
+/**
+ * Binds every request to one attempt: nothing starts once the attempt has ended or ownership is
+ * lost (which ends the attempt), and each request ends when either its own signal or the attempt's
+ * does.
+ */
+export function guardedFetch(
+  fetchImpl: Fetch,
+  attempt: AbortController,
+  owns: () => Promise<boolean>,
+): Fetch {
+  return async (url, init) => {
+    if (attempt.signal.aborted) throw new Error('attempt ended');
+    if (!(await owns())) {
+      attempt.abort();
+      throw new Error('attempt ended');
+    }
+    const signal = init.signal ? AbortSignal.any([init.signal, attempt.signal]) : attempt.signal;
+    return fetchImpl(url, { ...init, signal });
+  };
+}

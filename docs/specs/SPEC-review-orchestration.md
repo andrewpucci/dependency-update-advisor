@@ -139,8 +139,8 @@ receives `process.env` or a general fetch function.
    bodies. Existing distinctions, including permission/feature versus rate-limit
    403, are preserved.
 
-   Approved execution envelope, amended 2026-11-09: 896 total requests, 1 MiB
-   per response, 51 MiB total response bytes, a 15,000 ms request timeout, and
+   Approved execution envelope, amended 2026-11-09: 944 total requests, 1 MiB
+   per response, 54 MiB total response bytes, a 15,000 ms request timeout, and
    a 240,000 ms total deadline. Exceeding any bound is a fail-closed
    unavailable outcome; it does not replace an individual reader's approved
    limits.
@@ -154,7 +154,7 @@ receives `process.env` or a general fetch function.
    | Freshness reads (workflow, run, PR)       | 24       | 3 MiB   |
    | GitHub evidence session                   | 160      | 12 MiB  |
    | npm registry details                      | 64       | 4 MiB   |
-   | Upstream evidence                         | 192      | 12 MiB  |
+   | Upstream evidence                         | 240      | 15 MiB  |
    | Advisory lookup                           | 80       | 5 MiB   |
    | Signals: malware                          | 40       | 1.5 MiB |
    | Signals: npm publish times                | 40       | 1.5 MiB |
@@ -163,11 +163,11 @@ receives `process.env` or a general fetch function.
    | Signals: Actions upstream                 | 16       | 0.5 MiB |
 
    Research reads scale with the group. Measured per extra npm package, the
-   upstream reader needs about 5 requests, advisory lookup 2, and the malware
-   and publish-time readers 1 each, so these shares cover a group of 32 changed
-   packages. A larger group exhausts a share and ends incomplete with a
-   `budget` reason; the 240,000 ms deadline, not the request count, bounds a
-   very large group.
+   upstream reader needs about 7 requests (5 GitHub plus 2 registry), advisory
+   lookup 2, and the malware and publish-time readers 1 each, so these shares
+   cover a group of 32 changed packages, as a test confirms. A larger group
+   exhausts a share and ends incomplete with a `budget` reason; the 240,000 ms
+   deadline, not the request count, bounds a very large group.
 
    The snapshot share covers C1's 128 excerpt files with their directories.
    Freshness reads are reserved separately so a heavy snapshot cannot prevent

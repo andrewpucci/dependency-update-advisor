@@ -1,5 +1,11 @@
 import { expect, test, vi } from 'vite-plus/test';
-import { authenticatedFetch, createEventReads, publicFetch, researchFetch } from './adapters.js';
+import {
+  authenticatedFetch,
+  createEventReads,
+  guardedFetch,
+  publicFetch,
+  researchFetch,
+} from './adapters.js';
 import { createGithubTransport, W2_GITHUB_LIMITS } from './runtime.js';
 import { createGithubSnapshotReads } from './snapshot.js';
 import { createTestClaimStore } from './review.js';
@@ -143,4 +149,51 @@ test('adds the read token to research requests for api.github.com only', async (
   }
   await expect(research('http://api.github.com/x', {})).rejects.toThrow();
   await expect(research('https://user@api.github.com/x', {})).rejects.toThrow();
+});
+
+test("guards every request with the attempt: ownership first, the attempt signal merged with the caller's", async () => {
+  const attempt = new AbortController();
+  let owned = true;
+  const seen: AbortSignal[] = [];
+  const guarded = guardedFetch(
+    async (_url, init) => {
+      seen.push(init.signal as AbortSignal);
+      return new Response('{}');
+    },
+    attempt,
+    async () => owned,
+  );
+  const caller = new AbortController();
+  await guarded('https://example.com/a', { signal: caller.signal });
+  await guarded('https://example.com/b', {});
+  expect(seen).toHaveLength(2);
+  // A reader's own timeout still ends the request, and so does the attempt.
+  caller.abort();
+  expect(seen[0].aborted).toBe(true);
+  expect(seen[1].aborted).toBe(false);
+  attempt.abort();
+  expect(seen[1].aborted).toBe(true);
+  expect(seen[0]).not.toBe(seen[1]);
+});
+
+test('starts nothing once the attempt has ended or ownership is lost', async () => {
+  const attempt = new AbortController();
+  let owned = true;
+  let checks = 0;
+  const fetch = vi.fn(async (_url: string, _init: RequestInit) => new Response('{}'));
+  const guarded = guardedFetch(fetch, attempt, async () => {
+    checks += 1;
+    return owned;
+  });
+  await guarded('https://example.com/a', {});
+  owned = false;
+  await expect(guarded('https://example.com/b', {})).rejects.toThrow();
+  // Losing ownership ends the whole attempt, not just that request.
+  expect(attempt.signal.aborted).toBe(true);
+  expect(fetch).toHaveBeenCalledOnce();
+  const before = checks;
+  await expect(guarded('https://example.com/c', {})).rejects.toThrow();
+  // An ended attempt short-circuits without asking again.
+  expect(checks).toBe(before);
+  expect(fetch).toHaveBeenCalledOnce();
 });

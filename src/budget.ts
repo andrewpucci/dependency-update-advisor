@@ -1,10 +1,10 @@
 const MiB = 1024 * 1024;
 
 /** Bounds for all pre-analysis evidence reads. Time is shared; every reader gets what remains. */
-export const W2_ENVELOPE = Object.freeze({
-  maxRequests: 896,
+export const EVIDENCE_READ_ENVELOPE = Object.freeze({
+  maxRequests: 944,
   maxResponseBytes: MiB,
-  maxTotalBytes: 51 * MiB,
+  maxTotalBytes: 54 * MiB,
   requestTimeoutMs: 15_000,
   totalTimeoutMs: 240_000,
 });
@@ -13,7 +13,7 @@ export const W2_ENVELOPE = Object.freeze({
  * How the envelope is divided between readers. A larger pull request exhausts a share and ends
  * incomplete with a `budget` reason; no reader borrows from another.
  */
-export const W2_ALLOCATION = Object.freeze({
+export const EVIDENCE_READ_ALLOCATION = Object.freeze({
   // The snapshot covers C1's 128 excerpt files with their directories; freshness reads are
   // reserved separately so a heavy snapshot can never starve the checks that keep a result valid.
   transport: Object.freeze({
@@ -24,9 +24,10 @@ export const W2_ALLOCATION = Object.freeze({
   }),
   session: Object.freeze({ maxRequests: 160, maxTotalBytes: 12 * MiB }),
   registry: Object.freeze({ maxRequests: 64, maxTotalBytes: 4 * MiB }),
-  // Research reads scale with the group: measured at about 5 upstream, 2 advisory, and 1 each
-  // malware and publish-time request per extra package, so these cover a group of 32 packages.
-  upstream: Object.freeze({ maxRequests: 192, maxTotalBytes: 12 * MiB }),
+  // Research reads scale with the group: measured at about 7 upstream (5 GitHub plus 2 registry),
+  // 2 advisory, and 1 each malware and publish-time request per extra package, so these cover a
+  // group of 32 packages.
+  upstream: Object.freeze({ maxRequests: 240, maxTotalBytes: 15 * MiB }),
   advisory: Object.freeze({ maxRequests: 80, maxTotalBytes: 5 * MiB }),
   signals: Object.freeze({
     maxRequests: 176,

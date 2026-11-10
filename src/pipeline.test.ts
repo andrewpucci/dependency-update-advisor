@@ -903,3 +903,24 @@ test('hands a group too large to render off as a failure that says so, never as 
   });
   expect(sink.traces()[0]).toMatchObject({ gaps: [{ source: 'brief', reason: 'budget' }] });
 });
+
+test('starts no further public request once ownership is lost during a registry or research request', async () => {
+  const claims = createTestClaimStore();
+  const { input, publicCalls, modelCalls } = await setup({ claims, evidence: 'changes' });
+  const base = input.publicFetch;
+  let replaced = false;
+  const result = await runReview({
+    ...input,
+    publicFetch: async (url, init) => {
+      if (!replaced) {
+        replaced = true;
+        await claims.claim([101, 301, 402, 1, 42, NEXT]);
+      }
+      return base(url, init);
+    },
+  });
+  expect(result.kind).not.toBe('handed-off');
+  // Only the request in progress when ownership ended reached the network.
+  expect(publicCalls).toHaveLength(1);
+  expect(modelCalls).toEqual([]);
+});
