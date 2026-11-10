@@ -46,6 +46,15 @@ type Fragment = Readonly<{
   relationships: unknown;
 }>;
 
+type CollectedFragments =
+  | Readonly<{ kind: 'ready'; fragments: readonly Fragment[] }>
+  | Readonly<{ kind: 'incomplete'; gaps: readonly PacketGap[] }>
+  | Readonly<{ kind: 'stale' }>;
+type TrustedContext =
+  | Readonly<{ kind: 'ready'; trusted: Record<string, unknown> }>
+  | Readonly<{ kind: 'context-failure'; category: string }>
+  | Readonly<{ kind: 'internal-failure' | 'stale' }>;
+
 function fragment(value: unknown, ecosystem: Ecosystem): Fragment | null {
   if (
     !record(value, [
@@ -68,6 +77,45 @@ function fragment(value: unknown, ecosystem: Ecosystem): Fragment | null {
   return value as Fragment;
 }
 
+async function collectFragments<S extends Session>(
+  input: PacketAssemblyInput<S>,
+  session: S,
+): Promise<CollectedFragments> {
+  const fragments: Fragment[] = [];
+  for (const ecosystem of ['npm', 'actions', 'uv'] as const) {
+    if (!input.isCurrent()) return { kind: 'stale' };
+    const result = await input.collectors[ecosystem](session);
+    const value = fragment(result, ecosystem);
+    if (!value || !input.isCurrent())
+      return input.isCurrent()
+        ? { kind: 'incomplete', gaps: [{ source: ecosystem, reason: gapReason(result) }] }
+        : { kind: 'stale' };
+    fragments.push(value);
+  }
+  return { kind: 'ready', fragments };
+}
+
+async function collectTrustedContext<S extends Session>(
+  input: PacketAssemblyInput<S>,
+  fragments: readonly Fragment[],
+): Promise<TrustedContext> {
+  if (!record(input.trusted, ['binding', 'baseSha', 'contextRevision']))
+    return { kind: 'internal-failure' };
+  let trusted: Record<string, unknown> = input.trusted;
+  if (input.collectContext) {
+    const context = await input.collectContext(fragments.flatMap((item) => item.changes));
+    if (!input.isCurrent()) return { kind: 'stale' };
+    if (!record(context, ['ok'])) return { kind: 'internal-failure' };
+    if (context.ok !== true)
+      return {
+        kind: 'context-failure',
+        category: record(context.error, ['category']) ? String(context.error.category) : 'unknown',
+      };
+    trusted = { ...trusted, context };
+  } else if (!Object.hasOwn(trusted, 'context')) return { kind: 'internal-failure' };
+  return { kind: 'ready', trusted };
+}
+
 /** Owns one read session and delegates all structural acceptance to T4 validation. */
 export async function assembleReviewPacket<S extends Session>(
   input: PacketAssemblyInput<S>,
@@ -76,52 +124,31 @@ export async function assembleReviewPacket<S extends Session>(
   try {
     if (!input.isCurrent()) return { kind: 'stale' };
     session = await input.openSession();
-    const fragments: Fragment[] = [];
-    for (const ecosystem of ['npm', 'actions', 'uv'] as const) {
-      if (!input.isCurrent()) return { kind: 'stale' };
-      const result = await input.collectors[ecosystem](session);
-      const value = fragment(result, ecosystem);
-      if (!value || !input.isCurrent())
-        return input.isCurrent()
-          ? { kind: 'incomplete', gaps: [{ source: ecosystem, reason: gapReason(result) }] }
-          : { kind: 'stale' };
-      fragments.push(value);
-    }
-    if (!record(input.trusted, ['binding', 'baseSha', 'contextRevision']))
-      return { kind: 'internal-failure' };
-    let trusted: Record<string, unknown> = input.trusted;
-    if (input.collectContext) {
-      const context = await input.collectContext(fragments.flatMap((item) => item.changes));
-      if (!input.isCurrent()) return { kind: 'stale' };
-      if (!record(context, ['ok'])) return { kind: 'internal-failure' };
-      if (context.ok !== true)
-        return {
-          kind: 'context-failure',
-          category: record(context.error, ['category'])
-            ? String(context.error.category)
-            : 'unknown',
-        };
-      trusted = { ...trusted, context };
-    } else if (!Object.hasOwn(trusted, 'context')) return { kind: 'internal-failure' };
+    const collected = await collectFragments(input, session);
+    if (collected.kind !== 'ready') return collected;
+    const context = await collectTrustedContext(input, collected.fragments);
+    if (context.kind !== 'ready') return context;
     const packet = validateReviewPacket(
       {
         version: 1,
-        binding: input.trusted.binding,
-        baseSha: input.trusted.baseSha,
-        contextRevision: trusted.contextRevision,
-        context: trusted.context,
-        coverage: Object.fromEntries(fragments.map((item) => [item.ecosystem, item.coverage])),
-        changes: fragments.flatMap((item) => item.changes),
+        binding: context.trusted.binding,
+        baseSha: context.trusted.baseSha,
+        contextRevision: context.trusted.contextRevision,
+        context: context.trusted.context,
+        coverage: Object.fromEntries(
+          collected.fragments.map((item) => [item.ecosystem, item.coverage]),
+        ),
+        changes: collected.fragments.flatMap((item) => item.changes),
         sources: [
           ...(input.inventorySource === null || input.inventorySource === undefined
             ? []
             : [input.inventorySource]),
-          ...fragments.flatMap((item) => item.sources),
+          ...collected.fragments.flatMap((item) => item.sources),
         ],
-        findings: fragments.flatMap((item) => item.findings),
-        relationships: fragments.flatMap((item) => item.relationships),
+        findings: collected.fragments.flatMap((item) => item.findings),
+        relationships: collected.fragments.flatMap((item) => item.relationships),
       },
-      trusted,
+      context.trusted,
     );
     if (packet.ok) return { kind: 'ready', packet: packet.packet };
     return {
