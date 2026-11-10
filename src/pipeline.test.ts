@@ -120,7 +120,7 @@ function snapshot(
 
 type Overrides = Partial<PipelineInput> & {
   /** `changes` serves npm, Actions, and uv updates; the default repository has nothing changed. */
-  evidence?: 'unchanged' | 'changes' | 'uv-unsupported';
+  evidence?: 'unchanged' | 'changes' | 'vulnerable' | 'uv-unsupported';
   pullRequestHeads?: string[];
   runFails?: boolean;
   /** Freshness reads for the run fail from this call (0-based) onward. */
@@ -149,7 +149,10 @@ async function setup(overrides: Overrides = {}) {
   const sink = createRehearsalSink(null);
   if (!sink) throw new Error('sink');
   const kind = overrides.evidence ?? 'unchanged';
-  const changes = kind === 'changes' ? await upstreamScenario() : null;
+  const changes =
+    kind === 'changes' || kind === 'vulnerable'
+      ? await upstreamScenario({ vulnerableNpm: kind === 'vulnerable' })
+      : null;
   const evidence = uvMetadataScenario('empty', {
     files: kind === 'unchanged' ? { base: unchanged, head: unchanged } : {},
   });
@@ -663,4 +666,15 @@ test('wires the clock, model key, signal attempts, and npm inventory into resear
   );
   if (result.kind === 'handed-off')
     expect(result.body).toEqual(expect.stringContaining('Generated: 2026-11-07T00:00:00.000Z'));
+});
+
+test('renders a verified vulnerability as a reason not to merge instead of failing', async () => {
+  const { input } = await setup({ evidence: 'vulnerable' });
+  const result = await runReview(input);
+  expect(result.kind).toBe('handed-off');
+  if (result.kind !== 'handed-off') return;
+  expect(result.outcome).not.toBe('internal-failure');
+  expect(result.body).toEqual(expect.stringContaining('Reasons not to merge'));
+  expect(result.body).toEqual(expect.stringContaining('Remediation:'));
+  expect(result.body).toEqual(expect.stringContaining('Validation:'));
 });
