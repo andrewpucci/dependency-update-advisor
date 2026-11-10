@@ -94,9 +94,9 @@ context collection, grouping, or publication to make a fixture pass.
 
 The version-1 envelope has exactly `version`, `binding`, `baseSha`,
 `contextRevision`, `coverage`, `changes`, `sources`, `findings`,
-`relationships`, and `context`. All fields are required; empty arrays are
-explicit. Reject unknown fields at every level. Context opt-out is an explicit
-C2 disabled result, not omission or `null`.
+`relationships`, `reachability`, and `context`. All fields are required; empty
+arrays are explicit. Reject unknown fields at every level. Context opt-out is
+an explicit C2 disabled result, not omission or `null`.
 
 `binding`, `baseSha`, `contextRevision`, and `context` repeat values the
 trusted caller also supplies. The copies make an accepted packet
@@ -292,6 +292,7 @@ arrays, shorten identities, or delete findings to fit.
 | Complete serialized packet                                      | 1,048,576 UTF-8 bytes                                                              |
 | Changes                                                         | 128 total across all ecosystems; approved                                          |
 | Source records / findings / relationship proofs                 | 1,024 / 512 / 256 per packet                                                       |
+| Reachability verdicts                                           | 1,024 per packet (see the reachability amendment)                                  |
 | Relationship path                                               | 32 package instances per proof                                                     |
 | IDs and package names                                           | 1–256 UTF-16 code units, matching C2's existing bound                              |
 | Other identity strings, versions, refs, markers, paths, URLs    | 1,024 UTF-8 bytes each; shorter C2 limits still apply                              |
@@ -466,6 +467,34 @@ pass on one exact shared revision. Tests must also demonstrate that an invalid
 packet exposes nothing an assessment consumer can use. Unit tests do not
 certify collector completeness, graph grouping, provider projection, outbound
 disclosure, publication, consumer adoption, or cutover.
+
+## Reachability Amendment
+
+Approved for planning 2026-11-10 under
+[#93](https://github.com/andrewpucci/dependency-update-advisor/issues/93); the
+normative contract is the [reachability evidence spec](SPEC-reachability-evidence.md),
+and [ADR 0006](../adr/0006-amend-packet-v1-in-place-for-reachability.md)
+records the versioning decision. Implementation is tracked by #267.
+
+- The envelope gains one required field, `reachability`: a closed array of
+  per-pair verdicts (`ecosystem`, `side`, `sourceId`, `anchorId`, `memberId`
+  or `null`, `outcome`, `reasons`). The empty array is explicit and means no
+  absence evidence. A packet missing the field is rejected by the closed-field
+  rule; nothing is read as a complete graph.
+- Limit: 1,024 verdicts per packet. Overflow rejects the packet; collectors and
+  the packet assembler drop optional evidence first, never changes, sources,
+  findings, or a claimed anchor's proof. The 128-change, 256-proof, 32-instance,
+  and 1 MiB ceilings are unchanged.
+- Validation stays structural. Verdicts name known resolved changes in one
+  ecosystem and root, an anchor with role `direct` and a member with role
+  `transitive`, each with an instance on `side`; cite a lock source whose path
+  is the root's `package-lock.json` or `uv.lock`; reject duplicates keyed by
+  (side, anchor, member) whatever the source record, a scope record beside
+  pair records, `unreachable` with reasons or without a member, non-proving
+  outcomes without their required reasons, and an `unreachable` that conflicts
+  with a proof or is contradicted by a proof path through the anchor.
+- T4 does not read lockfiles and does not certify that a traversal was
+  exhaustive. That remains the authenticated collector's assertion.
 
 ## Commands
 

@@ -100,6 +100,9 @@ identity. It must preserve npm coverage separately in mixed npm/Actions PRs.
    unambiguous path in the immutable lockfile graph proves the relationship.
    Shared, orphaned, or ambiguous members stay separate unresolved decision
    units. A group retains its exact member count and coverage limits.
+   Grouping beyond one changed direct dependency per root follows the
+   [reachability evidence](SPEC-reachability-evidence.md) contract, approved
+   for planning 2026-11-10 under #93.
 6. Reconcile the inventory with GitHub's comparison and Dependabot text as
    untrusted corroboration. An empty response, omitted entry, endpoint 403,
    or rate limit does not delete a manifest or lockfile change. Distinguish

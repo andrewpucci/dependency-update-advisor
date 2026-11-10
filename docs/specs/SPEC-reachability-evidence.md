@@ -437,7 +437,8 @@ Confirmed with the user on 2026-11-09:
    both are on `main`.)
 9. An ADR records the in-place v1 amendment policy ("amend v1 in place until a
    consumer adopts it; absence evidence is asserted by the trusted collector").
-   It is written when the amendment PR lands, not as a placeholder now.
+   It is [ADR 0006](../adr/0006-amend-packet-v1-in-place-for-reachability.md),
+   written with the amendment PR.
 10. A removed direct candidate keeps blocking head-only members (additions), and
     an added direct candidate keeps blocking base-only members (removals),
     preserving the approved T5 rationale. Rename-style PRs stay standalone.

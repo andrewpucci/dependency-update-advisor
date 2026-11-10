@@ -1,6 +1,7 @@
 # Spec: N2 Proven npm Relationships and Lifecycle Evidence
 
-Status: implemented on `issue-15`, pending review and merge.
+Status: implemented and on `main`; the reachability amendment below is
+approved for planning.
 Supporting contract for `npm-evidence` in [the capability map](README.md),
 scoped to
 [issue #15: N2](https://github.com/andrewpucci/dependency-update-advisor/issues/15).
@@ -385,6 +386,27 @@ already used by both endpoints; endpoints with different source IDs remain
 unproven under the current contract. No source identity or membership limit
 is rewritten to enable grouping. General research, assessment/rendering,
 workflow publication, adoption, and cutover remain separate gates.
+
+## Reachability Amendment
+
+Approved for planning 2026-11-10 under
+[#93](https://github.com/andrewpucci/dependency-update-advisor/issues/93); the
+normative contract is the [reachability evidence spec](SPEC-reachability-evidence.md).
+Implementation is tracked by #270 and #271. Eligibility items 1 and 4 above
+describe the initial single-anchor rule; with `reachability` evidence N2
+instead:
+
+- traverses each changed direct anchor's exact-instance closure per side and
+  emits `unreachable` only after a complete, uninterrupted traversal in which
+  every skipped edge was classified; a zero- or several-candidate resolution,
+  an unresolved chain position, or an unsupported edge (peer-only, link,
+  workspace, override, shrinkwrap) makes the verdict `unknown` or
+  `unsupported`, never absence;
+- emits pair verdicts only for a member with exactly one reachable candidate,
+  at most two proofs for a member with several, and a scope record for each
+  unfinished anchor and side;
+- returns that evidence tagged as optional, so `packetBounds` no longer fails
+  the whole result for it; the packet assembler owns the drop order.
 
 ## Commands
 

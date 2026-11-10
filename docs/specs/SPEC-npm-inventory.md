@@ -380,6 +380,18 @@ belongs to [task #131](https://github.com/andrewpucci/dependency-update-advisor/
 and the PR. N2, research, M2/O1, W1/W2, disclosure, adoption, and cutover remain
 separate; the old reviewer stays active.
 
+## Role Amendment for Reachability
+
+Approved for planning 2026-11-10 under
+[#93](https://github.com/andrewpucci/dependency-update-advisor/issues/93); see
+the [reachability evidence spec](SPEC-reachability-evidence.md). Implementation
+is tracked by #269. N1 classifies an update's role from its head side only, so
+a package that is direct on base and installed only transitively on head is
+reported `transitive` and vanishes from the base-side candidate set. An update
+whose base and head roles conflict, in either direction, becomes `unknown` with
+a `conflict` coverage reason, matching uv. An `unknown` role in a root blocks
+grouping there until proven. Declaration-only changes remain non-candidates.
+
 ## Commands
 
 For documentation-only changes:
