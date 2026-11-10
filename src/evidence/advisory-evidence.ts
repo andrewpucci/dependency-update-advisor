@@ -127,9 +127,29 @@ function finding(
     rationale: record.withdrawn
       ? 'The cited advisory was withdrawn.'
       : 'The cited reviewed advisory affects the exact proposed target.',
-    remediation: [],
-    validation: [],
+    remediation: remediation(change, record),
+    validation: [
+      record.withdrawn
+        ? 'Confirm the advisory is still withdrawn when the review is re-run.'
+        : 'Re-run CI and the advisory lookup on the changed version and confirm this advisory no longer applies.',
+    ],
   };
+}
+/** The steps are generic by design: they name the package and range, never a guessed fixed version. */
+function remediation(change: PacketChange, record: AdvisoryRecord): string[] {
+  const instance = change.to ?? change.from;
+  const name =
+    instance && 'name' in instance
+      ? instance.name
+      : instance && 'action' in instance
+        ? instance.action
+        : 'the dependency';
+  if (record.withdrawn)
+    return [`No change is needed for ${name}; the cited advisory was withdrawn.`];
+  const range = record.range ? ` (${record.range})` : '';
+  return [
+    `Use a version of ${name} outside the affected range${range}, or keep the current version.`,
+  ];
 }
 export type SideResult = {
   target: AdvisoryTarget | null;

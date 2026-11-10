@@ -36,6 +36,8 @@ const REASONS = [
   'conflict',
   'unknown',
 ] as const;
+/** The fixed set of reasons a source of evidence can be unavailable for. */
+export const EVIDENCE_REASONS: readonly EvidenceReason[] = REASONS;
 export type Ecosystem = (typeof ECOSYSTEMS)[number];
 export type EvidenceReason = (typeof REASONS)[number];
 export type EvidenceStatus = 'available' | 'partial' | 'unavailable';

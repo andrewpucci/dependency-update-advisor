@@ -2,7 +2,7 @@ import fs from 'node:fs/promises';
 import { isAbsolute, join, relative, sep } from 'node:path';
 
 const CONFIG_FILE = '.github/dependabot-review.json';
-const MAX_CONFIG_BYTES = 16_384;
+export const MAX_CONFIG_BYTES = 16_384;
 const VERDICTS = ['merge', 'merge_with_followups', 'do_not_merge'] as const;
 
 export type Verdict = (typeof VERDICTS)[number];

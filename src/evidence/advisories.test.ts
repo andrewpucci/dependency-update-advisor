@@ -132,6 +132,12 @@ test.each([true, false])(
     expect(output.kind).toBe('enriched');
     if (output.kind !== 'enriched') throw new Error('expected evidence');
     expect(output.findings).toHaveLength(positive ? 1 : 0);
+    // The review renderer refuses a blocking finding that names no remediation or validation step.
+    for (const finding of output.findings) {
+      expect(finding.remediation.length).toBeGreaterThan(0);
+      expect(finding.validation.length).toBeGreaterThan(0);
+      expect(finding.remediation.join(' ')).toContain('fixture-anchor');
+    }
     expect(output.changes.every((c) => c.evidence.vulnerability.status === 'available')).toBe(true);
     expect(inventory.changes.every((c) => c.evidence.vulnerability.status === 'unavailable')).toBe(
       true,

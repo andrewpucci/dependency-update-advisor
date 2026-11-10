@@ -72,6 +72,9 @@ gaps and an introduced vulnerability before parity is claimed.
 - [Bounded source context](SPEC-source-context.md) — approved for C2 execution
   in `review-config`, scoped to issue #6; implemented on `main`, with
   [verification evidence](https://github.com/andrewpucci/dependency-update-advisor/issues/47).
+- [Trusted Dependabot roots](SPEC-dependabot-roots.md) — C4 in
+  `review-config`, approved for planning 2026-11-08; supplies W2's trusted npm
+  and uv roots.
 - [Advisory policy rules and overrides](SPEC-advisory-policy.md) — implemented
   on `main` in `review-config` for C3 #7; [verification and integration limits](https://github.com/andrewpucci/dependency-update-advisor/issues/52)
   remain separate from downstream collector, provider, renderer, and workflow gates.
@@ -224,6 +227,11 @@ gaps and an introduced vulnerability before parity is claimed.
   entry, named secrets, minimum permissions, `$/` action resolution, and no PR
   checkout, artifact, or cache. Transport, pagination, identity, and claim
   obligations that other specs assign to W1 are handed to W2 #26.
+- [Review orchestration](SPEC-review-orchestration.md) — approved for planning
+  supporting contract for W2 #26 in `shared-review`, after the user approved
+  its capability map and specification on 2026-11-08. It scopes the no-write,
+  injected-claim-store coordinator; separate drafts will cover publication,
+  shared PyPI release observations (#209), and bounded-reader consolidation.
 - [Advisory complexity review](SPEC-complexity-review.md) — user-requested
   supporting repository tooling contract; implemented and merged into `main`
   in [PR #65](https://github.com/andrewpucci/dependency-update-advisor/pull/65).

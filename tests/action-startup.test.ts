@@ -70,18 +70,14 @@ test('shipped layout has no installed dependencies', () => {
 
 test('starts on Node.js 24 without a TypeScript loader or installed dependencies', () => {
   const result = start();
-  expect(result.stderr).toBe(
-    'dependabot-review: review orchestration is not wired; no review ran.\n',
-  );
+  expect(result.stderr).toBe('dependabot-review: runtime configuration invalid; no review ran.\n');
   expect(result.stdout).toBe('');
   expect(result.status).toBe(78);
 });
 
 test('starts with filesystem reads limited to the checkout and never prints environment secrets', () => {
   const result = start(['--permission', `--allow-fs-read=${shipped}`]);
-  expect(result.stderr).toBe(
-    'dependabot-review: review orchestration is not wired; no review ran.\n',
-  );
+  expect(result.stderr).toBe('dependabot-review: runtime configuration invalid; no review ran.\n');
   expect(result.status).toBe(78);
   expect(result.stdout + result.stderr).not.toContain(sentinel);
 });
