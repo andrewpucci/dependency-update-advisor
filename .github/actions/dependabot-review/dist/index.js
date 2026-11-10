@@ -22207,9 +22207,9 @@ async function reviewPacket(input) {
 const MiB = 1048576;
 /** Bounds for all pre-analysis evidence reads. Time is shared; every reader gets what remains. */
 const W2_ENVELOPE = Object.freeze({
-	maxRequests: 672,
+	maxRequests: 896,
 	maxResponseBytes: MiB,
-	maxTotalBytes: 40 * MiB,
+	maxTotalBytes: 51 * MiB,
 	requestTimeoutMs: 15e3,
 	totalTimeoutMs: 24e4
 });
@@ -22239,16 +22239,38 @@ const W2_ALLOCATION = Object.freeze({
 		maxTotalBytes: 4 * MiB
 	}),
 	upstream: Object.freeze({
-		maxRequests: 96,
-		maxTotalBytes: 6 * MiB
+		maxRequests: 192,
+		maxTotalBytes: 12 * MiB
 	}),
 	advisory: Object.freeze({
-		maxRequests: 64,
-		maxTotalBytes: 4 * MiB
+		maxRequests: 80,
+		maxTotalBytes: 5 * MiB
 	}),
 	signals: Object.freeze({
-		maxRequests: 64,
-		maxTotalBytes: 2 * MiB
+		maxRequests: 176,
+		maxTotalBytes: 6 * MiB,
+		readers: Object.freeze({
+			malware: Object.freeze({
+				maxRequests: 40,
+				maxTotalBytes: 1.5 * MiB
+			}),
+			publishTimes: Object.freeze({
+				maxRequests: 40,
+				maxTotalBytes: 1.5 * MiB
+			}),
+			registry: Object.freeze({
+				maxRequests: 64,
+				maxTotalBytes: 2 * MiB
+			}),
+			metadata: Object.freeze({
+				maxRequests: 16,
+				maxTotalBytes: .5 * MiB
+			}),
+			upstream: Object.freeze({
+				maxRequests: 16,
+				maxTotalBytes: .5 * MiB
+			})
+		})
 	})
 });
 
@@ -28067,15 +28089,14 @@ function createPolicySignalReader(value, dependencies) {
 const MAX_JSON_ENTRIES = 2e5;
 const MAX_JSON_DEPTH = 32;
 const MAX_RETAINED_BYTES = 2e6;
-const SIGNAL_READERS = 5;
 function remaining(input) {
 	return Math.max(1, Math.min(W2_ENVELOPE.totalTimeoutMs, Math.floor(input.deadline - input.now())));
 }
-function limits(share, input, parts = 1) {
-	const maxTotalBytes = Math.floor(share.maxTotalBytes / parts);
+function limits(share, input) {
+	const { maxRequests, maxTotalBytes } = share;
 	return {
-		maxRequests: Math.floor(share.maxRequests / parts),
-		maxPages: Math.floor(share.maxRequests / parts),
+		maxRequests,
+		maxPages: maxRequests,
 		maxTagCandidates: 100,
 		maxTagDepth: 10,
 		maxResponseBytes: Math.min(W2_ENVELOPE.maxResponseBytes, maxTotalBytes),
@@ -28164,12 +28185,13 @@ async function runResearch(input) {
 			};
 			else fail("advisories", failure(advisories));
 		} else fail("advisories", "malformed");
-		const signalLimits = limits(W2_ALLOCATION.signals, input, SIGNAL_READERS);
-		const malware = createMalwareReader(signalLimits, dependencies);
-		const registry = createNpmRegistryReader(signalLimits, dependencies);
-		const times = createNpmPublishTimeReader(signalLimits, dependencies);
-		const metadata = createPolicySignalReader(signalLimits, dependencies);
-		const research = createUpstreamReader(signalLimits, dependencies);
+		const signalLimits = limits(W2_ALLOCATION.signals, input);
+		const { readers: shares } = W2_ALLOCATION.signals;
+		const malware = createMalwareReader(limits(shares.malware, input), dependencies);
+		const registry = createNpmRegistryReader(limits(shares.registry, input), dependencies);
+		const times = createNpmPublishTimeReader(limits(shares.publishTimes, input), dependencies);
+		const metadata = createPolicySignalReader(limits(shares.metadata, input), dependencies);
+		const research = createUpstreamReader(limits(shares.upstream, input), dependencies);
 		for (const opened of [
 			malware,
 			times,

@@ -45,8 +45,6 @@ export type ResearchResult =
 const MAX_JSON_ENTRIES = 200_000;
 const MAX_JSON_DEPTH = 32;
 const MAX_RETAINED_BYTES = 2_000_000;
-// S3 drives five independent readers; its share is divided evenly between them.
-const SIGNAL_READERS = 5;
 
 function remaining(input: Pick<ResearchInput, 'now' | 'deadline'>): number {
   return Math.max(
@@ -58,12 +56,11 @@ function remaining(input: Pick<ResearchInput, 'now' | 'deadline'>): number {
 function limits(
   share: { maxRequests: number; maxTotalBytes: number },
   input: Pick<ResearchInput, 'now' | 'deadline'>,
-  parts = 1,
 ) {
-  const maxTotalBytes = Math.floor(share.maxTotalBytes / parts);
+  const { maxRequests, maxTotalBytes } = share;
   return {
-    maxRequests: Math.floor(share.maxRequests / parts),
-    maxPages: Math.floor(share.maxRequests / parts),
+    maxRequests,
+    maxPages: maxRequests,
     maxTagCandidates: 100,
     maxTagDepth: 10,
     maxResponseBytes: Math.min(W2_ENVELOPE.maxResponseBytes, maxTotalBytes),
@@ -160,12 +157,14 @@ export async function runResearch(input: ResearchInput): Promise<ResearchResult>
       else fail('advisories', failure(advisories));
     } else fail('advisories', 'malformed');
 
-    const signalLimits = limits(W2_ALLOCATION.signals, input, SIGNAL_READERS);
-    const malware = createMalwareReader(signalLimits, dependencies);
-    const registry = createNpmRegistryReader(signalLimits, dependencies);
-    const times = createNpmPublishTimeReader(signalLimits, dependencies);
-    const metadata = createPolicySignalReader(signalLimits, dependencies);
-    const research = createUpstreamReader(signalLimits, dependencies);
+    // S3 drives five independent readers, each with its own share of the signals allocation.
+    const signalLimits = limits(W2_ALLOCATION.signals, input);
+    const { readers: shares } = W2_ALLOCATION.signals;
+    const malware = createMalwareReader(limits(shares.malware, input), dependencies);
+    const registry = createNpmRegistryReader(limits(shares.registry, input), dependencies);
+    const times = createNpmPublishTimeReader(limits(shares.publishTimes, input), dependencies);
+    const metadata = createPolicySignalReader(limits(shares.metadata, input), dependencies);
+    const research = createUpstreamReader(limits(shares.upstream, input), dependencies);
     // The npm registry reader holds no timers or listeners, so it has nothing to close.
     for (const opened of [malware, times, metadata])
       if (opened.kind === 'ready') readers.push(opened);

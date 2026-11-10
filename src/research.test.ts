@@ -6,6 +6,7 @@ import * as publishTimesModule from './evidence/npm-publish-times.js';
 import * as signalReadModule from './evidence/policy-signals-read.js';
 import * as advisoryReadModule from './evidence/advisory-read.js';
 import * as upstreamReadModule from './evidence/upstream-read.js';
+import { W2_ALLOCATION, W2_ENVELOPE } from './budget.js';
 import { runResearch } from './research.js';
 import * as schemaModule from './schema.js';
 import { validateReviewPacket } from './schema.js';
@@ -123,29 +124,10 @@ test('feeds upstream proofs to advisory lookup and signals, and returns a revali
   expect(result.signalAttempts.length).toBeGreaterThan(0);
 });
 
-test('gives each reader its share of the envelope and closes every one', async () => {
+test('closes every reader it opened', async () => {
   const { fixture, packet } = await scenario();
   closed.length = 0;
-  vi.mocked(upstreamReadModule.createUpstreamReader).mockClear();
-  vi.mocked(advisoryReadModule.createAdvisoryReader).mockClear();
-  vi.mocked(advisoryReadModule.createMalwareReader).mockClear();
   await runResearch(base(fixture, packet));
-  const MiB = 1024 * 1024;
-  const [upstream, signalUpstream] = vi
-    .mocked(upstreamReadModule.createUpstreamReader)
-    .mock.calls.map(([limits]) => limits as { maxRequests: number; maxTotalBytes: number });
-  expect(upstream).toMatchObject({ maxRequests: 96, maxTotalBytes: 6 * MiB });
-  expect(signalUpstream).toMatchObject({
-    maxRequests: 12,
-    maxTotalBytes: Math.floor((2 * MiB) / 5),
-  });
-  expect(vi.mocked(advisoryReadModule.createAdvisoryReader).mock.calls[0][0]).toMatchObject({
-    maxRequests: 64,
-    maxTotalBytes: 4 * MiB,
-  });
-  expect(vi.mocked(advisoryReadModule.createMalwareReader).mock.calls[0][0]).toMatchObject({
-    maxRequests: 12,
-  });
   expect(closed.sort()).toEqual(['advisory', 'malware', 'upstream', 'upstream']);
 });
 
@@ -221,42 +203,45 @@ test('caps every reader at its share, so the readers together stay inside the en
   await runResearch(base(fixture, packet));
   const MiB = 1024 * 1024;
   type Limits = { maxRequests: number; maxTotalBytes: number; maxResponseBytes: number };
-  const limits = (mock: unknown) =>
+  const calls = (mock: unknown) =>
     vi.mocked(mock as (value: unknown) => unknown).mock.calls.map(([value]) => value as Limits);
-  const upstream = limits(upstreamReadModule.createUpstreamReader);
-  const advisory = limits(advisoryReadModule.createAdvisoryReader);
-  const signal = [
-    ...limits(upstreamReadModule.createUpstreamReader).slice(1),
-    ...limits(advisoryReadModule.createMalwareReader),
-    // Each S2 reader builds an inner registry reader through its own bounded fetch, so the calls are
-    // [S2 inner, S3 registry, S3 upstream inner]; only the middle one is ours.
-    ...limits(npmRegistryModule.createNpmRegistryReader).slice(1, 2),
-    ...limits(publishTimesModule.createNpmPublishTimeReader),
-    ...limits(signalReadModule.createPolicySignalReader),
-  ];
+  const upstream = calls(upstreamReadModule.createUpstreamReader);
+  const advisory = calls(advisoryReadModule.createAdvisoryReader);
+  // Each S2 reader builds an inner registry reader through its own bounded fetch, so the registry
+  // calls are [S2 inner, S3 registry, S3 upstream inner]; only the middle one is ours.
+  const registry = calls(npmRegistryModule.createNpmRegistryReader);
   expect(upstream).toHaveLength(2);
   expect(advisory).toHaveLength(1);
-  expect(signal).toHaveLength(5);
-  const shareBytes = Math.floor((2 * MiB) / 5);
-  for (const each of signal)
-    expect(each).toMatchObject({
-      maxRequests: 12,
-      maxTotalBytes: shareBytes,
-      maxResponseBytes: Math.min(MiB, shareBytes),
+  const { readers } = W2_ALLOCATION.signals;
+  const expected = [
+    ['S2 upstream', upstream[0], W2_ALLOCATION.upstream],
+    ['advisory', advisory[0], W2_ALLOCATION.advisory],
+    ['malware', calls(advisoryReadModule.createMalwareReader)[0], readers.malware],
+    ['npm registry', registry[1], readers.registry],
+    [
+      'publish times',
+      calls(publishTimesModule.createNpmPublishTimeReader)[0],
+      readers.publishTimes,
+    ],
+    ['metadata', calls(signalReadModule.createPolicySignalReader)[0], readers.metadata],
+    ['S3 upstream', upstream[1], readers.upstream],
+  ] as const;
+  for (const [name, actual, share] of expected)
+    expect(actual, name).toMatchObject({
+      maxRequests: share.maxRequests,
+      maxTotalBytes: share.maxTotalBytes,
+      maxResponseBytes: Math.min(MiB, share.maxTotalBytes),
     });
-  expect(upstream[0]).toMatchObject({ maxRequests: 96, maxResponseBytes: MiB });
-  expect(advisory[0]).toMatchObject({ maxRequests: 64, maxResponseBytes: MiB });
-  const requests = [upstream[0], advisory[0], ...signal].reduce(
-    (sum, each) => sum + each.maxRequests,
-    0,
+  const used = expected.reduce((sum, [, actual]) => sum + actual.maxRequests, 0);
+  const bytes = expected.reduce((sum, [, actual]) => sum + actual.maxTotalBytes, 0);
+  // The transport, evidence session, and registry shares hold the rest of the envelope.
+  const others = [W2_ALLOCATION.transport, W2_ALLOCATION.session, W2_ALLOCATION.registry];
+  expect(used + others.reduce((sum, share) => sum + share.maxRequests, 0)).toBe(
+    W2_ENVELOPE.maxRequests,
   );
-  const bytes = [upstream[0], advisory[0], ...signal].reduce(
-    (sum, each) => sum + each.maxTotalBytes,
-    0,
+  expect(bytes + others.reduce((sum, share) => sum + share.maxTotalBytes, 0)).toBe(
+    W2_ENVELOPE.maxTotalBytes,
   );
-  // Transport (64), evidence session (160), and registry (64) hold the rest of 512 and 32 MiB.
-  expect(requests).toBeLessThanOrEqual(512 - 64 - 160 - 64);
-  expect(bytes).toBeLessThanOrEqual(32 * MiB - 4 * MiB - 12 * MiB - 4 * MiB);
 });
 
 test('reports an internal failure rather than a research result when a reader throws', async () => {
@@ -293,4 +278,32 @@ test('still runs, with request timeouts no longer than the time left, near the d
     expect(limits.totalTimeoutMs).toBe(5_000);
     expect(limits.requestTimeoutMs).toBeLessThanOrEqual(limits.totalTimeoutMs);
   }
+});
+
+test('researches a group of 32 changed packages without exhausting any reader', async () => {
+  // One npm anchor, one Action, one uv package, and 29 npm children.
+  const { fixture, packet } = await scenario({ children: 29 } as never);
+  expect(packet.changes.length).toBe(32);
+  const counts: Record<string, number> = {};
+  const bump = (key: string) => (counts[key] = (counts[key] ?? 0) + 1);
+  const result = await runResearch({
+    ...base(fixture, packet),
+    fetch: async (url, init) => {
+      const target = new URL(url);
+      if (target.pathname.startsWith('/advisories'))
+        bump(target.searchParams.get('type') === 'malware' ? 'malware' : 'advisory');
+      return fixture.fetch(url, init);
+    },
+  });
+  expect(result.kind).toBe('ready');
+  if (result.kind !== 'ready') return;
+  expect(result.unavailable).toEqual([]);
+  // Every package was looked up, and none was cut short by a share running out.
+  const { readers } = W2_ALLOCATION.signals;
+  expect(counts.malware).toBeGreaterThan(25);
+  expect(counts.malware).toBeLessThanOrEqual(readers.malware.maxRequests);
+  expect(counts.advisory).toBeGreaterThan(50);
+  expect(counts.advisory).toBeLessThanOrEqual(W2_ALLOCATION.advisory.maxRequests);
+  expect(JSON.stringify(result.packet.changes)).not.toContain('"reasons":["budget"]');
+  expect(JSON.stringify(result.packet.sources)).not.toContain('"reasons":["budget"]');
 });

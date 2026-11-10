@@ -5,9 +5,9 @@ const MiB = 1024 * 1024;
 
 test('records the W2 evidence envelope', () => {
   expect(W2_ENVELOPE).toEqual({
-    maxRequests: 672,
+    maxRequests: 896,
     maxResponseBytes: MiB,
-    maxTotalBytes: 40 * MiB,
+    maxTotalBytes: 51 * MiB,
     requestTimeoutMs: 15_000,
     totalTimeoutMs: 240_000,
   });
@@ -23,9 +23,19 @@ test('splits the envelope with nothing unallocated or over-allocated', () => {
     },
     session: { maxRequests: 160, maxTotalBytes: 12 * MiB },
     registry: { maxRequests: 64, maxTotalBytes: 4 * MiB },
-    upstream: { maxRequests: 96, maxTotalBytes: 6 * MiB },
-    advisory: { maxRequests: 64, maxTotalBytes: 4 * MiB },
-    signals: { maxRequests: 64, maxTotalBytes: 2 * MiB },
+    upstream: { maxRequests: 192, maxTotalBytes: 12 * MiB },
+    advisory: { maxRequests: 80, maxTotalBytes: 5 * MiB },
+    signals: {
+      maxRequests: 176,
+      maxTotalBytes: 6 * MiB,
+      readers: {
+        malware: { maxRequests: 40, maxTotalBytes: 1.5 * MiB },
+        publishTimes: { maxRequests: 40, maxTotalBytes: 1.5 * MiB },
+        registry: { maxRequests: 64, maxTotalBytes: 2 * MiB },
+        metadata: { maxRequests: 16, maxTotalBytes: 0.5 * MiB },
+        upstream: { maxRequests: 16, maxTotalBytes: 0.5 * MiB },
+      },
+    },
   });
   const shares = Object.values(W2_ALLOCATION);
   expect(shares.reduce((sum, share) => sum + share.maxRequests, 0)).toBe(W2_ENVELOPE.maxRequests);
@@ -41,5 +51,15 @@ test('divides the transport share exactly between snapshot reads and freshness r
   );
   expect(transport.snapshot.maxTotalBytes + transport.freshness.maxTotalBytes).toBe(
     transport.maxTotalBytes,
+  );
+});
+
+test('divides the signals share exactly between its five readers', () => {
+  const { signals } = W2_ALLOCATION;
+  const readers = Object.values(signals.readers);
+  expect(readers).toHaveLength(5);
+  expect(readers.reduce((sum, reader) => sum + reader.maxRequests, 0)).toBe(signals.maxRequests);
+  expect(readers.reduce((sum, reader) => sum + reader.maxTotalBytes, 0)).toBe(
+    signals.maxTotalBytes,
   );
 });
