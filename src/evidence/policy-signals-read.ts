@@ -100,6 +100,7 @@ class MetadataReader {
   private stopped: EvidenceReason | null = null;
   private busy = false;
   private cache = new Map<string, MetadataRead>();
+  private pending = new Map<string, Promise<MetadataRead>>();
   constructor(
     readonly limits: PublishTimeLimits,
     private deps: BoundedDependencies,
@@ -109,6 +110,9 @@ class MetadataReader {
   close() {
     this.stopped = 'unknown';
     this.active?.();
+    this.cache.clear();
+    this.pending.clear();
+    this.retained = 0;
   }
   private remaining() {
     return this.clock.remaining(this.stopped);
@@ -206,35 +210,45 @@ class MetadataReader {
     );
   }
   async read(value: unknown): Promise<MetadataRead> {
-    if (this.busy) return { kind: 'unavailable', reason: 'conflict' };
-    this.busy = true;
     try {
       this.remaining();
       const { query, url } = metadataUrl(value);
       const old = this.cache.get(url);
       if (old) return old;
-      let result: MetadataRead;
+      const inFlight = this.pending.get(url);
+      if (inFlight) return inFlight;
+      if (this.busy) return { kind: 'unavailable', reason: 'conflict' };
+      this.busy = true;
+      const pending = this.readFresh(query, url);
+      this.pending.set(url, pending);
       try {
-        result = await this.fetch(query, url);
-      } catch (error) {
-        result = {
-          kind: 'unavailable',
-          reason: error instanceof AdvisoryFailure ? error.reason : 'unknown',
-        };
+        return await pending;
+      } finally {
+        this.pending.delete(url);
+        this.busy = false;
       }
-      const size = Buffer.byteLength(url) + Buffer.byteLength(JSON.stringify(result));
-      advisoryCheck(this.retained + size <= this.limits.maxRetainedBytes, 'budget');
-      this.retained += size;
-      this.cache.set(url, result);
-      return result;
     } catch (error) {
       return {
         kind: 'unavailable',
         reason: error instanceof AdvisoryFailure ? error.reason : 'unsupported',
       };
-    } finally {
-      this.busy = false;
     }
+  }
+  private async readFresh(query: MetadataQuery, url: string): Promise<MetadataRead> {
+    let result: MetadataRead;
+    try {
+      result = await this.fetch(query, url);
+    } catch (error) {
+      result = {
+        kind: 'unavailable',
+        reason: error instanceof AdvisoryFailure ? error.reason : 'unknown',
+      };
+    }
+    const size = Buffer.byteLength(url) + Buffer.byteLength(JSON.stringify(result));
+    advisoryCheck(this.retained + size <= this.limits.maxRetainedBytes, 'budget');
+    this.retained += size;
+    this.cache.set(url, result);
+    return result;
   }
 }
 export function createPolicySignalReader(

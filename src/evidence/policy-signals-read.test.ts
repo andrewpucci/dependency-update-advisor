@@ -108,6 +108,24 @@ test('constructs exact public metadata routes, bounds JSON, and never forwards c
   expect(requests).toBe(1);
   r.close();
 });
+test('coalesces identical in-flight release reads into one immutable result', async () => {
+  let resolve: ((response: Response) => void) | undefined;
+  const fetch = vi.fn(
+    () =>
+      new Promise<Response>((done) => {
+        resolve = done;
+      }),
+  );
+  const r = createPolicySignalReader(limits, { now: () => 0, fetch });
+  if (r.kind !== 'ready') throw new Error('reader');
+  const first = r.read(query);
+  await Promise.resolve();
+  const second = r.read(query);
+  expect(fetch).toHaveBeenCalledTimes(1);
+  resolve?.(Response.json({ info: { name: query.name, version: query.version }, urls: [] }));
+  await expect(first).resolves.toEqual(await second);
+  r.close();
+});
 test.each([
   [403, 'permission'],
   [429, 'rate_limit'],
