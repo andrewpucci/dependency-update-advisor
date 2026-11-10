@@ -11105,13 +11105,17 @@ async function boundedGet(deps, request, onCancel, consume) {
 	const timer = setTimeout(() => stop("timeout"), request.timeoutMs);
 	let response;
 	try {
-		response = await Promise.race([deps.fetch(request.url, {
+		const pending = deps.fetch(request.url, {
 			method: "GET",
 			redirect: "manual",
 			credentials: "omit",
 			headers: { accept: request.accept },
 			signal: controller.signal
-		}), aborted]);
+		});
+		pending.then((late) => {
+			if (controller.signal.aborted && late.body && !late.body.locked) late.body.cancel().catch(() => {});
+		}, () => {});
+		response = await Promise.race([pending, aborted]);
 		return await consume(response, aborted);
 	} finally {
 		clearTimeout(timer);
@@ -12499,7 +12503,7 @@ function freeze$2(value) {
 	return value;
 }
 /** Node clamps oversized delays; schedule long caller deadlines in platform-sized intervals. */
-function timer$1(duration, expire) {
+function timer(duration, expire) {
 	let remaining = duration, handle;
 	const schedule = () => {
 		const interval = Math.min(remaining, 2 ** 31 - 1);
@@ -12636,7 +12640,7 @@ var RegistryReader = class {
 			this.stopped = "unknown";
 			stop("unknown");
 		};
-		const clear = timer$1(duration, () => stop("timeout"));
+		const clear = timer(duration, () => stop("timeout"));
 		this.deps.signal?.addEventListener("abort", cancel, { once: true });
 		const url = `https://registry.npmjs.org/${encodeURIComponent(r.name)}/${encodeURIComponent(r.version)}`;
 		let response;
@@ -12891,9 +12895,6 @@ var UpstreamFailure = class extends Error {
 		this.reason = reason;
 	}
 };
-function cancelUnusedBody(response) {
-	if (response?.body && !response.body.locked) response.body.cancel().catch(() => {});
-}
 function upstreamFailureReason(error) {
 	return error instanceof UpstreamFailure || error instanceof AdvisoryFailure ? error.reason : "malformed";
 }
@@ -12930,19 +12931,6 @@ function upstreamCopy(value, limits, work = { entries: 0 }) {
 		...limits,
 		maxFindings: 1
 	}, work);
-}
-function timer(ms, expire) {
-	let remaining = ms, handle;
-	const schedule = () => {
-		const part = Math.min(remaining, 2 ** 31 - 1);
-		handle = setTimeout(() => {
-			remaining -= part;
-			if (remaining > 0) schedule();
-			else expire();
-		}, part);
-	};
-	schedule();
-	return () => clearTimeout(handle);
 }
 function httpReason$2(response, bytes) {
 	let message = "";
@@ -13029,13 +13017,13 @@ var Reader = class {
 	requests = 0;
 	bytes = 0;
 	work = { entries: 0 };
-	last;
-	start;
+	clock;
 	closed = false;
 	busy = false;
 	stopped = null;
 	networkReason = null;
 	controller = new AbortController();
+	active = null;
 	blocked = /* @__PURE__ */ new Set();
 	cache = /* @__PURE__ */ new Map();
 	cacheSizes = /* @__PURE__ */ new Map();
@@ -13049,8 +13037,7 @@ var Reader = class {
 	constructor(limits, deps) {
 		this.limits = limits;
 		this.deps = deps;
-		this.start = this.last = deps.now();
-		requireUpstream(Number.isFinite(this.start));
+		this.clock = new BoundedClock(limits.totalTimeoutMs, deps);
 		this.npm = createNpmRegistryReader(limits, {
 			now: deps.now,
 			signal: this.controller.signal,
@@ -13060,6 +13047,7 @@ var Reader = class {
 	}
 	close() {
 		this.closed = true;
+		this.active?.();
 		this.controller.abort();
 		this.cache.clear();
 		this.cacheSizes.clear();
@@ -13100,13 +13088,13 @@ var Reader = class {
 	remaining() {
 		requireUpstream(!this.closed && !this.deps.signal?.aborted, "unknown");
 		requireUpstream(!this.stopped, this.stopped ?? "unknown");
-		const now = this.deps.now();
-		requireUpstream(Number.isFinite(now) && now >= this.last, "unknown");
-		this.last = now;
-		const left = this.limits.totalTimeoutMs - (now - this.start);
-		if (left <= 0) this.stopped = "timeout";
-		requireUpstream(left > 0, "timeout");
-		return left;
+		try {
+			return this.clock.remaining(this.stopped);
+		} catch (error) {
+			const reason = upstreamFailureReason(error);
+			if (reason === "timeout") this.stopped = reason;
+			throw new UpstreamFailure(reason);
+		}
 	}
 	dispatch(url) {
 		this.remaining();
@@ -13131,7 +13119,7 @@ var Reader = class {
 				chunks.push(chunk.value);
 			}
 		} catch (error) {
-			if (error instanceof UpstreamFailure) throw error;
+			if (error instanceof UpstreamFailure || error instanceof AdvisoryFailure) throw error;
 			throw new UpstreamFailure(size ? "truncated" : "unknown");
 		} finally {
 			reader.cancel().catch(() => {});
@@ -13140,62 +13128,36 @@ var Reader = class {
 	}
 	async fetchBounded(url, _init) {
 		this.dispatch(url);
-		const controller = new AbortController();
-		let reject = () => {};
-		const aborted = new Promise((_, no) => {
-			reject = no;
-		});
-		const stop = (reason) => {
-			reject(new UpstreamFailure(reason));
-			controller.abort();
-		};
-		const cancel = () => stop("unknown");
-		const signals = [
-			this.controller.signal,
-			this.deps.signal,
-			_init.signal
-		].filter((s) => !!s);
-		for (const signal of signals) signal.addEventListener("abort", cancel, { once: true });
-		const clear = timer(Math.min(this.remaining(), this.limits.requestTimeoutMs), () => stop("timeout"));
-		let response;
 		try {
-			const request = this.deps.fetch(url, {
-				method: "GET",
-				credentials: "omit",
-				redirect: "manual",
-				headers: { accept: "application/json" },
-				signal: controller.signal
-			});
-			request.then((late) => {
-				if (controller.signal.aborted) cancelUnusedBody(late);
-			}, () => {});
-			response = await Promise.race([request, aborted]);
-			requireUpstream(!response.redirected && (!response.url || response.url === url), "unsupported");
-			const immediate = httpReason$2(response, Buffer.alloc(0));
-			if (response.status !== 200 && immediate !== "unknown") {
-				if (immediate === "rate_limit") this.blocked.add(new URL(url).origin);
-				throw new UpstreamFailure(immediate);
-			}
-			const bytes = response.body ? await this.body(response, aborted) : Buffer.alloc(0);
-			if (response.status !== 200) {
-				const reason = httpReason$2(response, bytes);
-				if (reason === "rate_limit") this.blocked.add(new URL(url).origin);
-				throw new UpstreamFailure(reason);
-			}
-			requireUpstream(/^application\/(?:[\w.+-]*\+)?json(?:\s*;|$)/iu.test(response.headers.get("content-type") ?? ""), "unsupported");
-			this.remaining();
-			return new Response(bytes, {
-				status: 200,
-				headers: response.headers
+			return await boundedGet(this.deps, {
+				url,
+				accept: "application/json",
+				timeoutMs: Math.min(this.remaining(), this.limits.requestTimeoutMs)
+			}, (cancel) => {
+				this.active = cancel;
+			}, async (response, aborted) => {
+				requireUpstream(!response.redirected && (!response.url || response.url === url), "unsupported");
+				const immediate = httpReason$2(response, Buffer.alloc(0));
+				if (response.status !== 200 && immediate !== "unknown") {
+					if (immediate === "rate_limit") this.blocked.add(new URL(url).origin);
+					throw new UpstreamFailure(immediate);
+				}
+				const bytes = response.body ? await this.body(response, aborted) : Buffer.alloc(0);
+				if (response.status !== 200) {
+					const reason = httpReason$2(response, bytes);
+					if (reason === "rate_limit") this.blocked.add(new URL(url).origin);
+					throw new UpstreamFailure(reason);
+				}
+				requireUpstream(/^application\/(?:[\w.+-]*\+)?json(?:\s*;|$)/iu.test(response.headers.get("content-type") ?? ""), "unsupported");
+				this.remaining();
+				return new Response(bytes, {
+					status: 200,
+					headers: response.headers
+				});
 			});
 		} catch (error) {
-			this.networkReason = error instanceof UpstreamFailure ? error.reason : "unknown";
+			this.networkReason = upstreamFailureReason(error);
 			throw error;
-		} finally {
-			clear();
-			controller.abort();
-			for (const signal of signals) signal.removeEventListener("abort", cancel);
-			cancelUnusedBody(response);
 		}
 	}
 	async pypi(t, url) {
@@ -18223,11 +18185,11 @@ function metadataCoverage(change, side, lookup, sourceIds) {
 		}
 	}
 }
-async function metadata$2(input, output, change, side, reader) {
+async function metadata$2(input, output, change, side, reader, pypiReader) {
 	const instance = side === "base" ? change.from : change.to;
 	if (!instance) return;
 	const target = metadataTarget(input, change, side);
-	const lookup = target ? await reader.read(target) : {
+	const lookup = target ? target.kind === "pypi" && pypiReader ? await sharedPyPILookup(target, pypiReader) : await reader.read(target) : {
 		status: "unavailable",
 		fetched: false,
 		url: null,
@@ -18253,6 +18215,32 @@ async function metadata$2(input, output, change, side, reader) {
 	metadataAttempt(output, change, side, lookup, sourceIds);
 	metadataCoverage(change, side, lookup, sourceIds);
 	return lookup;
+}
+async function sharedPyPILookup(target, reader) {
+	const url = `https://pypi.org/pypi/${encodeURIComponent(target.name)}/${encodeURIComponent(target.version)}/json`;
+	const result = await reader.read({
+		kind: "pypi",
+		name: target.name,
+		version: target.version,
+		source: target.source
+	});
+	if (result.kind === "data") {
+		requireUpstream(isPlainObject(result.data.info));
+		return {
+			status: "available",
+			fetched: true,
+			url: result.url,
+			data: result.data.info,
+			reasons: []
+		};
+	}
+	return {
+		status: "unavailable",
+		fetched: result.kind !== "unavailable" || result.reason !== "unsupported",
+		url,
+		data: null,
+		reasons: [result.kind === "unavailable" ? result.reason : "missing"]
+	};
 }
 function researchSource(input, change, doc, research) {
 	const side = change.to ? "head" : "base", instance = change.to ?? change.from;
@@ -18473,7 +18461,7 @@ function attachActionMappings(input, output, change, mappings) {
 		};
 	}
 }
-async function enrichChange(input, output, change, reader) {
+async function enrichChange(input, output, change, reader, pypiReader) {
 	if ("basis" in change) return;
 	if (change.ecosystem === "actions") {
 		const result = await collectActionResearch(change, reader);
@@ -18484,7 +18472,7 @@ async function enrichChange(input, output, change, reader) {
 	}
 	const lookups = /* @__PURE__ */ new Map();
 	for (const side of ["base", "head"]) {
-		const lookup = await metadata$2(input, output, change, side, reader);
+		const lookup = await metadata$2(input, output, change, side, reader, pypiReader);
 		if (lookup) lookups.set(side, lookup);
 		bounds(output, input.limits, change);
 	}
@@ -18519,7 +18507,7 @@ async function enrichUpstream(value, dependencies) {
 	};
 	try {
 		bounds(output, input.limits);
-		for (const change of output.changes) await enrichChange(input, output, change, dependencies.reader);
+		for (const change of output.changes) await enrichChange(input, output, change, dependencies.reader, dependencies.pypiReader);
 		return freeze$3(output);
 	} catch (error) {
 		return {
@@ -28007,6 +27995,7 @@ var MetadataReader = class {
 	stopped = null;
 	busy = false;
 	cache = /* @__PURE__ */ new Map();
+	pending = /* @__PURE__ */ new Map();
 	constructor(limits, deps) {
 		this.limits = limits;
 		this.deps = deps;
@@ -28015,6 +28004,9 @@ var MetadataReader = class {
 	close() {
 		this.stopped = "unknown";
 		this.active?.();
+		this.cache.clear();
+		this.pending.clear();
+		this.retained = 0;
 	}
 	remaining() {
 		return this.clock.remaining(this.stopped);
@@ -28090,38 +28082,48 @@ var MetadataReader = class {
 		});
 	}
 	async read(value) {
-		if (this.busy) return {
-			kind: "unavailable",
-			reason: "conflict"
-		};
-		this.busy = true;
 		try {
 			this.remaining();
 			const { query, url } = metadataUrl(value);
 			const old = this.cache.get(url);
 			if (old) return old;
-			let result;
+			const inFlight = this.pending.get(url);
+			if (inFlight) return inFlight;
+			if (this.busy) return {
+				kind: "unavailable",
+				reason: "conflict"
+			};
+			this.busy = true;
+			const pending = this.readFresh(query, url);
+			this.pending.set(url, pending);
 			try {
-				result = await this.fetch(query, url);
-			} catch (error) {
-				result = {
-					kind: "unavailable",
-					reason: error instanceof AdvisoryFailure ? error.reason : "unknown"
-				};
+				return await pending;
+			} finally {
+				this.pending.delete(url);
+				this.busy = false;
 			}
-			const size = Buffer.byteLength(url) + Buffer.byteLength(JSON.stringify(result));
-			advisoryCheck(this.retained + size <= this.limits.maxRetainedBytes, "budget");
-			this.retained += size;
-			this.cache.set(url, result);
-			return result;
 		} catch (error) {
 			return {
 				kind: "unavailable",
 				reason: error instanceof AdvisoryFailure ? error.reason : "unsupported"
 			};
-		} finally {
-			this.busy = false;
 		}
+	}
+	async readFresh(query, url) {
+		let result;
+		try {
+			result = await this.fetch(query, url);
+		} catch (error) {
+			result = {
+				kind: "unavailable",
+				reason: error instanceof AdvisoryFailure ? error.reason : "unknown"
+			};
+		}
+		const size = Buffer.byteLength(url) + Buffer.byteLength(JSON.stringify(result));
+		advisoryCheck(this.retained + size <= this.limits.maxRetainedBytes, "budget");
+		this.retained += size;
+		this.cache.set(url, result);
+		return result;
 	}
 };
 function createPolicySignalReader(value, dependencies) {
@@ -28173,7 +28175,7 @@ function replaceEvidence(progress, evidence) {
 	progress.sources = evidence.sources;
 	progress.findings = evidence.findings;
 }
-async function enrichUpstreamStage(input, dependencies, readers, progress, fail) {
+async function enrichUpstreamStage(input, dependencies, readers, progress, fail, pypiReader) {
 	const limitsForStage = limits(EVIDENCE_READ_ALLOCATION.upstream, input);
 	const opened = createUpstreamReader(limitsForStage, dependencies);
 	if (opened.kind !== "ready") return fail("upstream", "malformed");
@@ -28185,7 +28187,10 @@ async function enrichUpstreamStage(input, dependencies, readers, progress, fail)
 		findings: progress.findings,
 		limits: limitsForStage,
 		...input.npmInventory ? { npmInventory: input.npmInventory } : {}
-	}, { reader: opened.reader });
+	}, {
+		reader: opened.reader,
+		...pypiReader ? { pypiReader } : {}
+	});
 	if (upstream.kind !== "enriched") return fail("upstream", failure$1(upstream));
 	replaceEvidence(progress, upstream);
 	progress.publicIdentities = upstream.publicIdentities;
@@ -28210,21 +28215,16 @@ async function enrichAdvisoryStage(input, dependencies, readers, progress, fail)
 	if (advisories.kind !== "enriched") return fail("advisories", failure$1(advisories));
 	replaceEvidence(progress, advisories);
 }
-async function enrichSignalsStage(input, dependencies, readers, progress, fail) {
+async function enrichSignalsStage(input, dependencies, readers, progress, fail, metadata) {
 	const limitsForStage = limits(EVIDENCE_READ_ALLOCATION.signals, input);
 	const { readers: shares } = EVIDENCE_READ_ALLOCATION.signals;
 	const malware = createMalwareReader(limits(shares.malware, input), dependencies);
 	const registry = createNpmRegistryReader(limits(shares.registry, input), dependencies);
 	const times = createNpmPublishTimeReader(limits(shares.publishTimes, input), dependencies);
-	const metadata = createPolicySignalReader(limits(shares.metadata, input), dependencies);
 	const upstream = createUpstreamReader(limits(shares.upstream, input), dependencies);
-	for (const opened of [
-		malware,
-		times,
-		metadata
-	]) if (opened.kind === "ready") readers.push(opened);
+	for (const opened of [malware, times]) if (opened.kind === "ready") readers.push(opened);
 	if (upstream.kind === "ready") readers.push(upstream.reader);
-	if (malware.kind !== "ready" || registry.kind !== "ready" || times.kind !== "ready" || metadata.kind !== "ready" || upstream.kind !== "ready") return fail("signals", "malformed");
+	if (malware.kind !== "ready" || registry.kind !== "ready" || times.kind !== "ready" || !metadata || upstream.kind !== "ready") return fail("signals", "malformed");
 	const signals = await enrichPolicySignals({
 		binding: input.packet.binding,
 		changes: progress.changes,
@@ -28289,9 +28289,12 @@ async function runResearch(input) {
 			stage,
 			reason
 		});
-		await enrichUpstreamStage(input, dependencies, readers, progress, fail);
+		const metadata = createPolicySignalReader(limits(EVIDENCE_READ_ALLOCATION.signals.readers.metadata, input), dependencies);
+		const sharedMetadata = metadata.kind === "ready" ? metadata : null;
+		if (sharedMetadata) readers.push(sharedMetadata);
+		await enrichUpstreamStage(input, dependencies, readers, progress, fail, sharedMetadata ?? void 0);
 		await enrichAdvisoryStage(input, dependencies, readers, progress, fail);
-		await enrichSignalsStage(input, dependencies, readers, progress, fail);
+		await enrichSignalsStage(input, dependencies, readers, progress, fail, sharedMetadata);
 		const candidate = revalidate(input, progress);
 		if (!candidate.ok) {
 			fail("revalidation", "malformed");

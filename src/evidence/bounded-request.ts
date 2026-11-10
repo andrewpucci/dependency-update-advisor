@@ -85,16 +85,21 @@ export async function boundedGet<T>(
   const timer = setTimeout(() => stop('timeout'), request.timeoutMs);
   let response: Response | undefined;
   try {
-    response = await Promise.race([
-      deps.fetch(request.url, {
-        method: 'GET',
-        redirect: 'manual',
-        credentials: 'omit',
-        headers: { accept: request.accept },
-        signal: controller.signal,
-      }),
-      aborted,
-    ]);
+    const pending = deps.fetch(request.url, {
+      method: 'GET',
+      redirect: 'manual',
+      credentials: 'omit',
+      headers: { accept: request.accept },
+      signal: controller.signal,
+    });
+    void pending.then(
+      (late) => {
+        if (controller.signal.aborted && late.body && !late.body.locked)
+          void late.body.cancel().catch(() => {});
+      },
+      () => {},
+    );
+    response = await Promise.race([pending, aborted]);
     return await consume(response, aborted);
   } finally {
     clearTimeout(timer);
