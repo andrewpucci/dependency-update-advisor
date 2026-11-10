@@ -8897,7 +8897,7 @@ const RUN_STATUSES = [
 	"waiting",
 	"pending"
 ];
-function failure$5(field, category = "input") {
+function failure$6(field, category = "input") {
 	return {
 		kind: "error",
 		category,
@@ -9081,41 +9081,41 @@ async function read$1(field, operation) {
 	} catch {
 		return {
 			ok: false,
-			error: failure$5(field, field === "replay" ? "replay" : "read")
+			error: failure$6(field, field === "replay" ? "replay" : "read")
 		};
 	}
 }
 function verifyEventInput(input) {
-	if (!record(input, ["eventName"]) || !text$4(input.eventName)) return failure$5("event");
+	if (!record(input, ["eventName"]) || !text$4(input.eventName)) return failure$6("event");
 	if (input.eventName !== "workflow_run") return {
 		kind: "skip",
 		reason: "ineligible"
 	};
-	if (!record(input, ["payload", "expected"]) || !record(input.payload, ["action"]) || !text$4(input.payload.action)) return failure$5("event");
+	if (!record(input, ["payload", "expected"]) || !record(input.payload, ["action"]) || !text$4(input.payload.action)) return failure$6("event");
 	if (input.payload.action !== "completed") return {
 		kind: "skip",
 		reason: "ineligible"
 	};
-	if (!record(input.expected, ["repository", "workflow"])) return failure$5("expected");
+	if (!record(input.expected, ["repository", "workflow"])) return failure$6("expected");
 	const expectedRepo = expectedRepository(input.expected.repository);
 	const expectedWorkflow = workflow$1(input.expected.workflow);
-	if (!expectedRepo || !expectedWorkflow) return failure$5("expected");
-	if (!record(input.payload, ["repository", "workflow_run"])) return failure$5("event");
+	if (!expectedRepo || !expectedWorkflow) return failure$6("expected");
+	if (!record(input.payload, ["repository", "workflow_run"])) return failure$6("event");
 	const eventRepo = repository$2(input.payload.repository), eventRun = run(input.payload.workflow_run);
-	if (!eventRepo || !eventRun) return failure$5("event");
+	if (!eventRepo || !eventRun) return failure$6("event");
 	if (eventRun.event !== "pull_request" || !isDependabot(eventRun.actor)) return {
 		kind: "skip",
 		reason: "ineligible"
 	};
-	if (eventRun.status !== "completed") return failure$5("event", "mismatch");
-	if (eventRun.conclusion === null) return failure$5("event");
-	if (!sameRepository(eventRepo, expectedRepo) || !sameRepository(eventRun.repository, expectedRepo) || eventRun.workflowId !== expectedWorkflow.id) return failure$5("event", "mismatch");
+	if (eventRun.status !== "completed") return failure$6("event", "mismatch");
+	if (eventRun.conclusion === null) return failure$6("event");
+	if (!sameRepository(eventRepo, expectedRepo) || !sameRepository(eventRun.repository, expectedRepo) || eventRun.workflowId !== expectedWorkflow.id) return failure$6("event", "mismatch");
 	if (eventRun.associations.length !== 1) return {
 		kind: "skip",
 		reason: "ineligible"
 	};
 	const eventAssociation = eventRun.associations[0];
-	if (!associatedWith(eventAssociation, eventAssociation.number, expectedRepo, eventRun.headRepository) || eventAssociation.headSha !== eventRun.headSha) return failure$5("event", "mismatch");
+	if (!associatedWith(eventAssociation, eventAssociation.number, expectedRepo, eventRun.headRepository) || eventAssociation.headSha !== eventRun.headSha) return failure$6("event", "mismatch");
 	return {
 		kind: "eligible",
 		expectedRepo,
@@ -9126,20 +9126,20 @@ function verifyEventInput(input) {
 }
 function verifyCurrentRun(currentRun, event) {
 	const { expectedRepo, expectedWorkflow, eventRun, eventAssociation } = event;
-	if (currentRun.id !== eventRun.id || currentRun.workflowId !== expectedWorkflow.id || !sameRepository(currentRun.repository, expectedRepo) || !sameRepository(currentRun.headRepository, eventRun.headRepository) || !sameActor(currentRun.actor, eventRun.actor) || currentRun.event !== eventRun.event || currentRun.headSha !== eventRun.headSha) return failure$5("run", "mismatch");
+	if (currentRun.id !== eventRun.id || currentRun.workflowId !== expectedWorkflow.id || !sameRepository(currentRun.repository, expectedRepo) || !sameRepository(currentRun.headRepository, eventRun.headRepository) || !sameActor(currentRun.actor, eventRun.actor) || currentRun.event !== eventRun.event || currentRun.headSha !== eventRun.headSha) return failure$6("run", "mismatch");
 	if (currentRun.attempt > eventRun.attempt) return {
 		kind: "skip",
 		reason: "obsolete"
 	};
-	if (currentRun.attempt !== eventRun.attempt || currentRun.status !== "completed") return failure$5("run", "mismatch");
-	if (currentRun.conclusion === null) return failure$5("run");
-	if (currentRun.conclusion !== eventRun.conclusion) return failure$5("run", "mismatch");
+	if (currentRun.attempt !== eventRun.attempt || currentRun.status !== "completed") return failure$6("run", "mismatch");
+	if (currentRun.conclusion === null) return failure$6("run");
+	if (currentRun.conclusion !== eventRun.conclusion) return failure$6("run", "mismatch");
 	if (currentRun.associations.length !== 1) return {
 		kind: "skip",
 		reason: "ineligible"
 	};
 	const currentAssociation = currentRun.associations[0];
-	if (!associatedWith(currentAssociation, eventAssociation.number, expectedRepo, eventRun.headRepository)) return failure$5("run", "mismatch");
+	if (!associatedWith(currentAssociation, eventAssociation.number, expectedRepo, eventRun.headRepository)) return failure$6("run", "mismatch");
 	return {
 		kind: "current",
 		association: currentAssociation,
@@ -9149,30 +9149,30 @@ function verifyCurrentRun(currentRun, event) {
 function verifyEventPullRequest(value, event, currentAssociation) {
 	const { expectedRepo, eventRun, eventAssociation } = event;
 	const pr = pullRequest(value);
-	if (!pr) return failure$5("pullRequest");
-	if (pr.number !== eventAssociation.number || !sameRepository(pr.repository, expectedRepo) || !sameRepository(pr.headRepository, eventRun.headRepository)) return failure$5("pullRequest", "mismatch");
+	if (!pr) return failure$6("pullRequest");
+	if (pr.number !== eventAssociation.number || !sameRepository(pr.repository, expectedRepo) || !sameRepository(pr.headRepository, eventRun.headRepository)) return failure$6("pullRequest", "mismatch");
 	if (!isDependabot(pr.actor)) return {
 		kind: "skip",
 		reason: "ineligible"
 	};
-	if (!sameActor(pr.actor, eventRun.actor)) return failure$5("pullRequest", "mismatch");
+	if (!sameActor(pr.actor, eventRun.actor)) return failure$6("pullRequest", "mismatch");
 	if (pr.closed || pr.headSha !== eventRun.headSha) return {
 		kind: "skip",
 		reason: "obsolete"
 	};
-	if (currentAssociation.headSha !== eventRun.headSha) return failure$5("run", "mismatch");
+	if (currentAssociation.headSha !== eventRun.headSha) return failure$6("run", "mismatch");
 	return {
 		kind: "current",
 		pr
 	};
 }
 function verifyReplay(replay, reviewIdentity) {
-	if (!record(replay, ["identity", "state"]) || !sameIdentity(replay.identity, reviewIdentity)) return failure$5("replay", "replay");
+	if (!record(replay, ["identity", "state"]) || !sameIdentity(replay.identity, reviewIdentity)) return failure$6("replay", "replay");
 	if (replay.state === "claimed" || replay.state === "completed") return {
 		kind: "skip",
 		reason: "duplicate"
 	};
-	if (replay.state !== "unseen") return failure$5("replay", "replay");
+	if (replay.state !== "unseen") return failure$6("replay", "replay");
 }
 /** Read-only identity verification. A binding is a snapshot; W2 must claim it before any write. */
 async function verifyCiEvent(input, reads) {
@@ -9183,12 +9183,12 @@ async function verifyCiEvent(input, reads) {
 		const workflowRead = await read$1("workflow", () => reads.readWorkflow(expectedRepo, expectedWorkflow.id));
 		if (!workflowRead.ok) return workflowRead.error;
 		const actualWorkflow = workflow$1(workflowRead.value);
-		if (!actualWorkflow) return failure$5("workflow");
-		if (actualWorkflow.id !== expectedWorkflow.id || actualWorkflow.path !== expectedWorkflow.path) return failure$5("workflow", "mismatch");
+		if (!actualWorkflow) return failure$6("workflow");
+		if (actualWorkflow.id !== expectedWorkflow.id || actualWorkflow.path !== expectedWorkflow.path) return failure$6("workflow", "mismatch");
 		const runRead = await read$1("run", () => reads.readRun(expectedRepo, eventRun.id));
 		if (!runRead.ok) return runRead.error;
 		const currentRun = run(runRead.value);
-		if (!currentRun) return failure$5("run");
+		if (!currentRun) return failure$6("run");
 		const checkedRun = verifyCurrentRun(currentRun, event);
 		if (checkedRun.kind !== "current") return checkedRun;
 		const currentAssociation = checkedRun.association;
@@ -9205,7 +9205,7 @@ async function verifyCiEvent(input, reads) {
 		const comparisonRead = await read$1("comparison", () => reads.readComparison(expectedRepo, pr.baseSha, pr.headSha));
 		if (!comparisonRead.ok) return comparisonRead.error;
 		const mergeBaseSha = comparisonMergeBase(comparisonRead.value, pr.baseSha);
-		if (!mergeBaseSha) return failure$5("comparison");
+		if (!mergeBaseSha) return failure$6("comparison");
 		return {
 			kind: "verified",
 			binding: Object.freeze({
@@ -9225,7 +9225,7 @@ async function verifyCiEvent(input, reads) {
 			})
 		};
 	} catch {
-		return failure$5("event");
+		return failure$6("event");
 	}
 }
 function binding$1(value) {
@@ -9275,14 +9275,14 @@ function parseReviewBinding(value) {
 	}
 }
 function verifyBoundRun(current, original) {
-	if (current.id !== original.runId || current.workflowId !== original.workflow.id || !sameRepository(current.repository, original.repository) || !sameRepository(current.headRepository, original.headRepository) || current.headSha !== original.headSha || current.event !== "pull_request" || !isDependabot(current.actor) || current.actor.id !== original.actorId) return failure$5("run", "mismatch");
+	if (current.id !== original.runId || current.workflowId !== original.workflow.id || !sameRepository(current.repository, original.repository) || !sameRepository(current.headRepository, original.headRepository) || current.headSha !== original.headSha || current.event !== "pull_request" || !isDependabot(current.actor) || current.actor.id !== original.actorId) return failure$6("run", "mismatch");
 	if (current.attempt > original.runAttempt) return { kind: "obsolete" };
-	if (current.attempt !== original.runAttempt || current.status !== "completed") return failure$5("run", "mismatch");
-	if (current.conclusion === null) return failure$5("run");
-	if (current.conclusion !== original.conclusion) return failure$5("run", "mismatch");
-	if (current.associations.length > 1) return failure$5("run", "mismatch");
+	if (current.attempt !== original.runAttempt || current.status !== "completed") return failure$6("run", "mismatch");
+	if (current.conclusion === null) return failure$6("run");
+	if (current.conclusion !== original.conclusion) return failure$6("run", "mismatch");
+	if (current.associations.length > 1) return failure$6("run", "mismatch");
 	const currentAssociation = current.associations[0];
-	if (currentAssociation && !associatedWith(currentAssociation, original.pullNumber, original.repository, original.headRepository)) return failure$5("run", "mismatch");
+	if (currentAssociation && !associatedWith(currentAssociation, original.pullNumber, original.repository, original.headRepository)) return failure$6("run", "mismatch");
 	return {
 		kind: "current",
 		association: currentAssociation
@@ -9294,17 +9294,17 @@ function pullRequestMatchesBinding(pr, original) {
 function completeComparison(value, baseSha, originalMergeBaseSha) {
 	try {
 		const mergeBaseSha = comparisonMergeBase(value, baseSha);
-		if (!mergeBaseSha) return failure$5("comparison");
+		if (!mergeBaseSha) return failure$6("comparison");
 		return { kind: mergeBaseSha === originalMergeBaseSha ? "current" : "obsolete" };
 	} catch {
-		return failure$5("comparison");
+		return failure$6("comparison");
 	}
 }
 function classifyBoundPullRequest(original, value) {
 	try {
 		const pr = pullRequest(value);
-		if (!pr) return failure$5("pullRequest");
-		if (!pullRequestMatchesBinding(pr, original)) return failure$5("pullRequest", "mismatch");
+		if (!pr) return failure$6("pullRequest");
+		if (!pullRequestMatchesBinding(pr, original)) return failure$6("pullRequest", "mismatch");
 		if (pr.closed || pr.headSha !== original.headSha || pr.baseRef !== original.baseRef) return { kind: "obsolete" };
 		if (pr.baseSha === original.baseSha) return { kind: "current" };
 		const baseSha = pr.baseSha, mergeBaseSha = original.mergeBaseSha;
@@ -9314,7 +9314,7 @@ function classifyBoundPullRequest(original, value) {
 			complete: (comparison) => completeComparison(comparison, baseSha, mergeBaseSha)
 		});
 	} catch {
-		return failure$5("pullRequest");
+		return failure$6("pullRequest");
 	}
 }
 /** Validate once; each PR read is independent, and comparison completion owns its snapshot. */
@@ -9330,12 +9330,12 @@ function createPullRequestClassifier(value) {
 async function reverifyReviewBinding(value, reads) {
 	try {
 		const classifier = createPullRequestClassifier(value);
-		if (!classifier) return failure$5("binding");
+		if (!classifier) return failure$6("binding");
 		const original = classifier.binding;
 		const runRead = await read$1("run", () => reads.readRun(original.repository, original.runId));
 		if (!runRead.ok) return runRead.error;
 		const current = run(runRead.value);
-		if (!current) return failure$5("run");
+		if (!current) return failure$6("run");
 		const checkedRun = verifyBoundRun(current, original);
 		if (checkedRun.kind !== "current") return checkedRun;
 		const currentAssociation = checkedRun.association;
@@ -9343,7 +9343,7 @@ async function reverifyReviewBinding(value, reads) {
 		if (!prRead.ok) return prRead.error;
 		const state = classifier.classify(prRead.value);
 		if (state.kind === "obsolete" || state.kind === "error") return state;
-		if (!currentAssociation || currentAssociation.headSha !== original.headSha) return failure$5("run", "mismatch");
+		if (!currentAssociation || currentAssociation.headSha !== original.headSha) return failure$6("run", "mismatch");
 		if (state.kind === "compare") {
 			const comparison = await read$1("comparison", () => reads.readComparison(original.repository, state.baseSha, original.headSha));
 			if (!comparison.ok) return comparison.error;
@@ -9352,7 +9352,7 @@ async function reverifyReviewBinding(value, reads) {
 		}
 		return { kind: "fresh" };
 	} catch {
-		return failure$5("binding");
+		return failure$6("binding");
 	}
 }
 
@@ -19711,7 +19711,7 @@ const DEFAULT_VERDICTS = Object.freeze({
 	recentRelease: "merge_with_followups",
 	deprecatedRelease: "merge_with_followups"
 });
-function failure$4(category, field = "$") {
+function failure$5(category, field = "$") {
 	return {
 		ok: false,
 		error: {
@@ -19784,22 +19784,22 @@ function defaultConfig() {
 }
 /** Validates present JSON; failure never substitutes missing-file defaults. */
 function parseReviewConfig(text) {
-	if (Buffer.byteLength(text, "utf8") > 16384) return failure$4("size");
+	if (Buffer.byteLength(text, "utf8") > 16384) return failure$5("size");
 	let document;
 	try {
 		document = JSON.parse(text);
 	} catch {
-		return failure$4("json");
+		return failure$5("json");
 	}
 	if (!objectWithKeys(document, [
 		"version",
 		"analysis",
 		"context",
 		"policy"
-	])) return failure$4("validation");
-	if (document.version !== 1) return failure$4("version", "version");
+	])) return failure$5("validation");
+	if (document.version !== 1) return failure$5("version", "version");
 	const field = invalidField(document);
-	if (field) return failure$4("validation", field);
+	if (field) return failure$5("validation", field);
 	const analysis = document.analysis;
 	const context = document.context;
 	const policy = document.policy;
@@ -19841,12 +19841,12 @@ async function resolveConfigEntry(root, path, directory) {
 	try {
 		path = await fs.realpath(path);
 	} catch (error) {
-		if (entry.isSymbolicLink()) return failure$4("path");
+		if (entry.isSymbolicLink()) return failure$5("path");
 		throw error;
 	}
-	if (!contained$1(root, path)) return failure$4("path");
+	if (!contained$1(root, path)) return failure$5("path");
 	const stat = await fs.stat(path);
-	if (directory ? !stat.isDirectory() : !stat.isFile()) return failure$4("path");
+	if (directory ? !stat.isDirectory() : !stat.isFile()) return failure$5("path");
 	return {
 		ok: true,
 		path
@@ -19856,7 +19856,7 @@ async function resolveConfigEntry(root, path, directory) {
 async function loadTrustedReviewConfig(checkoutRoot) {
 	try {
 		const root = await fs.realpath(checkoutRoot);
-		if (!(await fs.stat(root)).isDirectory()) return failure$4("path");
+		if (!(await fs.stat(root)).isDirectory()) return failure$5("path");
 		let path = root;
 		for (const [index, component] of [".github", "dependabot-review.json"].entries()) {
 			path = join(path, component);
@@ -19873,13 +19873,13 @@ async function loadTrustedReviewConfig(checkoutRoot) {
 		}
 		return await readConfigFile(path);
 	} catch {
-		return failure$4("read");
+		return failure$5("read");
 	}
 }
 async function readConfigFile(path) {
 	const handle = await fs.open(path, "r");
 	try {
-		if (!(await handle.stat()).isFile()) return failure$4("path");
+		if (!(await handle.stat()).isFile()) return failure$5("path");
 		const bytes = Buffer.alloc(16385);
 		let count = 0;
 		while (count < bytes.length) {
@@ -19892,7 +19892,7 @@ async function readConfigFile(path) {
 			if (bytesRead === 0) break;
 			count += bytesRead;
 		}
-		if (count > 16384) return failure$4("size");
+		if (count > 16384) return failure$5("size");
 		let text;
 		try {
 			text = new TextDecoder("utf-8", {
@@ -19900,7 +19900,7 @@ async function readConfigFile(path) {
 				ignoreBOM: true
 			}).decode(bytes.subarray(0, count));
 		} catch {
-			return failure$4("encoding");
+			return failure$5("encoding");
 		}
 		return parseReviewConfig(text);
 	} finally {
@@ -21270,7 +21270,7 @@ function result(outcome, snapshot) {
 		}
 	});
 }
-function failure$3(snapshot, category, attempted) {
+function failure$4(snapshot, category, attempted) {
 	const identity = {
 		batchId: snapshot.batchId,
 		unitIds: snapshot.selected.map((unit) => unit.id)
@@ -21340,7 +21340,7 @@ async function analyzeMistralBatch(batch, options, deps = {
 		run.check();
 		return result(validated, snapshot);
 	} catch (error) {
-		return failure$3(snapshot, error instanceof MistralFailure ? error.category : "transport", attempted);
+		return failure$4(snapshot, error instanceof MistralFailure ? error.category : "transport", attempted);
 	} finally {
 		run?.close();
 		cancelBody(response);
@@ -22363,6 +22363,19 @@ function settle(collected) {
 		roots: Object.freeze([...collected.roots].sort())
 	});
 }
+function collectEntry(entry, collected) {
+	if (!(entry instanceof Map)) fail("malformed");
+	const ecosystem = entry.get("package-ecosystem");
+	if (typeof ecosystem !== "string") fail("malformed");
+	if (ecosystem !== "npm" && ecosystem !== "uv") return;
+	const target = collected[ecosystem];
+	for (const directory of directoriesOf(entry)) {
+		const path = canonicalPath$2(directory);
+		if (path.kind === "bad") target.malformed = true;
+		else if (path.kind === "glob") target.unsupported = true;
+		else target.roots.add(path.path);
+	}
+}
 function extract$2(document) {
 	if (!(document instanceof Map) || document.get("version") !== 2) fail("malformed");
 	const updates = document.get("updates");
@@ -22380,19 +22393,7 @@ function extract$2(document) {
 			unsupported: false
 		}
 	};
-	for (const entry of updates) {
-		if (!(entry instanceof Map)) fail("malformed");
-		const ecosystem = entry.get("package-ecosystem");
-		if (typeof ecosystem !== "string") fail("malformed");
-		if (ecosystem !== "npm" && ecosystem !== "uv") continue;
-		const target = collected[ecosystem];
-		for (const directory of directoriesOf(entry)) {
-			const path = canonicalPath$2(directory);
-			if (path.kind === "bad") target.malformed = true;
-			else if (path.kind === "glob") target.unsupported = true;
-			else target.roots.add(path.path);
-		}
-	}
+	for (const entry of updates) collectEntry(entry, collected);
 	return Object.freeze({
 		kind: "roots",
 		npm: settle(collected.npm),
@@ -24081,7 +24082,7 @@ function graphResult({ inventory, limits, spend }) {
 function byId(a, b) {
 	return a.id < b.id ? -1 : 1;
 }
-function failure$2(error) {
+function failure$3(error) {
 	return error instanceof GraphFailure ? {
 		kind: "unavailable",
 		reason: error.reason
@@ -24156,7 +24157,7 @@ async function enrichNpmEvidence(value, deps) {
 		};
 		return freeze(structuredClone(result));
 	} catch (error) {
-		return failure$2(error);
+		return failure$3(error);
 	}
 }
 
@@ -24875,7 +24876,7 @@ const reasons = [
 	"unknown"
 ];
 const sha$1 = (value) => typeof value === "string" && /^[a-f\d]{40}$/iu.test(value);
-function failure$1(error) {
+function failure$2(error) {
 	return error instanceof UvFailure ? error.reason : "unknown";
 }
 function array(value) {
@@ -25034,7 +25035,7 @@ async function readFile(state, root, side, path, reader) {
 		snapshot.state = "unavailable";
 		snapshot.data = null;
 		snapshot.sourceId = null;
-		gap(state, failure$1(error), root, side, path);
+		gap(state, failure$2(error), root, side, path);
 	}
 	return snapshot;
 }
@@ -25132,7 +25133,7 @@ async function comparison(state) {
 	} catch (error) {
 		state.output.comparison = {
 			status: "unavailable",
-			reasons: [failure$1(error)]
+			reasons: [failure$2(error)]
 		};
 	}
 }
@@ -25239,7 +25240,7 @@ async function collectUvMetadata(value, { session }) {
 	} catch (error) {
 		return {
 			kind: "unavailable",
-			reason: failure$1(error)
+			reason: failure$2(error)
 		};
 	}
 }
@@ -27872,61 +27873,77 @@ function fragment(value, ecosystem) {
 	]) || value.kind !== "complete" || value.ecosystem !== ecosystem || !Array.isArray(value.changes) || !Array.isArray(value.sources) || !Array.isArray(value.findings) || !Array.isArray(value.relationships)) return null;
 	return value;
 }
+async function collectFragments(input, session) {
+	const fragments = [];
+	for (const ecosystem of [
+		"npm",
+		"actions",
+		"uv"
+	]) {
+		if (!input.isCurrent()) return { kind: "stale" };
+		const result = await input.collectors[ecosystem](session);
+		const value = fragment(result, ecosystem);
+		if (!value || !input.isCurrent()) return input.isCurrent() ? {
+			kind: "incomplete",
+			gaps: [{
+				source: ecosystem,
+				reason: gapReason(result)
+			}]
+		} : { kind: "stale" };
+		fragments.push(value);
+	}
+	return {
+		kind: "ready",
+		fragments
+	};
+}
+async function collectTrustedContext(input, fragments) {
+	if (!record(input.trusted, [
+		"binding",
+		"baseSha",
+		"contextRevision"
+	])) return { kind: "internal-failure" };
+	let trusted = input.trusted;
+	if (input.collectContext) {
+		const context = await input.collectContext(fragments.flatMap((item) => item.changes));
+		if (!input.isCurrent()) return { kind: "stale" };
+		if (!record(context, ["ok"])) return { kind: "internal-failure" };
+		if (context.ok !== true) return {
+			kind: "context-failure",
+			category: record(context.error, ["category"]) ? String(context.error.category) : "unknown"
+		};
+		trusted = {
+			...trusted,
+			context
+		};
+	} else if (!Object.hasOwn(trusted, "context")) return { kind: "internal-failure" };
+	return {
+		kind: "ready",
+		trusted
+	};
+}
 /** Owns one read session and delegates all structural acceptance to T4 validation. */
 async function assembleReviewPacket(input) {
 	let session;
 	try {
 		if (!input.isCurrent()) return { kind: "stale" };
 		session = await input.openSession();
-		const fragments = [];
-		for (const ecosystem of [
-			"npm",
-			"actions",
-			"uv"
-		]) {
-			if (!input.isCurrent()) return { kind: "stale" };
-			const result = await input.collectors[ecosystem](session);
-			const value = fragment(result, ecosystem);
-			if (!value || !input.isCurrent()) return input.isCurrent() ? {
-				kind: "incomplete",
-				gaps: [{
-					source: ecosystem,
-					reason: gapReason(result)
-				}]
-			} : { kind: "stale" };
-			fragments.push(value);
-		}
-		if (!record(input.trusted, [
-			"binding",
-			"baseSha",
-			"contextRevision"
-		])) return { kind: "internal-failure" };
-		let trusted = input.trusted;
-		if (input.collectContext) {
-			const context = await input.collectContext(fragments.flatMap((item) => item.changes));
-			if (!input.isCurrent()) return { kind: "stale" };
-			if (!record(context, ["ok"])) return { kind: "internal-failure" };
-			if (context.ok !== true) return {
-				kind: "context-failure",
-				category: record(context.error, ["category"]) ? String(context.error.category) : "unknown"
-			};
-			trusted = {
-				...trusted,
-				context
-			};
-		} else if (!Object.hasOwn(trusted, "context")) return { kind: "internal-failure" };
+		const collected = await collectFragments(input, session);
+		if (collected.kind !== "ready") return collected;
+		const context = await collectTrustedContext(input, collected.fragments);
+		if (context.kind !== "ready") return context;
 		const packet = validateReviewPacket({
 			version: 1,
-			binding: input.trusted.binding,
-			baseSha: input.trusted.baseSha,
-			contextRevision: trusted.contextRevision,
-			context: trusted.context,
-			coverage: Object.fromEntries(fragments.map((item) => [item.ecosystem, item.coverage])),
-			changes: fragments.flatMap((item) => item.changes),
-			sources: [...input.inventorySource === null || input.inventorySource === void 0 ? [] : [input.inventorySource], ...fragments.flatMap((item) => item.sources)],
-			findings: fragments.flatMap((item) => item.findings),
-			relationships: fragments.flatMap((item) => item.relationships)
-		}, trusted);
+			binding: context.trusted.binding,
+			baseSha: context.trusted.baseSha,
+			contextRevision: context.trusted.contextRevision,
+			context: context.trusted.context,
+			coverage: Object.fromEntries(collected.fragments.map((item) => [item.ecosystem, item.coverage])),
+			changes: collected.fragments.flatMap((item) => item.changes),
+			sources: [...input.inventorySource === null || input.inventorySource === void 0 ? [] : [input.inventorySource], ...collected.fragments.flatMap((item) => item.sources)],
+			findings: collected.fragments.flatMap((item) => item.findings),
+			relationships: collected.fragments.flatMap((item) => item.relationships)
+		}, context.trusted);
 		if (packet.ok) return {
 			kind: "ready",
 			packet: packet.packet
@@ -28148,6 +28165,101 @@ function limits(share, input) {
 		totalTimeoutMs: remaining(input)
 	};
 }
+function failure$1(result) {
+	return result.kind === "unavailable" && result.reason ? result.reason : "malformed";
+}
+function replaceEvidence(progress, evidence) {
+	progress.changes = evidence.changes;
+	progress.sources = evidence.sources;
+	progress.findings = evidence.findings;
+}
+async function enrichUpstreamStage(input, dependencies, readers, progress, fail) {
+	const limitsForStage = limits(EVIDENCE_READ_ALLOCATION.upstream, input);
+	const opened = createUpstreamReader(limitsForStage, dependencies);
+	if (opened.kind !== "ready") return fail("upstream", "malformed");
+	readers.push(opened.reader);
+	const upstream = await enrichUpstream({
+		binding: input.packet.binding,
+		changes: progress.changes,
+		sources: progress.sources,
+		findings: progress.findings,
+		limits: limitsForStage,
+		...input.npmInventory ? { npmInventory: input.npmInventory } : {}
+	}, { reader: opened.reader });
+	if (upstream.kind !== "enriched") return fail("upstream", failure$1(upstream));
+	replaceEvidence(progress, upstream);
+	progress.publicIdentities = upstream.publicIdentities;
+	progress.actionVersions = upstream.actionVersions;
+	progress.upstreamAttempts = upstream.attempts;
+}
+async function enrichAdvisoryStage(input, dependencies, readers, progress, fail) {
+	const limitsForStage = limits(EVIDENCE_READ_ALLOCATION.advisory, input);
+	const opened = createAdvisoryReader(limitsForStage, dependencies);
+	if (opened.kind !== "ready") return fail("advisories", "malformed");
+	readers.push(opened);
+	const advisories = await enrichAdvisories({
+		binding: input.packet.binding,
+		changes: progress.changes,
+		sources: progress.sources,
+		findings: progress.findings,
+		publicIdentities: progress.publicIdentities,
+		actionVersions: progress.actionVersions,
+		limits: limitsForStage,
+		...input.comparison?.kind === "available" ? { comparisons: [input.comparison] } : {}
+	}, { reader: opened });
+	if (advisories.kind !== "enriched") return fail("advisories", failure$1(advisories));
+	replaceEvidence(progress, advisories);
+}
+async function enrichSignalsStage(input, dependencies, readers, progress, fail) {
+	const limitsForStage = limits(EVIDENCE_READ_ALLOCATION.signals, input);
+	const { readers: shares } = EVIDENCE_READ_ALLOCATION.signals;
+	const malware = createMalwareReader(limits(shares.malware, input), dependencies);
+	const registry = createNpmRegistryReader(limits(shares.registry, input), dependencies);
+	const times = createNpmPublishTimeReader(limits(shares.publishTimes, input), dependencies);
+	const metadata = createPolicySignalReader(limits(shares.metadata, input), dependencies);
+	const upstream = createUpstreamReader(limits(shares.upstream, input), dependencies);
+	for (const opened of [
+		malware,
+		times,
+		metadata
+	]) if (opened.kind === "ready") readers.push(opened);
+	if (upstream.kind === "ready") readers.push(upstream.reader);
+	if (malware.kind !== "ready" || registry.kind !== "ready" || times.kind !== "ready" || metadata.kind !== "ready" || upstream.kind !== "ready") return fail("signals", "malformed");
+	const signals = await enrichPolicySignals({
+		binding: input.packet.binding,
+		changes: progress.changes,
+		sources: progress.sources,
+		findings: progress.findings,
+		publicIdentities: progress.publicIdentities,
+		actionVersions: progress.actionVersions,
+		evaluationTime: input.evaluationTime,
+		limits: limitsForStage
+	}, {
+		malwareReader: malware,
+		npmReader: registry,
+		publishTimeReader: times,
+		metadataReader: metadata,
+		upstreamReader: upstream.reader
+	});
+	if (signals.kind !== "enriched") return fail("signals", failure$1(signals));
+	replaceEvidence(progress, signals);
+	progress.signalAttempts = signals.attempts;
+}
+function revalidate(input, progress) {
+	const { packet } = input;
+	return validateReviewPacket({
+		version: 1,
+		binding: packet.binding,
+		baseSha: packet.baseSha,
+		contextRevision: packet.contextRevision,
+		context: packet.context,
+		coverage: packet.coverage,
+		changes: progress.changes,
+		sources: progress.sources,
+		findings: progress.findings,
+		relationships: packet.relationships
+	}, input.trusted);
+}
 /**
 * Runs upstream research, advisory lookup, and policy signals over a validated packet, feeding each
 * stage's proofs and sources to the next. A stage that cannot be established leaves the evidence as
@@ -28164,115 +28276,23 @@ async function runResearch(input) {
 	const readers = [];
 	try {
 		const { packet } = input;
-		let current = {
+		const progress = {
 			changes: packet.changes,
 			sources: packet.sources,
-			findings: packet.findings
+			findings: packet.findings,
+			publicIdentities: [],
+			actionVersions: [],
+			upstreamAttempts: [],
+			signalAttempts: []
 		};
-		let publicIdentities = [];
-		let actionVersions = [];
-		let upstreamAttempts = [];
-		let signalAttempts = [];
 		const fail = (stage, reason) => unavailable.push({
 			stage,
 			reason
 		});
-		const failure = (result) => result.kind === "unavailable" && result.reason ? result.reason : "malformed";
-		const upstreamLimits = limits(EVIDENCE_READ_ALLOCATION.upstream, input);
-		const opened = createUpstreamReader(upstreamLimits, dependencies);
-		if (opened.kind === "ready") {
-			readers.push(opened.reader);
-			const upstream = await enrichUpstream({
-				binding: packet.binding,
-				changes: current.changes,
-				sources: current.sources,
-				findings: current.findings,
-				limits: upstreamLimits,
-				...input.npmInventory ? { npmInventory: input.npmInventory } : {}
-			}, { reader: opened.reader });
-			if (upstream.kind === "enriched") {
-				current = {
-					changes: upstream.changes,
-					sources: upstream.sources,
-					findings: upstream.findings
-				};
-				publicIdentities = upstream.publicIdentities;
-				actionVersions = upstream.actionVersions;
-				upstreamAttempts = upstream.attempts;
-			} else fail("upstream", failure(upstream));
-		} else fail("upstream", "malformed");
-		const advisoryLimits = limits(EVIDENCE_READ_ALLOCATION.advisory, input);
-		const reviewed = createAdvisoryReader(advisoryLimits, dependencies);
-		if (reviewed.kind === "ready") {
-			readers.push(reviewed);
-			const advisories = await enrichAdvisories({
-				binding: packet.binding,
-				changes: current.changes,
-				sources: current.sources,
-				findings: current.findings,
-				publicIdentities,
-				actionVersions,
-				limits: advisoryLimits,
-				...input.comparison?.kind === "available" ? { comparisons: [input.comparison] } : {}
-			}, { reader: reviewed });
-			if (advisories.kind === "enriched") current = {
-				changes: advisories.changes,
-				sources: advisories.sources,
-				findings: advisories.findings
-			};
-			else fail("advisories", failure(advisories));
-		} else fail("advisories", "malformed");
-		const signalLimits = limits(EVIDENCE_READ_ALLOCATION.signals, input);
-		const { readers: shares } = EVIDENCE_READ_ALLOCATION.signals;
-		const malware = createMalwareReader(limits(shares.malware, input), dependencies);
-		const registry = createNpmRegistryReader(limits(shares.registry, input), dependencies);
-		const times = createNpmPublishTimeReader(limits(shares.publishTimes, input), dependencies);
-		const metadata = createPolicySignalReader(limits(shares.metadata, input), dependencies);
-		const research = createUpstreamReader(limits(shares.upstream, input), dependencies);
-		for (const opened of [
-			malware,
-			times,
-			metadata
-		]) if (opened.kind === "ready") readers.push(opened);
-		if (research.kind === "ready") readers.push(research.reader);
-		if (malware.kind === "ready" && registry.kind === "ready" && times.kind === "ready" && metadata.kind === "ready" && research.kind === "ready") {
-			const signals = await enrichPolicySignals({
-				binding: packet.binding,
-				changes: current.changes,
-				sources: current.sources,
-				findings: current.findings,
-				publicIdentities,
-				actionVersions,
-				evaluationTime: input.evaluationTime,
-				limits: signalLimits
-			}, {
-				malwareReader: malware,
-				npmReader: registry,
-				publishTimeReader: times,
-				metadataReader: metadata,
-				upstreamReader: research.reader
-			});
-			if (signals.kind === "enriched") {
-				current = {
-					changes: signals.changes,
-					sources: signals.sources,
-					findings: signals.findings
-				};
-				signalAttempts = signals.attempts;
-			} else fail("signals", failure(signals));
-		} else fail("signals", "malformed");
-		const candidate = validateReviewPacket({
-			version: 1,
-			binding: packet.binding,
-			baseSha: packet.baseSha,
-			contextRevision: packet.contextRevision,
-			context: packet.context,
-			coverage: packet.coverage,
-			changes: current.changes,
-			sources: current.sources,
-			findings: current.findings,
-			relationships: packet.relationships
-		}, input.trusted);
+		await enrichUpstreamStage(input, dependencies, readers, progress, fail);
+		await enrichAdvisoryStage(input, dependencies, readers, progress, fail);
+		await enrichSignalsStage(input, dependencies, readers, progress, fail);
+		const candidate = revalidate(input, progress);
 		if (!candidate.ok) {
 			fail("revalidation", "malformed");
 			return {
@@ -28287,8 +28307,8 @@ async function runResearch(input) {
 			kind: "ready",
 			packet: candidate.packet,
 			unavailable,
-			upstreamAttempts,
-			signalAttempts
+			upstreamAttempts: progress.upstreamAttempts,
+			signalAttempts: progress.signalAttempts
 		};
 	} catch {
 		return { kind: "internal-failure" };
