@@ -107,7 +107,10 @@ export function parseDependabotRoots(bytes: Uint8Array): DependabotRoots {
     const text = new TextDecoder('utf-8', { fatal: true }).decode(bytes);
     const budget = { nodes: 0, aliases: 0, occurrences: 0 };
     const tokens = [];
+    let documentTokens = 0;
     for (const token of new Parser().parse(text)) {
+      // Only one document is accepted, so stop before inspecting or composing a second.
+      if (token.type === 'document' && ++documentTokens > 1) fail('malformed');
       preflight(token, { ...DEPENDABOT_ROOT_LIMITS, maxOccurrences: 0 }, budget);
       tokens.push(token);
     }

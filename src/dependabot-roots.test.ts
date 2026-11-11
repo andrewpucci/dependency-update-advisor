@@ -1,4 +1,5 @@
-import { expect, test } from 'vite-plus/test';
+import { expect, test, vi } from 'vite-plus/test';
+import { Composer } from 'yaml';
 import {
   collectorRoots,
   DEPENDABOT_ROOT_LIMITS,
@@ -147,6 +148,24 @@ test.each([
   expect(result).toEqual({ kind: 'unavailable', reason: 'malformed' });
 });
 
+// `budget` or `unsupported` would mean the second document was inspected; a compose call means it was composed.
+test.each([
+  ['an over-budget', `---\nx: [${'1,'.repeat(DEPENDABOT_ROOT_LIMITS.maxYamlNodes)}]\n`],
+  ['an empty', '---\n'],
+  ['a tagged', '--- !custom\n'],
+])('rejects %s second document before inspecting or composing it', (_label, second) => {
+  const compose = vi.spyOn(Composer.prototype, 'compose');
+  try {
+    expect(parseDependabotRoots(encode(`${file(update('npm', '/'))}${second}`))).toEqual({
+      kind: 'unavailable',
+      reason: 'malformed',
+    });
+    expect(compose).not.toHaveBeenCalled();
+  } finally {
+    compose.mockRestore();
+  }
+});
+
 test('does not fail an ignored ecosystem entry whose directory is mistyped', () => {
   const result = parseDependabotRoots(
     encode('version: 2\nupdates:\n  - package-ecosystem: github-actions\n    directory: 5\n'),
@@ -165,7 +184,7 @@ test.each([
   ],
   [
     'YAML nodes in an ignored key',
-    encode(`${file(update('npm', '/'))}x: [${'1,'.repeat(10_001)}]\n`),
+    encode(`${file(update('npm', '/'))}x: [${'1,'.repeat(20_001)}]\n`),
   ],
   [
     'YAML depth',
@@ -309,4 +328,20 @@ test('puts no ignored value in a failure result', () => {
     encode(`version: 2\nsecret: ${sentinel}\nupdates: {`),
   ])
     expect(JSON.stringify(parseDependabotRoots(bytes))).not.toContain(sentinel);
+});
+
+test('does not charge comments or blank lines against the node cap', () => {
+  const bytes = encode(`${file(update('npm', '/'))}${'#\n'.repeat(30_000)}`);
+  expect(bytes.byteLength).toBeLessThanOrEqual(DEPENDABOT_ROOT_LIMITS.maxFileBytes);
+  expect(parseDependabotRoots(bytes)).toMatchObject({
+    kind: 'roots',
+    npm: { kind: 'roots', roots: ['.'] },
+  });
+});
+
+test('reports an unsupported tag as unsupported, not malformed', () => {
+  expect(parseDependabotRoots(encode(`${file(update('npm', '/'))}x: !custom 1\n`))).toEqual({
+    kind: 'unavailable',
+    reason: 'unsupported',
+  });
 });
