@@ -386,3 +386,121 @@ through D1/X1/T4/T5; it does not certify all source-PR parity or live operation.
 PR-body ownership before S2 #20, nonstandard configured directories, numeric
 live budgets/transport, S2/S3 research, M2/O1, W1/W2 publication, adoption, and
 cutover remain separate. Keep the old reviewer active.
+
+## YAML Node Budget Amendment
+
+Status: approved for planning, 2026-11-11, for
+[#151](https://github.com/andrewpucci/dependency-update-advisor/issues/151).
+Approval: the user answered `yes` to leaving the numeric limits unchanged and
+invoked `as-plan` on the reviewed draft. This approves the specification for
+planning; plan and execution approval remain separate. Plan approval: the user
+answered `yes` on 2026-11-11 to the three-task plan after fresh-context
+review; tasks are ordered sub-issues
+[#278](https://github.com/andrewpucci/dependency-update-advisor/issues/278),
+[#279](https://github.com/andrewpucci/dependency-update-advisor/issues/279), and
+[#280](https://github.com/andrewpucci/dependency-update-advisor/issues/280)
+of #151 on the implementation project. Execution approval is pending. It
+refines the "parsed nodes/entries" bound above and adds no module,
+dependency direction, or packet-schema amendment.
+
+### Problem
+
+`preflight` debits the shared `maxYamlNodes` budget for every CST object it
+visits, including `space`, `newline`, and `comment` tokens, indicators,
+documents, and start/end markers. The effective-graph walk then debits the same
+budget again for each node it visits (it does not charge map keys or null
+values). The limit therefore measures formatting, and the cumulative
+budget across base and head reads lets a heavily commented workflow exhaust it
+while the same workflow without comments fits. The spec bounds parsed nodes and
+entries, so formatting is outside the contract.
+
+`preflight` is also C4's only node counter: `parseDependabotRoots` calls it
+under its approved 20,000-node cap with no later effective-graph walk.
+
+### Contract
+
+1. `preflight` debits one node for each CST token of a structural kind:
+   `block-map`, `block-seq`, `flow-collection`, the four scalar kinds
+   (`scalar`, `single-quoted-scalar`, `double-quoted-scalar`, `block-scalar`),
+   and `alias`. Every other token is free: `space`, `newline`, `comment`,
+   `doc-start`/`doc-end`, `document`, indicators (`map-value-ind`,
+   `seq-item-ind`, `explicit-key-ind`, flow start/end), `anchor`, `tag`,
+   `block-scalar-header`, `directive`, `comma`, `byte-order-mark`, `doc-mode`,
+   `flow-error-end`, and `error`. Entries are free on purpose: a comment can
+   create a comment-only entry, so counting entries would again charge
+   formatting.
+2. Check order and limits are unchanged. Depth is still bounded for every
+   visited token, and unsupported tags and directives are still rejected, before
+   composition; free tokens remain subject to those checks. Exhaustion is still
+   `budget`.
+3. The budget stays cumulative across base and head reads. The effective-graph
+   walk keeps its own debits, including per-alias expansion, so alias
+   amplification still consumes budget before the graph is walked.
+4. Adding, removing, or reflowing comments, blank lines, or indentation does
+   not change the debit, so it cannot change whether a workflow fits.
+5. Numeric limits are unchanged, including C4's 20,000-node cap. Under C4 the
+   cap now counts collections, scalars, and aliases only. Besides formatting,
+   commas, `-`/`:` indicators, and entries are free, and an empty sequence item
+   costs nothing. Measured on yaml@2.9.1, about 20,000 list elements now fit
+   where 10,001 used to exceed the cap, and 32,000 empty `-` items parse under
+   the 20,000 cap. The 65,536-byte cap still bounds the work, so this is
+   accepted as defense in depth, not a defect. The user confirmed keeping
+   20,000 on 2026-11-11, and again after this effect was stated.
+6. Output, gaps, and retained evidence are unchanged; no formatting, comments,
+   or raw YAML are retained.
+
+### Acceptance checks
+
+New-behavior checks are written first and must fail on the current code.
+
+| Check                                                                                                                                                                   | Required result                                                                                                                             |
+| ----------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------- |
+| The `ordinary` workflow and a copy with added comments, blank lines, trailing spaces, and a dedented trailing comment inside a nested collection (a comment-only entry) | Equal `budget.nodes`; the same `maxYamlNodes` boundary passes for both and fails by one for both                                            |
+| Same pair read cumulatively through one budget                                                                                                                          | The second read's outcome does not depend on the first's comments                                                                           |
+| `jobs: {}` pinned as a literal at both levels: `preflight` alone, and `readWorkflow` `budget.nodes`                                                                     | `preflight` 3 and `budget.nodes` 5 (the current code gives 9 and 11); the implementation confirms the numbers                               |
+| One document with a plain, a single-quoted, a double-quoted, a block, and an aliased scalar, plus comments                                                              | Exact count pinned as a number: every structural kind counted once, comments free                                                           |
+| Comment-heavy input at the node boundary                                                                                                                                | Parses at the limit; `limit - 1` returns `budget`, not a formatting-driven failure                                                          |
+| `parseDependabotRoots` with a commented file over the old formatting-inflated count                                                                                     | Parses                                                                                                                                      |
+| `parseDependabotRoots` with `x: !custom 1`                                                                                                                              | `unsupported` from `preflight`'s tag check, not `malformed`; catches an early `continue` for non-structural tokens that skips the tag check |
+
+Preservation checks pass on the current code and must keep passing:
+
+| Check                                                                                                      | Required result                                                                                                                                                          |
+| ---------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| Existing X1 exact-boundary, cumulative, alias-amplification, and deeply nested flow tests                  | Unchanged; nested flow input beyond depth is still rejected before composition                                                                                           |
+| C4's `YAML nodes in an ignored key` case                                                                   | Re-pinned to `'1,'.repeat(20_001)` (still `budget`); the old input no longer exceeds the cap, so this case fails once the rule lands and is re-pinned in the same change |
+| `parseDependabotRoots` with a structurally over-cap file, and the existing depth, tag, and directive cases | Still `budget` or `unsupported` as before                                                                                                                                |
+
+Named mutations: restoring the unconditional debit (every token charged),
+removing the debit for structural kinds, counting entries or only
+`scalar` tokens, and a deny-list that frees only `space`, `newline`, and
+`comment` must each fail at least one check.
+
+### Boundaries
+
+- **Always:** Keep depth, tag, and directive checks before composition and keep
+  the cumulative budget.
+- **Ask first:** Change a numeric limit, drop the preflight debit entirely
+  (leaves C4 without a node bound), or change what counts as structural.
+- **Never:** Make comments, whitespace, or key order affect the result, or
+  weaken `budget` for alias amplification.
+
+### Decisions and open questions
+
+The user chose on 2026-11-11 to keep a preflight debit for structural tokens
+only, rather than drop it, so a spent cumulative budget is still detected before
+composition and C4 retains a node bound.
+
+- The issue states that nothing sets a production `maxYamlNodes`; code does
+  (`src/collection.ts` sets 100,000 for Actions, `src/startup.ts` a startup
+  probe, and C4 20,000). The user confirmed on 2026-11-11 that these numbers
+  stay unchanged.
+- Add a one-line pointer in [SPEC-dependabot-roots.md](SPEC-dependabot-roots.md)
+  that its node cap now counts structure.
+- The committed action bundle contains `preflight`, so the implementation
+  regenerates it with `npm run build` for the CI drift gate.
+
+Verification for the eventual change: `npm run check`, `npm run lint`,
+`npm run format:check`, and `npx vp test run` on one recorded revision. This
+specification change runs `npm run lint:md`, `npm run format:check`, and
+`git diff --check`.
