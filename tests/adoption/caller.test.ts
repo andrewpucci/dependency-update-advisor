@@ -23,9 +23,12 @@ function expressionsIn(value: unknown, path: string[] = []): LocatedExpression[]
 test('R1 caller permits only the approved pinned workflow_run shape', () => {
   const document = parseDocument(readFileSync(callerPath, 'utf8'), { uniqueKeys: true });
   const caller = document.toJS();
+  const ciDocument = parseDocument(readFileSync(ciPath, 'utf8'), { uniqueKeys: true });
+  const ci = ciDocument.toJS() as { name?: unknown };
 
   expect(document.errors).toEqual([]);
-  expect(readFileSync(ciPath, 'utf8')).toContain('name: CI');
+  expect(ciDocument.errors).toEqual([]);
+  expect(ci.name).toBe('CI');
   expect(caller).toEqual({
     name: 'Dependabot review caller',
     on: { workflow_run: { workflows: ['CI'], types: ['completed'] } },
