@@ -189,7 +189,7 @@ on: [push] # trailing comment
 jobs:
   # comment between keys
 
-  build:   
+  build:${' '.repeat(3)}
     steps:
       # comment before an item
       - run: echo uses:example/ignored@v1

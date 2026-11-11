@@ -399,7 +399,9 @@ review; tasks are ordered sub-issues
 [#278](https://github.com/andrewpucci/dependency-update-advisor/issues/278),
 [#279](https://github.com/andrewpucci/dependency-update-advisor/issues/279), and
 [#280](https://github.com/andrewpucci/dependency-update-advisor/issues/280)
-of #151 on the implementation project. Execution approval is pending. It
+of #151 on the implementation project. Execution approval: the user invoked
+`as-build auto` in one PR on 2026-11-11; implemented on `issue-151`, pending
+review and merge. It
 refines the "parsed nodes/entries" bound above and adds no module,
 dependency direction, or packet-schema amendment.
 
