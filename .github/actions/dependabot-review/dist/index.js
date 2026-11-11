@@ -8590,6 +8590,16 @@ function debit$1(budget, key, limit) {
 	need$5(budget[key] < limit, "budget");
 	budget[key]++;
 }
+const STRUCTURAL_TOKENS = /* @__PURE__ */ new Set([
+	"block-map",
+	"block-seq",
+	"flow-collection",
+	"scalar",
+	"single-quoted-scalar",
+	"double-quoted-scalar",
+	"block-scalar",
+	"alias"
+]);
 function preflight$1(value, limits, budget) {
 	const stack = [{
 		value,
@@ -8606,7 +8616,7 @@ function preflight$1(value, limits, budget) {
 		].includes(r.type);
 		const next = depth + Number(collection);
 		need$5(next <= limits.maxYamlDepth, "budget");
-		debit$1(budget, "nodes", limits.maxYamlNodes);
+		if (STRUCTURAL_TOKENS.has(r.type)) debit$1(budget, "nodes", limits.maxYamlNodes);
 		if (r.type === "tag") need$5([
 			"!!str",
 			"!!int",
