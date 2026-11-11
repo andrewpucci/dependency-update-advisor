@@ -17,9 +17,8 @@ rehearsal recorded the intentionally redacted `internal-failure` outcome, but
 that aggregate does not identify a safe investigation boundary. The evidence
 is recorded in [#27](https://github.com/andrewpucci/dependency-update-advisor/issues/27).
 The user approved the following amendment for planning on 2026-11-11 and
-approved its execution on 2026-11-11; the work is implemented on `issue-27`,
-pending fresh-context review. This amendment does not authorize live
-publication or a production claim backend.
+approved its execution on 2026-11-11; the work is merged. This amendment does
+not authorize live publication or a production claim backend.
 
 The user approved this W2 supporting-contract map on 2026-11-08:
 
