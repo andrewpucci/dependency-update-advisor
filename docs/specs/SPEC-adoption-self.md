@@ -148,7 +148,8 @@ three mapped secrets, no checkout, artifact, or cache, and no expression in
 - W2 #26 is merged (2026-11-10) as a no-write rehearsal. Resolved 2026-11-11:
   the caller merges as a no-write rehearsal before live publication and the
   production claim backend land; those gates (G1) block only the live trial.
-  No open issue tracks G1 yet.
+  [#282](https://github.com/andrewpucci/dependency-update-advisor/issues/282)
+  tracks G1's review-publication specification and production claim backend.
 - Resolved 2026-11-11: the invalid-config proof uses a temporary invalid config
   on `main`, then a revert. `main` CI is knowingly red for that window.
 - Final caller filename and the App's name and installation.

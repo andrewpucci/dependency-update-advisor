@@ -249,7 +249,9 @@ gaps and an introduced vulnerability before parity is claimed.
 - [Review orchestration](SPEC-review-orchestration.md) — approved for planning
   supporting contract for W2 #26 in `shared-review`, after the user approved
   its capability map and specification on 2026-11-08. It scopes the no-write,
-  injected-claim-store coordinator; publication remains separate. Its approved
+  injected-claim-store coordinator; publication remains separate. Its
+  2026-11-11 fixed-stage diagnostic amendment is approved for planning;
+  execution requires separate approval. Its approved
   map's #209 contracts are implemented on `issue-209`, pending fresh-context
   review and merge: [shared PyPI release
   observations](SPEC-shared-release-observations.md), charged to the existing

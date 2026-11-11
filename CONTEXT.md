@@ -16,10 +16,12 @@ and [T5 evidence](https://github.com/andrewpucci/dependency-update-advisor/issue
 record exact-revision checks and remaining integration gates.
 [Advisory complexity review](docs/specs/SPEC-complexity-review.md) is merged.
 The shared workflow remains fail closed and the old reviewer stays active.
-W2 orchestration is implemented on the working branch as a no-write rehearsal,
-with [C4 Dependabot roots](docs/specs/SPEC-dependabot-roots.md) supplying the
-collectors' trusted roots; it awaits fresh-context review and merge before any
-adoption, publication, or claim-backend work.
+W2 orchestration is merged into `main` as a no-write rehearsal, with
+[C4 Dependabot roots](docs/specs/SPEC-dependabot-roots.md) supplying the
+collectors' trusted roots. Its R1 rehearsal reached the trusted workflow but
+recorded a redacted `internal-failure`; the fixed-stage diagnostic amendment is
+approved for planning. Publication and production claim storage remain separate
+gates.
 
 ## Next action
 
@@ -39,9 +41,9 @@ before T2/T3 writes.
 tracks its remaining gates. W2, C2, adoption, parity and cutover need proof.
 [A1 #24](docs/specs/SPEC-action-package.md) is merged into `main`.
 [W1 #25](docs/specs/SPEC-reusable-workflow.md) is implemented, pending review.
-[W2 #26 review orchestration](docs/specs/SPEC-review-orchestration.md) has its
-approved plan implemented as the no-write rehearsal on this branch. Production
-claim storage and live publication remain separate supporting contracts. #209
+[W2 #26 review orchestration](docs/specs/SPEC-review-orchestration.md) is
+merged on `main` as the no-write rehearsal. Production claim storage and live
+publication remain separate supporting contracts. #209
 has implemented [shared PyPI release observations](docs/specs/SPEC-shared-release-observations.md)
 and [bounded-reader consolidation](docs/specs/SPEC-bounded-reader-consolidation.md)
 on `issue-209`. Its ordered #260–#264 tasks are pending fresh-context review
