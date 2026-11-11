@@ -89,6 +89,16 @@ function expand(
   }
   return found.sort((a, b) => (nodeKey(a) < nodeKey(b) ? -1 : nodeKey(a) > nodeKey(b) ? 1 : 0));
 }
+/** Supported dependency targets when a caller needs a path but not absence diagnostics. */
+export function supportedTargets(
+  snapshot: NpmRootSide,
+  unresolved: ReadonlySet<string>,
+  path: string,
+  node: NpmRootSide['packages'][string],
+  spend: () => void,
+) {
+  return expand(snapshot, unresolved, path, node, spend, () => undefined);
+}
 /**
  * Breadth-first closure from one anchor instance, with every skipped edge classified. A missing
  * slot is absence only under the lookup-chain rule; unresolved positions, instance-less entries,

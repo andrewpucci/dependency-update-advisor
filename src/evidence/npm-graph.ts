@@ -10,16 +10,9 @@ import {
   type EvidenceReason,
 } from '../schema.js';
 import type { Finding } from '../policy.js';
-import type { NpmInventoryResult, NpmRootSide, NpmNode } from './npm.js';
+import type { NpmInventoryResult, NpmRootSide } from './npm.js';
 import { fitRetained } from './optional-retained.js';
-import {
-  closureFrom,
-  closurePath,
-  nodeKey,
-  PACKAGE_KEY,
-  supportedEdge,
-  type Closure,
-} from './npm-reach.js';
+import { closureFrom, closurePath, supportedTargets, type Closure } from './npm-reach.js';
 import {
   createNpmRegistryReader,
   interpretNpmLifecycle,
@@ -234,41 +227,6 @@ function eligible(inventory: Inventory, member: Resolved): Resolved | Observatio
   if (anchors.length !== 1) return anchors.length ? 'multiple_direct_changes' : 'no_direct_change';
   return roots(anchors[0]).length === 1 ? anchors[0] : 'multiple_roots';
 }
-function slotTarget(
-  snapshot: NpmRootSide,
-  unresolved: ReadonlySet<string>,
-  path: string,
-  key: string,
-  spend: () => void,
-) {
-  let parent = path;
-  for (;;) {
-    spend();
-    const candidate = (parent ? parent + '/' : '') + 'node_modules/' + key;
-    if (unresolved.has(candidate)) return undefined;
-    const node = own(snapshot.packages, candidate);
-    if (node) return node.instance ?? undefined;
-    if (!parent) return undefined;
-    const index = parent.lastIndexOf('/node_modules/');
-    parent = index < 0 ? '' : parent.slice(0, index);
-  }
-}
-function edges(
-  snapshot: NpmRootSide,
-  unresolved: ReadonlySet<string>,
-  node: NpmNode,
-  spend: () => void,
-) {
-  const maps = { ...node.dependencies, ...node.optionalDependencies };
-  const targets: NpmSide[] = [];
-  for (const key of Object.keys(maps).sort()) {
-    spend();
-    if (!PACKAGE_KEY.test(key)) continue;
-    const target = slotTarget(snapshot, unresolved, node.instance!.lockPath, key, spend);
-    if (target && supportedEdge(key, maps[key], target)) targets.push(target);
-  }
-  return targets.sort((a, b) => (nodeKey(a) < nodeKey(b) ? -1 : nodeKey(a) > nodeKey(b) ? 1 : 0));
-}
 function pathTo(snapshot: NpmRootSide, start: NpmSide, end: NpmSide, spend: () => void) {
   // First discovery keeps the shortest canonical parent; paths are rebuilt only on success.
   const queue = [start],
@@ -284,7 +242,7 @@ function pathTo(snapshot: NpmRootSide, start: NpmSide, end: NpmSide, spend: () =
       return path;
     }
     if (!node) continue;
-    for (const target of edges(snapshot, unresolved, node, spend)) {
+    for (const target of supportedTargets(snapshot, unresolved, step.lockPath, node, spend)) {
       if (!parents.has(target.lockPath)) {
         parents.set(target.lockPath, step);
         queue.push(target);
@@ -348,7 +306,7 @@ function unchangedReach(
     spend();
     const node = own(snapshot.packages, queue[i].lockPath);
     if (!node) continue;
-    for (const target of edges(snapshot, unresolved, node, spend)) {
+    for (const target of supportedTargets(snapshot, unresolved, queue[i].lockPath, node, spend)) {
       if (!seen.has(target.lockPath)) {
         seen.add(target.lockPath);
         queue.push(target);
