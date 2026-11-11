@@ -219,6 +219,11 @@ gaps and an introduced vulnerability before parity is claimed.
   retains live transport, workflow prose acquisition, research, assessment,
   rendering, publication, packaging, adoption, parity, and cutover gates.
 - [Repository adoption](SPEC-repo-adoption.md) — approved for planning.
+- [R1 self-adoption](SPEC-adoption-self.md) — approved for planning,
+  2026-11-11; supporting consumer record for
+  [#27](https://github.com/andrewpucci/dependency-update-advisor/issues/27)
+  in `repo-adoption`. W2 #26 is merged as a no-write rehearsal; live
+  publication and the claim backend remain gates for the live trial.
 - [Comment experience](SPEC-comment-experience.md) — approved supporting contract.
 - [Decision brief rendering](SPEC-decision-brief.md) — approved for execution
   for O1 #23; renderer implementation is pending overall review and merge.

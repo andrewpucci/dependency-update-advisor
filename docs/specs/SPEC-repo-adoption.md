@@ -24,6 +24,10 @@ workflow runs the shared reviewer action at its own pinned commit. GitHub's
 can expose credentials, so the caller must preserve the trusted-code and
 untrusted-PR-data boundary from `SPEC-shared-review.md`.
 
+For the repeatable operator setup of the App and repository Actions secrets,
+use [Consumer GitHub App and Secret Setup](../adoption-setup.md). It does not
+replace the consumer-specific adoption record or its no-write and live trials.
+
 ## Commands
 
 After implementation, validate the shared revision with:
