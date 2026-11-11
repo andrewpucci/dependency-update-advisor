@@ -13,6 +13,7 @@ import { uvInstance, uvSemantic } from './uv-inventory.js';
 import { byCodeUnit } from './common.js';
 import { checkGraphData, UvGraphFailure, type GraphWork } from './uv-input.js';
 import { uvClosureFrom, uvClosurePath, type UvClosure } from './uv-reach.js';
+import { resolveMultiAnchor } from './multi-anchor.js';
 
 export type UvPathRoot = { root: UvRootSnapshot; base: UvRoles; head: UvRoles };
 type Path = Extract<RelationshipProof, { ecosystem: 'uv' }>;
@@ -241,30 +242,27 @@ function multiAnchor(
   candidates: readonly UvCandidate[],
   work: GraphWork,
 ) {
-  const verdicts: ReachabilityVerdict[] = [];
   const claim = member.kind === 'removal' ? 'base' : 'head',
     end = claim === 'base' ? member.from : member.to,
     context = contexts.find((c) => c.root.root === end?.root);
-  if (!end) return { proofs: [], verdicts, observation: 'wrong_side' };
-  if (!context) return { proofs: [], verdicts, observation: 'snapshot_missing' };
+  if (!end) return { proofs: [], verdicts: [], observation: 'wrong_side' };
+  if (!context) return { proofs: [], verdicts: [], observation: 'snapshot_missing' };
   // The marker-agnostic closure decides who can reach; only absence may rely on it.
-  const reaching = candidates.filter((c) => c.closures[claim]?.keys.has(key(end)));
-  if (!reaching.length) return { proofs: [], verdicts, observation: 'missing_relationship' };
-  if (reaching.length > 1)
-    return {
-      proofs: ambiguityProofs(context, member, claim, end, reaching),
-      verdicts,
-      observation: 'ambiguous_anchors',
-    };
-  const sole = reaching[0].change,
-    start = claim === 'head' ? sole.to : sole.from;
-  const proof = start
-    ? groupingProof(context, claim, sole, member, start, end, work)
-    : 'wrong_side';
-  if (typeof proof === 'string') return { proofs: [], verdicts, observation: proof };
-  for (const other of candidates)
-    if (other !== reaching[0]) verdicts.push(...unreachableVerdicts(member, other));
-  return { proofs: [proof], verdicts, observation: null };
+  return resolveMultiAnchor({
+    candidates,
+    reaches: (candidate) => candidate.closures[claim]?.keys.has(key(end)) ?? false,
+    noReach: () => 'missing_relationship',
+    ambiguityProofs: (reaching) => ambiguityProofs(context, member, claim, end, reaching),
+    soleProof: (candidate) => {
+      const start = claim === 'head' ? candidate.change.to : candidate.change.from;
+      return start
+        ? groupingProof(context, claim, candidate.change, member, start, end, work)
+        : 'wrong_side';
+    },
+    isProof: (value): value is Path => typeof value !== 'string',
+    ambiguous: 'ambiguous_anchors',
+    unreachable: (candidate) => unreachableVerdicts(member, candidate),
+  });
 }
 function isShared(result: UvInventory, contexts: UvPathRoot[], proof: Path, work: GraphWork) {
   const end = proof.path.at(-1)!,

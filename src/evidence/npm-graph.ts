@@ -12,6 +12,7 @@ import {
 import type { Finding } from '../policy.js';
 import type { NpmInventoryResult, NpmRootSide } from './npm.js';
 import { fitRetained } from './optional-retained.js';
+import { resolveMultiAnchor } from './multi-anchor.js';
 import { closureFrom, closurePath, supportedTargets, type Closure } from './npm-reach.js';
 import {
   createNpmRegistryReader,
@@ -421,21 +422,22 @@ function noReach(candidates: readonly Candidate[], claim: Claim, present: boolea
   return 'missing_relationship';
 }
 function multiAnchor(member: Resolved, candidates: readonly Candidate[], present: boolean) {
-  const proofs: NpmProof[] = [],
-    verdicts: ReachabilityVerdict[] = [];
   const claim = member.kind === 'removal' ? 'base' : 'head',
     end = claim === 'base' ? member.from : member.to;
-  if (!end) return { proofs, verdicts, observation: 'wrong_side' as Observation };
-  const reaching = candidates.filter((c) => c.closures[claim]?.steps.has(end.lockPath));
-  if (!reaching.length)
-    return { proofs, verdicts, observation: noReach(candidates, claim, present) };
-  const found = reachingProofs(member, claim, end, reaching);
-  if (reaching.length > 1)
-    return { proofs: found.proofs, verdicts, observation: 'ambiguous_anchors' as Observation };
-  if (!found.proofs.length) return { proofs: found.proofs, verdicts, observation: found.blocked };
-  for (const other of candidates)
-    if (other !== reaching[0]) verdicts.push(...unreachableVerdicts(member, other));
-  return { proofs: found.proofs, verdicts, observation: null };
+  if (!end) return { proofs: [], verdicts: [], observation: 'wrong_side' as Observation };
+  return resolveMultiAnchor<Candidate, NpmProof, ReachabilityVerdict, Observation>({
+    candidates,
+    reaches: (candidate) => candidate.closures[claim]?.steps.has(end.lockPath) ?? false,
+    noReach: () => noReach(candidates, claim, present),
+    ambiguityProofs: (reaching) => reachingProofs(member, claim, end, reaching).proofs,
+    soleProof: (candidate): NpmProof | Observation => {
+      const found = reachingProofs(member, claim, end, [candidate]);
+      return found.proofs[0] ?? found.blocked ?? 'missing_relationship';
+    },
+    isProof: (value): value is NpmProof => typeof value !== 'string',
+    ambiguous: 'ambiguous_anchors',
+    unreachable: (candidate) => unreachableVerdicts(member, candidate),
+  });
 }
 type ProofState = Readonly<{
   optionalRelationships: NpmProof[];
