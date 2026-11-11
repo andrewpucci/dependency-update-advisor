@@ -20,6 +20,8 @@ export type GroupingReason =
   | 'no_direct_change'
   | 'missing_relationship'
   | 'multiple_roots'
+  | 'ambiguous_anchors'
+  | 'reachability_unproven'
   | 'proven_relationship';
 const reasonRanks = {
   permission: 0,
@@ -50,6 +52,10 @@ export type DecisionUnit = PolicyUnit &
     memberIds: readonly string[];
     memberCount: number;
     proofKeys: readonly string[];
+    /** Canonical keys of the `unreachable` verdicts a group relied on. */
+    verdictKeys: readonly string[];
+    /** Informational relationship limits; never C3 sources, coverage limits, or evidence gaps. */
+    relationshipLimits: readonly string[];
     relationship: Readonly<{ reason: GroupingReason; nextAction: string }>;
     evidenceLinks: readonly EvidenceLink[];
   }>;
@@ -145,6 +151,10 @@ const actions: Record<GroupingReason, string> = {
     'Obtain an applicable immutable lockfile path or assess this change independently.',
   multiple_roots:
     'Assess this root-moving change and related members independently; groups must stay within one root.',
+  ambiguous_anchors:
+    'Assess this change independently; several changed direct anchors can reach it.',
+  reachability_unproven:
+    'Assess this change independently; reachability from every other changed direct candidate is not proven absent.',
   proven_relationship:
     'Assess the group without substituting anchor evidence for any member lookup.',
 };
@@ -206,12 +216,36 @@ function projectMembers(
     coverageLimits: sources.flatMap((source) => source.coverageLimits),
   };
 }
-function grouping(
-  packet: Packet,
-  change: Change,
-): { anchorId: string | null; reason: GroupingReason; proofKeys: string[] } {
+type ReachVerdict = Packet['reachability'][number];
+type ReachabilityIndex = Readonly<{
+  pairs: ReadonlyMap<string, ReachVerdict>;
+  scopes: ReadonlyMap<string, ReachVerdict>;
+  anchors: ReadonlySet<string>;
+}>;
+function indexReachability(packet: Packet): ReachabilityIndex {
+  const pairs = new Map<string, ReachVerdict>(),
+    scopes = new Map<string, ReachVerdict>();
+  for (const v of packet.reachability)
+    if (v.memberId === null) scopes.set(JSON.stringify([v.side, v.anchorId]), v);
+    else pairs.set(JSON.stringify([v.side, v.anchorId, v.memberId]), v);
+  return { pairs, scopes, anchors: new Set(packet.reachability.map((v) => v.anchorId)) };
+}
+type Assignment = {
+  anchorId: string | null;
+  reason: GroupingReason;
+  proofKeys: string[];
+  verdictKeys: string[];
+  limits: string[];
+};
+function grouping(packet: Packet, change: Change, reachability: ReachabilityIndex): Assignment {
   // ponytail: scans stay bounded by 128 changes and 256 proofs; index only if those packet caps grow.
-  const standalone = (reason: GroupingReason) => ({ anchorId: null, reason, proofKeys: [] });
+  const standalone = (reason: GroupingReason, limits: string[] = []): Assignment => ({
+    anchorId: null,
+    reason,
+    proofKeys: [],
+    verdictKeys: [],
+    limits: limits.sort(byCodeUnit),
+  });
   if (change.ecosystem === 'actions') return standalone('actions_occurrence');
   if ('basis' in change) return standalone('independent_change');
   if (change.role === 'unknown') return standalone('unknown_role');
@@ -227,17 +261,75 @@ function grouping(
   );
   if (candidates.some((c) => c.role === 'unknown')) return standalone('unknown_role');
   const anchors = candidates.filter((c) => c.role === 'direct');
-  if (anchors.length !== 1)
-    return standalone(anchors.length ? 'multiple_direct_changes' : 'no_direct_change');
-  if (roots(anchors[0]).length !== 1) return standalone('multiple_roots');
-  const proofs = packet.relationships.filter(
-    (p) => p.fromId === anchors[0].id && p.toId === change.id && p.side === side,
-  );
-  if (!proofs.length) return standalone('missing_relationship');
+  if (!anchors.length) return standalone('no_direct_change');
+  const proofsFrom = (anchor: Change, proofSide: 'base' | 'head') =>
+    packet.relationships.filter(
+      (p) => p.fromId === anchor.id && p.toId === change.id && p.side === proofSide,
+    );
+  const proven = (anchor: Change) =>
+    proofsFrom(anchor, side)
+      .map((p) => JSON.stringify(canonical(p)))
+      .sort();
+  if (anchors.length === 1) {
+    if (roots(anchors[0]).length !== 1) return standalone('multiple_roots');
+    const proofKeys = proven(anchors[0]);
+    if (!proofKeys.length) return standalone('missing_relationship');
+    return {
+      anchorId: anchors[0].id,
+      reason: 'proven_relationship',
+      proofKeys,
+      verdictKeys: [],
+      limits: [],
+    };
+  }
+  // Legacy: no record names any candidate, so absence was never evidenced for this root.
+  if (!anchors.some((c) => reachability.anchors.has(c.id)))
+    return standalone('multiple_direct_changes');
+  const reaching = anchors.filter((c) => proven(c).length);
+  if (reaching.length > 1)
+    return standalone(
+      'ambiguous_anchors',
+      reaching.flatMap((c) =>
+        proven(c).map((key) => JSON.stringify(['ambiguous_anchors', change.id, c.id, key])),
+      ),
+    );
+  if (!reaching.length) return standalone('missing_relationship');
+  const anchor = reaching[0];
+  if (roots(anchor).length !== 1) return standalone('multiple_roots');
+  const used = change.kind === 'update' ? (['base', 'head'] as const) : ([side] as const);
+  const limits: string[] = [],
+    verdictKeys: string[] = [];
+  for (const other of anchors.filter((c) => c !== anchor)) {
+    const counted = used.filter((s) => {
+      const step = s === 'base' ? other.from : other.to;
+      return step !== null && 'root' in step && step.root === instance.root;
+    });
+    if (!counted.length) limits.push(JSON.stringify(['blocked', change.id, other.id]));
+    for (const s of counted) {
+      const v = reachability.pairs.get(JSON.stringify([s, other.id, change.id]));
+      if (v?.outcome === 'unreachable') verdictKeys.push(JSON.stringify(canonical(v)));
+      else {
+        const known = v ?? reachability.scopes.get(JSON.stringify([s, other.id]));
+        limits.push(
+          JSON.stringify([
+            'reachability',
+            change.id,
+            other.id,
+            s,
+            known?.outcome ?? 'missing',
+            known?.reasons ?? [],
+          ]),
+        );
+      }
+    }
+  }
+  if (limits.length) return standalone('reachability_unproven', limits);
   return {
-    anchorId: anchors[0].id,
+    anchorId: anchor.id,
     reason: 'proven_relationship',
-    proofKeys: proofs.map((p) => JSON.stringify(canonical(p))).sort(),
+    proofKeys: proven(anchor),
+    verdictKeys: verdictKeys.sort(),
+    limits: [],
   };
 }
 
@@ -246,14 +338,20 @@ function grouping(
  */
 export function formDecisionUnits(input: Packet): UnitInventory {
   const packet = structuredClone(input);
-  const assignments = new Map(packet.changes.map((c) => [c.id, grouping(packet, c)]));
-  const groups = new Map<string, { members: string[]; proofs: string[] }>();
+  const reachability = indexReachability(packet);
+  const assignments = new Map(packet.changes.map((c) => [c.id, grouping(packet, c, reachability)]));
+  const groups = new Map<string, { members: string[]; proofs: string[]; verdicts: string[] }>();
   for (const c of packet.changes) {
     const assignment = assignments.get(c.id)!;
     if (assignment.anchorId === null) continue;
-    const group = groups.get(assignment.anchorId) ?? { members: [assignment.anchorId], proofs: [] };
+    const group = groups.get(assignment.anchorId) ?? {
+      members: [assignment.anchorId],
+      proofs: [],
+      verdicts: [],
+    };
     group.members.push(c.id);
     group.proofs.push(...assignment.proofKeys);
+    group.verdicts.push(...assignment.verdictKeys);
     groups.set(assignment.anchorId, group);
   }
   const units: DecisionUnit[] = packet.changes.flatMap((c) => {
@@ -274,6 +372,8 @@ export function formDecisionUnits(input: Packet): UnitInventory {
         memberIds,
         memberCount: memberIds.length,
         proofKeys: group ? group.proofs.sort() : [],
+        verdictKeys: group ? group.verdicts.sort() : [],
+        relationshipLimits: group ? [] : assignment.limits,
         relationship: { reason, nextAction: actions[reason] },
       },
     ];

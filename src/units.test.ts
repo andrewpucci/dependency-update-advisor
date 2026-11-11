@@ -428,6 +428,258 @@ test('multiple proofs to the same anchor preserve one group, not extra assessmen
   expect(formDecisionUnits(accepted(f)).units).toEqual(first.units);
 });
 
+type Outcome = 'unreachable' | 'unknown' | 'unsupported' | 'failed' | 'truncated';
+function verdict(
+  f: ReturnType<typeof fixture>,
+  anchorId: string,
+  memberId: string | null,
+  side: 'base' | 'head',
+  outcome: Outcome = 'unreachable',
+  reasons: EvidenceReason[] = [],
+) {
+  const anchor = f.packet.changes.find((c) => c.id === anchorId);
+  if (!anchor || anchor.ecosystem === 'actions') throw new Error('lock anchor required');
+  const step = side === 'head' ? anchor.to : anchor.from;
+  if (!step) throw new Error('anchor has no ' + side + ' instance');
+  f.packet.reachability.push({
+    ecosystem: anchor.ecosystem,
+    side,
+    sourceId: step.sourceId,
+    anchorId,
+    memberId,
+    outcome,
+    reasons,
+  });
+}
+const verdictKey = (v: ReviewPacket['reachability'][number]) =>
+  JSON.stringify(Object.fromEntries(Object.entries(v).sort(([a], [b]) => (a < b ? -1 : 1))));
+function multiAnchor(extra: PacketChange[] = []) {
+  const updated = npm('A'),
+    removed = { ...npm('R'), kind: 'removal' as const, to: null },
+    added = { ...npm('D'), kind: 'addition' as const, from: null },
+    member = npm('M');
+  member.role = 'transitive';
+  const f = fixture([updated, removed, added, member, ...extra]);
+  relate(f, 0, 3);
+  return f;
+}
+function completeVerdicts(f: ReturnType<typeof fixture>) {
+  verdict(f, 'R', 'M', 'base');
+  verdict(f, 'D', 'M', 'head');
+}
+function unit(f: ReturnType<typeof fixture>, memberId: string) {
+  return formDecisionUnits(accepted(f)).units.find((u) => u.memberIds.includes(memberId))!;
+}
+
+test('groups under the one reachable anchor when every other candidate is proven unreachable', () => {
+  const f = multiAnchor();
+  completeVerdicts(f);
+  const result = formDecisionUnits(accepted(f));
+  const group = result.units.find((u) => u.kind === 'direct_group')!;
+  expect(group).toMatchObject({ anchorId: 'A', memberIds: ['A', 'M'], memberCount: 2 });
+  expect(group.proofKeys).toHaveLength(1);
+  expect(group.verdictKeys).toEqual(f.packet.reachability.map(verdictKey).sort());
+  expect(group.relationshipLimits).toEqual([]);
+  expect(result.units.filter((u) => u.kind === 'standalone').map((u) => u.memberIds)).toEqual(
+    expect.arrayContaining([['R'], ['D']]),
+  );
+  expect(result.units.flatMap((u) => u.memberIds).sort()).toEqual(['A', 'D', 'M', 'R']);
+});
+
+test.each([
+  ['missing removal base verdict', 'R'],
+  ['missing addition head verdict', 'D'],
+] as const)('keeps the member standalone for a %s', (_label, omitted) => {
+  const f = multiAnchor();
+  if (omitted !== 'R') verdict(f, 'R', 'M', 'base');
+  if (omitted !== 'D') verdict(f, 'D', 'M', 'head');
+  const m = unit(f, 'M');
+  expect(m).toMatchObject({ kind: 'standalone', memberIds: ['M'] });
+  expect(m.relationship.reason).toBe('reachability_unproven');
+  expect(m.relationship.nextAction).toBeTruthy();
+  expect(m.verdictKeys).toEqual([]);
+  expect(m.relationshipLimits.join()).toContain(omitted);
+});
+
+test.each([
+  ['unknown', ['unknown']],
+  ['unsupported', ['unsupported']],
+  ['failed', ['timeout']],
+  ['truncated', ['truncated']],
+] as const)(
+  'a %s verdict never proves absence and stays an attributable limit',
+  (outcome, reasons) => {
+    const f = multiAnchor();
+    verdict(f, 'D', 'M', 'head');
+    verdict(f, 'R', 'M', 'base', outcome, [...reasons]);
+    const m = unit(f, 'M');
+    expect(m.relationship.reason).toBe('reachability_unproven');
+    expect(m.relationshipLimits.join()).toContain(outcome);
+    expect(m.relationshipLimits.join()).toContain(reasons[0]);
+  },
+);
+
+test('a scope record leaves every member of that anchor unproven', () => {
+  const f = multiAnchor();
+  verdict(f, 'D', 'M', 'head');
+  verdict(f, 'R', null, 'base', 'truncated', ['budget']);
+  const m = unit(f, 'M');
+  expect(m.relationship.reason).toBe('reachability_unproven');
+  expect(m.relationshipLimits).toEqual([
+    JSON.stringify(['reachability', 'M', 'R', 'base', 'truncated', ['budget']]),
+  ]);
+});
+
+test('relationship limits are informational and never become C3 evidence sources or limits', () => {
+  const f = multiAnchor();
+  verdict(f, 'D', 'M', 'head');
+  const withLimit = unit(f, 'M');
+  expect(withLimit.relationshipLimits.length).toBeGreaterThan(0);
+  const categories = Object.keys(f.packet.changes.find((c) => c.id === 'M')!.evidence);
+  for (const entry of [...withLimit.sources.map((x) => x.id), ...withLimit.coverageLimits]) {
+    const [memberId, category] = JSON.parse(entry) as [string, string];
+    expect([memberId, categories.includes(category)]).toEqual(['M', true]);
+  }
+});
+
+test('an updated candidate needs verdicts on both sides the member uses', () => {
+  const f = multiAnchor([npm('U')]);
+  completeVerdicts(f);
+  verdict(f, 'U', 'M', 'head');
+  expect(unit(f, 'M').relationship.reason).toBe('reachability_unproven');
+  verdict(f, 'U', 'M', 'base');
+  expect(unit(f, 'M')).toMatchObject({ kind: 'direct_group', anchorId: 'A' });
+});
+
+test('a removed direct blocks head-only members and an added direct blocks base-only members', () => {
+  const rename = fixture([
+    { ...npm('R'), kind: 'removal' as const, to: null },
+    { ...npm('D'), kind: 'addition' as const, from: null },
+    npm('U'),
+    { ...npm('N'), kind: 'addition' as const, from: null, role: 'transitive' as const },
+  ]);
+  relate(rename, 1, 3);
+  verdict(rename, 'U', 'N', 'head');
+  const added = unit(rename, 'N');
+  expect(added.relationship.reason).toBe('reachability_unproven');
+  expect(added.relationshipLimits).toEqual([JSON.stringify(['blocked', 'N', 'R'])]);
+  const reverse = fixture([
+    { ...npm('R'), kind: 'removal' as const, to: null },
+    { ...npm('D'), kind: 'addition' as const, from: null },
+    npm('U'),
+    { ...npm('G'), kind: 'removal' as const, to: null, role: 'transitive' as const },
+  ]);
+  relate(reverse, 0, 3, 'base');
+  verdict(reverse, 'U', 'G', 'base');
+  const removed = unit(reverse, 'G');
+  expect(removed.relationship.reason).toBe('reachability_unproven');
+  expect(removed.relationshipLimits).toEqual([JSON.stringify(['blocked', 'G', 'D'])]);
+});
+
+test('two candidates with a positive proof leave the member ambiguous and cite both proofs', () => {
+  const f = multiAnchor();
+  completeVerdicts(f);
+  f.packet.reachability = [];
+  verdict(f, 'R', 'M', 'base');
+  relate(f, 2, 3);
+  const m = unit(f, 'M');
+  expect(m).toMatchObject({ kind: 'standalone' });
+  expect(m.relationship.reason).toBe('ambiguous_anchors');
+  expect(m.relationshipLimits).toHaveLength(2);
+  expect(m.proofKeys).toEqual([]);
+});
+
+test('several groups form in one root and one member keeps its single unit', () => {
+  const f = fixture([npm('A1'), npm('A2'), npm('M1'), npm('M2'), npm('M3')]);
+  for (const id of ['M1', 'M2', 'M3'])
+    f.packet.changes.find((c) => c.id === id)!.role = 'transitive';
+  relate(f, 0, 2);
+  relate(f, 1, 3);
+  relate(f, 0, 4);
+  relate(f, 1, 4);
+  for (const [anchor, member] of [
+    ['A2', 'M1'],
+    ['A1', 'M2'],
+  ])
+    for (const side of ['base', 'head'] as const) verdict(f, anchor, member, side);
+  const units = formDecisionUnits(accepted(f)).units;
+  expect(units.filter((u) => u.kind === 'direct_group').map((u) => u.memberIds)).toEqual(
+    expect.arrayContaining([
+      ['A1', 'M1'],
+      ['A2', 'M2'],
+    ]),
+  );
+  expect(units.find((u) => u.memberIds.includes('M3'))).toMatchObject({
+    kind: 'standalone',
+    relationship: { reason: 'ambiguous_anchors' },
+  });
+  expect(units.flatMap((u) => u.memberIds).sort()).toEqual(['A1', 'A2', 'M1', 'M2', 'M3'].sort());
+});
+
+test('a candidate in another root is not counted against the member', () => {
+  const other = npm('X');
+  other.from!.root = other.to!.root = 'packages/other';
+  const f = multiAnchor([other]);
+  completeVerdicts(f);
+  expect(unit(f, 'M')).toMatchObject({ kind: 'direct_group', anchorId: 'A' });
+});
+
+test('a root-moving candidate counts only on the side naming the member root', () => {
+  const mover = npm('X');
+  mover.to!.root = 'packages/other';
+  const f = multiAnchor([mover]);
+  completeVerdicts(f);
+  expect(unit(f, 'M').relationship.reason).toBe('reachability_unproven');
+  verdict(f, 'X', 'M', 'base');
+  expect(unit(f, 'M')).toMatchObject({ kind: 'direct_group', anchorId: 'A' });
+});
+
+test.each([0, 1, 2] as const)(
+  'empty reachability keeps the legacy multiple_direct_changes result with %i proofs',
+  (proofs) => {
+    const f = multiAnchor();
+    f.packet.relationships = [];
+    if (proofs >= 1) relate(f, 0, 3);
+    if (proofs >= 2) relate(f, 2, 3);
+    const m = unit(f, 'M');
+    expect(m).toMatchObject({ kind: 'standalone', verdictKeys: [], relationshipLimits: [] });
+    expect(m.relationship).toEqual({
+      reason: 'multiple_direct_changes',
+      nextAction:
+        'Assess this change independently; current proofs cannot establish a unique changed anchor.',
+    });
+  },
+);
+
+test('earlier gates still win over reachability evidence', () => {
+  const unknownRole = multiAnchor([{ ...npm('Q'), role: 'unknown' as const }]);
+  completeVerdicts(unknownRole);
+  expect(unit(unknownRole, 'M').relationship.reason).toBe('unknown_role');
+  const partial = multiAnchor();
+  completeVerdicts(partial);
+  partial.packet.coverage.npm = { status: 'partial', reasons: ['truncated'], sourceIds: [] };
+  expect(unit(partial, 'M').relationship.reason).toBe('inventory_incomplete');
+});
+
+test('multi-anchor grouping is deterministic under permutation and keeps uv variants exact', () => {
+  const f = multiAnchor();
+  completeVerdicts(f);
+  const first = formDecisionUnits(accepted(f));
+  f.packet.changes.reverse();
+  f.packet.sources.reverse();
+  f.packet.reachability.reverse();
+  expect(formDecisionUnits(accepted(f)).units).toEqual(first.units);
+  const a = uv('ua'),
+    b = uv('ub'),
+    m = uv('um');
+  a.role = b.role = 'direct';
+  const g = fixture([a, b, m]);
+  relate(g, 0, 2);
+  verdict(g, 'ub', 'um', 'head');
+  verdict(g, 'ub', 'um', 'base');
+  expect(unit(g, 'um')).toMatchObject({ kind: 'direct_group', anchorId: 'ua' });
+});
+
 function available(f: ReturnType<typeof fixture>, id: string, categories?: string[]) {
   const change = f.packet.changes.find((c) => c.id === id)!;
   if ('basis' in change) throw new Error('resolved fixture required');
