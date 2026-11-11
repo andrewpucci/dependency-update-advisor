@@ -19545,6 +19545,18 @@ function guardedFetch(fetchImpl, attempt, owns) {
 }
 
 // src/review.ts
+/** Trusted internal labels for the only redacted diagnostic detail a rehearsal may expose. */
+const INTERNAL_FAILURE_STAGES = [
+	"snapshot",
+	"packet",
+	"research",
+	"assessment",
+	"handoff",
+	"unclassified"
+];
+function internalFailureStage(value) {
+	return INTERNAL_FAILURE_STAGES.includes(value) ? value : "unclassified";
+}
 const outcomeEligibility = Object.freeze({
 	skipped: {
 		kind: "skipped",
@@ -19699,17 +19711,28 @@ async function createReviewHandoff(claims, claim, kind, detail = {
 	const state = await claims.read(claim);
 	if (state.kind !== "owned" || state.owner !== claim.owner || state.generation !== claim.generation) return { kind: "stale" };
 	const outcome = reviewOutcome(kind);
+	const detailBase = {
+		identity: claim.identity,
+		generation: claim.generation,
+		status: outcome.status,
+		comment: outcome.comment,
+		body: detail.body ? "present" : "absent",
+		gaps: copyGaps(detail.gaps),
+		droppedOptional: countDroppedOptional(detail.droppedOptional ?? [])
+	};
+	if (kind === "internal-failure") return {
+		kind: "ready",
+		handoff: Object.freeze({
+			kind,
+			stage: internalFailureStage(detail.stage),
+			...detailBase
+		})
+	};
 	return {
 		kind: "ready",
 		handoff: Object.freeze({
 			kind,
-			identity: claim.identity,
-			generation: claim.generation,
-			status: outcome.status,
-			comment: outcome.comment,
-			body: detail.body ? "present" : "absent",
-			gaps: copyGaps(detail.gaps),
-			droppedOptional: countDroppedOptional(detail.droppedOptional ?? [])
+			...detailBase
 		})
 	};
 }
@@ -19720,8 +19743,7 @@ function createRehearsalSink(appToken) {
 	return Object.freeze({
 		record: (handoff) => {
 			if (traces.length >= 32) return false;
-			traces.push(Object.freeze({
-				kind: handoff.kind,
+			const traceBase = {
 				identity: Object.freeze([...handoff.identity]),
 				generation: handoff.generation,
 				status: handoff.status,
@@ -19729,6 +19751,15 @@ function createRehearsalSink(appToken) {
 				body: handoff.body,
 				gaps: copyGaps(handoff.gaps),
 				droppedOptional: handoff.droppedOptional
+			};
+			if (handoff.kind === "internal-failure") traces.push(Object.freeze({
+				kind: handoff.kind,
+				stage: handoff.stage,
+				...traceBase
+			}));
+			else traces.push(Object.freeze({
+				kind: handoff.kind,
+				...traceBase
 			}));
 			return true;
 		},
@@ -30173,8 +30204,12 @@ const JOB_BUDGET_MS = 9e5;
 /** How often a pending request is checked against ownership; shorter than any request timeout. */
 const OWNERSHIP_WATCH_MS = 2e3;
 function stopped(state) {
-	return {
-		kind: state === "stale" ? "stale" : "internal-failure",
+	return state === "stale" ? {
+		kind: "stale",
+		body: null
+	} : {
+		kind: "internal-failure",
+		stage: "unclassified",
 		body: null
 	};
 }
@@ -30240,8 +30275,12 @@ async function runReview(input) {
 	const guard = (fetch) => guardedFetch(fetch, attempt, owns);
 	const evaluate = async () => {
 		const entry = await stillCurrent();
-		if (entry !== "current") return {
-			kind: entry === "stale" ? "stale" : "internal-failure",
+		if (entry !== "current") return entry === "stale" ? {
+			kind: "stale",
+			body: null
+		} : {
+			kind: "internal-failure",
+			stage: "unclassified",
 			body: null
 		};
 		if (!input.llmApiKey) return {
@@ -30262,6 +30301,7 @@ async function runReview(input) {
 	} catch {
 		outcome = {
 			kind: "internal-failure",
+			stage: "unclassified",
 			body: null
 		};
 	} finally {
@@ -30274,7 +30314,8 @@ async function runReview(input) {
 	const handoff = await createReviewHandoff(input.claims, claim, outcome.kind, {
 		body: outcome.body !== null,
 		gaps: outcome.gaps ?? [],
-		droppedOptional: outcome.droppedOptional ?? []
+		droppedOptional: outcome.droppedOptional ?? [],
+		...outcome.kind === "internal-failure" ? { stage: outcome.stage } : {}
 	});
 	if (handoff.kind !== "ready") return {
 		kind: "not-eligible",
@@ -30293,106 +30334,161 @@ async function evaluateEvidence(input, binding, started, signal, state, recheck)
 	let evidenceSession = "ready";
 	let npmInventory = null;
 	const evidenceDeadline = started + EVIDENCE_READ_ENVELOPE.totalTimeoutMs;
-	const snapshot = await withTrustedSnapshot({
-		repository: input.repository,
-		reads: input.snapshotReads,
-		signal,
-		isCurrent,
-		temporaryRoot: input.temporaryRoot
-	}, async (trusted) => {
-		const collectors = createEvidenceCollectors({
-			binding,
-			dependabot: await trusted.dependabotRoots(),
-			registryFetch: input.publicFetch,
-			onNpmInventory: (inventory) => npmInventory = inventory,
+	let snapshot;
+	try {
+		snapshot = await withTrustedSnapshot({
+			repository: input.repository,
+			reads: input.snapshotReads,
 			signal,
-			now: input.now,
-			deadline: evidenceDeadline
-		});
-		const base = {
-			binding,
-			baseSha: binding.baseSha,
-			contextRevision: trusted.contextRevision
-		};
-		const assembled = await assembleReviewPacket({
-			trusted: base,
-			collectContext: (changes) => trusted.collectContext(dependencyIdentities(changes)),
 			isCurrent,
-			openSession: async () => {
-				const opened = await openEvidenceSession({
-					binding,
-					fetch: input.githubFetch,
-					now: input.now,
-					deadline: evidenceDeadline
-				});
-				evidenceSession = opened.kind;
-				if (opened.kind !== "ready") throw new Error("no evidence session");
-				return opened.session;
-			},
-			collectors,
-			inventorySource: null
-		});
-		if (assembled.kind === "context-failure") return {
-			kind: assembled.category === "config" || assembled.category === "path" ? "invalid-config" : "incomplete-evidence",
-			body: null
-		};
-		if (assembled.kind === "stale") return {
-			kind: "stale",
-			body: null
-		};
-		if (assembled.kind === "incomplete") return {
-			kind: "incomplete-evidence",
-			body: null,
-			gaps: assembled.gaps
-		};
-		if (assembled.kind !== "ready") return {
-			kind: evidenceSession === "obsolete" ? "stale" : "internal-failure",
-			body: null
-		};
-		const beforeResearch = await recheck();
-		if (beforeResearch !== "current") return stopped(beforeResearch);
-		const researched = await runResearch({
-			packet: assembled.packet,
-			trusted: {
-				...base,
-				context: assembled.packet.context
-			},
-			npmInventory,
-			comparison: null,
-			fetch: input.publicFetch,
-			now: input.now,
-			deadline: evidenceDeadline,
-			evaluationTime: input.evaluationTime,
-			signal
-		});
-		if (researched.kind !== "ready") return {
-			kind: "internal-failure",
-			body: null
-		};
-		const beforeModel = await recheck();
-		if (beforeModel !== "current") return stopped(beforeModel);
-		return {
-			...await reviewPacket({
-				packet: researched.packet,
-				config: trusted.config,
-				apiKey: input.llmApiKey,
-				evaluatedAt: input.evaluationTime,
-				deadlineMs: started + JOB_BUDGET_MS,
-				signalAttempts: researched.signalAttempts,
-				researchIncomplete: researched.unavailable.length > 0,
+			temporaryRoot: input.temporaryRoot
+		}, async (trusted) => {
+			const collectors = createEvidenceCollectors({
+				binding,
+				dependabot: await trusted.dependabotRoots(),
+				registryFetch: input.publicFetch,
+				onNpmInventory: (inventory) => npmInventory = inventory,
 				signal,
-				model: input.model
-			}),
-			droppedOptional: assembled.droppedOptional
+				now: input.now,
+				deadline: evidenceDeadline
+			});
+			const base = {
+				binding,
+				baseSha: binding.baseSha,
+				contextRevision: trusted.contextRevision
+			};
+			let assembled;
+			try {
+				assembled = await assembleReviewPacket({
+					trusted: base,
+					collectContext: (changes) => trusted.collectContext(dependencyIdentities(changes)),
+					isCurrent,
+					openSession: async () => {
+						const opened = await openEvidenceSession({
+							binding,
+							fetch: input.githubFetch,
+							now: input.now,
+							deadline: evidenceDeadline
+						});
+						evidenceSession = opened.kind;
+						if (opened.kind !== "ready") throw new Error("no evidence session");
+						return opened.session;
+					},
+					collectors,
+					inventorySource: null
+				});
+			} catch {
+				return {
+					kind: "internal-failure",
+					stage: "packet",
+					body: null
+				};
+			}
+			if (assembled.kind === "context-failure") return {
+				kind: assembled.category === "config" || assembled.category === "path" ? "invalid-config" : "incomplete-evidence",
+				body: null
+			};
+			if (assembled.kind === "stale") return {
+				kind: "stale",
+				body: null
+			};
+			if (assembled.kind === "incomplete") return {
+				kind: "incomplete-evidence",
+				body: null,
+				gaps: assembled.gaps
+			};
+			if (assembled.kind !== "ready") return evidenceSession === "obsolete" ? {
+				kind: "stale",
+				body: null
+			} : {
+				kind: "internal-failure",
+				stage: "packet",
+				body: null
+			};
+			const beforeResearch = await recheck();
+			if (beforeResearch !== "current") return stopped(beforeResearch);
+			let researched;
+			try {
+				researched = await runResearch({
+					packet: assembled.packet,
+					trusted: {
+						...base,
+						context: assembled.packet.context
+					},
+					npmInventory,
+					comparison: null,
+					fetch: input.publicFetch,
+					now: input.now,
+					deadline: evidenceDeadline,
+					evaluationTime: input.evaluationTime,
+					signal
+				});
+			} catch {
+				return {
+					kind: "internal-failure",
+					stage: "research",
+					body: null
+				};
+			}
+			if (researched.kind !== "ready") return {
+				kind: "internal-failure",
+				stage: "research",
+				body: null
+			};
+			const beforeModel = await recheck();
+			if (beforeModel !== "current") return stopped(beforeModel);
+			let reviewed;
+			try {
+				reviewed = await reviewPacket({
+					packet: researched.packet,
+					config: trusted.config,
+					apiKey: input.llmApiKey,
+					evaluatedAt: input.evaluationTime,
+					deadlineMs: started + JOB_BUDGET_MS,
+					signalAttempts: researched.signalAttempts,
+					researchIncomplete: researched.unavailable.length > 0,
+					signal,
+					model: input.model
+				});
+			} catch {
+				return {
+					kind: "internal-failure",
+					stage: "assessment",
+					body: null
+				};
+			}
+			if (reviewed.kind === "internal-failure") return {
+				kind: "internal-failure",
+				stage: "assessment",
+				body: reviewed.body,
+				...reviewed.gaps ? { gaps: reviewed.gaps } : {},
+				droppedOptional: assembled.droppedOptional
+			};
+			return {
+				kind: reviewed.kind,
+				body: reviewed.body,
+				...reviewed.gaps ? { gaps: reviewed.gaps } : {},
+				droppedOptional: assembled.droppedOptional
+			};
+		});
+	} catch {
+		return {
+			kind: "internal-failure",
+			stage: "snapshot",
+			body: null
 		};
-	});
+	}
 	if (snapshot.kind === "ready") return snapshot.value;
 	if (snapshot.kind === "invalid-config") return {
 		kind: "invalid-config",
 		body: null
 	};
-	return {
-		kind: state() === "stale" ? "stale" : "internal-failure",
+	return state() === "stale" ? {
+		kind: "stale",
+		body: null
+	} : {
+		kind: "internal-failure",
+		stage: "snapshot",
 		body: null
 	};
 }

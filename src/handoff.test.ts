@@ -13,6 +13,35 @@ test('keeps a fresh failure status-only and refuses a usable app token', async (
   expect(createRehearsalSink('sentinel-app-token')).toBeNull();
 });
 
+test('keeps a fixed internal-failure stage in the bounded rehearsal trace', async () => {
+  const claims = createTestClaimStore();
+  const claimed = await claims.claim([101, 301, 401, 1, 42, 'a'.repeat(40)]);
+  if (claimed.kind !== 'owned') throw new Error('fixture must own');
+  const result = await createReviewHandoff(claims, claimed, 'internal-failure', {
+    body: false,
+    gaps: [],
+    stage: 'handoff',
+  });
+  if (result.kind !== 'ready') throw new Error('expected handoff');
+  const sink = createRehearsalSink(null);
+  if (!sink) throw new Error('expected sink');
+  expect(sink.record(result.handoff)).toBe(true);
+  expect(sink.traces()[0]).toMatchObject({ kind: 'internal-failure', stage: 'handoff' });
+});
+
+test('maps an invalid internal-failure stage to the fixed catch-all', async () => {
+  const claims = createTestClaimStore();
+  const claimed = await claims.claim([101, 301, 401, 1, 42, 'a'.repeat(40)]);
+  if (claimed.kind !== 'owned') throw new Error('fixture must own');
+  const result = await createReviewHandoff(claims, claimed, 'internal-failure', {
+    body: false,
+    gaps: [],
+    stage: 'sentinel-invalid-stage' as never,
+  });
+  if (result.kind !== 'ready') throw new Error('expected handoff');
+  expect(result.handoff).toMatchObject({ kind: 'internal-failure', stage: 'unclassified' });
+});
+
 test('records only bounded redacted intent and rejects a lost claim', async () => {
   const claims = createTestClaimStore();
   const first = await claims.claim([101, 301, 401, 1, 42, 'a'.repeat(40)]);

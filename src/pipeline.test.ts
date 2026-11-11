@@ -632,9 +632,13 @@ test.each([
       kind: 'handed-off',
       outcome: 'internal-failure',
       body: null,
-      handoff: { status: 'failure', comment: 'none' },
+      handoff: { status: 'failure', comment: 'none', stage: 'unclassified' },
     });
-    expect(sink.traces()[0]).toMatchObject({ kind: 'internal-failure', status: 'failure' });
+    expect(sink.traces()[0]).toMatchObject({
+      kind: 'internal-failure',
+      status: 'failure',
+      stage: 'unclassified',
+    });
     if (from < 4) expect(modelCalls).toEqual([]);
   },
 );
@@ -702,10 +706,45 @@ test('hands a failed snapshot off as a failure and starts no collector', async (
     kind: 'handed-off',
     outcome: 'internal-failure',
     body: null,
-    handoff: { status: 'failure', comment: 'none' },
+    handoff: { status: 'failure', comment: 'none', stage: 'snapshot' },
   });
   expect(githubCalls).toEqual([]);
   expect(modelCalls).toEqual([]);
+});
+
+test.each([
+  [
+    'packet',
+    () =>
+      vi.mocked(npmModule.collectNpmInventory).mockImplementationOnce(async () => {
+        throw new Error(sentinel);
+      }),
+  ],
+  [
+    'research',
+    () =>
+      vi
+        .mocked(researchModule.runResearch)
+        .mockResolvedValueOnce({ kind: 'internal-failure' } as never),
+  ],
+  [
+    'assessment',
+    () =>
+      vi
+        .mocked(assessmentModule.reviewPacket)
+        .mockResolvedValueOnce({ kind: 'internal-failure', body: null }),
+  ],
+] as const)('labels a failed %s boundary without exposing its exception', async (stage, fail) => {
+  const { input, sink } = await setup({ evidence: 'changes' });
+  fail();
+  const result = await runReview(input);
+  expect(result).toMatchObject({
+    kind: 'handed-off',
+    outcome: 'internal-failure',
+    handoff: { stage },
+  });
+  expect(sink.traces()[0]).toMatchObject({ kind: 'internal-failure', stage });
+  expect(JSON.stringify({ result, traces: sink.traces() })).not.toContain(sentinel);
 });
 
 test('hands off a moved head seen only by the evidence session as stale, not as a failure', async () => {
