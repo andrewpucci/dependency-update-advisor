@@ -39,7 +39,7 @@ test('R1 caller permits only the approved pinned workflow_run shape', () => {
     },
     jobs: {
       review: {
-        uses: 'andrewpucci/dependency-update-advisor/.github/workflows/dependabot-review.yml@8493d18e987a94dc263e47f6ef9d1452bf9cec82',
+        uses: 'andrewpucci/dependency-update-advisor/.github/workflows/dependabot-review.yml@e858ee0a1c21d302ebfcde38c7d973a0d0609de4',
         with: { ci_workflow: '.github/workflows/ci.yml' },
         secrets: {
           llm_api_key: '${{ secrets.llm_api_key }}',
