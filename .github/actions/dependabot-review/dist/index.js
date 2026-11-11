@@ -19670,10 +19670,20 @@ function copyGaps(gaps) {
 		reason
 	})));
 }
+function countDroppedOptional(dropped) {
+	let reachability = 0, proof = 0;
+	for (const record of dropped) if (record.kind === "reachability") reachability += 1;
+	else proof += 1;
+	return Object.freeze({
+		reachability,
+		proof
+	});
+}
 /** Maps an owned outcome to publication intent without receiving a write capability. */
 async function createReviewHandoff(claims, claim, kind, detail = {
 	body: false,
-	gaps: []
+	gaps: [],
+	droppedOptional: []
 }) {
 	const state = await claims.read(claim);
 	if (state.kind !== "owned" || state.owner !== claim.owner || state.generation !== claim.generation) return { kind: "stale" };
@@ -19687,7 +19697,8 @@ async function createReviewHandoff(claims, claim, kind, detail = {
 			status: outcome.status,
 			comment: outcome.comment,
 			body: detail.body ? "present" : "absent",
-			gaps: copyGaps(detail.gaps)
+			gaps: copyGaps(detail.gaps),
+			droppedOptional: countDroppedOptional(detail.droppedOptional ?? [])
 		})
 	};
 }
@@ -19705,7 +19716,8 @@ function createRehearsalSink(appToken) {
 				status: handoff.status,
 				comment: handoff.comment,
 				body: handoff.body,
-				gaps: copyGaps(handoff.gaps)
+				gaps: copyGaps(handoff.gaps),
+				droppedOptional: handoff.droppedOptional
 			}));
 			return true;
 		},
@@ -20336,8 +20348,9 @@ function excludeAnchor(rel, other) {
 }
 function multiAnchor$2(rel, anchors) {
 	if (!anchors.some((c) => rel.reachability.anchors.has(c.id))) return standalone("multiple_direct_changes");
-	const reaching = anchors.filter((c) => proven(rel, c).length);
-	if (reaching.length > 1) return standalone("ambiguous_anchors", reaching.flatMap((c) => proven(rel, c).map((key) => JSON.stringify([
+	const proofs = new Map(anchors.map((c) => [c, proven(rel, c)]));
+	const reaching = anchors.filter((c) => proofs.get(c).length);
+	if (reaching.length > 1) return standalone("ambiguous_anchors", reaching.flatMap((c) => proofs.get(c).map((key) => JSON.stringify([
 		"ambiguous_anchors",
 		rel.change.id,
 		c.id,
@@ -20352,7 +20365,7 @@ function multiAnchor$2(rel, anchors) {
 	return {
 		anchorId: anchor.id,
 		reason: "proven_relationship",
-		proofKeys: proven(rel, anchor),
+		proofKeys: proofs.get(anchor),
 		verdictKeys: excluded.flatMap((e) => e.verdictKeys).sort(),
 		limits: []
 	};
@@ -23933,6 +23946,39 @@ function fitRetained(result, limit, fail) {
 	return bytes$1(next) <= limit ? next : fail();
 }
 
+// src/evidence/multi-anchor.ts
+/**
+* Applies the common conservative multi-anchor decision: ambiguity keeps two proofs, a sole
+* reachable anchor may group only with a representable proof, and every other anchor needs an
+* absence verdict. Ecosystem adapters retain their graph, path, and marker semantics.
+*/
+function resolveMultiAnchor(input) {
+	const verdicts = [];
+	const reaching = input.candidates.filter(input.reaches);
+	if (!reaching.length) return {
+		proofs: [],
+		verdicts,
+		observation: input.noReach()
+	};
+	if (reaching.length > 1) return {
+		proofs: [...input.ambiguityProofs(reaching)],
+		verdicts,
+		observation: input.ambiguous
+	};
+	const proof = input.soleProof(reaching[0]);
+	if (!input.isProof(proof)) return {
+		proofs: [],
+		verdicts,
+		observation: proof
+	};
+	for (const candidate of input.candidates) if (candidate !== reaching[0]) verdicts.push(...input.unreachable(candidate));
+	return {
+		proofs: [proof],
+		verdicts,
+		observation: null
+	};
+}
+
 // src/evidence/npm-reach.ts
 const UNKNOWN$1 = {
 	outcome: "unknown",
@@ -24008,6 +24054,10 @@ function expand$1(snapshot, unresolved, path, node, spend, note) {
 		else note(UNSUPPORTED$1);
 	}
 	return found.sort((a, b) => nodeKey(a) < nodeKey(b) ? -1 : nodeKey(a) > nodeKey(b) ? 1 : 0);
+}
+/** Supported dependency targets when a caller needs a path but not absence diagnostics. */
+function supportedTargets(snapshot, unresolved, path, node, spend) {
+	return expand$1(snapshot, unresolved, path, node, spend, () => void 0);
 }
 /**
 * Breadth-first closure from one anchor instance, with every skipped edge classified. A missing
@@ -24234,33 +24284,6 @@ function eligible(inventory, member) {
 	if (anchors.length !== 1) return anchors.length ? "multiple_direct_changes" : "no_direct_change";
 	return roots(anchors[0]).length === 1 ? anchors[0] : "multiple_roots";
 }
-function slotTarget(snapshot, unresolved, path, key, spend) {
-	let parent = path;
-	for (;;) {
-		spend();
-		const candidate = (parent ? parent + "/" : "") + "node_modules/" + key;
-		if (unresolved.has(candidate)) return void 0;
-		const node = own(snapshot.packages, candidate);
-		if (node) return node.instance ?? void 0;
-		if (!parent) return void 0;
-		const index = parent.lastIndexOf("/node_modules/");
-		parent = index < 0 ? "" : parent.slice(0, index);
-	}
-}
-function edges$2(snapshot, unresolved, node, spend) {
-	const maps = {
-		...node.dependencies,
-		...node.optionalDependencies
-	};
-	const targets = [];
-	for (const key of Object.keys(maps).sort()) {
-		spend();
-		if (!PACKAGE_KEY.test(key)) continue;
-		const target = slotTarget(snapshot, unresolved, node.instance.lockPath, key, spend);
-		if (target && supportedEdge(key, maps[key], target)) targets.push(target);
-	}
-	return targets.sort((a, b) => nodeKey(a) < nodeKey(b) ? -1 : nodeKey(a) > nodeKey(b) ? 1 : 0);
-}
 function pathTo$1(snapshot, start, end, spend) {
 	const queue = [start], parents = /* @__PURE__ */ new Map([[start.lockPath, null]]), unresolved = new Set(snapshot.unresolvedPaths);
 	for (let i = 0; i < queue.length; i++) {
@@ -24272,7 +24295,7 @@ function pathTo$1(snapshot, start, end, spend) {
 			return path;
 		}
 		if (!node) continue;
-		for (const target of edges$2(snapshot, unresolved, node, spend)) if (!parents.has(target.lockPath)) {
+		for (const target of supportedTargets(snapshot, unresolved, step.lockPath, node, spend)) if (!parents.has(target.lockPath)) {
 			parents.set(target.lockPath, step);
 			queue.push(target);
 		}
@@ -24319,7 +24342,7 @@ function unchangedReach(inventory, root, side, spend) {
 		spend();
 		const node = own(snapshot.packages, queue[i].lockPath);
 		if (!node) continue;
-		for (const target of edges$2(snapshot, unresolved, node, spend)) if (!seen.has(target.lockPath)) {
+		for (const target of supportedTargets(snapshot, unresolved, queue[i].lockPath, node, spend)) if (!seen.has(target.lockPath)) {
 			seen.add(target.lockPath);
 			queue.push(target);
 		}
@@ -24336,17 +24359,21 @@ function candidatesFor$1(inventory, root, spend, reachability) {
 		const closures = {};
 		for (const side of ["base", "head"]) {
 			const step = side === "head" ? change.to : change.from, snapshot = inventory.roots.find((r) => r.root === root)?.[side];
-			if (!step || step.root !== root || snapshot?.state !== "present") continue;
-			const closure = closureFrom(snapshot, step, spend, isBudget);
-			closures[side] = closure;
-			if (closure.limit) reachability.push({
+			if (!step || step.root !== root) continue;
+			const closure = snapshot?.state === "present" ? closureFrom(snapshot, step, spend, isBudget) : void 0;
+			if (closure) closures[side] = closure;
+			const limit = closure ? closure.limit : {
+				outcome: "failed",
+				reasons: ["missing"]
+			};
+			if (limit) reachability.push({
 				ecosystem: "npm",
 				side,
 				sourceId: step.sourceId,
 				anchorId: change.id,
 				memberId: null,
-				outcome: closure.limit.outcome,
-				reasons: [...closure.limit.reasons]
+				outcome: limit.outcome,
+				reasons: [...limit.reasons]
 			});
 		}
 		return {
@@ -24402,44 +24429,40 @@ function unreachableVerdicts$1(member, other) {
 	}
 	return verdicts;
 }
-function multiAnchor$1(member, candidates) {
-	const proofs = [], verdicts = [];
+/** Why no candidate reaches the member: an unavailable snapshot or a cut-short search is not a missing path. */
+function noReach(candidates, claim, present) {
+	if (!present) return "snapshot_missing";
+	if (candidates.some((c) => c.closures[claim]?.limit)) return "budget";
+	return "missing_relationship";
+}
+function multiAnchor$1(member, candidates, present) {
 	const claim = member.kind === "removal" ? "base" : "head", end = claim === "base" ? member.from : member.to;
 	if (!end) return {
-		proofs,
-		verdicts,
+		proofs: [],
+		verdicts: [],
 		observation: "wrong_side"
 	};
-	const reaching = candidates.filter((c) => c.closures[claim]?.steps.has(end.lockPath));
-	if (!reaching.length) return {
-		proofs,
-		verdicts,
-		observation: "missing_relationship"
-	};
-	const found = reachingProofs(member, claim, end, reaching);
-	if (reaching.length > 1) return {
-		proofs: found.proofs,
-		verdicts,
-		observation: "ambiguous_anchors"
-	};
-	if (!found.proofs.length) return {
-		proofs: found.proofs,
-		verdicts,
-		observation: found.blocked
-	};
-	for (const other of candidates) if (other !== reaching[0]) verdicts.push(...unreachableVerdicts$1(member, other));
-	return {
-		proofs: found.proofs,
-		verdicts,
-		observation: null
-	};
+	return resolveMultiAnchor({
+		candidates,
+		reaches: (candidate) => candidate.closures[claim]?.steps.has(end.lockPath) ?? false,
+		noReach: () => noReach(candidates, claim, present),
+		ambiguityProofs: (reaching) => reachingProofs(member, claim, end, reaching).proofs,
+		soleProof: (candidate) => {
+			const found = reachingProofs(member, claim, end, [candidate]);
+			return found.proofs[0] ?? found.blocked ?? "missing_relationship";
+		},
+		isProof: (value) => typeof value !== "string",
+		ambiguous: "ambiguous_anchors",
+		unreachable: (candidate) => unreachableVerdicts$1(member, candidate)
+	});
 }
 /** Resolves a member whose root has several direct anchors; null when no proof survives. */
 function resolveMulti(inventory, member, spend, state) {
 	const root = roots(member)[0];
 	const candidates = state.candidatesByRoot.get(root) ?? candidatesFor$1(inventory, root, spend, state.reachability);
 	state.candidatesByRoot.set(root, candidates);
-	const multi = multiAnchor$1(member, candidates);
+	const claim = member.kind === "removal" ? "base" : "head";
+	const multi = multiAnchor$1(member, candidates, inventory.roots.find((r) => r.root === root)?.[claim].state === "present");
 	state.reachability.push(...multi.verdicts);
 	state.optionalRelationships.push(...multi.proofs.slice(1));
 	if (multi.observation) state.findings.push(note$1(member, multi.observation));
@@ -27067,37 +27090,30 @@ function unreachableVerdicts(member, other) {
 	return verdicts;
 }
 function multiAnchor(contexts, member, candidates, work) {
-	const verdicts = [];
 	const claim = member.kind === "removal" ? "base" : "head", end = claim === "base" ? member.from : member.to, context = contexts.find((c) => c.root.root === end?.root);
-	if (!end || !context) return {
+	if (!end) return {
 		proofs: [],
-		verdicts,
+		verdicts: [],
 		observation: "wrong_side"
 	};
-	const reaching = candidates.filter((c) => c.closures[claim]?.keys.has(uvSideKey(end)));
-	if (!reaching.length) return {
+	if (!context) return {
 		proofs: [],
-		verdicts,
-		observation: "missing_relationship"
+		verdicts: [],
+		observation: "snapshot_missing"
 	};
-	if (reaching.length > 1) return {
-		proofs: ambiguityProofs(context, member, claim, end, reaching),
-		verdicts,
-		observation: "ambiguous_anchors"
-	};
-	const sole = reaching[0].change, start = claim === "head" ? sole.to : sole.from;
-	const proof = start ? groupingProof(context, claim, sole, member, start, end, work) : "wrong_side";
-	if (typeof proof === "string") return {
-		proofs: [],
-		verdicts,
-		observation: proof
-	};
-	for (const other of candidates) if (other !== reaching[0]) verdicts.push(...unreachableVerdicts(member, other));
-	return {
-		proofs: [proof],
-		verdicts,
-		observation: null
-	};
+	return resolveMultiAnchor({
+		candidates,
+		reaches: (candidate) => candidate.closures[claim]?.keys.has(uvSideKey(end)) ?? false,
+		noReach: () => "missing_relationship",
+		ambiguityProofs: (reaching) => ambiguityProofs(context, member, claim, end, reaching),
+		soleProof: (candidate) => {
+			const start = claim === "head" ? candidate.change.to : candidate.change.from;
+			return start ? groupingProof(context, claim, candidate.change, member, start, end, work) : "wrong_side";
+		},
+		isProof: (value) => typeof value !== "string",
+		ambiguous: "ambiguous_anchors",
+		unreachable: (candidate) => unreachableVerdicts(member, candidate)
+	});
 }
 function isShared(result, contexts, proof, work) {
 	const end = proof.path.at(-1), context = contexts.find((c) => c.root.root === end.root);
@@ -28595,28 +28611,19 @@ function fitOptionalEvidence(input) {
 	while (proofCount > PACKET_LIMITS.relationships && droppable.length) dropProof();
 	while (total() > PACKET_LIMITS.bytes && (pending.length || droppable.length)) if (pending.length) dropGroup();
 	else dropProof();
-	return {
-		/** Drops one more optional unit; false when none remain. Used if validation still reports a budget. */
-		dropMore: () => {
-			if (pending.length) dropGroup();
-			else if (droppable.length) dropProof();
-			else return false;
-			return true;
-		},
-		current: () => ({
-			reachability: [
-				...fixed,
-				...scopes,
-				...[...groups.values()].flatMap((g) => g.records)
-			],
-			relationships: [
-				...input.requiredProofs,
-				...keptProofs,
-				...proofs.map((p) => p.value)
-			],
-			dropped: [...dropped]
-		})
-	};
+	return { current: () => ({
+		reachability: [
+			...fixed,
+			...scopes,
+			...[...groups.values()].flatMap((g) => g.records)
+		],
+		relationships: [
+			...input.requiredProofs,
+			...keptProofs,
+			...proofs.map((p) => p.value)
+		],
+		dropped: [...dropped]
+	}) };
 }
 
 // src/packet.ts
@@ -28715,25 +28722,13 @@ async function assembleReviewPacket(input) {
 			reachability
 		});
 		const required = list((item) => item.relationships), optionalProofs = list((item) => item.optionalRelationships), verdicts = list((item) => item.reachability);
-		let fitted;
-		try {
-			fitted = fitOptionalEvidence({
-				baseBytes: Buffer.byteLength(JSON.stringify(build([], []))),
-				requiredProofs: required,
-				optionalProofs,
-				verdicts
-			});
-		} catch {}
-		let current = fitted?.current() ?? {
-			reachability: verdicts,
-			relationships: [...required, ...optionalProofs],
-			dropped: []
-		};
+		let current = fitOptionalEvidence({
+			baseBytes: Buffer.byteLength(JSON.stringify(build([], []))),
+			requiredProofs: required,
+			optionalProofs,
+			verdicts
+		}).current();
 		let packet = validateReviewPacket(build(current.reachability, current.relationships), context.trusted);
-		while (!packet.ok && packet.error.category === "budget" && fitted?.dropMore()) {
-			current = fitted.current();
-			packet = validateReviewPacket(build(current.reachability, current.relationships), context.trusted);
-		}
 		if (packet.ok) return {
 			kind: "ready",
 			packet: packet.packet,
@@ -30265,7 +30260,8 @@ async function runReview(input) {
 	}
 	const handoff = await createReviewHandoff(input.claims, claim, outcome.kind, {
 		body: outcome.body !== null,
-		gaps: outcome.gaps ?? []
+		gaps: outcome.gaps ?? [],
+		droppedOptional: outcome.droppedOptional ?? []
 	});
 	if (handoff.kind !== "ready") return {
 		kind: "not-eligible",
@@ -30362,17 +30358,20 @@ async function evaluateEvidence(input, binding, started, signal, state, recheck)
 		};
 		const beforeModel = await recheck();
 		if (beforeModel !== "current") return stopped(beforeModel);
-		return await reviewPacket({
-			packet: researched.packet,
-			config: trusted.config,
-			apiKey: input.llmApiKey,
-			evaluatedAt: input.evaluationTime,
-			deadlineMs: started + JOB_BUDGET_MS,
-			signalAttempts: researched.signalAttempts,
-			researchIncomplete: researched.unavailable.length > 0,
-			signal,
-			model: input.model
-		});
+		return {
+			...await reviewPacket({
+				packet: researched.packet,
+				config: trusted.config,
+				apiKey: input.llmApiKey,
+				evaluatedAt: input.evaluationTime,
+				deadlineMs: started + JOB_BUDGET_MS,
+				signalAttempts: researched.signalAttempts,
+				researchIncomplete: researched.unavailable.length > 0,
+				signal,
+				model: input.model
+			}),
+			droppedOptional: assembled.droppedOptional
+		};
 	});
 	if (snapshot.kind === "ready") return snapshot.value;
 	if (snapshot.kind === "invalid-config") return {
