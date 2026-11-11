@@ -1,5 +1,6 @@
 import { expect, test, vi } from 'vite-plus/test';
 import { assembleReviewPacket } from './packet.js';
+import * as optionalEvidence from './optional-evidence.js';
 import * as schema from './schema.js';
 import { formDecisionUnits } from './units.js';
 
@@ -8,6 +9,10 @@ vi.mock('./schema.js', async (importOriginal) => {
   return { ...original, validateReviewPacket: vi.fn(original.validateReviewPacket) };
 });
 const validations = () => vi.mocked(schema.validateReviewPacket);
+vi.mock('./optional-evidence.js', async (importOriginal) => {
+  const original = await importOriginal<typeof import('./optional-evidence.js')>();
+  return { ...original, fitOptionalEvidence: vi.fn(original.fitOptionalEvidence) };
+});
 
 const PACKET_LIMITS_BYTES = 1_048_576;
 
@@ -486,6 +491,20 @@ test('a partial drop never forms a group: members of a truncated anchor/side sta
   expect(units.flatMap((u) => u.memberIds).sort()).toEqual(
     result.packet.changes.map((c) => c.id).sort(),
   );
+});
+
+test('reports an internal failure when fitting optional evidence throws', async () => {
+  vi.mocked(optionalEvidence.fitOptionalEvidence).mockImplementationOnce(() => {
+    throw new TypeError('regression inside fitOptionalEvidence');
+  });
+  const result = await assembleReviewPacket({
+    trusted,
+    isCurrent: () => true,
+    openSession: async () => ({ close: () => undefined }),
+    collectors: { npm: collector('npm'), actions: collector('actions'), uv: collector('uv') },
+    inventorySource: null,
+  });
+  expect(result).toEqual({ kind: 'internal-failure' });
 });
 
 test('keeps the computed result when closing the session fails', async () => {

@@ -167,27 +167,18 @@ export async function assembleReviewPacket<S extends Session>(
     const required = list((item) => item.relationships),
       optionalProofs = list((item) => item.optionalRelationships),
       verdicts = list((item) => item.reachability);
-    let fitted: ReturnType<typeof fitOptionalEvidence> | undefined;
-    try {
-      fitted = fitOptionalEvidence({
-        baseBytes: Buffer.byteLength(JSON.stringify(build([], []))),
-        requiredProofs: required,
-        optionalProofs,
-        verdicts,
-      });
-    } catch {
-      // An unmeasurable fragment cannot be fitted; T4 validation decides what it means.
-    }
-    let current = fitted?.current() ?? {
-      reachability: verdicts,
-      relationships: [...required, ...optionalProofs],
-      dropped: [],
-    };
+    const fitted = fitOptionalEvidence({
+      baseBytes: Buffer.byteLength(JSON.stringify(build([], []))),
+      requiredProofs: required,
+      optionalProofs,
+      verdicts,
+    });
+    let current = fitted.current();
     let packet = validateReviewPacket(
       build(current.reachability, current.relationships),
       context.trusted,
     );
-    while (!packet.ok && packet.error.category === 'budget' && fitted?.dropMore()) {
+    while (!packet.ok && packet.error.category === 'budget' && fitted.dropMore()) {
       current = fitted.current();
       packet = validateReviewPacket(
         build(current.reachability, current.relationships),
