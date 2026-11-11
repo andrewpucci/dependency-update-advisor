@@ -2,6 +2,11 @@ const MiB = 1024 * 1024;
 
 /** The job's wall-clock limit; analysis and publication reserve their own time inside it. */
 export const JOB_BUDGET_MS = 15 * 60 * 1_000;
+/**
+ * Reserved at the end of the job window for the final freshness re-verification: three sequential
+ * reads (run, pull request, comparison) at the request timeout. Analysis must end before it.
+ */
+export const FRESHNESS_ALLOWANCE_MS = 45_000;
 
 /** Bounds for all pre-analysis evidence reads. Time is shared; every reader gets what remains. */
 export const EVIDENCE_READ_ENVELOPE = Object.freeze({

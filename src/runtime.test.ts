@@ -283,6 +283,32 @@ describe('freshness reads and the shared evidence deadline', () => {
     expect(requests).toBe(0);
   });
 
+  test('measures its windows from the supplied job start, not from when it was created', async () => {
+    let clock = 100_000;
+    let requests = 0;
+    const transport = createGithubTransport({
+      token: 'read-token',
+      now: () => clock,
+      startedAt: 0,
+      fetch: async () => {
+        requests += 1;
+        return new Response('{}');
+      },
+    });
+    // 240 s after the job start, but only 140 s after the transport existed.
+    clock = W2_GITHUB_LIMITS.totalTimeoutMs;
+    await expect(transport.readBlob(repo, 'a'.repeat(40))).resolves.toEqual({
+      kind: 'unavailable',
+      reason: 'budget',
+    });
+    clock = JOB_BUDGET_MS;
+    await expect(transport.readRun(repo, 401)).resolves.toEqual({
+      kind: 'unavailable',
+      reason: 'budget',
+    });
+    expect(requests).toBe(0);
+  });
+
   test.each([
     ['after the shared deadline', pastEvidenceDeadline, W2_GITHUB_LIMITS.requestTimeoutMs],
     ['near the job end', JOB_BUDGET_MS - 1_000, 1_000],

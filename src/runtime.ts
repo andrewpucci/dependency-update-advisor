@@ -61,6 +61,8 @@ type TransportDependencies = Readonly<{
   token: string;
   fetch: (url: string, init: RequestInit) => Promise<Response>;
   now: () => number;
+  /** The job's start on the `now` clock; defaults to when the transport is created. */
+  startedAt?: number;
 }>;
 
 function plainText(value: unknown): value is string {
@@ -165,7 +167,7 @@ export function createGithubTransport(dependencies: TransportDependencies): Gith
     snapshot: { requests: 0, bytes: 0 },
     freshness: { requests: 0, bytes: 0 },
   };
-  const started = dependencies.now();
+  const started = dependencies.startedAt ?? dependencies.now();
 
   const read = async (share: Share, url: string, signal?: AbortSignal): Promise<GithubRead> => {
     const limits = W2_GITHUB_LIMITS[share];

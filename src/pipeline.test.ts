@@ -710,6 +710,19 @@ test('builds the collectors and context from the default-branch revision, never 
   );
 });
 
+test('measures every deadline from the shared job start, not from its own clock', async () => {
+  vi.mocked(researchModule.runResearch).mockClear();
+  vi.mocked(assessmentModule.reviewPacket).mockClear();
+  const { input } = await setup({ evidence: 'changes', jobStartedAt: -100_000 });
+  await runReview(input);
+  expect(researchModule.runResearch).toHaveBeenCalledWith(
+    expect.objectContaining({ deadline: 140_000 }),
+  );
+  expect(assessmentModule.reviewPacket).toHaveBeenCalledWith(
+    expect.objectContaining({ deadlineMs: 755_000 }),
+  );
+});
+
 test('wires the clock, model key, signal attempts, and npm inventory into research and review', async () => {
   vi.mocked(researchModule.runResearch).mockClear();
   vi.mocked(assessmentModule.reviewPacket).mockClear();
@@ -727,7 +740,7 @@ test('wires the clock, model key, signal attempts, and npm inventory into resear
     expect.objectContaining({
       apiKey: sentinel,
       evaluatedAt: evaluationTime,
-      deadlineMs: 900_000,
+      deadlineMs: 855_000,
       signalAttempts: expect.arrayContaining([expect.anything()]),
     }),
   );

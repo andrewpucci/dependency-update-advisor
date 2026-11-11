@@ -128,6 +128,8 @@ export async function runStartup(
     writeError('dependabot-review: startup self-check failed; no review ran.');
     return SELF_CHECK_EXIT_CODE;
   }
+  // One origin for every deadline: the transport and the pipeline both measure from here.
+  const jobStartedAt = dependencies.now();
   const runtime = parseRuntime(environment);
   if (!runtime) {
     writeError('dependabot-review: runtime configuration invalid; no review ran.');
@@ -148,6 +150,7 @@ export async function runStartup(
       token: runtime.githubToken,
       fetch: dependencies.fetch,
       now: dependencies.now,
+      startedAt: jobStartedAt,
     });
     const workflow = await resolveWorkflow(runtime, transport);
     if (!workflow) {
@@ -170,6 +173,7 @@ export async function runStartup(
       publicFetch: researchFetch(runtime.githubToken, dependencies.fetch),
       model: dependencies.model,
       now: dependencies.now,
+      jobStartedAt,
       evaluationTime: dependencies.evaluationTime(),
     });
     if (result.kind === 'handed-off' && !result.recorded)

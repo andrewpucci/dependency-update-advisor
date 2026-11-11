@@ -1,11 +1,12 @@
 import fs from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { expect, test } from 'vite-plus/test';
+import { expect, test, vi } from 'vite-plus/test';
 import { analysisDocument } from '../tests/parity/analysis.js';
 import { upstreamScenario } from '../tests/parity/upstream.js';
 import { uvMetadataScenario } from '../tests/parity/uv-metadata.js';
 import { analyzeMistralBatch } from './analysis/mistral.js';
+import * as pipelineModule from './pipeline.js';
 import { createTestClaimStore } from './review.js';
 import type { StartupDependencies } from './startup.js';
 import {
@@ -16,6 +17,11 @@ import {
   runStartup,
   selfCheck,
 } from './startup.js';
+
+vi.mock('./pipeline.js', async (original) => {
+  const actual = await original<typeof import('./pipeline.js')>();
+  return { ...actual, runReview: vi.fn(actual.runReview) };
+});
 
 const environment = {
   INPUT_GITHUB_TOKEN: 'read-token',
@@ -369,6 +375,78 @@ test('reports a recorded internal failure with its fixed snapshot stage', async 
   ]);
   expect(code).toBe(NOT_WIRED_EXIT_CODE);
   expect(stderr.join('')).not.toContain(sentinel);
+});
+
+/** A shared monotonic clock that a model step can advance, as a slow model call would. */
+function slowModelDependencies(github: ReturnType<typeof mockGithub>, clock: { now: number }) {
+  const base = dependenciesFor(github, { now: () => clock.now });
+  const analyze = base.model?.analyze;
+  if (!analyze) throw new Error('fixture must configure a model');
+  return {
+    ...base,
+    model: {
+      now: () => clock.now,
+      analyze: ((batch: Parameters<typeof analyzeMistralBatch>[0], options: never) => {
+        clock.now = 300_000;
+        return analyze(batch, options);
+      }) as typeof analyzeMistralBatch,
+    },
+  };
+}
+
+test('records the normal outcome when the model step ends after the 240 s evidence window', async () => {
+  const control = await start(mockGithub({ changes: await upstreamScenario() }));
+  expect(control.stderr).toHaveLength(1);
+  const github = mockGithub({ changes: await upstreamScenario() });
+  const clock = { now: 0 };
+  const stderr: string[] = [];
+  const code = await runStartup(
+    (line) => stderr.push(line),
+    environmentFor(),
+    slowModelDependencies(github, clock),
+  );
+  expect(clock.now).toBe(300_000);
+  expect(stderr).toEqual(control.stderr);
+  expect(stderr.join('')).not.toContain('internal-failure');
+  expect(code).toBe(NOT_WIRED_EXIT_CODE);
+});
+
+test('records a head that moved during a late model step as stale, not as a failure', async () => {
+  const github = mockGithub({ changes: await upstreamScenario() });
+  const clock = { now: 0 };
+  const dependencies = slowModelDependencies(github, clock);
+  const moved = async (url: string, init: RequestInit) => {
+    const response = await github.fetch(url, init);
+    if (clock.now < 250_000 || !new URL(url).pathname.endsWith('/pulls/42')) return response;
+    const body = (await response.json()) as { head: { sha: string } };
+    return Response.json({ ...body, head: { ...body.head, sha: NEXT } });
+  };
+  const stderr: string[] = [];
+  await runStartup((line) => stderr.push(line), environmentFor(), {
+    ...dependencies,
+    fetch: moved,
+  });
+  expect(stderr).toEqual([
+    'dependabot-review: no-write rehearsal recorded stale; nothing was published.',
+  ]);
+});
+
+test('takes one job start before the first GitHub read and hands it to the pipeline', async () => {
+  vi.mocked(pipelineModule.runReview).mockClear();
+  const github = mockGithub();
+  const clock = { now: 7_000 };
+  const base = dependenciesFor(github, { now: () => clock.now });
+  await runStartup((line) => void line, environmentFor(), {
+    ...base,
+    // Workflow resolution is the first GitHub read; time passes while it runs.
+    fetch: async (url, init) => {
+      clock.now += 100_000;
+      return github.fetch(url, init);
+    },
+  });
+  expect(pipelineModule.runReview).toHaveBeenCalledWith(
+    expect.objectContaining({ jobStartedAt: 7_000 }),
+  );
 });
 
 test('skips an ineligible event and a duplicate delivery', async () => {

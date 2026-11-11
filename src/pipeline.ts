@@ -1,5 +1,5 @@
 import { reviewPacket, type AssessmentInput } from './assessment.js';
-import { EVIDENCE_READ_ENVELOPE, JOB_BUDGET_MS } from './budget.js';
+import { EVIDENCE_READ_ENVELOPE, FRESHNESS_ALLOWANCE_MS, JOB_BUDGET_MS } from './budget.js';
 import {
   createEvidenceCollectors,
   openEvidenceSession,
@@ -40,6 +40,11 @@ export type PipelineInput = Readonly<{
   model?: AssessmentInput['model'];
   /** Monotonic milliseconds. */
   now: () => number;
+  /**
+   * The monotonic time the job started, shared with the GitHub transport so every deadline has one
+   * origin. Defaults to this attempt's own start.
+   */
+  jobStartedAt?: number;
   /** Epoch milliseconds used for policy evaluation and the review timestamp. */
   evaluationTime: number;
   temporaryRoot?: () => Promise<string>;
@@ -121,7 +126,7 @@ function dependencyIdentities(changes: readonly unknown[]): { id: string; name: 
  * published; the App token never enters this function.
  */
 export async function runReview(input: PipelineInput): Promise<PipelineResult> {
-  const started = input.now();
+  const started = input.jobStartedAt ?? input.now();
   const verified = await verifyCiEvent(input.event, input.eventReads);
   if (verified.kind === 'skip') return { kind: 'skipped', reason: verified.reason };
   if (verified.kind === 'error') return { kind: 'not-eligible', reason: 'verification' };
@@ -321,7 +326,8 @@ async function evaluateEvidence(
             config: trusted.config,
             apiKey: input.llmApiKey,
             evaluatedAt: input.evaluationTime,
-            deadlineMs: started + JOB_BUDGET_MS,
+            // The final freshness check needs its allowance inside the job window.
+            deadlineMs: started + JOB_BUDGET_MS - FRESHNESS_ALLOWANCE_MS,
             signalAttempts: researched.signalAttempts,
             researchIncomplete: researched.unavailable.length > 0,
             signal,

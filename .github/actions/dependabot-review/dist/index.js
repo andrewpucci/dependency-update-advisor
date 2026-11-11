@@ -22419,6 +22419,11 @@ async function reviewPacket(input) {
 const MiB = 1048576;
 /** The job's wall-clock limit; analysis and publication reserve their own time inside it. */
 const JOB_BUDGET_MS = 9e5;
+/**
+* Reserved at the end of the job window for the final freshness re-verification: three sequential
+* reads (run, pull request, comparison) at the request timeout. Analysis must end before it.
+*/
+const FRESHNESS_ALLOWANCE_MS = 45e3;
 /** Bounds for all pre-analysis evidence reads. Time is shared; every reader gets what remains. */
 const EVIDENCE_READ_ENVELOPE = Object.freeze({
 	maxRequests: 944,
@@ -30238,7 +30243,7 @@ function dependencyIdentities(changes) {
 * published; the App token never enters this function.
 */
 async function runReview(input) {
-	const started = input.now();
+	const started = input.jobStartedAt ?? input.now();
 	const verified = await verifyCiEvent(input.event, input.eventReads);
 	if (verified.kind === "skip") return {
 		kind: "skipped",
@@ -30437,7 +30442,7 @@ async function evaluateEvidence(input, binding, started, signal, state, recheck)
 				config: trusted.config,
 				apiKey: input.llmApiKey,
 				evaluatedAt: input.evaluationTime,
-				deadlineMs: started + JOB_BUDGET_MS,
+				deadlineMs: started + JOB_BUDGET_MS - FRESHNESS_ALLOWANCE_MS,
 				signalAttempts: researched.signalAttempts,
 				researchIncomplete: researched.unavailable.length > 0,
 				signal,
@@ -30593,7 +30598,7 @@ function createGithubTransport(dependencies) {
 			bytes: 0
 		}
 	};
-	const started = dependencies.now();
+	const started = dependencies.startedAt ?? dependencies.now();
 	const read = async (share, url, signal) => {
 		const limits = W2_GITHUB_LIMITS[share];
 		const spent = used[share];
@@ -30758,6 +30763,7 @@ async function runStartup(writeError, environment = process.env, dependencies = 
 		writeError("dependabot-review: startup self-check failed; no review ran.");
 		return 79;
 	}
+	const jobStartedAt = dependencies.now();
 	const runtime = parseRuntime(environment);
 	if (!runtime) {
 		writeError("dependabot-review: runtime configuration invalid; no review ran.");
@@ -30777,7 +30783,8 @@ async function runStartup(writeError, environment = process.env, dependencies = 
 		const transport = createGithubTransport({
 			token: runtime.githubToken,
 			fetch: dependencies.fetch,
-			now: dependencies.now
+			now: dependencies.now,
+			startedAt: jobStartedAt
 		});
 		const workflow = await resolveWorkflow(runtime, transport);
 		if (!workflow) {
@@ -30806,6 +30813,7 @@ async function runStartup(writeError, environment = process.env, dependencies = 
 			publicFetch: researchFetch(runtime.githubToken, dependencies.fetch),
 			model: dependencies.model,
 			now: dependencies.now,
+			jobStartedAt,
 			evaluationTime: dependencies.evaluationTime()
 		});
 		if (result.kind === "handed-off" && !result.recorded) writeError("dependabot-review: no-write rehearsal could not record the handoff; nothing was published.");
