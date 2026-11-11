@@ -142,6 +142,8 @@ type Overrides = Partial<PipelineInput> & {
   runFails?: boolean;
   /** Freshness reads for the run fail from this call (0-based) onward. */
   runFailsFrom?: number;
+  /** Only this freshness read (0-based) of the run fails. */
+  runFailsAt?: number;
   config?: string;
   visibility?: 'public' | 'private';
   /** Contents of src/app.ts in the default branch. */
@@ -150,11 +152,26 @@ type Overrides = Partial<PipelineInput> & {
 
 const unchanged = { 'pyproject.toml': null, 'uv.lock': null };
 
+/** A claim store whose `failAt`-th ownership read (1-based) throws the sentinel. */
+function claimsFailingAt(failAt: number | undefined) {
+  const store = createTestClaimStore();
+  let reads = 0;
+  const claims = {
+    ...store,
+    read: async (claim: Parameters<typeof store.read>[0]) => {
+      if (++reads === failAt) throw new Error(sentinel);
+      return store.read(claim);
+    },
+  };
+  return { claims, reads: () => reads };
+}
+
 async function setup(overrides: Overrides = {}) {
   const {
     pullRequestHeads: _heads,
     runFails: _fails,
     runFailsFrom: _failsFrom,
+    runFailsAt: _failsAt,
     config: _config,
     visibility: _visibility,
     source: _source,
@@ -189,7 +206,8 @@ async function setup(overrides: Overrides = {}) {
       const call = runReads++;
       if (
         overrides.runFails ||
-        (overrides.runFailsFrom !== undefined && call >= overrides.runFailsFrom)
+        (overrides.runFailsFrom !== undefined && call >= overrides.runFailsFrom) ||
+        call === overrides.runFailsAt
       )
         throw new Error(sentinel);
       return run;
@@ -260,6 +278,8 @@ test('runs a current review to a complete, exact-bound handoff recorded without 
   });
   if (result.kind !== 'handed-off') return;
   expect(result.body).toEqual(expect.stringContaining(HEAD));
+  expect(result.handoff).not.toHaveProperty('stage');
+  expect(sink.traces()[0]).not.toHaveProperty('stage');
   expect(sink.traces()).toEqual([
     {
       kind: 'complete',
@@ -653,6 +673,25 @@ test.each([
   },
 );
 
+test.each([
+  ['an unreadable run before evidence starts', { runFailsAt: 1 }],
+  ['an ownership read that throws', { failClaimRead: 1 }],
+] as const)('labels %s as the unclassified stage', async (_label, fault) => {
+  const failing = 'failClaimRead' in fault ? claimsFailingAt(fault.failClaimRead) : null;
+  const { input, sink } = await setup({
+    evidence: 'changes',
+    ...(failing ? { claims: failing.claims } : fault),
+  });
+  const result = await runReview(input);
+  expect(result).toMatchObject({
+    kind: 'handed-off',
+    outcome: 'internal-failure',
+    handoff: { stage: 'unclassified' },
+  });
+  expect(sink.traces()[0]).toMatchObject({ kind: 'internal-failure', stage: 'unclassified' });
+  expect(JSON.stringify({ result, traces: sink.traces() })).not.toContain(sentinel);
+});
+
 test('builds the collectors and context from the default-branch revision, never a PR SHA', async () => {
   vi.mocked(npmModule.collectNpmInventory).mockClear();
   vi.mocked(researchModule.runResearch).mockClear();
@@ -723,11 +762,13 @@ test('hands a failed snapshot off as a failure and starts no collector', async (
 });
 
 test('reports a handoff-recording failure without fabricating a publishable handoff', async () => {
+  const real = createRehearsalSink(null);
+  if (!real) throw new Error('sink');
   const sink = {
     record: () => {
       throw new Error(sentinel);
     },
-    traces: () => [],
+    traces: real.traces,
   };
   const { input } = await setup({ sink });
   const result = await runReview(input);
@@ -742,17 +783,9 @@ const throwSentinel = async (): Promise<never> => {
 
 test('reports a failure building the handoff as the fixed handoff stage', async () => {
   const review = async (failAt?: number) => {
-    const store = createTestClaimStore();
-    let reads = 0;
-    const claims = {
-      ...store,
-      read: async (claim: Parameters<typeof store.read>[0]) => {
-        if (++reads === failAt) throw new Error(sentinel);
-        return store.read(claim);
-      },
-    };
-    const { input } = await setup({ claims });
-    return { result: await runReview(input), reads };
+    const failing = claimsFailingAt(failAt);
+    const { input } = await setup({ claims: failing.claims });
+    return { result: await runReview(input), reads: failing.reads() };
   };
   // The handoff's own ownership read is the last one of an otherwise healthy attempt.
   const healthy = await review();
@@ -771,10 +804,16 @@ test.each([
   ],
   [
     'snapshot',
-    // A context (C2) collection defect belongs to the trusted snapshot, not the packet.
+    // A defect while mapping changes for context collection belongs to the snapshot, not the packet.
     () =>
       vi.mocked(packetModule.assembleReviewPacket).mockImplementationOnce(async (packetInput) => {
-        await packetInput.collectContext?.([null]);
+        await packetInput.collectContext?.([
+          {
+            get to(): never {
+              throw new Error(sentinel);
+            },
+          },
+        ]);
         throw new Error('unreachable');
       }),
   ],
@@ -787,7 +826,7 @@ test.each([
     () =>
       vi
         .mocked(packetModule.assembleReviewPacket)
-        .mockResolvedValueOnce({ kind: 'internal-failure' } as never),
+        .mockResolvedValueOnce({ kind: 'internal-failure', detail: sentinel } as never),
   ],
   ['research', () => vi.mocked(researchModule.runResearch).mockImplementationOnce(throwSentinel)],
   [
@@ -795,7 +834,7 @@ test.each([
     () =>
       vi
         .mocked(researchModule.runResearch)
-        .mockResolvedValueOnce({ kind: 'internal-failure' } as never),
+        .mockResolvedValueOnce({ kind: 'internal-failure', detail: sentinel } as never),
   ],
   [
     'assessment',
@@ -808,18 +847,22 @@ test.each([
         .mocked(assessmentModule.reviewPacket)
         .mockResolvedValueOnce({ kind: 'internal-failure', body: null }),
   ],
-] as const)('labels a failed %s boundary without exposing its exception', async (stage, fail) => {
-  const { input, sink } = await setup({ evidence: 'changes' });
-  fail();
-  const result = await runReview(input);
-  expect(result).toMatchObject({
-    kind: 'handed-off',
-    outcome: 'internal-failure',
-    handoff: { stage },
-  });
-  expect(sink.traces()[0]).toMatchObject({ kind: 'internal-failure', stage });
-  expect(JSON.stringify({ result, traces: sink.traces() })).not.toContain(sentinel);
-});
+] as const)(
+  'labels a failed %s boundary (case %#) without exposing its exception',
+  async (stage, fail) => {
+    const { input, sink } = await setup({ evidence: 'changes' });
+    fail();
+    const result = await runReview(input);
+    expect(result).toMatchObject({
+      kind: 'handed-off',
+      outcome: 'internal-failure',
+      body: null,
+      handoff: { stage, body: 'absent' },
+    });
+    expect(sink.traces()[0]).toMatchObject({ kind: 'internal-failure', stage, body: 'absent' });
+    expect(JSON.stringify({ result, traces: sink.traces() })).not.toContain(sentinel);
+  },
+);
 
 test('hands off a moved head seen only by the evidence session as stale, not as a failure', async () => {
   const healthy = (await setup()).input.githubFetch;
@@ -839,6 +882,8 @@ test('hands off a moved head seen only by the evidence session as stale, not as 
     body: null,
     handoff: { status: 'none', comment: 'none' },
   });
+  if (result.kind !== 'handed-off') return;
+  expect(result.handoff).not.toHaveProperty('stage');
 });
 
 test('starts no further request once ownership is lost during collection', async () => {
