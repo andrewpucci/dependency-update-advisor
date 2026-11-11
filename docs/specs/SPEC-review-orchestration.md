@@ -20,6 +20,11 @@ The user approved the following amendment for planning on 2026-11-11 and
 approved its execution on 2026-11-11; the work is merged. This amendment does
 not authorize live publication or a production claim backend.
 
+**Draft Amendment 2 (freshness time allowance and stage detail), not
+approved:** the first rehearsal that reported a stage was `unclassified`;
+[#297](https://github.com/andrewpucci/dependency-update-advisor/issues/297)
+tracks the cause. The draft, below, needs the maintainer's approval first.
+
 The user approved this W2 supporting-contract map on 2026-11-08:
 
 | Supporting contract            | Responsibility                                                                                                                  | Depends on                                          |
@@ -306,107 +311,115 @@ comment, configuration, permission, token, trigger, or network-write change.
   untrusted data, weaken fail-closed behavior, or use this diagnostic work to
   start publication or production-claim implementation.
 
-## Diagnostic Amendment 2: Failure Cause, Progress, and Elapsed Time
+## Draft Amendment 2: Freshness Time Allowance and Stage Detail
 
-**Status: draft, not approved.** This amendment is proposed for review. It
-changes the approved stage vocabulary above, so per its "Ask first" boundary it
-needs the maintainer's recorded approval before planning or implementation.
+**Status: draft, not approved.** It is Ask-first under the approved
+execution envelope and the first amendment's boundaries, so it needs the
+maintainer's recorded approval before planning or implementation. Effort tier:
+L (crosses `startup`, the GitHub transport, `pipeline`, `handoff`, and
+amends approved text). Evidence and the reproduction are in
+[#297](https://github.com/andrewpucci/dependency-update-advisor/issues/297).
 
-The first fixed-stage amendment shipped. The R1 rehearsal of PR head `657f221`
-then reported `internal-failure at unclassified` after about 288 seconds, past
-the 240-second evidence-read envelope. `unclassified` is the label for five
-different sites (the entry and final freshness checks, a failed freshness read
-before research or the model, an uncaught `evaluate()` error, an unattributed
-snapshot-callback defect, and an uncaught startup error), so it cannot tell a
-budget exhaustion from a defect. This amendment adds the smallest fixed detail
-that distinguishes them, so one rehearsal run is enough to name the next fix.
-It adds no status, comment, configuration, permission, token, trigger, or
-network-write change and keeps the same redaction guarantee.
+A rehearsal whose model step ends after the GitHub transport's 240-second
+window cannot make its final freshness reads, so a valid result is reported
+as `internal-failure at unclassified`. The approved text causes this: the
+transport clock starts before `runReview`, "the time limit is one shared
+deadline", and "a failed freshness read is an internal failure". The result
+must still be re-verified; ending it as `incomplete-evidence` would hand off a
+comment-eligible result without checking the head, so this amendment does not
+do that.
 
-1. **`freshness` stage.** Add `freshness` to `InternalFailureStage`: failing to
-   re-verify ownership or the current PR head (the entry check, the checks
-   before research and before the model, and the final check). It replaces
-   `unclassified` at those four sites. `unclassified` keeps its remaining
-   meaning.
-2. **Fixed `cause`.** An internal failure also carries exactly one optional
-   `InternalFailureCause` from this closed vocabulary, chosen by trusted code
-   from its own state and never from an exception name, message, stack,
-   response body, URL, config value, PR input, or provider output:
+1. **Freshness time allowance.** Freshness reads (workflow, run, PR,
+   comparison) are exempt from the shared 240,000 ms evidence deadline and are
+   bounded instead by their own request and byte shares, the 15,000 ms request
+   timeout, and a fixed `freshnessAllowanceMs` that begins when the shared
+   deadline passes, or when the first freshness read is made after it,
+   whichever applies. Every other reader keeps the shared deadline. Freshness
+   reads still return the fixed `budget` reason once their own bounds are
+   spent.
+2. **Reserved analysis deadline.** The model's deadline is the job budget minus
+   `freshnessAllowanceMs`, so the final freshness check always has its
+   allowance inside the job.
+3. **Open decision: `freshnessAllowanceMs`.** The value is not set by this
+   draft. A derived lower bound is three sequential reads at the request
+   timeout (45,000 ms), which covers one full re-verification
+   (run, PR, comparison). The maintainer chooses the number; the plan must not
+   invent one.
+4. **Fixed freshness detail.** Add `freshness` to `InternalFailureStage`. It
+   replaces `unclassified` at the entry check, the checks before research and
+   before the model, and the final check, whether the check returned `error`
+   or its own read threw. When the stage is `freshness`, the failure also
+   carries a fixed `field` from `ownership`, `run`, `pullRequest`,
+   `comparison`, or `binding`, and a fixed `reason`: the `EvidenceReason` the
+   read adapter reported, or `mismatch`, `input`, or `unknown` when none
+   applies. The adapter records these in trusted code, never from error text;
+   `ownership` is the claim-store read, which has no `VerificationError`
+   source today. No other stage carries `field` or `reason`.
+5. **Reporting.** For `freshness` the stderr line is
+   `internal-failure at freshness (<field> <reason>)` (for example
+   `(run budget)`); every other stage keeps the exact first-amendment form.
+   The trace retains the same literals. The fields appear on the trace and
+   stderr only, not on the exported `ReviewHandoff`, and the `failed` result
+   (handoff recording) carries only its stage. Startup self-check diagnostics
+   are unchanged.
+6. **Supersedes on approval.** The first amendment's "six literal stages"
+   (Always line) and its item 2 exact form are amended by items 4 and 5; its
+   "Ask first" list is satisfied by this approval. The expected values in
+   `src/pipeline.test.ts` (freshness cases) and `src/startup.test.ts`
+   (unexpected-failure and stage lines) change from `unclassified` to
+   `freshness` where they cover a freshness failure.
+7. **Fail-closed preservation.** Neither the allowance nor the new fields
+   convert an outcome to success or make a skipped, stale, unverified, or
+   unowned attempt publication eligible. The final freshness check still gates
+   every handoff, and a freshness read that fails within its allowance is still
+   an internal failure.
+8. **Required checks.** Tests must prove:
+   - the motivating case: a model step that finishes after the 240,000 ms
+     window, with an unmoved head, completes its freshness re-verification and
+     reports its normal outcome, not `internal-failure`, using an injected
+     clock that distinguishes the transport window from the job start;
+   - a head that moved during that late window is still `stale`, and a
+     freshness read that fails within the allowance reports
+     `internal-failure at freshness (<field> <reason>)` for each `field`,
+     including the `mismatch` and `input` reasons;
+   - evidence readers still stop at the shared deadline, and the analysis
+     deadline leaves the allowance free;
+   - sentinel-bearing failures leave stderr and traces without the sentinel,
+     credentials, config values, source lines, exception text, response
+     bodies, URLs, and stacks, and no other stage carries `field` or `reason`.
 
-   - `deadline` — the attempt clock was at or past the evidence deadline when
-     the failure was recorded;
-   - `aborted` — the attempt's abort signal had fired (ownership lost or a
-     freshness error) before the deadline;
-   - `rejected` — a boundary returned a not-ready or internal-failure result
-     rather than throwing;
-   - `threw` — a boundary threw and none of the above applies;
-   - `ownership-read`, `run-read`, `pull-request-read`, `comparison-read`, or
-     `binding` — a `freshness` failure, selected from the existing fixed
-     `field` and `category` of the freshness result (`VerificationError`).
-
-   Precedence is the freshness literal when one applies, then `deadline`, then
-   `aborted`, then `rejected`, then `threw`.
-
-3. **Progress marker.** An internal failure also carries `reached`, the last
-   boundary the attempt entered, from the closed ordered set `start`,
-   `snapshot`, `packet`, `research`, `assessment`, `handoff`. Trusted code
-   sets it as it enters each boundary, so even an `unclassified` failure shows
-   how far the attempt got. `start` is everything before the snapshot.
-4. **Elapsed time.** An internal failure carries `elapsed`, whole seconds
-   since the attempt started, from the injected clock and capped at the job
-   budget (900). It is a bounded non-negative integer and no other number is
-   reported.
-5. **Redacted reporting.** The bounded stderr line extends to
-   `internal-failure at <stage> (cause <cause>, reached <boundary>, after <n>s)`
-   with only those fixed values, and the trace retains the same literals. The
-   fields are recorded only for `internal-failure`; the existing startup
-   self-check diagnostics are unchanged. An uncategorized startup exception
-   reports `unclassified` with `cause threw`, `reached start`, and a computed
-   `elapsed`, or omits fields it cannot set safely.
-6. **Fail-closed preservation.** Every requirement of the first amendment
-   holds: a stage, cause, progress marker, or elapsed value never converts an
-   outcome to success or makes a skipped, stale, unverified, or unowned attempt
-   publication eligible. This amendment does not change which outcome a
-   deadline produces; whether a post-deadline freshness failure should end as
-   incomplete evidence is a separate behavior decision that this diagnostic
-   work informs but does not make.
-7. **Required checks.** Tests inject a sentinel-bearing failure and prove, for
-   each cause and each `reached` value, that exactly the literal is reported,
-   including `freshness` at all four sites with each fixed read field. They
-   also prove deadline precedence by advancing the injected clock and abort
-   precedence by firing the signal, and that stderr and traces omit the
-   sentinel, credentials, config values, source lines, raw exception text,
-   response bodies, URLs, and stacks. Named mutations that derive a cause or
-   stage from an exception name or message, report an unlisted value, report
-   an uncapped or non-integer `elapsed`, or record the fields on a
-   non-`internal-failure` outcome must each fail a test. The shipped-bundle
-   test asserts the exact stderr form. Existing no-write assertions continue
-   to prove that no status, comment, App-token request, or other live write
-   occurs.
+   Named mutations that must each fail a test: exempting a non-freshness
+   reader from the shared deadline; removing the analysis-deadline reservation;
+   starting the allowance at the wrong time; mapping `field` while ignoring the
+   read result's `category`; reporting an unlisted `field` or `reason` or
+   deriving either from an exception name or message; and recording either on a
+   non-`freshness` stage. The shipped-bundle test asserts the exact `freshness`
+   stderr form and that no status, comment, App-token request, or other live
+   write occurs.
 
 ### Considered and not proposed
 
-- **Failing collector or source** (`npm`, `actions`, `uv`) for a `packet`
-  failure: useful, but an assembly throw does not identify its source without
-  threading per-collector tracking through T4 assembly. Revisit if `packet`
-  failures dominate.
-- **Request and byte counters** from the evidence accounting: bounded and
-  non-secret, but `deadline` plus `elapsed` answers the immediate question.
-  Add them only if a `deadline` failure needs a budget breakdown.
-- **Per-boundary durations**: derivable from successive runs of the progress
-  marker plus `elapsed`; not worth a larger reported surface.
+- A `cause` taxonomy (`deadline`, `aborted`, `rejected`, `threw`), a `reached`
+  progress marker, and an `elapsed` counter. The reproduction in #297 already
+  names the failing path. `reached` can move backwards (`collectContext` runs
+  inside the packet boundary) and `elapsed` has no single origin; revisit them
+  only if a later rehearsal leaves a failure unexplained.
+- The failing collector (`npm`, `actions`, `uv`) for a `packet` failure and
+  request or byte counters: need per-collector or accounting plumbing without a
+  current failure that requires them.
 
 ### Draft Amendment Boundaries
 
-- **Always:** report only the closed vocabularies above and one bounded
-  integer, record them only for `internal-failure`, and choose each value in
-  trusted code from its own state.
-- **Ask first:** add or rename a stage, cause, or progress value; report any
-  other number; surface these fields in status or comment text; or change the
-  workflow trigger, an App permission, or a secret.
-- **Never:** report a raw error or external payload, infer a value from
-  untrusted data, weaken fail-closed behavior, or use this work to change
-  deadline behavior or start publication.
+- **Always:** keep the final freshness check as a gate for every handoff, bound
+  every read, and choose reported values in trusted code from closed
+  vocabularies.
+- **Ask first:** set `freshnessAllowanceMs`, add or rename a stage, field, or
+  reason, report any number, surface these fields in status or comment text, or
+  change the workflow trigger, an App permission, or a secret.
+- **Never:** end an unverified or late result as `incomplete-evidence` to avoid
+  the failure, report a raw error or external payload, infer a value from
+  untrusted data, weaken fail-closed behavior, or start publication or
+  production-claim implementation.
 
 ### Trusted config and context snapshot
 
