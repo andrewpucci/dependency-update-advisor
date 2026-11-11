@@ -9363,6 +9363,7 @@ const PACKET_LIMITS = Object.freeze({
 	sources: 1024,
 	findings: 512,
 	relationships: 256,
+	reachability: 1024,
 	pathInstances: 32,
 	idCodeUnits: 256,
 	identityBytes: 1024,
@@ -9406,6 +9407,13 @@ const SOURCE_KINDS = [
 	"deprecation",
 	"trust",
 	"publisher"
+];
+const REACHABILITY_OUTCOMES = [
+	"unreachable",
+	"unknown",
+	"unsupported",
+	"failed",
+	"truncated"
 ];
 var PacketError = class extends Error {
 	field;
@@ -10510,6 +10518,74 @@ function linkRelationships(proofs, changes, sources) {
 		}), "relationships");
 	}
 }
+const PROVING_REASONS = {
+	unknown: ["unknown"],
+	unsupported: ["unsupported"],
+	truncated: ["truncated", "budget"],
+	failed: [
+		"permission",
+		"rate_limit",
+		"timeout",
+		"missing",
+		"malformed",
+		"conflict"
+	]
+};
+function reachabilityVerdict(value) {
+	const r = object$3(value, [
+		"ecosystem",
+		"side",
+		"sourceId",
+		"anchorId",
+		"memberId",
+		"outcome",
+		"reasons"
+	], [], "reachability");
+	const outcome = choice(r.outcome, REACHABILITY_OUTCOMES, "reachability");
+	const verdict = {
+		ecosystem: choice(r.ecosystem, ["npm", "uv"], "reachability"),
+		side: choice(r.side, ["base", "head"], "reachability"),
+		sourceId: id$1(r.sourceId, "reachability"),
+		anchorId: id$1(r.anchorId, "reachability"),
+		memberId: r.memberId === null ? null : id$1(r.memberId, "reachability"),
+		outcome,
+		reasons: reasons$1(r.reasons, "reachability")
+	};
+	if (outcome === "unreachable") requireValue$2(verdict.memberId !== null && verdict.reasons.length === 0, "reachability");
+	else requireValue$2(PROVING_REASONS[outcome].some((reason) => verdict.reasons.includes(reason)), "reachability");
+	return verdict;
+}
+/** A resolved npm/uv change of the verdict's ecosystem, or undefined; declarations never qualify. */
+function lockChange(c, ecosystem) {
+	return c && !("basis" in c) && c.ecosystem !== "actions" && c.ecosystem === ecosystem ? c : void 0;
+}
+function linkReachability(verdicts, proofs, changes, sources) {
+	distinct(verdicts.map((v) => JSON.stringify([
+		v.side,
+		v.anchorId,
+		v.memberId
+	])), "reachability");
+	const scoped = new Set(verdicts.filter((v) => v.memberId === null).map((v) => JSON.stringify([v.side, v.anchorId])));
+	for (const v of verdicts) {
+		const anchor = lockChange(changes.get(v.anchorId), v.ecosystem), member = v.memberId === null ? null : lockChange(changes.get(v.memberId), v.ecosystem);
+		requireValue$2(anchor && anchor.role === "direct" && member !== void 0, "reachability", "reference");
+		requireValue$2(member === null || member.role === "transitive" && member.id !== anchor.id, "reachability", "reference");
+		requireValue$2(member === null || !scoped.has(JSON.stringify([v.side, v.anchorId])), "reachability", "duplicate");
+		const anchorStep = v.side === "base" ? anchor.from : anchor.to, memberStep = member ? v.side === "base" ? member.from : member.to : null;
+		requireValue$2(anchorStep && (member === null || memberStep?.root === anchorStep.root), "reachability", "reference");
+		const root = anchorStep.root, prefix = root === "." ? "" : root + "/";
+		const source = sources.get(v.sourceId);
+		requireValue$2(source?.kind === "file" && source.status === "available" && source.ecosystems.includes(v.ecosystem) && source.provenance.kind === "file" && source.provenance.revision === v.side && source.provenance.path === prefix + (v.ecosystem === "npm" ? "package-lock.json" : "uv.lock") && source.memberIds.includes(anchor.id) && (member === null || source.memberIds.includes(member.id)), "reachability", "reference");
+		if (v.outcome !== "unreachable" || !member || !memberStep) continue;
+		const anchorKey = instanceKey$1(anchor, anchorStep), memberKey = instanceKey$1(member, memberStep);
+		for (const p of proofs) {
+			if (p.ecosystem !== v.ecosystem || p.side !== v.side || p.path[0].root !== root) continue;
+			const keys = p.path.map((step) => instanceKey$1(anchor, step));
+			const at = keys.indexOf(anchorKey), to = keys.indexOf(memberKey);
+			requireValue$2(at === -1 || to === -1 || at > to, "reachability", "reference");
+		}
+	}
+}
 function coverage(value, sources, changes) {
 	const c = object$3(value, ECOSYSTEMS, [], "coverage");
 	const entries = ECOSYSTEMS.map((ecosystem) => {
@@ -10566,6 +10642,7 @@ function validateReviewPacket(candidate, trusted) {
 			"sources",
 			"findings",
 			"relationships",
+			"reachability",
 			"context"
 		], [], "packet");
 		requireValue$2(r.version === 1, "packet");
@@ -10579,6 +10656,7 @@ function validateReviewPacket(candidate, trusted) {
 		const changes = array$1(r.changes, PACKET_LIMITS.changes, "changes").map(change$1);
 		const findings = array$1(r.findings, PACKET_LIMITS.findings, "findings").map(finding$2);
 		const relationships = array$1(r.relationships, PACKET_LIMITS.relationships, "relationships").map(relationship);
+		const reachability = array$1(r.reachability, PACKET_LIMITS.reachability, "reachability").map(reachabilityVerdict);
 		const sources = array$1(r.sources, PACKET_LIMITS.sources, "sources").map((v) => source$2(v, e));
 		distinct(sources.map((s) => s.id), "sources");
 		const sourceById = new Map(sources.map((s) => [s.id, s]));
@@ -10586,6 +10664,7 @@ function validateReviewPacket(candidate, trusted) {
 		linkContext(ctx, changeById);
 		linkFindings(findings, changeById, sourceById, ctx);
 		linkRelationships(relationships, changeById, sourceById);
+		linkReachability(reachability, relationships, changeById, sourceById);
 		const packet = {
 			version: 1,
 			binding: b,
@@ -10596,6 +10675,7 @@ function validateReviewPacket(candidate, trusted) {
 			sources,
 			findings,
 			relationships,
+			reachability,
 			context: ctx
 		};
 		requireValue$2(Buffer.byteLength(JSON.stringify(packet)) <= PACKET_LIMITS.bytes, "packet", "budget");
@@ -20096,6 +20176,8 @@ const actions = {
 	no_direct_change: "Assess this change independently; no changed direct anchor is established.",
 	missing_relationship: "Obtain an applicable immutable lockfile path or assess this change independently.",
 	multiple_roots: "Assess this root-moving change and related members independently; groups must stay within one root.",
+	ambiguous_anchors: "Assess this change independently; several changed direct anchors can reach it.",
+	reachability_unproven: "Assess this change independently; reachability from every other changed direct candidate is not proven absent.",
 	proven_relationship: "Assess the group without substituting anchor evidence for any member lookup."
 };
 function projectMembers(packet, memberIds) {
@@ -20140,11 +20222,27 @@ function projectMembers(packet, memberIds) {
 		coverageLimits: sources.flatMap((source) => source.coverageLimits)
 	};
 }
-function grouping(packet, change) {
-	const standalone = (reason) => ({
+function indexReachability(packet) {
+	const pairs = /* @__PURE__ */ new Map(), scopes = /* @__PURE__ */ new Map();
+	for (const v of packet.reachability) if (v.memberId === null) scopes.set(JSON.stringify([v.side, v.anchorId]), v);
+	else pairs.set(JSON.stringify([
+		v.side,
+		v.anchorId,
+		v.memberId
+	]), v);
+	return {
+		pairs,
+		scopes,
+		anchors: new Set(packet.reachability.map((v) => v.anchorId))
+	};
+}
+function grouping(packet, change, reachability) {
+	const standalone = (reason, limits = []) => ({
 		anchorId: null,
 		reason,
-		proofKeys: []
+		proofKeys: [],
+		verdictKeys: [],
+		limits: limits.sort(byCodeUnit)
 	});
 	if (change.ecosystem === "actions") return standalone("actions_occurrence");
 	if ("basis" in change) return standalone("independent_change");
@@ -20158,14 +20256,71 @@ function grouping(packet, change) {
 	const candidates = packet.changes.filter((c) => !("basis" in c) && c.ecosystem === change.ecosystem && roots$1(c).includes(instance.root));
 	if (candidates.some((c) => c.role === "unknown")) return standalone("unknown_role");
 	const anchors = candidates.filter((c) => c.role === "direct");
-	if (anchors.length !== 1) return standalone(anchors.length ? "multiple_direct_changes" : "no_direct_change");
-	if (roots$1(anchors[0]).length !== 1) return standalone("multiple_roots");
-	const proofs = packet.relationships.filter((p) => p.fromId === anchors[0].id && p.toId === change.id && p.side === side);
-	if (!proofs.length) return standalone("missing_relationship");
+	if (!anchors.length) return standalone("no_direct_change");
+	const proofsFrom = (anchor, proofSide) => packet.relationships.filter((p) => p.fromId === anchor.id && p.toId === change.id && p.side === proofSide);
+	const proven = (anchor) => proofsFrom(anchor, side).map((p) => JSON.stringify(canonical$2(p))).sort();
+	if (anchors.length === 1) {
+		if (roots$1(anchors[0]).length !== 1) return standalone("multiple_roots");
+		const proofKeys = proven(anchors[0]);
+		if (!proofKeys.length) return standalone("missing_relationship");
+		return {
+			anchorId: anchors[0].id,
+			reason: "proven_relationship",
+			proofKeys,
+			verdictKeys: [],
+			limits: []
+		};
+	}
+	if (!anchors.some((c) => reachability.anchors.has(c.id))) return standalone("multiple_direct_changes");
+	const reaching = anchors.filter((c) => proven(c).length);
+	if (reaching.length > 1) return standalone("ambiguous_anchors", reaching.flatMap((c) => proven(c).map((key) => JSON.stringify([
+		"ambiguous_anchors",
+		change.id,
+		c.id,
+		key
+	]))));
+	if (!reaching.length) return standalone("missing_relationship");
+	const anchor = reaching[0];
+	if (roots$1(anchor).length !== 1) return standalone("multiple_roots");
+	const used = change.kind === "update" ? ["base", "head"] : [side];
+	const limits = [], verdictKeys = [];
+	for (const other of anchors.filter((c) => c !== anchor)) {
+		const counted = used.filter((s) => {
+			const step = s === "base" ? other.from : other.to;
+			return step !== null && "root" in step && step.root === instance.root;
+		});
+		if (!counted.length) limits.push(JSON.stringify([
+			"blocked",
+			change.id,
+			other.id
+		]));
+		for (const s of counted) {
+			const v = reachability.pairs.get(JSON.stringify([
+				s,
+				other.id,
+				change.id
+			]));
+			if (v?.outcome === "unreachable") verdictKeys.push(JSON.stringify(canonical$2(v)));
+			else {
+				const known = v ?? reachability.scopes.get(JSON.stringify([s, other.id]));
+				limits.push(JSON.stringify([
+					"reachability",
+					change.id,
+					other.id,
+					s,
+					known?.outcome ?? "missing",
+					known?.reasons ?? []
+				]));
+			}
+		}
+	}
+	if (limits.length) return standalone("reachability_unproven", limits);
 	return {
-		anchorId: anchors[0].id,
+		anchorId: anchor.id,
 		reason: "proven_relationship",
-		proofKeys: proofs.map((p) => JSON.stringify(canonical$2(p))).sort()
+		proofKeys: proven(anchor),
+		verdictKeys: verdictKeys.sort(),
+		limits: []
 	};
 }
 /** Accepts only T4-validated packets from trusted orchestration; no validation or I/O occurs here.
@@ -20173,17 +20328,20 @@ function grouping(packet, change) {
 */
 function formDecisionUnits(input) {
 	const packet = structuredClone(input);
-	const assignments = new Map(packet.changes.map((c) => [c.id, grouping(packet, c)]));
+	const reachability = indexReachability(packet);
+	const assignments = new Map(packet.changes.map((c) => [c.id, grouping(packet, c, reachability)]));
 	const groups = /* @__PURE__ */ new Map();
 	for (const c of packet.changes) {
 		const assignment = assignments.get(c.id);
 		if (assignment.anchorId === null) continue;
 		const group = groups.get(assignment.anchorId) ?? {
 			members: [assignment.anchorId],
-			proofs: []
+			proofs: [],
+			verdicts: []
 		};
 		group.members.push(c.id);
 		group.proofs.push(...assignment.proofKeys);
+		group.verdicts.push(...assignment.verdictKeys);
 		groups.set(assignment.anchorId, group);
 	}
 	const units = packet.changes.flatMap((c) => {
@@ -20201,6 +20359,8 @@ function formDecisionUnits(input) {
 			memberIds,
 			memberCount: memberIds.length,
 			proofKeys: group ? group.proofs.sort() : [],
+			verdictKeys: group ? group.verdicts.sort() : [],
+			relationshipLimits: group ? [] : assignment.limits,
 			relationship: {
 				reason,
 				nextAction: actions[reason]
@@ -22399,18 +22559,18 @@ var InventoryFailure = class extends Error {
 function need$3(value, reason = "malformed") {
 	if (!value) throw new InventoryFailure(reason);
 }
-function own$2(value) {
+function own$3(value) {
 	need$3(isPlainObject(value));
 	return value;
 }
 function input$2(value) {
-	const r = own$2(value), raw = own$2(r.limits), b = own$2(r.binding);
+	const r = own$3(value), raw = own$3(r.limits), b = own$3(r.binding);
 	need$3(Object.keys(r).length === 2 && Object.hasOwn(r, "binding") && Object.hasOwn(r, "limits"));
 	for (const key of [
 		"repository",
 		"headRepository",
 		"workflow"
-	]) own$2(b[key]);
+	]) own$3(b[key]);
 	need$3(Array.isArray(b.identity) && !types.isProxy(b.identity) && Object.getPrototypeOf(b.identity) === Array.prototype);
 	need$3(b.identity.length === 6 && Reflect.ownKeys(b.identity).length === 7);
 	need$3(Object.values(Object.getOwnPropertyDescriptors(b.identity)).every((d) => "value" in d));
@@ -22761,7 +22921,7 @@ function uninventoried(state, path, side) {
 	return state.gaps.find((g) => at(g) && g.jobId === null)?.reason ?? "unknown";
 }
 function comparisonRow(state, value) {
-	const row = own$2(value);
+	const row = own$3(value);
 	need$3(isEvidencePath(row.manifest) && safeIdentity(row.name) && safeIdentity(row.version, 1024));
 	need$3(row.change_type === "added" || row.change_type === "removed");
 	const path = row.manifest, action = row.name, version = row.version;
@@ -22975,7 +23135,7 @@ const roles = [
 const npmFile = /(?:^|\/)(?:package\.json|package-lock\.json|npm-shrinkwrap\.json)$/u;
 const comparedFile = /(?:^|\/)(?:package-lock\.json|package\.json)$/u;
 /** Reads only own keys so hostile names such as `toString` cannot resolve inherited members. */
-function own$1(map, key) {
+function own$2(map, key) {
 	return Object.hasOwn(map, key) ? map[key] : void 0;
 }
 function rootOf(file) {
@@ -23334,7 +23494,7 @@ function research() {
 function classify(state, root, instance, side) {
 	const manifest = root[side].declarations;
 	if (!manifest) return { role: "unknown" };
-	const slot = slotName(instance.lockPath), membership = slot ? own$1(manifest, slot) : void 0;
+	const slot = slotName(instance.lockPath), membership = slot ? own$2(manifest, slot) : void 0;
 	if (!slot || !membership || instance.lockPath !== `node_modules/${slot}`) return { role: "transitive" };
 	const effective = membership.optionalDependencies ?? membership.dependencies ?? membership.devDependencies ?? membership.peerDependencies;
 	if ((effective?.startsWith("npm:") ? /^npm:((?:@[^/]+\/)?[^@/]+)(?:@.*)?$/u.exec(effective)?.[1] : slot) !== instance.name) {
@@ -23346,15 +23506,23 @@ function classify(state, root, instance, side) {
 		directRoles: sections.flatMap((section, i) => membership[section] === void 0 ? [] : [roles[i]])
 	};
 }
+/** A direct dependency that stops being direct (or the reverse) must not vanish from either side's candidates. */
+function roleOf(state, root, from, to) {
+	const head = classify(state, root, to ?? from, to ? "head" : "base");
+	if (!from || !to) return head;
+	const base = classify(state, root, from, "base");
+	if (base.role === "unknown" || head.role === "unknown" || base.role === head.role) return head;
+	gap$1(state, root.root, null, null, "conflict");
+	return { role: "unknown" };
+}
 function emitResolved(state, root, from, to) {
-	const instance = to ?? from;
 	state.changes.push({
 		id: changeId(state, "resolved", from, to),
 		ecosystem: "npm",
 		kind: from ? to ? "update" : "removal" : "addition",
 		from,
 		to,
-		...classify(state, root, instance, to ? "head" : "base"),
+		...roleOf(state, root, from, to),
 		evidence: research()
 	});
 }
@@ -23373,7 +23541,7 @@ function resolved$1(state, root) {
 	const unresolved = /* @__PURE__ */ new Set([...root.base.unresolvedPaths, ...root.head.unresolvedPaths]);
 	for (const key of keys) {
 		if (unresolved.has(key)) continue;
-		const before = own$1(root.base.packages, key), after = own$1(root.head.packages, key);
+		const before = own$2(root.base.packages, key), after = own$2(root.head.packages, key);
 		const from = before?.instance ?? null, to = after?.instance ?? null;
 		if (sameInstance(from, to)) {
 			if (!isDeepStrictEqual({
@@ -23396,7 +23564,7 @@ function declared(state, root) {
 	if (before === null || after === null) return;
 	const names = [.../* @__PURE__ */ new Set([...Object.keys(before), ...Object.keys(after)])].sort();
 	for (const name of names) {
-		const was = own$1(before, name), now = own$1(after, name);
+		const was = own$2(before, name), now = own$2(after, name);
 		if (isDeepStrictEqual(was, now)) continue;
 		const from = was ? {
 			root: root.root,
@@ -23677,6 +23845,163 @@ async function collectNpmInventory(value, { session }) {
 	}
 }
 
+// src/evidence/optional-retained.ts
+const bytes$1 = (value) => Buffer.byteLength(JSON.stringify(value));
+/** Replaces each anchor/side pair group with one truncated scope record; existing scope records stay. */
+function scopeAll(verdicts) {
+	const kept = [], groups = /* @__PURE__ */ new Map();
+	for (const v of verdicts) if (v.memberId === null) kept.push(v);
+	else groups.set(JSON.stringify([v.side, v.anchorId]), v);
+	return [...kept, ...[...groups.values()].map((v) => ({
+		ecosystem: v.ecosystem,
+		side: v.side,
+		sourceId: v.sourceId,
+		anchorId: v.anchorId,
+		memberId: null,
+		outcome: "truncated",
+		reasons: ["budget"]
+	}))];
+}
+/**
+* Keeps a retained result inside the caller's byte limit by degrading optional evidence only, in this
+* order: pair groups become scope records, second proofs go, then the scope records go. Only a
+* required-content overflow calls `fail`. Every step moves a member toward a standalone unit.
+*/
+function fitRetained(result, limit, fail) {
+	if (bytes$1(result) <= limit) return result;
+	let next = {
+		...result,
+		reachability: scopeAll(result.reachability)
+	};
+	if (bytes$1(next) <= limit) return next;
+	next = {
+		...next,
+		optionalRelationships: []
+	};
+	if (bytes$1(next) <= limit) return next;
+	next = {
+		...next,
+		reachability: []
+	};
+	return bytes$1(next) <= limit ? next : fail();
+}
+
+// src/evidence/npm-reach.ts
+const UNKNOWN$1 = {
+	outcome: "unknown",
+	reasons: ["unknown"]
+};
+const UNSUPPORTED$1 = {
+	outcome: "unsupported",
+	reasons: ["unsupported"]
+};
+const TRUNCATED$1 = {
+	outcome: "truncated",
+	reasons: ["budget"]
+};
+function own$1(map, key) {
+	return Object.hasOwn(map, key) ? map[key] : void 0;
+}
+function nodeKey(node) {
+	return JSON.stringify([
+		node.root,
+		node.lockPath,
+		node.name,
+		node.version,
+		node.source
+	]);
+}
+function supportedEdge(key, specifier, target) {
+	const alias = /^npm:((?:@[^/]+\/)?[^@/]+)@(.+)$/u.exec(specifier);
+	const name = alias?.[1] ?? key;
+	const range = alias?.[2] ?? specifier;
+	return target.source.kind === "registry" && target.name === name && /^[a-z\d\s._^~<>=*|+-]+$/iu.test(range) && /[a-z\d*]/iu.test(range);
+}
+/** Walks the install lookup chain; only a chain with no recorded slot and no unresolved position is absent. */
+function slot(snapshot, unresolved, path, key, spend) {
+	let parent = path;
+	for (;;) {
+		spend();
+		const candidate = (parent ? parent + "/" : "") + "node_modules/" + key;
+		if (unresolved.has(candidate)) return {
+			kind: "limit",
+			limit: UNKNOWN$1
+		};
+		const node = own$1(snapshot.packages, candidate);
+		if (node) return node.instance ? {
+			kind: "target",
+			target: node.instance
+		} : {
+			kind: "limit",
+			limit: UNSUPPORTED$1
+		};
+		if (!parent) return { kind: "absent" };
+		const index = parent.lastIndexOf("/node_modules/");
+		parent = index < 0 ? "" : parent.slice(0, index);
+	}
+}
+/**
+* Breadth-first closure from one anchor instance, with every skipped edge classified. A missing
+* slot is absence only under the lookup-chain rule; unresolved positions, instance-less entries,
+* linked entries (N1 records them without an instance), peer-only edges, unsupported specifiers, and exhausted work all make the closure
+* non-proving. Positive reachability found before the limit stays valid.
+*/
+function closureFrom(snapshot, start, spend, isBudget) {
+	const steps = /* @__PURE__ */ new Map([[start.lockPath, start]]), parents = /* @__PURE__ */ new Map([[start.lockPath, null]]), queue = [start.lockPath], unresolved = new Set(snapshot.unresolvedPaths);
+	let limit = null;
+	const note = (next) => {
+		limit ??= next;
+	};
+	try {
+		for (let i = 0; i < queue.length; i++) {
+			spend();
+			const node = own$1(snapshot.packages, queue[i]);
+			if (!node) {
+				note(UNKNOWN$1);
+				continue;
+			}
+			const maps = {
+				...node.dependencies,
+				...node.optionalDependencies
+			};
+			if (Object.keys(node.peerDependencies).some((key) => own$1(maps, key) === void 0)) note(UNSUPPORTED$1);
+			const found = [];
+			for (const key of Object.keys(maps).sort()) {
+				spend();
+				if (!/^(?:@[a-z\d._-]+\/)?[a-z\d][a-z\d._-]*$/iu.test(key)) {
+					note(UNSUPPORTED$1);
+					continue;
+				}
+				const resolved = slot(snapshot, unresolved, queue[i], key, spend);
+				if (resolved.kind === "limit") note(resolved.limit);
+				else if (resolved.kind === "target") if (supportedEdge(key, maps[key], resolved.target)) found.push(resolved.target);
+				else note(UNSUPPORTED$1);
+			}
+			found.sort((a, b) => nodeKey(a) < nodeKey(b) ? -1 : nodeKey(a) > nodeKey(b) ? 1 : 0);
+			for (const target of found) if (!parents.has(target.lockPath)) {
+				parents.set(target.lockPath, queue[i]);
+				steps.set(target.lockPath, target);
+				queue.push(target.lockPath);
+			}
+		}
+	} catch (error) {
+		if (!isBudget(error)) throw error;
+		note(TRUNCATED$1);
+	}
+	return {
+		steps,
+		parents,
+		limit
+	};
+}
+/** The shortest canonical path from the closure's start to `lockPath`, or undefined when unreached. */
+function closurePath(closure, lockPath) {
+	if (!closure.steps.has(lockPath)) return void 0;
+	const path = [];
+	for (let at = lockPath; at; at = closure.parents.get(at)) path.unshift(closure.steps.get(at));
+	return path;
+}
+
 // src/evidence/npm-graph.ts
 var GraphFailure = class extends Error {
 	reason;
@@ -23828,6 +24153,7 @@ const explanations = {
 	source_split: "Relationship unproven within the original lock-source membership limits.",
 	snapshot_missing: "Relationship unproven because an immutable graph snapshot is unavailable.",
 	path_limit: "Relationship unproven because the full path exceeds the packet limit.",
+	ambiguous_anchors: "Relationship unproven because several changed direct dependencies can reach this member.",
 	shared: "This member is also reachable from an unchanged direct dependency; grouping does not establish exclusive ownership or causation.",
 	budget: "Relationship search is incomplete because its graph-work budget was exhausted."
 };
@@ -23868,21 +24194,6 @@ function slotTarget(snapshot, unresolved, path, key, spend) {
 		const index = parent.lastIndexOf("/node_modules/");
 		parent = index < 0 ? "" : parent.slice(0, index);
 	}
-}
-function supportedEdge(key, specifier, target) {
-	const alias = /^npm:((?:@[^/]+\/)?[^@/]+)@(.+)$/u.exec(specifier);
-	const name = alias?.[1] ?? key;
-	const range = alias?.[2] ?? specifier;
-	return target.source.kind === "registry" && target.name === name && /^[a-z\d\s._^~<>=*|+-]+$/iu.test(range) && /[a-z\d*]/iu.test(range);
-}
-function nodeKey(node) {
-	return JSON.stringify([
-		node.root,
-		node.lockPath,
-		node.name,
-		node.version,
-		node.source
-	]);
 }
 function edges$2(snapshot, unresolved, node, spend) {
 	const maps = {
@@ -23963,8 +24274,104 @@ function unchangedReach(inventory, root, side, spend) {
 	}
 	return seen;
 }
+const failBudget = () => {
+	throw new GraphFailure("budget");
+};
+const isBudget = (error) => error instanceof GraphFailure && error.reason === "budget";
+/** One closure per changed direct anchor per side in this root; an incomplete one becomes a scope record. */
+function candidatesFor$1(inventory, root, spend, reachability) {
+	return inventory.changes.filter(resolved).filter((c) => c.role === "direct" && roots(c).includes(root)).sort(byId).map((change) => {
+		const closures = {};
+		for (const side of ["base", "head"]) {
+			const step = side === "head" ? change.to : change.from, snapshot = inventory.roots.find((r) => r.root === root)?.[side];
+			if (!step || step.root !== root || snapshot?.state !== "present") continue;
+			const closure = closureFrom(snapshot, step, spend, isBudget);
+			closures[side] = closure;
+			if (closure.limit) reachability.push({
+				ecosystem: "npm",
+				side,
+				sourceId: step.sourceId,
+				anchorId: change.id,
+				memberId: null,
+				outcome: closure.limit.outcome,
+				reasons: [...closure.limit.reasons]
+			});
+		}
+		return {
+			change,
+			closures
+		};
+	});
+}
+/** Sides T5 counts for a member: both for an update, the one existing side otherwise. */
+const sidesUsed$1 = (member) => member.kind === "update" ? ["base", "head"] : [member.kind === "removal" ? "base" : "head"];
+function multiAnchor$1(member, candidates) {
+	const proofs = [], verdicts = [];
+	const claim = member.kind === "removal" ? "base" : "head", end = claim === "base" ? member.from : member.to;
+	if (!end) return {
+		proofs,
+		verdicts,
+		observation: "wrong_side"
+	};
+	const reaching = candidates.filter((c) => c.closures[claim]?.steps.has(end.lockPath));
+	if (!reaching.length) return {
+		proofs,
+		verdicts,
+		observation: "missing_relationship"
+	};
+	let blocked = null;
+	for (const candidate of reaching.slice(0, 2)) {
+		const start = claim === "head" ? candidate.change.to : candidate.change.from;
+		const path = closurePath(candidate.closures[claim], end.lockPath);
+		if (!start || start.sourceId !== end.sourceId) blocked = "source_split";
+		else if (path.length > PACKET_LIMITS.pathInstances) blocked = "path_limit";
+		else proofs.push({
+			fromId: candidate.change.id,
+			toId: member.id,
+			ecosystem: "npm",
+			side: claim,
+			sourceId: start.sourceId,
+			path: path.map((step) => ({
+				...step,
+				sourceId: start.sourceId
+			}))
+		});
+	}
+	if (reaching.length > 1) return {
+		proofs,
+		verdicts,
+		observation: "ambiguous_anchors"
+	};
+	if (!proofs.length) return {
+		proofs,
+		verdicts,
+		observation: blocked
+	};
+	for (const other of candidates) {
+		if (other === reaching[0]) continue;
+		for (const side of sidesUsed$1(member)) {
+			const closure = other.closures[side], mine = side === "head" ? member.to : member.from, theirs = side === "head" ? other.change.to : other.change.from;
+			if (!closure || closure.limit || !mine || !theirs) continue;
+			if (closure.steps.has(mine.lockPath) || theirs.sourceId !== mine.sourceId) continue;
+			verdicts.push({
+				ecosystem: "npm",
+				side,
+				sourceId: theirs.sourceId,
+				anchorId: other.change.id,
+				memberId: member.id,
+				outcome: "unreachable",
+				reasons: []
+			});
+		}
+	}
+	return {
+		proofs,
+		verdicts,
+		observation: null
+	};
+}
 function collectProofs(inventory, spend) {
-	const relationships = [], findings = [], reach = /* @__PURE__ */ new Map();
+	const relationships = [], optionalRelationships = [], reachability = [], findings = [], reach = /* @__PURE__ */ new Map(), candidatesByRoot = /* @__PURE__ */ new Map();
 	const shared = (proof) => {
 		const end = proof.path.at(-1), key = JSON.stringify([end.root, proof.side]);
 		if (!reach.has(key)) reach.set(key, unchangedReach(inventory, end.root, proof.side, spend));
@@ -23973,7 +24380,18 @@ function collectProofs(inventory, spend) {
 	for (const member of [...inventory.changes].sort(byId)) {
 		if (!resolved(member) || member.role === "direct") continue;
 		try {
-			const result = proofFor$1(inventory, member, spend);
+			let result = proofFor$1(inventory, member, spend);
+			if (result === "multiple_direct_changes") {
+				const root = roots(member)[0];
+				const candidates = candidatesByRoot.get(root) ?? candidatesFor$1(inventory, root, spend, reachability);
+				candidatesByRoot.set(root, candidates);
+				const multi = multiAnchor$1(member, candidates);
+				reachability.push(...multi.verdicts);
+				optionalRelationships.push(...multi.proofs.slice(1));
+				if (multi.observation) findings.push(note$1(member, multi.observation));
+				if (!multi.proofs.length) continue;
+				result = multi.proofs[0];
+			}
 			if (typeof result === "string") findings.push(note$1(member, result));
 			else {
 				relationships.push(result);
@@ -23984,24 +24402,28 @@ function collectProofs(inventory, spend) {
 			findings.push(note$1(member, "budget"));
 		}
 	}
+	reachability.sort((a, b) => JSON.stringify(a) < JSON.stringify(b) ? -1 : 1);
 	return {
 		relationships,
+		optionalRelationships,
+		reachability,
 		findings
 	};
 }
 function graphResult({ inventory, limits, spend }) {
 	if (inventory.kind !== "inventory") return freeze(structuredClone(inventory));
-	const { relationships, findings } = collectProofs(inventory, spend);
+	const { relationships, optionalRelationships, reachability, findings } = collectProofs(inventory, spend);
 	const result = {
 		...inventory,
 		changes: [...inventory.changes].sort(byId),
 		roots: [...inventory.roots].sort((a, b) => a.root < b.root ? -1 : 1),
 		sources: [...inventory.sources].sort(byId),
 		relationships,
+		optionalRelationships,
+		reachability,
 		findings: findings.sort(byId)
 	};
-	if (Buffer.byteLength(JSON.stringify(result)) > limits.maxRetainedBytes) throw new GraphFailure("budget");
-	return freeze(structuredClone(result));
+	return freeze(structuredClone(fitRetained(result, limits.maxRetainedBytes, failBudget)));
 }
 function byId(a, b) {
 	return a.id < b.id ? -1 : 1;
@@ -24075,11 +24497,11 @@ async function enrichNpmEvidence(value, deps) {
 			findings: findings.sort(byId)
 		};
 		need$1(new Set(sources.map((s) => s.id)).size === sources.length && new Set(findings.map((f) => f.id)).size === findings.length);
-		if (!packetBounds(result) || Buffer.byteLength(JSON.stringify(result)) > parsed.limits.maxRetainedBytes) return {
+		if (!packetBounds(result)) return {
 			kind: "unavailable",
 			reason: "budget"
 		};
-		return freeze(structuredClone(result));
+		return freeze(structuredClone(fitRetained(result, parsed.limits.maxRetainedBytes, failBudget)));
 	} catch (error) {
 		return failure$3(error);
 	}
@@ -26316,9 +26738,86 @@ function finishUvOutput(result, maxBytes) {
 	result.gaps.sort((a, b) => byCodeUnit$1(JSON.stringify(a), JSON.stringify(b)));
 	result.observations.sort((a, b) => byCodeUnit$1(JSON.stringify(a), JSON.stringify(b)));
 	result.findings.sort((a, b) => byCodeUnit$1(a.id, b.id));
-	result.relationships.sort((a, b) => byCodeUnit$1(JSON.stringify(a), JSON.stringify(b)));
-	if (Buffer.byteLength(JSON.stringify(result)) > maxBytes) throw new UvGraphFailure("budget");
-	return freeze$3(result);
+	for (const list of [
+		result.relationships,
+		result.optionalRelationships,
+		result.reachability
+	]) list.sort((a, b) => byCodeUnit$1(JSON.stringify(a), JSON.stringify(b)));
+	return freeze$3(fitRetained(result, maxBytes, () => {
+		throw new UvGraphFailure("budget");
+	}));
+}
+
+// src/evidence/uv-reach.ts
+const UNKNOWN = {
+	outcome: "unknown",
+	reasons: ["unknown"]
+};
+const UNSUPPORTED = {
+	outcome: "unsupported",
+	reasons: ["unsupported"]
+};
+const TRUNCATED = {
+	outcome: "truncated",
+	reasons: ["budget"]
+};
+/**
+* Every package an anchor can reach in one root/side lock, ignoring environment markers and extras:
+* ordinary edges and every optional-dependency edge count, so a path that exists only on some
+* platform or extra is reachability, never absence. Unlike the same-context path search, this
+* never skips an edge for its marker or a node for its membership. A selector that does not resolve
+* to exactly one external package, or exhausted work, leaves the closure non-proving.
+*/
+function uvClosureFrom(context, side, startKey, work) {
+	const snapshot = context.root[side], nodes = context[side].nodes, keys = /* @__PURE__ */ new Set([startKey]), parents = /* @__PURE__ */ new Map([[startKey, null]]), queue = [startKey];
+	let limit = null;
+	const note = (next) => {
+		limit ??= next;
+	};
+	try {
+		for (let i = 0; i < queue.length; i++) {
+			work.spend();
+			const node = nodes.get(queue[i]);
+			if (!node) {
+				note(UNKNOWN);
+				continue;
+			}
+			const selectors = [...node.pkg.dependencies ?? [], ...(node.pkg.optionalDependencies ?? []).flatMap((extra) => extra.declarations)];
+			const found = /* @__PURE__ */ new Set();
+			for (const selector of selectors) {
+				work.spend();
+				const target = resolveUvSelector(snapshot, selector, work);
+				if (!target) note(UNKNOWN);
+				else if (!target.external) note(UNSUPPORTED);
+				else found.add(target.key);
+			}
+			for (const key of [...found].sort(byCodeUnit$1)) if (!keys.has(key)) {
+				keys.add(key);
+				parents.set(key, queue[i]);
+				queue.push(key);
+			}
+		}
+	} catch (error) {
+		if (!(error instanceof UvGraphFailure) || error.reason !== "budget") throw error;
+		note(TRUNCATED);
+	}
+	return {
+		keys,
+		parents,
+		limit
+	};
+}
+/** The shortest canonical instance path to `endKey`, or null when unreached or not representable. */
+function uvClosurePath(context, side, closure, endKey) {
+	if (!closure.keys.has(endKey)) return null;
+	const path = [];
+	for (let at = endKey; at; at = closure.parents.get(at)) {
+		const node = context[side].nodes.get(at);
+		const instance = node ? uvInstance(node, context.root, side) : null;
+		if (!instance) return null;
+		path.unshift(instance);
+	}
+	return path;
 }
 
 // src/evidence/uv-paths.ts
@@ -26416,6 +26915,100 @@ function proofFor(result, contexts, member, work) {
 		}))
 	};
 }
+/** One marker-agnostic closure per changed direct anchor per side in a root; incomplete ones become scope records. */
+function candidatesFor(result, contexts, root, work) {
+	const context = contexts.find((c) => c.root.root === root), scopes = [];
+	return {
+		candidates: result.changes.filter((c) => c.role === "direct" && (c.to ?? c.from).root === root).map((change) => {
+			const closures = {};
+			for (const side of ["base", "head"]) {
+				const step = side === "head" ? change.to : change.from;
+				if (!context || !step || step.root !== root) continue;
+				const closure = uvClosureFrom(context, side, uvSideKey(step), work);
+				closures[side] = closure;
+				if (closure.limit) scopes.push({
+					ecosystem: "uv",
+					side,
+					sourceId: step.sourceId,
+					anchorId: change.id,
+					memberId: null,
+					outcome: closure.limit.outcome,
+					reasons: [...closure.limit.reasons]
+				});
+			}
+			return {
+				change,
+				closures
+			};
+		}),
+		scopes
+	};
+}
+const sidesUsed = (member) => member.kind === "update" ? ["base", "head"] : [member.kind === "removal" ? "base" : "head"];
+function multiAnchor(contexts, member, candidates) {
+	const proofs = [], verdicts = [];
+	const claim = member.kind === "removal" ? "base" : "head", end = claim === "base" ? member.from : member.to, context = contexts.find((c) => c.root.root === end?.root);
+	if (!end || !context) return {
+		proofs,
+		verdicts,
+		observation: "wrong_side"
+	};
+	const reaching = candidates.filter((c) => c.closures[claim]?.keys.has(uvSideKey(end)));
+	if (!reaching.length) return {
+		proofs,
+		verdicts,
+		observation: "missing_relationship"
+	};
+	let blocked = "path_limit";
+	for (const candidate of reaching.slice(0, 2)) {
+		const start = claim === "head" ? candidate.change.to : candidate.change.from, path = uvClosurePath(context, claim, candidate.closures[claim], uvSideKey(end));
+		if (!start || start.sourceId !== end.sourceId) blocked = "source_split";
+		else if (!path || path.length > PACKET_LIMITS.pathInstances) blocked = "path_limit";
+		else proofs.push({
+			ecosystem: "uv",
+			fromId: candidate.change.id,
+			toId: member.id,
+			side: claim,
+			sourceId: start.sourceId,
+			path: path.map((p) => ({
+				...p,
+				sourceId: start.sourceId
+			}))
+		});
+	}
+	if (reaching.length > 1) return {
+		proofs,
+		verdicts,
+		observation: "ambiguous_anchors"
+	};
+	if (!proofs.length) return {
+		proofs,
+		verdicts,
+		observation: blocked
+	};
+	for (const other of candidates) {
+		if (other === reaching[0]) continue;
+		for (const side of sidesUsed(member)) {
+			const closure = other.closures[side], mine = side === "head" ? member.to : member.from, theirs = side === "head" ? other.change.to : other.change.from;
+			if (!closure || closure.limit || !mine || !theirs) continue;
+			if (closure.keys.has(uvSideKey(mine)) || theirs.sourceId !== mine.sourceId) continue;
+			verdicts.push({
+				ecosystem: "uv",
+				side,
+				sourceId: theirs.sourceId,
+				anchorId: other.change.id,
+				memberId: member.id,
+				outcome: "unreachable",
+				reasons: []
+			});
+		}
+	}
+	return {
+		proofs,
+		verdicts,
+		observation: null
+	};
+}
 function isShared(result, contexts, proof, work) {
 	const end = proof.path.at(-1), context = contexts.find((c) => c.root.root === end.root);
 	const changed = new Set(result.changes.map((c) => proof.side === "base" ? c.from : c.to).filter((s) => s !== null && s.root === end.root).map(uvSideKey));
@@ -26455,11 +27048,30 @@ function finding(member, note, work) {
 		validation: ["Inspect the exact cited immutable lockfile instance and selectors."]
 	};
 }
-function relationshipAddition(result, contexts, member, work) {
-	const proof = proofFor(result, contexts, member, work);
-	const note = typeof proof === "string" ? observation(member, proof) : isShared(result, contexts, proof, work) ? observation(member, "shared") : null;
+function relationshipAddition(result, contexts, member, work, roots) {
+	let proof = proofFor(result, contexts, member, work);
+	const optionalRelationships = [], reachability = [];
+	let ambiguous = false;
+	if (proof === "multiple_direct_changes") {
+		const root = (member.to ?? member.from).root;
+		let candidates = roots.get(root);
+		if (!candidates) {
+			const created = candidatesFor(result, contexts, root, work);
+			candidates = created.candidates;
+			roots.set(root, candidates);
+			result.reachability.push(...created.scopes);
+		}
+		const multi = multiAnchor(contexts, member, candidates);
+		reachability.push(...multi.verdicts);
+		optionalRelationships.push(...multi.proofs.slice(1));
+		ambiguous = multi.observation === "ambiguous_anchors";
+		proof = multi.proofs[0] ?? multi.observation ?? "missing_relationship";
+	}
+	const note = ambiguous ? observation(member, "ambiguous_anchors") : typeof proof === "string" ? observation(member, proof) : isShared(result, contexts, proof, work) ? observation(member, "shared") : null;
 	return {
 		relationships: typeof proof === "string" ? [] : [proof],
+		optionalRelationships,
+		reachability,
 		observations: note ? [note] : [],
 		findings: note ? [finding(member, note, work)] : []
 	};
@@ -26471,10 +27083,11 @@ function proveUvRelationships(result, contexts, work, maxBytes, summary) {
 	}
 	let bytes = Buffer.byteLength(JSON.stringify(result));
 	const appended = (list, items) => items.reduce((n, item, i) => n + Buffer.byteLength(JSON.stringify(item)) + (list.length || i ? 1 : 0), 0);
+	const roots = /* @__PURE__ */ new Map();
 	for (const member of result.changes) {
 		if (member.role === "direct") continue;
 		try {
-			const addition = relationshipAddition(result, contexts, member, work);
+			const addition = relationshipAddition(result, contexts, member, work, roots);
 			checkGraphData(addition, work, maxBytes);
 			const projected = bytes + appended(result.relationships, addition.relationships) + appended(result.observations, addition.observations) + appended(result.findings, addition.findings);
 			if (projected + (8 - summary.reason.length) > maxBytes) {
@@ -26483,6 +27096,8 @@ function proveUvRelationships(result, contexts, work, maxBytes, summary) {
 			}
 			bytes = projected;
 			result.relationships.push(...addition.relationships);
+			result.optionalRelationships.push(...addition.optionalRelationships);
+			result.reachability.push(...addition.reachability);
 			result.observations.push(...addition.observations);
 			result.findings.push(...addition.findings);
 		} catch (error) {
@@ -26831,6 +27446,8 @@ function initial(metadata, work) {
 		sources: [discovery, ...fileSources(metadata)],
 		fileIdentities: metadata.sources,
 		relationships: [],
+		optionalRelationships: [],
+		reachability: [],
 		findings: [],
 		gaps: [],
 		observations: [],
@@ -27727,7 +28344,9 @@ function createEvidenceCollectors(input) {
 			changes: enriched.changes,
 			sources: enriched.sources,
 			findings: enriched.findings,
-			relationships: enriched.relationships
+			relationships: enriched.relationships,
+			reachability: enriched.reachability,
+			optionalRelationships: enriched.optionalRelationships
 		};
 	};
 	const actions = async (session) => {
@@ -27769,7 +28388,9 @@ function createEvidenceCollectors(input) {
 			changes: graph.changes,
 			sources: graph.sources,
 			findings: graph.findings,
-			relationships: graph.relationships
+			relationships: graph.relationships,
+			reachability: graph.reachability,
+			optionalRelationships: graph.optionalRelationships
 		};
 	};
 	return Object.freeze({
@@ -27777,6 +28398,113 @@ function createEvidenceCollectors(input) {
 		actions,
 		uv
 	});
+}
+
+// src/optional-evidence.ts
+const size = (value) => Buffer.byteLength(JSON.stringify(value));
+const isLoose = (value) => typeof value === "object" && value !== null && !Array.isArray(value);
+const lock = (value) => value === "npm" || value === "uv";
+/**
+* Fits optional reachability evidence into the packet-wide budgets. It replaces whole anchor/side pair
+* groups with one `truncated` scope record, then drops optional proofs, uv before npm and then by
+* descending canonical key. Required proofs, verdicts it cannot group, and all non-evidence stay.
+* A dropped record only ever degrades a member toward a standalone unit.
+*/
+function fitOptionalEvidence(input) {
+	const fixed = [], groups = /* @__PURE__ */ new Map();
+	for (const v of input.verdicts) if (isLoose(v) && lock(v.ecosystem) && typeof v.side === "string" && typeof v.anchorId === "string" && typeof v.sourceId === "string" && typeof v.memberId === "string") {
+		const key = JSON.stringify([
+			v.ecosystem,
+			v.side,
+			v.anchorId
+		]);
+		const group = groups.get(key) ?? {
+			key,
+			ecosystem: v.ecosystem,
+			records: [],
+			bytes: 0
+		};
+		group.records.push(v);
+		group.bytes += size(v);
+		groups.set(key, group);
+	} else fixed.push(v);
+	const proofs = [], keptProofs = [];
+	for (const p of input.optionalProofs) if (isLoose(p) && lock(p.ecosystem) && typeof p.fromId === "string" && typeof p.toId === "string" && typeof p.side === "string") proofs.push({
+		key: JSON.stringify([
+			p.ecosystem,
+			p.fromId,
+			p.toId,
+			p.side
+		]),
+		ecosystem: p.ecosystem,
+		value: p,
+		bytes: size(p)
+	});
+	else keptProofs.push(p);
+	const byKeyDescending = (a, b) => a.key < b.key ? 1 : a.key > b.key ? -1 : 0;
+	const pending = [...groups.values()].sort(byKeyDescending), droppable = [...proofs].sort(byKeyDescending);
+	const scopes = [], dropped = [];
+	let verdictCount = fixed.length + [...groups.values()].reduce((n, g) => n + g.records.length, 0), verdictBytes = fixed.reduce((n, v) => n + size(v), 0) + [...groups.values()].reduce((n, g) => n + g.bytes, 0), proofCount = input.requiredProofs.length + keptProofs.length + proofs.length, proofBytes = input.requiredProofs.reduce((n, p) => n + size(p), 0) + keptProofs.reduce((n, p) => n + size(p), 0) + proofs.reduce((n, p) => n + p.bytes, 0);
+	const total = () => input.baseBytes + verdictBytes + Math.max(verdictCount - 1, 0) + proofBytes + Math.max(proofCount - 1, 0);
+	const dropGroup = () => {
+		const group = pending.shift();
+		const first = group.records[0];
+		const scope = {
+			ecosystem: first.ecosystem,
+			side: first.side,
+			sourceId: first.sourceId,
+			anchorId: first.anchorId,
+			memberId: null,
+			outcome: "truncated",
+			reasons: ["budget"]
+		};
+		scopes.push(scope);
+		verdictCount += 1 - group.records.length;
+		verdictBytes += size(scope) - group.bytes;
+		groups.delete(group.key);
+		dropped.push({
+			kind: "reachability",
+			ecosystem: group.ecosystem,
+			key: group.key
+		});
+	};
+	const dropProof = () => {
+		const proof = droppable.shift();
+		proofs.splice(proofs.indexOf(proof), 1);
+		proofCount -= 1;
+		proofBytes -= proof.bytes;
+		dropped.push({
+			kind: "proof",
+			ecosystem: proof.ecosystem,
+			key: proof.key
+		});
+	};
+	while (verdictCount > PACKET_LIMITS.reachability && pending.length) dropGroup();
+	while (proofCount > PACKET_LIMITS.relationships && droppable.length) dropProof();
+	while (total() > PACKET_LIMITS.bytes && (pending.length || droppable.length)) if (pending.length) dropGroup();
+	else dropProof();
+	return {
+		/** Drops one more optional unit; false when none remain. Used if validation still reports a budget. */
+		dropMore: () => {
+			if (pending.length) dropGroup();
+			else if (droppable.length) dropProof();
+			else return false;
+			return true;
+		},
+		current: () => ({
+			reachability: [
+				...fixed,
+				...scopes,
+				...[...groups.values()].flatMap((g) => g.records)
+			],
+			relationships: [
+				...input.requiredProofs,
+				...keptProofs,
+				...proofs.map((p) => p.value)
+			],
+			dropped: [...dropped]
+		})
+	};
 }
 
 // src/packet.ts
@@ -27794,7 +28522,7 @@ function fragment(value, ecosystem) {
 		"sources",
 		"findings",
 		"relationships"
-	]) || value.kind !== "complete" || value.ecosystem !== ecosystem || !Array.isArray(value.changes) || !Array.isArray(value.sources) || !Array.isArray(value.findings) || !Array.isArray(value.relationships)) return null;
+	]) || value.kind !== "complete" || value.ecosystem !== ecosystem || !Array.isArray(value.changes) || !Array.isArray(value.sources) || !Array.isArray(value.findings) || !Array.isArray(value.relationships) || value.reachability !== void 0 && !Array.isArray(value.reachability) || value.optionalRelationships !== void 0 && !Array.isArray(value.optionalRelationships)) return null;
 	return value;
 }
 async function collectFragments(input, session) {
@@ -27856,21 +28584,48 @@ async function assembleReviewPacket(input) {
 		if (collected.kind !== "ready") return collected;
 		const context = await collectTrustedContext(input, collected.fragments);
 		if (context.kind !== "ready") return context;
-		const packet = validateReviewPacket({
+		const fragments = collected.fragments;
+		const list = (pick) => fragments.flatMap((item) => {
+			const value = pick(item);
+			return Array.isArray(value) ? value : [];
+		});
+		const build = (reachability, relationships) => ({
 			version: 1,
 			binding: context.trusted.binding,
 			baseSha: context.trusted.baseSha,
 			contextRevision: context.trusted.contextRevision,
 			context: context.trusted.context,
-			coverage: Object.fromEntries(collected.fragments.map((item) => [item.ecosystem, item.coverage])),
-			changes: collected.fragments.flatMap((item) => item.changes),
-			sources: [...input.inventorySource === null || input.inventorySource === void 0 ? [] : [input.inventorySource], ...collected.fragments.flatMap((item) => item.sources)],
-			findings: collected.fragments.flatMap((item) => item.findings),
-			relationships: collected.fragments.flatMap((item) => item.relationships)
-		}, context.trusted);
+			coverage: Object.fromEntries(fragments.map((item) => [item.ecosystem, item.coverage])),
+			changes: fragments.flatMap((item) => item.changes),
+			sources: [...input.inventorySource === null || input.inventorySource === void 0 ? [] : [input.inventorySource], ...fragments.flatMap((item) => item.sources)],
+			findings: fragments.flatMap((item) => item.findings),
+			relationships,
+			reachability
+		});
+		const required = list((item) => item.relationships), optionalProofs = list((item) => item.optionalRelationships), verdicts = list((item) => item.reachability);
+		let fitted;
+		try {
+			fitted = fitOptionalEvidence({
+				baseBytes: Buffer.byteLength(JSON.stringify(build([], []))),
+				requiredProofs: required,
+				optionalProofs,
+				verdicts
+			});
+		} catch {}
+		let current = fitted?.current() ?? {
+			reachability: verdicts,
+			relationships: [...required, ...optionalProofs],
+			dropped: []
+		};
+		let packet = validateReviewPacket(build(current.reachability, current.relationships), context.trusted);
+		while (!packet.ok && packet.error.category === "budget" && fitted?.dropMore()) {
+			current = fitted.current();
+			packet = validateReviewPacket(build(current.reachability, current.relationships), context.trusted);
+		}
 		if (packet.ok) return {
 			kind: "ready",
-			packet: packet.packet
+			packet: packet.packet,
+			droppedOptional: current.dropped
 		};
 		return {
 			kind: "incomplete",
@@ -28252,7 +29007,8 @@ function revalidate(input, progress) {
 		changes: progress.changes,
 		sources: progress.sources,
 		findings: progress.findings,
-		relationships: packet.relationships
+		relationships: packet.relationships,
+		reachability: packet.reachability
 	}, input.trusted);
 }
 /**
