@@ -8590,10 +8590,13 @@ function debit$1(budget, key, limit) {
 	need$5(budget[key] < limit, "budget");
 	budget[key]++;
 }
-const STRUCTURAL_TOKENS = /* @__PURE__ */ new Set([
+const COLLECTION_TOKENS = /* @__PURE__ */ new Set([
 	"block-map",
 	"block-seq",
-	"flow-collection",
+	"flow-collection"
+]);
+const STRUCTURAL_TOKENS = /* @__PURE__ */ new Set([
+	...COLLECTION_TOKENS,
 	"scalar",
 	"single-quoted-scalar",
 	"double-quoted-scalar",
@@ -8609,11 +8612,7 @@ function preflight$1(value, limits, budget) {
 		const { value: item, depth } = stack.pop();
 		if (!item || typeof item !== "object") continue;
 		const r = item;
-		const collection = [
-			"block-map",
-			"block-seq",
-			"flow-collection"
-		].includes(r.type);
+		const collection = COLLECTION_TOKENS.has(r.type);
 		const next = depth + Number(collection);
 		need$5(next <= limits.maxYamlDepth, "budget");
 		if (STRUCTURAL_TOKENS.has(r.type)) debit$1(budget, "nodes", limits.maxYamlNodes);
@@ -8860,7 +8859,9 @@ function readWorkflow(bytes, limits, budget = {
 		need$5(bytes.byteLength <= limits.maxFileBytes, "budget");
 		const text = new TextDecoder("utf-8", { fatal: true }).decode(bytes);
 		const tokens = [];
+		let documentTokens = 0;
 		for (const token of new import_dist.Parser().parse(text)) {
+			if (token.type === "document") need$5(++documentTokens === 1);
 			preflight$1(token, limits, budget);
 			tokens.push(token);
 		}
@@ -22565,7 +22566,9 @@ function parseDependabotRoots(bytes) {
 			occurrences: 0
 		};
 		const tokens = [];
+		let documentTokens = 0;
 		for (const token of new import_dist.Parser().parse(text)) {
+			if (token.type === "document" && ++documentTokens > 1) fail("malformed");
 			preflight$1(token, {
 				...DEPENDABOT_ROOT_LIMITS,
 				maxOccurrences: 0

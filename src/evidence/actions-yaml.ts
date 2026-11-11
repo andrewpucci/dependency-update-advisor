@@ -46,11 +46,10 @@ function debit(budget: YamlBudget, key: keyof YamlBudget, limit: number) {
   budget[key]++;
 }
 
+const COLLECTION_TOKENS = new Set(['block-map', 'block-seq', 'flow-collection']);
 // Only structure is charged; whitespace, comments, indicators and other punctuation are free.
 const STRUCTURAL_TOKENS = new Set([
-  'block-map',
-  'block-seq',
-  'flow-collection',
+  ...COLLECTION_TOKENS,
   'scalar',
   'single-quoted-scalar',
   'double-quoted-scalar',
@@ -65,7 +64,7 @@ export function preflight(value: unknown, limits: YamlLimits, budget: YamlBudget
     const { value: item, depth } = stack.pop()!;
     if (!item || typeof item !== 'object') continue;
     const r = item as Record<string, unknown>;
-    const collection = ['block-map', 'block-seq', 'flow-collection'].includes(r.type as string);
+    const collection = COLLECTION_TOKENS.has(r.type as string);
     const next = depth + Number(collection);
     need(next <= limits.maxYamlDepth, 'budget');
     if (STRUCTURAL_TOKENS.has(r.type as string)) debit(budget, 'nodes', limits.maxYamlNodes);
@@ -296,7 +295,10 @@ export function readWorkflow(
     need(bytes.byteLength <= limits.maxFileBytes, 'budget');
     const text = new TextDecoder('utf-8', { fatal: true }).decode(bytes);
     const tokens = [];
+    let documentTokens = 0;
     for (const token of new Parser().parse(text)) {
+      // Only one document is accepted, so stop before inspecting or composing a second.
+      if (token.type === 'document') need(++documentTokens === 1);
       preflight(token, limits, budget);
       tokens.push(token);
     }

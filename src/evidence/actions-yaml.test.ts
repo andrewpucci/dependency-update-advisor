@@ -97,6 +97,15 @@ test.each([
   expect(read(yaml)).toEqual({ kind: 'unavailable', reason });
 });
 
+test('rejects a second document before inspecting or composing it', () => {
+  // The second document alone would exhaust the node budget, so `budget` means it was inspected.
+  const overBudget = `x: [${'1,'.repeat(limits.maxYamlNodes)}]`;
+  expect(read(`jobs: {}\n---\n${overBudget}`)).toEqual({
+    kind: 'unavailable',
+    reason: 'malformed',
+  });
+});
+
 test('keeps independent jobs after an unsupported semantic use without retaining its text', () => {
   const result = read(`jobs:
   good:
@@ -249,8 +258,11 @@ d: |
   block
 e: &anchor [x]
 f: *anchor
+g:
+  - y
 `;
-  // block-map + 6 keys + plain, single, double, block scalars + flow-collection + x + alias
-  expect(preflightNodes(kinds)).toBe(1 + 6 + 4 + 1 + 1 + 1);
+  // block-map + 7 keys + plain, single, double, block scalars + flow-collection + x + alias
+  // + block-seq + y
+  expect(preflightNodes(kinds)).toBe(1 + 7 + 4 + 1 + 1 + 1 + 1 + 1);
   expect(preflightNodes(`${kinds}\n\n# trailing\n`)).toBe(preflightNodes(kinds));
 });

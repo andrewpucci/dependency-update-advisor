@@ -198,7 +198,8 @@ gaps and an introduced vulnerability before parity is claimed.
   records resolved complexity findings and downstream integration/cutover gates.
   A [YAML node budget amendment](SPEC-actions-inventory.md#yaml-node-budget-amendment)
   for [#151](https://github.com/andrewpucci/dependency-update-advisor/issues/151)
-  counts structure instead of formatting; approved for planning, 2026-11-11.
+  counts structure instead of formatting; implemented on `issue-151`, pending
+  review and merge.
 - [uv evidence](SPEC-uv-evidence.md) — approved for planning.
 - [Tested uv metadata](SPEC-uv-metadata.md) — U1 #17 and #152–#159
   implemented on `issue-17`, pending review and merge. The user approved the

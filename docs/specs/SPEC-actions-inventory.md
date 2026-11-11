@@ -389,8 +389,9 @@ cutover remain separate. Keep the old reviewer active.
 
 ## YAML Node Budget Amendment
 
-Status: approved for planning, 2026-11-11, for
-[#151](https://github.com/andrewpucci/dependency-update-advisor/issues/151).
+Status: implemented on `issue-151`, pending review and merge, for
+[#151](https://github.com/andrewpucci/dependency-update-advisor/issues/151);
+approved for planning, 2026-11-11.
 Approval: the user answered `yes` to leaving the numeric limits unchanged and
 invoked `as-plan` on the reviewed draft. This approves the specification for
 planning; plan and execution approval remain separate. Plan approval: the user
@@ -400,10 +401,12 @@ review; tasks are ordered sub-issues
 [#279](https://github.com/andrewpucci/dependency-update-advisor/issues/279), and
 [#280](https://github.com/andrewpucci/dependency-update-advisor/issues/280)
 of #151 on the implementation project. Execution approval: the user invoked
-`as-build auto` in one PR on 2026-11-11; implemented on `issue-151`, pending
-review and merge. It
-refines the "parsed nodes/entries" bound above and adds no module,
-dependency direction, or packet-schema amendment.
+`as-build auto` in one PR on 2026-11-11. Review amendment: after the code
+review of [PR #281](https://github.com/andrewpucci/dependency-update-advisor/pull/281),
+the user answered `yes` on 2026-11-11 to rejecting a second document before
+composition (contract item 2) and to recording the measured composer cost
+(contract item 5). It refines the "parsed nodes/entries" bound above and adds
+no module, dependency direction, or packet-schema amendment.
 
 ### Problem
 
@@ -431,10 +434,13 @@ under its approved 20,000-node cap with no later effective-graph walk.
    `flow-error-end`, and `error`. Entries are free on purpose: a comment can
    create a comment-only entry, so counting entries would again charge
    formatting.
-2. Check order and limits are unchanged. Depth is still bounded for every
-   visited token, and unsupported tags and directives are still rejected, before
-   composition; free tokens remain subject to those checks. Exhaustion is still
-   `budget`.
+2. Limits are unchanged, and existing checks keep their order. Depth is still
+   bounded for every visited token, and unsupported tags and directives are
+   still rejected, before composition; free tokens remain subject to those
+   checks. Exhaustion is still `budget`. Both callers accept one document only,
+   so a second `document` token returns `malformed` before it is inspected or
+   composed; otherwise free document tokens would let a stream of empty
+   documents reach composition.
 3. The budget stays cumulative across base and head reads. The effective-graph
    walk keeps its own debits, including per-alias expansion, so alias
    amplification still consumes budget before the graph is walked.
@@ -447,7 +453,10 @@ under its approved 20,000-node cap with no later effective-graph walk.
    where 10,001 used to exceed the cap, and 32,000 empty `-` items parse under
    the 20,000 cap. The 65,536-byte cap still bounds the work, so this is
    accepted as defense in depth, not a defect. The user confirmed keeping
-   20,000 on 2026-11-11, and again after this effect was stated.
+   20,000 on 2026-11-11, and again after this effect was stated. Free entries
+   also let maps with empty or null keys reach composition: C4 `x: {` with
+   60,000 commas measured 35 ms `budget` before and 190 ms `malformed` after.
+   The user accepted that cost on 2026-11-11.
 6. Output, gaps, and retained evidence are unchanged; no formatting, comments,
    or raw YAML are retained.
 
@@ -464,6 +473,7 @@ New-behavior checks are written first and must fail on the current code.
 | Comment-heavy input at the node boundary                                                                                                                                | Parses at the limit; `limit - 1` returns `budget`, not a formatting-driven failure                                                          |
 | `parseDependabotRoots` with a commented file over the old formatting-inflated count                                                                                     | Parses                                                                                                                                      |
 | `parseDependabotRoots` with `x: !custom 1`                                                                                                                              | `unsupported` from `preflight`'s tag check, not `malformed`; catches an early `continue` for non-structural tokens that skips the tag check |
+| `readWorkflow` and `parseDependabotRoots` with a valid first document and a second document that alone exceeds the node cap                                             | `malformed`, not `budget`: the second document is rejected before `preflight` inspects it or the composer runs                              |
 
 Preservation checks pass on the current code and must keep passing:
 
