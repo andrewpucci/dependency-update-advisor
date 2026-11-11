@@ -15,6 +15,7 @@ import {
 import { createReviewHandoff, type RehearsalSink, type ReviewHandoff } from './handoff.js';
 import { guardedFetch } from './adapters.js';
 import { assembleReviewPacket, type PacketGap } from './packet.js';
+import type { DroppedOptional } from './optional-evidence.js';
 import { runResearch } from './research.js';
 import type { ClaimStore, OwnedClaim, ReviewOutcomeKind } from './review.js';
 import { withTrustedSnapshot, type SnapshotReads } from './snapshot.js';
@@ -65,6 +66,8 @@ type Outcome = Readonly<{
   body: string | null;
   /** Sources that gave no usable evidence, when no packet could be rendered. */
   gaps?: readonly PacketGap[];
+  /** Optional evidence that fit the packet only after a conservative budget drop. */
+  droppedOptional?: readonly DroppedOptional[];
 }>;
 
 /** `stale` proves the head moved or ownership ended; `error` only means it could not be verified. */
@@ -174,6 +177,7 @@ export async function runReview(input: PipelineInput): Promise<PipelineResult> {
   const handoff = await createReviewHandoff(input.claims, claim, outcome.kind, {
     body: outcome.body !== null,
     gaps: outcome.gaps ?? [],
+    droppedOptional: outcome.droppedOptional ?? [],
   });
   if (handoff.kind !== 'ready') return { kind: 'not-eligible', reason: 'ownership' };
   return {
@@ -284,7 +288,7 @@ async function evaluateEvidence(
         signal,
         model: input.model,
       });
-      return reviewed;
+      return { ...reviewed, droppedOptional: assembled.droppedOptional };
     },
   );
   if (snapshot.kind === 'ready') return snapshot.value;

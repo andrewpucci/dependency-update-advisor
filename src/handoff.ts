@@ -1,4 +1,5 @@
 import type { PacketGap } from './packet.js';
+import type { DroppedOptional } from './optional-evidence.js';
 import {
   reviewOutcome,
   type ClaimStore,
@@ -16,15 +17,30 @@ export type ReviewHandoff = Readonly<{
   body: 'present' | 'absent';
   /** Which sources gave no usable evidence and why; never error text. */
   gaps: readonly PacketGap[];
+  /** Bounded, redacted accounting for optional packet evidence removed to meet a budget. */
+  droppedOptional: OptionalEvidenceDropCounts;
 }>;
+export type OptionalEvidenceDropCounts = Readonly<{ reachability: number; proof: number }>;
 /** What the pipeline knows about the result beyond its outcome kind. */
-export type HandoffDetail = Readonly<{ body: boolean; gaps: readonly PacketGap[] }>;
+export type HandoffDetail = Readonly<{
+  body: boolean;
+  gaps: readonly PacketGap[];
+  droppedOptional?: readonly DroppedOptional[];
+}>;
 const MAX_GAPS = 4;
 
 function copyGaps(gaps: readonly PacketGap[]): readonly PacketGap[] {
   return Object.freeze(
     gaps.slice(0, MAX_GAPS).map(({ source, reason }) => Object.freeze({ source, reason })),
   );
+}
+function countDroppedOptional(dropped: readonly DroppedOptional[]): OptionalEvidenceDropCounts {
+  let reachability = 0,
+    proof = 0;
+  for (const record of dropped)
+    if (record.kind === 'reachability') reachability += 1;
+    else proof += 1;
+  return Object.freeze({ reachability, proof });
 }
 export type HandoffResult =
   | Readonly<{ kind: 'ready'; handoff: ReviewHandoff }>
@@ -35,7 +51,7 @@ export async function createReviewHandoff(
   claims: ClaimStore,
   claim: OwnedClaim,
   kind: ReviewOutcomeKind,
-  detail: HandoffDetail = { body: false, gaps: [] },
+  detail: HandoffDetail = { body: false, gaps: [], droppedOptional: [] },
 ): Promise<HandoffResult> {
   const state = await claims.read(claim);
   if (
@@ -55,6 +71,7 @@ export async function createReviewHandoff(
       comment: outcome.comment,
       body: detail.body ? 'present' : 'absent',
       gaps: copyGaps(detail.gaps),
+      droppedOptional: countDroppedOptional(detail.droppedOptional ?? []),
     }),
   };
 }
@@ -67,6 +84,7 @@ export type RehearsalTrace = Readonly<{
   comment: ReviewHandoff['comment'];
   body: ReviewHandoff['body'];
   gaps: ReviewHandoff['gaps'];
+  droppedOptional: ReviewHandoff['droppedOptional'];
 }>;
 export type RehearsalSink = Readonly<{
   record: (handoff: ReviewHandoff) => boolean;
@@ -89,6 +107,7 @@ export function createRehearsalSink(appToken: string | null): RehearsalSink | nu
           comment: handoff.comment,
           body: handoff.body,
           gaps: copyGaps(handoff.gaps),
+          droppedOptional: handoff.droppedOptional,
         }),
       );
       return true;

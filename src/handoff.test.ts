@@ -33,6 +33,7 @@ test('records only bounded redacted intent and rejects a lost claim', async () =
       comment: 'eligible',
       body: 'absent',
       gaps: [],
+      droppedOptional: { reachability: 0, proof: 0 },
     },
   ]);
 });
@@ -79,13 +80,38 @@ test('records whether a body exists and which sources gave no usable evidence', 
   expect(Object.isFrozen(sink.traces()[0].gaps)).toBe(true);
 });
 
+test('records bounded counts when packet fitting drops optional evidence', async () => {
+  const claims = createTestClaimStore();
+  const claimed = await claims.claim([101, 301, 401, 1, 42, 'a'.repeat(40)]);
+  if (claimed.kind !== 'owned') throw new Error('fixture must own');
+  const result = await createReviewHandoff(claims, claimed, 'complete', {
+    body: true,
+    gaps: [],
+    droppedOptional: [
+      { kind: 'reachability', ecosystem: 'npm', key: 'one' },
+      { kind: 'proof', ecosystem: 'uv', key: 'two' },
+      { kind: 'reachability', ecosystem: 'npm', key: 'three' },
+    ],
+  });
+  if (result.kind !== 'ready') throw new Error('expected handoff');
+  expect(result.handoff.droppedOptional).toEqual({ reachability: 2, proof: 1 });
+  const sink = createRehearsalSink(null);
+  if (!sink) throw new Error('expected sink');
+  sink.record(result.handoff);
+  expect(sink.traces()[0].droppedOptional).toEqual({ reachability: 2, proof: 1 });
+});
+
 test('defaults to no body and no gaps, and keeps at most four gaps', async () => {
   const claims = createTestClaimStore();
   const claimed = await claims.claim([101, 301, 401, 1, 42, 'a'.repeat(40)]);
   if (claimed.kind !== 'owned') throw new Error('fixture must own');
   const plain = await createReviewHandoff(claims, claimed, 'stale');
   if (plain.kind !== 'ready') throw new Error('expected handoff');
-  expect(plain.handoff).toMatchObject({ body: 'absent', gaps: [] });
+  expect(plain.handoff).toMatchObject({
+    body: 'absent',
+    gaps: [],
+    droppedOptional: { reachability: 0, proof: 0 },
+  });
   const many = await createReviewHandoff(claims, claimed, 'incomplete-evidence', {
     body: false,
     gaps: Array.from({ length: 9 }, () => ({ source: 'uv' as const, reason: 'unknown' as const })),
