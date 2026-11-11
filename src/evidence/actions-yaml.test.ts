@@ -1,5 +1,6 @@
 import { expect, test } from 'vite-plus/test';
-import { readWorkflow, type YamlLimits } from './actions-yaml.js';
+import { Parser } from 'yaml';
+import { preflight, readWorkflow, type YamlLimits } from './actions-yaml.js';
 
 const limits: YamlLimits = {
   maxFileBytes: 100_000,
@@ -166,4 +167,90 @@ test('counts cumulative nodes and UTF-8 bytes at exact boundaries and bounds dee
 test('expanded scalar alias entries consume node budget before the graph can amplify', () => {
   const yaml = `extras: &list [${Array(100).fill('value').join(',')}]\ncopies: [${Array(100).fill('*list').join(',')}]\njobs: {}`;
   expect(read(yaml, { maxYamlNodes: 1500 })).toEqual({ kind: 'unavailable', reason: 'budget' });
+});
+
+function newBudget() {
+  return { nodes: 0, aliases: 0, occurrences: 0 };
+}
+function preflightNodes(yaml: string) {
+  const budget = newBudget();
+  for (const token of new Parser().parse(yaml)) preflight(token, limits, budget);
+  return budget.nodes;
+}
+function readNodes(yaml: string, budget = newBudget()) {
+  const result = read(yaml, { maxYamlNodes: 100_000 });
+  readWorkflow(new TextEncoder().encode(yaml), limits, budget);
+  return { result, nodes: budget.nodes };
+}
+
+const commented = `# leading comment
+
+on: [push] # trailing comment
+jobs:
+  # comment between keys
+
+  build:   
+    steps:
+      # comment before an item
+      - run: echo uses:example/ignored@v1
+      - id: setup
+        uses: example/action/subpath@v2 # v9 is not the ref
+    # dedented trailing comment inside a nested collection
+  reuse:
+    uses: example/repo/.github/workflows/build.yml@main
+
+# trailing comment
+`;
+
+test('comments, blank lines and trailing spaces do not change the node count', () => {
+  const plain = readNodes(ordinary);
+  const withComments = readNodes(commented);
+  expect(withComments.result).toEqual(plain.result);
+  expect(withComments.nodes).toBe(plain.nodes);
+  expect(preflightNodes(commented)).toBe(preflightNodes(ordinary));
+});
+
+test('the node boundary is the same with and without comments', () => {
+  const nodes = readNodes(ordinary).nodes;
+  for (const yaml of [ordinary, commented]) {
+    expect(read(yaml, { maxYamlNodes: nodes }).kind).toBe('parsed');
+    expect(read(yaml, { maxYamlNodes: nodes - 1 })).toEqual({
+      kind: 'unavailable',
+      reason: 'budget',
+    });
+  }
+});
+
+test('a second read through one budget does not depend on the first read’s comments', () => {
+  const nodes = readNodes(ordinary).nodes;
+  const encode = (yaml: string) => new TextEncoder().encode(yaml);
+  for (const first of [ordinary, commented]) {
+    const budget = newBudget();
+    const tight = { ...limits, maxYamlNodes: nodes * 2 };
+    expect(readWorkflow(encode(first), tight, budget).kind).toBe('parsed');
+    expect(readWorkflow(encode(ordinary), tight, budget).kind).toBe('parsed');
+    expect(readWorkflow(encode(ordinary), tight, budget)).toEqual({
+      kind: 'unavailable',
+      reason: 'budget',
+    });
+  }
+});
+
+test('pins the structural count for a minimal workflow at both levels', () => {
+  expect(preflightNodes('jobs: {}')).toBe(3);
+  expect(readNodes('jobs: {}').nodes).toBe(5);
+});
+
+test('charges each structural token kind once and nothing else', () => {
+  const kinds = `a: plain # comment
+b: 'single'
+c: "double"
+d: |
+  block
+e: &anchor [x]
+f: *anchor
+`;
+  // block-map + 6 keys + plain, single, double, block scalars + flow-collection + x + alias
+  expect(preflightNodes(kinds)).toBe(1 + 6 + 4 + 1 + 1 + 1);
+  expect(preflightNodes(`${kinds}\n\n# trailing\n`)).toBe(preflightNodes(kinds));
 });

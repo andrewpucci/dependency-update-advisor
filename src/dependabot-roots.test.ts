@@ -165,7 +165,7 @@ test.each([
   ],
   [
     'YAML nodes in an ignored key',
-    encode(`${file(update('npm', '/'))}x: [${'1,'.repeat(10_001)}]\n`),
+    encode(`${file(update('npm', '/'))}x: [${'1,'.repeat(20_001)}]\n`),
   ],
   [
     'YAML depth',

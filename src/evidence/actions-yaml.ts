@@ -46,6 +46,18 @@ function debit(budget: YamlBudget, key: keyof YamlBudget, limit: number) {
   budget[key]++;
 }
 
+// Only structure is charged; whitespace, comments, indicators and other punctuation are free.
+const STRUCTURAL_TOKENS = new Set([
+  'block-map',
+  'block-seq',
+  'flow-collection',
+  'scalar',
+  'single-quoted-scalar',
+  'double-quoted-scalar',
+  'block-scalar',
+  'alias',
+]);
+
 // CST inspection precedes the library's recursive composition; aliases are still unexpanded.
 export function preflight(value: unknown, limits: YamlLimits, budget: YamlBudget) {
   const stack = [{ value, depth: 0 }];
@@ -56,7 +68,7 @@ export function preflight(value: unknown, limits: YamlLimits, budget: YamlBudget
     const collection = ['block-map', 'block-seq', 'flow-collection'].includes(r.type as string);
     const next = depth + Number(collection);
     need(next <= limits.maxYamlDepth, 'budget');
-    debit(budget, 'nodes', limits.maxYamlNodes);
+    if (STRUCTURAL_TOKENS.has(r.type as string)) debit(budget, 'nodes', limits.maxYamlNodes);
     if (r.type === 'tag')
       need(
         ['!!str', '!!int', '!!float', '!!bool', '!!null', '!!map', '!!seq'].includes(
