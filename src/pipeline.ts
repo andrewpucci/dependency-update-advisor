@@ -75,6 +75,22 @@ type Outcome =
       Readonly<{ kind: Exclude<ReviewOutcomeKind, 'internal-failure'>; stage?: never }>)
   | (OutcomeDetail & Readonly<{ kind: 'internal-failure'; stage: InternalFailureStage }>);
 
+/** A boundary failure whose stage is a literal chosen by this module, never derived from the error. */
+class StageFailure extends Error {
+  constructor(readonly stage: InternalFailureStage) {
+    super(stage);
+  }
+}
+
+/** Runs one boundary, reporting any exception from it as that stage's fixed failure. */
+async function inStage<T>(stage: InternalFailureStage, run: () => Promise<T>): Promise<T> {
+  try {
+    return await run();
+  } catch (error) {
+    throw error instanceof StageFailure ? error : new StageFailure(stage);
+  }
+}
+
 /** `stale` proves the head moved or ownership ended; `error` only means it could not be verified. */
 type Freshness = 'current' | 'stale' | 'error';
 
@@ -183,26 +199,24 @@ export async function runReview(input: PipelineInput): Promise<PipelineResult> {
     if (final !== 'current') outcome = stopped(final);
   }
 
-  const handoff = await createReviewHandoff(input.claims, claim, outcome.kind, {
-    body: outcome.body !== null,
-    gaps: outcome.gaps ?? [],
-    droppedOptional: outcome.droppedOptional ?? [],
-    ...(outcome.kind === 'internal-failure' ? { stage: outcome.stage } : {}),
-  });
-  if (handoff.kind !== 'ready') return { kind: 'not-eligible', reason: 'ownership' };
-  let recorded: boolean;
   try {
-    recorded = input.sink.record(handoff.handoff);
+    const handoff = await createReviewHandoff(input.claims, claim, outcome.kind, {
+      body: outcome.body !== null,
+      gaps: outcome.gaps ?? [],
+      droppedOptional: outcome.droppedOptional ?? [],
+      ...(outcome.kind === 'internal-failure' ? { stage: outcome.stage } : {}),
+    });
+    if (handoff.kind !== 'ready') return { kind: 'not-eligible', reason: 'ownership' };
+    return {
+      kind: 'handed-off',
+      outcome: outcome.kind,
+      handoff: handoff.handoff,
+      body: outcome.body,
+      recorded: input.sink.record(handoff.handoff),
+    };
   } catch {
     return { kind: 'failed', outcome: 'internal-failure', stage: 'handoff' };
   }
-  return {
-    kind: 'handed-off',
-    outcome: outcome.kind,
-    handoff: handoff.handoff,
-    body: outcome.body,
-    recorded,
-  };
 }
 
 async function evaluateEvidence(
@@ -243,11 +257,11 @@ async function evaluateEvidence(
           baseSha: binding.baseSha,
           contextRevision: trusted.contextRevision,
         };
-        let assembled: Awaited<ReturnType<typeof assembleReviewPacket>>;
-        try {
-          assembled = await assembleReviewPacket({
+        const assembled = await inStage('packet', () =>
+          assembleReviewPacket({
             trusted: base,
-            collectContext: (changes) => trusted.collectContext(dependencyIdentities(changes)),
+            collectContext: (changes) =>
+              inStage('snapshot', () => trusted.collectContext(dependencyIdentities(changes))),
             isCurrent,
             openSession: async () => {
               const opened = await openEvidenceSession({
@@ -262,10 +276,8 @@ async function evaluateEvidence(
             },
             collectors,
             inventorySource: null,
-          });
-        } catch {
-          return { kind: 'internal-failure', stage: 'packet', body: null };
-        }
+          }),
+        );
         if (assembled.kind === 'context-failure')
           // A consumer configuration fault stops the review; a failed or limited read is incomplete.
           return {
@@ -286,9 +298,8 @@ async function evaluateEvidence(
         // Public research is only worth starting while this attempt still owns the current head.
         const beforeResearch = await recheck();
         if (beforeResearch !== 'current') return stopped(beforeResearch);
-        let researched: Awaited<ReturnType<typeof runResearch>>;
-        try {
-          researched = await runResearch({
+        const researched = await inStage('research', () =>
+          runResearch({
             packet: assembled.packet,
             trusted: { ...base, context: assembled.packet.context as never },
             npmInventory: npmInventory as never,
@@ -298,19 +309,16 @@ async function evaluateEvidence(
             deadline: evidenceDeadline,
             evaluationTime: input.evaluationTime,
             signal,
-          });
-        } catch {
-          return { kind: 'internal-failure', stage: 'research', body: null };
-        }
+          }),
+        );
         if (researched.kind !== 'ready')
           return { kind: 'internal-failure', stage: 'research', body: null };
         // The model is only called while the attempt is still the owner's.
         const beforeModel = await recheck();
         if (beforeModel !== 'current') return stopped(beforeModel);
 
-        let reviewed: Awaited<ReturnType<typeof reviewPacket>>;
-        try {
-          reviewed = await reviewPacket({
+        const reviewed = await inStage('assessment', () =>
+          reviewPacket({
             packet: researched.packet,
             config: trusted.config,
             apiKey: input.llmApiKey,
@@ -320,10 +328,8 @@ async function evaluateEvidence(
             researchIncomplete: researched.unavailable.length > 0,
             signal,
             model: input.model,
-          });
-        } catch {
-          return { kind: 'internal-failure', stage: 'assessment', body: null };
-        }
+          }),
+        );
         if (reviewed.kind === 'internal-failure')
           return {
             kind: 'internal-failure',
@@ -340,8 +346,12 @@ async function evaluateEvidence(
         };
       },
     );
-  } catch {
-    return { kind: 'internal-failure', stage: 'snapshot', body: null };
+  } catch (error) {
+    return {
+      kind: 'internal-failure',
+      stage: error instanceof StageFailure ? error.stage : 'snapshot',
+      body: null,
+    };
   }
   if (snapshot.kind === 'ready') return snapshot.value;
   if (snapshot.kind === 'invalid-config') return { kind: 'invalid-config', body: null };

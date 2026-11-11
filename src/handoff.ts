@@ -77,21 +77,13 @@ export async function createReviewHandoff(
     gaps: copyGaps(detail.gaps),
     droppedOptional: countDroppedOptional(detail.droppedOptional ?? []),
   };
-  if (kind === 'internal-failure')
-    return {
-      kind: 'ready',
-      handoff: Object.freeze({
-        kind,
-        stage: internalFailureStage(detail.stage),
-        ...detailBase,
-      }),
-    };
   return {
     kind: 'ready',
     handoff: Object.freeze({
       kind,
+      ...(kind === 'internal-failure' ? { stage: internalFailureStage(detail.stage) } : {}),
       ...detailBase,
-    }),
+    }) as ReviewHandoff,
   };
 }
 
@@ -129,9 +121,13 @@ export function createRehearsalSink(appToken: string | null): RehearsalSink | nu
         gaps: copyGaps(handoff.gaps),
         droppedOptional: handoff.droppedOptional,
       };
-      if (handoff.kind === 'internal-failure')
-        traces.push(Object.freeze({ kind: handoff.kind, stage: handoff.stage, ...traceBase }));
-      else traces.push(Object.freeze({ kind: handoff.kind, ...traceBase }));
+      traces.push(
+        Object.freeze({
+          kind: handoff.kind,
+          ...(handoff.kind === 'internal-failure' ? { stage: handoff.stage } : {}),
+          ...traceBase,
+        }) as RehearsalTrace,
+      );
       return true;
     },
     traces: () => Object.freeze([...traces]),

@@ -1,7 +1,9 @@
 import { expect, test, vi } from 'vite-plus/test';
 import * as assessmentModule from './assessment.js';
+import * as collectionModule from './collection.js';
 import * as npmModule from './evidence/npm.js';
 import * as optionalEvidence from './optional-evidence.js';
+import * as packetModule from './packet.js';
 import * as researchModule from './research.js';
 import { analysisDocument } from '../tests/parity/analysis.js';
 import { snapshotReads, treeEntry } from '../tests/parity/snapshot-reads.js';
@@ -20,6 +22,14 @@ vi.mock('./research.js', async (original) => {
 vi.mock('./assessment.js', async (original) => {
   const actual = await original<typeof import('./assessment.js')>();
   return { ...actual, reviewPacket: vi.fn(actual.reviewPacket) };
+});
+vi.mock('./packet.js', async (original) => {
+  const actual = await original<typeof import('./packet.js')>();
+  return { ...actual, assembleReviewPacket: vi.fn(actual.assembleReviewPacket) };
+});
+vi.mock('./collection.js', async (original) => {
+  const actual = await original<typeof import('./collection.js')>();
+  return { ...actual, createEvidenceCollectors: vi.fn(actual.createEvidenceCollectors) };
 });
 vi.mock('./evidence/npm.js', async (original) => {
   const actual = await original<typeof import('./evidence/npm.js')>();
@@ -726,20 +736,70 @@ test('reports a handoff-recording failure without fabricating a publishable hand
   expect(JSON.stringify(result)).not.toContain(sentinel);
 });
 
+const throwSentinel = async (): Promise<never> => {
+  throw new Error(sentinel);
+};
+
+test('reports a failure building the handoff as the fixed handoff stage', async () => {
+  const review = async (failAt?: number) => {
+    const store = createTestClaimStore();
+    let reads = 0;
+    const claims = {
+      ...store,
+      read: async (claim: Parameters<typeof store.read>[0]) => {
+        if (++reads === failAt) throw new Error(sentinel);
+        return store.read(claim);
+      },
+    };
+    const { input } = await setup({ claims });
+    return { result: await runReview(input), reads };
+  };
+  // The handoff's own ownership read is the last one of an otherwise healthy attempt.
+  const healthy = await review();
+  const { result } = await review(healthy.reads);
+  expect(result).toEqual({ kind: 'failed', outcome: 'internal-failure', stage: 'handoff' });
+});
+
 test.each([
   [
-    'packet',
+    'snapshot',
+    // A defect in the snapshot callback is rethrown by the snapshot reader, not absorbed.
     () =>
-      vi.mocked(npmModule.collectNpmInventory).mockImplementationOnce(async () => {
+      vi.mocked(collectionModule.createEvidenceCollectors).mockImplementationOnce(() => {
         throw new Error(sentinel);
       }),
   ],
+  [
+    'snapshot',
+    // A context (C2) collection defect belongs to the trusted snapshot, not the packet.
+    () =>
+      vi.mocked(packetModule.assembleReviewPacket).mockImplementationOnce(async (packetInput) => {
+        await packetInput.collectContext?.([null]);
+        throw new Error('unreachable');
+      }),
+  ],
+  [
+    'packet',
+    () => vi.mocked(packetModule.assembleReviewPacket).mockImplementationOnce(throwSentinel),
+  ],
+  [
+    'packet',
+    () =>
+      vi
+        .mocked(packetModule.assembleReviewPacket)
+        .mockResolvedValueOnce({ kind: 'internal-failure' } as never),
+  ],
+  ['research', () => vi.mocked(researchModule.runResearch).mockImplementationOnce(throwSentinel)],
   [
     'research',
     () =>
       vi
         .mocked(researchModule.runResearch)
         .mockResolvedValueOnce({ kind: 'internal-failure' } as never),
+  ],
+  [
+    'assessment',
+    () => vi.mocked(assessmentModule.reviewPacket).mockImplementationOnce(throwSentinel),
   ],
   [
     'assessment',

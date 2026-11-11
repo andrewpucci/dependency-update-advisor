@@ -19720,18 +19720,11 @@ async function createReviewHandoff(claims, claim, kind, detail = {
 		gaps: copyGaps(detail.gaps),
 		droppedOptional: countDroppedOptional(detail.droppedOptional ?? [])
 	};
-	if (kind === "internal-failure") return {
-		kind: "ready",
-		handoff: Object.freeze({
-			kind,
-			stage: internalFailureStage(detail.stage),
-			...detailBase
-		})
-	};
 	return {
 		kind: "ready",
 		handoff: Object.freeze({
 			kind,
+			...kind === "internal-failure" ? { stage: internalFailureStage(detail.stage) } : {},
 			...detailBase
 		})
 	};
@@ -19752,13 +19745,9 @@ function createRehearsalSink(appToken) {
 				gaps: copyGaps(handoff.gaps),
 				droppedOptional: handoff.droppedOptional
 			};
-			if (handoff.kind === "internal-failure") traces.push(Object.freeze({
+			traces.push(Object.freeze({
 				kind: handoff.kind,
-				stage: handoff.stage,
-				...traceBase
-			}));
-			else traces.push(Object.freeze({
-				kind: handoff.kind,
+				...handoff.kind === "internal-failure" ? { stage: handoff.stage } : {},
 				...traceBase
 			}));
 			return true;
@@ -30203,6 +30192,22 @@ async function withTrustedSnapshot(request, use) {
 const JOB_BUDGET_MS = 9e5;
 /** How often a pending request is checked against ownership; shorter than any request timeout. */
 const OWNERSHIP_WATCH_MS = 2e3;
+/** A boundary failure whose stage is a literal chosen by this module, never derived from the error. */
+var StageFailure = class extends Error {
+	stage;
+	constructor(stage) {
+		super(stage);
+		this.stage = stage;
+	}
+};
+/** Runs one boundary, reporting any exception from it as that stage's fixed failure. */
+async function inStage(stage, run) {
+	try {
+		return await run();
+	} catch (error) {
+		throw error instanceof StageFailure ? error : new StageFailure(stage);
+	}
+}
 function stopped(state) {
 	return state === "stale" ? {
 		kind: "stale",
@@ -30311,19 +30316,24 @@ async function runReview(input) {
 		const final = await stillCurrent().catch(() => "error");
 		if (final !== "current") outcome = stopped(final);
 	}
-	const handoff = await createReviewHandoff(input.claims, claim, outcome.kind, {
-		body: outcome.body !== null,
-		gaps: outcome.gaps ?? [],
-		droppedOptional: outcome.droppedOptional ?? [],
-		...outcome.kind === "internal-failure" ? { stage: outcome.stage } : {}
-	});
-	if (handoff.kind !== "ready") return {
-		kind: "not-eligible",
-		reason: "ownership"
-	};
-	let recorded;
 	try {
-		recorded = input.sink.record(handoff.handoff);
+		const handoff = await createReviewHandoff(input.claims, claim, outcome.kind, {
+			body: outcome.body !== null,
+			gaps: outcome.gaps ?? [],
+			droppedOptional: outcome.droppedOptional ?? [],
+			...outcome.kind === "internal-failure" ? { stage: outcome.stage } : {}
+		});
+		if (handoff.kind !== "ready") return {
+			kind: "not-eligible",
+			reason: "ownership"
+		};
+		return {
+			kind: "handed-off",
+			outcome: outcome.kind,
+			handoff: handoff.handoff,
+			body: outcome.body,
+			recorded: input.sink.record(handoff.handoff)
+		};
 	} catch {
 		return {
 			kind: "failed",
@@ -30331,13 +30341,6 @@ async function runReview(input) {
 			stage: "handoff"
 		};
 	}
-	return {
-		kind: "handed-off",
-		outcome: outcome.kind,
-		handoff: handoff.handoff,
-		body: outcome.body,
-		recorded
-	};
 }
 async function evaluateEvidence(input, binding, started, signal, state, recheck) {
 	const isCurrent = () => state() === "current";
@@ -30367,33 +30370,24 @@ async function evaluateEvidence(input, binding, started, signal, state, recheck)
 				baseSha: binding.baseSha,
 				contextRevision: trusted.contextRevision
 			};
-			let assembled;
-			try {
-				assembled = await assembleReviewPacket({
-					trusted: base,
-					collectContext: (changes) => trusted.collectContext(dependencyIdentities(changes)),
-					isCurrent,
-					openSession: async () => {
-						const opened = await openEvidenceSession({
-							binding,
-							fetch: input.githubFetch,
-							now: input.now,
-							deadline: evidenceDeadline
-						});
-						evidenceSession = opened.kind;
-						if (opened.kind !== "ready") throw new Error("no evidence session");
-						return opened.session;
-					},
-					collectors,
-					inventorySource: null
-				});
-			} catch {
-				return {
-					kind: "internal-failure",
-					stage: "packet",
-					body: null
-				};
-			}
+			const assembled = await inStage("packet", () => assembleReviewPacket({
+				trusted: base,
+				collectContext: (changes) => inStage("snapshot", () => trusted.collectContext(dependencyIdentities(changes))),
+				isCurrent,
+				openSession: async () => {
+					const opened = await openEvidenceSession({
+						binding,
+						fetch: input.githubFetch,
+						now: input.now,
+						deadline: evidenceDeadline
+					});
+					evidenceSession = opened.kind;
+					if (opened.kind !== "ready") throw new Error("no evidence session");
+					return opened.session;
+				},
+				collectors,
+				inventorySource: null
+			}));
 			if (assembled.kind === "context-failure") return {
 				kind: assembled.category === "config" || assembled.category === "path" ? "invalid-config" : "incomplete-evidence",
 				body: null
@@ -30417,29 +30411,20 @@ async function evaluateEvidence(input, binding, started, signal, state, recheck)
 			};
 			const beforeResearch = await recheck();
 			if (beforeResearch !== "current") return stopped(beforeResearch);
-			let researched;
-			try {
-				researched = await runResearch({
-					packet: assembled.packet,
-					trusted: {
-						...base,
-						context: assembled.packet.context
-					},
-					npmInventory,
-					comparison: null,
-					fetch: input.publicFetch,
-					now: input.now,
-					deadline: evidenceDeadline,
-					evaluationTime: input.evaluationTime,
-					signal
-				});
-			} catch {
-				return {
-					kind: "internal-failure",
-					stage: "research",
-					body: null
-				};
-			}
+			const researched = await inStage("research", () => runResearch({
+				packet: assembled.packet,
+				trusted: {
+					...base,
+					context: assembled.packet.context
+				},
+				npmInventory,
+				comparison: null,
+				fetch: input.publicFetch,
+				now: input.now,
+				deadline: evidenceDeadline,
+				evaluationTime: input.evaluationTime,
+				signal
+			}));
 			if (researched.kind !== "ready") return {
 				kind: "internal-failure",
 				stage: "research",
@@ -30447,26 +30432,17 @@ async function evaluateEvidence(input, binding, started, signal, state, recheck)
 			};
 			const beforeModel = await recheck();
 			if (beforeModel !== "current") return stopped(beforeModel);
-			let reviewed;
-			try {
-				reviewed = await reviewPacket({
-					packet: researched.packet,
-					config: trusted.config,
-					apiKey: input.llmApiKey,
-					evaluatedAt: input.evaluationTime,
-					deadlineMs: started + JOB_BUDGET_MS,
-					signalAttempts: researched.signalAttempts,
-					researchIncomplete: researched.unavailable.length > 0,
-					signal,
-					model: input.model
-				});
-			} catch {
-				return {
-					kind: "internal-failure",
-					stage: "assessment",
-					body: null
-				};
-			}
+			const reviewed = await inStage("assessment", () => reviewPacket({
+				packet: researched.packet,
+				config: trusted.config,
+				apiKey: input.llmApiKey,
+				evaluatedAt: input.evaluationTime,
+				deadlineMs: started + JOB_BUDGET_MS,
+				signalAttempts: researched.signalAttempts,
+				researchIncomplete: researched.unavailable.length > 0,
+				signal,
+				model: input.model
+			}));
 			if (reviewed.kind === "internal-failure") return {
 				kind: "internal-failure",
 				stage: "assessment",
@@ -30481,10 +30457,10 @@ async function evaluateEvidence(input, binding, started, signal, state, recheck)
 				droppedOptional: assembled.droppedOptional
 			};
 		});
-	} catch {
+	} catch (error) {
 		return {
 			kind: "internal-failure",
-			stage: "snapshot",
+			stage: error instanceof StageFailure ? error.stage : "snapshot",
 			body: null
 		};
 	}
