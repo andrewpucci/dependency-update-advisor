@@ -1,6 +1,7 @@
 import { expect, test, vi } from 'vite-plus/test';
 import * as assessmentModule from './assessment.js';
 import * as npmModule from './evidence/npm.js';
+import * as optionalEvidence from './optional-evidence.js';
 import * as researchModule from './research.js';
 import { analysisDocument } from '../tests/parity/analysis.js';
 import { snapshotReads, treeEntry } from '../tests/parity/snapshot-reads.js';
@@ -23,6 +24,10 @@ vi.mock('./assessment.js', async (original) => {
 vi.mock('./evidence/npm.js', async (original) => {
   const actual = await original<typeof import('./evidence/npm.js')>();
   return { ...actual, collectNpmInventory: vi.fn(actual.collectNpmInventory) };
+});
+vi.mock('./optional-evidence.js', async (original) => {
+  const actual = await original<typeof import('./optional-evidence.js')>();
+  return { ...actual, fitOptionalEvidence: vi.fn(actual.fitOptionalEvidence) };
 });
 
 const HEAD = 'a'.repeat(40);
@@ -254,6 +259,7 @@ test('runs a current review to a complete, exact-bound handoff recorded without 
       comment: 'eligible',
       body: 'present',
       gaps: [],
+      droppedOptional: { reachability: 0, proof: 0 },
     },
   ]);
   expect(githubCalls.length).toBeGreaterThan(0);
@@ -852,6 +858,29 @@ test('records which source gave no inventory, with a fixed reason, when there is
     gaps: [{ source: 'npm', reason: 'malformed' }],
   });
   expect(JSON.stringify(result)).not.toContain(sentinel);
+});
+
+test('carries optional-evidence budget drops into the bounded handoff trace', async () => {
+  const { input, sink } = await setup();
+  vi.mocked(optionalEvidence.fitOptionalEvidence).mockReturnValueOnce({
+    dropMore: () => false,
+    current: () => ({
+      reachability: [],
+      relationships: [],
+      dropped: [
+        { kind: 'reachability', ecosystem: 'npm', key: 'one' },
+        { kind: 'proof', ecosystem: 'uv', key: 'two' },
+      ],
+    }),
+  } as never);
+
+  const result = await runReview(input);
+
+  expect(result).toMatchObject({
+    kind: 'handed-off',
+    handoff: { droppedOptional: { reachability: 1, proof: 1 } },
+  });
+  expect(sink.traces()[0].droppedOptional).toEqual({ reachability: 1, proof: 1 });
 });
 
 test('records a rendered incomplete review as having a body and no source gaps', async () => {

@@ -36,6 +36,7 @@ function emptyBrief() {
     ...expected,
     changes: [],
     relationships: [],
+    reachability: [],
     findings: [],
     coverage: { npm: coverage, actions: coverage, uv: coverage },
     sources: [

@@ -573,6 +573,7 @@ function packet(
     },
     findings: [],
     relationships: [],
+    reachability: [],
   };
   return { candidate, expected, validated: validateReviewPacket(candidate, expected) };
 }

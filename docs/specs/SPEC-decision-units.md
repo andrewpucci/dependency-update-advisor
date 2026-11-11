@@ -14,7 +14,9 @@ specification, the user invoked `as-plan` on 2026-10-21 and requested child
 issues under #12 on the project board. This authorizes planning and issue
 organization. The user subsequently invoked `as-build auto`, approving the
 six-task plan for #94–#99 and one PR closing those tasks and parent #12.
-The deferred reachability extension #93 remains outside this execution scope.
+The deferred reachability extension #93 remains outside this execution scope;
+its [multi-anchor amendment](#multi-anchor-grouping-amendment) is approved for
+planning separately.
 
 [N1 inventory](SPEC-npm-inventory.md#declaration-amendment-to-t4-and-t5)
 is approved for planning, 2026-10-26. It amends this contract with standalone
@@ -374,6 +376,36 @@ exist, `policyProvenance.withoutAssessments` records the no-state guard used
 to identify verified holds. Neither nested summary is an alternative final
 outcome. All outputs are detached frozen snapshots.
 
+## Multi-anchor Grouping Amendment
+
+Approved for planning 2026-11-10 under
+[#93](https://github.com/andrewpucci/dependency-update-advisor/issues/93); the
+normative rule is the
+[reachability evidence spec](SPEC-reachability-evidence.md). Implemented on
+`issue-93` as #268, pending review and merge. It replaces the initial "exactly
+one direct change per root" restriction above, which stays in force for packets
+whose `reachability` is empty.
+
+A member M groups under changed direct anchor A only when the ecosystem
+inventory is `complete`, no change in M's root has an `unknown` role, A has a
+positive proof on the side matching M's change kind, and every other changed
+direct candidate in M's root is proven `unreachable` for M on each side it
+exists. A candidate with no instance on a side M uses blocks grouping, so a
+removed direct blocks head-only members and an added direct blocks base-only
+members. Sharing with unchanged direct dependencies still never forbids
+grouping; groups prove a relationship, not causation or safety; each member
+keeps its own findings and required evidence; T5 never emits `group_backed`.
+
+Standalone reasons are checked in this order and report the first that applies:
+`actions_occurrence`, `unknown_role`, `no_direct_change`,
+`inventory_incomplete`, `multiple_direct_changes` (legacy: several candidates
+and no `reachability` record names any of them), `multiple_roots`,
+`ambiguous_anchors` (new), `missing_relationship`, then `reachability_unproven`
+(new). Units gain `verdictKeys`, the canonical keys of every verdict a group
+relied on, and `relationshipLimits`, a unit-level informational field for
+non-proving records. That field is not `unit.sources` and not C3's
+`coverageLimits`, so a relationship limit never becomes a required-evidence gap.
+
 ## Commands
 
 For this documentation-only change:
@@ -479,6 +511,11 @@ The baseline parsed full npm lockfiles. T5 instead consumes T4's bounded proof
 records. More conservative grouping and explicit standalone assessment can
 increase unit counts; record this proposed difference during parity review,
 without weakening required evidence or claiming fidelity before comparison.
+The [multi-anchor amendment](#multi-anchor-grouping-amendment) reduces that difference:
+roots with several changed direct dependencies now group where reachability is proven,
+still with more standalone units than the baseline wherever evidence is missing,
+ambiguous, or unsupported (peer-only and link edges are common). Record the exact
+unit-count difference during parity review; it never weakens required evidence.
 
 ## Approval and Follow-up
 

@@ -45,6 +45,7 @@ function fixture() {
     changes: [],
     findings: [],
     relationships: [],
+    reachability: [],
     sources: [
       {
         id: 'inventory',
@@ -738,6 +739,220 @@ test('rejects duplicated proofs and cross-root or cross-ecosystem grouping', () 
   expect(validateReviewPacket({ ...f.packet, relationships: [proof] }, f.expected)).toMatchObject({
     ok: false,
   });
+});
+
+function reachabilityFixture() {
+  const f = npmFixture(3);
+  f.changes[2].role = 'transitive';
+  const [anchor, candidate, member] = f.changes;
+  const proof = {
+    fromId: anchor.id,
+    toId: member.id,
+    ecosystem: 'npm',
+    side: 'head',
+    sourceId: 'head-lock',
+    path: [anchor.to, member.to],
+  };
+  const verdict = {
+    ecosystem: 'npm',
+    side: 'head',
+    sourceId: 'head-lock',
+    anchorId: candidate.id,
+    memberId: member.id,
+    outcome: 'unreachable',
+    reasons: [] as string[],
+  };
+  const duplicateSource = {
+    ...f.sources.find((s) => s.id === 'head-lock')!,
+    id: 'head-lock-copy',
+  };
+  return {
+    ...f,
+    proof,
+    verdict,
+    duplicateSource,
+    packet: {
+      ...f.packet,
+      relationships: [proof],
+      reachability: [verdict],
+      sources: [...f.packet.sources, duplicateSource],
+    },
+  };
+}
+
+test('requires the reachability field and accepts the empty array as no absence evidence', () => {
+  const f = fixture();
+  const { reachability: _omitted, ...withoutField } = f.packet;
+  expect(validateReviewPacket(withoutField, f.expected)).toMatchObject({ ok: false });
+  expect(accepted(f).reachability).toEqual([]);
+});
+
+test('retains a proven-unreachable verdict beside a positive proof, deeply frozen', () => {
+  const f = reachabilityFixture();
+  const result = accepted(f);
+  expect(result.reachability).toEqual([f.verdict]);
+  expect(Object.isFrozen(result.reachability)).toBe(true);
+  expect(Object.isFrozen(result.reachability[0])).toBe(true);
+});
+
+test.each([
+  'dangling-anchor',
+  'dangling-member',
+  'anchor-not-direct',
+  'member-not-transitive',
+  'anchor-is-member',
+  'wrong-ecosystem',
+  'wrong-side-source',
+  'non-lock-source',
+  'source-not-scoping-member',
+  'cross-root',
+  'unreachable-with-reasons',
+  'unreachable-without-member',
+  'unproven-without-reasons',
+  'unproven-wrong-reason',
+  'declaration-anchor',
+])('rejects a %s reachability verdict', (mode) => {
+  const f = reachabilityFixture();
+  const v = f.verdict as Record<string, unknown>;
+  if (mode === 'dangling-anchor') v.anchorId = 'missing';
+  if (mode === 'dangling-member') v.memberId = 'missing';
+  if (mode === 'anchor-not-direct') f.changes[1].role = 'transitive';
+  if (mode === 'member-not-transitive') f.changes[2].role = 'direct';
+  if (mode === 'anchor-is-member') v.memberId = v.anchorId;
+  if (mode === 'wrong-ecosystem') v.ecosystem = 'uv';
+  if (mode === 'wrong-side-source') v.side = 'base';
+  if (mode === 'non-lock-source') v.sourceId = 'inventory';
+  if (mode === 'source-not-scoping-member')
+    f.packet.sources.find((s) => s.id === 'head-lock')!.memberIds = [f.changes[0].id];
+  if (mode === 'cross-root') {
+    const to = f.changes[1].to as { root: string };
+    to.root = 'packages/other';
+  }
+  if (mode === 'unreachable-with-reasons') v.reasons = ['unknown'];
+  if (mode === 'unreachable-without-member') v.memberId = null;
+  if (mode === 'unproven-without-reasons') Object.assign(v, { outcome: 'unknown', reasons: [] });
+  if (mode === 'unproven-wrong-reason')
+    Object.assign(v, { outcome: 'truncated', reasons: ['unknown'] });
+  if (mode === 'declaration-anchor') v.anchorId = 'declaration:missing';
+  expect(validateReviewPacket(f.packet, f.expected)).toMatchObject({
+    ok: false,
+    error: { field: expect.stringMatching(/reachability|changes|relationships|sources/) },
+  });
+});
+
+test.each([
+  ['unknown', ['unknown']],
+  ['unsupported', ['unsupported']],
+  ['truncated', ['truncated']],
+  ['truncated', ['budget']],
+  ['failed', ['timeout']],
+  ['failed', ['malformed', 'conflict']],
+])(
+  'accepts a %s verdict with reasons %j and a null member as a scope record',
+  (outcome, reasons) => {
+    const f = reachabilityFixture();
+    Object.assign(f.verdict, { outcome, reasons, memberId: null });
+    expect(accepted(f).reachability[0]).toMatchObject({ outcome, memberId: null });
+  },
+);
+
+test('keys duplicate verdicts on side, anchor, and member whatever the source record', () => {
+  const f = reachabilityFixture();
+  const copy = { ...f.verdict, sourceId: 'head-lock-copy' };
+  expect(
+    validateReviewPacket({ ...f.packet, reachability: [f.verdict, copy] }, f.expected),
+  ).toMatchObject({ ok: false, error: { category: 'duplicate', field: 'reachability' } });
+});
+
+test('rejects a scope record beside a pair record for one anchor and side', () => {
+  const f = reachabilityFixture();
+  const scope = {
+    ...f.verdict,
+    memberId: null,
+    outcome: 'truncated',
+    reasons: ['truncated'],
+  };
+  expect(
+    validateReviewPacket({ ...f.packet, reachability: [f.verdict, scope] }, f.expected),
+  ).toMatchObject({ ok: false, error: { field: 'reachability' } });
+});
+
+test('rejects unreachable when a proof for the same anchor, member, and side exists', () => {
+  const f = reachabilityFixture();
+  const proof = { ...f.proof, fromId: f.changes[1].id, path: [f.changes[1].to, f.changes[2].to] };
+  expect(
+    validateReviewPacket({ ...f.packet, relationships: [f.proof, proof] }, f.expected),
+  ).toMatchObject({ ok: false, error: { field: 'reachability' } });
+});
+
+test('accepts a non-proving verdict beside a proof for the same pair: the proof wins', () => {
+  const f = reachabilityFixture();
+  const proof = { ...f.proof, fromId: f.changes[1].id, path: [f.changes[1].to, f.changes[2].to] };
+  Object.assign(f.verdict, { outcome: 'unknown', reasons: ['unknown'] });
+  expect(
+    accepted({ ...f, packet: { ...f.packet, relationships: [f.proof, proof] } }).reachability,
+  ).toHaveLength(1);
+});
+
+test('rejects unreachable contradicted by a proof path through the anchor before the member', () => {
+  const f = reachabilityFixture();
+  const through = {
+    ...f.proof,
+    toId: f.changes[2].id,
+    path: [f.changes[0].to, f.changes[1].to, f.changes[2].to],
+  };
+  expect(validateReviewPacket({ ...f.packet, relationships: [through] }, f.expected)).toMatchObject(
+    { ok: false, error: { field: 'reachability' } },
+  );
+});
+
+test('accepts unreachable when the anchor appears after the member on a proof path', () => {
+  const f = reachabilityFixture();
+  const reverse = {
+    ...f.proof,
+    toId: f.changes[1].id,
+    path: [f.changes[0].to, f.changes[2].to, f.changes[1].to],
+  };
+  expect(
+    accepted({ ...f, packet: { ...f.packet, relationships: [reverse] } }).reachability,
+  ).toEqual([f.verdict]);
+});
+
+function manyVerdicts() {
+  const f = npmFixture(128);
+  const verdicts: Record<string, unknown>[] = [];
+  f.changes.forEach((c, i) => {
+    c.role = i % 32 < 16 ? 'direct' : 'transitive';
+  });
+  for (let chunk = 0; chunk < 4; chunk += 1)
+    for (const side of ['head', 'base'])
+      for (let a = 0; a < 16; a += 1)
+        for (let m = 16; m < 32; m += 1)
+          verdicts.push({
+            ecosystem: 'npm',
+            side,
+            sourceId: chunk === 0 ? `${side}-lock` : `${side}-lock:${chunk}`,
+            anchorId: f.changes[chunk * 32 + a].id,
+            memberId: f.changes[chunk * 32 + m].id,
+            outcome: 'unreachable',
+            reasons: [],
+          });
+  return { ...f, verdicts };
+}
+
+test('accepts exactly 1,024 verdicts and rejects one beyond without trimming', () => {
+  const f = manyVerdicts();
+  expect(PACKET_LIMITS.reachability).toBe(1_024);
+  const reachability = f.verdicts.slice(0, 1_024);
+  expect(accepted({ ...f, packet: { ...f.packet, reachability } }).reachability).toHaveLength(
+    1_024,
+  );
+  expect(
+    validateReviewPacket(
+      { ...f.packet, reachability: [...reachability, f.verdicts[1_024]] },
+      f.expected,
+    ),
+  ).toEqual({ ok: false, error: { category: 'budget', field: 'reachability' } });
 });
 
 function contextFixture() {

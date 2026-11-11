@@ -1,4 +1,5 @@
 import { record } from './event.js';
+import { fitOptionalEvidence, type DroppedOptional } from './optional-evidence.js';
 import {
   EVIDENCE_REASONS,
   validateReviewPacket,
@@ -20,7 +21,12 @@ function gapReason(value: unknown): EvidenceReason {
   return EVIDENCE_REASONS.find((reason) => reason === value.reason) ?? 'unknown';
 }
 export type PacketAssemblyResult =
-  | Readonly<{ kind: 'ready'; packet: Extract<PacketResult, { ok: true }>['packet'] }>
+  | Readonly<{
+      kind: 'ready';
+      packet: Extract<PacketResult, { ok: true }>['packet'];
+      /** Optional reachability evidence dropped to fit packet budgets; empty when everything fit. */
+      droppedOptional: readonly DroppedOptional[];
+    }>
   | Readonly<{ kind: 'incomplete'; gaps: readonly PacketGap[] }>
   | Readonly<{ kind: 'stale' | 'internal-failure' }>
   /** C2 could not produce a usable context; `category` is C2's own failure category. */
@@ -44,6 +50,10 @@ type Fragment = Readonly<{
   sources: unknown;
   findings: unknown;
   relationships: unknown;
+  /** Absent means the collector supplied no absence evidence; the packet field is always present. */
+  reachability?: unknown;
+  /** Proofs beyond those a group needs; the assembler may drop them to fit packet budgets. */
+  optionalRelationships?: unknown;
 }>;
 
 type CollectedFragments =
@@ -71,7 +81,9 @@ function fragment(value: unknown, ecosystem: Ecosystem): Fragment | null {
     !Array.isArray(value.changes) ||
     !Array.isArray(value.sources) ||
     !Array.isArray(value.findings) ||
-    !Array.isArray(value.relationships)
+    !Array.isArray(value.relationships) ||
+    (value.reachability !== undefined && !Array.isArray(value.reachability)) ||
+    (value.optionalRelationships !== undefined && !Array.isArray(value.optionalRelationships))
   )
     return null;
   return value as Fragment;
@@ -128,29 +140,46 @@ export async function assembleReviewPacket<S extends Session>(
     if (collected.kind !== 'ready') return collected;
     const context = await collectTrustedContext(input, collected.fragments);
     if (context.kind !== 'ready') return context;
-    const packet = validateReviewPacket(
-      {
-        version: 1,
-        binding: context.trusted.binding,
-        baseSha: context.trusted.baseSha,
-        contextRevision: context.trusted.contextRevision,
-        context: context.trusted.context,
-        coverage: Object.fromEntries(
-          collected.fragments.map((item) => [item.ecosystem, item.coverage]),
-        ),
-        changes: collected.fragments.flatMap((item) => item.changes),
-        sources: [
-          ...(input.inventorySource === null || input.inventorySource === undefined
-            ? []
-            : [input.inventorySource]),
-          ...collected.fragments.flatMap((item) => item.sources),
-        ],
-        findings: collected.fragments.flatMap((item) => item.findings),
-        relationships: collected.fragments.flatMap((item) => item.relationships),
-      },
+    const fragments = collected.fragments;
+    const list = (pick: (item: Fragment) => unknown) =>
+      fragments.flatMap((item) => {
+        const value = pick(item);
+        return Array.isArray(value) ? value : [];
+      });
+    const build = (reachability: readonly unknown[], relationships: readonly unknown[]) => ({
+      version: 1,
+      binding: context.trusted.binding,
+      baseSha: context.trusted.baseSha,
+      contextRevision: context.trusted.contextRevision,
+      context: context.trusted.context,
+      coverage: Object.fromEntries(fragments.map((item) => [item.ecosystem, item.coverage])),
+      changes: fragments.flatMap((item) => item.changes),
+      sources: [
+        ...(input.inventorySource === null || input.inventorySource === undefined
+          ? []
+          : [input.inventorySource]),
+        ...fragments.flatMap((item) => item.sources),
+      ],
+      findings: fragments.flatMap((item) => item.findings),
+      relationships,
+      reachability,
+    });
+    const required = list((item) => item.relationships),
+      optionalProofs = list((item) => item.optionalRelationships),
+      verdicts = list((item) => item.reachability);
+    const fitted = fitOptionalEvidence({
+      baseBytes: Buffer.byteLength(JSON.stringify(build([], []))),
+      requiredProofs: required,
+      optionalProofs,
+      verdicts,
+    });
+    let current = fitted.current();
+    let packet = validateReviewPacket(
+      build(current.reachability, current.relationships),
       context.trusted,
     );
-    if (packet.ok) return { kind: 'ready', packet: packet.packet };
+    if (packet.ok)
+      return { kind: 'ready', packet: packet.packet, droppedOptional: current.dropped };
     return {
       kind: 'incomplete',
       gaps: [

@@ -59,6 +59,7 @@ async function collect(
       sources: [...result.sources, fixture.absent],
       findings: [],
       relationships: [],
+      reachability: [],
       coverage: {
         npm: result.coverage,
         actions: { status: 'not_applicable', reasons: [], sourceIds: ['other'] },
@@ -245,6 +246,7 @@ async function enrich(
     changes: result.changes,
     sources: [...result.sources, f.fixture.absent],
     relationships: result.relationships,
+    reachability: [],
     findings: result.findings,
   };
   return { result, candidate, calls, packet: validateReviewPacket(candidate, f.fixture.expected) };

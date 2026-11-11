@@ -247,6 +247,7 @@ test('keeps the registry capability separate from the GitHub fetch', async () =>
     sources: [],
     findings: [],
     relationships: [],
+    reachability: [],
   });
   const result = await assembleReviewPacket({
     trusted: fixture.expected,
@@ -310,7 +311,7 @@ async function readySession() {
   };
 }
 
-test("forwards the uv graph's coverage, findings, and relationships unchanged", async () => {
+test("forwards the uv graph's coverage, findings, relationships, and optional reachability unchanged", async () => {
   const { session, collectors } = await readySession();
   const graph = {
     kind: 'inventory',
@@ -319,6 +320,8 @@ test("forwards the uv graph's coverage, findings, and relationships unchanged", 
     sources: [{ id: 's' }],
     findings: [{ id: 'f' }],
     relationships: [{ id: 'r' }],
+    optionalRelationships: [{ id: 'second' }],
+    reachability: [{ id: 'verdict' }],
   };
   vi.mocked(uvGraphModule.reconcileUvGraph).mockReturnValueOnce(graph as never);
   await expect(collectors.uv(session)).resolves.toEqual({
@@ -329,6 +332,34 @@ test("forwards the uv graph's coverage, findings, and relationships unchanged", 
     sources: graph.sources,
     findings: graph.findings,
     relationships: graph.relationships,
+    optionalRelationships: graph.optionalRelationships,
+    reachability: graph.reachability,
+  });
+});
+
+test("forwards the npm graph's optional reachability evidence to the assembler", async () => {
+  const { session, collectors } = await readySession();
+  const graph = {
+    kind: 'inventory',
+    coverage: { status: 'available', reasons: [], sourceIds: ['s'] },
+    changes: [{ id: 'c' }],
+    sources: [{ id: 's' }],
+    findings: [{ id: 'f' }],
+    relationships: [{ id: 'r' }],
+    optionalRelationships: [{ id: 'second' }],
+    reachability: [{ id: 'verdict' }],
+  };
+  vi.mocked(npmGraphModule.enrichNpmEvidence).mockResolvedValueOnce(graph as never);
+  await expect(collectors.npm(session)).resolves.toEqual({
+    kind: 'complete',
+    ecosystem: 'npm',
+    coverage: graph.coverage,
+    changes: graph.changes,
+    sources: graph.sources,
+    findings: graph.findings,
+    relationships: graph.relationships,
+    optionalRelationships: graph.optionalRelationships,
+    reachability: graph.reachability,
   });
 });
 

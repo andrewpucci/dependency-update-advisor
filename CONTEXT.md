@@ -26,9 +26,10 @@ adoption, publication, or claim-backend work.
 [S1](docs/specs/SPEC-advisory-lookup.md), [S2](docs/specs/SPEC-upstream-evidence.md),
 [S3](docs/specs/SPEC-policy-signals.md), M1 and M2 are merged; their separate
 integration gates remain open.
-[U2 #18](docs/specs/SPEC-uv-relationships.md) awaits review/merge; #169 holds evidence.
-[N2 #15](docs/specs/SPEC-npm-relationships.md) is implemented on
-`issue-15`, pending review/merge; #140 holds verification. #93 stays separate.
+[U2 #18](docs/specs/SPEC-uv-relationships.md) and
+[N2 #15](docs/specs/SPEC-npm-relationships.md) are on `main`; #169 and #140 hold
+verification. [#93 reachability](docs/specs/SPEC-reachability-evidence.md) is
+implemented on `issue-93` (#266–#274), pending fresh-context review and merge.
 [#110 snapshot reuse](docs/specs/SPEC-pr-freshness-snapshot.md) awaits review/merge;
 [verification #113](https://github.com/andrewpucci/dependency-update-advisor/issues/113)
 retains remaining gates. W1/W2 must supply bounded reads and exclusive claims

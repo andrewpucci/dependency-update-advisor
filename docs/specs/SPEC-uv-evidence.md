@@ -27,6 +27,15 @@ global-advisory lookup may supplement vulnerability evidence for resolved
 PyPI package versions. The reviewer does not install
 Python dependencies or execute either commit's code.
 
+## Reachability Evidence
+
+Grouping beyond one changed direct dependency per root follows the
+[reachability evidence](SPEC-reachability-evidence.md) contract, approved for
+planning 2026-11-10 under
+[#93](https://github.com/andrewpucci/dependency-update-advisor/issues/93). An
+unreliable mapping still stays standalone and incomplete; absence is never
+inferred from a missing path.
+
 ## Commands
 
 This repository must provide these commands after implementation:

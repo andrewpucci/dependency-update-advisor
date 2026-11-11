@@ -292,31 +292,31 @@ test('batch identity and request bytes stay pinned for fixed selections', async 
   const pinned = [
     [
       [a, b, c],
-      '61281f5d3eafa26ca245635ca6d6aa95fa3730d13533d38468aa304e06dced24',
+      'fb5487b7862ae856cc8666193be0e10fecf7c4ef8ccc9ff1af4e8e6c609a23fb',
       54_813,
       '5fb34036ac9e8a8a7c22e5e59416ffafd6032c746a88912128e9f7e3963cf5c8',
     ],
     [
       [a],
-      'bfce67342c15a15413bb3a066a6e21bcd2d6f1fb04027127d0021bce93fb495a',
+      '0f7d2ef7f798f930363f2b709177f0965953e0d3bf86cda9d3c744d120882472',
       15_788,
       'fdecb7ec4b66b9f5d63edfcf8bb296e98b594f836a1c52b3e21363f5f99a0133',
     ],
     [
       [b],
-      'db0f07c8f9015321d4eba063653f9c5045ae56ac28ae0a0766a1aa68b54c289e',
+      '37dd74859624c918a78d0ba20da9d63fc90ebc60ff30152a8817f26d4148a486',
       34_688,
       'a95a255daa4317d950e14429b232fbd607d9f0900264fabe39bb4bd889d411ba',
     ],
     [
       [c],
-      '71b4f80051b1c73fd3f111da51ac60d37d8cc87b638b61166546b370f0bf1391',
+      '2e57de60d88243a93d5af107b5388fcf4f97ee077a325ce91ab9ca2c7037c249',
       15_579,
       '0e84bb19023f3d53649cc0934001587a58873d99f08047d038d54667299f88ea',
     ],
     [
       [a, c],
-      'f76c27bd90233ddfe3cc9e4e8557064623d68e4fc542b536167d9a204be2a5e4',
+      '8b57a6fbdf1dde8eff35f29a8b9caa0b542e51571afdcfcb474f12296fc02bfb',
       25_699,
       'ea0210d93df8c8bb1e49535151c82c261ba94f0ca63574fec9a1db842900baac',
     ],

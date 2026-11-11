@@ -3,6 +3,7 @@ import type { Finding } from '../policy.js';
 import type {
   PacketChange,
   PacketSource,
+  ReachabilityVerdict,
   RelationshipProof,
   InventoryCoverage,
   PacketRevision,
@@ -37,6 +38,10 @@ export type UvInventory = {
   sources: PacketSource[];
   fileIdentities: UvMetadata['sources'];
   relationships: RelationshipProof[];
+  /** Proofs beyond the one a group needs; optional evidence the assembler may drop. */
+  optionalRelationships: RelationshipProof[];
+  /** Per-pair absence evidence and scope limits; optional evidence the assembler may drop. */
+  reachability: ReachabilityVerdict[];
   findings: Finding[];
   gaps: UvGraphGap[];
   observations: UvObservation[];
@@ -117,6 +122,8 @@ function initial(metadata: UvMetadata, work: GraphWork): UvInventory {
     sources: [discovery, ...fileSources(metadata)],
     fileIdentities: metadata.sources,
     relationships: [],
+    optionalRelationships: [],
+    reachability: [],
     findings: [],
     gaps: [],
     observations: [],

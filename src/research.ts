@@ -218,6 +218,7 @@ function revalidate(input: ResearchInput, progress: ResearchProgress) {
       sources: progress.sources,
       findings: progress.findings,
       relationships: packet.relationships,
+      reachability: packet.reachability,
     },
     input.trusted,
   );

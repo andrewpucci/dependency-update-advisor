@@ -14,6 +14,7 @@ export const PACKET_LIMITS = Object.freeze({
   sources: 1_024,
   findings: 512,
   relationships: 256,
+  reachability: 1_024,
   pathInstances: 32,
   idCodeUnits: 256,
   identityBytes: 1_024,
@@ -176,6 +177,23 @@ export type RelationshipProof = {
   side: 'base' | 'head';
   sourceId: string;
 } & ({ ecosystem: 'npm'; path: NpmSide[] } | { ecosystem: 'uv'; path: UvSide[] });
+const REACHABILITY_OUTCOMES = [
+  'unreachable',
+  'unknown',
+  'unsupported',
+  'failed',
+  'truncated',
+] as const;
+/** A trusted collector's per-pair statement about one anchor and one member on one side. */
+export type ReachabilityVerdict = {
+  ecosystem: 'npm' | 'uv';
+  side: 'base' | 'head';
+  sourceId: string;
+  anchorId: string;
+  memberId: string | null;
+  outcome: (typeof REACHABILITY_OUTCOMES)[number];
+  reasons: EvidenceReason[];
+};
 export type PacketContext = Extract<SourceContextResult, { ok: true }>;
 export type ReviewPacket = {
   version: 1;
@@ -187,6 +205,7 @@ export type ReviewPacket = {
   sources: PacketSource[];
   findings: Finding[];
   relationships: RelationshipProof[];
+  reachability: ReachabilityVerdict[];
   context: PacketContext;
 };
 export type PacketExpected = {
@@ -206,6 +225,7 @@ type Field =
   | 'sources'
   | 'findings'
   | 'relationships'
+  | 'reachability'
   | 'context';
 type Category = 'input' | 'identity' | 'duplicate' | 'reference' | 'coverage' | 'budget';
 export type PacketResult =
@@ -1513,6 +1533,143 @@ function linkRelationships(
     distinct(keys, 'relationships');
   }
 }
+const PROVING_REASONS: Record<string, readonly EvidenceReason[]> = {
+  unknown: ['unknown'],
+  unsupported: ['unsupported'],
+  truncated: ['truncated', 'budget'],
+  failed: ['permission', 'rate_limit', 'timeout', 'missing', 'malformed', 'conflict'],
+};
+function reachabilityVerdict(value: unknown): ReachabilityVerdict {
+  const r = object(
+    value,
+    ['ecosystem', 'side', 'sourceId', 'anchorId', 'memberId', 'outcome', 'reasons'],
+    [],
+    'reachability',
+  );
+  const outcome = choice(r.outcome, REACHABILITY_OUTCOMES, 'reachability');
+  const verdict = {
+    ecosystem: choice(r.ecosystem, ['npm', 'uv'], 'reachability'),
+    side: choice(r.side, ['base', 'head'], 'reachability'),
+    sourceId: id(r.sourceId, 'reachability'),
+    anchorId: id(r.anchorId, 'reachability'),
+    memberId: r.memberId === null ? null : id(r.memberId, 'reachability'),
+    outcome,
+    reasons: reasons(r.reasons, 'reachability'),
+  };
+  if (outcome === 'unreachable')
+    requireValue(verdict.memberId !== null && verdict.reasons.length === 0, 'reachability');
+  else
+    requireValue(
+      PROVING_REASONS[outcome].some((reason) => verdict.reasons.includes(reason)),
+      'reachability',
+    );
+  return verdict;
+}
+type LockChange = Exclude<
+  Extract<PacketChange, { ecosystem: 'npm' | 'uv' }>,
+  { basis: 'declaration' }
+>;
+/** A resolved npm/uv change of the verdict's ecosystem, or undefined; declarations never qualify. */
+function lockChange(c: PacketChange | undefined, ecosystem: 'npm' | 'uv'): LockChange | undefined {
+  return c && !('basis' in c) && c.ecosystem !== 'actions' && c.ecosystem === ecosystem
+    ? c
+    : undefined;
+}
+type LockStep = NonNullable<LockChange['from']>;
+type VerdictEnds = Readonly<{
+  anchor: LockChange;
+  member: LockChange | null;
+  anchorStep: LockStep;
+  memberStep: LockStep | null;
+}>;
+/** Resolves a verdict's anchor and member to same-root lock changes on the verdict's side. */
+function verdictEnds(
+  v: ReachabilityVerdict,
+  changes: ChangeIndex,
+  scoped: ReadonlySet<string>,
+): VerdictEnds {
+  const anchor = lockChange(changes.get(v.anchorId), v.ecosystem),
+    member = v.memberId === null ? null : lockChange(changes.get(v.memberId), v.ecosystem);
+  requireValue(
+    anchor && anchor.role === 'direct' && member !== undefined,
+    'reachability',
+    'reference',
+  );
+  requireValue(
+    member === null || (member.role === 'transitive' && member.id !== anchor.id),
+    'reachability',
+    'reference',
+  );
+  requireValue(
+    member === null || !scoped.has(JSON.stringify([v.side, v.anchorId])),
+    'reachability',
+    'duplicate',
+  );
+  const anchorStep = v.side === 'base' ? anchor.from : anchor.to,
+    memberStep = member ? (v.side === 'base' ? member.from : member.to) : null;
+  requireValue(
+    anchorStep && (member === null || memberStep?.root === anchorStep.root),
+    'reachability',
+    'reference',
+  );
+  return { anchor, member, anchorStep, memberStep };
+}
+/** The verdict must cite an available lockfile of its side and root that covers both ends. */
+function requireVerdictSource(v: ReachabilityVerdict, ends: VerdictEnds, sources: SourceIndex) {
+  const { anchor, member, anchorStep } = ends,
+    prefix = anchorStep.root === '.' ? '' : anchorStep.root + '/';
+  const source = sources.get(v.sourceId);
+  requireValue(
+    source?.kind === 'file' &&
+      source.status === 'available' &&
+      source.ecosystems.includes(v.ecosystem) &&
+      source.provenance.kind === 'file' &&
+      source.provenance.revision === v.side &&
+      source.provenance.path ===
+        prefix + (v.ecosystem === 'npm' ? 'package-lock.json' : 'uv.lock') &&
+      source.memberIds.includes(anchor.id) &&
+      (member === null || source.memberIds.includes(member.id)),
+    'reachability',
+    'reference',
+  );
+}
+/** An unreachable verdict contradicts any proof path that reaches the member through the anchor. */
+function requireNoContraryProof(
+  v: ReachabilityVerdict,
+  { anchor, member, anchorStep, memberStep }: VerdictEnds,
+  proofs: RelationshipProof[],
+) {
+  if (!member || !memberStep) return;
+  const anchorKey = instanceKey(anchor, anchorStep),
+    memberKey = instanceKey(member, memberStep);
+  for (const p of proofs) {
+    if (p.ecosystem !== v.ecosystem || p.side !== v.side || p.path[0].root !== anchorStep.root)
+      continue;
+    const keys = p.path.map((step) => instanceKey(anchor, step));
+    const at = keys.indexOf(anchorKey),
+      to = keys.indexOf(memberKey);
+    requireValue(at === -1 || to === -1 || at > to, 'reachability', 'reference');
+  }
+}
+function linkReachability(
+  verdicts: ReachabilityVerdict[],
+  proofs: RelationshipProof[],
+  changes: ChangeIndex,
+  sources: SourceIndex,
+) {
+  distinct(
+    verdicts.map((v) => JSON.stringify([v.side, v.anchorId, v.memberId])),
+    'reachability',
+  );
+  const scoped = new Set(
+    verdicts.filter((v) => v.memberId === null).map((v) => JSON.stringify([v.side, v.anchorId])),
+  );
+  for (const v of verdicts) {
+    const ends = verdictEnds(v, changes, scoped);
+    requireVerdictSource(v, ends, sources);
+    if (v.outcome === 'unreachable') requireNoContraryProof(v, ends, proofs);
+  }
+}
 function coverage(
   value: unknown,
   sources: SourceIndex,
@@ -1610,6 +1767,7 @@ export function validateReviewPacket(candidate: unknown, trusted: unknown): Pack
         'sources',
         'findings',
         'relationships',
+        'reachability',
         'context',
       ],
       [],
@@ -1630,6 +1788,9 @@ export function validateReviewPacket(candidate: unknown, trusted: unknown): Pack
     const relationships = array(r.relationships, PACKET_LIMITS.relationships, 'relationships').map(
       relationship,
     );
+    const reachability = array(r.reachability, PACKET_LIMITS.reachability, 'reachability').map(
+      reachabilityVerdict,
+    );
     const sources = array(r.sources, PACKET_LIMITS.sources, 'sources').map((v) => source(v, e));
     distinct(
       sources.map((s) => s.id),
@@ -1640,6 +1801,7 @@ export function validateReviewPacket(candidate: unknown, trusted: unknown): Pack
     linkContext(ctx, changeById);
     linkFindings(findings, changeById, sourceById, ctx);
     linkRelationships(relationships, changeById, sourceById);
+    linkReachability(reachability, relationships, changeById, sourceById);
     const packet: ReviewPacket = {
       version: 1,
       binding: b,
@@ -1650,6 +1812,7 @@ export function validateReviewPacket(candidate: unknown, trusted: unknown): Pack
       sources,
       findings,
       relationships,
+      reachability,
       context: ctx,
     };
     requireValue(

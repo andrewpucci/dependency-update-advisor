@@ -79,6 +79,8 @@ export function uvPacket(result: {
   coverage: unknown;
   relationships: unknown;
   findings: unknown;
+  reachability?: unknown;
+  optionalRelationships?: readonly unknown[];
 }) {
   const context = { ok: true, status: 'disabled', dependencies: [], reasons: [] };
   const expected = {
@@ -110,7 +112,11 @@ export function uvPacket(result: {
       changes: result.changes,
       sources: [...result.sources, absent],
       findings: result.findings,
-      relationships: result.relationships,
+      relationships: [
+        ...(result.relationships as readonly unknown[]),
+        ...(result.optionalRelationships ?? []),
+      ],
+      reachability: result.reachability ?? [],
       coverage: {
         npm: { status: 'not_applicable', reasons: [], sourceIds: [absent.id] },
         actions: { status: 'not_applicable', reasons: [], sourceIds: [absent.id] },

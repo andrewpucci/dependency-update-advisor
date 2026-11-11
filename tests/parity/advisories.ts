@@ -387,6 +387,7 @@ export async function collectMixedAdvisoryInventories(children = 1) {
       expected,
       coverage: { npm: npm.coverage, actions: actions.coverage, uv: uv.coverage },
       relationships: [...npm.relationships, ...uv.relationships],
+      reachability: [],
     };
   } finally {
     opened.session.close();

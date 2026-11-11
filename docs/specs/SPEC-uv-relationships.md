@@ -1,6 +1,7 @@
 # Spec: U2 Conservative uv Change Reconciliation
 
-Status: implemented on `issue-18`, pending review and merge.
+Status: implemented and on `main`; the reachability amendment below is
+approved for planning.
 The revised spec was approved for planning on 2026-11-01; execution was
 approved on 2026-11-02, as recorded below.
 Supporting contract for `uv-evidence` in
@@ -362,6 +363,27 @@ const result = {
   reason: 'budget',
 } as const;
 ```
+
+## Reachability Amendment
+
+Approved for planning 2026-11-10 under
+[#93](https://github.com/andrewpucci/dependency-update-advisor/issues/93); the
+normative contract is the
+[reachability evidence spec](SPEC-reachability-evidence.md). Implemented on
+`issue-93` as #270 and #272, pending review and merge. The "No ... T4/T5
+amendment" line at the top and the "broader reachability" ask-first item
+describe the initial scope. With `reachability` evidence U2:
+
+- uses its own closure traversal that ignores marker and extras contexts, so a
+  package another candidate reaches only on some platform or extra still counts
+  as reachable; the existing `pathTo`, `children`, and `compatible()` helpers
+  are single-context and are not reused for absence;
+- treats any node or edge skipped for an unresolved marker, extras, or
+  membership as non-proving, and an activation path T4 cannot represent as
+  `unsupported`;
+- binds verdicts to exact variant change IDs, so a verdict for one variant
+  never covers a sibling, and applies the same emission and optional-evidence
+  rules as N2.
 
 ## Commands and Testing Strategy
 

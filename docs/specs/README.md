@@ -114,10 +114,18 @@ gaps and an introduced vulnerability before parity is claimed.
   contract for T5 #12 in `shared-review`; initial scope uses proven grouping
   with exactly one direct change per root and complete ecosystem inventory.
   Interview decisions are confirmed; [#93](https://github.com/andrewpucci/dependency-update-advisor/issues/93)
-  tracks broader reachability evidence. Implemented for #94–#99 and parent #12
+  tracks broader reachability evidence, with a [multi-anchor amendment](SPEC-decision-units.md#multi-anchor-grouping-amendment)
+  approved for planning. Implemented for #94–#99 and parent #12
   and merged into `main` in [PR #100](https://github.com/andrewpucci/dependency-update-advisor/pull/100).
   [Verification #99](https://github.com/andrewpucci/dependency-update-advisor/issues/99)
   keeps collector/M2/O1/W2, publication, adoption, and cutover gates separate.
+- [Complete npm/uv reachability evidence](SPEC-reachability-evidence.md) —
+  approved for planning, 2026-11-10, for [#93](https://github.com/andrewpucci/dependency-update-advisor/issues/93).
+  Per-pair reachability verdicts, an in-place T4 v1 amendment, and multi-anchor
+  T5 grouping. Implemented on `issue-93` for tasks #266–#274 under #93 (one PR),
+  pending fresh-context review and merge; it does not block T5, N2, or U2.
+  [ADR 0006](../adr/0006-amend-packet-v1-in-place-for-reachability.md) records
+  the versioning decision.
 - [Current-head execution status](SPEC-execution-status.md) — approved
   supporting contract for T2 #9 in `shared-review`; implemented and
   merged into `main`. [Verification evidence](https://github.com/andrewpucci/dependency-update-advisor/issues/69)
@@ -174,9 +182,11 @@ gaps and an introduced vulnerability before parity is claimed.
   [verification #131](https://github.com/andrewpucci/dependency-update-advisor/issues/131)
   retains separate N2, research, workflow, assessment/rendering, and cutover gates.
 - [Proven npm relationships and lifecycle evidence](SPEC-npm-relationships.md) —
-  implemented for N2 #15 and #133–#139 on `issue-15`, pending review and merge.
+  implemented for N2 #15 and #133–#139 and on `main`.
   Preserves T5 single-anchor grouping and exact per-member lifecycle evidence;
-  broader reachability remains #93. [Verification #140](https://github.com/andrewpucci/dependency-update-advisor/issues/140)
+  broader reachability is planned under #93 via a
+  [reachability amendment](SPEC-npm-relationships.md#reachability-amendment).
+  [Verification #140](https://github.com/andrewpucci/dependency-update-advisor/issues/140)
   retains downstream research, workflow, publication, adoption, and cutover gates.
 - [GitHub Actions evidence](SPEC-actions-evidence.md) — approved for planning.
 - [GitHub Actions reference inventory](SPEC-actions-inventory.md) — X1 #16 and #142–#149
@@ -196,7 +206,7 @@ gaps and an introduced vulnerability before parity is claimed.
   keeps U2 #18 reconciliation, mixed T4/T5 integration, research, live transport,
   workflow/publication, adoption, and cutover separate.
 - [Conservative uv change reconciliation](SPEC-uv-relationships.md) — implemented
-  for U2 #18 and #161–#169 on `issue-18`, pending review and merge.
+  for U2 #18 and #161–#169 and on `main`.
   The user approved the revised spec/plan and authorized `as-build auto`
   in one PR on 2026-11-02. Preserves exact variants, scoped extras, conservative
   same-side proofs, bounded prose hints, and existing T4/T5 gates. Real

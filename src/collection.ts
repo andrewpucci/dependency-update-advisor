@@ -93,6 +93,9 @@ type Fragment = Readonly<{
   sources: readonly unknown[];
   findings: readonly unknown[];
   relationships: readonly unknown[];
+  /** Optional absence evidence; the assembler decides what fits the packet budgets. */
+  reachability?: readonly unknown[];
+  optionalRelationships?: readonly unknown[];
 }>;
 type Unavailable = Readonly<{ kind: 'unavailable'; reason: EvidenceReason }>;
 type Collector = (session: GithubReadSession) => Promise<Fragment | Unavailable>;
@@ -212,6 +215,8 @@ export function createEvidenceCollectors(
       sources: enriched.sources,
       findings: enriched.findings,
       relationships: enriched.relationships,
+      reachability: enriched.reachability,
+      optionalRelationships: enriched.optionalRelationships,
     };
   };
 
@@ -259,6 +264,8 @@ export function createEvidenceCollectors(
       sources: graph.sources,
       findings: graph.findings,
       relationships: graph.relationships,
+      reachability: graph.reachability,
+      optionalRelationships: graph.optionalRelationships,
     };
   };
 
