@@ -712,6 +712,20 @@ test('hands a failed snapshot off as a failure and starts no collector', async (
   expect(modelCalls).toEqual([]);
 });
 
+test('reports a handoff-recording failure without fabricating a publishable handoff', async () => {
+  const sink = {
+    record: () => {
+      throw new Error(sentinel);
+    },
+    traces: () => [],
+  };
+  const { input } = await setup({ sink });
+  const result = await runReview(input);
+  expect(result).toEqual({ kind: 'failed', outcome: 'internal-failure', stage: 'handoff' });
+  expect(sink.traces()).toEqual([]);
+  expect(JSON.stringify(result)).not.toContain(sentinel);
+});
+
 test.each([
   [
     'packet',

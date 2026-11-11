@@ -30321,12 +30321,22 @@ async function runReview(input) {
 		kind: "not-eligible",
 		reason: "ownership"
 	};
+	let recorded;
+	try {
+		recorded = input.sink.record(handoff.handoff);
+	} catch {
+		return {
+			kind: "failed",
+			outcome: "internal-failure",
+			stage: "handoff"
+		};
+	}
 	return {
 		kind: "handed-off",
 		outcome: outcome.kind,
 		handoff: handoff.handoff,
 		body: outcome.body,
-		recorded: input.sink.record(handoff.handoff)
+		recorded
 	};
 }
 async function evaluateEvidence(input, binding, started, signal, state, recheck) {
@@ -30821,6 +30831,7 @@ async function runStartup(writeError, environment = process.env, dependencies = 
 			evaluationTime: dependencies.evaluationTime()
 		});
 		if (result.kind === "handed-off" && !result.recorded) writeError("dependabot-review: no-write rehearsal could not record the handoff; nothing was published.");
+		else if (result.kind === "failed") writeError(`dependabot-review: no-write rehearsal recorded internal-failure at ${result.stage}; nothing was published.`);
 		else if (result.kind === "handed-off" && result.handoff.kind === "internal-failure") writeError(`dependabot-review: no-write rehearsal recorded internal-failure at ${result.handoff.stage}; nothing was published.`);
 		else if (result.kind === "handed-off") writeError(`dependabot-review: no-write rehearsal recorded ${result.outcome}; nothing was published.`);
 		else if (result.kind === "skipped") writeError(`dependabot-review: event skipped (${result.reason}); nothing was published.`);

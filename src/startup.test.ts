@@ -469,6 +469,21 @@ test('says so, and does not claim a recording, when the sink refuses the handoff
   expect(code).toBe(NOT_WIRED_EXIT_CODE);
 });
 
+test('reports a throwing no-write sink as a fixed handoff failure without error text', async () => {
+  const sink = {
+    record: () => {
+      throw new Error(sentinel);
+    },
+    traces: () => [],
+  };
+  const { stderr, code } = await start(mockGithub(), {}, { sink });
+  expect(stderr).toEqual([
+    'dependabot-review: no-write rehearsal recorded internal-failure at handoff; nothing was published.',
+  ]);
+  expect(code).toBe(NOT_WIRED_EXIT_CODE);
+  expect(stderr.join('')).not.toContain(sentinel);
+});
+
 test('sends the read token only to api.github.com, never to a registry or any other host', async () => {
   const github = mockGithub({ changes: await upstreamScenario() });
   const { stderr } = await start(github);

@@ -52,6 +52,8 @@ export type PipelineResult =
   | Readonly<{ kind: 'skipped'; reason: 'ineligible' | 'obsolete' | 'duplicate' }>
   /** Identity could not be verified or ownership was never held or was lost: nothing is publishable. */
   | Readonly<{ kind: 'not-eligible'; reason: 'verification' | 'ownership' }>
+  /** The no-write sink failed after a valid handoff was built; it is not publishable. */
+  | Readonly<{ kind: 'failed'; outcome: 'internal-failure'; stage: 'handoff' }>
   | Readonly<{
       kind: 'handed-off';
       outcome: ReviewOutcomeKind;
@@ -188,12 +190,18 @@ export async function runReview(input: PipelineInput): Promise<PipelineResult> {
     ...(outcome.kind === 'internal-failure' ? { stage: outcome.stage } : {}),
   });
   if (handoff.kind !== 'ready') return { kind: 'not-eligible', reason: 'ownership' };
+  let recorded: boolean;
+  try {
+    recorded = input.sink.record(handoff.handoff);
+  } catch {
+    return { kind: 'failed', outcome: 'internal-failure', stage: 'handoff' };
+  }
   return {
     kind: 'handed-off',
     outcome: outcome.kind,
     handoff: handoff.handoff,
     body: outcome.body,
-    recorded: input.sink.record(handoff.handoff),
+    recorded,
   };
 }
 

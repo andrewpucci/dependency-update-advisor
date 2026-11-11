@@ -176,6 +176,10 @@ export async function runStartup(
       writeError(
         'dependabot-review: no-write rehearsal could not record the handoff; nothing was published.',
       );
+    else if (result.kind === 'failed')
+      writeError(
+        `dependabot-review: no-write rehearsal recorded internal-failure at ${result.stage}; nothing was published.`,
+      );
     else if (result.kind === 'handed-off' && result.handoff.kind === 'internal-failure')
       writeError(
         `dependabot-review: no-write rehearsal recorded internal-failure at ${result.handoff.stage}; nothing was published.`,
