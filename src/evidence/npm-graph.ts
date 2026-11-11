@@ -381,18 +381,23 @@ function candidatesFor(
     for (const side of ['base', 'head'] as const) {
       const step = side === 'head' ? change.to : change.from,
         snapshot = inventory.roots.find((r) => r.root === root)?.[side];
-      if (!step || step.root !== root || snapshot?.state !== 'present') continue;
-      const closure = closureFrom(snapshot, step, spend, isBudget);
-      closures[side] = closure;
-      if (closure.limit)
+      if (!step || step.root !== root) continue;
+      // An anchor whose traversal never started is still unfinished and keeps its own scope record.
+      const closure =
+        snapshot?.state === 'present' ? closureFrom(snapshot, step, spend, isBudget) : undefined;
+      if (closure) closures[side] = closure;
+      const limit = closure
+        ? closure.limit
+        : ({ outcome: 'failed', reasons: ['missing'] } as const);
+      if (limit)
         reachability.push({
           ecosystem: 'npm',
           side,
           sourceId: step.sourceId,
           anchorId: change.id,
           memberId: null,
-          outcome: closure.limit.outcome,
-          reasons: [...closure.limit.reasons],
+          outcome: limit.outcome,
+          reasons: [...limit.reasons],
         });
     }
     return { change, closures };

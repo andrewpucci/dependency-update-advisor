@@ -888,6 +888,36 @@ test('a member whose root snapshot is unavailable says so instead of reporting a
   expect(details.join(' ')).toContain('immutable graph snapshot is unavailable');
 });
 
+test('an anchor whose side snapshot is unavailable gets its own scope record', async () => {
+  const input = await twoAnchors();
+  const gone = {
+    state: 'unavailable' as const,
+    manifestId: null,
+    lockId: null,
+    packages: {},
+    unresolvedPaths: [],
+    declarations: null,
+  };
+  const graph = inventoryGraph({
+    ...input,
+    inventory: {
+      ...input.inventory,
+      roots: input.inventory.roots.map((r) => ({ ...r, head: gone })),
+    },
+  });
+  const [anchor, other] = ['anchor', 'other'].map((n) => idOf(graph, n));
+  const scopes = graph.reachability
+    .filter((v) => v.memberId === null && v.side === 'head')
+    .map((v) => [v.anchorId, v.outcome, ...v.reasons]);
+  expect(scopes.sort()).toEqual(
+    [
+      [anchor, 'failed', 'missing'],
+      [other, 'failed', 'missing'],
+    ].sort(),
+  );
+  expect(multiUnits(graph).length).toBeGreaterThan(0);
+});
+
 const bytes = (value: unknown) => Buffer.byteLength(JSON.stringify(value));
 function scoped(verdicts: Graph['reachability']): Graph['reachability'] {
   const groups = new Map<string, Graph['reachability'][number]>();
