@@ -245,7 +245,8 @@ function multiAnchor(
   const claim = member.kind === 'removal' ? 'base' : 'head',
     end = claim === 'base' ? member.from : member.to,
     context = contexts.find((c) => c.root.root === end?.root);
-  if (!end || !context) return { proofs: [], verdicts, observation: 'wrong_side' };
+  if (!end) return { proofs: [], verdicts, observation: 'wrong_side' };
+  if (!context) return { proofs: [], verdicts, observation: 'snapshot_missing' };
   // The marker-agnostic closure decides who can reach; only absence may rely on it.
   const reaching = candidates.filter((c) => c.closures[claim]?.keys.has(key(end)));
   if (!reaching.length) return { proofs: [], verdicts, observation: 'missing_relationship' };

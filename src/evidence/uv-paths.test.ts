@@ -444,3 +444,35 @@ test('a sole reaching anchor whose only path crosses a marker-guarded edge does 
     anchorId: orbit,
   });
 });
+
+test('a member left unproven by a truncated search is reported as budget, not as a missing path', async () => {
+  const input = await uvGraphFixture({
+    'base:pyproject.toml': multiManifest,
+    'head:pyproject.toml': multiManifest,
+    'base:uv.lock': multiLock('1'),
+    'head:uv.lock': multiLock('2'),
+  });
+  const at = (maxGraphWork: number) =>
+    reconcileUvGraph({ ...input, limits: { ...input.limits, maxGraphWork } });
+  let low = 1,
+    high = 1_000_000;
+  while (low < high) {
+    const mid = Math.floor((low + high) / 2);
+    if (at(mid).kind === 'inventory') high = mid;
+    else low = mid + 1;
+  }
+  let sawCutSearch = false;
+  for (let work = low; work < low + 600; work += 1) {
+    const result = at(work);
+    if (result.kind !== 'inventory') continue;
+    const child = idFor(result, 'child');
+    const cut = result.reachability.some((v) => v.outcome === 'truncated');
+    if (!cut || result.relationships.some((p) => p.toId === child)) continue;
+    sawCutSearch = true;
+    const reasons = result.observations
+      .filter((o) => o.kind === 'relationship' && o.memberIds.includes(child))
+      .map((o) => o.reason);
+    expect(reasons).not.toContain('missing_relationship');
+  }
+  expect(sawCutSearch).toBe(true);
+});
