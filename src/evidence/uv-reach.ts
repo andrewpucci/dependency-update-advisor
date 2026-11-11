@@ -19,6 +19,27 @@ const UNKNOWN: UvReachLimit = { outcome: 'unknown', reasons: ['unknown'] };
 const UNSUPPORTED: UvReachLimit = { outcome: 'unsupported', reasons: ['unsupported'] };
 const TRUNCATED: UvReachLimit = { outcome: 'truncated', reasons: ['budget'] };
 
+/** The distinct external package keys one node depends on; every unresolved or internal edge is noted. */
+function expand(
+  snapshot: UvPathRoot['root']['base' | 'head'],
+  node: NonNullable<ReturnType<UvPathRoot['base']['nodes']['get']>>,
+  work: GraphWork,
+  note: (limit: UvReachLimit) => void,
+): Set<string> {
+  const selectors = [
+    ...(node.pkg.dependencies ?? []),
+    ...(node.pkg.optionalDependencies ?? []).flatMap((extra) => extra.declarations),
+  ];
+  const found = new Set<string>();
+  for (const selector of selectors) {
+    work.spend();
+    const target = resolveUvSelector(snapshot, selector, work);
+    if (!target) note(UNKNOWN);
+    else if (!target.external) note(UNSUPPORTED);
+    else found.add(target.key);
+  }
+  return found;
+}
 /**
  * Every package an anchor can reach in one root/side lock, ignoring environment markers and extras:
  * ordinary edges and every optional-dependency edge count, so a path that exists only on some
@@ -49,18 +70,7 @@ export function uvClosureFrom(
         note(UNKNOWN);
         continue;
       }
-      const selectors = [
-        ...(node.pkg.dependencies ?? []),
-        ...(node.pkg.optionalDependencies ?? []).flatMap((extra) => extra.declarations),
-      ];
-      const found = new Set<string>();
-      for (const selector of selectors) {
-        work.spend();
-        const target = resolveUvSelector(snapshot, selector, work);
-        if (!target) note(UNKNOWN);
-        else if (!target.external) note(UNSUPPORTED);
-        else found.add(target.key);
-      }
+      const found = expand(snapshot, node, work, note);
       for (const key of [...found].sort(byCodeUnit))
         if (!keys.has(key)) {
           keys.add(key);

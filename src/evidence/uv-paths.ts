@@ -172,15 +172,15 @@ const sidesUsed = (member: UvChange) =>
   member.kind === 'update'
     ? (['base', 'head'] as const)
     : ([member.kind === 'removal' ? 'base' : 'head'] as const);
-function multiAnchor(contexts: UvPathRoot[], member: UvChange, candidates: readonly UvCandidate[]) {
-  const proofs: Path[] = [],
-    verdicts: ReachabilityVerdict[] = [];
-  const claim = member.kind === 'removal' ? 'base' : 'head',
-    end = claim === 'base' ? member.from : member.to,
-    context = contexts.find((c) => c.root.root === end?.root);
-  if (!end || !context) return { proofs, verdicts, observation: 'wrong_side' };
-  const reaching = candidates.filter((c) => c.closures[claim]?.keys.has(key(end)));
-  if (!reaching.length) return { proofs, verdicts, observation: 'missing_relationship' };
+/** Proofs from up to two reaching anchors; `blocked` records why one could not be proven. */
+function reachingProofs(
+  context: UvPathRoot,
+  member: UvChange,
+  claim: 'base' | 'head',
+  end: UvSide,
+  reaching: readonly UvCandidate[],
+) {
+  const proofs: Path[] = [];
   let blocked = 'path_limit';
   for (const candidate of reaching.slice(0, 2)) {
     const start = claim === 'head' ? candidate.change.to : candidate.change.from,
@@ -197,28 +197,42 @@ function multiAnchor(contexts: UvPathRoot[], member: UvChange, candidates: reado
         path: path.map((p) => ({ ...p, sourceId: start.sourceId })),
       });
   }
+  return { proofs, blocked };
+}
+/** Unreachable verdicts for `other`; a pair with no record is unknown, so any doubt (limit, reach, source split) omits it. */
+function unreachableVerdicts(member: UvChange, other: UvCandidate): ReachabilityVerdict[] {
+  const verdicts: ReachabilityVerdict[] = [];
+  for (const side of sidesUsed(member)) {
+    const closure = other.closures[side],
+      mine = side === 'head' ? member.to : member.from,
+      theirs = side === 'head' ? other.change.to : other.change.from;
+    if (!closure || closure.limit || !mine || !theirs) continue;
+    if (closure.keys.has(key(mine)) || theirs.sourceId !== mine.sourceId) continue;
+    verdicts.push({
+      ecosystem: 'uv',
+      side,
+      sourceId: theirs.sourceId,
+      anchorId: other.change.id,
+      memberId: member.id,
+      outcome: 'unreachable',
+      reasons: [],
+    });
+  }
+  return verdicts;
+}
+function multiAnchor(contexts: UvPathRoot[], member: UvChange, candidates: readonly UvCandidate[]) {
+  const verdicts: ReachabilityVerdict[] = [];
+  const claim = member.kind === 'removal' ? 'base' : 'head',
+    end = claim === 'base' ? member.from : member.to,
+    context = contexts.find((c) => c.root.root === end?.root);
+  if (!end || !context) return { proofs: [], verdicts, observation: 'wrong_side' };
+  const reaching = candidates.filter((c) => c.closures[claim]?.keys.has(key(end)));
+  if (!reaching.length) return { proofs: [], verdicts, observation: 'missing_relationship' };
+  const { proofs, blocked } = reachingProofs(context, member, claim, end, reaching);
   if (reaching.length > 1) return { proofs, verdicts, observation: 'ambiguous_anchors' };
   if (!proofs.length) return { proofs, verdicts, observation: blocked };
-  for (const other of candidates) {
-    if (other === reaching[0]) continue;
-    for (const side of sidesUsed(member)) {
-      const closure = other.closures[side],
-        mine = side === 'head' ? member.to : member.from,
-        theirs = side === 'head' ? other.change.to : other.change.from;
-      // A pair with no record is unknown, so any doubt (limit, reach, source split) simply omits it.
-      if (!closure || closure.limit || !mine || !theirs) continue;
-      if (closure.keys.has(key(mine)) || theirs.sourceId !== mine.sourceId) continue;
-      verdicts.push({
-        ecosystem: 'uv',
-        side,
-        sourceId: theirs.sourceId,
-        anchorId: other.change.id,
-        memberId: member.id,
-        outcome: 'unreachable',
-        reasons: [],
-      });
-    }
-  }
+  for (const other of candidates)
+    if (other !== reaching[0]) verdicts.push(...unreachableVerdicts(member, other));
   return { proofs, verdicts, observation: null };
 }
 function isShared(result: UvInventory, contexts: UvPathRoot[], proof: Path, work: GraphWork) {

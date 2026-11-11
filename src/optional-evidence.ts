@@ -22,41 +22,42 @@ const isLoose = (value: unknown): value is Loose =>
   typeof value === 'object' && value !== null && !Array.isArray(value);
 const lock = (value: unknown): value is 'npm' | 'uv' => value === 'npm' || value === 'uv';
 
-/**
- * Fits optional reachability evidence into the packet-wide budgets. It replaces whole anchor/side pair
- * groups with one `truncated` scope record, then drops optional proofs, uv before npm and then by
- * descending canonical key. Required proofs, verdicts it cannot group, and all non-evidence stay.
- * A dropped record only ever degrades a member toward a standalone unit.
- */
-export function fitOptionalEvidence(input: OptionalInput) {
+const groupable = (v: unknown): v is Loose & { ecosystem: 'npm' | 'uv' } =>
+  isLoose(v) &&
+  lock(v.ecosystem) &&
+  typeof v.side === 'string' &&
+  typeof v.anchorId === 'string' &&
+  typeof v.sourceId === 'string' &&
+  typeof v.memberId === 'string';
+const droppableProof = (p: unknown): p is Loose & { ecosystem: 'npm' | 'uv' } =>
+  isLoose(p) &&
+  lock(p.ecosystem) &&
+  typeof p.fromId === 'string' &&
+  typeof p.toId === 'string' &&
+  typeof p.side === 'string';
+/** Groups pair verdicts by ecosystem, side, and anchor; anything else stays as a fixed record. */
+function groupVerdicts(verdicts: readonly unknown[]) {
   const fixed: unknown[] = [],
     groups = new Map<string, Group>();
-  for (const v of input.verdicts) {
-    if (
-      isLoose(v) &&
-      lock(v.ecosystem) &&
-      typeof v.side === 'string' &&
-      typeof v.anchorId === 'string' &&
-      typeof v.sourceId === 'string' &&
-      typeof v.memberId === 'string'
-    ) {
-      const key = JSON.stringify([v.ecosystem, v.side, v.anchorId]);
-      const group = groups.get(key) ?? { key, ecosystem: v.ecosystem, records: [], bytes: 0 };
-      group.records.push(v);
-      group.bytes += size(v);
-      groups.set(key, group);
-    } else fixed.push(v);
+  for (const v of verdicts) {
+    if (!groupable(v)) {
+      fixed.push(v);
+      continue;
+    }
+    const key = JSON.stringify([v.ecosystem, v.side, v.anchorId]);
+    const group = groups.get(key) ?? { key, ecosystem: v.ecosystem, records: [], bytes: 0 };
+    group.records.push(v);
+    group.bytes += size(v);
+    groups.set(key, group);
   }
+  return { fixed, groups };
+}
+/** Splits optional proofs into droppable ones and those that must stay. */
+function splitProofs(optionalProofs: readonly unknown[]) {
   const proofs: Proof[] = [],
     keptProofs: unknown[] = [];
-  for (const p of input.optionalProofs) {
-    if (
-      isLoose(p) &&
-      lock(p.ecosystem) &&
-      typeof p.fromId === 'string' &&
-      typeof p.toId === 'string' &&
-      typeof p.side === 'string'
-    )
+  for (const p of optionalProofs) {
+    if (droppableProof(p))
       proofs.push({
         key: JSON.stringify([p.ecosystem, p.fromId, p.toId, p.side]),
         ecosystem: p.ecosystem,
@@ -65,6 +66,28 @@ export function fitOptionalEvidence(input: OptionalInput) {
       });
     else keptProofs.push(p);
   }
+  return { proofs, keptProofs };
+}
+/** A budget-truncated scope record standing in for a whole dropped group. */
+const scopeFor = (group: Group) => ({
+  ecosystem: group.records[0].ecosystem,
+  side: group.records[0].side,
+  sourceId: group.records[0].sourceId,
+  anchorId: group.records[0].anchorId,
+  memberId: null,
+  outcome: 'truncated',
+  reasons: ['budget'],
+});
+
+/**
+ * Fits optional reachability evidence into the packet-wide budgets. It replaces whole anchor/side pair
+ * groups with one `truncated` scope record, then drops optional proofs, uv before npm and then by
+ * descending canonical key. Required proofs, verdicts it cannot group, and all non-evidence stay.
+ * A dropped record only ever degrades a member toward a standalone unit.
+ */
+export function fitOptionalEvidence(input: OptionalInput) {
+  const { fixed, groups } = groupVerdicts(input.verdicts),
+    { proofs, keptProofs } = splitProofs(input.optionalProofs);
   const byKeyDescending = <T extends { key: string }>(a: T, b: T) =>
     a.key < b.key ? 1 : a.key > b.key ? -1 : 0;
   const pending = [...groups.values()].sort(byKeyDescending),
@@ -88,16 +111,7 @@ export function fitOptionalEvidence(input: OptionalInput) {
     Math.max(proofCount - 1, 0);
   const dropGroup = () => {
     const group = pending.shift()!;
-    const first = group.records[0];
-    const scope = {
-      ecosystem: first.ecosystem,
-      side: first.side,
-      sourceId: first.sourceId,
-      anchorId: first.anchorId,
-      memberId: null,
-      outcome: 'truncated',
-      reasons: ['budget'],
-    };
+    const scope = scopeFor(group);
     scopes.push(scope);
     verdictCount += 1 - group.records.length;
     verdictBytes += size(scope) - group.bytes;

@@ -237,100 +237,127 @@ type Assignment = {
   verdictKeys: string[];
   limits: string[];
 };
-function grouping(packet: Packet, change: Change, reachability: ReachabilityIndex): Assignment {
-  // ponytail: scans stay bounded by 128 changes and 256 proofs; index only if those packet caps grow.
-  const standalone = (reason: GroupingReason, limits: string[] = []): Assignment => ({
-    anchorId: null,
-    reason,
-    proofKeys: [],
-    verdictKeys: [],
-    limits: limits.sort(byCodeUnit),
-  });
-  if (change.ecosystem === 'actions') return standalone('actions_occurrence');
-  if ('basis' in change) return standalone('independent_change');
-  if (change.role === 'unknown') return standalone('unknown_role');
-  if (change.role === 'direct') return standalone('independent_change');
-  if (packet.coverage[change.ecosystem].status !== 'complete')
-    return standalone('inventory_incomplete');
+type Side = 'base' | 'head';
+type Eligible = Readonly<{ side: Side; root: string }>;
+type Relation = Readonly<{
+  packet: Packet;
+  change: Change;
+  side: Side;
+  root: string;
+  reachability: ReachabilityIndex;
+}>;
+const standalone = (reason: GroupingReason, limits: string[] = []): Assignment => ({
+  anchorId: null,
+  reason,
+  proofKeys: [],
+  verdictKeys: [],
+  limits: limits.sort(byCodeUnit),
+});
+/** Standalone reason, or the side and instance root the change is grouped by. */
+function eligibility(packet: Packet, change: Change): GroupingReason | Eligible {
+  if (change.ecosystem === 'actions') return 'actions_occurrence';
+  if ('basis' in change) return 'independent_change';
+  if (change.role === 'unknown') return 'unknown_role';
+  if (change.role === 'direct') return 'independent_change';
+  if (packet.coverage[change.ecosystem].status !== 'complete') return 'inventory_incomplete';
   const side = change.kind === 'removal' ? 'base' : 'head';
   const instance = side === 'base' ? change.from : change.to;
-  if (!instance) return standalone('missing_relationship');
-  if (roots(change).length !== 1) return standalone('multiple_roots');
+  if (!instance) return 'missing_relationship';
+  if (roots(change).length !== 1) return 'multiple_roots';
+  return { side, root: instance.root };
+}
+function directAnchors(packet: Packet, change: Change, root: string): Change[] | GroupingReason {
   const candidates = packet.changes.filter(
-    (c) => !('basis' in c) && c.ecosystem === change.ecosystem && roots(c).includes(instance.root),
+    (c) => !('basis' in c) && c.ecosystem === change.ecosystem && roots(c).includes(root),
   );
-  if (candidates.some((c) => c.role === 'unknown')) return standalone('unknown_role');
+  if (candidates.some((c) => c.role === 'unknown')) return 'unknown_role';
   const anchors = candidates.filter((c) => c.role === 'direct');
-  if (!anchors.length) return standalone('no_direct_change');
-  const proofsFrom = (anchor: Change, proofSide: 'base' | 'head') =>
-    packet.relationships.filter(
-      (p) => p.fromId === anchor.id && p.toId === change.id && p.side === proofSide,
+  return anchors.length ? anchors : 'no_direct_change';
+}
+const proven = ({ packet, change, side }: Relation, anchor: Change): string[] =>
+  packet.relationships
+    .filter((p) => p.fromId === anchor.id && p.toId === change.id && p.side === side)
+    .map((p) => JSON.stringify(canonical(p)))
+    .sort();
+function singleAnchor(rel: Relation, anchor: Change): Assignment {
+  if (roots(anchor).length !== 1) return standalone('multiple_roots');
+  const proofKeys = proven(rel, anchor);
+  if (!proofKeys.length) return standalone('missing_relationship');
+  return {
+    anchorId: anchor.id,
+    reason: 'proven_relationship',
+    proofKeys,
+    verdictKeys: [],
+    limits: [],
+  };
+}
+/** Evidence that `other` cannot reach the change, or the limits explaining why not. */
+function excludeAnchor(rel: Relation, other: Change): { verdictKeys: string[]; limits: string[] } {
+  const { change, side, root, reachability } = rel;
+  const used = change.kind === 'update' ? (['base', 'head'] as const) : ([side] as const);
+  const counted = used.filter((s) => {
+    const step = s === 'base' ? other.from : other.to;
+    return step !== null && 'root' in step && step.root === root;
+  });
+  const verdictKeys: string[] = [],
+    limits: string[] = [];
+  if (!counted.length) limits.push(JSON.stringify(['blocked', change.id, other.id]));
+  for (const s of counted) {
+    const v = reachability.pairs.get(JSON.stringify([s, other.id, change.id]));
+    if (v?.outcome === 'unreachable') {
+      verdictKeys.push(JSON.stringify(canonical(v)));
+      continue;
+    }
+    const known = v ?? reachability.scopes.get(JSON.stringify([s, other.id]));
+    limits.push(
+      JSON.stringify([
+        'reachability',
+        change.id,
+        other.id,
+        s,
+        known?.outcome ?? 'missing',
+        known?.reasons ?? [],
+      ]),
     );
-  const proven = (anchor: Change) =>
-    proofsFrom(anchor, side)
-      .map((p) => JSON.stringify(canonical(p)))
-      .sort();
-  if (anchors.length === 1) {
-    if (roots(anchors[0]).length !== 1) return standalone('multiple_roots');
-    const proofKeys = proven(anchors[0]);
-    if (!proofKeys.length) return standalone('missing_relationship');
-    return {
-      anchorId: anchors[0].id,
-      reason: 'proven_relationship',
-      proofKeys,
-      verdictKeys: [],
-      limits: [],
-    };
   }
+  return { verdictKeys, limits };
+}
+function multiAnchor(rel: Relation, anchors: Change[]): Assignment {
   // Legacy: no record names any candidate, so absence was never evidenced for this root.
-  if (!anchors.some((c) => reachability.anchors.has(c.id)))
+  if (!anchors.some((c) => rel.reachability.anchors.has(c.id)))
     return standalone('multiple_direct_changes');
-  const reaching = anchors.filter((c) => proven(c).length);
+  const reaching = anchors.filter((c) => proven(rel, c).length);
   if (reaching.length > 1)
     return standalone(
       'ambiguous_anchors',
       reaching.flatMap((c) =>
-        proven(c).map((key) => JSON.stringify(['ambiguous_anchors', change.id, c.id, key])),
+        proven(rel, c).map((key) =>
+          JSON.stringify(['ambiguous_anchors', rel.change.id, c.id, key]),
+        ),
       ),
     );
   if (!reaching.length) return standalone('missing_relationship');
   const anchor = reaching[0];
   if (roots(anchor).length !== 1) return standalone('multiple_roots');
-  const used = change.kind === 'update' ? (['base', 'head'] as const) : ([side] as const);
-  const limits: string[] = [],
-    verdictKeys: string[] = [];
-  for (const other of anchors.filter((c) => c !== anchor)) {
-    const counted = used.filter((s) => {
-      const step = s === 'base' ? other.from : other.to;
-      return step !== null && 'root' in step && step.root === instance.root;
-    });
-    if (!counted.length) limits.push(JSON.stringify(['blocked', change.id, other.id]));
-    for (const s of counted) {
-      const v = reachability.pairs.get(JSON.stringify([s, other.id, change.id]));
-      if (v?.outcome === 'unreachable') verdictKeys.push(JSON.stringify(canonical(v)));
-      else {
-        const known = v ?? reachability.scopes.get(JSON.stringify([s, other.id]));
-        limits.push(
-          JSON.stringify([
-            'reachability',
-            change.id,
-            other.id,
-            s,
-            known?.outcome ?? 'missing',
-            known?.reasons ?? [],
-          ]),
-        );
-      }
-    }
-  }
+  const excluded = anchors.filter((c) => c !== anchor).map((c) => excludeAnchor(rel, c));
+  const limits = excluded.flatMap((e) => e.limits);
   if (limits.length) return standalone('reachability_unproven', limits);
   return {
     anchorId: anchor.id,
     reason: 'proven_relationship',
-    proofKeys: proven(anchor),
-    verdictKeys: verdictKeys.sort(),
+    proofKeys: proven(rel, anchor),
+    verdictKeys: excluded.flatMap((e) => e.verdictKeys).sort(),
     limits: [],
   };
+}
+function grouping(packet: Packet, change: Change, reachability: ReachabilityIndex): Assignment {
+  // ponytail: scans stay bounded by 128 changes and 256 proofs; index only if those packet caps grow.
+  const eligible = eligibility(packet, change);
+  if (typeof eligible === 'string') return standalone(eligible);
+  const anchors = directAnchors(packet, change, eligible.root);
+  if (typeof anchors === 'string') return standalone(anchors);
+  const rel: Relation = { packet, change, ...eligible, reachability };
+  return anchors.length === 1 ? singleAnchor(rel, anchors[0]) : multiAnchor(rel, anchors);
 }
 
 /** Accepts only T4-validated packets from trusted orchestration; no validation or I/O occurs here.

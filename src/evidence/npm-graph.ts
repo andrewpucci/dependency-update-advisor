@@ -396,15 +396,15 @@ const sidesUsed = (member: Resolved) =>
   member.kind === 'update'
     ? (['base', 'head'] as const)
     : ([member.kind === 'removal' ? 'base' : 'head'] as const);
-function multiAnchor(member: Resolved, candidates: readonly Candidate[]) {
-  const proofs: NpmProof[] = [],
-    verdicts: ReachabilityVerdict[] = [];
-  const claim = member.kind === 'removal' ? 'base' : 'head',
-    end = claim === 'base' ? member.from : member.to;
-  if (!end) return { proofs, verdicts, observation: 'wrong_side' as Observation };
-  const reaching = candidates.filter((c) => c.closures[claim]?.steps.has(end.lockPath));
-  if (!reaching.length)
-    return { proofs, verdicts, observation: 'missing_relationship' as Observation };
+type Claim = 'base' | 'head';
+/** Proofs from up to two reaching anchors; `blocked` records why one could not be proven. */
+function reachingProofs(
+  member: Resolved,
+  claim: Claim,
+  end: NonNullable<Resolved['to']>,
+  reaching: readonly Candidate[],
+) {
+  const proofs: NpmProof[] = [];
   let blocked: Observation | null = null;
   for (const candidate of reaching.slice(0, 2)) {
     const start = claim === 'head' ? candidate.change.to : candidate.change.from;
@@ -421,38 +421,102 @@ function multiAnchor(member: Resolved, candidates: readonly Candidate[]) {
         path: path.map((step) => ({ ...step, sourceId: start.sourceId })),
       });
   }
-  if (reaching.length > 1)
-    return { proofs, verdicts, observation: 'ambiguous_anchors' as Observation };
-  if (!proofs.length) return { proofs, verdicts, observation: blocked };
-  for (const other of candidates) {
-    if (other === reaching[0]) continue;
-    for (const side of sidesUsed(member)) {
-      const closure = other.closures[side],
-        mine = side === 'head' ? member.to : member.from,
-        theirs = side === 'head' ? other.change.to : other.change.from;
-      // A pair with no record is unknown, so any doubt (limit, reach, source split) simply omits it.
-      if (!closure || closure.limit || !mine || !theirs) continue;
-      if (closure.steps.has(mine.lockPath) || theirs.sourceId !== mine.sourceId) continue;
-      verdicts.push({
-        ecosystem: 'npm',
-        side,
-        sourceId: theirs.sourceId,
-        anchorId: other.change.id,
-        memberId: member.id,
-        outcome: 'unreachable',
-        reasons: [],
-      });
-    }
+  return { proofs, blocked };
+}
+/** Unreachable verdicts for `other`; a pair with no record is unknown, so any doubt (limit, reach, source split) omits it. */
+function unreachableVerdicts(member: Resolved, other: Candidate): ReachabilityVerdict[] {
+  const verdicts: ReachabilityVerdict[] = [];
+  for (const side of sidesUsed(member)) {
+    const closure = other.closures[side],
+      mine = side === 'head' ? member.to : member.from,
+      theirs = side === 'head' ? other.change.to : other.change.from;
+    if (!closure || closure.limit || !mine || !theirs) continue;
+    if (closure.steps.has(mine.lockPath) || theirs.sourceId !== mine.sourceId) continue;
+    verdicts.push({
+      ecosystem: 'npm',
+      side,
+      sourceId: theirs.sourceId,
+      anchorId: other.change.id,
+      memberId: member.id,
+      outcome: 'unreachable',
+      reasons: [],
+    });
   }
-  return { proofs, verdicts, observation: null };
+  return verdicts;
+}
+function multiAnchor(member: Resolved, candidates: readonly Candidate[]) {
+  const proofs: NpmProof[] = [],
+    verdicts: ReachabilityVerdict[] = [];
+  const claim = member.kind === 'removal' ? 'base' : 'head',
+    end = claim === 'base' ? member.from : member.to;
+  if (!end) return { proofs, verdicts, observation: 'wrong_side' as Observation };
+  const reaching = candidates.filter((c) => c.closures[claim]?.steps.has(end.lockPath));
+  if (!reaching.length)
+    return { proofs, verdicts, observation: 'missing_relationship' as Observation };
+  const found = reachingProofs(member, claim, end, reaching);
+  if (reaching.length > 1)
+    return { proofs: found.proofs, verdicts, observation: 'ambiguous_anchors' as Observation };
+  if (!found.proofs.length) return { proofs: found.proofs, verdicts, observation: found.blocked };
+  for (const other of candidates)
+    if (other !== reaching[0]) verdicts.push(...unreachableVerdicts(member, other));
+  return { proofs: found.proofs, verdicts, observation: null };
+}
+type ProofState = Readonly<{
+  optionalRelationships: NpmProof[];
+  reachability: ReachabilityVerdict[];
+  findings: Finding[];
+  candidatesByRoot: Map<string, Candidate[]>;
+}>;
+/** Resolves a member whose root has several direct anchors; null when no proof survives. */
+function resolveMulti(
+  inventory: Inventory,
+  member: Resolved,
+  spend: () => void,
+  state: ProofState,
+): NpmProof | null {
+  const root = roots(member)[0];
+  const candidates =
+    state.candidatesByRoot.get(root) ?? candidatesFor(inventory, root, spend, state.reachability);
+  state.candidatesByRoot.set(root, candidates);
+  const multi = multiAnchor(member, candidates);
+  state.reachability.push(...multi.verdicts);
+  state.optionalRelationships.push(...multi.proofs.slice(1));
+  if (multi.observation) state.findings.push(note(member, multi.observation));
+  return multi.proofs[0] ?? null;
+}
+/** Records the member's proof or finding; a budget failure becomes a finding. */
+function recordMember(
+  inventory: Inventory,
+  member: Resolved,
+  spend: () => void,
+  state: ProofState,
+  relationships: NpmProof[],
+  shared: (proof: NpmProof) => boolean,
+) {
+  try {
+    let result: NpmProof | Observation | null = proofFor(inventory, member, spend);
+    if (result === 'multiple_direct_changes')
+      result = resolveMulti(inventory, member, spend, state);
+    if (!result) return;
+    if (typeof result === 'string') state.findings.push(note(member, result));
+    else {
+      relationships.push(result);
+      if (shared(result)) state.findings.push(note(member, 'shared'));
+    }
+  } catch (error) {
+    if (!(error instanceof GraphFailure)) throw error;
+    state.findings.push(note(member, 'budget'));
+  }
 }
 function collectProofs(inventory: Inventory, spend: () => void) {
   const relationships: NpmProof[] = [],
-    optionalRelationships: NpmProof[] = [],
-    reachability: ReachabilityVerdict[] = [],
-    findings: Finding[] = [],
     reach = new Map<string, Set<string>>(),
-    candidatesByRoot = new Map<string, Candidate[]>();
+    state: ProofState = {
+      optionalRelationships: [],
+      reachability: [],
+      findings: [],
+      candidatesByRoot: new Map(),
+    };
   const shared = (proof: NpmProof) => {
     const end = proof.path.at(-1)!,
       key = JSON.stringify([end.root, proof.side]);
@@ -460,32 +524,11 @@ function collectProofs(inventory: Inventory, spend: () => void) {
     return reach.get(key)!.has(end.lockPath);
   };
   for (const member of [...inventory.changes].sort(byId)) {
-    if (!resolved(member) || member.role === 'direct') continue;
-    try {
-      let result = proofFor(inventory, member, spend);
-      if (result === 'multiple_direct_changes') {
-        const root = roots(member)[0];
-        const candidates =
-          candidatesByRoot.get(root) ?? candidatesFor(inventory, root, spend, reachability);
-        candidatesByRoot.set(root, candidates);
-        const multi = multiAnchor(member, candidates);
-        reachability.push(...multi.verdicts);
-        optionalRelationships.push(...multi.proofs.slice(1));
-        if (multi.observation) findings.push(note(member, multi.observation));
-        if (!multi.proofs.length) continue;
-        result = multi.proofs[0];
-      }
-      if (typeof result === 'string') findings.push(note(member, result));
-      else {
-        relationships.push(result);
-        if (shared(result)) findings.push(note(member, 'shared'));
-      }
-    } catch (error) {
-      if (!(error instanceof GraphFailure)) throw error;
-      findings.push(note(member, 'budget'));
-    }
+    if (resolved(member) && member.role !== 'direct')
+      recordMember(inventory, member, spend, state, relationships, shared);
   }
-  reachability.sort((a, b) => (JSON.stringify(a) < JSON.stringify(b) ? -1 : 1));
+  state.reachability.sort((a, b) => (JSON.stringify(a) < JSON.stringify(b) ? -1 : 1));
+  const { optionalRelationships, reachability, findings } = state;
   return { relationships, optionalRelationships, reachability, findings };
 }
 function graphResult({ inventory, limits, spend }: ReturnType<typeof parse>): NpmGraphResult {

@@ -60,6 +60,35 @@ function slot(
     parent = index < 0 ? '' : parent.slice(0, index);
   }
 }
+type NpmNode = NpmRootSide['packages'][string];
+const PACKAGE_KEY = /^(?:@[a-z\d._-]+\/)?[a-z\d][a-z\d._-]*$/iu;
+/** The supported dependency targets of one node in canonical order; every skipped edge is noted. */
+function expand(
+  snapshot: NpmRootSide,
+  unresolved: ReadonlySet<string>,
+  path: string,
+  node: NpmNode,
+  spend: () => void,
+  note: (limit: ReachLimit) => void,
+): NpmSide[] {
+  const maps = { ...node.dependencies, ...node.optionalDependencies };
+  if (Object.keys(node.peerDependencies).some((key) => own(maps, key) === undefined))
+    note(UNSUPPORTED);
+  const found: NpmSide[] = [];
+  for (const key of Object.keys(maps).sort()) {
+    spend();
+    if (!PACKAGE_KEY.test(key)) {
+      note(UNSUPPORTED);
+      continue;
+    }
+    const resolved = slot(snapshot, unresolved, path, key, spend);
+    if (resolved.kind === 'limit') note(resolved.limit);
+    else if (resolved.kind === 'target')
+      if (supportedEdge(key, maps[key], resolved.target)) found.push(resolved.target);
+      else note(UNSUPPORTED);
+  }
+  return found.sort((a, b) => (nodeKey(a) < nodeKey(b) ? -1 : nodeKey(a) > nodeKey(b) ? 1 : 0));
+}
 /**
  * Breadth-first closure from one anchor instance, with every skipped edge classified. A missing
  * slot is absence only under the lookup-chain rule; unresolved positions, instance-less entries,
@@ -88,23 +117,7 @@ export function closureFrom(
         note(UNKNOWN);
         continue;
       }
-      const maps = { ...node.dependencies, ...node.optionalDependencies };
-      if (Object.keys(node.peerDependencies).some((key) => own(maps, key) === undefined))
-        note(UNSUPPORTED);
-      const found: NpmSide[] = [];
-      for (const key of Object.keys(maps).sort()) {
-        spend();
-        if (!/^(?:@[a-z\d._-]+\/)?[a-z\d][a-z\d._-]*$/iu.test(key)) {
-          note(UNSUPPORTED);
-          continue;
-        }
-        const resolved = slot(snapshot, unresolved, queue[i], key, spend);
-        if (resolved.kind === 'limit') note(resolved.limit);
-        else if (resolved.kind === 'target')
-          if (supportedEdge(key, maps[key], resolved.target)) found.push(resolved.target);
-          else note(UNSUPPORTED);
-      }
-      found.sort((a, b) => (nodeKey(a) < nodeKey(b) ? -1 : nodeKey(a) > nodeKey(b) ? 1 : 0));
+      const found = expand(snapshot, unresolved, queue[i], node, spend, note);
       for (const target of found)
         if (!parents.has(target.lockPath)) {
           parents.set(target.lockPath, queue[i]);

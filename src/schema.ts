@@ -1575,6 +1575,82 @@ function lockChange(c: PacketChange | undefined, ecosystem: 'npm' | 'uv'): LockC
     ? c
     : undefined;
 }
+type LockStep = NonNullable<LockChange['from']>;
+type VerdictEnds = Readonly<{
+  anchor: LockChange;
+  member: LockChange | null;
+  anchorStep: LockStep;
+  memberStep: LockStep | null;
+}>;
+/** Resolves a verdict's anchor and member to same-root lock changes on the verdict's side. */
+function verdictEnds(
+  v: ReachabilityVerdict,
+  changes: ChangeIndex,
+  scoped: ReadonlySet<string>,
+): VerdictEnds {
+  const anchor = lockChange(changes.get(v.anchorId), v.ecosystem),
+    member = v.memberId === null ? null : lockChange(changes.get(v.memberId), v.ecosystem);
+  requireValue(
+    anchor && anchor.role === 'direct' && member !== undefined,
+    'reachability',
+    'reference',
+  );
+  requireValue(
+    member === null || (member.role === 'transitive' && member.id !== anchor.id),
+    'reachability',
+    'reference',
+  );
+  requireValue(
+    member === null || !scoped.has(JSON.stringify([v.side, v.anchorId])),
+    'reachability',
+    'duplicate',
+  );
+  const anchorStep = v.side === 'base' ? anchor.from : anchor.to,
+    memberStep = member ? (v.side === 'base' ? member.from : member.to) : null;
+  requireValue(
+    anchorStep && (member === null || memberStep?.root === anchorStep.root),
+    'reachability',
+    'reference',
+  );
+  return { anchor, member, anchorStep, memberStep };
+}
+/** The verdict must cite an available lockfile of its side and root that covers both ends. */
+function requireVerdictSource(v: ReachabilityVerdict, ends: VerdictEnds, sources: SourceIndex) {
+  const { anchor, member, anchorStep } = ends,
+    prefix = anchorStep.root === '.' ? '' : anchorStep.root + '/';
+  const source = sources.get(v.sourceId);
+  requireValue(
+    source?.kind === 'file' &&
+      source.status === 'available' &&
+      source.ecosystems.includes(v.ecosystem) &&
+      source.provenance.kind === 'file' &&
+      source.provenance.revision === v.side &&
+      source.provenance.path ===
+        prefix + (v.ecosystem === 'npm' ? 'package-lock.json' : 'uv.lock') &&
+      source.memberIds.includes(anchor.id) &&
+      (member === null || source.memberIds.includes(member.id)),
+    'reachability',
+    'reference',
+  );
+}
+/** An unreachable verdict contradicts any proof path that reaches the member through the anchor. */
+function requireNoContraryProof(
+  v: ReachabilityVerdict,
+  { anchor, member, anchorStep, memberStep }: VerdictEnds,
+  proofs: RelationshipProof[],
+) {
+  if (!member || !memberStep) return;
+  const anchorKey = instanceKey(anchor, anchorStep),
+    memberKey = instanceKey(member, memberStep);
+  for (const p of proofs) {
+    if (p.ecosystem !== v.ecosystem || p.side !== v.side || p.path[0].root !== anchorStep.root)
+      continue;
+    const keys = p.path.map((step) => instanceKey(anchor, step));
+    const at = keys.indexOf(anchorKey),
+      to = keys.indexOf(memberKey);
+    requireValue(at === -1 || to === -1 || at > to, 'reachability', 'reference');
+  }
+}
 function linkReachability(
   verdicts: ReachabilityVerdict[],
   proofs: RelationshipProof[],
@@ -1589,56 +1665,9 @@ function linkReachability(
     verdicts.filter((v) => v.memberId === null).map((v) => JSON.stringify([v.side, v.anchorId])),
   );
   for (const v of verdicts) {
-    const anchor = lockChange(changes.get(v.anchorId), v.ecosystem),
-      member = v.memberId === null ? null : lockChange(changes.get(v.memberId), v.ecosystem);
-    requireValue(
-      anchor && anchor.role === 'direct' && member !== undefined,
-      'reachability',
-      'reference',
-    );
-    requireValue(
-      member === null || (member.role === 'transitive' && member.id !== anchor.id),
-      'reachability',
-      'reference',
-    );
-    requireValue(
-      member === null || !scoped.has(JSON.stringify([v.side, v.anchorId])),
-      'reachability',
-      'duplicate',
-    );
-    const anchorStep = v.side === 'base' ? anchor.from : anchor.to,
-      memberStep = member ? (v.side === 'base' ? member.from : member.to) : null;
-    requireValue(
-      anchorStep && (member === null || memberStep?.root === anchorStep.root),
-      'reachability',
-      'reference',
-    );
-    const root = anchorStep.root,
-      prefix = root === '.' ? '' : root + '/';
-    const source = sources.get(v.sourceId);
-    requireValue(
-      source?.kind === 'file' &&
-        source.status === 'available' &&
-        source.ecosystems.includes(v.ecosystem) &&
-        source.provenance.kind === 'file' &&
-        source.provenance.revision === v.side &&
-        source.provenance.path ===
-          prefix + (v.ecosystem === 'npm' ? 'package-lock.json' : 'uv.lock') &&
-        source.memberIds.includes(anchor.id) &&
-        (member === null || source.memberIds.includes(member.id)),
-      'reachability',
-      'reference',
-    );
-    if (v.outcome !== 'unreachable' || !member || !memberStep) continue;
-    const anchorKey = instanceKey(anchor, anchorStep),
-      memberKey = instanceKey(member, memberStep);
-    for (const p of proofs) {
-      if (p.ecosystem !== v.ecosystem || p.side !== v.side || p.path[0].root !== root) continue;
-      const keys = p.path.map((step) => instanceKey(anchor, step));
-      const at = keys.indexOf(anchorKey),
-        to = keys.indexOf(memberKey);
-      requireValue(at === -1 || to === -1 || at > to, 'reachability', 'reference');
-    }
+    const ends = verdictEnds(v, changes, scoped);
+    requireVerdictSource(v, ends, sources);
+    if (v.outcome === 'unreachable') requireNoContraryProof(v, ends, proofs);
   }
 }
 function coverage(
