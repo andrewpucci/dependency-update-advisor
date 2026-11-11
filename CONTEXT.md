@@ -20,9 +20,11 @@ W2 orchestration is merged into `main` as a no-write rehearsal, with
 [C4 Dependabot roots](docs/specs/SPEC-dependabot-roots.md) supplying the
 collectors' trusted roots. Its R1 rehearsal reached the trusted workflow but
 recorded a redacted `internal-failure`; the fixed-stage diagnostic amendment is
-merged, so a rehearsal now reports `internal-failure at <stage>`. Re-run the R1
-rehearsal on `main` to read the stage. Publication and production claim storage
-remain separate gates.
+merged. The R1 rehearsal reported `internal-failure at unclassified`;
+[#297](https://github.com/andrewpucci/dependency-update-advisor/issues/297)
+tracks the cause, a final freshness check failing after the transport window,
+and its Amendment 2 is approved for planning. Publication and production claim
+storage remain separate gates.
 
 ## Next action
 

@@ -20,6 +20,12 @@ The user approved the following amendment for planning on 2026-11-11 and
 approved its execution on 2026-11-11; the work is merged. This amendment does
 not authorize live publication or a production claim backend.
 
+**Diagnostic Amendment 2 (freshness time allowance and stage detail),
+approved for planning 2026-11-11:** the first rehearsal that reported a stage
+was `unclassified`;
+[#297](https://github.com/andrewpucci/dependency-update-advisor/issues/297)
+tracks the cause. Execution requires separate approval.
+
 The user approved this W2 supporting-contract map on 2026-11-08:
 
 | Supporting contract            | Responsibility                                                                                                                  | Depends on                                          |
@@ -305,6 +311,119 @@ comment, configuration, permission, token, trigger, or network-write change.
 - **Never:** report a raw error or external payload, infer a stage from
   untrusted data, weaken fail-closed behavior, or use this diagnostic work to
   start publication or production-claim implementation.
+
+## Diagnostic Amendment 2: Freshness Time Allowance and Stage Detail
+
+**Status: approved for planning 2026-11-11.** The user approved this amendment
+and its proposed `freshnessAllowanceMs` of 45,000 ms on 2026-11-11 (it was
+Ask-first under the approved execution envelope and the first amendment's
+boundaries). Execution requires separate approval, and the amendment does not
+authorize live publication or a production claim backend. Effort tier:
+L (crosses `startup`, the GitHub transport, `pipeline`, `handoff`, and
+amends approved text). Evidence and the reproduction are in
+[#297](https://github.com/andrewpucci/dependency-update-advisor/issues/297).
+
+A rehearsal whose model step ends after the GitHub transport's 240-second
+window cannot make its final freshness reads, so a valid result is reported
+as `internal-failure at unclassified`. The approved text causes this: the
+transport clock starts before `runReview`, "the time limit is one shared
+deadline", and "a failed freshness read is an internal failure". The result
+must still be re-verified; ending it as `incomplete-evidence` would hand off a
+comment-eligible result without checking the head, so this amendment does not
+do that.
+
+1. **Freshness time allowance.** Freshness reads (workflow, run, PR,
+   comparison) are exempt from the shared 240,000 ms evidence deadline and are
+   bounded instead by their own request and byte shares, the 15,000 ms request
+   timeout, and a fixed `freshnessAllowanceMs` that begins when the shared
+   deadline passes, or when the first freshness read is made after it,
+   whichever applies. Every other reader keeps the shared deadline. Freshness
+   reads still return the fixed `budget` reason once their own bounds are
+   spent.
+2. **Reserved analysis deadline.** The model's deadline is the job budget minus
+   `freshnessAllowanceMs`, so the final freshness check always has its
+   allowance inside the job.
+3. **Value: `freshnessAllowanceMs` = 45,000.** It is the derived minimum:
+   three sequential reads (run, PR, comparison) at the 15,000 ms request
+   timeout cover one full re-verification, the only freshness check that must
+   follow the model. The user approved this value on 2026-11-11; changing it
+   needs a new approval.
+4. **Fixed freshness detail.** Add `freshness` to `InternalFailureStage`. It
+   replaces `unclassified` at the entry check, the checks before research and
+   before the model, and the final check, whether the check returned `error`
+   or its own read threw. When the stage is `freshness`, the failure also
+   carries a fixed `field` from `ownership`, `run`, `pullRequest`,
+   `comparison`, or `binding`, and a fixed `reason`: the `EvidenceReason` the
+   read adapter reported, or `mismatch`, `input`, or `unknown` when none
+   applies. The adapter records these in trusted code, never from error text;
+   `ownership` is the claim-store read, which has no `VerificationError`
+   source today. No other stage carries `field` or `reason`.
+5. **Reporting.** For `freshness` the stderr line is
+   `internal-failure at freshness (<field> <reason>)` (for example
+   `(run budget)`); every other stage keeps the exact first-amendment form.
+   The trace retains the same literals. The fields appear on the trace and
+   stderr only, not on the exported `ReviewHandoff`, and the `failed` result
+   (handoff recording) carries only its stage. Startup self-check diagnostics
+   are unchanged.
+6. **Supersedes when implemented.** The first amendment's "six literal stages"
+   (Always line) and its item 2 exact form are amended by items 4 and 5 once
+   this amendment is implemented; its "Ask first" list is satisfied by this
+   approval. The expected values in
+   `src/pipeline.test.ts` (freshness cases) and `src/startup.test.ts`
+   (unexpected-failure and stage lines) change from `unclassified` to
+   `freshness` where they cover a freshness failure.
+7. **Fail-closed preservation.** Neither the allowance nor the new fields
+   convert an outcome to success or make a skipped, stale, unverified, or
+   unowned attempt publication eligible. The final freshness check still gates
+   every handoff, and a freshness read that fails within its allowance is still
+   an internal failure.
+8. **Required checks.** Tests must prove:
+   - the motivating case: a model step that finishes after the 240,000 ms
+     window, with an unmoved head, completes its freshness re-verification and
+     reports its normal outcome, not `internal-failure`, using an injected
+     clock that distinguishes the transport window from the job start;
+   - a head that moved during that late window is still `stale`, and a
+     freshness read that fails within the allowance reports
+     `internal-failure at freshness (<field> <reason>)` for each `field`,
+     including the `mismatch` and `input` reasons;
+   - evidence readers still stop at the shared deadline, and the analysis
+     deadline leaves the allowance free;
+   - sentinel-bearing failures leave stderr and traces without the sentinel,
+     credentials, config values, source lines, exception text, response
+     bodies, URLs, and stacks, and no other stage carries `field` or `reason`.
+
+   Named mutations that must each fail a test: exempting a non-freshness
+   reader from the shared deadline; removing the analysis-deadline reservation;
+   starting the allowance at the wrong time; mapping `field` while ignoring the
+   read result's `category`; reporting an unlisted `field` or `reason` or
+   deriving either from an exception name or message; and recording either on a
+   non-`freshness` stage. The shipped-bundle test asserts the exact `freshness`
+   stderr form and that no status, comment, App-token request, or other live
+   write occurs.
+
+### Considered and not proposed
+
+- A `cause` taxonomy (`deadline`, `aborted`, `rejected`, `threw`), a `reached`
+  progress marker, and an `elapsed` counter. The reproduction in #297 already
+  names the failing path. `reached` can move backwards (`collectContext` runs
+  inside the packet boundary) and `elapsed` has no single origin; revisit them
+  only if a later rehearsal leaves a failure unexplained.
+- The failing collector (`npm`, `actions`, `uv`) for a `packet` failure and
+  request or byte counters: need per-collector or accounting plumbing without a
+  current failure that requires them.
+
+### Amendment 2 Boundaries
+
+- **Always:** keep the final freshness check as a gate for every handoff, bound
+  every read, and choose reported values in trusted code from closed
+  vocabularies.
+- **Ask first:** set `freshnessAllowanceMs`, add or rename a stage, field, or
+  reason, report any number, surface these fields in status or comment text, or
+  change the workflow trigger, an App permission, or a secret.
+- **Never:** end an unverified or late result as `incomplete-evidence` to avoid
+  the failure, report a raw error or external payload, infer a value from
+  untrusted data, weaken fail-closed behavior, or start publication or
+  production-claim implementation.
 
 ### Trusted config and context snapshot
 
