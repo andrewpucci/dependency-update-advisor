@@ -351,6 +351,26 @@ test('records no model key as model-unavailable without evidence requests', asyn
   expect(github.urls.some((url) => url.includes('/git/'))).toBe(false);
 });
 
+test('reports a recorded internal failure with its fixed snapshot stage', async () => {
+  const github = mockGithub();
+  const base = github.fetch;
+  const { stderr, code } = await start(
+    github,
+    {},
+    {
+      fetch: async (url, init) =>
+        new URL(url).pathname === '/repos/example/consumer'
+          ? new Response(sentinel, { status: 500 })
+          : base(url, init),
+    },
+  );
+  expect(stderr).toEqual([
+    'dependabot-review: no-write rehearsal recorded internal-failure at snapshot; nothing was published.',
+  ]);
+  expect(code).toBe(NOT_WIRED_EXIT_CODE);
+  expect(stderr.join('')).not.toContain(sentinel);
+});
+
 test('skips an ineligible event and a duplicate delivery', async () => {
   const skipped = await start(mockGithub(), { GITHUB_EVENT_NAME: 'push' });
   expect(skipped.stderr).toEqual([
@@ -420,7 +440,7 @@ test('fails closed when the workflow cannot be verified', async () => {
   expect(stderr).toEqual(['dependabot-review: workflow could not be verified; no review ran.']);
 });
 
-test('reports an unexpected failure with a fixed message and no error text', async () => {
+test('reports an unexpected failure as an unclassified fixed stage with no error text', async () => {
   const { stderr, code } = await start(
     mockGithub(),
     {},
@@ -430,7 +450,9 @@ test('reports an unexpected failure with a fixed message and no error text', asy
       },
     },
   );
-  expect(stderr).toEqual(['dependabot-review: rehearsal failed; nothing was published.']);
+  expect(stderr).toEqual([
+    'dependabot-review: no-write rehearsal recorded internal-failure at unclassified; nothing was published.',
+  ]);
   expect(code).toBe(NOT_WIRED_EXIT_CODE);
   expect(stderr.join('')).not.toContain(sentinel);
 });
