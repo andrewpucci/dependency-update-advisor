@@ -29,7 +29,7 @@ integration gates remain open.
 [U2 #18](docs/specs/SPEC-uv-relationships.md) and
 [N2 #15](docs/specs/SPEC-npm-relationships.md) are on `main`; #169 and #140 hold
 verification. [#93 reachability](docs/specs/SPEC-reachability-evidence.md) is
-planned (#266–#274) and awaits execution.
+implemented on `issue-93` (#266–#274), pending fresh-context review and merge.
 [#110 snapshot reuse](docs/specs/SPEC-pr-freshness-snapshot.md) awaits review/merge;
 [verification #113](https://github.com/andrewpucci/dependency-update-advisor/issues/113)
 retains remaining gates. W1/W2 must supply bounded reads and exclusive claims

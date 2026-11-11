@@ -1,6 +1,8 @@
 # Spec: Complete npm/uv Reachability Evidence for Multi-Anchor Grouping
 
-Status: approved for planning, 2026-11-10; not approved for implementation.
+Status: implemented on `issue-93` for tasks #266-#274, pending fresh-context review
+and merge. Approved for planning 2026-11-10; the user approved the plan and
+`as-build auto` the same day.
 Supporting contract for `shared-review`, `npm-evidence`, and `uv-evidence` in
 [the capability map](README.md), scoped to
 [issue #93](https://github.com/andrewpucci/dependency-update-advisor/issues/93).
@@ -460,6 +462,42 @@ None. The packet assembler's drop step belongs in `assembleReviewPacket`
 plan.
 
 Fresh-context reviews run at the plan's review phase.
+
+## Implemented Interface and Handoff
+
+Implemented on `issue-93` (commits for #267-#273; this refresh is #274). Names
+and behavior the spec left to planning:
+
+- **T4** (`src/schema.ts`): `ReviewPacket.reachability: ReachabilityVerdict[]`,
+  `PACKET_LIMITS.reachability` (1,024), and the structural rules above.
+- **T5** (`src/units.ts`): `DecisionUnit.verdictKeys` and
+  `DecisionUnit.relationshipLimits`; reasons `ambiguous_anchors` and
+  `reachability_unproven`. Legacy is decided per root: more than one candidate
+  and no record whose `anchorId` is one of them.
+- **Collectors**: `src/evidence/npm-reach.ts` and `uv-reach.ts` build the
+  closures (npm classifies every skipped edge; uv ignores markers and extras and
+  follows every optional-dependency edge). Results carry `reachability` and
+  `optionalRelationships`. N1 reports conflicting base/head roles as `unknown`
+  with a `conflict` gap.
+- **Assembler** (`src/packet.ts`, `src/optional-evidence.ts`): packet-wide
+  drops, in the order the spec states, reported as `droppedOptional`. A
+  collector fragment may omit the optional fields; the packet field is always
+  present.
+- **Retained bytes** (`src/evidence/optional-retained.ts`, shared by N2 and U2):
+  pair groups degrade to scope records, then second proofs and scope records go,
+  before a required-content overflow can fail a collector.
+- **uv budget cut**: after work is exhausted the existing relationship-summary
+  budget marker stops further members, so a truncated scope record appears only
+  for a closure cut before that point; later members get no proofs and stay
+  standalone.
+- **Pinned batch identities** in `src/analysis/contract.test.ts` changed because
+  the analysis batch identity hashes the packet and units; request bytes and
+  request hashes are unchanged, so the provider payload is unaffected.
+
+Verification and remaining gates are recorded in
+[#274](https://github.com/andrewpucci/dependency-update-advisor/issues/274):
+fresh-context review of the new checks, publication, adoption, parity, and
+cutover stay separate.
 
 ## Approval
 

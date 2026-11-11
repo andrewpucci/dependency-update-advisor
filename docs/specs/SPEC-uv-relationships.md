@@ -368,10 +368,11 @@ const result = {
 
 Approved for planning 2026-11-10 under
 [#93](https://github.com/andrewpucci/dependency-update-advisor/issues/93); the
-normative contract is the [reachability evidence spec](SPEC-reachability-evidence.md).
-Implementation is tracked by #270 and #272. The "No ... T4/T5 amendment" line
-at the top and the "broader reachability" ask-first item describe the initial
-scope. With `reachability` evidence U2:
+normative contract is the
+[reachability evidence spec](SPEC-reachability-evidence.md). Implemented on
+`issue-93` as #270 and #272, pending review and merge. The "No ... T4/T5
+amendment" line at the top and the "broader reachability" ask-first item
+describe the initial scope. With `reachability` evidence U2:
 
 - uses its own closure traversal that ignores marker and extras contexts, so a
   package another candidate reaches only on some platform or extra still counts

@@ -380,10 +380,11 @@ outcome. All outputs are detached frozen snapshots.
 
 Approved for planning 2026-11-10 under
 [#93](https://github.com/andrewpucci/dependency-update-advisor/issues/93); the
-normative rule is the [reachability evidence spec](SPEC-reachability-evidence.md).
-Implementation is tracked by #268. It replaces the initial "exactly one direct
-change per root" restriction above, which stays in force for packets whose
-`reachability` is empty.
+normative rule is the
+[reachability evidence spec](SPEC-reachability-evidence.md). Implemented on
+`issue-93` as #268, pending review and merge. It replaces the initial "exactly
+one direct change per root" restriction above, which stays in force for packets
+whose `reachability` is empty.
 
 A member M groups under changed direct anchor A only when the ecosystem
 inventory is `complete`, no change in M's root has an `unknown` role, A has a
@@ -400,10 +401,10 @@ Standalone reasons are checked in this order and report the first that applies:
 `inventory_incomplete`, `multiple_direct_changes` (legacy: several candidates
 and no `reachability` record names any of them), `multiple_roots`,
 `ambiguous_anchors` (new), `missing_relationship`, then `reachability_unproven`
-(new). Units gain the canonical keys of every verdict a group relied on and a
-unit-level informational limit field for non-proving records. That field is not
-`unit.sources` and not C3's `coverageLimits`, so a relationship limit never
-becomes a required-evidence gap.
+(new). Units gain `verdictKeys`, the canonical keys of every verdict a group
+relied on, and `relationshipLimits`, a unit-level informational field for
+non-proving records. That field is not `unit.sources` and not C3's
+`coverageLimits`, so a relationship limit never becomes a required-evidence gap.
 
 ## Commands
 
@@ -510,6 +511,11 @@ The baseline parsed full npm lockfiles. T5 instead consumes T4's bounded proof
 records. More conservative grouping and explicit standalone assessment can
 increase unit counts; record this proposed difference during parity review,
 without weakening required evidence or claiming fidelity before comparison.
+The [multi-anchor amendment](#multi-anchor-grouping-amendment) reduces that difference:
+roots with several changed direct dependencies now group where reachability is proven,
+still with more standalone units than the baseline wherever evidence is missing,
+ambiguous, or unsupported (peer-only and link edges are common). Record the exact
+unit-count difference during parity review; it never weakens required evidence.
 
 ## Approval and Follow-up
 

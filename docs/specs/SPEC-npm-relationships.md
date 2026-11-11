@@ -391,10 +391,11 @@ workflow publication, adoption, and cutover remain separate gates.
 
 Approved for planning 2026-11-10 under
 [#93](https://github.com/andrewpucci/dependency-update-advisor/issues/93); the
-normative contract is the [reachability evidence spec](SPEC-reachability-evidence.md).
-Implementation is tracked by #270 and #271. Eligibility items 1 and 4 above
-describe the initial single-anchor rule; with `reachability` evidence N2
-instead:
+normative contract is the
+[reachability evidence spec](SPEC-reachability-evidence.md). Implemented on
+`issue-93` as #270 and #271, pending review and merge. Eligibility items 1 and
+4 above describe the initial single-anchor rule; with `reachability` evidence
+N2 instead:
 
 - traverses each changed direct anchor's exact-instance closure per side and
   emits `unreachable` only after a complete, uninterrupted traversal in which

@@ -474,7 +474,8 @@ Approved for planning 2026-11-10 under
 [#93](https://github.com/andrewpucci/dependency-update-advisor/issues/93); the
 normative contract is the [reachability evidence spec](SPEC-reachability-evidence.md),
 and [ADR 0006](../adr/0006-amend-packet-v1-in-place-for-reachability.md)
-records the versioning decision. Implementation is tracked by #267.
+records the versioning decision. Implemented on `issue-93` as #267, pending
+review and merge.
 
 - The envelope gains one required field, `reachability`: a closed array of
   per-pair verdicts (`ecosystem`, `side`, `sourceId`, `anchorId`, `memberId`

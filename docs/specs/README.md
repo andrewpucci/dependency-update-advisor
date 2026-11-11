@@ -122,8 +122,8 @@ gaps and an introduced vulnerability before parity is claimed.
 - [Complete npm/uv reachability evidence](SPEC-reachability-evidence.md) —
   approved for planning, 2026-11-10, for [#93](https://github.com/andrewpucci/dependency-update-advisor/issues/93).
   Per-pair reachability verdicts, an in-place T4 v1 amendment, and multi-anchor
-  T5 grouping. The plan is approved (tasks #266–#274 under #93, one PR);
-  execution is in progress, and the work does not block T5, N2, or U2.
+  T5 grouping. Implemented on `issue-93` for tasks #266–#274 under #93 (one PR),
+  pending fresh-context review and merge; it does not block T5, N2, or U2.
   [ADR 0006](../adr/0006-amend-packet-v1-in-place-for-reachability.md) records
   the versioning decision.
 - [Current-head execution status](SPEC-execution-status.md) — approved

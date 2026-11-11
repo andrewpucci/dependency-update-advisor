@@ -384,13 +384,14 @@ separate; the old reviewer stays active.
 
 Approved for planning 2026-11-10 under
 [#93](https://github.com/andrewpucci/dependency-update-advisor/issues/93); see
-the [reachability evidence spec](SPEC-reachability-evidence.md). Implementation
-is tracked by #269. N1 classifies an update's role from its head side only, so
-a package that is direct on base and installed only transitively on head is
-reported `transitive` and vanishes from the base-side candidate set. An update
-whose base and head roles conflict, in either direction, becomes `unknown` with
-a `conflict` coverage reason, matching uv. An `unknown` role in a root blocks
-grouping there until proven. Declaration-only changes remain non-candidates.
+the [reachability evidence spec](SPEC-reachability-evidence.md). Implemented on
+`issue-93` as #269, pending review and merge. N1 classified an update's role
+from its head side only, so a package that is direct on base and installed only
+transitively on head was reported `transitive` and vanished from the base-side
+candidate set. An update whose base and head roles conflict, in either
+direction, now becomes `unknown` with a `conflict` coverage reason, matching
+uv. An `unknown` role in a root blocks grouping there until proven.
+Declaration-only changes remain non-candidates.
 
 ## Commands
 
