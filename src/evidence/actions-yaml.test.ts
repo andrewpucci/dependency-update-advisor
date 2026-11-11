@@ -177,9 +177,9 @@ function preflightNodes(yaml: string) {
   for (const token of new Parser().parse(yaml)) preflight(token, limits, budget);
   return budget.nodes;
 }
-function readNodes(yaml: string, budget = newBudget()) {
-  const result = read(yaml, { maxYamlNodes: 100_000 });
-  readWorkflow(new TextEncoder().encode(yaml), limits, budget);
+function readNodes(yaml: string) {
+  const budget = newBudget();
+  const result = readWorkflow(new TextEncoder().encode(yaml), limits, budget);
   return { result, nodes: budget.nodes };
 }
 
