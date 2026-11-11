@@ -1,4 +1,5 @@
-import { expect, test } from 'vite-plus/test';
+import { expect, test, vi } from 'vite-plus/test';
+import { Composer } from 'yaml';
 import {
   collectorRoots,
   DEPENDABOT_ROOT_LIMITS,
@@ -147,13 +148,22 @@ test.each([
   expect(result).toEqual({ kind: 'unavailable', reason: 'malformed' });
 });
 
-test('rejects a second document before inspecting or composing it', () => {
-  // The second document alone would exhaust the node budget, so `budget` means it was inspected.
-  const overBudget = `x: [${'1,'.repeat(DEPENDABOT_ROOT_LIMITS.maxYamlNodes)}]`;
-  expect(parseDependabotRoots(encode(`${file(update('npm', '/'))}---\n${overBudget}\n`))).toEqual({
-    kind: 'unavailable',
-    reason: 'malformed',
-  });
+// `budget` or `unsupported` would mean the second document was inspected; a compose call means it was composed.
+test.each([
+  ['an over-budget', `---\nx: [${'1,'.repeat(DEPENDABOT_ROOT_LIMITS.maxYamlNodes)}]\n`],
+  ['an empty', '---\n'],
+  ['a tagged', '--- !custom\n'],
+])('rejects %s second document before inspecting or composing it', (_label, second) => {
+  const compose = vi.spyOn(Composer.prototype, 'compose');
+  try {
+    expect(parseDependabotRoots(encode(`${file(update('npm', '/'))}${second}`))).toEqual({
+      kind: 'unavailable',
+      reason: 'malformed',
+    });
+    expect(compose).not.toHaveBeenCalled();
+  } finally {
+    compose.mockRestore();
+  }
 });
 
 test('does not fail an ignored ecosystem entry whose directory is mistyped', () => {

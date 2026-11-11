@@ -1,5 +1,5 @@
-import { expect, test } from 'vite-plus/test';
-import { Parser } from 'yaml';
+import { expect, test, vi } from 'vite-plus/test';
+import { Composer, Parser } from 'yaml';
 import { preflight, readWorkflow, type YamlLimits } from './actions-yaml.js';
 
 const limits: YamlLimits = {
@@ -97,13 +97,19 @@ test.each([
   expect(read(yaml)).toEqual({ kind: 'unavailable', reason });
 });
 
-test('rejects a second document before inspecting or composing it', () => {
-  // The second document alone would exhaust the node budget, so `budget` means it was inspected.
-  const overBudget = `x: [${'1,'.repeat(limits.maxYamlNodes)}]`;
-  expect(read(`jobs: {}\n---\n${overBudget}`)).toEqual({
-    kind: 'unavailable',
-    reason: 'malformed',
-  });
+// `budget` or `unsupported` would mean the second document was inspected; a compose call means it was composed.
+test.each([
+  ['an over-budget', `---\nx: [${'1,'.repeat(limits.maxYamlNodes)}]\n`],
+  ['an empty', '---\n'],
+  ['a tagged', '--- !custom\n'],
+])('rejects %s second document before inspecting or composing it', (_label, second) => {
+  const compose = vi.spyOn(Composer.prototype, 'compose');
+  try {
+    expect(read(`jobs: {}\n${second}`)).toEqual({ kind: 'unavailable', reason: 'malformed' });
+    expect(compose).not.toHaveBeenCalled();
+  } finally {
+    compose.mockRestore();
+  }
 });
 
 test('keeps independent jobs after an unsupported semantic use without retaining its text', () => {
