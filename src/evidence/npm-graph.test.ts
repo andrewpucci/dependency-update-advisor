@@ -837,6 +837,57 @@ test('truncating graph work never invents absence and reports the cut as a limit
   expect(sawTruncation).toBe(true);
 });
 
+test('a member left unproven by a truncated search is explained by the budget, not by a missing path', async () => {
+  const input = await twoAnchors();
+  const at = (maxGraphWork: number) =>
+    proveNpmRelationships({ ...input, limits: { ...input.limits, maxGraphWork } });
+  let low = 1,
+    high = 200_000;
+  while (low < high) {
+    const mid = Math.floor((low + high) / 2);
+    if (at(mid).kind === 'inventory') high = mid;
+    else low = mid + 1;
+  }
+  let sawCutSearch = false;
+  for (let work = low; work < low + 400; work += 1) {
+    const result = at(work);
+    if (result.kind !== 'inventory') continue;
+    const child = idOf(result, 'child');
+    const cut = result.reachability.some((v) => v.outcome === 'truncated');
+    if (!cut || result.relationships.some((p) => p.toId === child)) continue;
+    sawCutSearch = true;
+    const details = result.findings
+      .filter((f) => f.memberId === child && 'detail' in f)
+      .map((f) => ('detail' in f ? f.detail : ''));
+    expect(details.join(' ')).not.toContain('No supported immutable path');
+  }
+  expect(sawCutSearch).toBe(true);
+});
+
+test('a member whose root snapshot is unavailable says so instead of reporting a missing path', async () => {
+  const input = await twoAnchors();
+  const gone = {
+    state: 'unavailable' as const,
+    manifestId: null,
+    lockId: null,
+    packages: {},
+    unresolvedPaths: [],
+    declarations: null,
+  };
+  const graph = inventoryGraph({
+    ...input,
+    inventory: {
+      ...input.inventory,
+      roots: input.inventory.roots.map((r) => ({ ...r, head: gone })),
+    },
+  });
+  const child = idOf(graph, 'child');
+  const details = graph.findings
+    .filter((f) => f.memberId === child && 'detail' in f)
+    .map((f) => ('detail' in f ? f.detail : ''));
+  expect(details.join(' ')).toContain('immutable graph snapshot is unavailable');
+});
+
 const bytes = (value: unknown) => Buffer.byteLength(JSON.stringify(value));
 function scoped(verdicts: Graph['reachability']): Graph['reachability'] {
   const groups = new Map<string, Graph['reachability'][number]>();

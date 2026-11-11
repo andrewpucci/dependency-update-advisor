@@ -451,7 +451,13 @@ function unreachableVerdicts(member: Resolved, other: Candidate): ReachabilityVe
   }
   return verdicts;
 }
-function multiAnchor(member: Resolved, candidates: readonly Candidate[]) {
+/** Why no candidate reaches the member: an unavailable snapshot or a cut-short search is not a missing path. */
+function noReach(candidates: readonly Candidate[], claim: Claim, present: boolean): Observation {
+  if (!present) return 'snapshot_missing';
+  if (candidates.some((c) => c.closures[claim]?.limit)) return 'budget';
+  return 'missing_relationship';
+}
+function multiAnchor(member: Resolved, candidates: readonly Candidate[], present: boolean) {
   const proofs: NpmProof[] = [],
     verdicts: ReachabilityVerdict[] = [];
   const claim = member.kind === 'removal' ? 'base' : 'head',
@@ -459,7 +465,7 @@ function multiAnchor(member: Resolved, candidates: readonly Candidate[]) {
   if (!end) return { proofs, verdicts, observation: 'wrong_side' as Observation };
   const reaching = candidates.filter((c) => c.closures[claim]?.steps.has(end.lockPath));
   if (!reaching.length)
-    return { proofs, verdicts, observation: 'missing_relationship' as Observation };
+    return { proofs, verdicts, observation: noReach(candidates, claim, present) };
   const found = reachingProofs(member, claim, end, reaching);
   if (reaching.length > 1)
     return { proofs: found.proofs, verdicts, observation: 'ambiguous_anchors' as Observation };
@@ -485,7 +491,9 @@ function resolveMulti(
   const candidates =
     state.candidatesByRoot.get(root) ?? candidatesFor(inventory, root, spend, state.reachability);
   state.candidatesByRoot.set(root, candidates);
-  const multi = multiAnchor(member, candidates);
+  const claim = member.kind === 'removal' ? 'base' : 'head';
+  const present = inventory.roots.find((r) => r.root === root)?.[claim].state === 'present';
+  const multi = multiAnchor(member, candidates, present);
   state.reachability.push(...multi.verdicts);
   state.optionalRelationships.push(...multi.proofs.slice(1));
   if (multi.observation) state.findings.push(note(member, multi.observation));
