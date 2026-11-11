@@ -24255,7 +24255,7 @@ function edges$2(snapshot, unresolved, node, spend) {
 	const targets = [];
 	for (const key of Object.keys(maps).sort()) {
 		spend();
-		if (!/^(?:@[a-z\d._-]+\/)?[a-z\d][a-z\d._-]*$/iu.test(key)) continue;
+		if (!PACKAGE_KEY.test(key)) continue;
 		const target = slotTarget(snapshot, unresolved, node.instance.lockPath, key, spend);
 		if (target && supportedEdge(key, maps[key], target)) targets.push(target);
 	}
@@ -24358,7 +24358,7 @@ function candidatesFor$1(inventory, root, spend, reachability) {
 /** Sides T5 counts for a member: both for an update, the one existing side otherwise. */
 const sidesUsed$1 = (member) => member.kind === "update" ? ["base", "head"] : [member.kind === "removal" ? "base" : "head"];
 /** Proofs from up to two reaching anchors; `blocked` records why one could not be proven. */
-function reachingProofs$1(member, claim, end, reaching) {
+function reachingProofs(member, claim, end, reaching) {
 	const proofs = [];
 	let blocked = null;
 	for (const candidate of reaching.slice(0, 2)) {
@@ -24416,7 +24416,7 @@ function multiAnchor$1(member, candidates) {
 		verdicts,
 		observation: "missing_relationship"
 	};
-	const found = reachingProofs$1(member, claim, end, reaching);
+	const found = reachingProofs(member, claim, end, reaching);
 	if (reaching.length > 1) return {
 		proofs: found.proofs,
 		verdicts,
@@ -26978,6 +26978,11 @@ function proofFor(result, contexts, member, work) {
 	if (start.sourceId !== end.sourceId) return "source_split";
 	const context = contexts.find((c) => c.root.root === end.root);
 	if (!context) return "snapshot_missing";
+	return groupingProof(context, side, anchor, member, start, end, work);
+}
+/** The one grouping proof an anchor may claim: a single-context path, never a marker-agnostic one. */
+function groupingProof(context, side, anchor, member, start, end, work) {
+	if (start.sourceId !== end.sourceId) return "source_split";
 	const path = pathTo(context, side, start, end, work);
 	if (!path) return "missing_relationship";
 	if (path.length > PACKET_LIMITS.pathInstances) return "path_limit";
@@ -27023,15 +27028,12 @@ function candidatesFor(result, contexts, root, work) {
 	};
 }
 const sidesUsed = (member) => member.kind === "update" ? ["base", "head"] : [member.kind === "removal" ? "base" : "head"];
-/** Proofs from up to two reaching anchors; `blocked` records why one could not be proven. */
-function reachingProofs(context, member, claim, end, reaching) {
+/** Proofs from up to two reaching anchors, evidencing ambiguity only; they never form a group. */
+function ambiguityProofs(context, member, claim, end, reaching) {
 	const proofs = [];
-	let blocked = "path_limit";
 	for (const candidate of reaching.slice(0, 2)) {
 		const start = claim === "head" ? candidate.change.to : candidate.change.from, path = uvClosurePath(context, claim, candidate.closures[claim], uvSideKey(end));
-		if (!start || start.sourceId !== end.sourceId) blocked = "source_split";
-		else if (!path || path.length > PACKET_LIMITS.pathInstances) blocked = "path_limit";
-		else proofs.push({
+		if (start && start.sourceId === end.sourceId && path && path.length <= PACKET_LIMITS.pathInstances) proofs.push({
 			ecosystem: "uv",
 			fromId: candidate.change.id,
 			toId: member.id,
@@ -27043,10 +27045,7 @@ function reachingProofs(context, member, claim, end, reaching) {
 			}))
 		});
 	}
-	return {
-		proofs,
-		blocked
-	};
+	return proofs;
 }
 /** Unreachable verdicts for `other`; a pair with no record is unknown, so any doubt (limit, reach, source split) omits it. */
 function unreachableVerdicts(member, other) {
@@ -27067,7 +27066,7 @@ function unreachableVerdicts(member, other) {
 	}
 	return verdicts;
 }
-function multiAnchor(contexts, member, candidates) {
+function multiAnchor(contexts, member, candidates, work) {
 	const verdicts = [];
 	const claim = member.kind === "removal" ? "base" : "head", end = claim === "base" ? member.from : member.to, context = contexts.find((c) => c.root.root === end?.root);
 	if (!end || !context) return {
@@ -27081,20 +27080,21 @@ function multiAnchor(contexts, member, candidates) {
 		verdicts,
 		observation: "missing_relationship"
 	};
-	const { proofs, blocked } = reachingProofs(context, member, claim, end, reaching);
 	if (reaching.length > 1) return {
-		proofs,
+		proofs: ambiguityProofs(context, member, claim, end, reaching),
 		verdicts,
 		observation: "ambiguous_anchors"
 	};
-	if (!proofs.length) return {
-		proofs,
+	const sole = reaching[0].change, start = claim === "head" ? sole.to : sole.from;
+	const proof = start ? groupingProof(context, claim, sole, member, start, end, work) : "wrong_side";
+	if (typeof proof === "string") return {
+		proofs: [],
 		verdicts,
-		observation: blocked
+		observation: proof
 	};
 	for (const other of candidates) if (other !== reaching[0]) verdicts.push(...unreachableVerdicts(member, other));
 	return {
-		proofs,
+		proofs: [proof],
 		verdicts,
 		observation: null
 	};
@@ -27151,7 +27151,7 @@ function relationshipAddition(result, contexts, member, work, roots) {
 			roots.set(root, candidates);
 			result.reachability.push(...created.scopes);
 		}
-		const multi = multiAnchor(contexts, member, candidates);
+		const multi = multiAnchor(contexts, member, candidates, work);
 		reachability.push(...multi.verdicts);
 		optionalRelationships.push(...multi.proofs.slice(1));
 		ambiguous = multi.observation === "ambiguous_anchors";

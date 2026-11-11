@@ -123,6 +123,19 @@ function proofFor(
   if (start.sourceId !== end.sourceId) return 'source_split';
   const context = contexts.find((c) => c.root.root === end.root);
   if (!context) return 'snapshot_missing';
+  return groupingProof(context, side, anchor, member, start, end, work);
+}
+/** The one grouping proof an anchor may claim: a single-context path, never a marker-agnostic one. */
+function groupingProof(
+  context: UvPathRoot,
+  side: 'base' | 'head',
+  anchor: UvChange,
+  member: UvChange,
+  start: UvSide,
+  end: UvSide,
+  work: GraphWork,
+): Path | string {
+  if (start.sourceId !== end.sourceId) return 'source_split';
   const path = pathTo(context, side, start, end, work);
   if (!path) return 'missing_relationship';
   if (path.length > PACKET_LIMITS.pathInstances) return 'path_limit';
@@ -172,8 +185,8 @@ const sidesUsed = (member: UvChange) =>
   member.kind === 'update'
     ? (['base', 'head'] as const)
     : ([member.kind === 'removal' ? 'base' : 'head'] as const);
-/** Proofs from up to two reaching anchors; `blocked` records why one could not be proven. */
-function reachingProofs(
+/** Proofs from up to two reaching anchors, evidencing ambiguity only; they never form a group. */
+function ambiguityProofs(
   context: UvPathRoot,
   member: UvChange,
   claim: 'base' | 'head',
@@ -181,13 +194,15 @@ function reachingProofs(
   reaching: readonly UvCandidate[],
 ) {
   const proofs: Path[] = [];
-  let blocked = 'path_limit';
   for (const candidate of reaching.slice(0, 2)) {
     const start = claim === 'head' ? candidate.change.to : candidate.change.from,
       path = uvClosurePath(context, claim, candidate.closures[claim]!, key(end));
-    if (!start || start.sourceId !== end.sourceId) blocked = 'source_split';
-    else if (!path || path.length > PACKET_LIMITS.pathInstances) blocked = 'path_limit';
-    else
+    if (
+      start &&
+      start.sourceId === end.sourceId &&
+      path &&
+      path.length <= PACKET_LIMITS.pathInstances
+    )
       proofs.push({
         ecosystem: 'uv',
         fromId: candidate.change.id,
@@ -197,7 +212,7 @@ function reachingProofs(
         path: path.map((p) => ({ ...p, sourceId: start.sourceId })),
       });
   }
-  return { proofs, blocked };
+  return proofs;
 }
 /** Unreachable verdicts for `other`; a pair with no record is unknown, so any doubt (limit, reach, source split) omits it. */
 function unreachableVerdicts(member: UvChange, other: UvCandidate): ReachabilityVerdict[] {
@@ -220,20 +235,35 @@ function unreachableVerdicts(member: UvChange, other: UvCandidate): Reachability
   }
   return verdicts;
 }
-function multiAnchor(contexts: UvPathRoot[], member: UvChange, candidates: readonly UvCandidate[]) {
+function multiAnchor(
+  contexts: UvPathRoot[],
+  member: UvChange,
+  candidates: readonly UvCandidate[],
+  work: GraphWork,
+) {
   const verdicts: ReachabilityVerdict[] = [];
   const claim = member.kind === 'removal' ? 'base' : 'head',
     end = claim === 'base' ? member.from : member.to,
     context = contexts.find((c) => c.root.root === end?.root);
   if (!end || !context) return { proofs: [], verdicts, observation: 'wrong_side' };
+  // The marker-agnostic closure decides who can reach; only absence may rely on it.
   const reaching = candidates.filter((c) => c.closures[claim]?.keys.has(key(end)));
   if (!reaching.length) return { proofs: [], verdicts, observation: 'missing_relationship' };
-  const { proofs, blocked } = reachingProofs(context, member, claim, end, reaching);
-  if (reaching.length > 1) return { proofs, verdicts, observation: 'ambiguous_anchors' };
-  if (!proofs.length) return { proofs, verdicts, observation: blocked };
+  if (reaching.length > 1)
+    return {
+      proofs: ambiguityProofs(context, member, claim, end, reaching),
+      verdicts,
+      observation: 'ambiguous_anchors',
+    };
+  const sole = reaching[0].change,
+    start = claim === 'head' ? sole.to : sole.from;
+  const proof = start
+    ? groupingProof(context, claim, sole, member, start, end, work)
+    : 'wrong_side';
+  if (typeof proof === 'string') return { proofs: [], verdicts, observation: proof };
   for (const other of candidates)
     if (other !== reaching[0]) verdicts.push(...unreachableVerdicts(member, other));
-  return { proofs, verdicts, observation: null };
+  return { proofs: [proof], verdicts, observation: null };
 }
 function isShared(result: UvInventory, contexts: UvPathRoot[], proof: Path, work: GraphWork) {
   const end = proof.path.at(-1)!,
@@ -308,7 +338,7 @@ function relationshipAddition(
       // Kept even if this member's addition is later discarded: a cut closure must stay a visible limit.
       result.reachability.push(...created.scopes);
     }
-    const multi = multiAnchor(contexts, member, candidates);
+    const multi = multiAnchor(contexts, member, candidates, work);
     reachability.push(...multi.verdicts);
     optionalRelationships.push(...multi.proofs.slice(1));
     ambiguous = multi.observation === 'ambiguous_anchors';

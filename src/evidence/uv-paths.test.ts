@@ -425,3 +425,22 @@ test('a same-package change in another root must not suppress an unchanged direc
   expect(r.relationships).toHaveLength(1);
   expect(r.observations.some((o) => o.root === '.' && o.reason === 'shared')).toBe(true);
 });
+test('a sole reaching anchor whose only path crosses a marker-guarded edge does not group', async () => {
+  const { r, units } = accepted(
+    await multiFixture(
+      () => `dependencies=[{name="child",marker="sys_platform == 'win32'"}]\n`,
+      (v) => uvPackage('solo', v),
+      '{name="solo"}',
+    ),
+  );
+  const [orbit, solo, child] = ['orbit', 'solo', 'child'].map((n) => idFor(r, n));
+  expect(r.relationships.some((p) => p.toId === child)).toBe(false);
+  expect(r.reachability.some((v) => v.memberId === child)).toBe(false);
+  expect(units.units.find((u) => u.memberIds.includes(child))).toMatchObject({
+    kind: 'standalone',
+  });
+  expect(units.units.find((u) => u.memberIds.includes(solo))).toMatchObject({
+    kind: 'direct_group',
+    anchorId: orbit,
+  });
+});

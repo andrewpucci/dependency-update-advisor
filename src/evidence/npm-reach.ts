@@ -61,7 +61,7 @@ function slot(
   }
 }
 type NpmNode = NpmRootSide['packages'][string];
-const PACKAGE_KEY = /^(?:@[a-z\d._-]+\/)?[a-z\d][a-z\d._-]*$/iu;
+export const PACKAGE_KEY = /^(?:@[a-z\d._-]+\/)?[a-z\d][a-z\d._-]*$/iu;
 /** The supported dependency targets of one node in canonical order; every skipped edge is noted. */
 function expand(
   snapshot: NpmRootSide,

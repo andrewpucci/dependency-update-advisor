@@ -12,7 +12,14 @@ import {
 import type { Finding } from '../policy.js';
 import type { NpmInventoryResult, NpmRootSide, NpmNode } from './npm.js';
 import { fitRetained } from './optional-retained.js';
-import { closureFrom, closurePath, nodeKey, supportedEdge, type Closure } from './npm-reach.js';
+import {
+  closureFrom,
+  closurePath,
+  nodeKey,
+  PACKAGE_KEY,
+  supportedEdge,
+  type Closure,
+} from './npm-reach.js';
 import {
   createNpmRegistryReader,
   interpretNpmLifecycle,
@@ -256,7 +263,7 @@ function edges(
   const targets: NpmSide[] = [];
   for (const key of Object.keys(maps).sort()) {
     spend();
-    if (!/^(?:@[a-z\d._-]+\/)?[a-z\d][a-z\d._-]*$/iu.test(key)) continue;
+    if (!PACKAGE_KEY.test(key)) continue;
     const target = slotTarget(snapshot, unresolved, node.instance!.lockPath, key, spend);
     if (target && supportedEdge(key, maps[key], target)) targets.push(target);
   }
