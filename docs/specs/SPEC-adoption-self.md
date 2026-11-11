@@ -53,7 +53,10 @@ GitHub App token.
    `review_app_private_key`, with no `secrets: inherit`. The App is installed on
    this repository only, with issues and statuses write access.
 4. Branch rules, comment ownership, and the App identity are unrecorded and are
-   inventoried from live GitHub state, not assumed.
+   inventoried from live GitHub state, not assumed. The caller filename is
+   `.github/workflows/dependabot-review-caller.yml`; its first no-write pin is
+   `8493d18e987a94dc263e47f6ef9d1452bf9cec82`, the passing `main` revision that
+   contains merged W2 rehearsal code.
 
 ## Commands
 

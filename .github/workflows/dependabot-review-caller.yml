@@ -1,0 +1,21 @@
+name: Dependabot review caller
+
+on:
+  workflow_run:
+    workflows: [CI]
+    types: [completed]
+
+permissions:
+  actions: read
+  contents: read
+  pull-requests: read
+
+jobs:
+  review:
+    uses: andrewpucci/dependency-update-advisor/.github/workflows/dependabot-review.yml@8493d18e987a94dc263e47f6ef9d1452bf9cec82
+    with:
+      ci_workflow: .github/workflows/ci.yml
+    secrets:
+      llm_api_key: ${{ secrets.llm_api_key }}
+      review_app_client_id: ${{ secrets.review_app_client_id }}
+      review_app_private_key: ${{ secrets.review_app_private_key }}
