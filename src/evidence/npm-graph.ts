@@ -4,12 +4,14 @@ import { parseReviewBinding } from '../event.js';
 import {
   PACKET_LIMITS,
   type PacketChange,
+  type ReachabilityVerdict,
   type RelationshipProof,
   type NpmSide,
   type EvidenceReason,
 } from '../schema.js';
 import type { Finding } from '../policy.js';
 import type { NpmInventoryResult, NpmRootSide, NpmNode } from './npm.js';
+import { closureFrom, closurePath, nodeKey, supportedEdge, type Closure } from './npm-reach.js';
 import {
   createNpmRegistryReader,
   interpretNpmLifecycle,
@@ -26,6 +28,10 @@ export type NpmGraphResult =
   | Exclude<NpmInventoryResult, Inventory>
   | (Inventory & {
       readonly relationships: readonly NpmProof[];
+      /** Proofs beyond the one a group needs; the packet assembler may drop them to fit budgets. */
+      readonly optionalRelationships: readonly NpmProof[];
+      /** Per-pair absence evidence and scope limits; optional, and the assembler owns dropping it. */
+      readonly reachability: readonly ReachabilityVerdict[];
       readonly findings: readonly Finding[];
     });
 class GraphFailure extends Error {
@@ -185,6 +191,8 @@ const explanations = {
   source_split: 'Relationship unproven within the original lock-source membership limits.',
   snapshot_missing: 'Relationship unproven because an immutable graph snapshot is unavailable.',
   path_limit: 'Relationship unproven because the full path exceeds the packet limit.',
+  ambiguous_anchors:
+    'Relationship unproven because several changed direct dependencies can reach this member.',
   shared:
     'This member is also reachable from an unchanged direct dependency; grouping does not establish exclusive ownership or causation.',
   budget: 'Relationship search is incomplete because its graph-work budget was exhausted.',
@@ -236,20 +244,6 @@ function slotTarget(
     const index = parent.lastIndexOf('/node_modules/');
     parent = index < 0 ? '' : parent.slice(0, index);
   }
-}
-function supportedEdge(key: string, specifier: string, target: NpmSide) {
-  const alias = /^npm:((?:@[^/]+\/)?[^@/]+)@(.+)$/u.exec(specifier);
-  const name = alias?.[1] ?? key;
-  const range = alias?.[2] ?? specifier;
-  return (
-    target.source.kind === 'registry' &&
-    target.name === name &&
-    /^[a-z\d\s._^~<>=*|+-]+$/iu.test(range) &&
-    /[a-z\d*]/iu.test(range)
-  );
-}
-function nodeKey(node: NpmSide) {
-  return JSON.stringify([node.root, node.lockPath, node.name, node.version, node.source]);
 }
 function edges(
   snapshot: NpmRootSide,
@@ -355,10 +349,106 @@ function unchangedReach(
   }
   return seen;
 }
+const isBudget = (error: unknown) => error instanceof GraphFailure && error.reason === 'budget';
+type Candidate = Readonly<{
+  change: Resolved;
+  closures: Partial<Record<'base' | 'head', Closure>>;
+}>;
+/** One closure per changed direct anchor per side in this root; an incomplete one becomes a scope record. */
+function candidatesFor(
+  inventory: Inventory,
+  root: string,
+  spend: () => void,
+  reachability: ReachabilityVerdict[],
+): Candidate[] {
+  const anchors = inventory.changes
+    .filter(resolved)
+    .filter((c) => c.role === 'direct' && roots(c).includes(root))
+    .sort(byId);
+  return anchors.map((change) => {
+    const closures: Candidate['closures'] = {};
+    for (const side of ['base', 'head'] as const) {
+      const step = side === 'head' ? change.to : change.from,
+        snapshot = inventory.roots.find((r) => r.root === root)?.[side];
+      if (!step || step.root !== root || snapshot?.state !== 'present') continue;
+      const closure = closureFrom(snapshot, step, spend, isBudget);
+      closures[side] = closure;
+      if (closure.limit)
+        reachability.push({
+          ecosystem: 'npm',
+          side,
+          sourceId: step.sourceId,
+          anchorId: change.id,
+          memberId: null,
+          outcome: closure.limit.outcome,
+          reasons: [...closure.limit.reasons],
+        });
+    }
+    return { change, closures };
+  });
+}
+/** Sides T5 counts for a member: both for an update, the one existing side otherwise. */
+const sidesUsed = (member: Resolved) =>
+  member.kind === 'update'
+    ? (['base', 'head'] as const)
+    : ([member.kind === 'removal' ? 'base' : 'head'] as const);
+function multiAnchor(member: Resolved, candidates: readonly Candidate[]) {
+  const proofs: NpmProof[] = [],
+    verdicts: ReachabilityVerdict[] = [];
+  const claim = member.kind === 'removal' ? 'base' : 'head',
+    end = claim === 'base' ? member.from : member.to;
+  if (!end) return { proofs, verdicts, observation: 'wrong_side' as Observation };
+  const reaching = candidates.filter((c) => c.closures[claim]?.steps.has(end.lockPath));
+  if (!reaching.length)
+    return { proofs, verdicts, observation: 'missing_relationship' as Observation };
+  let blocked: Observation | null = null;
+  for (const candidate of reaching.slice(0, 2)) {
+    const start = claim === 'head' ? candidate.change.to : candidate.change.from;
+    const path = closurePath(candidate.closures[claim]!, end.lockPath)!;
+    if (!start || start.sourceId !== end.sourceId) blocked = 'source_split';
+    else if (path.length > PACKET_LIMITS.pathInstances) blocked = 'path_limit';
+    else
+      proofs.push({
+        fromId: candidate.change.id,
+        toId: member.id,
+        ecosystem: 'npm',
+        side: claim,
+        sourceId: start.sourceId,
+        path: path.map((step) => ({ ...step, sourceId: start.sourceId })),
+      });
+  }
+  if (reaching.length > 1)
+    return { proofs, verdicts, observation: 'ambiguous_anchors' as Observation };
+  if (!proofs.length) return { proofs, verdicts, observation: blocked };
+  for (const other of candidates) {
+    if (other === reaching[0]) continue;
+    for (const side of sidesUsed(member)) {
+      const closure = other.closures[side],
+        mine = side === 'head' ? member.to : member.from,
+        theirs = side === 'head' ? other.change.to : other.change.from;
+      // A pair with no record is unknown, so any doubt (limit, reach, source split) simply omits it.
+      if (!closure || closure.limit || !mine || !theirs) continue;
+      if (closure.steps.has(mine.lockPath) || theirs.sourceId !== mine.sourceId) continue;
+      verdicts.push({
+        ecosystem: 'npm',
+        side,
+        sourceId: theirs.sourceId,
+        anchorId: other.change.id,
+        memberId: member.id,
+        outcome: 'unreachable',
+        reasons: [],
+      });
+    }
+  }
+  return { proofs, verdicts, observation: null };
+}
 function collectProofs(inventory: Inventory, spend: () => void) {
   const relationships: NpmProof[] = [],
+    optionalRelationships: NpmProof[] = [],
+    reachability: ReachabilityVerdict[] = [],
     findings: Finding[] = [],
-    reach = new Map<string, Set<string>>();
+    reach = new Map<string, Set<string>>(),
+    candidatesByRoot = new Map<string, Candidate[]>();
   const shared = (proof: NpmProof) => {
     const end = proof.path.at(-1)!,
       key = JSON.stringify([end.root, proof.side]);
@@ -368,7 +458,19 @@ function collectProofs(inventory: Inventory, spend: () => void) {
   for (const member of [...inventory.changes].sort(byId)) {
     if (!resolved(member) || member.role === 'direct') continue;
     try {
-      const result = proofFor(inventory, member, spend);
+      let result = proofFor(inventory, member, spend);
+      if (result === 'multiple_direct_changes') {
+        const root = roots(member)[0];
+        const candidates =
+          candidatesByRoot.get(root) ?? candidatesFor(inventory, root, spend, reachability);
+        candidatesByRoot.set(root, candidates);
+        const multi = multiAnchor(member, candidates);
+        reachability.push(...multi.verdicts);
+        optionalRelationships.push(...multi.proofs.slice(1));
+        if (multi.observation) findings.push(note(member, multi.observation));
+        if (!multi.proofs.length) continue;
+        result = multi.proofs[0];
+      }
       if (typeof result === 'string') findings.push(note(member, result));
       else {
         relationships.push(result);
@@ -379,22 +481,65 @@ function collectProofs(inventory: Inventory, spend: () => void) {
       findings.push(note(member, 'budget'));
     }
   }
-  return { relationships, findings };
+  reachability.sort((a, b) => (JSON.stringify(a) < JSON.stringify(b) ? -1 : 1));
+  return { relationships, optionalRelationships, reachability, findings };
+}
+const bytes = (value: unknown) => Buffer.byteLength(JSON.stringify(value));
+/** Replaces each anchor/side pair group with one truncated scope record; existing scope records stay. */
+function scopeAll(verdicts: readonly ReachabilityVerdict[]): ReachabilityVerdict[] {
+  const kept: ReachabilityVerdict[] = [],
+    groups = new Map<string, ReachabilityVerdict>();
+  for (const v of verdicts) {
+    if (v.memberId === null) kept.push(v);
+    else groups.set(JSON.stringify([v.side, v.anchorId]), v);
+  }
+  return [
+    ...kept,
+    ...[...groups.values()].map((v) => ({
+      ecosystem: v.ecosystem,
+      side: v.side,
+      sourceId: v.sourceId,
+      anchorId: v.anchorId,
+      memberId: null,
+      outcome: 'truncated' as const,
+      reasons: ['budget' as const],
+    })),
+  ];
+}
+/**
+ * Keeps the retained result inside the caller's byte limit by degrading optional evidence only:
+ * pair groups become scope records, then second proofs go. Core inventory overflow still fails.
+ */
+function fitRetained<
+  T extends {
+    reachability: readonly ReachabilityVerdict[];
+    optionalRelationships: readonly NpmProof[];
+  },
+>(result: T, limit: number): T {
+  if (bytes(result) <= limit) return result;
+  let next = { ...result, reachability: scopeAll(result.reachability) };
+  if (bytes(next) <= limit) return next;
+  next = { ...next, optionalRelationships: [] };
+  if (bytes(next) <= limit) return next;
+  throw new GraphFailure('budget');
 }
 function graphResult({ inventory, limits, spend }: ReturnType<typeof parse>): NpmGraphResult {
   if (inventory.kind !== 'inventory') return freeze(structuredClone(inventory));
-  const { relationships, findings } = collectProofs(inventory, spend);
+  const { relationships, optionalRelationships, reachability, findings } = collectProofs(
+    inventory,
+    spend,
+  );
   const result = {
     ...inventory,
     changes: [...inventory.changes].sort(byId),
     roots: [...inventory.roots].sort((a, b) => (a.root < b.root ? -1 : 1)),
     sources: [...inventory.sources].sort(byId),
     relationships,
+    optionalRelationships,
+    reachability,
     findings: findings.sort(byId),
   };
-  if (Buffer.byteLength(JSON.stringify(result)) > limits.maxRetainedBytes)
-    throw new GraphFailure('budget');
-  return freeze(structuredClone(result));
+  return freeze(structuredClone(fitRetained(result, limits.maxRetainedBytes)));
 }
 function byId(a: { id: string }, b: { id: string }) {
   return a.id < b.id ? -1 : 1;
@@ -494,12 +639,8 @@ export async function enrichNpmEvidence(
       new Set(sources.map((s) => s.id)).size === sources.length &&
         new Set(findings.map((f) => f.id)).size === findings.length,
     );
-    if (
-      !packetBounds(result) ||
-      Buffer.byteLength(JSON.stringify(result)) > parsed.limits.maxRetainedBytes
-    )
-      return { kind: 'unavailable', reason: 'budget' };
-    return freeze(structuredClone(result));
+    if (!packetBounds(result)) return { kind: 'unavailable', reason: 'budget' };
+    return freeze(structuredClone(fitRetained(result, parsed.limits.maxRetainedBytes)));
   } catch (error) {
     return failure(error);
   }

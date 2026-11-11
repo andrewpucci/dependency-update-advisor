@@ -338,7 +338,7 @@ test('sharing with an unchanged direct parent stays attributable without blockin
   );
 });
 
-test('multiple changed anchors stay standalone with attributable diagnostics', async () => {
+test('multiple changed anchors keep the one proof and evidence absence instead of a blanket diagnostic', async () => {
   const input = await graphFixture(
     { 'node_modules/other': pkg('1.1.0') },
     { 'node_modules/other': pkg('1.0.0') },
@@ -347,10 +347,11 @@ test('multiple changed anchors stay standalone with attributable diagnostics', a
   const graph = proveNpmRelationships(input);
   expect(graph.kind).toBe('inventory');
   if (graph.kind !== 'inventory') throw new Error('expected graph');
-  expect(graph.relationships).toEqual([]);
-  expect(graph.findings).toContainEqual(
-    expect.objectContaining({ detail: expect.stringContaining('multiple changed direct') }),
-  );
+  expect(graph.relationships).toHaveLength(1);
+  expect(graph.reachability.map((v) => v.outcome)).toEqual(['unreachable', 'unreachable']);
+  expect(
+    graph.findings.some((f) => 'detail' in f && f.detail.includes('multiple changed direct')),
+  ).toBe(false);
 });
 
 test('orphaned members keep a visible unproven path rather than an absence claim', async () => {
@@ -370,7 +371,7 @@ test('orphaned members keep a visible unproven path rather than an absence claim
   expect(graph.coverage).toEqual(input.inventory.coverage);
 });
 
-test('a direct removal still counts beside a head-side direct update', async () => {
+test('a direct removal beside a head-side direct update needs and gets its base-side absence proof', async () => {
   const input = await graphFixture(
     { 'node_modules/other': undefined },
     { 'node_modules/other': pkg('1.0.0') },
@@ -381,10 +382,9 @@ test('a direct removal still counts beside a head-side direct update', async () 
   expect(input.inventory.coverage.status).toBe('complete');
   expect(graph.kind).toBe('inventory');
   if (graph.kind !== 'inventory') throw new Error('expected graph');
-  expect(graph.relationships).toEqual([]);
-  expect(graph.findings).toContainEqual(
-    expect.objectContaining({ detail: expect.stringContaining('multiple changed direct') }),
-  );
+  expect(graph.relationships).toHaveLength(1);
+  expect(graph.reachability.map((v) => v.side)).toEqual(['base']);
+  expect(graph.reachability[0].outcome).toBe('unreachable');
 });
 
 const registryLimits = {
@@ -601,6 +601,314 @@ test.each(['orphan', 'multi-anchor', 'unknown'] as const)(
     expect(graph.changes.map((c) => c.evidence)).toEqual(inventory.changes.map((c) => c.evidence));
   },
 );
+
+type Graph = Extract<ReturnType<typeof proveNpmRelationships>, { kind: 'inventory' }>;
+function inventoryGraph(input: Awaited<ReturnType<typeof graphFixture>>): Graph {
+  const graph = proveNpmRelationships(input);
+  expect(graph.kind).toBe('inventory');
+  if (graph.kind !== 'inventory') throw new Error('expected graph');
+  return graph;
+}
+function multiUnits(graph: Graph) {
+  const fixture = npmScenario();
+  const packet = validateReviewPacket(
+    {
+      version: 1,
+      ...fixture.expected,
+      changes: graph.changes,
+      sources: [...graph.sources, fixture.absent],
+      findings: graph.findings,
+      relationships: [...graph.relationships, ...graph.optionalRelationships],
+      reachability: graph.reachability,
+      coverage: {
+        npm: graph.coverage,
+        actions: { status: 'not_applicable', reasons: [], sourceIds: ['other'] },
+        uv: { status: 'not_applicable', reasons: [], sourceIds: ['other'] },
+      },
+    },
+    fixture.expected,
+  );
+  expect(packet.ok, JSON.stringify(packet)).toBe(true);
+  if (!packet.ok) throw new Error('expected packet');
+  return formDecisionUnits(packet.packet).units;
+}
+const twoAnchors = (otherHead = pkg('1.1.0'), otherBase = pkg('1.0.0')) =>
+  graphFixture(
+    { 'node_modules/other': otherHead },
+    { 'node_modules/other': otherBase },
+    { anchor: '^1', other: '^1' },
+  );
+const idOf = (graph: Graph, name: string) =>
+  graph.changes.find((c) => {
+    const side = c.to ?? c.from;
+    return !('basis' in c) && side !== null && 'name' in side && side.name === name;
+  })!.id;
+const verdictKey = (v: Graph['reachability'][number]) =>
+  [v.side, v.anchorId, v.memberId, v.outcome].join('|');
+
+/** `child` is reachable from both anchors; `solo` only from `anchor`, so the root leaves the legacy state. */
+const ambiguousAnchors = () =>
+  graphFixture(
+    {
+      'node_modules/anchor': pkg('1.1.0', { dependencies: { child: '^1', solo: '^1' } }),
+      'node_modules/solo': pkg('1.1.0'),
+      'node_modules/other': pkg('1.1.0', { dependencies: { child: '^1' } }),
+    },
+    {
+      'node_modules/anchor': pkg('1.0.0', { dependencies: { child: '^1', solo: '^1' } }),
+      'node_modules/solo': pkg('1.0.0'),
+      'node_modules/other': pkg('1.0.0', { dependencies: { child: '^1' } }),
+    },
+    { anchor: '^1', other: '^1' },
+  );
+
+test('proves one reachable anchor and absence for every other candidate on each side', async () => {
+  const graph = inventoryGraph(await twoAnchors());
+  const [anchor, other, child] = ['anchor', 'other', 'child'].map((n) => idOf(graph, n));
+  expect(graph.relationships.map((p) => [p.fromId, p.toId, p.side])).toEqual([
+    [anchor, child, 'head'],
+  ]);
+  expect(graph.optionalRelationships).toEqual([]);
+  expect(graph.reachability.map(verdictKey).sort()).toEqual(
+    [`base|${other}|${child}|unreachable`, `head|${other}|${child}|unreachable`].sort(),
+  );
+  const units = multiUnits(graph);
+  expect(units.find((u) => u.kind === 'direct_group')).toMatchObject({
+    anchorId: anchor,
+    memberIds: [anchor, child].sort(),
+  });
+  expect(units.find((u) => u.memberIds.includes(other))).toMatchObject({ kind: 'standalone' });
+});
+
+test('sharing with an unchanged direct dependency still groups and is noted', async () => {
+  const unchanged = { 'node_modules/keeper': pkg('1.0.0', { dependencies: { child: '^1' } }) };
+  const input = await graphFixture(
+    { ...unchanged, 'node_modules/other': pkg('1.1.0') },
+    { ...unchanged, 'node_modules/other': pkg('1.0.0') },
+    { anchor: '^1', other: '^1', keeper: '^1' },
+  );
+  const graph = inventoryGraph(input);
+  const group = multiUnits(graph).find((u) => u.kind === 'direct_group')!;
+  expect(group.memberIds).toContain(idOf(graph, 'child'));
+  expect(
+    group.findings.some((f) => f.kind === 'informational' && f.detail.includes('unchanged direct')),
+  ).toBe(true);
+});
+
+test('a member reachable from two changed anchors is ambiguous and cites both paths', async () => {
+  const graph = inventoryGraph(await ambiguousAnchors());
+  const child = idOf(graph, 'child');
+  expect(graph.relationships.filter((p) => p.toId === child)).toHaveLength(1);
+  expect(graph.optionalRelationships.map((p) => p.toId)).toEqual([child]);
+  expect(new Set([graph.relationships[0].fromId, graph.optionalRelationships[0].fromId]).size).toBe(
+    2,
+  );
+  expect(graph.reachability.filter((v) => v.memberId === child)).toEqual([]);
+  expect(
+    graph.findings.some(
+      (f) =>
+        f.memberId === child &&
+        'detail' in f &&
+        f.detail.includes('several changed direct dependencies'),
+    ),
+  ).toBe(true);
+  const unit = multiUnits(graph).find((u) => u.memberIds.includes(child))!;
+  expect(unit.kind).toBe('standalone');
+  expect(unit.relationship.reason).toBe('ambiguous_anchors');
+});
+
+test('dropping the optional second proof degrades the member to unproven, never a group', async () => {
+  const graph = inventoryGraph(await ambiguousAnchors());
+  const child = idOf(graph, 'child');
+  const units = multiUnits({ ...graph, optionalRelationships: [] });
+  const unit = units.find((u) => u.memberIds.includes(child))!;
+  expect(unit.kind).toBe('standalone');
+  expect(unit.relationship.reason).toBe('reachability_unproven');
+});
+
+test.each([
+  ['a peer-only edge', { peerDependencies: { ghost: '^1' } }, 'unsupported'],
+  ['a dependency on an unresolved slot', { dependencies: { ghost: '^1' } }, 'unknown'],
+] as const)(
+  '%s makes the anchor non-proving, never unreachable',
+  async (_label, extra, outcome) => {
+    const input = await twoAnchors(pkg('1.1.0', extra), pkg('1.0.0', extra));
+    input.inventory = structuredClone(input.inventory);
+    for (const root of input.inventory.roots)
+      for (const side of [root.base, root.head])
+        (side.unresolvedPaths as string[]).push('node_modules/ghost');
+    const graph = inventoryGraph(input);
+    const [other, child] = ['other', 'child'].map((n) => idOf(graph, n));
+    expect(graph.reachability.some((v) => v.outcome === 'unreachable')).toBe(false);
+    const scopes = graph.reachability.filter((v) => v.anchorId === other);
+    expect(scopes.map((v) => [v.side, v.memberId, v.outcome, v.reasons])).toEqual(
+      expect.arrayContaining([
+        ['base', null, outcome, [outcome]],
+        ['head', null, outcome, [outcome]],
+      ]),
+    );
+    expect(scopes.every((v) => v.memberId === null)).toBe(true);
+    const unit = multiUnits(graph).find((u) => u.memberIds.includes(child))!;
+    expect(unit.kind).toBe('standalone');
+    expect(unit.relationship.reason).toBe('reachability_unproven');
+  },
+);
+
+test('an installed entry without a usable instance is unsupported, not absent', async () => {
+  const input = await twoAnchors(
+    pkg('1.1.0', { dependencies: { linked: '^1' } }),
+    pkg('1.0.0', { dependencies: { linked: '^1' } }),
+  );
+  input.inventory = structuredClone(input.inventory);
+  for (const root of input.inventory.roots)
+    for (const side of [root.base, root.head])
+      side.packages['node_modules/linked'] = {
+        instance: null,
+        dependencies: {},
+        optionalDependencies: {},
+        peerDependencies: {},
+        integrity: null,
+        hasInstallScript: null,
+        link: 'packages/linked',
+      };
+  const graph = inventoryGraph(input);
+  expect(graph.reachability.some((v) => v.outcome === 'unreachable')).toBe(false);
+  expect(graph.reachability.some((v) => v.outcome === 'unsupported')).toBe(true);
+});
+
+test('absence on one side only is not enough when the other side can reach the member', async () => {
+  const graph = inventoryGraph(
+    await twoAnchors(pkg('1.1.0'), pkg('1.0.0', { dependencies: { child: '^1' } })),
+  );
+  const [other, child] = ['other', 'child'].map((n) => idOf(graph, n));
+  expect(graph.reachability.map(verdictKey)).toEqual([`head|${other}|${child}|unreachable`]);
+  const unit = multiUnits(graph).find((u) => u.memberIds.includes(child))!;
+  expect(unit.kind).toBe('standalone');
+  expect(unit.relationship.reason).toBe('reachability_unproven');
+});
+
+test('a missing optional slot is affirmative absence under the lookup-chain rule', async () => {
+  const optional = { optionalDependencies: { 'missing-platform': '^1' } };
+  const graph = inventoryGraph(await twoAnchors(pkg('1.1.0', optional), pkg('1.0.0', optional)));
+  expect(graph.reachability.filter((v) => v.outcome === 'unreachable')).toHaveLength(2);
+});
+
+test('a direct removal beside an update groups only with its base-side absence proof', async () => {
+  const input = await graphFixture(
+    {},
+    { 'node_modules/other': pkg('1.0.0') },
+    { anchor: '^1' },
+    { anchor: '^1', other: '^1' },
+  );
+  const graph = inventoryGraph(input);
+  const [other, child] = ['other', 'child'].map((n) => idOf(graph, n));
+  expect(graph.reachability.map(verdictKey)).toEqual([`base|${other}|${child}|unreachable`]);
+  expect(multiUnits(graph).find((u) => u.kind === 'direct_group')).toBeDefined();
+});
+
+test('truncating graph work never invents absence and reports the cut as a limit', async () => {
+  const input = await twoAnchors();
+  const full = inventoryGraph(input);
+  const fullAbsent = new Set(
+    full.reachability.filter((v) => v.outcome === 'unreachable').map(verdictKey),
+  );
+  const at = (maxGraphWork: number) =>
+    proveNpmRelationships({ ...input, limits: { ...input.limits, maxGraphWork } });
+  let low = 1,
+    high = 200_000;
+  while (low < high) {
+    const mid = Math.floor((low + high) / 2);
+    if (at(mid).kind === 'inventory') high = mid;
+    else low = mid + 1;
+  }
+  let sawTruncation = false;
+  for (let work = low; work < low + 400; work += 1) {
+    const result = at(work);
+    if (result.kind !== 'inventory') continue;
+    for (const v of result.reachability) {
+      if (v.outcome === 'unreachable') expect(fullAbsent.has(verdictKey(v))).toBe(true);
+      if (v.outcome === 'truncated') {
+        sawTruncation = true;
+        expect(v.reasons).toContain('budget');
+        expect(v.memberId).toBeNull();
+      }
+    }
+  }
+  expect(sawTruncation).toBe(true);
+});
+
+const bytes = (value: unknown) => Buffer.byteLength(JSON.stringify(value));
+function scoped(verdicts: Graph['reachability']): Graph['reachability'] {
+  const groups = new Map<string, Graph['reachability'][number]>();
+  for (const v of verdicts) groups.set(JSON.stringify([v.side, v.anchorId]), v);
+  return [...groups.values()].map((v) => ({
+    ecosystem: v.ecosystem,
+    side: v.side,
+    sourceId: v.sourceId,
+    anchorId: v.anchorId,
+    memberId: null,
+    outcome: 'truncated' as const,
+    reasons: ['budget' as const],
+  }));
+}
+async function manyMembers() {
+  const members = Array.from({ length: 28 }, (_, i) => `m${i}`);
+  const deps = Object.fromEntries(members.map((m) => [m, '^1']));
+  const installed = (version: string) =>
+    Object.fromEntries(members.map((m) => [`node_modules/${m}`, pkg(version)]));
+  return graphFixture(
+    {
+      ...installed('1.1.0'),
+      'node_modules/anchor': pkg('1.1.0', { dependencies: deps }),
+      'node_modules/other': pkg('1.1.0'),
+    },
+    {
+      ...installed('1.0.0'),
+      'node_modules/anchor': pkg('1.0.0', { dependencies: deps }),
+      'node_modules/other': pkg('1.0.0'),
+    },
+    { anchor: '^1', other: '^1' },
+  );
+}
+
+test('optional-evidence overflow degrades pair verdicts to scope records instead of failing', async () => {
+  const input = await manyMembers();
+  const full = inventoryGraph(input);
+  expect(full.reachability.length).toBeGreaterThan(40); // 28 members on two sides
+  const core = bytes({ ...full, reachability: [], optionalRelationships: [] });
+  const limit = core + 1_500;
+  expect(bytes(full)).toBeGreaterThan(limit);
+  const result = proveNpmRelationships({
+    ...input,
+    limits: { ...input.limits, maxRetainedBytes: limit },
+  });
+  expect(result.kind).toBe('inventory');
+  if (result.kind !== 'inventory') throw new Error('expected graph');
+  expect(result.reachability).toEqual(scoped(full.reachability));
+  expect(result.relationships).toEqual(full.relationships);
+  expect(bytes(result)).toBeLessThanOrEqual(limit);
+});
+
+test('second proofs are dropped after pair verdicts, and core overflow still fails the result', async () => {
+  const input = await ambiguousAnchors();
+  const full = inventoryGraph(input);
+  expect(full.optionalRelationships).toHaveLength(1);
+  const fitted = { ...full, reachability: scoped(full.reachability), optionalRelationships: [] };
+  const limit = bytes(fitted) + 10;
+  expect(bytes({ ...full, reachability: scoped(full.reachability) })).toBeGreaterThan(limit);
+  const result = proveNpmRelationships({
+    ...input,
+    limits: { ...input.limits, maxRetainedBytes: limit },
+  });
+  expect(result.kind).toBe('inventory');
+  if (result.kind !== 'inventory') throw new Error('expected graph');
+  expect(result.optionalRelationships).toEqual([]);
+  expect(result.reachability).toEqual(scoped(full.reachability));
+  const core = bytes({ ...full, reachability: [], optionalRelationships: [] });
+  expect(
+    proveNpmRelationships({ ...input, limits: { ...input.limits, maxRetainedBytes: core - 1 } }),
+  ).toEqual({ kind: 'unavailable', reason: 'budget' });
+});
 
 test('known unchanged-parent sharing is accepted by T4 and preserved within a T5 group', async () => {
   const other = { 'node_modules/other': pkg('1.0.0', { dependencies: { child: '^1' } }) };
