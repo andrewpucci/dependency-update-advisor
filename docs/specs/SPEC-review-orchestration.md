@@ -306,6 +306,108 @@ comment, configuration, permission, token, trigger, or network-write change.
   untrusted data, weaken fail-closed behavior, or use this diagnostic work to
   start publication or production-claim implementation.
 
+## Diagnostic Amendment 2: Failure Cause, Progress, and Elapsed Time
+
+**Status: draft, not approved.** This amendment is proposed for review. It
+changes the approved stage vocabulary above, so per its "Ask first" boundary it
+needs the maintainer's recorded approval before planning or implementation.
+
+The first fixed-stage amendment shipped. The R1 rehearsal of PR head `657f221`
+then reported `internal-failure at unclassified` after about 288 seconds, past
+the 240-second evidence-read envelope. `unclassified` is the label for five
+different sites (the entry and final freshness checks, a failed freshness read
+before research or the model, an uncaught `evaluate()` error, an unattributed
+snapshot-callback defect, and an uncaught startup error), so it cannot tell a
+budget exhaustion from a defect. This amendment adds the smallest fixed detail
+that distinguishes them, so one rehearsal run is enough to name the next fix.
+It adds no status, comment, configuration, permission, token, trigger, or
+network-write change and keeps the same redaction guarantee.
+
+1. **`freshness` stage.** Add `freshness` to `InternalFailureStage`: failing to
+   re-verify ownership or the current PR head (the entry check, the checks
+   before research and before the model, and the final check). It replaces
+   `unclassified` at those four sites. `unclassified` keeps its remaining
+   meaning.
+2. **Fixed `cause`.** An internal failure also carries exactly one optional
+   `InternalFailureCause` from this closed vocabulary, chosen by trusted code
+   from its own state and never from an exception name, message, stack,
+   response body, URL, config value, PR input, or provider output:
+
+   - `deadline` — the attempt clock was at or past the evidence deadline when
+     the failure was recorded;
+   - `aborted` — the attempt's abort signal had fired (ownership lost or a
+     freshness error) before the deadline;
+   - `rejected` — a boundary returned a not-ready or internal-failure result
+     rather than throwing;
+   - `threw` — a boundary threw and none of the above applies;
+   - `ownership-read`, `run-read`, `pull-request-read`, `comparison-read`, or
+     `binding` — a `freshness` failure, selected from the existing fixed
+     `field` and `category` of the freshness result (`VerificationError`).
+
+   Precedence is the freshness literal when one applies, then `deadline`, then
+   `aborted`, then `rejected`, then `threw`.
+
+3. **Progress marker.** An internal failure also carries `reached`, the last
+   boundary the attempt entered, from the closed ordered set `start`,
+   `snapshot`, `packet`, `research`, `assessment`, `handoff`. Trusted code
+   sets it as it enters each boundary, so even an `unclassified` failure shows
+   how far the attempt got. `start` is everything before the snapshot.
+4. **Elapsed time.** An internal failure carries `elapsed`, whole seconds
+   since the attempt started, from the injected clock and capped at the job
+   budget (900). It is a bounded non-negative integer and no other number is
+   reported.
+5. **Redacted reporting.** The bounded stderr line extends to
+   `internal-failure at <stage> (cause <cause>, reached <boundary>, after <n>s)`
+   with only those fixed values, and the trace retains the same literals. The
+   fields are recorded only for `internal-failure`; the existing startup
+   self-check diagnostics are unchanged. An uncategorized startup exception
+   reports `unclassified` with `cause threw`, `reached start`, and a computed
+   `elapsed`, or omits fields it cannot set safely.
+6. **Fail-closed preservation.** Every requirement of the first amendment
+   holds: a stage, cause, progress marker, or elapsed value never converts an
+   outcome to success or makes a skipped, stale, unverified, or unowned attempt
+   publication eligible. This amendment does not change which outcome a
+   deadline produces; whether a post-deadline freshness failure should end as
+   incomplete evidence is a separate behavior decision that this diagnostic
+   work informs but does not make.
+7. **Required checks.** Tests inject a sentinel-bearing failure and prove, for
+   each cause and each `reached` value, that exactly the literal is reported,
+   including `freshness` at all four sites with each fixed read field. They
+   also prove deadline precedence by advancing the injected clock and abort
+   precedence by firing the signal, and that stderr and traces omit the
+   sentinel, credentials, config values, source lines, raw exception text,
+   response bodies, URLs, and stacks. Named mutations that derive a cause or
+   stage from an exception name or message, report an unlisted value, report
+   an uncapped or non-integer `elapsed`, or record the fields on a
+   non-`internal-failure` outcome must each fail a test. The shipped-bundle
+   test asserts the exact stderr form. Existing no-write assertions continue
+   to prove that no status, comment, App-token request, or other live write
+   occurs.
+
+### Considered and not proposed
+
+- **Failing collector or source** (`npm`, `actions`, `uv`) for a `packet`
+  failure: useful, but an assembly throw does not identify its source without
+  threading per-collector tracking through T4 assembly. Revisit if `packet`
+  failures dominate.
+- **Request and byte counters** from the evidence accounting: bounded and
+  non-secret, but `deadline` plus `elapsed` answers the immediate question.
+  Add them only if a `deadline` failure needs a budget breakdown.
+- **Per-boundary durations**: derivable from successive runs of the progress
+  marker plus `elapsed`; not worth a larger reported surface.
+
+### Draft Amendment Boundaries
+
+- **Always:** report only the closed vocabularies above and one bounded
+  integer, record them only for `internal-failure`, and choose each value in
+  trusted code from its own state.
+- **Ask first:** add or rename a stage, cause, or progress value; report any
+  other number; surface these fields in status or comment text; or change the
+  workflow trigger, an App permission, or a secret.
+- **Never:** report a raw error or external payload, infer a value from
+  untrusted data, weaken fail-closed behavior, or use this work to change
+  deadline behavior or start publication.
+
 ### Trusted config and context snapshot
 
 Resolve repository visibility and the default-branch identity through trusted,

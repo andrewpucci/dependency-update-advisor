@@ -251,7 +251,8 @@ gaps and an introduced vulnerability before parity is claimed.
   its capability map and specification on 2026-11-08. It scopes the no-write,
   injected-claim-store coordinator; publication remains separate. Its
   2026-11-11 fixed-stage diagnostic amendment is approved for planning and
-  execution and is merged. Its approved
+  execution and is merged. A second amendment (failure cause, progress marker,
+  and elapsed time, plus a `freshness` stage) is a draft pending approval. Its approved
   map's #209 contracts are implemented on `issue-209`, pending fresh-context
   review and merge: [shared PyPI release
   observations](SPEC-shared-release-observations.md), charged to the existing
