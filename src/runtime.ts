@@ -1,4 +1,4 @@
-import { EVIDENCE_READ_ALLOCATION, EVIDENCE_READ_ENVELOPE } from './budget.js';
+import { EVIDENCE_READ_ALLOCATION, EVIDENCE_READ_ENVELOPE, JOB_BUDGET_MS } from './budget.js';
 import { positiveId, record, type RepositoryIdentity, type WorkflowIdentity } from './event.js';
 import { httpReason } from './github-read.js';
 import type { EvidenceReason } from './schema.js';
@@ -6,7 +6,8 @@ import type { EvidenceReason } from './schema.js';
 /**
  * Snapshot reads (repository, commit, trees, blobs) and freshness reads (workflow, run, pull
  * request, comparison) draw on separate shares, so a heavy snapshot cannot starve the checks that
- * keep a finished review valid. Time is one shared deadline.
+ * keep a finished review valid. Snapshot reads share one evidence deadline; freshness reads are
+ * exempt from it and end only with the job window, so the checks that follow a slow model can run.
  */
 export const W2_GITHUB_LIMITS = Object.freeze({
   snapshot: EVIDENCE_READ_ALLOCATION.transport.snapshot,
@@ -169,16 +170,17 @@ export function createGithubTransport(dependencies: TransportDependencies): Gith
   const read = async (share: Share, url: string, signal?: AbortSignal): Promise<GithubRead> => {
     const limits = W2_GITHUB_LIMITS[share];
     const spent = used[share];
+    const window = share === 'freshness' ? JOB_BUDGET_MS : W2_GITHUB_LIMITS.totalTimeoutMs;
     if (
       signal?.aborted ||
       ++spent.requests > limits.maxRequests ||
-      dependencies.now() - started >= W2_GITHUB_LIMITS.totalTimeoutMs
+      dependencies.now() - started >= window
     )
       return { kind: 'unavailable', reason: 'budget' };
     const controller = new AbortController();
     const cancel = () => controller.abort();
     signal?.addEventListener('abort', cancel, { once: true });
-    const remaining = W2_GITHUB_LIMITS.totalTimeoutMs - (dependencies.now() - started);
+    const remaining = window - (dependencies.now() - started);
     const timer = setTimeout(
       () => controller.abort(),
       Math.min(W2_GITHUB_LIMITS.requestTimeoutMs, remaining),

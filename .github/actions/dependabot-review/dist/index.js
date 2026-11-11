@@ -22417,6 +22417,8 @@ async function reviewPacket(input) {
 
 // src/budget.ts
 const MiB = 1048576;
+/** The job's wall-clock limit; analysis and publication reserve their own time inside it. */
+const JOB_BUDGET_MS = 9e5;
 /** Bounds for all pre-analysis evidence reads. Time is shared; every reader gets what remains. */
 const EVIDENCE_READ_ENVELOPE = Object.freeze({
 	maxRequests: 944,
@@ -30188,8 +30190,6 @@ async function withTrustedSnapshot(request, use) {
 }
 
 // src/pipeline.ts
-/** The job's wall-clock limit; analysis and publication reserve their own time inside it. */
-const JOB_BUDGET_MS = 9e5;
 /** How often a pending request is checked against ownership; shorter than any request timeout. */
 const OWNERSHIP_WATCH_MS = 2e3;
 /** A boundary failure whose stage is a literal chosen by this module, never derived from the error. */
@@ -30483,7 +30483,8 @@ async function evaluateEvidence(input, binding, started, signal, state, recheck)
 /**
 * Snapshot reads (repository, commit, trees, blobs) and freshness reads (workflow, run, pull
 * request, comparison) draw on separate shares, so a heavy snapshot cannot starve the checks that
-* keep a finished review valid. Time is one shared deadline.
+* keep a finished review valid. Snapshot reads share one evidence deadline; freshness reads are
+* exempt from it and end only with the job window, so the checks that follow a slow model can run.
 */
 const W2_GITHUB_LIMITS = Object.freeze({
 	snapshot: EVIDENCE_READ_ALLOCATION.transport.snapshot,
@@ -30596,14 +30597,15 @@ function createGithubTransport(dependencies) {
 	const read = async (share, url, signal) => {
 		const limits = W2_GITHUB_LIMITS[share];
 		const spent = used[share];
-		if (signal?.aborted || ++spent.requests > limits.maxRequests || dependencies.now() - started >= W2_GITHUB_LIMITS.totalTimeoutMs) return {
+		const window = share === "freshness" ? JOB_BUDGET_MS : W2_GITHUB_LIMITS.totalTimeoutMs;
+		if (signal?.aborted || ++spent.requests > limits.maxRequests || dependencies.now() - started >= window) return {
 			kind: "unavailable",
 			reason: "budget"
 		};
 		const controller = new AbortController();
 		const cancel = () => controller.abort();
 		signal?.addEventListener("abort", cancel, { once: true });
-		const remaining = W2_GITHUB_LIMITS.totalTimeoutMs - (dependencies.now() - started);
+		const remaining = window - (dependencies.now() - started);
 		const timer = setTimeout(() => controller.abort(), Math.min(W2_GITHUB_LIMITS.requestTimeoutMs, remaining));
 		try {
 			const response = await dependencies.fetch(url, {

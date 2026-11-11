@@ -1,5 +1,5 @@
 import { reviewPacket, type AssessmentInput } from './assessment.js';
-import { EVIDENCE_READ_ENVELOPE } from './budget.js';
+import { EVIDENCE_READ_ENVELOPE, JOB_BUDGET_MS } from './budget.js';
 import {
   createEvidenceCollectors,
   openEvidenceSession,
@@ -20,8 +20,6 @@ import { runResearch } from './research.js';
 import type { ClaimStore, InternalFailureStage, OwnedClaim, ReviewOutcomeKind } from './review.js';
 import { withTrustedSnapshot, type SnapshotReads } from './snapshot.js';
 
-/** The job's wall-clock limit; analysis and publication reserve their own time inside it. */
-const JOB_BUDGET_MS = 15 * 60 * 1_000;
 /** How often a pending request is checked against ownership; shorter than any request timeout. */
 const OWNERSHIP_WATCH_MS = 2_000;
 
