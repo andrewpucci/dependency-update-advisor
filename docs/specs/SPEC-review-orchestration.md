@@ -20,10 +20,11 @@ The user approved the following amendment for planning on 2026-11-11 and
 approved its execution on 2026-11-11; the work is merged. This amendment does
 not authorize live publication or a production claim backend.
 
-**Draft Amendment 2 (freshness time allowance and stage detail), not
-approved:** the first rehearsal that reported a stage was `unclassified`;
+**Diagnostic Amendment 2 (freshness time allowance and stage detail),
+approved for planning 2026-11-11:** the first rehearsal that reported a stage
+was `unclassified`;
 [#297](https://github.com/andrewpucci/dependency-update-advisor/issues/297)
-tracks the cause. The draft, below, needs the maintainer's approval first.
+tracks the cause. Execution requires separate approval.
 
 The user approved this W2 supporting-contract map on 2026-11-08:
 
@@ -311,11 +312,13 @@ comment, configuration, permission, token, trigger, or network-write change.
   untrusted data, weaken fail-closed behavior, or use this diagnostic work to
   start publication or production-claim implementation.
 
-## Draft Amendment 2: Freshness Time Allowance and Stage Detail
+## Diagnostic Amendment 2: Freshness Time Allowance and Stage Detail
 
-**Status: draft, not approved.** It is Ask-first under the approved
-execution envelope and the first amendment's boundaries, so it needs the
-maintainer's recorded approval before planning or implementation. Effort tier:
+**Status: approved for planning 2026-11-11.** The user approved this amendment
+and its proposed `freshnessAllowanceMs` of 45,000 ms on 2026-11-11 (it was
+Ask-first under the approved execution envelope and the first amendment's
+boundaries). Execution requires separate approval, and the amendment does not
+authorize live publication or a production claim backend. Effort tier:
 L (crosses `startup`, the GitHub transport, `pipeline`, `handoff`, and
 amends approved text). Evidence and the reproduction are in
 [#297](https://github.com/andrewpucci/dependency-update-advisor/issues/297).
@@ -340,12 +343,11 @@ do that.
 2. **Reserved analysis deadline.** The model's deadline is the job budget minus
    `freshnessAllowanceMs`, so the final freshness check always has its
    allowance inside the job.
-3. **Proposed value: `freshnessAllowanceMs` = 45,000.** It is the derived
-   minimum: three sequential reads (run, PR, comparison) at the 15,000 ms
-   request timeout cover one full re-verification, the only freshness check
-   that must follow the model. It is proposed, not approved; the maintainer
-   confirms or changes it when approving this draft, and changing it needs the
-   same approval.
+3. **Value: `freshnessAllowanceMs` = 45,000.** It is the derived minimum:
+   three sequential reads (run, PR, comparison) at the 15,000 ms request
+   timeout cover one full re-verification, the only freshness check that must
+   follow the model. The user approved this value on 2026-11-11; changing it
+   needs a new approval.
 4. **Fixed freshness detail.** Add `freshness` to `InternalFailureStage`. It
    replaces `unclassified` at the entry check, the checks before research and
    before the model, and the final check, whether the check returned `error`
@@ -363,9 +365,10 @@ do that.
    stderr only, not on the exported `ReviewHandoff`, and the `failed` result
    (handoff recording) carries only its stage. Startup self-check diagnostics
    are unchanged.
-6. **Supersedes on approval.** The first amendment's "six literal stages"
-   (Always line) and its item 2 exact form are amended by items 4 and 5; its
-   "Ask first" list is satisfied by this approval. The expected values in
+6. **Supersedes when implemented.** The first amendment's "six literal stages"
+   (Always line) and its item 2 exact form are amended by items 4 and 5 once
+   this amendment is implemented; its "Ask first" list is satisfied by this
+   approval. The expected values in
    `src/pipeline.test.ts` (freshness cases) and `src/startup.test.ts`
    (unexpected-failure and stage lines) change from `unclassified` to
    `freshness` where they cover a freshness failure.
@@ -409,7 +412,7 @@ do that.
   request or byte counters: need per-collector or accounting plumbing without a
   current failure that requires them.
 
-### Draft Amendment Boundaries
+### Amendment 2 Boundaries
 
 - **Always:** keep the final freshness check as a gate for every handoff, bound
   every read, and choose reported values in trusted code from closed
