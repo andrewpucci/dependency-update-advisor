@@ -30460,7 +30460,7 @@ async function evaluateEvidence(input, binding, started, signal, state, recheck)
 	} catch (error) {
 		return {
 			kind: "internal-failure",
-			stage: error instanceof StageFailure ? error.stage : "snapshot",
+			stage: error instanceof StageFailure ? error.stage : "unclassified",
 			body: null
 		};
 	}

@@ -795,8 +795,9 @@ test('reports a failure building the handoff as the fixed handoff stage', async 
 
 test.each([
   [
-    'snapshot',
-    // A defect in the snapshot callback is rethrown by the snapshot reader, not absorbed.
+    'unclassified',
+    // A defect in the snapshot callback is rethrown by the snapshot reader, not absorbed, and
+    // cannot be attributed to a stage.
     () =>
       vi.mocked(collectionModule.createEvidenceCollectors).mockImplementationOnce(() => {
         throw new Error(sentinel);

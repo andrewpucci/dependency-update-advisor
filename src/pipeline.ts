@@ -349,7 +349,7 @@ async function evaluateEvidence(
   } catch (error) {
     return {
       kind: 'internal-failure',
-      stage: error instanceof StageFailure ? error.stage : 'snapshot',
+      stage: error instanceof StageFailure ? error.stage : 'unclassified',
       body: null,
     };
   }
