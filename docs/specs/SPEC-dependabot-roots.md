@@ -75,6 +75,11 @@ src/packet.ts or coordinator  → passes roots and configRevision to N1/U2
    Limits approved 2026-11-08: 65,536 bytes, 20,000 YAML nodes, depth 16, 0
    alias expansions, 256 update entries, and 256 roots per ecosystem.
 
+   The node cap counts structure (collections, scalars, aliases), not
+   formatting; see the
+   [YAML node budget amendment](SPEC-actions-inventory.md#yaml-node-budget-amendment).
+   Commas, indicators, and entries are free, and the byte cap still bounds work.
+
 4. **Narrow extraction.** Require `version: 2` and an `updates` sequence. From
    each entry, read only `package-ecosystem` and either `directory` (string)
    or `directories` (string list). Other keys may be present but are neither

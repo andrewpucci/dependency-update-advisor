@@ -310,3 +310,19 @@ test('puts no ignored value in a failure result', () => {
   ])
     expect(JSON.stringify(parseDependabotRoots(bytes))).not.toContain(sentinel);
 });
+
+test('does not charge comments or blank lines against the node cap', () => {
+  const comments = '#\n'.repeat(30_000);
+  expect(comments.length).toBeLessThan(DEPENDABOT_ROOT_LIMITS.maxFileBytes);
+  expect(parseDependabotRoots(encode(`${file(update('npm', '/'))}${comments}`))).toMatchObject({
+    kind: 'roots',
+    npm: { kind: 'roots', roots: ['.'] },
+  });
+});
+
+test('reports an unsupported tag as unsupported, not malformed', () => {
+  expect(parseDependabotRoots(encode(`${file(update('npm', '/'))}x: !custom 1\n`))).toEqual({
+    kind: 'unavailable',
+    reason: 'unsupported',
+  });
+});
