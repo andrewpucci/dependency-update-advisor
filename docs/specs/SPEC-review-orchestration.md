@@ -16,9 +16,10 @@ draft does not select a production claim backend or authorize live publication.
 rehearsal recorded the intentionally redacted `internal-failure` outcome, but
 that aggregate does not identify a safe investigation boundary. The evidence
 is recorded in [#27](https://github.com/andrewpucci/dependency-update-advisor/issues/27).
-The user approved the following amendment for planning on 2026-11-11. Execution
-requires separate approval; this amendment does not authorize live publication
-or a production claim backend.
+The user approved the following amendment for planning on 2026-11-11 and
+approved its execution on 2026-11-11; the work is implemented on `issue-27`,
+pending fresh-context review. This amendment does not authorize live
+publication or a production claim backend.
 
 The user approved this W2 supporting-contract map on 2026-11-08:
 
@@ -258,7 +259,8 @@ comment, configuration, permission, token, trigger, or network-write change.
    - `packet` — collecting or validating the evidence packet before research;
    - `research` — S1/S2/S3 evidence acquisition and aggregation;
    - `assessment` — M1/M2 analysis or O1 brief rendering;
-   - `handoff` — constructing the otherwise publication-eligible handoff; or
+   - `handoff` — constructing or recording the otherwise publication-eligible
+     handoff; or
    - `unclassified` — any unexpected boundary not safely attributable to one
      of the preceding stages.
 
