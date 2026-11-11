@@ -326,14 +326,15 @@ function multiAnchor(rel: Relation, anchors: Change[]): Assignment {
   // Legacy: no record names any candidate, so absence was never evidenced for this root.
   if (!anchors.some((c) => rel.reachability.anchors.has(c.id)))
     return standalone('multiple_direct_changes');
-  const reaching = anchors.filter((c) => proven(rel, c).length);
+  const proofs = new Map(anchors.map((c) => [c, proven(rel, c)] as const));
+  const reaching = anchors.filter((c) => proofs.get(c)!.length);
   if (reaching.length > 1)
     return standalone(
       'ambiguous_anchors',
       reaching.flatMap((c) =>
-        proven(rel, c).map((key) =>
-          JSON.stringify(['ambiguous_anchors', rel.change.id, c.id, key]),
-        ),
+        proofs
+          .get(c)!
+          .map((key) => JSON.stringify(['ambiguous_anchors', rel.change.id, c.id, key])),
       ),
     );
   if (!reaching.length) return standalone('missing_relationship');
@@ -345,7 +346,7 @@ function multiAnchor(rel: Relation, anchors: Change[]): Assignment {
   return {
     anchorId: anchor.id,
     reason: 'proven_relationship',
-    proofKeys: proven(rel, anchor),
+    proofKeys: proofs.get(anchor)!,
     verdictKeys: excluded.flatMap((e) => e.verdictKeys).sort(),
     limits: [],
   };
