@@ -21,10 +21,11 @@ approved its execution on 2026-11-11; the work is merged. This amendment does
 not authorize live publication or a production claim backend.
 
 **Diagnostic Amendment 2 (freshness time allowance and stage detail),
-approved for planning 2026-11-11:** the first rehearsal that reported a stage
-was `unclassified`;
+approved for planning and execution 2026-11-11:** the first rehearsal that
+reported a stage was `unclassified`;
 [#297](https://github.com/andrewpucci/dependency-update-advisor/issues/297)
-tracks the cause. Execution requires separate approval.
+tracks the cause and its ordered tasks (#299-#304). It does not authorize live
+publication or a production claim backend.
 
 The user approved this W2 supporting-contract map on 2026-11-08:
 
@@ -160,12 +161,13 @@ receives `process.env` or a general fetch function.
    limits.
 
    The requests and bytes are divided between readers; one reader never
-   borrows from another. The time limit is one shared deadline.
+   borrows from another. The time limit is one shared deadline, except that
+   freshness reads are bounded by the job window (Diagnostic Amendment 2).
 
    | Reader                                    | Requests | Bytes   |
    | ----------------------------------------- | -------- | ------- |
    | Snapshot reads (repository, commit, tree) | 200      | 9 MiB   |
-   | Freshness reads (workflow, run, PR)       | 24       | 3 MiB   |
+   | Freshness (workflow, run, PR, compare)    | 24       | 3 MiB   |
    | GitHub evidence session                   | 160      | 12 MiB  |
    | npm registry details                      | 64       | 4 MiB   |
    | Upstream evidence                         | 240      | 15 MiB  |
@@ -186,7 +188,8 @@ receives `process.env` or a general fetch function.
    The snapshot share covers C1's 128 excerpt files with their directories.
    Freshness reads are reserved separately so a heavy snapshot cannot prevent
    the checks that keep a finished review valid. A failed freshness read is
-   an internal failure, never a stale head.
+   an internal failure, never a stale head; its time bound is the job window,
+   not the shared 240,000 ms deadline (Diagnostic Amendment 2).
 
 3. **Credential separation.** `github-token` performs GitHub reads;
    `app-token` is reserved for later publication. Collectors, source context,
@@ -314,11 +317,12 @@ comment, configuration, permission, token, trigger, or network-write change.
 
 ## Diagnostic Amendment 2: Freshness Time Allowance and Stage Detail
 
-**Status: approved for planning 2026-11-11.** The user approved this amendment
-and its proposed `freshnessAllowanceMs` of 45,000 ms on 2026-11-11 (it was
-Ask-first under the approved execution envelope and the first amendment's
-boundaries). Execution requires separate approval, and the amendment does not
-authorize live publication or a production claim backend. Effort tier:
+**Status: approved for planning and execution 2026-11-11.** The user approved
+this amendment and its `freshnessAllowanceMs` of 45,000 ms for planning on
+2026-11-11 (it was Ask-first under the approved execution envelope and the
+first amendment's boundaries), approved the plan, and approved its execution
+the same day. The amendment does not authorize live publication or a
+production claim backend. Effort tier:
 L (crosses `startup`, the GitHub transport, `pipeline`, `handoff`, and
 amends approved text). Evidence and the reproduction are in
 [#297](https://github.com/andrewpucci/dependency-update-advisor/issues/297).
@@ -332,17 +336,25 @@ must still be re-verified; ending it as `incomplete-evidence` would hand off a
 comment-eligible result without checking the head, so this amendment does not
 do that.
 
-1. **Freshness time allowance.** Freshness reads (workflow, run, PR,
-   comparison) are exempt from the shared 240,000 ms evidence deadline and are
-   bounded instead by their own request and byte shares, the 15,000 ms request
-   timeout, and a fixed `freshnessAllowanceMs` that begins when the shared
-   deadline passes, or when the first freshness read is made after it,
-   whichever applies. Every other reader keeps the shared deadline. Freshness
+1. **Freshness reads use the job window.** One job-start timestamp, taken by
+   startup before the first GitHub read, is the only clock origin for the
+   GitHub transport and for `runReview` (its evidence, research, and analysis
+   deadlines). Freshness reads (workflow, run, PR, comparison) are exempt from
+   the shared 240,000 ms evidence deadline and are bounded instead by their own
+   request and byte shares, the 15,000 ms request timeout, and the end of the
+   job window (job start plus the 900,000 ms job budget). Each freshness
+   request's timer is the smaller of the request timeout and the time left in
+   the job window, so a read after 240,000 ms is neither refused nor clamped to
+   a near-zero timer. Every other reader keeps the shared deadline. Freshness
    reads still return the fixed `budget` reason once their own bounds are
    spent.
-2. **Reserved analysis deadline.** The model's deadline is the job budget minus
-   `freshnessAllowanceMs`, so the final freshness check always has its
-   allowance inside the job.
+2. **Reserved analysis deadline.** The deadline passed to analysis is the job
+   start plus the job budget minus `freshnessAllowanceMs`, so the final
+   freshness check always has the allowance inside the job. The analysis layer
+   already stops at the smaller of that deadline minus its 60,000 ms
+   publication reserve and 600,000 ms after its own start; the allowance stacks
+   on that reserve, so the model ends by 795,000 ms after the job start and the
+   final check by about 840,000 ms.
 3. **Value: `freshnessAllowanceMs` = 45,000.** It is the derived minimum:
    three sequential reads (run, PR, comparison) at the 15,000 ms request
    timeout cover one full re-verification, the only freshness check that must
@@ -362,30 +374,42 @@ do that.
    `internal-failure at freshness (<field> <reason>)` (for example
    `(run budget)`); every other stage keeps the exact first-amendment form.
    The trace retains the same literals. The fields appear on the trace and
-   stderr only, not on the exported `ReviewHandoff`, and the `failed` result
-   (handoff recording) carries only its stage. Startup self-check diagnostics
-   are unchanged.
-6. **Supersedes when implemented.** The first amendment's "six literal stages"
-   (Always line) and its item 2 exact form are amended by items 4 and 5 once
-   this amendment is implemented; its "Ask first" list is satisfied by this
-   approval. The expected values in
-   `src/pipeline.test.ts` (freshness cases) and `src/startup.test.ts`
-   (unexpected-failure and stage lines) change from `unclassified` to
-   `freshness` where they cover a freshness failure.
+   stderr only, not on the exported `ReviewHandoff` (which gains only the
+   `freshness` stage literal). The detail reaches the trace through an optional
+   second argument to `RehearsalSink.record` and reaches stderr on the
+   `handed-off` pipeline result. The `failed` result (handoff recording) is
+   always stage `handoff` and carries only its stage, never `field` or
+   `reason`. Startup self-check diagnostics are unchanged.
+6. **Supersedes when implemented.** The first amendment's "six literal
+   stages" (Always line) and its item 2 exact form are amended by items 4 and 5
+   once this amendment is implemented; its "Ask first" list is satisfied by
+   this approval. The envelope text "The time limit is one shared deadline" and
+   the freshness-share sentence are narrowed by item 1. The expected values in
+   `src/pipeline.test.ts` (the freshness cases) change from `unclassified` to
+   `freshness`. The `src/startup.test.ts` unexpected-failure case throws in
+   startup before `runReview` runs, so it stays `unclassified`; a new startup
+   test covers the `freshness` form.
 7. **Fail-closed preservation.** Neither the allowance nor the new fields
    convert an outcome to success or make a skipped, stale, unverified, or
    unowned attempt publication eligible. The final freshness check still gates
-   every handoff, and a freshness read that fails within its allowance is still
+   every handoff, and a freshness read that fails within the job window is still
    an internal failure.
 8. **Required checks.** Tests must prove:
    - the motivating case: a model step that finishes after the 240,000 ms
      window, with an unmoved head, completes its freshness re-verification and
-     reports its normal outcome, not `internal-failure`, using an injected
-     clock that distinguishes the transport window from the job start;
+     reports its normal outcome, not `internal-failure`, through the real
+     startup harness with an injected clock;
+   - one clock origin: a job start that differs from the pipeline's own `now()`
+     moves the evidence, research, and analysis deadlines, and a clock that
+     advances during workflow resolution does not shift the job window;
+   - the request timer: with fake timers, a freshness read made after
+     240,000 ms stays pending for the 15,000 ms request timeout and then times
+     out, and one made near the job end times out at the time left;
    - a head that moved during that late window is still `stale`, and a
-     freshness read that fails within the allowance reports
+     freshness read that fails within the job window reports
      `internal-failure at freshness (<field> <reason>)` for each `field`,
-     including the `mismatch` and `input` reasons;
+     including the `mismatch` and `input` reasons and a throwing ownership read
+     at each of the four sites;
    - evidence readers still stop at the shared deadline, and the analysis
      deadline leaves the allowance free;
    - sentinel-bearing failures leave stderr and traces without the sentinel,
@@ -393,8 +417,11 @@ do that.
      bodies, URLs, and stacks, and no other stage carries `field` or `reason`.
 
    Named mutations that must each fail a test: exempting a non-freshness
-   reader from the shared deadline; removing the analysis-deadline reservation;
-   starting the allowance at the wrong time; mapping `field` while ignoring the
+   reader from the shared deadline; removing the analysis-deadline reservation
+   (asserted directly on the deadline, because the existing 60,000 ms reserve
+   hides it end to end); using the pipeline's own clock instead of the shared
+   job start; computing a freshness request timer from the 240,000 ms window;
+   mapping `field` while ignoring the
    read result's `category`; reporting an unlisted `field` or `reason` or
    deriving either from an exception name or message; and recording either on a
    non-`freshness` stage. The shipped-bundle test asserts the exact `freshness`
