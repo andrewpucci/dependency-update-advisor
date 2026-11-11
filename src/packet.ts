@@ -178,13 +178,6 @@ export async function assembleReviewPacket<S extends Session>(
       build(current.reachability, current.relationships),
       context.trusted,
     );
-    while (!packet.ok && packet.error.category === 'budget' && fitted.dropMore()) {
-      current = fitted.current();
-      packet = validateReviewPacket(
-        build(current.reachability, current.relationships),
-        context.trusted,
-      );
-    }
     if (packet.ok)
       return { kind: 'ready', packet: packet.packet, droppedOptional: current.dropped };
     return {

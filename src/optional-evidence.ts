@@ -131,13 +131,6 @@ export function fitOptionalEvidence(input: OptionalInput) {
     if (pending.length) dropGroup();
     else dropProof();
   return {
-    /** Drops one more optional unit; false when none remain. Used if validation still reports a budget. */
-    dropMore: () => {
-      if (pending.length) dropGroup();
-      else if (droppable.length) dropProof();
-      else return false;
-      return true;
-    },
     current: () => ({
       reachability: [...fixed, ...scopes, ...[...groups.values()].flatMap((g) => g.records)],
       relationships: [...input.requiredProofs, ...keptProofs, ...proofs.map((p) => p.value)],

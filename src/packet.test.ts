@@ -300,6 +300,21 @@ test('keeps all reachability evidence when the packet fits its budgets', async (
   expect(result.droppedOptional).toEqual([]);
 });
 
+test('does not repeatedly validate whole packets after the fitter has accounted for every budget', async () => {
+  const validate = validations();
+  validate.mockImplementation(() => ({ ok: false, error: { category: 'budget' } }) as never);
+  try {
+    const result = await assembleMixed(
+      lockFragment('npm', 64, 0, { reachability: pairVerdicts('npm', 64, 0, 10) }),
+      lockFragment('uv', 64, 0),
+    );
+    expect(result).toEqual({ kind: 'incomplete', gaps: [{ source: 'packet', reason: 'budget' }] });
+    expect(validate).toHaveBeenCalledTimes(1);
+  } finally {
+    validate.mockRestore();
+  }
+});
+
 test('a mixed packet over the verdict cap drops uv groups first, then the largest npm groups', async () => {
   const npmVerdicts = pairVerdicts('npm', 64, 0),
     uvVerdicts = pairVerdicts('uv', 64, 0);
