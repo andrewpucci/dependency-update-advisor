@@ -121,6 +121,7 @@ function fixture(changes: PacketChange[] = []) {
     ...structuredClone(expected),
     changes,
     relationships: [],
+    reachability: [],
     findings: [],
     coverage: { npm: coverageFor('npm'), actions: coverageFor('actions'), uv: coverageFor('uv') },
     sources: [

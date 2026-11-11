@@ -280,6 +280,7 @@ export async function upstreamScenario(options: Options = {}) {
       advisoryLimits: advisoryTestLimits,
       coverage: { npm: npm.coverage, actions: actions.coverage, uv: uv.coverage },
       relationships: [...npm.relationships, ...uv.relationships],
+      reachability: [],
       expected: {
         binding: fixture.input.binding,
         baseSha: fixture.input.binding.baseSha,

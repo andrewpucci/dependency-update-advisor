@@ -149,6 +149,7 @@ test.each([true, false])(
         ...f.expected,
         ...fields,
         relationships: [],
+        reachability: [],
         sources: [...output.sources, f.absent],
         coverage: {
           npm: inventory.coverage,
@@ -231,6 +232,7 @@ test.each([
         sources: [...output.sources, f.absent],
         findings: output.findings,
         relationships: [],
+        reachability: [],
         coverage: {
           npm: inventory.coverage,
           actions: { status: 'not_applicable', reasons: [], sourceIds: ['other'] },
@@ -320,6 +322,7 @@ test.each([false, true])(
         sources: [...output.sources, f.absent],
         findings: output.findings,
         relationships: [],
+        reachability: [],
         coverage: {
           npm: inventory.coverage,
           actions: { status: 'not_applicable', reasons: [], sourceIds: ['other'] },

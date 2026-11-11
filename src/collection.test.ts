@@ -247,6 +247,7 @@ test('keeps the registry capability separate from the GitHub fetch', async () =>
     sources: [],
     findings: [],
     relationships: [],
+    reachability: [],
   });
   const result = await assembleReviewPacket({
     trusted: fixture.expected,

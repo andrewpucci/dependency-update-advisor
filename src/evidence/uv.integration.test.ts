@@ -261,6 +261,7 @@ async function handoff(mode: UvComparisonMode = 'permission403', options: Handof
       changes: [...uv.changes, ...npmResult.changes, ...actions.changes],
       sources: [...uv.sources, ...npmResult.sources, ...actions.sources],
       relationships: uv.relationships,
+      reachability: [],
       findings: uv.findings,
     };
     return {

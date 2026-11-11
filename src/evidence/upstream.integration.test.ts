@@ -46,6 +46,7 @@ async function review(options: Parameters<typeof upstreamScenario>[0] = {}) {
       ...addSyntheticMalwareCoverage(result),
       coverage: fixture.coverage,
       relationships: fixture.relationships,
+      reachability: [],
     },
     fixture.expected,
   );

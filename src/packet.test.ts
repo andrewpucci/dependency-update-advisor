@@ -33,6 +33,7 @@ function collector(ecosystem: 'npm' | 'actions' | 'uv') {
     sources: [],
     findings: [],
     relationships: [],
+    reachability: [],
     ecosystem,
   });
 }
@@ -110,6 +111,49 @@ test('names the packet as the gap when validation rejects the assembled evidence
     inventorySource: null,
   });
   expect(result).toMatchObject({ kind: 'incomplete', gaps: [{ source: 'packet' }] });
+});
+
+const sharedInventory = {
+  id: 'inventory',
+  kind: 'file-list',
+  ecosystems: ['npm', 'actions', 'uv'],
+  memberIds: [],
+  status: 'available',
+  reasons: [],
+  provenance: {
+    kind: 'inventory',
+    repository,
+    baseSha: base,
+    headSha: head,
+    absentEcosystems: ['npm', 'actions', 'uv'],
+  },
+};
+function assembleWithUv(uv: () => Promise<unknown>) {
+  return assembleReviewPacket({
+    trusted,
+    isCurrent: () => true,
+    openSession: async () => ({ close: () => undefined }),
+    collectors: { npm: collector('npm'), actions: collector('actions'), uv },
+    inventorySource: sharedInventory,
+  });
+}
+
+test('a fragment without reachability yields an explicit empty array, never a missing field', async () => {
+  const { reachability: _omitted, ...fragment } = await collector('uv')();
+  const result = await assembleWithUv(async () => fragment);
+  expect(result).toMatchObject({ kind: 'ready', packet: { reachability: [] } });
+});
+
+test('forwards fragment reachability to T4 instead of dropping it', async () => {
+  const fragment = await collector('uv')();
+  const result = await assembleWithUv(async () => ({ ...fragment, reachability: [{}] }));
+  expect(result).toEqual({ kind: 'incomplete', gaps: [{ source: 'packet', reason: 'malformed' }] });
+});
+
+test('rejects a fragment whose reachability is not an array', async () => {
+  const fragment = await collector('uv')();
+  const result = await assembleWithUv(async () => ({ ...fragment, reachability: 'none' }));
+  expect(result).toEqual({ kind: 'incomplete', gaps: [{ source: 'uv', reason: 'malformed' }] });
 });
 
 test('keeps the computed result when closing the session fails', async () => {

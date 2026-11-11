@@ -136,6 +136,7 @@ function accepted(result: Inventory) {
     },
     findings: [],
     relationships: [],
+    reachability: [],
   };
   const validated = validateReviewPacket(candidate, expected);
   expect(validated.ok, JSON.stringify(validated)).toBe(true);

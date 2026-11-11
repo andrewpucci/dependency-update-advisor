@@ -44,6 +44,8 @@ type Fragment = Readonly<{
   sources: unknown;
   findings: unknown;
   relationships: unknown;
+  /** Absent means the collector supplied no absence evidence; the packet field is always present. */
+  reachability?: unknown;
 }>;
 
 type CollectedFragments =
@@ -71,7 +73,8 @@ function fragment(value: unknown, ecosystem: Ecosystem): Fragment | null {
     !Array.isArray(value.changes) ||
     !Array.isArray(value.sources) ||
     !Array.isArray(value.findings) ||
-    !Array.isArray(value.relationships)
+    !Array.isArray(value.relationships) ||
+    (value.reachability !== undefined && !Array.isArray(value.reachability))
   )
     return null;
   return value as Fragment;
@@ -147,6 +150,9 @@ export async function assembleReviewPacket<S extends Session>(
         ],
         findings: collected.fragments.flatMap((item) => item.findings),
         relationships: collected.fragments.flatMap((item) => item.relationships),
+        reachability: collected.fragments.flatMap((item) =>
+          Array.isArray(item.reachability) ? item.reachability : [],
+        ),
       },
       context.trusted,
     );

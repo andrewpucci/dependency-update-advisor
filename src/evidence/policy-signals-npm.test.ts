@@ -184,6 +184,7 @@ test.each([
       findings: out.findings,
       coverage: f.coverage,
       relationships: f.relationships,
+      reachability: [],
     },
     f.expected,
   );

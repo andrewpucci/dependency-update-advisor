@@ -555,6 +555,7 @@ function validatedGraphUnits(
       sources: [...graph.sources, fixture.absent],
       findings: graph.findings,
       relationships: graph.relationships,
+      reachability: [],
       coverage: {
         npm: graph.coverage,
         actions: { status: 'not_applicable', reasons: [], sourceIds: ['other'] },
