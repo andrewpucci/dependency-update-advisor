@@ -56,7 +56,11 @@ GitHub App token.
    inventoried from live GitHub state, not assumed. The caller filename is
    `.github/workflows/dependabot-review-caller.yml`; its first no-write pin is
    `8493d18e987a94dc263e47f6ef9d1452bf9cec82`, the passing `main` revision that
-   contains merged W2 rehearsal code.
+   contains merged W2 rehearsal code. It was re-pinned to
+   `e858ee0a1c21d302ebfcde38c7d973a0d0609de4`, the passing `main` revision that
+   contains the fixed-stage diagnostics, so the no-write rehearsal reports
+   `internal-failure at <stage>`. This changes no permission, secret, or
+   trigger.
 
 ## Commands
 
