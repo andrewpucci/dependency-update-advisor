@@ -1,0 +1,11 @@
+{
+  "version": 1,
+  "analysis": {
+    "provider": "mistral",
+    "model": "mistral-large-latest"
+  },
+  "context": {
+    "sourceRoots": ["src"],
+    "sendSourceExcerptsToModel": false
+  }
+}
