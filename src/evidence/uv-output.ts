@@ -4,6 +4,7 @@ import type { UvInventory, UvObservation, UvChange } from './uv-graph.js';
 import { byCodeUnit, freeze } from './common.js';
 import { checkGraphData, UvGraphFailure, type GraphWork } from './uv-input.js';
 import { uvSideKey } from './uv-roles.js';
+import { fitRetained } from './optional-retained.js';
 
 function sourceChunks(s: PacketSource, work: GraphWork) {
   const chunks: PacketSource[] = [];
@@ -101,7 +102,12 @@ export function finishUvOutput(result: UvInventory, maxBytes: number) {
   result.gaps.sort((a, b) => byCodeUnit(JSON.stringify(a), JSON.stringify(b)));
   result.observations.sort((a, b) => byCodeUnit(JSON.stringify(a), JSON.stringify(b)));
   result.findings.sort((a, b) => byCodeUnit(a.id, b.id));
-  result.relationships.sort((a, b) => byCodeUnit(JSON.stringify(a), JSON.stringify(b)));
-  if (Buffer.byteLength(JSON.stringify(result)) > maxBytes) throw new UvGraphFailure('budget');
-  return freeze(result);
+  for (const list of [result.relationships, result.optionalRelationships, result.reachability])
+    list.sort((a, b) => byCodeUnit(JSON.stringify(a), JSON.stringify(b)));
+  // Optional absence evidence degrades before required inventory can fail the whole result.
+  return freeze(
+    fitRetained(result, maxBytes, () => {
+      throw new UvGraphFailure('budget');
+    }),
+  );
 }

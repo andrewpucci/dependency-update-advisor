@@ -86,29 +86,182 @@ test('removed transitive changes use only a base-side path', async () => {
   expect(r.relationships[0].side).toBe('base');
   expect(units.units).toHaveLength(1);
 });
-test('multiple changed direct dependencies leave the transitive member standalone', async () => {
-  const manifest = uvManifest.replace('["orbit>=1"]', '["orbit>=1","other>=1"]');
-  const lock = (v: string) =>
+const multiManifest = uvManifest.replace('["orbit>=1"]', '["orbit>=1","other>=1"]');
+function multiLock(v: string, other = '', extra = '', orbitDeps = '{name="child"}') {
+  return (
     tree(v)
       .replace('dependencies=[{name="orbit"}]', 'dependencies=[{name="orbit"},{name="other"}]')
       .replace(
         'requires-dist=[{name="orbit",specifier=">=1"}]',
         'requires-dist=[{name="orbit",specifier=">=1"},{name="other",specifier=">=1"}]',
-      ) + uvPackage('other', v);
+      )
+      .replace('dependencies=[{name="child"}]', `dependencies=[${orbitDeps}]`) +
+    uvPackage('other', v, other) +
+    extra
+  );
+}
+async function multiFixture(
+  other = (_v: string) => '',
+  extra = (_v: string) => '',
+  orbitDeps = '{name="child"}',
+) {
+  return reconcileUvGraph(
+    await uvGraphFixture({
+      'base:pyproject.toml': multiManifest,
+      'head:pyproject.toml': multiManifest,
+      'base:uv.lock': multiLock('1', other('1'), extra('1'), orbitDeps),
+      'head:uv.lock': multiLock('2', other('2'), extra('2'), orbitDeps),
+    }),
+  );
+}
+const vkey = (v: { side: string; anchorId: string; memberId: string | null; outcome: string }) =>
+  [v.side, v.anchorId, v.memberId, v.outcome].join('|');
+const idFor = (
+  r: { changes: readonly { id: string; to: unknown; from: unknown }[] },
+  name: string,
+) => r.changes.find((c) => ((c.to ?? c.from) as { name: string }).name === name)!.id;
+
+test('multiple changed direct dependencies with proven absence keep one proof and no blanket diagnostic', async () => {
+  const { r } = accepted(await multiFixture());
+  expect(r.relationships).toHaveLength(1);
+  expect(r.observations.some((o) => o.reason === 'multiple_direct_changes')).toBe(false);
+});
+test('one reachable anchor groups when every other candidate is proven unreachable on each side', async () => {
+  const { r, units } = accepted(await multiFixture());
+  const [orbit, other, child] = ['orbit', 'other', 'child'].map((n) => idFor(r, n));
+  expect(r.coverage.status).toBe('complete');
+  expect(r.relationships.map((p) => [p.fromId, p.toId, p.side])).toEqual([[orbit, child, 'head']]);
+  expect(r.optionalRelationships).toEqual([]);
+  expect(r.reachability.map(vkey).sort()).toEqual(
+    [`base|${other}|${child}|unreachable`, `head|${other}|${child}|unreachable`].sort(),
+  );
+  expect(units.units.find((u) => u.kind === 'direct_group')).toMatchObject({
+    anchorId: orbit,
+    memberIds: [orbit, child].sort(),
+  });
+});
+
+test('an edge guarded by a platform marker still counts as reachability, never absence', async () => {
+  const marker = `sys_platform == 'win32'`;
+  const { r, units } = accepted(
+    await multiFixture(
+      () => `dependencies=[{name="child",marker="${marker}"}]\n`,
+      (v) => uvPackage('solo', v),
+      '{name="child"},{name="solo"}',
+    ),
+  );
+  const [other, child] = ['other', 'child'].map((n) => idFor(r, n));
+  expect(r.reachability.some((v) => v.anchorId === other && v.memberId === child)).toBe(false);
+  expect(r.optionalRelationships.map((p) => p.toId)).toEqual([child]);
+  expect(
+    r.observations.some((o) => o.reason === 'ambiguous_anchors' && o.memberIds.includes(child)),
+  ).toBe(true);
+  expect(units.units.find((u) => u.memberIds.includes(child))).toMatchObject({
+    kind: 'standalone',
+    relationship: { reason: 'ambiguous_anchors' },
+  });
+});
+
+test('an optional-dependency extra edge counts as reachability, never absence', async () => {
+  const { r } = accepted(
+    await multiFixture(
+      () => '[package.optional-dependencies]\nfeature=[{name="child"}]\n',
+      (v) => uvPackage('solo', v),
+      '{name="child"},{name="solo"}',
+    ),
+  );
+  const [other, child] = ['other', 'child'].map((n) => idFor(r, n));
+  expect(r.reachability.some((v) => v.anchorId === other && v.memberId === child)).toBe(false);
+  expect(r.optionalRelationships.map((p) => p.toId)).toEqual([child]);
+});
+
+test('absence on one side only is not enough when the other side can reach the member', async () => {
+  const { r, units } = accepted(
+    await multiFixture((v) => (v === '1' ? 'dependencies=[{name="child"}]\n' : '')),
+  );
+  const [other, child] = ['other', 'child'].map((n) => idFor(r, n));
+  expect(r.reachability.map(vkey)).toEqual([`head|${other}|${child}|unreachable`]);
+  expect(units.units.find((u) => u.memberIds.includes(child))!.relationship.reason).toBe(
+    'reachability_unproven',
+  );
+});
+
+test('a selector that resolves to no lock package makes the anchor non-proving, never unreachable', async () => {
+  const { r, units } = accepted(await multiFixture(() => 'dependencies=[{name="ghost"}]\n'));
+  const [other, child] = ['other', 'child'].map((n) => idFor(r, n));
+  expect(r.coverage.status).toBe('complete');
+  expect(r.reachability.some((v) => v.outcome === 'unreachable')).toBe(false);
+  expect(
+    r.reachability.filter((v) => v.anchorId === other).map((v) => [v.side, v.memberId, v.outcome]),
+  ).toEqual(
+    expect.arrayContaining([
+      ['base', null, 'unknown'],
+      ['head', null, 'unknown'],
+    ]),
+  );
+  expect(units.units.find((u) => u.memberIds.includes(child))!.relationship.reason).toBe(
+    'reachability_unproven',
+  );
+});
+
+test('a direct removal beside an update groups only with its base-side absence proof', async () => {
   const { r, units } = accepted(
     reconcileUvGraph(
       await uvGraphFixture({
-        'base:pyproject.toml': manifest,
-        'head:pyproject.toml': manifest,
-        'base:uv.lock': lock('1'),
-        'head:uv.lock': lock('2'),
+        'base:pyproject.toml': multiManifest,
+        'head:pyproject.toml': uvManifest,
+        'base:uv.lock': multiLock('1'),
+        'head:uv.lock': tree('2'),
       }),
     ),
   );
-  expect(r.relationships).toEqual([]);
-  expect(units.units).toHaveLength(3);
-  expect(r.observations.some((o) => o.reason === 'multiple_direct_changes')).toBe(true);
+  const [other, child] = ['other', 'child'].map((n) => idFor(r, n));
+  expect(r.reachability.map(vkey)).toEqual([`base|${other}|${child}|unreachable`]);
+  expect(units.units.find((u) => u.kind === 'direct_group')).toBeDefined();
 });
+
+test('truncating graph work never invents absence and reports the cut as a limit', async () => {
+  const files = {
+    'base:pyproject.toml': multiManifest,
+    'head:pyproject.toml': multiManifest,
+    'base:uv.lock': multiLock('1'),
+    'head:uv.lock': multiLock('2'),
+  };
+  const input = await uvGraphFixture(files);
+  const full = reconcileUvGraph(input);
+  if (full.kind !== 'inventory') throw new Error('expected inventory');
+  const fullAbsent = new Set(
+    full.reachability.filter((v) => v.outcome === 'unreachable').map(vkey),
+  );
+  const at = (maxGraphWork: number) =>
+    reconcileUvGraph({ ...input, limits: { ...input.limits, maxGraphWork } });
+  let low = 1,
+    high = 1_000_000;
+  while (low < high) {
+    const mid = Math.floor((low + high) / 2);
+    if (at(mid).kind === 'inventory') high = mid;
+    else low = mid + 1;
+  }
+  let sawTruncation = false,
+    sawBudgetMarker = false;
+  for (let work = low; work < low + 600; work += 1) {
+    const result = at(work);
+    if (result.kind !== 'inventory') continue;
+    for (const v of result.reachability) {
+      if (v.outcome === 'unreachable') expect(fullAbsent.has(vkey(v))).toBe(true);
+      if (v.outcome === 'truncated') {
+        sawTruncation = true;
+        expect(v.reasons).toContain('budget');
+        expect(v.memberId).toBeNull();
+      }
+    }
+    if (result.observations.some((o) => o.kind === 'relationship' && o.reason === 'budget'))
+      sawBudgetMarker = true;
+  }
+  expect(sawBudgetMarker).toBe(true);
+  expect(sawTruncation).toBe(true);
+});
+
 test('source-split endpoints never emit a proof rejected by T4', async () => {
   const deps = Array.from({ length: 34 }, (_, i) => `{name="leaf-${i}"}`).join(',');
   const lock = (v: string) =>

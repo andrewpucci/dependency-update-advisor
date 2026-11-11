@@ -264,6 +264,8 @@ export function createEvidenceCollectors(
       sources: graph.sources,
       findings: graph.findings,
       relationships: graph.relationships,
+      reachability: graph.reachability,
+      optionalRelationships: graph.optionalRelationships,
     };
   };
 

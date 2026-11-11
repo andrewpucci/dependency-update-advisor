@@ -11,6 +11,7 @@ import {
 } from '../schema.js';
 import type { Finding } from '../policy.js';
 import type { NpmInventoryResult, NpmRootSide, NpmNode } from './npm.js';
+import { fitRetained } from './optional-retained.js';
 import { closureFrom, closurePath, nodeKey, supportedEdge, type Closure } from './npm-reach.js';
 import {
   createNpmRegistryReader,
@@ -349,6 +350,9 @@ function unchangedReach(
   }
   return seen;
 }
+const failBudget = (): never => {
+  throw new GraphFailure('budget');
+};
 const isBudget = (error: unknown) => error instanceof GraphFailure && error.reason === 'budget';
 type Candidate = Readonly<{
   change: Resolved;
@@ -484,45 +488,6 @@ function collectProofs(inventory: Inventory, spend: () => void) {
   reachability.sort((a, b) => (JSON.stringify(a) < JSON.stringify(b) ? -1 : 1));
   return { relationships, optionalRelationships, reachability, findings };
 }
-const bytes = (value: unknown) => Buffer.byteLength(JSON.stringify(value));
-/** Replaces each anchor/side pair group with one truncated scope record; existing scope records stay. */
-function scopeAll(verdicts: readonly ReachabilityVerdict[]): ReachabilityVerdict[] {
-  const kept: ReachabilityVerdict[] = [],
-    groups = new Map<string, ReachabilityVerdict>();
-  for (const v of verdicts) {
-    if (v.memberId === null) kept.push(v);
-    else groups.set(JSON.stringify([v.side, v.anchorId]), v);
-  }
-  return [
-    ...kept,
-    ...[...groups.values()].map((v) => ({
-      ecosystem: v.ecosystem,
-      side: v.side,
-      sourceId: v.sourceId,
-      anchorId: v.anchorId,
-      memberId: null,
-      outcome: 'truncated' as const,
-      reasons: ['budget' as const],
-    })),
-  ];
-}
-/**
- * Keeps the retained result inside the caller's byte limit by degrading optional evidence only:
- * pair groups become scope records, then second proofs go. Core inventory overflow still fails.
- */
-function fitRetained<
-  T extends {
-    reachability: readonly ReachabilityVerdict[];
-    optionalRelationships: readonly NpmProof[];
-  },
->(result: T, limit: number): T {
-  if (bytes(result) <= limit) return result;
-  let next = { ...result, reachability: scopeAll(result.reachability) };
-  if (bytes(next) <= limit) return next;
-  next = { ...next, optionalRelationships: [] };
-  if (bytes(next) <= limit) return next;
-  throw new GraphFailure('budget');
-}
 function graphResult({ inventory, limits, spend }: ReturnType<typeof parse>): NpmGraphResult {
   if (inventory.kind !== 'inventory') return freeze(structuredClone(inventory));
   const { relationships, optionalRelationships, reachability, findings } = collectProofs(
@@ -539,7 +504,7 @@ function graphResult({ inventory, limits, spend }: ReturnType<typeof parse>): Np
     reachability,
     findings: findings.sort(byId),
   };
-  return freeze(structuredClone(fitRetained(result, limits.maxRetainedBytes)));
+  return freeze(structuredClone(fitRetained(result, limits.maxRetainedBytes, failBudget)));
 }
 function byId(a: { id: string }, b: { id: string }) {
   return a.id < b.id ? -1 : 1;
@@ -640,7 +605,7 @@ export async function enrichNpmEvidence(
         new Set(findings.map((f) => f.id)).size === findings.length,
     );
     if (!packetBounds(result)) return { kind: 'unavailable', reason: 'budget' };
-    return freeze(structuredClone(fitRetained(result, parsed.limits.maxRetainedBytes)));
+    return freeze(structuredClone(fitRetained(result, parsed.limits.maxRetainedBytes, failBudget)));
   } catch (error) {
     return failure(error);
   }

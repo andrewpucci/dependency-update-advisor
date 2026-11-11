@@ -1,5 +1,10 @@
 import { isDeepStrictEqual } from 'node:util';
-import { PACKET_LIMITS, type UvSide, type RelationshipProof } from '../schema.js';
+import {
+  PACKET_LIMITS,
+  type ReachabilityVerdict,
+  type UvSide,
+  type RelationshipProof,
+} from '../schema.js';
 import type { Finding } from '../policy.js';
 import type { UvInventory, UvChange, UvObservation } from './uv-graph.js';
 import type { UvRootSnapshot } from './uv.js';
@@ -7,6 +12,7 @@ import { resolveUvSelector, uvSideKey as key, type UvRoles, type UvRoleNode } fr
 import { uvInstance, uvSemantic } from './uv-inventory.js';
 import { byCodeUnit } from './common.js';
 import { checkGraphData, UvGraphFailure, type GraphWork } from './uv-input.js';
+import { uvClosureFrom, uvClosurePath, type UvClosure } from './uv-reach.js';
 
 export type UvPathRoot = { root: UvRootSnapshot; base: UvRoles; head: UvRoles };
 type Path = Extract<RelationshipProof, { ecosystem: 'uv' }>;
@@ -129,6 +135,92 @@ function proofFor(
     path: path.map((p) => ({ ...p, sourceId: start.sourceId })),
   };
 }
+type UvCandidate = Readonly<{
+  change: UvChange;
+  closures: Partial<Record<'base' | 'head', UvClosure>>;
+}>;
+type MultiRoots = Map<string, readonly UvCandidate[]>;
+/** One marker-agnostic closure per changed direct anchor per side in a root; incomplete ones become scope records. */
+function candidatesFor(result: UvInventory, contexts: UvPathRoot[], root: string, work: GraphWork) {
+  const context = contexts.find((c) => c.root.root === root),
+    scopes: ReachabilityVerdict[] = [];
+  const candidates = result.changes
+    .filter((c) => c.role === 'direct' && (c.to ?? c.from)!.root === root)
+    .map((change): UvCandidate => {
+      const closures: UvCandidate['closures'] = {};
+      for (const side of ['base', 'head'] as const) {
+        const step = side === 'head' ? change.to : change.from;
+        if (!context || !step || step.root !== root) continue;
+        const closure = uvClosureFrom(context, side, key(step), work);
+        closures[side] = closure;
+        if (closure.limit)
+          scopes.push({
+            ecosystem: 'uv',
+            side,
+            sourceId: step.sourceId,
+            anchorId: change.id,
+            memberId: null,
+            outcome: closure.limit.outcome,
+            reasons: [...closure.limit.reasons],
+          });
+      }
+      return { change, closures };
+    });
+  return { candidates, scopes };
+}
+const sidesUsed = (member: UvChange) =>
+  member.kind === 'update'
+    ? (['base', 'head'] as const)
+    : ([member.kind === 'removal' ? 'base' : 'head'] as const);
+function multiAnchor(contexts: UvPathRoot[], member: UvChange, candidates: readonly UvCandidate[]) {
+  const proofs: Path[] = [],
+    verdicts: ReachabilityVerdict[] = [];
+  const claim = member.kind === 'removal' ? 'base' : 'head',
+    end = claim === 'base' ? member.from : member.to,
+    context = contexts.find((c) => c.root.root === end?.root);
+  if (!end || !context) return { proofs, verdicts, observation: 'wrong_side' };
+  const reaching = candidates.filter((c) => c.closures[claim]?.keys.has(key(end)));
+  if (!reaching.length) return { proofs, verdicts, observation: 'missing_relationship' };
+  let blocked = 'path_limit';
+  for (const candidate of reaching.slice(0, 2)) {
+    const start = claim === 'head' ? candidate.change.to : candidate.change.from,
+      path = uvClosurePath(context, claim, candidate.closures[claim]!, key(end));
+    if (!start || start.sourceId !== end.sourceId) blocked = 'source_split';
+    else if (!path || path.length > PACKET_LIMITS.pathInstances) blocked = 'path_limit';
+    else
+      proofs.push({
+        ecosystem: 'uv',
+        fromId: candidate.change.id,
+        toId: member.id,
+        side: claim,
+        sourceId: start.sourceId,
+        path: path.map((p) => ({ ...p, sourceId: start.sourceId })),
+      });
+  }
+  if (reaching.length > 1) return { proofs, verdicts, observation: 'ambiguous_anchors' };
+  if (!proofs.length) return { proofs, verdicts, observation: blocked };
+  for (const other of candidates) {
+    if (other === reaching[0]) continue;
+    for (const side of sidesUsed(member)) {
+      const closure = other.closures[side],
+        mine = side === 'head' ? member.to : member.from,
+        theirs = side === 'head' ? other.change.to : other.change.from;
+      // A pair with no record is unknown, so any doubt (limit, reach, source split) simply omits it.
+      if (!closure || closure.limit || !mine || !theirs) continue;
+      if (closure.keys.has(key(mine)) || theirs.sourceId !== mine.sourceId) continue;
+      verdicts.push({
+        ecosystem: 'uv',
+        side,
+        sourceId: theirs.sourceId,
+        anchorId: other.change.id,
+        memberId: member.id,
+        outcome: 'unreachable',
+        reasons: [],
+      });
+    }
+  }
+  return { proofs, verdicts, observation: null };
+}
 function isShared(result: UvInventory, contexts: UvPathRoot[], proof: Path, work: GraphWork) {
   const end = proof.path.at(-1)!,
     context = contexts.find((c) => c.root.root === end.root)!;
@@ -186,16 +278,39 @@ function relationshipAddition(
   contexts: UvPathRoot[],
   member: UvChange,
   work: GraphWork,
+  roots: MultiRoots,
 ) {
-  const proof = proofFor(result, contexts, member, work);
-  const note =
-    typeof proof === 'string'
+  let proof = proofFor(result, contexts, member, work);
+  const optionalRelationships: Path[] = [],
+    reachability: ReachabilityVerdict[] = [];
+  let ambiguous = false;
+  if (proof === 'multiple_direct_changes') {
+    const root = (member.to ?? member.from)!.root;
+    let candidates = roots.get(root);
+    if (!candidates) {
+      const created = candidatesFor(result, contexts, root, work);
+      candidates = created.candidates;
+      roots.set(root, candidates);
+      // Kept even if this member's addition is later discarded: a cut closure must stay a visible limit.
+      result.reachability.push(...created.scopes);
+    }
+    const multi = multiAnchor(contexts, member, candidates);
+    reachability.push(...multi.verdicts);
+    optionalRelationships.push(...multi.proofs.slice(1));
+    ambiguous = multi.observation === 'ambiguous_anchors';
+    proof = multi.proofs[0] ?? multi.observation ?? 'missing_relationship';
+  }
+  const note = ambiguous
+    ? observation(member, 'ambiguous_anchors')
+    : typeof proof === 'string'
       ? observation(member, proof)
       : isShared(result, contexts, proof, work)
         ? observation(member, 'shared')
         : null;
   return {
     relationships: typeof proof === 'string' ? [] : [proof],
+    optionalRelationships,
+    reachability,
     observations: note ? [note] : [],
     findings: note ? [finding(member, note, work)] : [],
   };
@@ -218,10 +333,11 @@ export function proveUvRelationships(
       (n, item, i) => n + Buffer.byteLength(JSON.stringify(item)) + (list.length || i ? 1 : 0),
       0,
     );
+  const roots: MultiRoots = new Map();
   for (const member of result.changes) {
     if (member.role === 'direct') continue;
     try {
-      const addition = relationshipAddition(result, contexts, member, work);
+      const addition = relationshipAddition(result, contexts, member, work, roots);
       checkGraphData(addition, work, maxBytes);
       const projected =
         bytes +
@@ -235,6 +351,8 @@ export function proveUvRelationships(
       }
       bytes = projected;
       result.relationships.push(...addition.relationships);
+      result.optionalRelationships.push(...addition.optionalRelationships);
+      result.reachability.push(...addition.reachability);
       result.observations.push(...addition.observations);
       result.findings.push(...addition.findings);
     } catch (error) {
