@@ -531,15 +531,23 @@ function classify(state: State, root: NpmRoot, instance: NpmSide, side: 'base' |
     ),
   };
 }
+/** A direct dependency that stops being direct (or the reverse) must not vanish from either side's candidates. */
+function roleOf(state: State, root: NpmRoot, from: NpmSide | null, to: NpmSide | null) {
+  const head = classify(state, root, to ?? from!, to ? 'head' : 'base');
+  if (!from || !to) return head;
+  const base = classify(state, root, from, 'base');
+  if (base.role === 'unknown' || head.role === 'unknown' || base.role === head.role) return head;
+  gap(state, root.root, null, null, 'conflict');
+  return { role: 'unknown' as const };
+}
 function emitResolved(state: State, root: NpmRoot, from: NpmSide | null, to: NpmSide | null) {
-  const instance = to ?? from!;
   state.changes.push({
     id: changeId(state, 'resolved', from, to),
     ecosystem: 'npm',
     kind: from ? (to ? 'update' : 'removal') : 'addition',
     from,
     to,
-    ...classify(state, root, instance, to ? 'head' : 'base'),
+    ...roleOf(state, root, from, to),
     evidence: research(),
   });
 }

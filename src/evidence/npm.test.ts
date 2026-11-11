@@ -273,6 +273,47 @@ test('preserves role changes independently from a resolved version update', asyn
   accepted(result);
 });
 
+test.each([
+  ['direct on base but only installed transitively on head', {}, undefined],
+  ['transitive on base but direct on head', undefined, {}],
+] as const)(
+  'an update that is %s has an unknown role and a conflict gap',
+  async (_label, head, base) => {
+    const f = fixture();
+    const dropped = { dependencies: {} };
+    const declared = { dependencies: { widget: '^1' } };
+    for (const [side, manifest] of [
+      ['base', base === undefined ? declared : dropped],
+      ['head', head === undefined ? declared : dropped],
+    ] as const) {
+      f.files[`${side}:package.json`] = structuredClone(manifest);
+      lock(f, side).packages[''] = structuredClone(manifest);
+    }
+    const result = inventory(await collectNpmInventory(f.input, { session: f.session }));
+    const update = result.changes.find((c) => !('basis' in c));
+    expect(update).toMatchObject({ kind: 'update', role: 'unknown' });
+    expect(result.gaps.map((g) => g.reason)).toContain('conflict');
+    accepted(result);
+  },
+);
+
+test('an update that stays direct or stays transitive keeps its established role', async () => {
+  const direct = fixture();
+  expect(
+    inventory(await collectNpmInventory(direct.input, { session: direct.session })).changes[0],
+  ).toMatchObject({ role: 'direct' });
+  const transitive = fixture();
+  for (const side of ['base', 'head'] as const) {
+    transitive.files[`${side}:package.json`] = { dependencies: {} };
+    lock(transitive, side).packages[''] = { dependencies: {} };
+  }
+  const result = inventory(
+    await collectNpmInventory(transitive.input, { session: transitive.session }),
+  );
+  expect(result.changes[0]).toMatchObject({ role: 'transitive' });
+  expect(result.gaps.map((g) => g.reason)).not.toContain('conflict');
+});
+
 test('retains declaration additions despite an unavailable lock and flags stale lock declarations', async () => {
   const f = fixture();
   f.files['head:package.json'] = { dependencies: { widget: '^2', added: '^1' } };
