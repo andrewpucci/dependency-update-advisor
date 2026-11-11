@@ -340,11 +340,12 @@ do that.
 2. **Reserved analysis deadline.** The model's deadline is the job budget minus
    `freshnessAllowanceMs`, so the final freshness check always has its
    allowance inside the job.
-3. **Open decision: `freshnessAllowanceMs`.** The value is not set by this
-   draft. A derived lower bound is three sequential reads at the request
-   timeout (45,000 ms), which covers one full re-verification
-   (run, PR, comparison). The maintainer chooses the number; the plan must not
-   invent one.
+3. **Proposed value: `freshnessAllowanceMs` = 45,000.** It is the derived
+   minimum: three sequential reads (run, PR, comparison) at the 15,000 ms
+   request timeout cover one full re-verification, the only freshness check
+   that must follow the model. It is proposed, not approved; the maintainer
+   confirms or changes it when approving this draft, and changing it needs the
+   same approval.
 4. **Fixed freshness detail.** Add `freshness` to `InternalFailureStage`. It
    replaces `unclassified` at the entry check, the checks before research and
    before the model, and the final check, whether the check returned `error`
