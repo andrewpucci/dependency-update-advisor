@@ -12,6 +12,15 @@ and [reusable workflow](SPEC-reusable-workflow.md), together with
 and [packet validation](SPEC-review-packet.md), remain authoritative. This
 draft does not select a production claim backend or authorize live publication.
 
+**Diagnostic amendment, approved for planning 2026-11-11:** The R1 no-write
+rehearsal recorded the intentionally redacted `internal-failure` outcome, but
+that aggregate does not identify a safe investigation boundary. The evidence
+is recorded in [#27](https://github.com/andrewpucci/dependency-update-advisor/issues/27).
+The user approved the following amendment for planning on 2026-11-11 and
+approved its execution on 2026-11-11; the work is implemented on `issue-27`,
+pending fresh-context review. This amendment does not authorize live
+publication or a production claim backend.
+
 The user approved this W2 supporting-contract map on 2026-11-08:
 
 | Supporting contract            | Responsibility                                                                                                                  | Depends on                                          |
@@ -233,6 +242,70 @@ receives `process.env` or a general fetch function.
    self-check exit behavior and redaction guarantee. An operator-visible check
    name requires an action-package amendment and a sentinel-redaction test;
    errors and stacks remain forbidden.
+
+## Diagnostic Amendment: Fixed Internal-Failure Stages
+
+This amendment preserves the current outcome contract while making the
+no-write rehearsal diagnosable without exposing exception data. It is scoped to
+the action's bounded stderr and rehearsal trace; it introduces no status,
+comment, configuration, permission, token, trigger, or network-write change.
+
+1. **Additive, fixed detail.** `internal-failure` remains the exact public
+   `ReviewOutcomeKind`. An internal failure carries exactly one optional
+   `InternalFailureStage` selected from this closed vocabulary:
+
+   - `snapshot` — resolving or materializing the trusted default-branch
+     snapshot, including C1/C2 inputs;
+   - `packet` — collecting or validating the evidence packet before research;
+   - `research` — S1/S2/S3 evidence acquisition and aggregation;
+   - `assessment` — M1/M2 analysis or O1 brief rendering;
+   - `handoff` — constructing or recording the otherwise publication-eligible
+     handoff; or
+   - `unclassified` — any unexpected boundary not safely attributable to one
+     of the preceding stages.
+
+   The stage is a literal selected by trusted code. It must not be derived from
+   an exception name, message, stack, response body, URL, config value, source
+   content, PR input, credential, or provider output. Non-`internal-failure`
+   outcomes carry no stage.
+
+2. **Redacted reporting.** When a no-write rehearsal records an internal
+   failure, its bounded stderr line includes only the literal outcome and
+   stage, in the form `internal-failure at <stage>`. The trace may retain that
+   same literal stage with the existing binding and operation ordering. No
+   stage is sent to a status, comment, or future publisher by this amendment.
+   The existing fixed startup diagnostics remain the only output for startup
+   self-check failures; an uncategorized exception at that boundary maps to
+   `unclassified` if it reaches the rehearsal result.
+3. **Fail-closed preservation.** Mapping a stage neither converts an outcome
+   to success nor makes a skipped, stale, unverified, or unowned attempt
+   publication eligible. Every cleanup, cancellation, ownership, freshness,
+   credential-separation, and no-live-write requirement above remains
+   unchanged. Failure to classify safely uses `unclassified`; it never emits
+   raw diagnostic data.
+4. **Required checks.** The implementation must inject a sentinel-bearing
+   failure at each classified boundary and prove the corresponding literal
+   stage is reported. It must also inject an unexpected failure and prove it
+   maps to `unclassified`. The action-level rehearsal test must assert its
+   shipped bundle emits the exact fixed diagnostic form. All those tests must
+   prove stderr and traces omit the sentinel, plus credentials, config values,
+   source lines, raw exception text, response bodies, URLs, and stacks. A
+   named mutation that interpolates an exception message or selects a stage
+   outside this vocabulary must fail a test. Existing no-write assertions must
+   continue to prove that no status, comment, App-token request, or other live
+   write occurs.
+
+### Amendment Boundaries
+
+- **Always:** retain the exact outcome kinds and redaction guarantee, use only
+  the six literal stages above, and record a stage only for
+  `internal-failure`.
+- **Ask first:** add or rename a stage, surface it in status or comment text,
+  change A1's startup interface, alter the workflow trigger, or change an App
+  permission or secret.
+- **Never:** report a raw error or external payload, infer a stage from
+  untrusted data, weaken fail-closed behavior, or use this diagnostic work to
+  start publication or production-claim implementation.
 
 ### Trusted config and context snapshot
 

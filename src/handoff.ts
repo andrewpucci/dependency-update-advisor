@@ -1,14 +1,15 @@
 import type { PacketGap } from './packet.js';
 import type { DroppedOptional } from './optional-evidence.js';
 import {
+  internalFailureStage,
   reviewOutcome,
   type ClaimStore,
+  type InternalFailureStage,
   type OwnedClaim,
   type ReviewOutcomeKind,
 } from './review.js';
 
-export type ReviewHandoff = Readonly<{
-  kind: ReviewOutcomeKind;
+type ReviewHandoffBase = Readonly<{
   identity: OwnedClaim['identity'];
   generation: number;
   status: 'none' | 'failure' | 'success';
@@ -20,12 +21,18 @@ export type ReviewHandoff = Readonly<{
   /** Bounded, redacted accounting for optional packet evidence removed to meet a budget. */
   droppedOptional: OptionalEvidenceDropCounts;
 }>;
+export type ReviewHandoff =
+  | (ReviewHandoffBase & Readonly<{ kind: 'internal-failure'; stage: InternalFailureStage }>)
+  | (ReviewHandoffBase &
+      Readonly<{ kind: Exclude<ReviewOutcomeKind, 'internal-failure'>; stage?: never }>);
 export type OptionalEvidenceDropCounts = Readonly<{ reachability: number; proof: number }>;
 /** What the pipeline knows about the result beyond its outcome kind. */
 export type HandoffDetail = Readonly<{
   body: boolean;
   gaps: readonly PacketGap[];
   droppedOptional?: readonly DroppedOptional[];
+  /** Required for internal failures; defaults to the safe catch-all for direct callers. */
+  stage?: InternalFailureStage;
 }>;
 const MAX_GAPS = 4;
 
@@ -61,23 +68,26 @@ export async function createReviewHandoff(
   )
     return { kind: 'stale' };
   const outcome = reviewOutcome(kind);
+  const detailBase = {
+    identity: claim.identity,
+    generation: claim.generation,
+    status: outcome.status,
+    comment: outcome.comment,
+    body: detail.body ? ('present' as const) : ('absent' as const),
+    gaps: copyGaps(detail.gaps),
+    droppedOptional: countDroppedOptional(detail.droppedOptional ?? []),
+  };
   return {
     kind: 'ready',
     handoff: Object.freeze({
       kind,
-      identity: claim.identity,
-      generation: claim.generation,
-      status: outcome.status,
-      comment: outcome.comment,
-      body: detail.body ? 'present' : 'absent',
-      gaps: copyGaps(detail.gaps),
-      droppedOptional: countDroppedOptional(detail.droppedOptional ?? []),
-    }),
+      ...(kind === 'internal-failure' ? { stage: internalFailureStage(detail.stage) } : {}),
+      ...detailBase,
+    }) as ReviewHandoff,
   };
 }
 
-export type RehearsalTrace = Readonly<{
-  kind: ReviewOutcomeKind;
+type RehearsalTraceBase = Readonly<{
   identity: OwnedClaim['identity'];
   generation: number;
   status: ReviewHandoff['status'];
@@ -86,6 +96,10 @@ export type RehearsalTrace = Readonly<{
   gaps: ReviewHandoff['gaps'];
   droppedOptional: ReviewHandoff['droppedOptional'];
 }>;
+export type RehearsalTrace =
+  | (RehearsalTraceBase & Readonly<{ kind: 'internal-failure'; stage: InternalFailureStage }>)
+  | (RehearsalTraceBase &
+      Readonly<{ kind: Exclude<ReviewOutcomeKind, 'internal-failure'>; stage?: never }>);
 export type RehearsalSink = Readonly<{
   record: (handoff: ReviewHandoff) => boolean;
   traces: () => readonly RehearsalTrace[];
@@ -98,17 +112,21 @@ export function createRehearsalSink(appToken: string | null): RehearsalSink | nu
   return Object.freeze({
     record: (handoff) => {
       if (traces.length >= 32) return false;
+      const traceBase = {
+        identity: Object.freeze([...handoff.identity]) as OwnedClaim['identity'],
+        generation: handoff.generation,
+        status: handoff.status,
+        comment: handoff.comment,
+        body: handoff.body,
+        gaps: copyGaps(handoff.gaps),
+        droppedOptional: handoff.droppedOptional,
+      };
       traces.push(
         Object.freeze({
           kind: handoff.kind,
-          identity: Object.freeze([...handoff.identity]) as OwnedClaim['identity'],
-          generation: handoff.generation,
-          status: handoff.status,
-          comment: handoff.comment,
-          body: handoff.body,
-          gaps: copyGaps(handoff.gaps),
-          droppedOptional: handoff.droppedOptional,
-        }),
+          ...(handoff.kind === 'internal-failure' ? { stage: handoff.stage } : {}),
+          ...traceBase,
+        }) as RehearsalTrace,
       );
       return true;
     },

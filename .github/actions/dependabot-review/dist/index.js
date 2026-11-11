@@ -19545,6 +19545,18 @@ function guardedFetch(fetchImpl, attempt, owns) {
 }
 
 // src/review.ts
+/** Trusted internal labels for the only redacted diagnostic detail a rehearsal may expose. */
+const INTERNAL_FAILURE_STAGES = [
+	"snapshot",
+	"packet",
+	"research",
+	"assessment",
+	"handoff",
+	"unclassified"
+];
+function internalFailureStage(value) {
+	return INTERNAL_FAILURE_STAGES.includes(value) ? value : "unclassified";
+}
 const outcomeEligibility = Object.freeze({
 	skipped: {
 		kind: "skipped",
@@ -19699,17 +19711,21 @@ async function createReviewHandoff(claims, claim, kind, detail = {
 	const state = await claims.read(claim);
 	if (state.kind !== "owned" || state.owner !== claim.owner || state.generation !== claim.generation) return { kind: "stale" };
 	const outcome = reviewOutcome(kind);
+	const detailBase = {
+		identity: claim.identity,
+		generation: claim.generation,
+		status: outcome.status,
+		comment: outcome.comment,
+		body: detail.body ? "present" : "absent",
+		gaps: copyGaps(detail.gaps),
+		droppedOptional: countDroppedOptional(detail.droppedOptional ?? [])
+	};
 	return {
 		kind: "ready",
 		handoff: Object.freeze({
 			kind,
-			identity: claim.identity,
-			generation: claim.generation,
-			status: outcome.status,
-			comment: outcome.comment,
-			body: detail.body ? "present" : "absent",
-			gaps: copyGaps(detail.gaps),
-			droppedOptional: countDroppedOptional(detail.droppedOptional ?? [])
+			...kind === "internal-failure" ? { stage: internalFailureStage(detail.stage) } : {},
+			...detailBase
 		})
 	};
 }
@@ -19720,8 +19736,7 @@ function createRehearsalSink(appToken) {
 	return Object.freeze({
 		record: (handoff) => {
 			if (traces.length >= 32) return false;
-			traces.push(Object.freeze({
-				kind: handoff.kind,
+			const traceBase = {
 				identity: Object.freeze([...handoff.identity]),
 				generation: handoff.generation,
 				status: handoff.status,
@@ -19729,6 +19744,11 @@ function createRehearsalSink(appToken) {
 				body: handoff.body,
 				gaps: copyGaps(handoff.gaps),
 				droppedOptional: handoff.droppedOptional
+			};
+			traces.push(Object.freeze({
+				kind: handoff.kind,
+				...handoff.kind === "internal-failure" ? { stage: handoff.stage } : {},
+				...traceBase
 			}));
 			return true;
 		},
@@ -30172,9 +30192,29 @@ async function withTrustedSnapshot(request, use) {
 const JOB_BUDGET_MS = 9e5;
 /** How often a pending request is checked against ownership; shorter than any request timeout. */
 const OWNERSHIP_WATCH_MS = 2e3;
+/** A boundary failure whose stage is a literal chosen by this module, never derived from the error. */
+var StageFailure = class extends Error {
+	stage;
+	constructor(stage) {
+		super(stage);
+		this.stage = stage;
+	}
+};
+/** Runs one boundary, reporting any exception from it as that stage's fixed failure. */
+async function inStage(stage, run) {
+	try {
+		return await run();
+	} catch (error) {
+		throw error instanceof StageFailure ? error : new StageFailure(stage);
+	}
+}
 function stopped(state) {
-	return {
-		kind: state === "stale" ? "stale" : "internal-failure",
+	return state === "stale" ? {
+		kind: "stale",
+		body: null
+	} : {
+		kind: "internal-failure",
+		stage: "unclassified",
 		body: null
 	};
 }
@@ -30240,8 +30280,12 @@ async function runReview(input) {
 	const guard = (fetch) => guardedFetch(fetch, attempt, owns);
 	const evaluate = async () => {
 		const entry = await stillCurrent();
-		if (entry !== "current") return {
-			kind: entry === "stale" ? "stale" : "internal-failure",
+		if (entry !== "current") return entry === "stale" ? {
+			kind: "stale",
+			body: null
+		} : {
+			kind: "internal-failure",
+			stage: "unclassified",
 			body: null
 		};
 		if (!input.llmApiKey) return {
@@ -30262,6 +30306,7 @@ async function runReview(input) {
 	} catch {
 		outcome = {
 			kind: "internal-failure",
+			stage: "unclassified",
 			body: null
 		};
 	} finally {
@@ -30271,108 +30316,123 @@ async function runReview(input) {
 		const final = await stillCurrent().catch(() => "error");
 		if (final !== "current") outcome = stopped(final);
 	}
-	const handoff = await createReviewHandoff(input.claims, claim, outcome.kind, {
-		body: outcome.body !== null,
-		gaps: outcome.gaps ?? [],
-		droppedOptional: outcome.droppedOptional ?? []
-	});
-	if (handoff.kind !== "ready") return {
-		kind: "not-eligible",
-		reason: "ownership"
-	};
-	return {
-		kind: "handed-off",
-		outcome: outcome.kind,
-		handoff: handoff.handoff,
-		body: outcome.body,
-		recorded: input.sink.record(handoff.handoff)
-	};
+	try {
+		const handoff = await createReviewHandoff(input.claims, claim, outcome.kind, {
+			body: outcome.body !== null,
+			gaps: outcome.gaps ?? [],
+			droppedOptional: outcome.droppedOptional ?? [],
+			...outcome.kind === "internal-failure" ? { stage: outcome.stage } : {}
+		});
+		if (handoff.kind !== "ready") return {
+			kind: "not-eligible",
+			reason: "ownership"
+		};
+		return {
+			kind: "handed-off",
+			outcome: outcome.kind,
+			handoff: handoff.handoff,
+			body: outcome.body,
+			recorded: input.sink.record(handoff.handoff)
+		};
+	} catch {
+		return {
+			kind: "failed",
+			outcome: "internal-failure",
+			stage: "handoff"
+		};
+	}
 }
 async function evaluateEvidence(input, binding, started, signal, state, recheck) {
 	const isCurrent = () => state() === "current";
 	let evidenceSession = "ready";
 	let npmInventory = null;
 	const evidenceDeadline = started + EVIDENCE_READ_ENVELOPE.totalTimeoutMs;
-	const snapshot = await withTrustedSnapshot({
-		repository: input.repository,
-		reads: input.snapshotReads,
-		signal,
-		isCurrent,
-		temporaryRoot: input.temporaryRoot
-	}, async (trusted) => {
-		const collectors = createEvidenceCollectors({
-			binding,
-			dependabot: await trusted.dependabotRoots(),
-			registryFetch: input.publicFetch,
-			onNpmInventory: (inventory) => npmInventory = inventory,
+	let snapshot;
+	try {
+		snapshot = await withTrustedSnapshot({
+			repository: input.repository,
+			reads: input.snapshotReads,
 			signal,
-			now: input.now,
-			deadline: evidenceDeadline
-		});
-		const base = {
-			binding,
-			baseSha: binding.baseSha,
-			contextRevision: trusted.contextRevision
-		};
-		const assembled = await assembleReviewPacket({
-			trusted: base,
-			collectContext: (changes) => trusted.collectContext(dependencyIdentities(changes)),
 			isCurrent,
-			openSession: async () => {
-				const opened = await openEvidenceSession({
-					binding,
-					fetch: input.githubFetch,
-					now: input.now,
-					deadline: evidenceDeadline
-				});
-				evidenceSession = opened.kind;
-				if (opened.kind !== "ready") throw new Error("no evidence session");
-				return opened.session;
-			},
-			collectors,
-			inventorySource: null
-		});
-		if (assembled.kind === "context-failure") return {
-			kind: assembled.category === "config" || assembled.category === "path" ? "invalid-config" : "incomplete-evidence",
-			body: null
-		};
-		if (assembled.kind === "stale") return {
-			kind: "stale",
-			body: null
-		};
-		if (assembled.kind === "incomplete") return {
-			kind: "incomplete-evidence",
-			body: null,
-			gaps: assembled.gaps
-		};
-		if (assembled.kind !== "ready") return {
-			kind: evidenceSession === "obsolete" ? "stale" : "internal-failure",
-			body: null
-		};
-		const beforeResearch = await recheck();
-		if (beforeResearch !== "current") return stopped(beforeResearch);
-		const researched = await runResearch({
-			packet: assembled.packet,
-			trusted: {
-				...base,
-				context: assembled.packet.context
-			},
-			npmInventory,
-			comparison: null,
-			fetch: input.publicFetch,
-			now: input.now,
-			deadline: evidenceDeadline,
-			evaluationTime: input.evaluationTime,
-			signal
-		});
-		if (researched.kind !== "ready") return {
-			kind: "internal-failure",
-			body: null
-		};
-		const beforeModel = await recheck();
-		if (beforeModel !== "current") return stopped(beforeModel);
-		return {
-			...await reviewPacket({
+			temporaryRoot: input.temporaryRoot
+		}, async (trusted) => {
+			const collectors = createEvidenceCollectors({
+				binding,
+				dependabot: await trusted.dependabotRoots(),
+				registryFetch: input.publicFetch,
+				onNpmInventory: (inventory) => npmInventory = inventory,
+				signal,
+				now: input.now,
+				deadline: evidenceDeadline
+			});
+			const base = {
+				binding,
+				baseSha: binding.baseSha,
+				contextRevision: trusted.contextRevision
+			};
+			const assembled = await inStage("packet", () => assembleReviewPacket({
+				trusted: base,
+				collectContext: (changes) => inStage("snapshot", () => trusted.collectContext(dependencyIdentities(changes))),
+				isCurrent,
+				openSession: async () => {
+					const opened = await openEvidenceSession({
+						binding,
+						fetch: input.githubFetch,
+						now: input.now,
+						deadline: evidenceDeadline
+					});
+					evidenceSession = opened.kind;
+					if (opened.kind !== "ready") throw new Error("no evidence session");
+					return opened.session;
+				},
+				collectors,
+				inventorySource: null
+			}));
+			if (assembled.kind === "context-failure") return {
+				kind: assembled.category === "config" || assembled.category === "path" ? "invalid-config" : "incomplete-evidence",
+				body: null
+			};
+			if (assembled.kind === "stale") return {
+				kind: "stale",
+				body: null
+			};
+			if (assembled.kind === "incomplete") return {
+				kind: "incomplete-evidence",
+				body: null,
+				gaps: assembled.gaps
+			};
+			if (assembled.kind !== "ready") return evidenceSession === "obsolete" ? {
+				kind: "stale",
+				body: null
+			} : {
+				kind: "internal-failure",
+				stage: "packet",
+				body: null
+			};
+			const beforeResearch = await recheck();
+			if (beforeResearch !== "current") return stopped(beforeResearch);
+			const researched = await inStage("research", () => runResearch({
+				packet: assembled.packet,
+				trusted: {
+					...base,
+					context: assembled.packet.context
+				},
+				npmInventory,
+				comparison: null,
+				fetch: input.publicFetch,
+				now: input.now,
+				deadline: evidenceDeadline,
+				evaluationTime: input.evaluationTime,
+				signal
+			}));
+			if (researched.kind !== "ready") return {
+				kind: "internal-failure",
+				stage: "research",
+				body: null
+			};
+			const beforeModel = await recheck();
+			if (beforeModel !== "current") return stopped(beforeModel);
+			const reviewed = await inStage("assessment", () => reviewPacket({
 				packet: researched.packet,
 				config: trusted.config,
 				apiKey: input.llmApiKey,
@@ -30382,17 +30442,39 @@ async function evaluateEvidence(input, binding, started, signal, state, recheck)
 				researchIncomplete: researched.unavailable.length > 0,
 				signal,
 				model: input.model
-			}),
-			droppedOptional: assembled.droppedOptional
+			}));
+			if (reviewed.kind === "internal-failure") return {
+				kind: "internal-failure",
+				stage: "assessment",
+				body: reviewed.body,
+				...reviewed.gaps ? { gaps: reviewed.gaps } : {},
+				droppedOptional: assembled.droppedOptional
+			};
+			return {
+				kind: reviewed.kind,
+				body: reviewed.body,
+				...reviewed.gaps ? { gaps: reviewed.gaps } : {},
+				droppedOptional: assembled.droppedOptional
+			};
+		});
+	} catch (error) {
+		return {
+			kind: "internal-failure",
+			stage: error instanceof StageFailure ? error.stage : "unclassified",
+			body: null
 		};
-	});
+	}
 	if (snapshot.kind === "ready") return snapshot.value;
 	if (snapshot.kind === "invalid-config") return {
 		kind: "invalid-config",
 		body: null
 	};
-	return {
-		kind: state() === "stale" ? "stale" : "internal-failure",
+	return state() === "stale" ? {
+		kind: "stale",
+		body: null
+	} : {
+		kind: "internal-failure",
+		stage: "snapshot",
 		body: null
 	};
 }
@@ -30725,11 +30807,13 @@ async function runStartup(writeError, environment = process.env, dependencies = 
 			evaluationTime: dependencies.evaluationTime()
 		});
 		if (result.kind === "handed-off" && !result.recorded) writeError("dependabot-review: no-write rehearsal could not record the handoff; nothing was published.");
+		else if (result.kind === "failed") writeError(`dependabot-review: no-write rehearsal recorded internal-failure at ${result.stage}; nothing was published.`);
+		else if (result.kind === "handed-off" && result.handoff.kind === "internal-failure") writeError(`dependabot-review: no-write rehearsal recorded internal-failure at ${result.handoff.stage}; nothing was published.`);
 		else if (result.kind === "handed-off") writeError(`dependabot-review: no-write rehearsal recorded ${result.outcome}; nothing was published.`);
 		else if (result.kind === "skipped") writeError(`dependabot-review: event skipped (${result.reason}); nothing was published.`);
 		else writeError(`dependabot-review: no publishable handoff (${result.reason}); nothing was published.`);
 	} catch {
-		writeError("dependabot-review: rehearsal failed; nothing was published.");
+		writeError("dependabot-review: no-write rehearsal recorded internal-failure at unclassified; nothing was published.");
 	}
 	return 78;
 }

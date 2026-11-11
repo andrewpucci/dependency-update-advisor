@@ -1,6 +1,21 @@
 import type { ReviewIdentity as EventReviewIdentity } from './event.js';
 
 export type ReviewIdentity = EventReviewIdentity;
+/** Trusted internal labels for the only redacted diagnostic detail a rehearsal may expose. */
+export const INTERNAL_FAILURE_STAGES = [
+  'snapshot',
+  'packet',
+  'research',
+  'assessment',
+  'handoff',
+  'unclassified',
+] as const;
+export type InternalFailureStage = (typeof INTERNAL_FAILURE_STAGES)[number];
+export function internalFailureStage(value: unknown): InternalFailureStage {
+  return INTERNAL_FAILURE_STAGES.includes(value as InternalFailureStage)
+    ? (value as InternalFailureStage)
+    : 'unclassified';
+}
 export type ReviewOutcomeKind =
   | 'skipped'
   | 'stale'

@@ -176,6 +176,14 @@ export async function runStartup(
       writeError(
         'dependabot-review: no-write rehearsal could not record the handoff; nothing was published.',
       );
+    else if (result.kind === 'failed')
+      writeError(
+        `dependabot-review: no-write rehearsal recorded internal-failure at ${result.stage}; nothing was published.`,
+      );
+    else if (result.kind === 'handed-off' && result.handoff.kind === 'internal-failure')
+      writeError(
+        `dependabot-review: no-write rehearsal recorded internal-failure at ${result.handoff.stage}; nothing was published.`,
+      );
     else if (result.kind === 'handed-off')
       writeError(
         `dependabot-review: no-write rehearsal recorded ${result.outcome}; nothing was published.`,
@@ -187,7 +195,9 @@ export async function runStartup(
         `dependabot-review: no publishable handoff (${result.reason}); nothing was published.`,
       );
   } catch {
-    writeError('dependabot-review: rehearsal failed; nothing was published.');
+    writeError(
+      'dependabot-review: no-write rehearsal recorded internal-failure at unclassified; nothing was published.',
+    );
   }
   return NOT_WIRED_EXIT_CODE;
 }

@@ -17,7 +17,7 @@ import { guardedFetch } from './adapters.js';
 import { assembleReviewPacket, type PacketGap } from './packet.js';
 import type { DroppedOptional } from './optional-evidence.js';
 import { runResearch } from './research.js';
-import type { ClaimStore, OwnedClaim, ReviewOutcomeKind } from './review.js';
+import type { ClaimStore, InternalFailureStage, OwnedClaim, ReviewOutcomeKind } from './review.js';
 import { withTrustedSnapshot, type SnapshotReads } from './snapshot.js';
 
 /** The job's wall-clock limit; analysis and publication reserve their own time inside it. */
@@ -52,6 +52,8 @@ export type PipelineResult =
   | Readonly<{ kind: 'skipped'; reason: 'ineligible' | 'obsolete' | 'duplicate' }>
   /** Identity could not be verified or ownership was never held or was lost: nothing is publishable. */
   | Readonly<{ kind: 'not-eligible'; reason: 'verification' | 'ownership' }>
+  /** The no-write sink failed after a valid handoff was built; it is not publishable. */
+  | Readonly<{ kind: 'failed'; outcome: 'internal-failure'; stage: 'handoff' }>
   | Readonly<{
       kind: 'handed-off';
       outcome: ReviewOutcomeKind;
@@ -61,20 +63,41 @@ export type PipelineResult =
       recorded: boolean;
     }>;
 
-type Outcome = Readonly<{
-  kind: ReviewOutcomeKind;
+type OutcomeDetail = Readonly<{
   body: string | null;
   /** Sources that gave no usable evidence, when no packet could be rendered. */
   gaps?: readonly PacketGap[];
   /** Optional evidence that fit the packet only after a conservative budget drop. */
   droppedOptional?: readonly DroppedOptional[];
 }>;
+type Outcome =
+  | (OutcomeDetail &
+      Readonly<{ kind: Exclude<ReviewOutcomeKind, 'internal-failure'>; stage?: never }>)
+  | (OutcomeDetail & Readonly<{ kind: 'internal-failure'; stage: InternalFailureStage }>);
+
+/** A boundary failure whose stage is a literal chosen by this module, never derived from the error. */
+class StageFailure extends Error {
+  constructor(readonly stage: InternalFailureStage) {
+    super(stage);
+  }
+}
+
+/** Runs one boundary, reporting any exception from it as that stage's fixed failure. */
+async function inStage<T>(stage: InternalFailureStage, run: () => Promise<T>): Promise<T> {
+  try {
+    return await run();
+  } catch (error) {
+    throw error instanceof StageFailure ? error : new StageFailure(stage);
+  }
+}
 
 /** `stale` proves the head moved or ownership ended; `error` only means it could not be verified. */
 type Freshness = 'current' | 'stale' | 'error';
 
 function stopped(state: 'stale' | 'error'): Outcome {
-  return { kind: state === 'stale' ? 'stale' : 'internal-failure', body: null };
+  return state === 'stale'
+    ? { kind: 'stale', body: null }
+    : { kind: 'internal-failure', stage: 'unclassified', body: null };
 }
 
 /** T4 requires exactly one context entry per change, so every change is named, Actions included. */
@@ -140,7 +163,9 @@ export async function runReview(input: PipelineInput): Promise<PipelineResult> {
   const evaluate = async (): Promise<Outcome> => {
     const entry = await stillCurrent();
     if (entry !== 'current')
-      return { kind: entry === 'stale' ? 'stale' : 'internal-failure', body: null };
+      return entry === 'stale'
+        ? { kind: 'stale', body: null }
+        : { kind: 'internal-failure', stage: 'unclassified', body: null };
     // With no model configured, no snapshot, collector, or model request is made.
     if (!input.llmApiKey) return { kind: 'model-unavailable', body: null };
     return evaluateEvidence(
@@ -163,7 +188,7 @@ export async function runReview(input: PipelineInput): Promise<PipelineResult> {
   try {
     outcome = await evaluate();
   } catch {
-    outcome = { kind: 'internal-failure', body: null };
+    outcome = { kind: 'internal-failure', stage: 'unclassified', body: null };
   } finally {
     clearInterval(watcher);
   }
@@ -174,19 +199,24 @@ export async function runReview(input: PipelineInput): Promise<PipelineResult> {
     if (final !== 'current') outcome = stopped(final);
   }
 
-  const handoff = await createReviewHandoff(input.claims, claim, outcome.kind, {
-    body: outcome.body !== null,
-    gaps: outcome.gaps ?? [],
-    droppedOptional: outcome.droppedOptional ?? [],
-  });
-  if (handoff.kind !== 'ready') return { kind: 'not-eligible', reason: 'ownership' };
-  return {
-    kind: 'handed-off',
-    outcome: outcome.kind,
-    handoff: handoff.handoff,
-    body: outcome.body,
-    recorded: input.sink.record(handoff.handoff),
-  };
+  try {
+    const handoff = await createReviewHandoff(input.claims, claim, outcome.kind, {
+      body: outcome.body !== null,
+      gaps: outcome.gaps ?? [],
+      droppedOptional: outcome.droppedOptional ?? [],
+      ...(outcome.kind === 'internal-failure' ? { stage: outcome.stage } : {}),
+    });
+    if (handoff.kind !== 'ready') return { kind: 'not-eligible', reason: 'ownership' };
+    return {
+      kind: 'handed-off',
+      outcome: outcome.kind,
+      handoff: handoff.handoff,
+      body: outcome.body,
+      recorded: input.sink.record(handoff.handoff),
+    };
+  } catch {
+    return { kind: 'failed', outcome: 'internal-failure', stage: 'handoff' };
+  }
 }
 
 async function evaluateEvidence(
@@ -202,96 +232,130 @@ async function evaluateEvidence(
   let evidenceSession: EvidenceSessionResult['kind'] = 'ready';
   let npmInventory: unknown = null;
   const evidenceDeadline = started + EVIDENCE_READ_ENVELOPE.totalTimeoutMs;
-  const snapshot = await withTrustedSnapshot(
-    {
-      repository: input.repository,
-      reads: input.snapshotReads,
-      signal,
-      isCurrent,
-      temporaryRoot: input.temporaryRoot,
-    },
-    async (trusted): Promise<Outcome> => {
-      const collectors = createEvidenceCollectors({
-        binding,
-        dependabot: await trusted.dependabotRoots(),
-        registryFetch: input.publicFetch,
-        onNpmInventory: (inventory) => (npmInventory = inventory),
+  let snapshot: Awaited<ReturnType<typeof withTrustedSnapshot<Outcome>>>;
+  try {
+    snapshot = await withTrustedSnapshot(
+      {
+        repository: input.repository,
+        reads: input.snapshotReads,
         signal,
-        now: input.now,
-        deadline: evidenceDeadline,
-      });
-      const base = {
-        binding,
-        baseSha: binding.baseSha,
-        contextRevision: trusted.contextRevision,
-      };
-      const assembled = await assembleReviewPacket({
-        trusted: base,
-        collectContext: (changes) => trusted.collectContext(dependencyIdentities(changes)),
         isCurrent,
-        openSession: async () => {
-          const opened = await openEvidenceSession({
-            binding,
-            fetch: input.githubFetch,
+        temporaryRoot: input.temporaryRoot,
+      },
+      async (trusted): Promise<Outcome> => {
+        const collectors = createEvidenceCollectors({
+          binding,
+          dependabot: await trusted.dependabotRoots(),
+          registryFetch: input.publicFetch,
+          onNpmInventory: (inventory) => (npmInventory = inventory),
+          signal,
+          now: input.now,
+          deadline: evidenceDeadline,
+        });
+        const base = {
+          binding,
+          baseSha: binding.baseSha,
+          contextRevision: trusted.contextRevision,
+        };
+        const assembled = await inStage('packet', () =>
+          assembleReviewPacket({
+            trusted: base,
+            collectContext: (changes) =>
+              inStage('snapshot', () => trusted.collectContext(dependencyIdentities(changes))),
+            isCurrent,
+            openSession: async () => {
+              const opened = await openEvidenceSession({
+                binding,
+                fetch: input.githubFetch,
+                now: input.now,
+                deadline: evidenceDeadline,
+              });
+              evidenceSession = opened.kind;
+              if (opened.kind !== 'ready') throw new Error('no evidence session');
+              return opened.session;
+            },
+            collectors,
+            inventorySource: null,
+          }),
+        );
+        if (assembled.kind === 'context-failure')
+          // A consumer configuration fault stops the review; a failed or limited read is incomplete.
+          return {
+            kind:
+              assembled.category === 'config' || assembled.category === 'path'
+                ? 'invalid-config'
+                : 'incomplete-evidence',
+            body: null,
+          };
+        if (assembled.kind === 'stale') return { kind: 'stale', body: null };
+        if (assembled.kind === 'incomplete')
+          return { kind: 'incomplete-evidence', body: null, gaps: assembled.gaps };
+        if (assembled.kind !== 'ready')
+          return evidenceSession === 'obsolete'
+            ? { kind: 'stale', body: null }
+            : { kind: 'internal-failure', stage: 'packet', body: null };
+
+        // Public research is only worth starting while this attempt still owns the current head.
+        const beforeResearch = await recheck();
+        if (beforeResearch !== 'current') return stopped(beforeResearch);
+        const researched = await inStage('research', () =>
+          runResearch({
+            packet: assembled.packet,
+            trusted: { ...base, context: assembled.packet.context as never },
+            npmInventory: npmInventory as never,
+            comparison: null,
+            fetch: input.publicFetch,
             now: input.now,
             deadline: evidenceDeadline,
-          });
-          evidenceSession = opened.kind;
-          if (opened.kind !== 'ready') throw new Error('no evidence session');
-          return opened.session;
-        },
-        collectors,
-        inventorySource: null,
-      });
-      if (assembled.kind === 'context-failure')
-        // A consumer configuration fault stops the review; a failed or limited read is incomplete.
+            evaluationTime: input.evaluationTime,
+            signal,
+          }),
+        );
+        if (researched.kind !== 'ready')
+          return { kind: 'internal-failure', stage: 'research', body: null };
+        // The model is only called while the attempt is still the owner's.
+        const beforeModel = await recheck();
+        if (beforeModel !== 'current') return stopped(beforeModel);
+
+        const reviewed = await inStage('assessment', () =>
+          reviewPacket({
+            packet: researched.packet,
+            config: trusted.config,
+            apiKey: input.llmApiKey,
+            evaluatedAt: input.evaluationTime,
+            deadlineMs: started + JOB_BUDGET_MS,
+            signalAttempts: researched.signalAttempts,
+            researchIncomplete: researched.unavailable.length > 0,
+            signal,
+            model: input.model,
+          }),
+        );
+        if (reviewed.kind === 'internal-failure')
+          return {
+            kind: 'internal-failure',
+            stage: 'assessment',
+            body: reviewed.body,
+            ...(reviewed.gaps ? { gaps: reviewed.gaps } : {}),
+            droppedOptional: assembled.droppedOptional,
+          };
         return {
-          kind:
-            assembled.category === 'config' || assembled.category === 'path'
-              ? 'invalid-config'
-              : 'incomplete-evidence',
-          body: null,
+          kind: reviewed.kind,
+          body: reviewed.body,
+          ...(reviewed.gaps ? { gaps: reviewed.gaps } : {}),
+          droppedOptional: assembled.droppedOptional,
         };
-      if (assembled.kind === 'stale') return { kind: 'stale', body: null };
-      if (assembled.kind === 'incomplete')
-        return { kind: 'incomplete-evidence', body: null, gaps: assembled.gaps };
-      if (assembled.kind !== 'ready')
-        return { kind: evidenceSession === 'obsolete' ? 'stale' : 'internal-failure', body: null };
-
-      // Public research is only worth starting while this attempt still owns the current head.
-      const beforeResearch = await recheck();
-      if (beforeResearch !== 'current') return stopped(beforeResearch);
-      const researched = await runResearch({
-        packet: assembled.packet,
-        trusted: { ...base, context: assembled.packet.context as never },
-        npmInventory: npmInventory as never,
-        comparison: null,
-        fetch: input.publicFetch,
-        now: input.now,
-        deadline: evidenceDeadline,
-        evaluationTime: input.evaluationTime,
-        signal,
-      });
-      if (researched.kind !== 'ready') return { kind: 'internal-failure', body: null };
-      // The model is only called while the attempt is still the owner's.
-      const beforeModel = await recheck();
-      if (beforeModel !== 'current') return stopped(beforeModel);
-
-      const reviewed = await reviewPacket({
-        packet: researched.packet,
-        config: trusted.config,
-        apiKey: input.llmApiKey,
-        evaluatedAt: input.evaluationTime,
-        deadlineMs: started + JOB_BUDGET_MS,
-        signalAttempts: researched.signalAttempts,
-        researchIncomplete: researched.unavailable.length > 0,
-        signal,
-        model: input.model,
-      });
-      return { ...reviewed, droppedOptional: assembled.droppedOptional };
-    },
-  );
+      },
+    );
+  } catch (error) {
+    return {
+      kind: 'internal-failure',
+      stage: error instanceof StageFailure ? error.stage : 'unclassified',
+      body: null,
+    };
+  }
   if (snapshot.kind === 'ready') return snapshot.value;
   if (snapshot.kind === 'invalid-config') return { kind: 'invalid-config', body: null };
-  return { kind: state() === 'stale' ? 'stale' : 'internal-failure', body: null };
+  return state() === 'stale'
+    ? { kind: 'stale', body: null }
+    : { kind: 'internal-failure', stage: 'snapshot', body: null };
 }
