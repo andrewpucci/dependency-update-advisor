@@ -256,7 +256,8 @@ gaps and an introduced vulnerability before parity is claimed.
   2026-11-11 fixed-stage diagnostic amendment is approved for planning and
   execution and is merged. A second amendment (a freshness time allowance and a
   `freshness` stage, [#297](https://github.com/andrewpucci/dependency-update-advisor/issues/297))
-  is approved for planning and execution (tasks #299-#304). Its approved
+  is approved for planning and execution; its code (#299-#303) is merged and
+  the R1 re-pin and rehearsal (#304) remain. Its approved
   map's #209 contracts are implemented on `issue-209`, pending fresh-context
   review and merge: [shared PyPI release
   observations](SPEC-shared-release-observations.md), charged to the existing
