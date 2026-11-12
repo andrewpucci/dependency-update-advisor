@@ -2,10 +2,12 @@ import type { PacketGap } from './packet.js';
 import type { DroppedOptional } from './optional-evidence.js';
 import {
   internalFailureStage,
+  modelUnavailableReason,
   reviewOutcome,
   type ClaimStore,
   type FreshnessDetail,
   type InternalFailureStage,
+  type ModelUnavailableReason,
   type OwnedClaim,
   type ReviewOutcomeKind,
 } from './review.js';
@@ -107,13 +109,29 @@ export type RehearsalTrace =
       }>)
   | (RehearsalTraceBase &
       Readonly<{
-        kind: Exclude<ReviewOutcomeKind, 'internal-failure'>;
+        kind: 'model-unavailable';
         stage?: never;
         detail?: never;
+        /** Why no model verdict exists; a fixed literal, never provider output. */
+        modelUnavailableReason?: ModelUnavailableReason;
+      }>)
+  | (RehearsalTraceBase &
+      Readonly<{
+        kind: Exclude<ReviewOutcomeKind, 'internal-failure' | 'model-unavailable'>;
+        stage?: never;
+        detail?: never;
+        modelUnavailableReason?: never;
       }>);
+/** The only extra a rehearsal may keep beside a handoff; each kind keeps only its own. */
+export type RehearsalDetail =
+  | FreshnessDetail
+  | Readonly<{ modelUnavailableReason: ModelUnavailableReason }>;
 export type RehearsalSink = Readonly<{
-  /** `detail` is kept only for a `freshness` internal failure; it never enters the handoff. */
-  record: (handoff: ReviewHandoff, detail?: FreshnessDetail) => boolean;
+  /**
+   * `detail` is kept only for the kind it describes (a `freshness` internal failure, or a
+   * `model-unavailable` result); it never enters the handoff.
+   */
+  record: (handoff: ReviewHandoff, detail?: RehearsalDetail) => boolean;
   traces: () => readonly RehearsalTrace[];
 }>;
 
@@ -137,8 +155,14 @@ export function createRehearsalSink(appToken: string | null): RehearsalSink | nu
         Object.freeze({
           kind: handoff.kind,
           ...(handoff.kind === 'internal-failure' ? { stage: handoff.stage } : {}),
-          ...(handoff.kind === 'internal-failure' && handoff.stage === 'freshness' && detail
+          ...(handoff.kind === 'internal-failure' &&
+          handoff.stage === 'freshness' &&
+          detail &&
+          'field' in detail
             ? { detail: Object.freeze({ field: detail.field, reason: detail.reason }) }
+            : {}),
+          ...(handoff.kind === 'model-unavailable' && detail && 'modelUnavailableReason' in detail
+            ? { modelUnavailableReason: modelUnavailableReason(detail.modelUnavailableReason) }
             : {}),
           ...traceBase,
         }) as RehearsalTrace,

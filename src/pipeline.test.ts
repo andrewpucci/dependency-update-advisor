@@ -322,6 +322,7 @@ test('makes no snapshot, collector, or model request without a model key', async
   expect(result).toMatchObject({
     kind: 'handed-off',
     outcome: 'model-unavailable',
+    modelUnavailableReason: 'no-key',
     handoff: { status: 'failure', comment: 'none' },
   });
   expect(githubCalls).toEqual([]);
@@ -422,20 +423,48 @@ test('runs npm, Actions, and uv changes through research and model analysis to a
 });
 
 test('hands off a model failure as a status-only failure with no body', async () => {
-  const failing = {
-    now: () => 0,
-    analyze: (async () => ({ kind: 'unavailable', reason: 'timeout' })) as never,
-  };
-  const { input, sink } = await setup({ evidence: 'changes', model: failing });
+  const { input, sink } = await setup({ evidence: 'changes', model: failingModel('transport') });
   const result = await runReview(input);
   expect(result).toMatchObject({
     kind: 'handed-off',
     outcome: 'model-unavailable',
+    modelUnavailableReason: 'transport',
     body: null,
     handoff: { status: 'failure', comment: 'none' },
   });
-  expect(sink.traces()[0]).toMatchObject({ kind: 'model-unavailable', status: 'failure' });
+  expect(sink.traces()[0]).toMatchObject({
+    kind: 'model-unavailable',
+    status: 'failure',
+    modelUnavailableReason: 'transport',
+  });
+  // The reason stays off the exported handoff.
+  if (result.kind !== 'handed-off') throw new Error('expected handoff');
+  expect(result.handoff).not.toHaveProperty('modelUnavailableReason');
   expect(JSON.stringify(result)).not.toContain(sentinel);
+});
+
+test('a model-unavailable result that fails the final freshness check carries no reason', async () => {
+  // Run read #4 is the final re-verification after the model step.
+  const { input, sink } = await setup({
+    evidence: 'changes',
+    model: failingModel('transport'),
+    runFailsAt: 4,
+  });
+  const result = await runReview(input);
+  expect(result).toMatchObject({
+    kind: 'handed-off',
+    outcome: 'internal-failure',
+    handoff: { stage: 'freshness' },
+  });
+  expect(result).not.toHaveProperty('modelUnavailableReason');
+  expect(sink.traces()[0]).not.toHaveProperty('modelUnavailableReason');
+});
+
+test('carries no model-unavailable reason on any other outcome', async () => {
+  const { input, sink } = await setup({ evidence: 'changes' });
+  const result = await runReview(input);
+  expect(result).not.toHaveProperty('modelUnavailableReason');
+  expect(sink.traces()[0]).not.toHaveProperty('modelUnavailableReason');
 });
 
 test('renders accurately incomplete evidence as a failure with a comment-eligible body', async () => {
@@ -1400,3 +1429,18 @@ test('starts no further public request once ownership is lost during a registry 
   expect(publicCalls).toHaveLength(1);
   expect(modelCalls).toEqual([]);
 });
+
+/** A model seam whose every batch fails, bound to its batch, with one fixed category. */
+function failingModel(category: string) {
+  return {
+    now: () => 0,
+    analyze: (async (batch: { batchId: string; unitIds: readonly string[] }) => ({
+      kind: 'failed',
+      category,
+      attempted: true,
+      batchId: batch.batchId,
+      unitIds: batch.unitIds,
+      diagnostics: { provider: 'mistral' },
+    })) as never,
+  };
+}

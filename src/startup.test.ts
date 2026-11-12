@@ -358,9 +358,56 @@ test('records no model key as model-unavailable without evidence requests', asyn
   const github = mockGithub();
   const { stderr } = await start(github, { INPUT_LLM_API_KEY: '' });
   expect(stderr).toEqual([
-    'dependabot-review: no-write rehearsal recorded model-unavailable; nothing was published.',
+    'dependabot-review: no-write rehearsal recorded model-unavailable (no-key); nothing was published.',
   ]);
   expect(github.urls.some((url) => url.includes('/git/'))).toBe(false);
+});
+
+test.each([
+  [401, 'http-auth'],
+  [429, 'http-rate-limit'],
+  [503, 'http-server'],
+  [400, 'http-other'],
+] as const)('names the %s model response as %s', async (status, reason) => {
+  const github = mockGithub({ changes: await upstreamScenario() });
+  const { stderr } = await start(
+    github,
+    {},
+    {
+      model: {
+        now: () => 0,
+        analyze: ((batch: Parameters<typeof analyzeMistralBatch>[0], options: never) =>
+          analyzeMistralBatch(batch, options, {
+            now: () => 0,
+            fetch: async () => new Response('RAW_PROVIDER_BODY', { status }),
+          })) as typeof analyzeMistralBatch,
+      },
+    },
+  );
+  expect(stderr).toEqual([
+    `dependabot-review: no-write rehearsal recorded model-unavailable (${reason}); nothing was published.`,
+  ]);
+  expect(stderr.join('')).not.toContain('RAW_PROVIDER_BODY');
+});
+
+test('names a throwing model as transport without echoing the exception text', async () => {
+  const github = mockGithub({ changes: await upstreamScenario() });
+  const { stderr } = await start(
+    github,
+    {},
+    {
+      model: {
+        now: () => 0,
+        analyze: (async () => {
+          throw new Error(`${sentinel} sentinel-model-key`);
+        }) as never,
+      },
+    },
+  );
+  expect(stderr).toEqual([
+    'dependabot-review: no-write rehearsal recorded model-unavailable (transport); nothing was published.',
+  ]);
+  expect(stderr.join('')).not.toContain(sentinel);
 });
 
 test('reports a recorded internal failure with its fixed snapshot stage', async () => {

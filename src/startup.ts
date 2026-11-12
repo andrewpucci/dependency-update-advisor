@@ -118,8 +118,12 @@ function rehearsalLine(result: PipelineResult): string {
     case 'handed-off': {
       if (!result.recorded)
         return 'dependabot-review: no-write rehearsal could not record the handoff; nothing was published.';
-      if (result.handoff.kind !== 'internal-failure')
-        return `${recorded} ${result.outcome}; nothing was published.`;
+      if (result.handoff.kind !== 'internal-failure') {
+        // Only a model-unavailable result states a reason, a fixed literal chosen in trusted code.
+        const reason =
+          result.outcome === 'model-unavailable' ? ` (${result.modelUnavailableReason})` : '';
+        return `${recorded} ${result.outcome}${reason}; nothing was published.`;
+      }
       const detail = result.detail ? ` (${result.detail.field} ${result.detail.reason})` : '';
       return `${recorded} internal-failure at ${result.handoff.stage}${detail}; nothing was published.`;
     }
