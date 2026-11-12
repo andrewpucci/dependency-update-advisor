@@ -458,6 +458,173 @@ do that.
   untrusted data, weaken fail-closed behavior, or start publication or
   production-claim implementation.
 
+## Diagnostic Amendment 3: Fixed Model-Unavailable Reason
+
+**Status: approved for planning, 2026-11-11; execution needs separate plan
+approval.** Scoped to
+[#309](https://github.com/andrewpucci/dependency-update-advisor/issues/309).
+It adds a reported value, which Amendment 2's boundaries make Ask-first, and
+the user approved splitting `http` by status class and then approved the
+amendment and invoked `as-plan` on 2026-11-11. A fresh-context review
+followed, and the user approved applying all of its findings the same day
+(the closed list gains `call_budget`; the reason is required). It does not
+authorize live publication or a production claim backend. Effort tier: L
+(crosses `analysis`, `assessment`, `review`, `pipeline`, `handoff`,
+`reporting`, and `startup`, and amends approved text).
+
+The R1 no-write rehearsal on the fixed code ended in `model-unavailable`
+(caller run 43170508054 on `main` at `d7482f7`, shared workflow pinned to
+`351cc6e`, Dependabot PR #276). The stderr line names only the outcome, and no
+log or trace carries the cause: the action step ran about 298 s and printed
+nothing else. The run log shows `llm-api-key: ***` was passed, and an empty key
+returns before any request, so the 298 s points to analysis rather than a
+missing key. That is inference; this amendment exists to replace it with a
+recorded cause.
+
+`model-unavailable` has two sources: an empty or unusable key (`pipeline` entry
+and `assessment`), and an analysis result with `analysisUnavailable`, meaning at
+least one decision unit and none assessed. The analysis layer already records a
+closed category per unresolved unit (`src/analysis/batches.ts`); `assessment`
+discards it.
+
+1. **Fixed reason.** `model-unavailable` carries exactly one
+   `ModelUnavailableReason`, required on that outcome, a literal chosen by
+   trusted code from this closed vocabulary:
+   - `no-key` — the model key was absent, empty, or not plain text (the runtime
+     turns a key with control characters into no key);
+   - the analysis categories `input`, `configuration`, `projection`, `budget`,
+     `reference`, `policy`, `schema`;
+   - `call_budget`, the one category M2 adds;
+   - the Mistral transport categories `cancelled`, `deadline`, `transport`,
+     `media-type`, `response-size`, `encoding`, `envelope`, `json`, `length`;
+   - the four HTTP classes `http-auth`, `http-rate-limit`, `http-server`,
+     `http-other` (item 4); and
+   - `unknown` — a category outside this list.
+
+   No other outcome carries a reason. The reason is never derived from an
+   exception name or message, response body or header, URL, config value, source
+   content, PR input, credential, or provider output. The one input beyond the
+   category is the HTTP status of the model response, read only by item 4's
+   fixed mapping; the number is never reported or stored. The analysis record's
+   category is typed `string`; item 2 narrows it. `configuration` covers more
+   than one cause (a key containing a space or non-ASCII character, and a
+   config with no `analysis` section), so a run that reports it does not say
+   which.
+
+2. **Selection.** When analysis is unavailable, the reason is the category of
+   the first unresolved unit record in inventory order (the order `batches.ts`
+   sorts records into), if it is in the closed list, and `unknown` otherwise. A
+   key that is unusable at either check reports `no-key`. The sorted,
+   deduplicated `failureCategories` list is not used, because it does not say
+   which unit it came from. This is the unit the renderer names first.
+3. **Reporting.** The stderr line for `model-unavailable` becomes
+
+   ```text
+   dependabot-review: no-write rehearsal recorded model-unavailable (<reason>); nothing was published.
+   ```
+
+   Every other outcome keeps its exact form. The trace retains the same literal
+   on a `modelUnavailableReason` field, present only for `model-unavailable`.
+   `RehearsalSink.record` keeps its optional second argument, which becomes a
+   union of Amendment 2's `FreshnessDetail` and the reason; each is stored only
+   for its own kind. The reason is not added to `ReviewHandoff`, status text,
+   comment text, or any future publisher input, and Amendment 2's `field` and
+   `reason` stay `freshness`-only. A `model-unavailable` result without a reason
+   does not type-check; it is not defaulted at the reporting site.
+
+4. **HTTP split (approved 2026-11-11).** Mistral's `http` category, which
+   covers any non-200 or redirected response, is replaced in the M1 category
+   vocabulary by four literals chosen from the response status in trusted code
+   and never from a body, header (including `retry-after`), or URL:
+   - `http-auth` — status 401 or 403 (a rejected or unauthorized key);
+   - `http-rate-limit` — status 429;
+   - `http-server` — status 500 through 599; and
+   - `http-other` — every other status, including a redirected response.
+
+   Each is a `failed`, `attempted` result and settles in M2 exactly as `http`
+   does today: `unavailable`, attempted. The renderer's `recovery` returns
+   today's retry text for all four, so no comment text changes; `http` leaves
+   its list with the category. Known ambiguity: `http-other` includes a 400,
+   which covers both a context-length failure and a bad request, and
+   `http-auth` covers both 401 and 403. A real redirect makes `fetch` reject
+   (`redirect: 'error'`) and reports `transport`, so `http-other` sees a
+   redirected response only from an injected fetch. The status number is not
+   reported or stored.
+
+5. **Scope.** This amendment names the cause; it does not fix it. A fix or a
+   decision follows from the recorded reason, as its own change.
+6. **Supersedes when implemented.** No approved text defines the
+   `model-unavailable` stderr line today; `rehearsalLine` in `src/startup.ts`
+   alone sets it, so item 3 specifies it for the first time. The expected line
+   in `src/startup.test.ts` (the no-key case) changes to the item 3 form with
+   `no-key`. The rehearsal trace type gains the field for that kind only. In
+   [SPEC-mistral-transport](SPEC-mistral-transport.md), the handoff row
+   "transport/HTTP/deadline" and the sentence "HTTP 400 remains a non-retryable
+   HTTP failure" name the four item 4 classes; in
+   [SPEC-analysis-batches](SPEC-analysis-batches.md), the `failed` row of the
+   M1-to-M2 table does the same. Each of those approved specs records this
+   amendment's approval, which is Ask-first under their boundaries.
+   `src/analysis/mistral.ts`, its category type, `recovery` in
+   `src/reporting.ts`, and the tests that name `http` change with them.
+7. **Fail-closed preservation.** The reason changes no outcome, status, comment,
+   freshness gate, claim, or write. A result that was `model-unavailable`
+   remains so, and remains ineligible for a success handoff. If the final
+   freshness check then turns it into `internal-failure at freshness`, the
+   reason is dropped with the outcome.
+8. **Required checks.** Tests must prove:
+   - each listed category, including `call_budget`, injected through the real
+     analysis layer's model seam, reaches stderr and the trace as its own
+     literal, and an unlisted category becomes `unknown`;
+   - each status maps to its class: 401 and 403 to `http-auth`, 429 to
+     `http-rate-limit`, 500, 503, and 599 to `http-server`, and 302, 400, 404,
+     408, 499, and a redirected response to `http-other`, with a `retry-after`
+     header and a sentinel body that change nothing;
+   - the rendered review comment for each `http-*` class contains the literal
+     `Rerun CI to retry dependency analysis.`, so a class missing from
+     `recovery` (which would fall through to different text) fails;
+   - several unresolved units with different categories report the first in
+     inventory order, using at least two batches (a batch shares one category)
+     and a case where that unit's category differs from the alphabetically
+     first;
+   - an empty key reports `no-key` at the pipeline entry and at `assessment`
+     (the latter by calling it directly), with no evidence or model request, as
+     today;
+   - the shipped bundle emits the exact item 3 line for `no-key` and for one
+     transport category, and no status, comment, App-token request, or other
+     live write occurs, with the only exemption being the model endpoint POST;
+   - a `model-unavailable` result followed by a failed final freshness check
+     reports `internal-failure at freshness` and carries no reason;
+   - a sentinel in an injected exception, response body, URL, or credential
+     never appears in stderr or traces, and `complete`, `incomplete-evidence`,
+     and `internal-failure` outcomes carry no reason.
+
+   Named mutations that must each fail a test: reporting a constant reason;
+   selecting from sorted `failureCategories` instead of record order; passing
+   the category string through without the closed-list check; recording a
+   reason on a non-`model-unavailable` outcome; adding it to the exported
+   `ReviewHandoff` or to the status or comment body; mapping the class from a
+   header or body; storing or reporting the status number; sending 401 to
+   `http-server` or 429 to `http-auth`; omitting an `http-*` class from
+   `recovery`; M2 settling an `http-*` class as `rejected` or unattempted;
+   keeping the reason after the freshness conversion; and loosening the
+   shipped-bundle no-write guard beyond the one model endpoint.
+
+9. **Closing evidence.** After the code is merged and the R1 caller is
+   re-pinned to it, a rehearsal on a Dependabot PR either reaches `complete`
+   or reports a reason. The reason, the run, and the revision are recorded on
+   #309, which satisfies its first acceptance criterion.
+
+### Amendment 3 Boundaries
+
+- **Always:** choose the reason in trusted code from the closed list, keep it
+  on stderr and the trace only, and preserve every outcome kind.
+- **Ask first:** add or rename a reason or HTTP class, report a number,
+  surface the reason in status or comment text, or change the trigger, an App
+  permission, or a secret.
+- **Never:** report a raw error, payload, status code, header, or URL; derive
+  a reason from untrusted data; weaken fail-closed behavior; or start
+  publication or production-claim implementation.
+
 ### Trusted config and context snapshot
 
 Resolve repository visibility and the default-branch identity through trusted,

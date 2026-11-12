@@ -264,6 +264,9 @@ gaps and an introduced vulnerability before parity is claimed.
   Signals: PyPI metadata allocation, and [bounded-reader
   consolidation](SPEC-bounded-reader-consolidation.md). The ordered #260–#264
   tasks preserve separate publication, adoption, parity, and cutover gates.
+  A third amendment ([fixed model-unavailable reason](SPEC-review-orchestration.md#diagnostic-amendment-3-fixed-model-unavailable-reason),
+  [#309](https://github.com/andrewpucci/dependency-update-advisor/issues/309))
+  is approved for planning, 2026-11-11.
 - [Advisory complexity review](SPEC-complexity-review.md) — user-requested
   supporting repository tooling contract; implemented and merged into `main`
   in [PR #65](https://github.com/andrewpucci/dependency-update-advisor/pull/65).
