@@ -166,6 +166,10 @@ gaps and an introduced vulnerability before parity is claimed.
   [implemented handoff](SPEC-mistral-transport.md#implemented-interface-and-handoff)
   preserves separate M2, workflow, packaging, provider/consumer trial,
   adoption, parity, and cutover gates.
+  A [reasoning-model compatibility amendment](SPEC-mistral-transport.md#reasoning-model-compatibility-amendment)
+  ([#309](https://github.com/andrewpucci/dependency-update-advisor/issues/309))
+  is approved for planning, 2026-11-12: `top_p`, content chunks, and larger
+  budgets.
 - [Immutable GitHub evidence reads](SPEC-github-read.md) — implemented for
   D1 #13 and #101–#107 in `shared-review`, merged into `main`. Caller-supplied
   budgets cover discovery, immutable file bytes, and independent comparison
