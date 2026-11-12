@@ -22460,8 +22460,12 @@ async function reviewPacket(input) {
 
 // src/budget.ts
 const MiB = 1048576;
-/** The job's wall-clock limit; analysis and publication reserve their own time inside it. */
-const JOB_BUDGET_MS = 9e5;
+/**
+* The job window measured from the startup job start. The freshness reads and the analysis
+* deadline read this, never `JOB_BUDGET_MS` directly; analysis and publication reserve their own
+* time inside it.
+*/
+const JOB_WINDOW_MS = 84e4;
 /**
 * Reserved at the end of the job window for the final freshness re-verification: three sequential
 * reads (run, pull request, comparison) at the request timeout. Analysis must end before it.
@@ -30502,7 +30506,7 @@ async function evaluateEvidence(input, binding, started, signal, state, recheck,
 				config: trusted.config,
 				apiKey: input.llmApiKey,
 				evaluatedAt: input.evaluationTime,
-				deadlineMs: started + JOB_BUDGET_MS - FRESHNESS_ALLOWANCE_MS,
+				deadlineMs: started + JOB_WINDOW_MS - FRESHNESS_ALLOWANCE_MS,
 				signalAttempts: researched.signalAttempts,
 				researchIncomplete: researched.unavailable.length > 0,
 				signal,
@@ -30660,7 +30664,7 @@ function createGithubTransport(dependencies) {
 	const read = async (share, url, signal) => {
 		const limits = W2_GITHUB_LIMITS[share];
 		const spent = used[share];
-		const window = share === "freshness" ? JOB_BUDGET_MS : W2_GITHUB_LIMITS.totalTimeoutMs;
+		const window = share === "freshness" ? JOB_WINDOW_MS : W2_GITHUB_LIMITS.totalTimeoutMs;
 		if (signal?.aborted || ++spent.requests > limits.maxRequests || dependencies.now() - started >= window) return {
 			kind: "unavailable",
 			reason: "budget"

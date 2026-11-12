@@ -1,5 +1,5 @@
 import { describe, expect, test, vi } from 'vite-plus/test';
-import { JOB_BUDGET_MS } from './budget.js';
+import { JOB_WINDOW_MS } from './budget.js';
 import {
   createGithubTransport,
   parseRuntime,
@@ -275,7 +275,7 @@ describe('freshness reads and the shared evidence deadline', () => {
         return new Response('{}');
       },
     });
-    clock = JOB_BUDGET_MS;
+    clock = JOB_WINDOW_MS;
     await expect(transport.readRun(repo, 401)).resolves.toEqual({
       kind: 'unavailable',
       reason: 'budget',
@@ -301,7 +301,7 @@ describe('freshness reads and the shared evidence deadline', () => {
       kind: 'unavailable',
       reason: 'budget',
     });
-    clock = JOB_BUDGET_MS;
+    clock = JOB_WINDOW_MS;
     await expect(transport.readRun(repo, 401)).resolves.toEqual({
       kind: 'unavailable',
       reason: 'budget',
@@ -322,13 +322,13 @@ describe('freshness reads and the shared evidence deadline', () => {
     await expect(transport.readBlob(repo, 'a'.repeat(40))).resolves.toMatchObject({
       kind: 'available',
     });
-    clock = started + JOB_BUDGET_MS - 1_000;
+    clock = started + JOB_WINDOW_MS - 1_000;
     await expect(transport.readRun(repo, 401)).resolves.toMatchObject({ kind: 'available' });
   });
 
   test.each([
     ['after the shared deadline', pastEvidenceDeadline, W2_GITHUB_LIMITS.requestTimeoutMs],
-    ['near the job end', JOB_BUDGET_MS - 1_000, 1_000],
+    ['near the job end', JOB_WINDOW_MS - 1_000, 1_000],
   ])(
     'times a freshness read made %s out at the smaller of the request timeout and the time left',
     async (_name, at, timeout) => {

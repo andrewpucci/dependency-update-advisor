@@ -1,5 +1,5 @@
 import { reviewPacket, type AssessmentInput } from './assessment.js';
-import { EVIDENCE_READ_ENVELOPE, FRESHNESS_ALLOWANCE_MS, JOB_BUDGET_MS } from './budget.js';
+import { EVIDENCE_READ_ENVELOPE, FRESHNESS_ALLOWANCE_MS, JOB_WINDOW_MS } from './budget.js';
 import {
   createEvidenceCollectors,
   openEvidenceSession,
@@ -368,7 +368,7 @@ async function evaluateEvidence(
             apiKey: input.llmApiKey,
             evaluatedAt: input.evaluationTime,
             // The final freshness check needs its allowance inside the job window.
-            deadlineMs: started + JOB_BUDGET_MS - FRESHNESS_ALLOWANCE_MS,
+            deadlineMs: started + JOB_WINDOW_MS - FRESHNESS_ALLOWANCE_MS,
             signalAttempts: researched.signalAttempts,
             researchIncomplete: researched.unavailable.length > 0,
             signal,

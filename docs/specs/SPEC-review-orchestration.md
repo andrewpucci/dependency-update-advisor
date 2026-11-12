@@ -28,6 +28,12 @@ tracked the cause and its ordered tasks (#299-#304). Its code (#299-#303) is
 merged; the R1 re-pin and rehearsal (#304) remain. It does not authorize live
 publication or a production claim backend.
 
+**Diagnostic Amendment 3 (pre-startup allowance), approved for planning and
+execution 2026-11-11, implemented on the #306 branch (#310-#312):** the job clock
+starts inside `runStartup`, after time the runner has already spent
+([#306](https://github.com/andrewpucci/dependency-update-advisor/issues/306)).
+Its `preStartupAllowanceMs` value was chosen by the user on 2026-11-11.
+
 The user approved this W2 supporting-contract map on 2026-11-08:
 
 | Supporting contract            | Responsibility                                                                                                                  | Depends on                                          |
@@ -163,7 +169,8 @@ receives `process.env` or a general fetch function.
 
    The requests and bytes are divided between readers; one reader never
    borrows from another. The time limit is one shared deadline, except that
-   freshness reads are bounded by the job window (Diagnostic Amendment 2).
+   freshness reads are bounded by the job window (Diagnostic Amendments 2
+   and 3).
 
    | Reader                                    | Requests | Bytes   |
    | ----------------------------------------- | -------- | ------- |
@@ -190,7 +197,7 @@ receives `process.env` or a general fetch function.
    Freshness reads are reserved separately so a heavy snapshot cannot prevent
    the checks that keep a finished review valid. A failed freshness read is
    an internal failure, never a stale head; its time bound is the job window,
-   not the shared 240,000 ms deadline (Diagnostic Amendment 2).
+   not the shared 240,000 ms deadline (Diagnostic Amendments 2 and 3).
 
 3. **Credential separation.** `github-token` performs GitHub reads;
    `app-token` is reserved for later publication. Collectors, source context,
@@ -457,6 +464,110 @@ do that.
   the failure, report a raw error or external payload, infer a value from
   untrusted data, weaken fail-closed behavior, or start publication or
   production-claim implementation.
+
+## Diagnostic Amendment 3: Pre-Startup Allowance
+
+**Status: approved for planning and execution 2026-11-11; implemented
+(#310-#312), pending merge.** The user chose the fixed-margin
+approach and a `preStartupAllowanceMs` of 60,000, then invoked `as-plan` on this
+reviewed draft, which is the approval for planning. Plan and execution
+approval were separate gates, and the user approved execution the same day.
+It does not authorize live publication or a
+production claim backend. Effort tier: L (crosses `budget`, the GitHub
+transport, and `pipeline`, and amends approved text, as Amendment 2 did).
+Evidence is in
+[#306](https://github.com/andrewpucci/dependency-update-advisor/issues/306),
+found in the fresh-context review of PR #305.
+
+`JOB_BUDGET_MS` (900,000 ms) equals the review workflow's `timeout-minutes: 15`,
+but every deadline measures it from the job-start timestamp `runStartup` takes
+after the app-token step, action setup, Node load, and self-check. Time spent
+before that timestamp is not counted, so the pipeline's window can end after
+the runner's. By code reading, the final freshness check ends at about 840,000
+ms on the startup clock today and the 60,000 ms publication reserve absorbs
+the pre-startup time; no rehearsal has reached it. It becomes reachable once
+publication spends that reserve.
+
+1. **A fixed margin, not a new anchor.** The pipeline treats the job window as
+   `jobWindowMs` = `JOB_BUDGET_MS` - `preStartupAllowanceMs`, measured from the
+   existing startup job-start timestamp. No workflow-run or job start time is
+   read, and no epoch time is converted to the monotonic clock. `timeout-minutes`
+   and `JOB_BUDGET_MS` are unchanged.
+2. **Value: `preStartupAllowanceMs` = 60,000.** The user chose it on 2026-11-11.
+   It is an allowance for the app-token step, action download, Node load, and
+   self-check, not a measured minimum: no recorded rehearsal timing exists in
+   this repository. Changing it needs a new approval. If a rehearsal shows
+   pre-startup time near or above it, that is a finding for this amendment's
+   owner, not a reason to tune the value silently.
+3. **Both readers use the window.** Wherever Amendment 2 says "the job window"
+   or "job start plus the job budget" (the freshness read window and each
+   freshness request's timer, and the analysis deadline), the end is
+   `jobWindowMs` after the job start. The analysis deadline is the job start
+   plus `jobWindowMs` minus `freshnessAllowanceMs`. With the unchanged 60,000
+   ms analysis reserve, the model ends by 735,000 ms after the job start and
+   the final freshness check by about 780,000 ms. With the full 60,000 ms
+   allowance spent, that is 840,000 ms on the runner clock, leaving 60,000 ms
+   for publication. The shared 240,000 ms evidence deadline and
+   every other deadline are unchanged.
+4. **One definition.** `jobWindowMs` is derived in `src/budget.ts` and is the
+   only value the transport and the pipeline read; neither subtracts the
+   allowance itself.
+5. **Fail-closed preservation.** The allowance only shortens the window. It
+   converts no outcome to success, adds no read or credential, and leaves the
+   final freshness check as the gate for every handoff. A freshness read
+   started at or after the end of the window is refused with the fixed `budget`
+   reason; one still in flight when the window ends is aborted and reports the
+   fixed `timeout` reason, as Amendment 2 item 8 requires.
+6. **Required checks.** Tests must prove:
+   - through the real startup harness, with an injected clock that reads
+     60,000 when startup takes the job start (the full allowance spent before
+     startup), a model that advances that same clock to one millisecond before
+     the analysis deadline it receives, and an earlier advance during evidence
+     so the publication reserve, not the 600,000 ms analysis cap, sets that
+     deadline: every read of the final freshness check ends no later than
+     840,000 on the injected clock, which leaves the 60,000 ms publication
+     reserve intact. The limit is stated as a literal, not derived from the
+     constants under test, and a control with the same evidence advance and no
+     model delay is compared. The check fails on the code before this
+     amendment (the final reads end at about 855,000);
+   - the analysis deadline passed to `reviewPacket` equals job start plus
+     `jobWindowMs` minus `freshnessAllowanceMs`, asserted against the literal
+     value, not a recomputation from the constants (the analysis layer
+     subtracts its own 60,000 ms reserve from it, which hides it end to end);
+   - a freshness read made at `jobWindowMs` after the job start is refused with
+     `budget`, one made just before it is served, and its request timer is the
+     smaller of the request timeout and the time left in `jobWindowMs`;
+   - evidence readers still stop at the shared 240,000 ms deadline;
+   - `src/budget.test.ts` pins `preStartupAllowanceMs` to 60,000 and
+     `jobWindowMs` to 840,000 as literals, so an allowance of zero or one
+     subtracted twice inside `budget` fails.
+
+   Named mutations that must each fail a test: measuring the transport window
+   or the analysis deadline from `JOB_BUDGET_MS` instead of `jobWindowMs`; using
+   `jobWindowMs` in only one of the two; subtracting the allowance twice; and
+   setting `preStartupAllowanceMs` to zero. The existing tests that assert
+   `JOB_BUDGET_MS` windows (`src/pipeline.test.ts`, `src/runtime.test.ts`)
+   change to `jobWindowMs` with this amendment, including the two refusal
+   tests at the end of the window, so each is tied to the new window explicitly.
+
+7. **Supersedes when implemented.** Amendment 2's references to "the 900,000 ms
+   job budget" and to a final check at about 840,000 ms are narrowed by items 1
+   and 3; the `freshnessAllowanceMs` value is unchanged. The `src/pipeline.test.ts`
+   expectations of an analysis deadline of 755,000 ms (job start -100,000) and
+   855,000 ms become 695,000 ms and 795,000 ms.
+8. **Revisit with publication.** The reserve this amendment protects is first
+   spent by publication. The publication work re-checks the allowance against
+   its own measured pre-startup time and records the result in its spec.
+
+### Amendment 3 Boundaries
+
+- **Always:** keep one derived `jobWindowMs`, keep the final freshness check as
+  a gate for every handoff, and bound every read.
+- **Ask first:** change `preStartupAllowanceMs`, `JOB_BUDGET_MS`, or
+  `timeout-minutes`; add a run-start or job-start anchor read; or change the
+  workflow trigger, an App permission, or a secret.
+- **Never:** end an unverified or late result as `incomplete-evidence`, weaken
+  fail-closed behavior, or start publication or production-claim implementation.
 
 ### Trusted config and context snapshot
 
