@@ -737,3 +737,21 @@ test('hostile upstream instructions cannot change model, endpoint, headers or va
   expect(JSON.stringify(result)).not.toContain('SENTINEL');
   expect(fetch).toHaveBeenCalledTimes(1);
 });
+
+test('the larger request limit never outlasts the caller deadline', async () => {
+  const { input } = await preparedAnalysis();
+  const prepared = prepareAnalysisBatch({ ...input, limits: ANALYSIS_LIMITS });
+  if (prepared.kind !== 'prepared') throw new Error('fixture');
+  vi.useFakeTimers();
+  let now = 0;
+  const fetch = vi.fn(() => new Promise<Response>(() => {}));
+  const task = analyzeMistralBatch(
+    prepared.batch,
+    { ...options, deadlineMs: 5_000 },
+    { fetch, now: () => now },
+  );
+  now = 5_000;
+  await vi.advanceTimersByTimeAsync(5_000);
+  expect(await task).toMatchObject({ kind: 'failed', category: 'deadline' });
+  expect(vi.getTimerCount()).toBe(0);
+});

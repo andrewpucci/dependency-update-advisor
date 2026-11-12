@@ -254,3 +254,29 @@ test('a shared vetted URL cannot lend one member the other member’s source ali
   ref.sourceId = sources[1].alias;
   expect((await validate(batch, document)).kind).toBe('failed');
 });
+
+test('budgets fit a reasoning-model reply and keep the response ceiling tied to the formula', () => {
+  // Observed 2026-11-12: reasoning replies used 4.1k-8.0k completion tokens and took 58-101 s.
+  expect(ANALYSIS_LIMITS).toMatchObject({
+    completionTokens: 16_384,
+    requestTimeoutMs: 240_000,
+    responseBytes: 12_648_448,
+  });
+  expect(ANALYSIS_LIMITS.responseBytes).toBe(ANALYSIS_LIMITS.completionTokens * 128 * 6 + 65_536);
+  // Every input bound is unchanged.
+  expect(ANALYSIS_LIMITS).toMatchObject({
+    maxUnits: 8,
+    sourceBytes: 2_048,
+    unitBytes: 65_536,
+    requestBytes: 262_144,
+  });
+});
+
+test('the old response ceiling is too small for the new completion budget', async () => {
+  const { input } = await analysisScenario();
+  const result = prepareAnalysisBatch({
+    ...input,
+    limits: { ...ANALYSIS_LIMITS, responseBytes: 3_211_264 },
+  });
+  expect(result.kind).toBe('invalid');
+});

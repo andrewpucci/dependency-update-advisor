@@ -292,33 +292,33 @@ test('batch identity and request bytes stay pinned for fixed selections', async 
   const pinned = [
     [
       [a, b, c],
-      'fb5487b7862ae856cc8666193be0e10fecf7c4ef8ccc9ff1af4e8e6c609a23fb',
-      54_823,
-      'c0bedaa2be4b52ad52f7ad367e3828864d8592cd8319a2f176b05a7eaeb34db4',
+      '575424c89a67ab582cec0d10a26e091047c0b2a1850ba68f81d9d20dcd821755',
+      54_824,
+      'a9da2838619f3f52da64639941be0ac3df40106468593f77b2b73b935b8585a3',
     ],
     [
       [a],
-      '0f7d2ef7f798f930363f2b709177f0965953e0d3bf86cda9d3c744d120882472',
-      15_798,
-      '19edf397613bc2e3bc75c467a756622553c2964518c681ec214f58f831d6bb9f',
+      'd5432719644b96dd332f400b94e8466c91c3839dc318d733bdf7be5dfc1d45e7',
+      15_799,
+      '570a5bca169fcfe3d732962a20b2c6ccdeb695007720c0ae037174e29cb5b00c',
     ],
     [
       [b],
-      '37dd74859624c918a78d0ba20da9d63fc90ebc60ff30152a8817f26d4148a486',
-      34_698,
-      'c8a13335569cc82ec83a50d75c6a752068ea444722220a9df88e8d37dd77ab6c',
+      'a38e4f37b542702b00cbc374763c77628e0fa034ce4c9cead98f115729b12b8d',
+      34_699,
+      '262db507ae6eeed32e53c65cf2bad64d9ef084b014c31c7c836460a7d0637664',
     ],
     [
       [c],
-      '2e57de60d88243a93d5af107b5388fcf4f97ee077a325ce91ab9ca2c7037c249',
-      15_589,
-      '1066532ba9bc89f2111a874186f773b7991b3b042aa1107f36fa82e5a6408033',
+      '01c8afdc539f9e3b7c143c3b10496ae589b31d1b14d419e6a5c4f7c0f9629614',
+      15_590,
+      'a36112000f627fb8d357213d40d55f43a3909069b4d5a4369f5574c5c9c5cff6',
     ],
     [
       [a, c],
-      '8b57a6fbdf1dde8eff35f29a8b9caa0b542e51571afdcfcb474f12296fc02bfb',
-      25_709,
-      '3821acffcfd41578e88c522f0af31b92c40ba4730e21e5766211944cbb56f2b8',
+      '82ad8e0c6299825e50040a30f0e54b6d467d8361d157a3f206063ceadb70acc5',
+      25_710,
+      '2e4f57a7b2a099b947d49962973f9a6c3b36a1532f1dd888e0b5f3086b6e4218',
     ],
   ] as const;
   expect(input.unitIds).toHaveLength(3);
