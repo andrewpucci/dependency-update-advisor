@@ -3,6 +3,16 @@ const MiB = 1024 * 1024;
 /** The job's wall-clock limit; analysis and publication reserve their own time inside it. */
 export const JOB_BUDGET_MS = 15 * 60 * 1_000;
 /**
+ * Time the runner spends before `runStartup` takes its job start: the app-token step, action
+ * download, Node load, and self-check. It is an allowance, not a measurement.
+ */
+export const PRE_STARTUP_ALLOWANCE_MS = 60_000;
+/**
+ * The job window measured from the startup job start. Every deadline that must end inside the
+ * runner's timeout reads this, never `JOB_BUDGET_MS` directly.
+ */
+export const JOB_WINDOW_MS = JOB_BUDGET_MS - PRE_STARTUP_ALLOWANCE_MS;
+/**
  * Reserved at the end of the job window for the final freshness re-verification: three sequential
  * reads (run, pull request, comparison) at the request timeout. Analysis must end before it.
  */

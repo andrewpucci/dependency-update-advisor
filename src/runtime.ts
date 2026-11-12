@@ -1,4 +1,4 @@
-import { EVIDENCE_READ_ALLOCATION, EVIDENCE_READ_ENVELOPE, JOB_BUDGET_MS } from './budget.js';
+import { EVIDENCE_READ_ALLOCATION, EVIDENCE_READ_ENVELOPE, JOB_WINDOW_MS } from './budget.js';
 import { positiveId, record, type RepositoryIdentity, type WorkflowIdentity } from './event.js';
 import { httpReason } from './github-read.js';
 import type { EvidenceReason } from './schema.js';
@@ -172,7 +172,7 @@ export function createGithubTransport(dependencies: TransportDependencies): Gith
   const read = async (share: Share, url: string, signal?: AbortSignal): Promise<GithubRead> => {
     const limits = W2_GITHUB_LIMITS[share];
     const spent = used[share];
-    const window = share === 'freshness' ? JOB_BUDGET_MS : W2_GITHUB_LIMITS.totalTimeoutMs;
+    const window = share === 'freshness' ? JOB_WINDOW_MS : W2_GITHUB_LIMITS.totalTimeoutMs;
     if (
       signal?.aborted ||
       ++spent.requests > limits.maxRequests ||
