@@ -63,7 +63,11 @@ GitHub App token.
    `351cc6e125afc415195a974ca881223e00453b09`, the passing `main` revision that
    contains the freshness time allowance and `freshness` stage detail, so a
    slow run completes or reports `internal-failure at freshness (<field>
-   <reason>)`. Neither re-pin changes a permission, secret, or trigger.
+   <reason>)`. It was then re-pinned to
+   `214fbfc284cae4d19d270ec7c8b17e6b7999bb40`, the passing `main` revision that
+   contains the pre-startup allowance and the fixed model-unavailable reason, so
+   a rehearsal that ends `model-unavailable` reports `(<reason>)`. No re-pin
+   changes a permission, secret, or trigger.
 
 ## Commands
 
