@@ -312,8 +312,36 @@ globalThis.fetch = (input, init) => new Promise((resolve, reject) => {
 });
 `;
 
-/** What the test answers the one model call with: an HTTP status, or a network failure. */
-type ModelReply = number | 'network-error';
+/**
+ * What the test answers the one model call with: an HTTP status, a network failure, or a 200 reply
+ * carrying the given assistant `content` and finish reason.
+ */
+type ModelReply = number | 'network-error' | { content: unknown; finish: 'stop' | 'length' };
+
+function modelAnswer(id: number, modelReply: ModelReply) {
+  if (modelReply === 'network-error') return { id, error: true };
+  if (typeof modelReply === 'number')
+    return { id, status: modelReply, body: 'RAW_PROVIDER_BODY', headers: {} };
+  return {
+    id,
+    status: 200,
+    headers: { 'content-type': 'application/json' },
+    body: JSON.stringify({
+      choices: [
+        {
+          index: 0,
+          finish_reason: modelReply.finish,
+          message: {
+            role: 'assistant',
+            content: modelReply.content,
+            tool_calls: [],
+            refusal: null,
+          },
+        },
+      ],
+    }),
+  };
+}
 
 /** Runs the shipped bundle against the shared mock GitHub, answering the model call itself. */
 async function startWithModelReply(modelReply: ModelReply) {
@@ -355,11 +383,7 @@ async function startWithModelReply(modelReply: ModelReply) {
         if (isLiveWrite(request, sentinel)) violations.push(`${message.method} ${message.url}`);
         if (message.url === MODEL_ENDPOINT) {
           modelCalls.push(message.method);
-          reply(
-            modelReply === 'network-error'
-              ? { id: message.id, error: true }
-              : { id: message.id, status: modelReply, body: 'RAW_PROVIDER_BODY', headers: {} },
-          );
+          reply(modelAnswer(message.id, modelReply));
           return;
         }
         const headers: Record<string, string> = {};
@@ -409,6 +433,56 @@ test.each([
     expect(result.code).toBe(78);
     expect(result.stderr).not.toContain(sentinel);
     expect(result.stderr).not.toContain('RAW_PROVIDER_BODY');
+  },
+  30_000,
+);
+
+const thinking = [{ type: 'text', text: 'RAW_THINKING_SENTINEL' }];
+test.each([
+  [
+    'a thinking chunk and a non-JSON text chunk',
+    {
+      content: [
+        { type: 'thinking', thinking },
+        { type: 'text', text: 'not json' },
+      ],
+      finish: 'stop',
+    },
+    'json',
+    false,
+  ],
+  [
+    'a thinking-only reply that stopped',
+    { content: [{ type: 'thinking', thinking }], finish: 'stop' },
+    'envelope',
+    false,
+  ],
+  [
+    'a thinking-only reply cut off for length',
+    { content: [{ type: 'thinking', thinking }], finish: 'length' },
+    'length',
+    true,
+  ],
+  [
+    'an unknown chunk type',
+    { content: [{ type: 'image_url', url: 'x' }], finish: 'stop' },
+    'envelope',
+    false,
+  ],
+] as const)(
+  'shipped action parses reasoning chunks: %s',
+  async (_name, modelReply, reason, splits) => {
+    const result = await startWithModelReply(modelReply);
+    expect(result.stderr).toBe(
+      `dependabot-review: no-write rehearsal recorded model-unavailable (${reason}); nothing was published.\n`,
+    );
+    // A truncated multi-unit batch is split and retried by M2, so it makes more than one call.
+    if (splits) expect(result.modelCalls.length).toBeGreaterThan(1);
+    else expect(result.modelCalls).toEqual(['POST']);
+    expect(new Set(result.modelCalls)).toEqual(new Set(['POST']));
+    expect(result.violations).toEqual([]);
+    expect(result.code).toBe(78);
+    expect(result.stderr).not.toContain('RAW_THINKING_SENTINEL');
   },
   30_000,
 );
