@@ -10,7 +10,8 @@ import { snapshotReads, treeEntry } from '../tests/parity/snapshot-reads.js';
 import { upstreamScenario } from '../tests/parity/upstream.js';
 import { uvMetadataScenario } from '../tests/parity/uv-metadata.js';
 import { analyzeMistralBatch } from './analysis/mistral.js';
-import type { EventReads, ReviewIdentity } from './event.js';
+import type { EventReads, RepositoryIdentity, ReviewIdentity } from './event.js';
+import { createEventReads } from './adapters.js';
 import { createRehearsalSink } from './handoff.js';
 import { runReview, type PipelineInput } from './pipeline.js';
 import { createTestClaimStore } from './review.js';
@@ -666,21 +667,193 @@ test.each([
       kind: 'handed-off',
       outcome: 'internal-failure',
       body: null,
-      handoff: { status: 'failure', comment: 'none', stage: 'unclassified' },
+      handoff: { status: 'failure', comment: 'none', stage: 'freshness' },
+      detail: { field: 'run', reason: 'unknown' },
     });
     expect(sink.traces()[0]).toMatchObject({
       kind: 'internal-failure',
       status: 'failure',
-      stage: 'unclassified',
+      stage: 'freshness',
     });
     if (from < 4) expect(modelCalls).toEqual([]);
   },
 );
 
+const actualPacket = await vi.importActual<typeof import('./packet.js')>('./packet.js');
+
+/** The next ownership read fails once after `gate.armed` is set, as a transient store fault would. */
+function claimsBrokenWhenArmed() {
+  const store = createTestClaimStore();
+  const gate = { armed: false };
+  const claims = {
+    ...store,
+    read: async (claim: Parameters<typeof store.read>[0]) => {
+      if (gate.armed) {
+        gate.armed = false;
+        throw new Error(sentinel);
+      }
+      return store.read(claim);
+    },
+  };
+  return { claims, gate };
+}
+
 test.each([
-  ['an unreadable run before evidence starts', { runFailsAt: 1 }],
-  ['an ownership read that throws', { failClaimRead: 1 }],
-] as const)('labels %s as the unclassified stage', async (_label, fault) => {
+  ['at the entry check', (_gate: { armed: boolean }) => _gate],
+  [
+    'before research',
+    (gate: { armed: boolean }) =>
+      vi.mocked(packetModule.assembleReviewPacket).mockImplementationOnce(async (packetInput) => {
+        const assembled = await actualPacket.assembleReviewPacket(packetInput);
+        gate.armed = true;
+        return assembled;
+      }),
+  ],
+  [
+    'before the model',
+    (gate: { armed: boolean }) =>
+      vi.mocked(researchModule.runResearch).mockImplementationOnce(async (researchInput) => {
+        const researched = await vi
+          .importActual<typeof import('./research.js')>('./research.js')
+          .then((actual) => actual.runResearch(researchInput));
+        gate.armed = true;
+        return researched;
+      }),
+  ],
+  [
+    'at the final check',
+    (gate: { armed: boolean }) =>
+      vi.mocked(assessmentModule.reviewPacket).mockImplementationOnce(async (reviewInput) => {
+        const reviewed = await vi
+          .importActual<typeof import('./assessment.js')>('./assessment.js')
+          .then((actual) => actual.reviewPacket(reviewInput));
+        gate.armed = true;
+        return reviewed;
+      }),
+  ],
+] as const)('reports a throwing ownership read %s as freshness ownership', async (label, arm) => {
+  const { claims, gate } = claimsBrokenWhenArmed();
+  // The watcher reads ownership on a timer; keep it out of the way of the one-shot fault.
+  const { input, sink } = await setup({
+    evidence: 'changes',
+    claims,
+    ownershipWatchMs: 3_600_000,
+  });
+  if (label === 'at the entry check') gate.armed = true;
+  else arm(gate);
+  const result = await runReview(input);
+  expect(result).toMatchObject({
+    kind: 'handed-off',
+    outcome: 'internal-failure',
+    handoff: { stage: 'freshness' },
+    detail: { field: 'ownership', reason: 'unknown' },
+  });
+  expect(sink.traces()[0]).toMatchObject({ kind: 'internal-failure', stage: 'freshness' });
+  expect(JSON.stringify({ result, traces: sink.traces() })).not.toContain(sentinel);
+});
+
+/** Event reads over a transport whose run read fails with a fixed reason from the given call on. */
+async function eventReadsFailingRun(from: number, reason: 'budget' | 'rate_limit') {
+  const { input } = await setup({ evidence: 'changes' });
+  const base = input.eventReads;
+  const available = <T>(value: T) => ({ kind: 'available' as const, value });
+  let runs = 0;
+  const transport = {
+    readWorkflowById: async (repo: RepositoryIdentity, id: number) =>
+      available(await base.readWorkflow(repo, id)),
+    readRun: async (repo: RepositoryIdentity, id: number) =>
+      runs++ >= from
+        ? { kind: 'unavailable' as const, reason }
+        : available(await base.readRun(repo, id)),
+    readPullRequest: async (repo: RepositoryIdentity, n: number) =>
+      available(await base.readPullRequest(repo, n)),
+    readComparison: async (repo: RepositoryIdentity, a: string, b: string) =>
+      available(await base.readComparison(repo, a, b)),
+  };
+  return {
+    input,
+    eventReads: createEventReads(transport as never, input.claims),
+  };
+}
+
+test.each([
+  ['budget', 1],
+  ['rate_limit', 3],
+] as const)(
+  'reports the adapter reason %s of a failed run read as the fixed freshness detail',
+  async (reason, from) => {
+    const { input, eventReads } = await eventReadsFailingRun(from, reason);
+    const result = await runReview({ ...input, eventReads });
+    expect(result).toMatchObject({
+      kind: 'handed-off',
+      outcome: 'internal-failure',
+      handoff: { stage: 'freshness' },
+      detail: { field: 'run', reason },
+    });
+  },
+);
+
+test('reports a run that no longer matches its binding as a mismatch, not a read failure', async () => {
+  const { input } = await setup({ evidence: 'changes' });
+  let runs = 0;
+  const eventReads = {
+    ...input.eventReads,
+    readRun: async (repo: RepositoryIdentity, id: number) => {
+      const run = (await input.eventReads.readRun(repo, id)) as { workflow_id: number };
+      return runs++ === 0 ? run : { ...run, workflow_id: run.workflow_id + 1 };
+    },
+  };
+  const result = await runReview({ ...input, eventReads });
+  expect(result).toMatchObject({
+    outcome: 'internal-failure',
+    handoff: { stage: 'freshness' },
+    detail: { field: 'run', reason: 'mismatch' },
+  });
+});
+
+test('clears the remembered read reason before every re-verification', async () => {
+  const { input } = await setup({ evidence: 'changes' });
+  const events: string[] = [];
+  const eventReads = {
+    ...input.eventReads,
+    readRun: async (repo: RepositoryIdentity, id: number) => {
+      events.push('run');
+      return input.eventReads.readRun(repo, id);
+    },
+    failureReason: () => 'rate_limit' as const,
+    clearFailureReason: () => void events.push('clear'),
+  };
+  await runReview({ ...input, eventReads });
+  // The first run read verifies the event; every later one belongs to a re-verification.
+  const later = events.slice(events.indexOf('run') + 1);
+  let cleared = false;
+  let reverifications = 0;
+  for (const event of later) {
+    if (event === 'clear') cleared = true;
+    else {
+      expect(cleared).toBe(true);
+      cleared = false;
+      reverifications += 1;
+    }
+  }
+  expect(reverifications).toBeGreaterThanOrEqual(2);
+});
+
+test('carries no freshness detail on any other outcome or stage', async () => {
+  const { input } = await setup({ evidence: 'changes' });
+  const result = await runReview(input);
+  expect(result).not.toHaveProperty('detail');
+  const failed = await setup({ evidence: 'changes' });
+  vi.mocked(researchModule.runResearch).mockImplementationOnce(throwSentinel);
+  const research = await runReview(failed.input);
+  expect(research).toMatchObject({ handoff: { stage: 'research' } });
+  expect(research).not.toHaveProperty('detail');
+});
+
+test.each([
+  ['an unreadable run before evidence starts', { runFailsAt: 1 }, 'run'],
+  ['an ownership read that throws', { failClaimRead: 1 }, 'ownership'],
+] as const)('labels %s as a freshness failure', async (_label, fault, field) => {
   const failing = 'failClaimRead' in fault ? claimsFailingAt(fault.failClaimRead) : null;
   const { input, sink } = await setup({
     evidence: 'changes',
@@ -690,9 +863,10 @@ test.each([
   expect(result).toMatchObject({
     kind: 'handed-off',
     outcome: 'internal-failure',
-    handoff: { stage: 'unclassified' },
+    handoff: { stage: 'freshness' },
+    detail: { field, reason: 'unknown' },
   });
-  expect(sink.traces()[0]).toMatchObject({ kind: 'internal-failure', stage: 'unclassified' });
+  expect(sink.traces()[0]).toMatchObject({ kind: 'internal-failure', stage: 'freshness' });
   expect(JSON.stringify({ result, traces: sink.traces() })).not.toContain(sentinel);
 });
 

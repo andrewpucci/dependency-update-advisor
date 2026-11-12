@@ -1,17 +1,33 @@
 import type { EventReads } from './event.js';
 import type { GithubRead, GithubTransport } from './runtime.js';
+import type { EvidenceReason } from './schema.js';
 import type { ClaimStore } from './review.js';
 
 type Fetch = (url: string, init: RequestInit) => Promise<Response>;
 
-async function value(read: Promise<GithubRead>): Promise<unknown> {
-  const result = await read;
-  if (result.kind !== 'available') throw new Error('read unavailable');
-  return result.value;
-}
+/**
+ * The fixed reason of the last failed read. T1 catches every read error, so the reason cannot travel
+ * with the exception; it is remembered here and cleared before each re-verification.
+ */
+export type FailureRecorder = Readonly<{
+  failureReason: () => EvidenceReason | null;
+  clearFailureReason: () => void;
+}>;
 
 /** T1's reads throw on any failure; replay state comes from the claim store, never from GitHub. */
-export function createEventReads(transport: GithubTransport, claims: ClaimStore): EventReads {
+export function createEventReads(
+  transport: GithubTransport,
+  claims: ClaimStore,
+): EventReads & FailureRecorder {
+  let last: EvidenceReason | null = null;
+  const value = async (read: Promise<GithubRead>): Promise<unknown> => {
+    const result = await read;
+    if (result.kind !== 'available') {
+      last = result.reason;
+      throw new Error('read unavailable');
+    }
+    return result.value;
+  };
   return {
     readWorkflow: (repository, workflowId) =>
       value(transport.readWorkflowById(repository, workflowId)),
@@ -21,6 +37,10 @@ export function createEventReads(transport: GithubTransport, claims: ClaimStore)
     readComparison: (repository, base, head) =>
       value(transport.readComparison(repository, base, head)),
     readReplay: (identity) => claims.replay(identity),
+    failureReason: () => last,
+    clearFailureReason: () => {
+      last = null;
+    },
   };
 }
 

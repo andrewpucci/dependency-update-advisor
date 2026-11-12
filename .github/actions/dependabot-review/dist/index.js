@@ -19462,19 +19462,27 @@ function collectLicenseSignals(input, output, change, sides) {
 }
 
 // src/adapters.ts
-async function value(read) {
-	const result = await read;
-	if (result.kind !== "available") throw new Error("read unavailable");
-	return result.value;
-}
 /** T1's reads throw on any failure; replay state comes from the claim store, never from GitHub. */
 function createEventReads(transport, claims) {
+	let last = null;
+	const value = async (read) => {
+		const result = await read;
+		if (result.kind !== "available") {
+			last = result.reason;
+			throw new Error("read unavailable");
+		}
+		return result.value;
+	};
 	return {
 		readWorkflow: (repository, workflowId) => value(transport.readWorkflowById(repository, workflowId)),
 		readRun: (repository, runId) => value(transport.readRun(repository, runId)),
 		readPullRequest: (repository, pullNumber) => value(transport.readPullRequest(repository, pullNumber)),
 		readComparison: (repository, base, head) => value(transport.readComparison(repository, base, head)),
-		readReplay: (identity) => claims.replay(identity)
+		readReplay: (identity) => claims.replay(identity),
+		failureReason: () => last,
+		clearFailureReason: () => {
+			last = null;
+		}
 	};
 }
 function httpsUrl(url) {
@@ -19552,10 +19560,28 @@ const INTERNAL_FAILURE_STAGES = [
 	"research",
 	"assessment",
 	"handoff",
+	"freshness",
 	"unclassified"
 ];
 function internalFailureStage(value) {
 	return INTERNAL_FAILURE_STAGES.includes(value) ? value : "unclassified";
+}
+const FRESHNESS_FIELDS = [
+	"run",
+	"pullRequest",
+	"comparison"
+];
+/** Maps T1's fixed freshness error, and the adapter's reason for a failed read, to the detail. */
+function freshnessDetail(error, adapterReason) {
+	const field = FRESHNESS_FIELDS.includes(error.field) ? error.field : "binding";
+	if (error.category === "mismatch" || error.category === "input") return {
+		field,
+		reason: error.category
+	};
+	return {
+		field,
+		reason: error.category === "read" && adapterReason && EVIDENCE_REASONS.includes(adapterReason) ? adapterReason : "unknown"
+	};
 }
 const outcomeEligibility = Object.freeze({
 	skipped: {
@@ -30213,16 +30239,6 @@ async function inStage(stage, run) {
 		throw error instanceof StageFailure ? error : new StageFailure(stage);
 	}
 }
-function stopped(state) {
-	return state === "stale" ? {
-		kind: "stale",
-		body: null
-	} : {
-		kind: "internal-failure",
-		stage: "unclassified",
-		body: null
-	};
-}
 /** T4 requires exactly one context entry per change, so every change is named, Actions included. */
 function dependencyIdentities(changes) {
 	const identities = [];
@@ -30273,26 +30289,51 @@ async function runReview(input) {
 		}
 		return mine;
 	};
-	/** Ownership and the PR head must both still hold before anything may be handed off. */
-	const stillCurrent = async () => {
-		if (!await owns()) return "stale";
-		const fresh = await reverifyReviewBinding(binding, input.eventReads);
-		if (fresh.kind === "fresh") return state = "current";
-		state = fresh.kind === "obsolete" ? "stale" : "error";
+	/** The check that could not verify the attempt, kept so the failure can name it. */
+	let failedCheck = {
+		field: "binding",
+		reason: "unknown"
+	};
+	const unverified = (detail) => {
+		failedCheck = detail;
+		state = "error";
 		attempt.abort();
 		return state;
+	};
+	/** Ownership and the PR head must both still hold before anything may be handed off. */
+	const stillCurrent = async () => {
+		input.eventReads.clearFailureReason?.();
+		let owner;
+		try {
+			owner = await owns();
+		} catch {
+			return unverified({
+				field: "ownership",
+				reason: "unknown"
+			});
+		}
+		if (!owner) return "stale";
+		const fresh = await reverifyReviewBinding(binding, input.eventReads);
+		if (fresh.kind === "fresh") return state = "current";
+		if (fresh.kind === "error") return unverified(freshnessDetail(fresh, input.eventReads.failureReason?.() ?? null));
+		state = "stale";
+		attempt.abort();
+		return state;
+	};
+	/** A check that did not return `current`: proof of a moved head, or a failure to verify. */
+	const halted = (check) => check === "stale" ? {
+		kind: "stale",
+		body: null
+	} : {
+		kind: "internal-failure",
+		stage: "freshness",
+		freshness: failedCheck,
+		body: null
 	};
 	const guard = (fetch) => guardedFetch(fetch, attempt, owns);
 	const evaluate = async () => {
 		const entry = await stillCurrent();
-		if (entry !== "current") return entry === "stale" ? {
-			kind: "stale",
-			body: null
-		} : {
-			kind: "internal-failure",
-			stage: "unclassified",
-			body: null
-		};
+		if (entry !== "current") return halted(entry);
 		if (!input.llmApiKey) return {
 			kind: "model-unavailable",
 			body: null
@@ -30301,7 +30342,7 @@ async function runReview(input) {
 			...input,
 			githubFetch: guard(input.githubFetch),
 			publicFetch: guard(input.publicFetch)
-		}, binding, started, attempt.signal, () => state, stillCurrent);
+		}, binding, started, attempt.signal, () => state, stillCurrent, halted);
 	};
 	let outcome;
 	const watcher = setInterval(() => void owns().catch(() => void 0), input.ownershipWatchMs ?? OWNERSHIP_WATCH_MS);
@@ -30318,8 +30359,8 @@ async function runReview(input) {
 		clearInterval(watcher);
 	}
 	if (outcome.kind !== "stale") {
-		const final = await stillCurrent().catch(() => "error");
-		if (final !== "current") outcome = stopped(final);
+		const final = await stillCurrent();
+		if (final !== "current") outcome = halted(final);
 	}
 	try {
 		const handoff = await createReviewHandoff(input.claims, claim, outcome.kind, {
@@ -30337,7 +30378,8 @@ async function runReview(input) {
 			outcome: outcome.kind,
 			handoff: handoff.handoff,
 			body: outcome.body,
-			recorded: input.sink.record(handoff.handoff)
+			recorded: input.sink.record(handoff.handoff),
+			...outcome.kind === "internal-failure" && outcome.freshness ? { detail: outcome.freshness } : {}
 		};
 	} catch {
 		return {
@@ -30347,7 +30389,7 @@ async function runReview(input) {
 		};
 	}
 }
-async function evaluateEvidence(input, binding, started, signal, state, recheck) {
+async function evaluateEvidence(input, binding, started, signal, state, recheck, halted) {
 	const isCurrent = () => state() === "current";
 	let evidenceSession = "ready";
 	let npmInventory = null;
@@ -30415,7 +30457,7 @@ async function evaluateEvidence(input, binding, started, signal, state, recheck)
 				body: null
 			};
 			const beforeResearch = await recheck();
-			if (beforeResearch !== "current") return stopped(beforeResearch);
+			if (beforeResearch !== "current") return halted(beforeResearch);
 			const researched = await inStage("research", () => runResearch({
 				packet: assembled.packet,
 				trusted: {
@@ -30436,7 +30478,7 @@ async function evaluateEvidence(input, binding, started, signal, state, recheck)
 				body: null
 			};
 			const beforeModel = await recheck();
-			if (beforeModel !== "current") return stopped(beforeModel);
+			if (beforeModel !== "current") return halted(beforeModel);
 			const reviewed = await inStage("assessment", () => reviewPacket({
 				packet: researched.packet,
 				config: trusted.config,
@@ -30474,14 +30516,12 @@ async function evaluateEvidence(input, binding, started, signal, state, recheck)
 		kind: "invalid-config",
 		body: null
 	};
-	return state() === "stale" ? {
-		kind: "stale",
-		body: null
-	} : {
+	const check = state();
+	return check === "current" ? {
 		kind: "internal-failure",
 		stage: "snapshot",
 		body: null
-	};
+	} : halted(check);
 }
 
 // src/runtime.ts

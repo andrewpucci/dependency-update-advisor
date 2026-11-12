@@ -197,3 +197,43 @@ test('starts nothing once the attempt has ended or ownership is lost', async () 
   expect(checks).toBe(before);
   expect(fetch).toHaveBeenCalledOnce();
 });
+
+test('remembers the fixed reason of the last failed read until it is cleared', async () => {
+  const reads = createEventReads(
+    transportFor((url) =>
+      url.endsWith('/pulls/42') ? new Response('{}', { status: 404 }) : new Response('{}'),
+    ),
+    createTestClaimStore(),
+  );
+  expect(reads.failureReason()).toBeNull();
+  await expect(reads.readPullRequest(repository, 42)).rejects.toThrow();
+  expect(reads.failureReason()).toBe('missing');
+  await expect(reads.readRun(repository, 401)).resolves.toEqual({});
+  expect(reads.failureReason()).toBe('missing');
+  reads.clearFailureReason();
+  expect(reads.failureReason()).toBeNull();
+});
+
+test('does not put error text or response bodies in the remembered reason', async () => {
+  const reads = createEventReads(
+    transportFor(() => new Response('sentinel-body', { status: 500 })),
+    createTestClaimStore(),
+  );
+  await expect(reads.readRun(repository, 401)).rejects.toThrow();
+  expect(reads.failureReason()).not.toContain('sentinel');
+});
+
+test('reports the reason of the most recent failed read, not the first', async () => {
+  const reads = createEventReads(
+    transportFor((url) =>
+      url.endsWith('/pulls/42')
+        ? new Response('{}', { status: 404 })
+        : new Response('{}', { status: 403, headers: { 'retry-after': '60' } }),
+    ),
+    createTestClaimStore(),
+  );
+  await expect(reads.readPullRequest(repository, 42)).rejects.toThrow();
+  expect(reads.failureReason()).toBe('missing');
+  await expect(reads.readRun(repository, 401)).rejects.toThrow();
+  expect(reads.failureReason()).toBe('rate_limit');
+});
