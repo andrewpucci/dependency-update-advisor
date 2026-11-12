@@ -7,7 +7,7 @@ import { compareUpstreamVersions } from './evidence/upstream-version.js';
 import fs from 'node:fs/promises';
 import { authenticatedFetch, createEventReads, researchFetch } from './adapters.js';
 import { createRehearsalSink, type RehearsalSink } from './handoff.js';
-import { runReview, type PipelineInput } from './pipeline.js';
+import { runReview, type PipelineInput, type PipelineResult } from './pipeline.js';
 import { createTestClaimStore, type ClaimStore } from './review.js';
 import { createGithubTransport, parseRuntime, resolveWorkflow } from './runtime.js';
 import { createGithubSnapshotReads } from './snapshot.js';
@@ -109,6 +109,27 @@ function platformDependencies(): StartupDependencies {
   };
 }
 
+/** The one fixed line for a rehearsal result; no input, error text, or stack is ever echoed. */
+function rehearsalLine(result: PipelineResult): string {
+  const recorded = 'dependabot-review: no-write rehearsal recorded';
+  switch (result.kind) {
+    case 'failed':
+      return `${recorded} internal-failure at ${result.stage}; nothing was published.`;
+    case 'handed-off': {
+      if (!result.recorded)
+        return 'dependabot-review: no-write rehearsal could not record the handoff; nothing was published.';
+      if (result.handoff.kind !== 'internal-failure')
+        return `${recorded} ${result.outcome}; nothing was published.`;
+      const detail = result.detail ? ` (${result.detail.field} ${result.detail.reason})` : '';
+      return `${recorded} internal-failure at ${result.handoff.stage}${detail}; nothing was published.`;
+    }
+    case 'skipped':
+      return `dependabot-review: event skipped (${result.reason}); nothing was published.`;
+    default:
+      return `dependabot-review: no publishable handoff (${result.reason}); nothing was published.`;
+  }
+}
+
 /**
  * Runs one no-write rehearsal of the review pipeline. It reads GitHub and public sources and records
  * the intended publication in a sink that cannot write, so the exit code stays non-zero: no status
@@ -176,30 +197,7 @@ export async function runStartup(
       jobStartedAt,
       evaluationTime: dependencies.evaluationTime(),
     });
-    if (result.kind === 'handed-off' && !result.recorded)
-      writeError(
-        'dependabot-review: no-write rehearsal could not record the handoff; nothing was published.',
-      );
-    else if (result.kind === 'failed')
-      writeError(
-        `dependabot-review: no-write rehearsal recorded internal-failure at ${result.stage}; nothing was published.`,
-      );
-    else if (result.kind === 'handed-off' && result.handoff.kind === 'internal-failure')
-      writeError(
-        `dependabot-review: no-write rehearsal recorded internal-failure at ${result.handoff.stage}${
-          result.detail ? ` (${result.detail.field} ${result.detail.reason})` : ''
-        }; nothing was published.`,
-      );
-    else if (result.kind === 'handed-off')
-      writeError(
-        `dependabot-review: no-write rehearsal recorded ${result.outcome}; nothing was published.`,
-      );
-    else if (result.kind === 'skipped')
-      writeError(`dependabot-review: event skipped (${result.reason}); nothing was published.`);
-    else
-      writeError(
-        `dependabot-review: no publishable handoff (${result.reason}); nothing was published.`,
-      );
+    writeError(rehearsalLine(result));
   } catch {
     writeError(
       'dependabot-review: no-write rehearsal recorded internal-failure at unclassified; nothing was published.',
