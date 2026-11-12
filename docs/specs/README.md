@@ -257,7 +257,10 @@ gaps and an introduced vulnerability before parity is claimed.
   execution and is merged. A second amendment (a freshness time allowance and a
   `freshness` stage, [#297](https://github.com/andrewpucci/dependency-update-advisor/issues/297))
   is approved for planning and execution; its code (#299-#303) is merged and
-  the R1 re-pin and rehearsal (#304) remain. Its approved
+  the R1 re-pin and rehearsal (#304) remain. A third amendment (a fixed
+  60,000 ms pre-startup allowance,
+  [#306](https://github.com/andrewpucci/dependency-update-advisor/issues/306))
+  is approved for planning 2026-11-11; its plan awaits approval. The approved
   map's #209 contracts are implemented on `issue-209`, pending fresh-context
   review and merge: [shared PyPI release
   observations](SPEC-shared-release-observations.md), charged to the existing
