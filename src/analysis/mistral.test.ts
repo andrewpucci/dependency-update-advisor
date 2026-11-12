@@ -76,29 +76,53 @@ test('rejects missing or header-invalid credentials and copied handles before fe
   expect(fetch).not.toHaveBeenCalled();
 });
 
-test.each([301, 401, 403, 429, 500])(
-  'HTTP %s causes one scoped failure with no retry',
-  async (status) => {
-    const { batch } = await preparedAnalysis();
-    const fetch = vi.fn(
-      async () =>
-        new Response('RAW_ERROR_SENTINEL', {
-          status,
-          headers: { location: 'https://example.invalid/redirect', 'retry-after': '500' },
-        }),
-    );
-    const result = await analyzeMistralBatch(batch, options, { fetch, now: () => 0 });
-    expect(result).toMatchObject({
-      kind: 'failed',
-      category: 'http',
-      attempted: true,
-      batchId: batch.batchId,
-    });
-    expect(result).not.toHaveProperty('assessments');
-    expect(JSON.stringify(result)).not.toContain('RAW_ERROR_SENTINEL');
-    expect(fetch).toHaveBeenCalledTimes(1);
-  },
-);
+test.each([
+  [301, 'http-other'],
+  [302, 'http-other'],
+  [400, 'http-other'],
+  [401, 'http-auth'],
+  [403, 'http-auth'],
+  [404, 'http-other'],
+  [408, 'http-other'],
+  [429, 'http-rate-limit'],
+  [499, 'http-other'],
+  [500, 'http-server'],
+  [503, 'http-server'],
+  [599, 'http-server'],
+])('HTTP %s causes one scoped %s failure with no retry', async (status, category) => {
+  const { batch } = await preparedAnalysis();
+  const fetch = vi.fn(
+    async () =>
+      new Response('RAW_ERROR_SENTINEL', {
+        status,
+        // A header that looks like an auth or server hint must not pick the class.
+        headers: { location: 'https://example.invalid/redirect', 'retry-after': '500' },
+      }),
+  );
+  const result = await analyzeMistralBatch(batch, options, { fetch, now: () => 0 });
+  expect(result).toMatchObject({
+    kind: 'failed',
+    category,
+    attempted: true,
+    batchId: batch.batchId,
+  });
+  expect(result).not.toHaveProperty('assessments');
+  expect(JSON.stringify(result)).not.toContain('RAW_ERROR_SENTINEL');
+  expect(JSON.stringify(result)).not.toMatch(new RegExp(`\\b${status}\\b`));
+  expect(fetch).toHaveBeenCalledTimes(1);
+});
+
+test('a redirected response reports http-other even with a 200 status', async () => {
+  const { batch } = await preparedAnalysis();
+  const response = new Response('RAW_ERROR_SENTINEL', { status: 200 });
+  Object.defineProperty(response, 'redirected', { value: true });
+  const fetch = vi.fn(async () => response);
+  expect(await analyzeMistralBatch(batch, options, { fetch, now: () => 0 })).toMatchObject({
+    kind: 'failed',
+    category: 'http-other',
+    attempted: true,
+  });
+});
 
 test.each(['length', 'model_length', 'tool_calls', 'unknown'])(
   'classifies finish reason %s without accepting partial text',

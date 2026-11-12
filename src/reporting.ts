@@ -78,7 +78,10 @@ function recovery(category: string | null): string {
   if (
     [
       'transport',
-      'http',
+      'http-auth',
+      'http-rate-limit',
+      'http-server',
+      'http-other',
       'media-type',
       'response-size',
       'encoding',
