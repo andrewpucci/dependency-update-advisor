@@ -1023,7 +1023,7 @@ test('measures every deadline from the shared job start, not from its own clock'
     expect.objectContaining({ deadline: 140_000 }),
   );
   expect(assessmentModule.reviewPacket).toHaveBeenCalledWith(
-    expect.objectContaining({ deadlineMs: 755_000 }),
+    expect.objectContaining({ deadlineMs: 695_000 }),
   );
 });
 
@@ -1044,7 +1044,7 @@ test('wires the clock, model key, signal attempts, and npm inventory into resear
     expect.objectContaining({
       apiKey: sentinel,
       evaluatedAt: evaluationTime,
-      deadlineMs: 855_000,
+      deadlineMs: 795_000,
       signalAttempts: expect.arrayContaining([expect.anything()]),
     }),
   );

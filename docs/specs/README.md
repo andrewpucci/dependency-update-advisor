@@ -257,14 +257,18 @@ gaps and an introduced vulnerability before parity is claimed.
   execution and is merged. A second amendment (a freshness time allowance and a
   `freshness` stage, [#297](https://github.com/andrewpucci/dependency-update-advisor/issues/297))
   is approved for planning and execution; its code (#299-#303) is merged and
-  the R1 re-pin and rehearsal (#304) remain. Its approved
+  the R1 re-pin and rehearsal (#304) remain. A third amendment (a fixed
+  60,000 ms pre-startup allowance,
+  [#306](https://github.com/andrewpucci/dependency-update-advisor/issues/306))
+  is approved for planning and execution 2026-11-11 and implemented on the #306
+  branch, pending merge. The approved
   map's #209 contracts are implemented on `issue-209`, pending fresh-context
   review and merge: [shared PyPI release
   observations](SPEC-shared-release-observations.md), charged to the existing
   Signals: PyPI metadata allocation, and [bounded-reader
   consolidation](SPEC-bounded-reader-consolidation.md). The ordered #260–#264
   tasks preserve separate publication, adoption, parity, and cutover gates.
-  A third amendment ([fixed model-unavailable reason](SPEC-review-orchestration.md#diagnostic-amendment-3-fixed-model-unavailable-reason),
+  A fourth amendment ([fixed model-unavailable reason](SPEC-review-orchestration.md#diagnostic-amendment-4-fixed-model-unavailable-reason),
   [#309](https://github.com/andrewpucci/dependency-update-advisor/issues/309))
   is approved for planning and execution, 2026-11-11; code implemented, pending
   review and merge, with the R1 re-pin and rehearsal remaining.

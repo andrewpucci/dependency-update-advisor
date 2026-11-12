@@ -19,7 +19,7 @@ status, the response-byte rule, and a planning spike for `model_length`.
 Those revisions preceded full-spec approval.
 
 Amendment, 2026-11-11: the user approved the HTTP category split in
-[Amendment 3][a3-309] of the W2 spec, a change to this approved contract
+[Amendment 4][a4-309] of the W2 spec, a change to this approved contract
 (#309). The single `http` category becomes four classes, chosen from the
 response status alone: `http-auth` (401, 403),
 `http-rate-limit` (429), `http-server` (500-599), and `http-other` (any other
@@ -727,4 +727,4 @@ No product-scope question remains for M1. Numeric budgets, canonical identity,
 aliases, and exported types are approved for execution. M2 scheduling, live
 workflow/consumer integration, adoption, parity, and cutover remain separate.
 
-[a3-309]: SPEC-review-orchestration.md#diagnostic-amendment-3-fixed-model-unavailable-reason
+[a4-309]: SPEC-review-orchestration.md#diagnostic-amendment-4-fixed-model-unavailable-reason

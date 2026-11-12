@@ -25,9 +25,12 @@ merged. The R1 rehearsal reported `internal-failure at unclassified`;
 tracked the cause, a final freshness check failing after the transport window.
 Its Amendment 2 code and the R1 caller re-pin
 ([#304](https://github.com/andrewpucci/dependency-update-advisor/issues/304))
-are merged. The next rehearsal ended `model-unavailable` without a cause;
+are merged. Amendment 3
+([#306](https://github.com/andrewpucci/dependency-update-advisor/issues/306))
+adds a 60,000 ms pre-startup allowance to the job window and is merged. The
+next rehearsal ended `model-unavailable` without a cause;
 [#309](https://github.com/andrewpucci/dependency-update-advisor/issues/309)
-adds a fixed reason (Amendment 3, implemented, pending review and merge).
+adds a fixed reason (Amendment 4, implemented, pending review and merge).
 Publication and production claim storage remain separate gates.
 
 ## Next action

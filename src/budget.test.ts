@@ -1,7 +1,19 @@
 import { expect, test } from 'vite-plus/test';
-import { EVIDENCE_READ_ALLOCATION, EVIDENCE_READ_ENVELOPE } from './budget.js';
+import {
+  EVIDENCE_READ_ALLOCATION,
+  EVIDENCE_READ_ENVELOPE,
+  JOB_BUDGET_MS,
+  JOB_WINDOW_MS,
+  PRE_STARTUP_ALLOWANCE_MS,
+} from './budget.js';
 
 const MiB = 1024 * 1024;
+
+test('records the job window as the budget less the pre-startup allowance', () => {
+  expect(JOB_BUDGET_MS).toBe(900_000);
+  expect(PRE_STARTUP_ALLOWANCE_MS).toBe(60_000);
+  expect(JOB_WINDOW_MS).toBe(840_000);
+});
 
 test('records the evidence-read envelope', () => {
   expect(EVIDENCE_READ_ENVELOPE).toEqual({

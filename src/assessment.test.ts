@@ -2,7 +2,7 @@ import { expect, test, vi } from 'vite-plus/test';
 import { analyzeMistralBatch } from './analysis/mistral.js';
 import { assessReviewPacket, reviewPacket } from './assessment.js';
 import type { MistralCategory } from './analysis/mistral.js';
-import { MODEL_FAILURE_CATEGORIES } from './review.js';
+import { MODEL_FAILURE_CATEGORIES, modelUnavailableReason } from './review.js';
 import * as batchesModule from './analysis/batches.js';
 import * as reportingModule from './reporting.js';
 
@@ -355,4 +355,33 @@ test('the closed reason list covers every category M1 can report', () => {
     ? true
     : false = true;
   expect(covered).toBe(true);
+});
+
+test('the closed reason list is exactly the vocabulary the spec names', () => {
+  // A literal copy of spec item 1, so removing or adding a reason is a deliberate, reviewed edit.
+  expect([...MODEL_FAILURE_CATEGORIES]).toEqual([
+    'input',
+    'configuration',
+    'projection',
+    'budget',
+    'reference',
+    'policy',
+    'schema',
+    'call_budget',
+    'cancelled',
+    'deadline',
+    'transport',
+    'http-auth',
+    'http-rate-limit',
+    'http-server',
+    'http-other',
+    'media-type',
+    'response-size',
+    'encoding',
+    'envelope',
+    'json',
+    'length',
+  ]);
+  expect(modelUnavailableReason('call_budget')).toBe('call_budget');
+  expect(modelUnavailableReason('http')).toBe('unknown');
 });

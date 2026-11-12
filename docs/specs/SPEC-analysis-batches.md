@@ -17,7 +17,7 @@ request too large to prepare, so diagnostics can tell the two apart.
 
 Amendment, 2026-11-11: the user approved splitting M1's `http` category into
 `http-auth`, `http-rate-limit`, `http-server`, and `http-other`, in
-[Amendment 3][a3-309] of the W2 spec (#309). M2 settles each exactly as it
+[Amendment 4][a4-309] of the W2 spec (#309). M2 settles each exactly as it
 settled `http`: `unavailable`, attempted.
 
 Review revision accepted by the user, 2026-11-07: a result not
@@ -256,4 +256,4 @@ M2 does not establish live provider behavior, current-head publication,
 workflow credential wiring, packaging, adoption, parity, or cutover. The old
 reviewer remains active until those separate gates pass.
 
-[a3-309]: SPEC-review-orchestration.md#diagnostic-amendment-3-fixed-model-unavailable-reason
+[a4-309]: SPEC-review-orchestration.md#diagnostic-amendment-4-fixed-model-unavailable-reason

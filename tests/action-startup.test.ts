@@ -252,6 +252,20 @@ test('the no-write guard exempts exactly the one model call', () => {
       key,
     ),
   ).toBe(false);
+  // Each of these is a GET, so only the path and credential clauses can flag them.
+  const github = 'https://api.github.com/repos/o/r';
+  expect(isLiveWrite({ method: 'GET', url: github, authorization: 'Bearer app-token' }, key)).toBe(
+    true,
+  );
+  expect(
+    isLiveWrite(
+      { method: 'GET', url: `${github}/statuses/x`, authorization: 'Bearer read-token' },
+      key,
+    ),
+  ).toBe(true);
+  expect(
+    isLiveWrite({ method: 'GET', url: MODEL_ENDPOINT, authorization: `Bearer ${key}` }, key),
+  ).toBe(true);
 });
 
 /** Plain ESM for the child: forwards every fetch to the test over IPC and awaits the reply. */
