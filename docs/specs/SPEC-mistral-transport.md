@@ -387,7 +387,8 @@ anchor's sources. Unknown or unavailable evidence cannot satisfy these checks.
    No endpoint, header, tool, or remote URL is accepted from evidence/config.
    The read token and App write token never enter the adapter.
 3. Send the selected model, one choice, non-streaming completion,
-   `temperature: 0` as in the baseline,
+   `temperature: 0` as in the baseline with `top_p: 1` (Mistral rejects
+   greedy sampling without it),
    `response_format: { type: 'json_object' }`, a bounded `max_tokens`, and
    fixed prompt messages. Supply no tools, tool execution, attachments,
    repository access, or provider-side retrieval. Mistral documents the
@@ -403,6 +404,7 @@ anchor's sources. Unknown or unavailable evidence cannot satisfy these checks.
    time, and the caller's remaining analysis deadline. Validate limits before
    I/O. Do not start after cancellation/deadline exhaustion. Timeout covers
    headers and the entire response body, not just the initial `fetch` promise.
+   The values are in Initial resource ceilings below.
    Cancellation must settle the call and release timers/readers even when a
    transport or body stalls; late completion cannot become accepted output.
 6. Accept only a non-streaming HTTP 200 response with `application/json`
@@ -413,8 +415,10 @@ anchor's sources. Unknown or unavailable evidence cannot satisfy these checks.
    than draining an unbounded error body. Reject invalid UTF-8 and JSON.
 7. Validate the provider envelope separately from the inner review document:
    exactly one choice, valid choice index, assistant role, no tool calls,
-   and a supported finish reason. Successful output requires `stop` and a
-   nonempty string message content. Reject null, arrays/content chunks,
+   and a supported finish reason. Successful output requires `stop` and
+   nonempty message content: a string, or an array of chunks accepted by the
+   Reasoning-Model Compatibility Amendment (`thinking` chunks ignored, `text`
+   chunks joined in order). Reject null, any other array or chunk shape,
    refusals, unexpected roles, and tool/function outputs. Ignore only bounded
    provider metadata not consumed by the contract; never return it downstream.
 8. A well-formed single choice with `finish_reason: 'length'` yields the
@@ -438,9 +442,11 @@ anchor's sources. Unknown or unavailable evidence cannot satisfy these checks.
 
 ## Reasoning-Model Compatibility Amendment
 
-**Status: approved for planning, 2026-11-12; execution needs separate plan
-approval.** The user reviewed the open questions (240,000 ms timeout; no model
-change) and approved the amendment, then invoked `as-plan`. Scoped to
+**Status: approved for planning and automatic execution, 2026-11-12;
+implemented for #324-#328, pending review and merge; the R1 re-pin and live
+rehearsal (#329) remain.** The user reviewed the open questions (240,000 ms
+timeout; no model change) and approved the amendment, then invoked `as-plan`.
+Scoped to
 [#309](https://github.com/andrewpucci/dependency-update-advisor/issues/309).
 It changes the approved M1 request, envelope, and budget contract, which is
 Ask-first under this spec's boundaries. It does not authorize live publication
@@ -729,12 +735,12 @@ are proposed. M2/W2 still choose their cumulative budgets and publication reserv
 | Repository source excerpt                          | C2's existing 500 code units         | Only already eligible C2 text; its 65,536-byte total context cap still applies.             |
 | Serialized projected unit bytes                    | 65,536                               | Reject a unit whose required structure cannot fit; never remove members/findings.           |
 | Final serialized HTTP request bytes                | 262,144                              | Includes fixed prompts, model/options, JSON string escaping, and envelope.                  |
-| Completion tokens                                  | 4,096                                | Retain the baseline completion budget initially.                                            |
-| Per-request timeout                                | 120,000 ms maximum                   | Retain baseline ceiling, clipped to the caller's remaining analysis time.                   |
+| Completion tokens                                  | 16,384                               | Reasoning tokens count against it; live replies used 4.1k-8.0k (2026-11-12).                |
+| Per-request timeout                                | 240,000 ms maximum                   | Live replies took 58-101 s; clipped to the caller's remaining analysis time.                |
 | Inner content allowance                            | 128 UTF-8 bytes per completion token | Conservative planning allowance, not a documented guarantee for every model/tokenizer.      |
 | Outer JSON escaping multiplier                     | 6                                    | Allows byte-to-`\uXXXX` expansion when content is encoded inside the response envelope.     |
 | Provider envelope allowance                        | 65,536 bytes                         | Bounded metadata overhead beyond generated content.                                         |
-| Observed response bytes                            | 3,211,264                            | `4,096 * 128 * 6 + 65,536`; input C2/T4 limits remain unchanged.                            |
+| Observed response bytes                            | 12,648,448                           | `16,384 * 128 * 6 + 65,536`; input C2/T4 limits remain unchanged.                           |
 | Model reason/rationale/action/impact text          | 1,024 UTF-8 bytes each               | Concise per-unit advice; nonempty when required.                                            |
 | Feature text                                       | 512 UTF-8 bytes                      | At most one capability per unit.                                                            |
 | Follow-up description                              | 280 UTF-8 bytes                      | Does not expand the baseline's 280-character bound.                                         |

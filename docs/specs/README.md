@@ -168,8 +168,9 @@ gaps and an introduced vulnerability before parity is claimed.
   adoption, parity, and cutover gates.
   A [reasoning-model compatibility amendment](SPEC-mistral-transport.md#reasoning-model-compatibility-amendment)
   ([#309](https://github.com/andrewpucci/dependency-update-advisor/issues/309))
-  is approved for planning, 2026-11-12: `top_p`, content chunks, and larger
-  budgets.
+  is approved for planning and execution, 2026-11-12: `top_p`, content chunks,
+  and larger budgets; implemented, pending review and merge, with the R1 re-pin
+  and live rehearsal remaining.
 - [Immutable GitHub evidence reads](SPEC-github-read.md) — implemented for
   D1 #13 and #101–#107 in `shared-review`, merged into `main`. Caller-supplied
   budgets cover discovery, immutable file bytes, and independent comparison
