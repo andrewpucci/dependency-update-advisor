@@ -41,6 +41,8 @@ export type AnalysisFailure = Readonly<{
 export type AnalysisRequest = Readonly<{
   model: string;
   temperature: 0;
+  /** Mistral rejects greedy sampling (temperature 0) unless top_p is 1. */
+  top_p: 1;
   n: 1;
   stream: false;
   max_tokens: number;
