@@ -28,8 +28,8 @@ tracked the cause and its ordered tasks (#299-#304). Its code (#299-#303) is
 merged; the R1 re-pin and rehearsal (#304) remain. It does not authorize live
 publication or a production claim backend.
 
-**Diagnostic Amendment 3 (pre-startup allowance), approved for planning
-2026-11-11:** the job clock
+**Diagnostic Amendment 3 (pre-startup allowance), approved for planning and
+execution 2026-11-11, implemented on the #306 branch (#310-#312):** the job clock
 starts inside `runStartup`, after time the runner has already spent
 ([#306](https://github.com/andrewpucci/dependency-update-advisor/issues/306)).
 Its `preStartupAllowanceMs` value was chosen by the user on 2026-11-11;
@@ -468,10 +468,12 @@ do that.
 
 ## Diagnostic Amendment 3: Pre-Startup Allowance
 
-**Status: approved for planning 2026-11-11.** The user chose the fixed-margin
+**Status: approved for planning and execution 2026-11-11; implemented
+(#310-#312), pending merge.** The user chose the fixed-margin
 approach and a `preStartupAllowanceMs` of 60,000, then invoked `as-plan` on this
 reviewed draft, which is the approval for planning. Plan and execution
-approval remain separate gates. It does not authorize live publication or a
+approval were separate gates, and the user approved execution the same day.
+It does not authorize live publication or a
 production claim backend. Effort tier: L (crosses `budget`, the GitHub
 transport, and `pipeline`, and amends approved text, as Amendment 2 did).
 Evidence is in

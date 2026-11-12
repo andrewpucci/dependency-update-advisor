@@ -260,7 +260,8 @@ gaps and an introduced vulnerability before parity is claimed.
   the R1 re-pin and rehearsal (#304) remain. A third amendment (a fixed
   60,000 ms pre-startup allowance,
   [#306](https://github.com/andrewpucci/dependency-update-advisor/issues/306))
-  is approved for planning 2026-11-11; its plan awaits approval. The approved
+  is approved for planning and execution 2026-11-11 and implemented on the #306
+  branch, pending merge. The approved
   map's #209 contracts are implemented on `issue-209`, pending fresh-context
   review and merge: [shared PyPI release
   observations](SPEC-shared-release-observations.md), charged to the existing

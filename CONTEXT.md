@@ -25,7 +25,10 @@ merged. The R1 rehearsal reported `internal-failure at unclassified`;
 tracked the cause, a final freshness check failing after the transport window.
 Its Amendment 2 code is merged (#299-#303); the R1 caller re-pin and rehearsal
 ([#304](https://github.com/andrewpucci/dependency-update-advisor/issues/304))
-remain. Publication and production claim storage remain separate gates.
+remain. Amendment 3
+([#306](https://github.com/andrewpucci/dependency-update-advisor/issues/306))
+adds a 60,000 ms pre-startup allowance to the job window; implemented, pending
+merge. Publication and production claim storage remain separate gates.
 
 ## Next action
 
