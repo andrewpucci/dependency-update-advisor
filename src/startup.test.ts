@@ -7,6 +7,7 @@ import { upstreamScenario } from '../tests/parity/upstream.js';
 import { uvMetadataScenario } from '../tests/parity/uv-metadata.js';
 import { analyzeMistralBatch } from './analysis/mistral.js';
 import * as pipelineModule from './pipeline.js';
+import * as runtimeModule from './runtime.js';
 import { createTestClaimStore } from './review.js';
 import type { StartupDependencies } from './startup.js';
 import {
@@ -21,6 +22,11 @@ import {
 vi.mock('./pipeline.js', async (original) => {
   const actual = await original<typeof import('./pipeline.js')>();
   return { ...actual, runReview: vi.fn(actual.runReview) };
+});
+
+vi.mock('./runtime.js', async (original) => {
+  const actual = await original<typeof import('./runtime.js')>();
+  return { ...actual, createGithubTransport: vi.fn(actual.createGithubTransport) };
 });
 
 const environment = {
@@ -399,13 +405,20 @@ test('records the normal outcome when the model step ends after the 240 s eviden
   expect(control.stderr).toHaveLength(1);
   const github = mockGithub({ changes: await upstreamScenario() });
   const clock = { now: 0 };
+  const late: string[] = [];
+  const base = slowModelDependencies(github, clock);
   const stderr: string[] = [];
-  const code = await runStartup(
-    (line) => stderr.push(line),
-    environmentFor(),
-    slowModelDependencies(github, clock),
-  );
+  const code = await runStartup((line) => stderr.push(line), environmentFor(), {
+    ...base,
+    fetch: async (url, init) => {
+      if (clock.now >= 300_000) late.push(new URL(url).pathname);
+      return base.fetch(url, init);
+    },
+  });
   expect(clock.now).toBe(300_000);
+  // The final re-verification ran, and made its reads, after the evidence window.
+  expect(late.some((path) => path.endsWith('/actions/runs/401'))).toBe(true);
+  expect(late.some((path) => path.endsWith('/pulls/42'))).toBe(true);
   expect(stderr).toEqual(control.stderr);
   expect(stderr.join('')).not.toContain('internal-failure');
   expect(code).toBe(NOT_WIRED_EXIT_CODE);
@@ -446,6 +459,26 @@ test('takes one job start before the first GitHub read and hands it to the pipel
   });
   expect(pipelineModule.runReview).toHaveBeenCalledWith(
     expect.objectContaining({ jobStartedAt: 7_000 }),
+  );
+});
+
+test('gives the transport and the pipeline the same job start, even if the event read is slow', async () => {
+  vi.mocked(pipelineModule.runReview).mockClear();
+  vi.mocked(runtimeModule.createGithubTransport).mockClear();
+  const github = mockGithub();
+  const clock = { now: 7_000 };
+  const base = dependenciesFor(github, { now: () => clock.now });
+  await runStartup((line) => void line, environmentFor(), {
+    ...base,
+    readEvent: async (path) => {
+      clock.now += 50_000;
+      return base.readEvent(path);
+    },
+  });
+  const jobStartedAt = vi.mocked(pipelineModule.runReview).mock.calls[0]?.[0].jobStartedAt;
+  expect(jobStartedAt).toBe(7_000);
+  expect(vi.mocked(runtimeModule.createGithubTransport)).toHaveBeenCalledWith(
+    expect.objectContaining({ startedAt: jobStartedAt }),
   );
 });
 

@@ -29,7 +29,11 @@ vi.mock('./packet.js', async (original) => {
 });
 vi.mock('./collection.js', async (original) => {
   const actual = await original<typeof import('./collection.js')>();
-  return { ...actual, createEvidenceCollectors: vi.fn(actual.createEvidenceCollectors) };
+  return {
+    ...actual,
+    createEvidenceCollectors: vi.fn(actual.createEvidenceCollectors),
+    openEvidenceSession: vi.fn(actual.openEvidenceSession),
+  };
 });
 vi.mock('./evidence/npm.js', async (original) => {
   const actual = await original<typeof import('./evidence/npm.js')>();
@@ -713,8 +717,16 @@ test('builds the collectors and context from the default-branch revision, never 
 test('measures every deadline from the shared job start, not from its own clock', async () => {
   vi.mocked(researchModule.runResearch).mockClear();
   vi.mocked(assessmentModule.reviewPacket).mockClear();
+  vi.mocked(collectionModule.createEvidenceCollectors).mockClear();
+  vi.mocked(collectionModule.openEvidenceSession).mockClear();
   const { input } = await setup({ evidence: 'changes', jobStartedAt: -100_000 });
   await runReview(input);
+  expect(collectionModule.createEvidenceCollectors).toHaveBeenCalledWith(
+    expect.objectContaining({ deadline: 140_000 }),
+  );
+  expect(collectionModule.openEvidenceSession).toHaveBeenCalledWith(
+    expect.objectContaining({ deadline: 140_000 }),
+  );
   expect(researchModule.runResearch).toHaveBeenCalledWith(
     expect.objectContaining({ deadline: 140_000 }),
   );

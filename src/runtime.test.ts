@@ -309,6 +309,23 @@ describe('freshness reads and the shared evidence deadline', () => {
     expect(requests).toBe(0);
   });
 
+  test('serves reads right up to each window when the job started after time zero', async () => {
+    const started = 20_000;
+    let clock = 50_000;
+    const transport = createGithubTransport({
+      token: 'read-token',
+      now: () => clock,
+      startedAt: started,
+      fetch: async () => new Response('{}'),
+    });
+    clock = started + W2_GITHUB_LIMITS.totalTimeoutMs - 1_000;
+    await expect(transport.readBlob(repo, 'a'.repeat(40))).resolves.toMatchObject({
+      kind: 'available',
+    });
+    clock = started + JOB_BUDGET_MS - 1_000;
+    await expect(transport.readRun(repo, 401)).resolves.toMatchObject({ kind: 'available' });
+  });
+
   test.each([
     ['after the shared deadline', pastEvidenceDeadline, W2_GITHUB_LIMITS.requestTimeoutMs],
     ['near the job end', JOB_BUDGET_MS - 1_000, 1_000],
@@ -317,16 +334,18 @@ describe('freshness reads and the shared evidence deadline', () => {
     async (_name, at, timeout) => {
       vi.useFakeTimers();
       try {
-        let clock = 0;
+        const started = 20_000;
+        let clock = 50_000;
         const transport = createGithubTransport({
           token: 'read-token',
           now: () => clock,
+          startedAt: started,
           fetch: (_url, init) =>
             new Promise((_resolve, reject) =>
               init.signal?.addEventListener('abort', () => reject(new Error('aborted'))),
             ),
         });
-        clock = at;
+        clock = started + at;
         let settled = false;
         const pending = transport.readRun(repo, 401).then((result) => {
           settled = true;
