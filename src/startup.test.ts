@@ -6,6 +6,7 @@ import { analysisDocument } from '../tests/parity/analysis.js';
 import { upstreamScenario } from '../tests/parity/upstream.js';
 import { uvMetadataScenario } from '../tests/parity/uv-metadata.js';
 import { analyzeMistralBatch } from './analysis/mistral.js';
+import * as assessmentModule from './assessment.js';
 import * as pipelineModule from './pipeline.js';
 import * as runtimeModule from './runtime.js';
 import { createTestClaimStore } from './review.js';
@@ -18,6 +19,11 @@ import {
   runStartup,
   selfCheck,
 } from './startup.js';
+
+vi.mock('./assessment.js', async (original) => {
+  const actual = await original<typeof import('./assessment.js')>();
+  return { ...actual, reviewPacket: vi.fn(actual.reviewPacket) };
+});
 
 vi.mock('./pipeline.js', async (original) => {
   const actual = await original<typeof import('./pipeline.js')>();
@@ -442,6 +448,65 @@ test('records a head that moved during a late model step as stale, not as a fail
   expect(stderr).toEqual([
     'dependabot-review: no-write rehearsal recorded stale; nothing was published.',
   ]);
+});
+
+/**
+ * A job that spent the whole pre-startup allowance (60,000 ms on the runner clock) before
+ * `runStartup` took its job start. Evidence time passes first, so the publication reserve, not
+ * the 600,000 ms analysis cap, sets the model's deadline; the model then runs to just before it.
+ */
+async function runWithPreStartupTime(modelRunsToDeadline: boolean) {
+  vi.mocked(pipelineModule.runReview).mockClear();
+  const github = mockGithub({ changes: await upstreamScenario() });
+  const clock = { now: 60_000 };
+  const base = dependenciesFor(github, { now: () => clock.now });
+  const analyze = base.model?.analyze;
+  if (!analyze) throw new Error('fixture must configure a model');
+  let modelEnded = false;
+  const finalReadEnds: number[] = [];
+  const stderr: string[] = [];
+  await runStartup((line) => stderr.push(line), environmentFor(), {
+    ...base,
+    model: {
+      now: () => clock.now,
+      analyze: ((
+        batch: Parameters<typeof analyzeMistralBatch>[0],
+        options: { deadlineMs: number },
+      ) => {
+        if (modelRunsToDeadline) clock.now = options.deadlineMs - 1;
+        modelEnded = true;
+        return analyze(batch, options as never);
+      }) as typeof analyzeMistralBatch,
+    },
+    fetch: async (url, init) => {
+      const path = new URL(url).pathname;
+      if (path.includes('/pulls/42/files')) clock.now = Math.max(clock.now, 290_000);
+      const response = await github.fetch(url, init);
+      if (modelEnded) finalReadEnds.push(clock.now);
+      return response;
+    },
+  });
+  return { stderr, finalReadEnds };
+}
+
+test('leaves the publication reserve intact when the whole pre-startup allowance was spent', async () => {
+  const control = await runWithPreStartupTime(false);
+  expect(control.stderr.join('')).not.toContain('internal-failure');
+  const late = await runWithPreStartupTime(true);
+  // The reads of the final freshness check ran, and their stderr matches the control.
+  expect(late.finalReadEnds.length).toBeGreaterThan(0);
+  expect(late.stderr).toEqual(control.stderr);
+  // 900,000 ms runner timeout less the 60,000 ms publication reserve, as a literal.
+  expect(Math.max(...late.finalReadEnds)).toBeLessThanOrEqual(840_000);
+});
+
+test('hands analysis a deadline inside the job window, not the full job budget', async () => {
+  vi.mocked(assessmentModule.reviewPacket).mockClear();
+  await runWithPreStartupTime(false);
+  // Job start 60,000 + job window 840,000 - freshness allowance 45,000.
+  expect(assessmentModule.reviewPacket).toHaveBeenCalledWith(
+    expect.objectContaining({ deadlineMs: 855_000 }),
+  );
 });
 
 test('takes one job start before the first GitHub read and hands it to the pipeline', async () => {
