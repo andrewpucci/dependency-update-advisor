@@ -748,7 +748,11 @@ test.each([
     handoff: { stage: 'freshness' },
     detail: { field: 'ownership', reason: 'unknown' },
   });
-  expect(sink.traces()[0]).toMatchObject({ kind: 'internal-failure', stage: 'freshness' });
+  expect(sink.traces()[0]).toMatchObject({
+    kind: 'internal-failure',
+    stage: 'freshness',
+    detail: { field: 'ownership', reason: 'unknown' },
+  });
   expect(JSON.stringify({ result, traces: sink.traces() })).not.toContain(sentinel);
 });
 

@@ -482,6 +482,50 @@ test('gives the transport and the pipeline the same job start, even if the event
   );
 });
 
+test.each([
+  [404, 'pullRequest missing'],
+  [401, 'pullRequest permission'],
+] as const)(
+  'reports a failed re-verification read (%i) with its fixed field and reason',
+  async (status, detail) => {
+    const github = mockGithub();
+    let pulls = 0;
+    const { stderr, code } = await start(
+      github,
+      {},
+      {
+        fetch: async (url, init) =>
+          new URL(url).pathname.endsWith('/pulls/42') && ++pulls > 1
+            ? new Response(sentinel, { status })
+            : github.fetch(url, init),
+      },
+    );
+    expect(stderr).toEqual([
+      `dependabot-review: no-write rehearsal recorded internal-failure at freshness (${detail}); nothing was published.`,
+    ]);
+    expect(code).toBe(NOT_WIRED_EXIT_CODE);
+    expect(stderr.join('')).not.toContain(sentinel);
+  },
+);
+
+test('keeps the exact first-amendment line for every other internal-failure stage', async () => {
+  const { stderr } = await start(
+    mockGithub(),
+    {},
+    {
+      sink: {
+        record: () => {
+          throw new Error(sentinel);
+        },
+        traces: () => [],
+      },
+    },
+  );
+  expect(stderr).toEqual([
+    'dependabot-review: no-write rehearsal recorded internal-failure at handoff; nothing was published.',
+  ]);
+});
+
 test('skips an ineligible event and a duplicate delivery', async () => {
   const skipped = await start(mockGithub(), { GITHUB_EVENT_NAME: 'push' });
   expect(skipped.stderr).toEqual([

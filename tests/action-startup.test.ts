@@ -68,7 +68,7 @@ function noWriteEnvironment(eventPath: string) {
   };
 }
 
-function startNoWriteSnapshotFailure() {
+function startNoWriteFailure(mode: 'snapshot' | 'freshness') {
   const eventPath = join(shipped, 'event.json');
   const fetchPath = join(shipped, 'mock-fetch.mjs');
   const head = 'a'.repeat(40);
@@ -100,7 +100,8 @@ function startNoWriteSnapshotFailure() {
   );
   writeFileSync(
     fetchPath,
-    `globalThis.fetch = async (url) => {
+    `let pulls = 0;
+    globalThis.fetch = async (url) => {
       const path = new URL(url).pathname;
       if (path.endsWith('/actions/workflows/ci.yml') || path.endsWith('/actions/workflows/301'))
         return Response.json({ id: 301, path: '.github/workflows/ci.yml' });
@@ -112,6 +113,8 @@ function startNoWriteSnapshotFailure() {
           head_repository: { id: 101, full_name: 'example/consumer' },
           pull_requests: [{ number: 42, base: { repo: { id: 101, name: 'consumer', full_name: 'example/consumer' } }, head: { sha: '${head}', repo: { id: 101, name: 'consumer', full_name: 'example/consumer' } } }],
         });
+      if (path.endsWith('/pulls/42') && ${JSON.stringify(mode)} === 'freshness' && ++pulls > 1)
+        return new Response('sentinel-body', { status: 404 });
       if (path.endsWith('/pulls/42'))
         return Response.json({
           number: 42, state: 'open', merged: false, changed_files: 0, user: { id: 201, login: 'dependabot[bot]', type: 'Bot' },
@@ -163,11 +166,22 @@ test('starts with filesystem reads limited to the checkout and never prints envi
 });
 
 test('shipped action reports a fixed snapshot stage without environment secrets', () => {
-  const result = startNoWriteSnapshotFailure();
+  const result = startNoWriteFailure('snapshot');
   expect(result.stderr).toBe(
     'dependabot-review: no-write rehearsal recorded internal-failure at snapshot; nothing was published.\n',
   );
   expect(result.stdout).toBe('');
   expect(result.status).toBe(78);
   expect(result.stdout + result.stderr).not.toContain(sentinel);
+});
+
+test('shipped action reports a fixed freshness field and reason without secrets', () => {
+  const result = startNoWriteFailure('freshness');
+  expect(result.stderr).toBe(
+    'dependabot-review: no-write rehearsal recorded internal-failure at freshness (pullRequest missing); nothing was published.\n',
+  );
+  expect(result.stdout).toBe('');
+  expect(result.status).toBe(78);
+  expect(result.stdout + result.stderr).not.toContain(sentinel);
+  expect(result.stdout + result.stderr).not.toContain('sentinel-body');
 });

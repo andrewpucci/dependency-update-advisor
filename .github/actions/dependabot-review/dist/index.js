@@ -19760,7 +19760,7 @@ function createRehearsalSink(appToken) {
 	if (appToken) return null;
 	const traces = [];
 	return Object.freeze({
-		record: (handoff) => {
+		record: (handoff, detail) => {
 			if (traces.length >= 32) return false;
 			const traceBase = {
 				identity: Object.freeze([...handoff.identity]),
@@ -19774,6 +19774,10 @@ function createRehearsalSink(appToken) {
 			traces.push(Object.freeze({
 				kind: handoff.kind,
 				...handoff.kind === "internal-failure" ? { stage: handoff.stage } : {},
+				...handoff.kind === "internal-failure" && handoff.stage === "freshness" && detail ? { detail: Object.freeze({
+					field: detail.field,
+					reason: detail.reason
+				}) } : {},
 				...traceBase
 			}));
 			return true;
@@ -30373,13 +30377,14 @@ async function runReview(input) {
 			kind: "not-eligible",
 			reason: "ownership"
 		};
+		const freshness = outcome.kind === "internal-failure" && outcome.stage === "freshness" ? outcome.freshness : void 0;
 		return {
 			kind: "handed-off",
 			outcome: outcome.kind,
 			handoff: handoff.handoff,
 			body: outcome.body,
-			recorded: input.sink.record(handoff.handoff),
-			...outcome.kind === "internal-failure" && outcome.freshness ? { detail: outcome.freshness } : {}
+			recorded: input.sink.record(handoff.handoff, freshness),
+			...freshness ? { detail: freshness } : {}
 		};
 	} catch {
 		return {
@@ -30858,7 +30863,7 @@ async function runStartup(writeError, environment = process.env, dependencies = 
 		});
 		if (result.kind === "handed-off" && !result.recorded) writeError("dependabot-review: no-write rehearsal could not record the handoff; nothing was published.");
 		else if (result.kind === "failed") writeError(`dependabot-review: no-write rehearsal recorded internal-failure at ${result.stage}; nothing was published.`);
-		else if (result.kind === "handed-off" && result.handoff.kind === "internal-failure") writeError(`dependabot-review: no-write rehearsal recorded internal-failure at ${result.handoff.stage}; nothing was published.`);
+		else if (result.kind === "handed-off" && result.handoff.kind === "internal-failure") writeError(`dependabot-review: no-write rehearsal recorded internal-failure at ${result.handoff.stage}${result.detail ? ` (${result.detail.field} ${result.detail.reason})` : ""}; nothing was published.`);
 		else if (result.kind === "handed-off") writeError(`dependabot-review: no-write rehearsal recorded ${result.outcome}; nothing was published.`);
 		else if (result.kind === "skipped") writeError(`dependabot-review: event skipped (${result.reason}); nothing was published.`);
 		else writeError(`dependabot-review: no publishable handoff (${result.reason}); nothing was published.`);

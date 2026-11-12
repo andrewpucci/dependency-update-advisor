@@ -4,6 +4,7 @@ import {
   internalFailureStage,
   reviewOutcome,
   type ClaimStore,
+  type FreshnessDetail,
   type InternalFailureStage,
   type OwnedClaim,
   type ReviewOutcomeKind,
@@ -97,11 +98,22 @@ type RehearsalTraceBase = Readonly<{
   droppedOptional: ReviewHandoff['droppedOptional'];
 }>;
 export type RehearsalTrace =
-  | (RehearsalTraceBase & Readonly<{ kind: 'internal-failure'; stage: InternalFailureStage }>)
   | (RehearsalTraceBase &
-      Readonly<{ kind: Exclude<ReviewOutcomeKind, 'internal-failure'>; stage?: never }>);
+      Readonly<{
+        kind: 'internal-failure';
+        stage: InternalFailureStage;
+        /** Only with the `freshness` stage: which check failed and why. */
+        detail?: FreshnessDetail;
+      }>)
+  | (RehearsalTraceBase &
+      Readonly<{
+        kind: Exclude<ReviewOutcomeKind, 'internal-failure'>;
+        stage?: never;
+        detail?: never;
+      }>);
 export type RehearsalSink = Readonly<{
-  record: (handoff: ReviewHandoff) => boolean;
+  /** `detail` is kept only for a `freshness` internal failure; it never enters the handoff. */
+  record: (handoff: ReviewHandoff, detail?: FreshnessDetail) => boolean;
   traces: () => readonly RehearsalTrace[];
 }>;
 
@@ -110,7 +122,7 @@ export function createRehearsalSink(appToken: string | null): RehearsalSink | nu
   if (appToken) return null;
   const traces: RehearsalTrace[] = [];
   return Object.freeze({
-    record: (handoff) => {
+    record: (handoff, detail) => {
       if (traces.length >= 32) return false;
       const traceBase = {
         identity: Object.freeze([...handoff.identity]) as OwnedClaim['identity'],
@@ -125,6 +137,9 @@ export function createRehearsalSink(appToken: string | null): RehearsalSink | nu
         Object.freeze({
           kind: handoff.kind,
           ...(handoff.kind === 'internal-failure' ? { stage: handoff.stage } : {}),
+          ...(handoff.kind === 'internal-failure' && handoff.stage === 'freshness' && detail
+            ? { detail: Object.freeze({ field: detail.field, reason: detail.reason }) }
+            : {}),
           ...traceBase,
         }) as RehearsalTrace,
       );

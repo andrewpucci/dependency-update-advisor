@@ -240,15 +240,17 @@ export async function runReview(input: PipelineInput): Promise<PipelineResult> {
       ...(outcome.kind === 'internal-failure' ? { stage: outcome.stage } : {}),
     });
     if (handoff.kind !== 'ready') return { kind: 'not-eligible', reason: 'ownership' };
+    const freshness =
+      outcome.kind === 'internal-failure' && outcome.stage === 'freshness'
+        ? outcome.freshness
+        : undefined;
     return {
       kind: 'handed-off',
       outcome: outcome.kind,
       handoff: handoff.handoff,
       body: outcome.body,
-      recorded: input.sink.record(handoff.handoff),
-      ...(outcome.kind === 'internal-failure' && outcome.freshness
-        ? { detail: outcome.freshness }
-        : {}),
+      recorded: input.sink.record(handoff.handoff, freshness),
+      ...(freshness ? { detail: freshness } : {}),
     };
   } catch {
     return { kind: 'failed', outcome: 'internal-failure', stage: 'handoff' };
