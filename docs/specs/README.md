@@ -266,7 +266,8 @@ gaps and an introduced vulnerability before parity is claimed.
   tasks preserve separate publication, adoption, parity, and cutover gates.
   A third amendment ([fixed model-unavailable reason](SPEC-review-orchestration.md#diagnostic-amendment-3-fixed-model-unavailable-reason),
   [#309](https://github.com/andrewpucci/dependency-update-advisor/issues/309))
-  is approved for planning, 2026-11-11.
+  is approved for planning and execution, 2026-11-11; code implemented, pending
+  review and merge, with the R1 re-pin and rehearsal remaining.
 - [Advisory complexity review](SPEC-complexity-review.md) — user-requested
   supporting repository tooling contract; implemented and merged into `main`
   in [PR #65](https://github.com/andrewpucci/dependency-update-advisor/pull/65).

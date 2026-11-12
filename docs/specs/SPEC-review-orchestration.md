@@ -460,8 +460,9 @@ do that.
 
 ## Diagnostic Amendment 3: Fixed Model-Unavailable Reason
 
-**Status: approved for planning, 2026-11-11; execution needs separate plan
-approval.** Scoped to
+**Status: approved for planning, 2026-11-11, and for automatic execution; code
+implemented for #314-#318, pending review and merge; the R1 re-pin and
+rehearsal (#319) remain.** Scoped to
 [#309](https://github.com/andrewpucci/dependency-update-advisor/issues/309).
 It adds a reported value, which Amendment 2's boundaries make Ask-first, and
 the user approved splitting `http` by status class and then approved the
