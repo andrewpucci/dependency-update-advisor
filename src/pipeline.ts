@@ -16,6 +16,7 @@ import { createReviewHandoff, type RehearsalSink, type ReviewHandoff } from './h
 import { guardedFetch, type FailureRecorder } from './adapters.js';
 import { assembleReviewPacket, type PacketGap } from './packet.js';
 import type { DroppedOptional } from './optional-evidence.js';
+import type { EvidenceReason } from './schema.js';
 import { runResearch } from './research.js';
 import {
   freshnessDetail,
@@ -172,7 +173,11 @@ export async function runReview(input: PipelineInput): Promise<PipelineResult> {
   };
   /** Ownership and the PR head must both still hold before anything may be handed off. */
   const stillCurrent = async (): Promise<Freshness> => {
-    input.eventReads.clearFailureReason?.();
+    try {
+      input.eventReads.clearFailureReason?.();
+    } catch {
+      return unverified({ field: 'binding', reason: 'unknown' });
+    }
     let owner: boolean;
     try {
       owner = await owns();
@@ -182,8 +187,15 @@ export async function runReview(input: PipelineInput): Promise<PipelineResult> {
     if (!owner) return 'stale';
     const fresh = await reverifyReviewBinding(binding, input.eventReads);
     if (fresh.kind === 'fresh') return (state = 'current');
-    if (fresh.kind === 'error')
-      return unverified(freshnessDetail(fresh, input.eventReads.failureReason?.() ?? null));
+    if (fresh.kind === 'error') {
+      let adapterReason: EvidenceReason | null = null;
+      try {
+        adapterReason = input.eventReads.failureReason?.() ?? null;
+      } catch {
+        // The reason is optional detail; without it the failure is still reported.
+      }
+      return unverified(freshnessDetail(fresh, adapterReason));
+    }
     state = 'stale';
     attempt.abort();
     return state;

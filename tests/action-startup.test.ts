@@ -101,8 +101,13 @@ function startNoWriteFailure(mode: 'snapshot' | 'freshness') {
   writeFileSync(
     fetchPath,
     `let pulls = 0;
-    globalThis.fetch = async (url) => {
+    globalThis.fetch = async (url, init) => {
       const path = new URL(url).pathname;
+      const authorization = new Headers(init?.headers ?? {}).get('authorization');
+      // No-write rehearsal: any write, status or comment path, or non-read credential is a defect.
+      if ((init?.method ?? 'GET') !== 'GET' || /\\/(statuses|comments)(\\/|$)/.test(path) ||
+          (authorization && authorization !== 'Bearer read-token'))
+        process.stderr.write('LIVE-WRITE ' + (init?.method ?? 'GET') + ' ' + path + '\\n');
       if (path.endsWith('/actions/workflows/ci.yml') || path.endsWith('/actions/workflows/301'))
         return Response.json({ id: 301, path: '.github/workflows/ci.yml' });
       if (path.endsWith('/actions/runs/401'))

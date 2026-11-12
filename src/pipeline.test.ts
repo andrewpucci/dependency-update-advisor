@@ -681,6 +681,13 @@ test.each([
 
 const actualPacket = await vi.importActual<typeof import('./packet.js')>('./packet.js');
 
+/** The detail rides on the result and the trace only; the exported handoff never carries it. */
+function expectDetailOffHandoff(result: Awaited<ReturnType<typeof runReview>>) {
+  if (result.kind !== 'handed-off') throw new Error('expected a handed-off result');
+  for (const key of ['detail', 'field', 'reason', 'freshness'])
+    expect(result.handoff).not.toHaveProperty(key);
+}
+
 /** The next ownership read fails once after `gate.armed` is set, as a transient store fault would. */
 function claimsBrokenWhenArmed() {
   const store = createTestClaimStore();
@@ -734,7 +741,7 @@ test.each([
 ] as const)('reports a throwing ownership read %s as freshness ownership', async (label, arm) => {
   const { claims, gate } = claimsBrokenWhenArmed();
   // The watcher reads ownership on a timer; keep it out of the way of the one-shot fault.
-  const { input, sink } = await setup({
+  const { input, sink, modelCalls } = await setup({
     evidence: 'changes',
     claims,
     ownershipWatchMs: 3_600_000,
@@ -742,6 +749,9 @@ test.each([
   if (label === 'at the entry check') gate.armed = true;
   else arm(gate);
   const result = await runReview(input);
+  expectDetailOffHandoff(result);
+  // Work stopped at the failed check: the model only runs after the last re-verification.
+  if (label !== 'at the final check') expect(modelCalls).toEqual([]);
   expect(result).toMatchObject({
     kind: 'handed-off',
     outcome: 'internal-failure',
@@ -757,7 +767,7 @@ test.each([
 });
 
 /** Event reads over a transport whose run read fails with a fixed reason from the given call on. */
-async function eventReadsFailingRun(from: number, reason: 'budget' | 'rate_limit') {
+async function eventReadsFailingRun(from: number, reason: 'budget' | 'rate_limit', once = false) {
   const { input } = await setup({ evidence: 'changes' });
   const base = input.eventReads;
   const available = <T>(value: T) => ({ kind: 'available' as const, value });
@@ -766,7 +776,7 @@ async function eventReadsFailingRun(from: number, reason: 'budget' | 'rate_limit
     readWorkflowById: async (repo: RepositoryIdentity, id: number) =>
       available(await base.readWorkflow(repo, id)),
     readRun: async (repo: RepositoryIdentity, id: number) =>
-      runs++ >= from
+      (once ? runs++ === from : runs++ >= from)
         ? { kind: 'unavailable' as const, reason }
         : available(await base.readRun(repo, id)),
     readPullRequest: async (repo: RepositoryIdentity, n: number) =>
@@ -788,12 +798,59 @@ test.each([
   async (reason, from) => {
     const { input, eventReads } = await eventReadsFailingRun(from, reason);
     const result = await runReview({ ...input, eventReads });
+    expectDetailOffHandoff(result);
     expect(result).toMatchObject({
       kind: 'handed-off',
       outcome: 'internal-failure',
       handoff: { stage: 'freshness' },
       detail: { field: 'run', reason },
     });
+  },
+);
+
+test('reports the reason of the check that failed, read after the reason was cleared', async () => {
+  // Only the final re-verification (run read #4) fails; no earlier check left a reason behind.
+  const { input, eventReads } = await eventReadsFailingRun(4, 'rate_limit', true);
+  const result = await runReview({ ...input, eventReads });
+  expect(result).toMatchObject({
+    outcome: 'internal-failure',
+    handoff: { stage: 'freshness' },
+    detail: { field: 'run', reason: 'rate_limit' },
+  });
+});
+
+test.each([
+  [
+    'clearing',
+    {
+      clearFailureReason: () => {
+        throw new Error(sentinel);
+      },
+    },
+    'binding',
+  ],
+  [
+    'reading',
+    {
+      failureReason: () => {
+        throw new Error(sentinel);
+      },
+    },
+    'run',
+  ],
+] as const)(
+  'reports a recorder that throws while %s its reason as a freshness failure, not a rejection',
+  async (_label, recorder, field) => {
+    const { input } = await setup({ evidence: 'changes', runFailsFrom: 1 });
+    const eventReads = { ...input.eventReads, ...recorder };
+    const result = await runReview({ ...input, eventReads });
+    expect(result).toMatchObject({
+      kind: 'handed-off',
+      outcome: 'internal-failure',
+      handoff: { stage: 'freshness' },
+      detail: { field, reason: 'unknown' },
+    });
+    expect(JSON.stringify(result)).not.toContain(sentinel);
   },
 );
 
@@ -841,6 +898,32 @@ test('clears the remembered read reason before every re-verification', async () 
     }
   }
   expect(reverifications).toBeGreaterThanOrEqual(2);
+});
+
+test('reports a freshness failure whose handoff cannot be recorded as the fixed handoff failure', async () => {
+  const real = createRehearsalSink(null);
+  if (!real) throw new Error('sink');
+  const sink = {
+    record: () => {
+      throw new Error(sentinel);
+    },
+    traces: real.traces,
+  };
+  const { input } = await setup({ evidence: 'changes', runFailsFrom: 1, sink });
+  const result = await runReview(input);
+  expect(result).toEqual({ kind: 'failed', outcome: 'internal-failure', stage: 'handoff' });
+});
+
+test('hands off a head that moved only at the final read as stale, even after an earlier failure', async () => {
+  vi.mocked(researchModule.runResearch).mockImplementationOnce(throwSentinel);
+  // Reads of the PR: event, entry, before research (which then fails), final.
+  const { input } = await setup({
+    evidence: 'changes',
+    pullRequestHeads: [HEAD, HEAD, HEAD, NEXT],
+  });
+  const result = await runReview(input);
+  expect(result).toMatchObject({ kind: 'handed-off', outcome: 'stale', body: null });
+  expect(result).not.toHaveProperty('detail');
 });
 
 test('carries no freshness detail on any other outcome or stage', async () => {

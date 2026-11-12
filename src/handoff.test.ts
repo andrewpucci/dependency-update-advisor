@@ -196,3 +196,12 @@ test('records the detail only for a freshness internal failure', async () => {
   expect(sink.traces()).toHaveLength(2);
   for (const trace of sink.traces()) expect(trace).not.toHaveProperty('detail');
 });
+
+test('copies only the fixed field and reason into the trace', async () => {
+  const handoff = await internalFailureHandoff('freshness');
+  const sink = createRehearsalSink(null);
+  if (!sink) throw new Error('expected sink');
+  const detail = { field: 'run', reason: 'budget', extra: 'sentinel-extra' } as never;
+  sink.record(handoff, detail);
+  expect(sink.traces()[0]?.detail).toEqual({ field: 'run', reason: 'budget' });
+});

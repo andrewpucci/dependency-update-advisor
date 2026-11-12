@@ -220,7 +220,7 @@ test('does not put error text or response bodies in the remembered reason', asyn
     createTestClaimStore(),
   );
   await expect(reads.readRun(repository, 401)).rejects.toThrow();
-  expect(reads.failureReason()).not.toContain('sentinel');
+  expect(reads.failureReason()).toBe('unknown');
 });
 
 test('reports the reason of the most recent failed read, not the first', async () => {

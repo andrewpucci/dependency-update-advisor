@@ -508,24 +508,6 @@ test.each([
   },
 );
 
-test('keeps the exact first-amendment line for every other internal-failure stage', async () => {
-  const { stderr } = await start(
-    mockGithub(),
-    {},
-    {
-      sink: {
-        record: () => {
-          throw new Error(sentinel);
-        },
-        traces: () => [],
-      },
-    },
-  );
-  expect(stderr).toEqual([
-    'dependabot-review: no-write rehearsal recorded internal-failure at handoff; nothing was published.',
-  ]);
-});
-
 test('skips an ineligible event and a duplicate delivery', async () => {
   const skipped = await start(mockGithub(), { GITHUB_EVENT_NAME: 'push' });
   expect(skipped.stderr).toEqual([
