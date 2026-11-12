@@ -58,9 +58,12 @@ export async function assessReviewPacket(input: AssessmentInput): Promise<Assess
     );
     if (!result.ok) return { kind: 'internal-failure' };
     if (result.analysisUnavailable) {
-      // Records are in inventory order; the first unit's category names the reason.
-      const first = result.records.find((record) => record.category !== null);
-      return { kind: 'model-unavailable', reason: modelUnavailableReason(first?.category) };
+      // Analysis is unavailable only when no unit was assessed, so every record is unresolved and
+      // carries a category. Records are in inventory order; the first unit names the reason.
+      return {
+        kind: 'model-unavailable',
+        reason: modelUnavailableReason(result.records[0]?.category),
+      };
     }
     const kind = evidenceComplete(result.coverage) ? 'complete' : 'incomplete-evidence';
     return { kind, records: result.records, coverage: result.coverage };

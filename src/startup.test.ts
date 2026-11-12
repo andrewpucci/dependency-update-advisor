@@ -9,7 +9,7 @@ import { analyzeMistralBatch } from './analysis/mistral.js';
 import * as assessmentModule from './assessment.js';
 import * as pipelineModule from './pipeline.js';
 import * as runtimeModule from './runtime.js';
-import { createTestClaimStore } from './review.js';
+import { MODEL_FAILURE_CATEGORIES, createTestClaimStore } from './review.js';
 import type { StartupDependencies } from './startup.js';
 import {
   MAX_EVENT_BYTES,
@@ -259,6 +259,33 @@ test.each([
   ]);
   expect(stderr.join('')).not.toContain('RAW_PROVIDER_BODY');
 });
+
+test.each([...MODEL_FAILURE_CATEGORIES])(
+  'prints the %s category as the fixed stderr reason',
+  async (category) => {
+    const github = mockGithub({ changes: await upstreamScenario() });
+    const { stderr } = await start(
+      github,
+      {},
+      {
+        model: {
+          now: () => 0,
+          analyze: (async (batch: { batchId: string; unitIds: readonly string[] }) => ({
+            kind: 'failed',
+            category,
+            attempted: true,
+            batchId: batch.batchId,
+            unitIds: batch.unitIds,
+            diagnostics: { provider: 'mistral' },
+          })) as never,
+        },
+      },
+    );
+    expect(stderr).toEqual([
+      `dependabot-review: no-write rehearsal recorded model-unavailable (${category}); nothing was published.`,
+    ]);
+  },
+);
 
 test('names a throwing model as transport without echoing the exception text', async () => {
   const github = mockGithub({ changes: await upstreamScenario() });

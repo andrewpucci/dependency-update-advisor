@@ -112,17 +112,20 @@ test.each([
   expect(fetch).toHaveBeenCalledTimes(1);
 });
 
-test('a redirected response reports http-other even with a 200 status', async () => {
-  const { batch } = await preparedAnalysis();
-  const response = new Response('RAW_ERROR_SENTINEL', { status: 200 });
-  Object.defineProperty(response, 'redirected', { value: true });
-  const fetch = vi.fn(async () => response);
-  expect(await analyzeMistralBatch(batch, options, { fetch, now: () => 0 })).toMatchObject({
-    kind: 'failed',
-    category: 'http-other',
-    attempted: true,
-  });
-});
+test.each([200, 401, 429, 503])(
+  'a redirected response reports http-other even with a %s status',
+  async (status) => {
+    const { batch } = await preparedAnalysis();
+    const response = new Response('RAW_ERROR_SENTINEL', { status });
+    Object.defineProperty(response, 'redirected', { value: true });
+    const fetch = vi.fn(async () => response);
+    expect(await analyzeMistralBatch(batch, options, { fetch, now: () => 0 })).toMatchObject({
+      kind: 'failed',
+      category: 'http-other',
+      attempted: true,
+    });
+  },
+);
 
 test.each(['length', 'model_length', 'tool_calls', 'unknown'])(
   'classifies finish reason %s without accepting partial text',

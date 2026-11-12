@@ -19806,6 +19806,8 @@ function createRehearsalSink(appToken) {
 	return Object.freeze({
 		record: (handoff, detail) => {
 			if (traces.length >= 32) return false;
+			const modelReason = handoff.kind === "model-unavailable" && detail && "modelUnavailableReason" in detail ? modelUnavailableReason(detail.modelUnavailableReason) : void 0;
+			if (handoff.kind === "model-unavailable" && !modelReason) return false;
 			const traceBase = {
 				identity: Object.freeze([...handoff.identity]),
 				generation: handoff.generation,
@@ -19822,7 +19824,7 @@ function createRehearsalSink(appToken) {
 					field: detail.field,
 					reason: detail.reason
 				}) } : {},
-				...handoff.kind === "model-unavailable" && detail && "modelUnavailableReason" in detail ? { modelUnavailableReason: modelUnavailableReason(detail.modelUnavailableReason) } : {},
+				...modelReason ? { modelUnavailableReason: modelReason } : {},
 				...traceBase
 			}));
 			return true;
@@ -22456,13 +22458,10 @@ async function assessReviewPacket(input) {
 			analyze: model.analyze
 		} : {});
 		if (!result.ok) return { kind: "internal-failure" };
-		if (result.analysisUnavailable) {
-			const first = result.records.find((record) => record.category !== null);
-			return {
-				kind: "model-unavailable",
-				reason: modelUnavailableReason(first?.category)
-			};
-		}
+		if (result.analysisUnavailable) return {
+			kind: "model-unavailable",
+			reason: modelUnavailableReason(result.records[0]?.category)
+		};
 		return {
 			kind: evidenceComplete(result.coverage) ? "complete" : "incomplete-evidence",
 			records: result.records,

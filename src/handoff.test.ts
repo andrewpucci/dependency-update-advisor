@@ -247,10 +247,20 @@ test('records the model-unavailable reason only for a model-unavailable outcome'
   if (!sink) throw new Error('expected sink');
   sink.record(await handoffOf('complete', 'e'), { modelUnavailableReason: 'transport' });
   sink.record(await internalFailureHandoff('freshness'), { modelUnavailableReason: 'transport' });
-  sink.record(await handoffOf('model-unavailable', 'f'), { field: 'run', reason: 'budget' });
-  expect(sink.traces()).toHaveLength(3);
+  // A freshness detail is not a reason, so a model-unavailable result with only it is refused.
+  expect(
+    sink.record(await handoffOf('model-unavailable', 'f'), { field: 'run', reason: 'budget' }),
+  ).toBe(false);
+  expect(sink.traces()).toHaveLength(2);
   for (const trace of sink.traces()) {
     expect(trace).not.toHaveProperty('modelUnavailableReason');
     expect(trace).not.toHaveProperty('detail');
   }
+});
+
+test('refuses to record a model-unavailable result that states no reason', async () => {
+  const sink = createRehearsalSink(null);
+  if (!sink) throw new Error('expected sink');
+  expect(sink.record(await handoffOf('model-unavailable', 'a'))).toBe(false);
+  expect(sink.traces()).toEqual([]);
 });

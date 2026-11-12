@@ -113,7 +113,7 @@ export type RehearsalTrace =
         stage?: never;
         detail?: never;
         /** Why no model verdict exists; a fixed literal, never provider output. */
-        modelUnavailableReason?: ModelUnavailableReason;
+        modelUnavailableReason: ModelUnavailableReason;
       }>)
   | (RehearsalTraceBase &
       Readonly<{
@@ -142,6 +142,12 @@ export function createRehearsalSink(appToken: string | null): RehearsalSink | nu
   return Object.freeze({
     record: (handoff, detail) => {
       if (traces.length >= 32) return false;
+      // A model-unavailable result must say why; refuse it rather than record a guess.
+      const modelReason =
+        handoff.kind === 'model-unavailable' && detail && 'modelUnavailableReason' in detail
+          ? modelUnavailableReason(detail.modelUnavailableReason)
+          : undefined;
+      if (handoff.kind === 'model-unavailable' && !modelReason) return false;
       const traceBase = {
         identity: Object.freeze([...handoff.identity]) as OwnedClaim['identity'],
         generation: handoff.generation,
@@ -161,9 +167,7 @@ export function createRehearsalSink(appToken: string | null): RehearsalSink | nu
           'field' in detail
             ? { detail: Object.freeze({ field: detail.field, reason: detail.reason }) }
             : {}),
-          ...(handoff.kind === 'model-unavailable' && detail && 'modelUnavailableReason' in detail
-            ? { modelUnavailableReason: modelUnavailableReason(detail.modelUnavailableReason) }
-            : {}),
+          ...(modelReason ? { modelUnavailableReason: modelReason } : {}),
           ...traceBase,
         }) as RehearsalTrace,
       );

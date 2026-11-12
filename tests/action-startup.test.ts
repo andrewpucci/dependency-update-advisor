@@ -268,34 +268,55 @@ test('the no-write guard exempts exactly the one model call', () => {
   ).toBe(true);
 });
 
-/** Plain ESM for the child: forwards every fetch to the test over IPC and awaits the reply. */
+/**
+ * Plain ESM for the child: forwards every fetch to the test over IPC and awaits the reply. It
+ * accepts a Request or a URL, rejects when the caller's signal aborts, and rejects like a network
+ * failure when the test answers with an error.
+ */
 const bridge = `
 const pending = new Map();
 let next = 0;
 process.channel.unref();
-process.on('message', (reply) => {
-  const resolve = pending.get(reply.id);
-  pending.delete(reply.id);
+function settle(id, finish) {
+  const entry = pending.get(id);
+  if (!entry) return;
+  pending.delete(id);
   if (pending.size === 0) process.channel.unref();
-  resolve(new Response(reply.body, { status: reply.status, headers: reply.headers }));
+  finish(entry);
+}
+process.on('message', (reply) => {
+  settle(reply.id, (entry) => {
+    if (reply.error) entry.reject(new TypeError('fetch failed'));
+    else entry.resolve(new Response(reply.body, { status: reply.status, headers: reply.headers }));
+  });
 });
-globalThis.fetch = (url, init) => new Promise((resolve) => {
+globalThis.fetch = (input, init) => new Promise((resolve, reject) => {
+  const request = typeof input === 'object' && 'url' in input ? input : null;
+  const signal = init?.signal ?? request?.signal;
+  if (signal?.aborted) return reject(signal.reason);
   const id = ++next;
-  pending.set(id, resolve);
+  pending.set(id, { resolve, reject });
   process.channel.ref();
+  signal?.addEventListener('abort', () => settle(id, (entry) => entry.reject(signal.reason)), {
+    once: true,
+  });
   process.send({
     id,
-    url: String(url),
-    method: init?.method ?? 'GET',
-    redirect: init?.redirect,
-    authorization: new Headers(init?.headers ?? {}).get('authorization'),
+    url: request ? request.url : String(input),
+    method: init?.method ?? request?.method ?? 'GET',
+    redirect: init?.redirect ?? request?.redirect,
+    credentials: init?.credentials ?? request?.credentials,
+    authorization: new Headers(init?.headers ?? request?.headers ?? {}).get('authorization'),
     body: typeof init?.body === 'string' ? init.body : null,
   });
 });
 `;
 
+/** What the test answers the one model call with: an HTTP status, or a network failure. */
+type ModelReply = number | 'network-error';
+
 /** Runs the shipped bundle against the shared mock GitHub, answering the model call itself. */
-async function startWithModelStatus(modelStatus: number) {
+async function startWithModelReply(modelReply: ModelReply) {
   const eventPath = join(shipped, 'event.json');
   const bridgePath = join(shipped, 'bridge.mjs');
   writeFileSync(eventPath, eventFile);
@@ -312,48 +333,74 @@ async function startWithModelStatus(modelStatus: number) {
   });
   let stderr = '';
   child.stderr?.on('data', (chunk) => (stderr += chunk));
-  child.on('message', async (message: Request & { id: number; redirect?: RequestRedirect }) => {
-    const request = {
-      method: message.method,
-      url: message.url,
-      authorization: message.authorization,
-    };
-    if (isLiveWrite(request, sentinel)) violations.push(`${message.method} ${message.url}`);
-    if (message.url === MODEL_ENDPOINT) {
-      modelCalls.push(message.method);
-      child.send({ id: message.id, status: modelStatus, body: 'RAW_PROVIDER_BODY', headers: {} });
-      return;
-    }
-    const headers: Record<string, string> = {};
-    if (message.authorization) headers.authorization = message.authorization;
-    try {
-      const response = await github.fetch(message.url, {
-        method: message.method,
-        redirect: message.redirect,
-        headers,
-      });
-      child.send({
-        id: message.id,
-        status: response.status,
-        body: await response.text(),
-        headers: Object.fromEntries(response.headers),
-      });
-    } catch {
-      // A request the mock refuses must not leave the child waiting.
-      child.send({ id: message.id, status: 500, body: '', headers: {} });
-    }
+  const reply = (message: object) => {
+    // A child that already exited cannot be answered, and must not fail the test with an error.
+    if (child.connected) child.send(message);
+  };
+  child.on(
+    'message',
+    async (
+      message: Request & {
+        id: number;
+        redirect?: RequestRedirect;
+        credentials?: RequestCredentials;
+      },
+    ) => {
+      try {
+        const request = {
+          method: message.method,
+          url: message.url,
+          authorization: message.authorization,
+        };
+        if (isLiveWrite(request, sentinel)) violations.push(`${message.method} ${message.url}`);
+        if (message.url === MODEL_ENDPOINT) {
+          modelCalls.push(message.method);
+          reply(
+            modelReply === 'network-error'
+              ? { id: message.id, error: true }
+              : { id: message.id, status: modelReply, body: 'RAW_PROVIDER_BODY', headers: {} },
+          );
+          return;
+        }
+        const headers: Record<string, string> = {};
+        if (message.authorization) headers.authorization = message.authorization;
+        const response = await github.fetch(message.url, {
+          method: message.method,
+          redirect: message.redirect,
+          credentials: message.credentials,
+          headers,
+        });
+        reply({
+          id: message.id,
+          status: response.status,
+          body: await response.text(),
+          headers: Object.fromEntries(response.headers),
+        });
+      } catch {
+        // A request the guard or mock cannot handle must not leave the child waiting.
+        violations.push(`unhandled ${String(message?.url)}`);
+        reply({ id: message.id, status: 500, body: '', headers: {} });
+      }
+    },
+  );
+  // A hung child is killed so it never outlives the test.
+  const killer = setTimeout(() => child.kill('SIGKILL'), 20_000);
+  const code = await new Promise<number | null>((resolve) => {
+    child.on('error', () => resolve(null));
+    child.on('close', resolve);
   });
-  const code = await new Promise<number | null>((resolve) => child.on('close', resolve));
+  clearTimeout(killer);
   return { stderr, code, violations, modelCalls };
 }
 
 test.each([
   [401, 'http-auth'],
   [503, 'http-server'],
+  ['network-error', 'transport'],
 ] as const)(
-  'shipped action reports a %s model response as %s and makes no other write',
-  async (status, reason) => {
-    const result = await startWithModelStatus(status);
+  'shipped action reports a %s model reply as %s and makes no other write',
+  async (modelReply, reason) => {
+    const result = await startWithModelReply(modelReply);
     expect(result.stderr).toBe(
       `dependabot-review: no-write rehearsal recorded model-unavailable (${reason}); nothing was published.\n`,
     );
