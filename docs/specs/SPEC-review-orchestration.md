@@ -24,7 +24,8 @@ not authorize live publication or a production claim backend.
 approved for planning and execution 2026-11-11:** the first rehearsal that
 reported a stage was `unclassified`;
 [#297](https://github.com/andrewpucci/dependency-update-advisor/issues/297)
-tracks the cause and its ordered tasks (#299-#304). It does not authorize live
+tracked the cause and its ordered tasks (#299-#304). Its code (#299-#303) is
+merged; the R1 re-pin and rehearsal (#304) remain. It does not authorize live
 publication or a production claim backend.
 
 The user approved this W2 supporting-contract map on 2026-11-08:
@@ -317,15 +318,15 @@ comment, configuration, permission, token, trigger, or network-write change.
 
 ## Diagnostic Amendment 2: Freshness Time Allowance and Stage Detail
 
-**Status: approved for planning and execution 2026-11-11.** The user approved
-this amendment and its `freshnessAllowanceMs` of 45,000 ms for planning on
-2026-11-11 (it was Ask-first under the approved execution envelope and the
-first amendment's boundaries), approved the plan, and approved its execution
-the same day. The amendment does not authorize live publication or a
-production claim backend. Effort tier:
-L (crosses `startup`, the GitHub transport, `pipeline`, `handoff`, and
-amends approved text). Evidence and the reproduction are in
-[#297](https://github.com/andrewpucci/dependency-update-advisor/issues/297).
+**Status: approved for planning and execution 2026-11-11; implemented and
+merged into `main` (#299-#303); the R1 re-pin and rehearsal (#304) remain.**
+The user approved this amendment and its `freshnessAllowanceMs` of 45,000 ms
+for planning on 2026-11-11 (it was Ask-first under the approved execution
+envelope and the first amendment's boundaries), approved the plan, and approved
+its execution the same day. The amendment does not authorize live publication
+or a production claim backend. Effort tier: L (crosses `startup`, the GitHub
+transport, `pipeline`, `handoff`, and amends approved text). Evidence and the
+reproduction are in [#297](https://github.com/andrewpucci/dependency-update-advisor/issues/297).
 
 A rehearsal whose model step ends after the GitHub transport's 240-second
 window cannot make its final freshness reads, so a valid result is reported
