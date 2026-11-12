@@ -148,3 +148,60 @@ test('defaults to no body and no gaps, and keeps at most four gaps', async () =>
   if (many.kind !== 'ready') throw new Error('expected handoff');
   expect(many.handoff.gaps).toHaveLength(4);
 });
+
+async function internalFailureHandoff(stage: 'freshness' | 'snapshot') {
+  const claims = createTestClaimStore();
+  const claimed = await claims.claim([101, 301, 401, 1, 42, 'a'.repeat(40)]);
+  if (claimed.kind !== 'owned') throw new Error('fixture must own');
+  const result = await createReviewHandoff(claims, claimed, 'internal-failure', {
+    body: false,
+    gaps: [],
+    stage,
+  });
+  if (result.kind !== 'ready') throw new Error('expected handoff');
+  return result.handoff;
+}
+
+test('keeps the fixed freshness detail in the trace, frozen, and off the handoff', async () => {
+  const handoff = await internalFailureHandoff('freshness');
+  const sink = createRehearsalSink(null);
+  if (!sink) throw new Error('expected sink');
+  const detail = { field: 'run', reason: 'budget' } as const;
+  expect(sink.record(handoff, detail)).toBe(true);
+  expect(sink.traces()[0]).toMatchObject({
+    kind: 'internal-failure',
+    stage: 'freshness',
+    detail: { field: 'run', reason: 'budget' },
+  });
+  expect(Object.isFrozen(sink.traces()[0]?.detail)).toBe(true);
+  expect(sink.traces()[0]?.detail).not.toBe(detail);
+  expect(handoff).not.toHaveProperty('detail');
+  expect(handoff).not.toHaveProperty('field');
+});
+
+test('records the detail only for a freshness internal failure', async () => {
+  const sink = createRehearsalSink(null);
+  if (!sink) throw new Error('expected sink');
+  const detail = { field: 'run', reason: 'budget' } as const;
+  sink.record(await internalFailureHandoff('snapshot'), detail);
+  const claims = createTestClaimStore();
+  const claimed = await claims.claim([101, 301, 401, 1, 43, 'b'.repeat(40)]);
+  if (claimed.kind !== 'owned') throw new Error('fixture must own');
+  const complete = await createReviewHandoff(claims, claimed, 'complete', {
+    body: true,
+    gaps: [],
+  });
+  if (complete.kind !== 'ready') throw new Error('expected handoff');
+  sink.record(complete.handoff, detail);
+  expect(sink.traces()).toHaveLength(2);
+  for (const trace of sink.traces()) expect(trace).not.toHaveProperty('detail');
+});
+
+test('copies only the fixed field and reason into the trace', async () => {
+  const handoff = await internalFailureHandoff('freshness');
+  const sink = createRehearsalSink(null);
+  if (!sink) throw new Error('expected sink');
+  const detail = { field: 'run', reason: 'budget', extra: 'sentinel-extra' } as never;
+  sink.record(handoff, detail);
+  expect(sink.traces()[0]?.detail).toEqual({ field: 'run', reason: 'budget' });
+});

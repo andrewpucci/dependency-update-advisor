@@ -145,6 +145,9 @@ gaps and an introduced vulnerability before parity is claimed.
   for T1 and the T4 binding check is implemented and merged into `main`;
   [#107](https://github.com/andrewpucci/dependency-update-advisor/issues/107)
   tracks it.
+  A [read-reason amendment](SPEC-event-verification.md#read-reason-amendment)
+  (diagnostic amendment 2, approved 2026-11-11) adds an optional fixed
+  `reason` to `VerificationError` for failed reads.
 - [Analysis providers](SPEC-analysis-providers.md) — approved for planning.
 - [Bounded decision-unit analysis](SPEC-analysis-batches.md) — approved for
   execution for M2 #22 after plan approval, 2026-11-07.
@@ -253,7 +256,7 @@ gaps and an introduced vulnerability before parity is claimed.
   2026-11-11 fixed-stage diagnostic amendment is approved for planning and
   execution and is merged. A second amendment (a freshness time allowance and a
   `freshness` stage, [#297](https://github.com/andrewpucci/dependency-update-advisor/issues/297))
-  is approved for planning; execution requires separate approval. Its approved
+  is approved for planning and execution (tasks #299-#304). Its approved
   map's #209 contracts are implemented on `issue-209`, pending fresh-context
   review and merge: [shared PyPI release
   observations](SPEC-shared-release-observations.md), charged to the existing

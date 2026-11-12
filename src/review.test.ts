@@ -1,6 +1,8 @@
 import { expect, test } from 'vite-plus/test';
 import {
   createTestClaimStore,
+  freshnessDetail,
+  internalFailureStage,
   reviewOutcome,
   type ClaimResult,
   type OwnedClaim,
@@ -99,4 +101,44 @@ test('reports replay state for T1 without claiming', async () => {
   // Looking must not create a claim.
   await expect(claims.replay(attempt(3))).resolves.toMatchObject({ state: 'unseen' });
   await expect(claims.claim(attempt(3))).resolves.toMatchObject({ kind: 'owned', generation: 3 });
+});
+
+test('has a freshness stage in the closed vocabulary', () => {
+  expect(internalFailureStage('freshness')).toBe('freshness');
+  expect(internalFailureStage('sentinel-stage')).toBe('unclassified');
+});
+
+test.each([
+  ['run', 'read', 'budget', { field: 'run', reason: 'budget' }],
+  ['pullRequest', 'read', 'rate_limit', { field: 'pullRequest', reason: 'rate_limit' }],
+  ['comparison', 'read', 'missing', { field: 'comparison', reason: 'missing' }],
+  ['run', 'read', null, { field: 'run', reason: 'unknown' }],
+  ['run', 'mismatch', 'budget', { field: 'run', reason: 'mismatch' }],
+  ['pullRequest', 'input', 'budget', { field: 'pullRequest', reason: 'input' }],
+  ['binding', 'input', null, { field: 'binding', reason: 'input' }],
+  ['workflow', 'read', 'timeout', { field: 'binding', reason: 'timeout' }],
+  ['replay', 'replay', 'budget', { field: 'binding', reason: 'unknown' }],
+] as const)(
+  'maps a %s %s freshness failure with adapter reason %s to a fixed detail',
+  (field, category, adapterReason, expected) => {
+    expect(
+      freshnessDetail({
+        kind: 'error',
+        category,
+        field,
+        ...(adapterReason ? { reason: adapterReason } : {}),
+      }),
+    ).toEqual(expected);
+  },
+);
+
+test('never reports an adapter reason outside the fixed vocabulary', () => {
+  expect(
+    freshnessDetail({
+      kind: 'error',
+      category: 'read',
+      field: 'run',
+      reason: 'sentinel-reason' as never,
+    }),
+  ).toEqual({ field: 'run', reason: 'unknown' });
 });

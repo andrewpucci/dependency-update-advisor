@@ -1,4 +1,5 @@
-import type { ReviewIdentity as EventReviewIdentity } from './event.js';
+import type { ReviewIdentity as EventReviewIdentity, VerificationError } from './event.js';
+import { EVIDENCE_REASONS, type EvidenceReason } from './schema.js';
 
 export type ReviewIdentity = EventReviewIdentity;
 /** Trusted internal labels for the only redacted diagnostic detail a rehearsal may expose. */
@@ -8,6 +9,7 @@ export const INTERNAL_FAILURE_STAGES = [
   'research',
   'assessment',
   'handoff',
+  'freshness',
   'unclassified',
 ] as const;
 export type InternalFailureStage = (typeof INTERNAL_FAILURE_STAGES)[number];
@@ -15,6 +17,28 @@ export function internalFailureStage(value: unknown): InternalFailureStage {
   return INTERNAL_FAILURE_STAGES.includes(value as InternalFailureStage)
     ? (value as InternalFailureStage)
     : 'unclassified';
+}
+/**
+ * Which check failed and why, for a `freshness` internal failure only. Both are fixed literals
+ * chosen from trusted state; none is derived from an error, response, or other external text.
+ */
+export type FreshnessDetail = Readonly<{
+  field: 'ownership' | 'run' | 'pullRequest' | 'comparison' | 'binding';
+  reason: EvidenceReason | 'mismatch' | 'input';
+}>;
+const FRESHNESS_FIELDS: readonly string[] = ['run', 'pullRequest', 'comparison'];
+/** Maps T1's fixed freshness error, with the reason its read adapter gave, to the detail. */
+export function freshnessDetail(error: VerificationError): FreshnessDetail {
+  const field = FRESHNESS_FIELDS.includes(error.field)
+    ? (error.field as 'run' | 'pullRequest' | 'comparison')
+    : 'binding';
+  if (error.category === 'mismatch' || error.category === 'input')
+    return { field, reason: error.category };
+  const reason =
+    error.category === 'read' && error.reason && EVIDENCE_REASONS.includes(error.reason)
+      ? error.reason
+      : 'unknown';
+  return { field, reason };
 }
 export type ReviewOutcomeKind =
   | 'skipped'

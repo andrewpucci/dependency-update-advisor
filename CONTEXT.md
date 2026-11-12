@@ -23,8 +23,8 @@ recorded a redacted `internal-failure`; the fixed-stage diagnostic amendment is
 merged. The R1 rehearsal reported `internal-failure at unclassified`;
 [#297](https://github.com/andrewpucci/dependency-update-advisor/issues/297)
 tracks the cause, a final freshness check failing after the transport window,
-and its Amendment 2 is approved for planning. Publication and production claim
-storage remain separate gates.
+and its Amendment 2 is approved and in progress (#299-#304). Publication and
+production claim storage remain separate gates.
 
 ## Next action
 

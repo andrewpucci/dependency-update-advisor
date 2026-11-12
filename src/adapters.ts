@@ -1,17 +1,18 @@
-import type { EventReads } from './event.js';
+import { ReadFailure, type EventReads } from './event.js';
 import type { GithubRead, GithubTransport } from './runtime.js';
 import type { ClaimStore } from './review.js';
 
 type Fetch = (url: string, init: RequestInit) => Promise<Response>;
 
-async function value(read: Promise<GithubRead>): Promise<unknown> {
-  const result = await read;
-  if (result.kind !== 'available') throw new Error('read unavailable');
-  return result.value;
-}
-
 /** T1's reads throw on any failure; replay state comes from the claim store, never from GitHub. */
 export function createEventReads(transport: GithubTransport, claims: ClaimStore): EventReads {
+  const value = async (read: Promise<GithubRead>): Promise<unknown> => {
+    const result = await read;
+    if (result.kind !== 'available') {
+      throw new ReadFailure(result.reason);
+    }
+    return result.value;
+  };
   return {
     readWorkflow: (repository, workflowId) =>
       value(transport.readWorkflowById(repository, workflowId)),

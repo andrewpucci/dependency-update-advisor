@@ -8908,6 +8908,14 @@ const RUN_STATUSES = [
 	"waiting",
 	"pending"
 ];
+/** A read that failed for a fixed reason; `read` keeps that reason, and nothing else, on the error. */
+var ReadFailure = class extends Error {
+	reason;
+	constructor(reason) {
+		super("read unavailable");
+		this.reason = reason;
+	}
+};
 function failure$6(field, category = "input") {
 	return {
 		kind: "error",
@@ -9089,11 +9097,24 @@ async function read$1(field, operation) {
 			ok: true,
 			value: await operation()
 		};
-	} catch {
+	} catch (error) {
+		const category = field === "replay" ? "replay" : "read";
+		const reason = category === "read" ? readReason(error) : void 0;
 		return {
 			ok: false,
-			error: failure$6(field, field === "replay" ? "replay" : "read")
+			error: {
+				...failure$6(field, category),
+				...reason ? { reason } : {}
+			}
 		};
+	}
+}
+/** The adapter's fixed reason; a thrown value that cannot be inspected has none. */
+function readReason(error) {
+	try {
+		return error instanceof ReadFailure && EVIDENCE_REASONS.includes(error.reason) ? error.reason : void 0;
+	} catch {
+		return;
 	}
 }
 function verifyEventInput(input) {
@@ -19462,13 +19483,13 @@ function collectLicenseSignals(input, output, change, sides) {
 }
 
 // src/adapters.ts
-async function value(read) {
-	const result = await read;
-	if (result.kind !== "available") throw new Error("read unavailable");
-	return result.value;
-}
 /** T1's reads throw on any failure; replay state comes from the claim store, never from GitHub. */
 function createEventReads(transport, claims) {
+	const value = async (read) => {
+		const result = await read;
+		if (result.kind !== "available") throw new ReadFailure(result.reason);
+		return result.value;
+	};
 	return {
 		readWorkflow: (repository, workflowId) => value(transport.readWorkflowById(repository, workflowId)),
 		readRun: (repository, runId) => value(transport.readRun(repository, runId)),
@@ -19552,10 +19573,28 @@ const INTERNAL_FAILURE_STAGES = [
 	"research",
 	"assessment",
 	"handoff",
+	"freshness",
 	"unclassified"
 ];
 function internalFailureStage(value) {
 	return INTERNAL_FAILURE_STAGES.includes(value) ? value : "unclassified";
+}
+const FRESHNESS_FIELDS = [
+	"run",
+	"pullRequest",
+	"comparison"
+];
+/** Maps T1's fixed freshness error, with the reason its read adapter gave, to the detail. */
+function freshnessDetail(error) {
+	const field = FRESHNESS_FIELDS.includes(error.field) ? error.field : "binding";
+	if (error.category === "mismatch" || error.category === "input") return {
+		field,
+		reason: error.category
+	};
+	return {
+		field,
+		reason: error.category === "read" && error.reason && EVIDENCE_REASONS.includes(error.reason) ? error.reason : "unknown"
+	};
 }
 const outcomeEligibility = Object.freeze({
 	skipped: {
@@ -19734,7 +19773,7 @@ function createRehearsalSink(appToken) {
 	if (appToken) return null;
 	const traces = [];
 	return Object.freeze({
-		record: (handoff) => {
+		record: (handoff, detail) => {
 			if (traces.length >= 32) return false;
 			const traceBase = {
 				identity: Object.freeze([...handoff.identity]),
@@ -19748,6 +19787,10 @@ function createRehearsalSink(appToken) {
 			traces.push(Object.freeze({
 				kind: handoff.kind,
 				...handoff.kind === "internal-failure" ? { stage: handoff.stage } : {},
+				...handoff.kind === "internal-failure" && handoff.stage === "freshness" && detail ? { detail: Object.freeze({
+					field: detail.field,
+					reason: detail.reason
+				}) } : {},
 				...traceBase
 			}));
 			return true;
@@ -22417,6 +22460,13 @@ async function reviewPacket(input) {
 
 // src/budget.ts
 const MiB = 1048576;
+/** The job's wall-clock limit; analysis and publication reserve their own time inside it. */
+const JOB_BUDGET_MS = 9e5;
+/**
+* Reserved at the end of the job window for the final freshness re-verification: three sequential
+* reads (run, pull request, comparison) at the request timeout. Analysis must end before it.
+*/
+const FRESHNESS_ALLOWANCE_MS = 45e3;
 /** Bounds for all pre-analysis evidence reads. Time is shared; every reader gets what remains. */
 const EVIDENCE_READ_ENVELOPE = Object.freeze({
 	maxRequests: 944,
@@ -27681,7 +27731,7 @@ const TYPE_FOR_MODE = {
 	"120000": "blob",
 	"160000": "commit"
 };
-var ReadFailure = class extends Error {
+var GithubReadFailure = class extends Error {
 	reason;
 	obsolete;
 	constructor(reason, obsolete = false) {
@@ -27691,12 +27741,12 @@ var ReadFailure = class extends Error {
 	}
 };
 function requireRead(condition, reason = "malformed") {
-	if (!condition) throw new ReadFailure(reason);
+	if (!condition) throw new GithubReadFailure(reason);
 }
 function fixedFailure(error) {
 	return {
 		kind: "unavailable",
-		reason: error instanceof ReadFailure ? error.reason : "unknown"
+		reason: error instanceof GithubReadFailure ? error.reason : "unknown"
 	};
 }
 function parseLimits(value) {
@@ -27792,7 +27842,7 @@ function frozenRecord(item) {
 	try {
 		JSON.stringify(item);
 	} catch {
-		throw new ReadFailure("unsupported");
+		throw new GithubReadFailure("unsupported");
 	}
 	const pending = [item];
 	while (pending.length) {
@@ -27872,11 +27922,11 @@ var ReadSession = class {
 		return time - this.started;
 	}
 	check() {
-		if (this.stopped) throw new ReadFailure(this.stopped);
+		if (this.stopped) throw new GithubReadFailure(this.stopped);
 		if (this.elapsed() >= this.limits.totalTimeoutMs) {
 			this.stopped ??= "timeout";
 			this.active?.abort();
-			throw new ReadFailure("timeout");
+			throw new GithubReadFailure("timeout");
 		}
 	}
 	consumeEntries(value) {
@@ -27890,7 +27940,7 @@ var ReadSession = class {
 			this.entries += children.length;
 			if (this.entries > this.limits.maxJsonEntries) {
 				this.stopped ??= "budget";
-				throw new ReadFailure("budget");
+				throw new GithubReadFailure("budget");
 			}
 			for (const child of children) pending.push(child);
 		}
@@ -27899,7 +27949,7 @@ var ReadSession = class {
 		const size = Buffer.byteLength(JSON.stringify(value), "utf8") + bytes;
 		if (size > this.limits.maxRetainedBytes - this.retained) {
 			this.stopped ??= "budget";
-			throw new ReadFailure("budget");
+			throw new GithubReadFailure("budget");
 		}
 		this.retained += size;
 	}
@@ -27927,11 +27977,11 @@ var ReadSession = class {
 		const remaining = this.limits.totalTimeoutMs - this.elapsed();
 		if (remaining <= 0) {
 			this.stopped ??= "timeout";
-			throw new ReadFailure("timeout");
+			throw new GithubReadFailure("timeout");
 		}
 		if (this.requests >= this.limits.maxRequests) {
 			this.stopped ??= "budget";
-			throw new ReadFailure("budget");
+			throw new GithubReadFailure("budget");
 		}
 		this.requests++;
 		return Math.min(this.limits.requestTimeoutMs, remaining);
@@ -27947,7 +27997,7 @@ var ReadSession = class {
 			if (length > this.limits.maxResponseBytes || this.bytes > this.limits.maxTotalBytes) {
 				this.stopped ??= "budget";
 				controller.abort();
-				throw new ReadFailure("budget");
+				throw new GithubReadFailure("budget");
 			}
 			this.check();
 			chunks.push(chunk.value);
@@ -27959,11 +28009,11 @@ var ReadSession = class {
 		try {
 			value = JSON.parse(new TextDecoder("utf-8", { fatal: true }).decode(body));
 		} catch {
-			throw new ReadFailure(statusFailure(response));
+			throw new GithubReadFailure(statusFailure(response));
 		}
 		if (response.status !== 200) {
 			this.consumeEntries(value);
-			throw new ReadFailure(httpReason$1(response, value));
+			throw new GithubReadFailure(httpReason$1(response, value));
 		}
 		this.check();
 		return value;
@@ -27980,7 +28030,7 @@ var ReadSession = class {
 		const aborted = new Promise((_, reject) => {
 			controller.signal.addEventListener("abort", () => {
 				cancel();
-				reject(new ReadFailure(expired ? "timeout" : "budget"));
+				reject(new GithubReadFailure(expired ? "timeout" : "budget"));
 			}, { once: true });
 		});
 		const stopTimer = startTimer(duration, () => {
@@ -28000,11 +28050,11 @@ var ReadSession = class {
 			}).then((result) => {
 				if (controller.signal.aborted) {
 					result.body?.cancel().catch(() => {});
-					throw new ReadFailure("timeout");
+					throw new GithubReadFailure("timeout");
 				}
 				return result;
 			}), aborted]);
-			if (response.body === null) throw new ReadFailure(statusFailure(response));
+			if (response.body === null) throw new GithubReadFailure(statusFailure(response));
 			reader = response.body.getReader();
 			requireRead(!response.redirected, "unknown");
 			const body = await this.readBody(reader, aborted, controller);
@@ -28013,8 +28063,8 @@ var ReadSession = class {
 				headers: response.headers
 			};
 		} catch (error) {
-			if (error instanceof ReadFailure) throw error;
-			throw new ReadFailure(reader ? "truncated" : "unknown");
+			if (error instanceof GithubReadFailure) throw error;
+			throw new GithubReadFailure(reader ? "truncated" : "unknown");
 		} finally {
 			stopTimer();
 			cancel();
@@ -28026,13 +28076,13 @@ var ReadSession = class {
 		const { value } = await this.get(path);
 		this.consumeEntries(value);
 		const state = this.classifier.classify(value);
-		if (state.kind === "obsolete") throw new ReadFailure("conflict", true);
-		if (state.kind === "error") throw new ReadFailure(state.category === "mismatch" ? "conflict" : "malformed");
+		if (state.kind === "obsolete") throw new GithubReadFailure("conflict", true);
+		if (state.kind === "error") throw new GithubReadFailure(state.category === "mismatch" ? "conflict" : "malformed");
 		if (state.kind === "compare") {
 			const comparison = await this.get(`${repoPath(this.binding.repository)}/compare/${state.baseSha}...${this.binding.headSha}?per_page=1&page=2`);
 			this.consumeEntries(comparison.value);
 			const checked = state.complete(comparison.value);
-			if (checked.kind === "obsolete") throw new ReadFailure("conflict", true);
+			if (checked.kind === "obsolete") throw new GithubReadFailure("conflict", true);
 			requireRead(checked.kind === "current");
 		}
 		requireRead(record(value) && typeof value.changed_files === "number" && Number.isSafeInteger(value.changed_files) && value.changed_files >= 0);
@@ -28067,7 +28117,7 @@ var ReadSession = class {
 			requireRead(await this.metadata() === count, "conflict");
 		} catch (error) {
 			reasons.add(fixedFailure(error).reason);
-			if (error instanceof ReadFailure && error.obsolete) {
+			if (error instanceof GithubReadFailure && error.obsolete) {
 				this.stopped ??= "conflict";
 				return result("obsolete");
 			}
@@ -28171,7 +28221,7 @@ var ReadSession = class {
 					bytes: new Uint8Array(bytes)
 				};
 			}
-			throw new ReadFailure("unknown");
+			throw new GithubReadFailure("unknown");
 		} catch (error) {
 			const failure = fixedFailure(error);
 			if (failure.reason === "budget") this.stopped ??= "budget";
@@ -28222,7 +28272,7 @@ var ReadSession = class {
 		requireRead(size === blob.size);
 		if (size > this.limits.maxFileBytes || size > this.limits.maxTotalBytes - this.bytes) {
 			this.stopped ??= "budget";
-			throw new ReadFailure("budget");
+			throw new GithubReadFailure("budget");
 		}
 		this.bytes += size;
 		const bytes = Buffer.from(content, "base64");
@@ -28309,7 +28359,7 @@ async function createGithubReadSession(input, dependencies) {
 			})
 		};
 	} catch (error) {
-		return error instanceof ReadFailure && error.obsolete ? { kind: "obsolete" } : fixedFailure(error);
+		return error instanceof GithubReadFailure && error.obsolete ? { kind: "obsolete" } : fixedFailure(error);
 	}
 }
 
@@ -30188,8 +30238,6 @@ async function withTrustedSnapshot(request, use) {
 }
 
 // src/pipeline.ts
-/** The job's wall-clock limit; analysis and publication reserve their own time inside it. */
-const JOB_BUDGET_MS = 9e5;
 /** How often a pending request is checked against ownership; shorter than any request timeout. */
 const OWNERSHIP_WATCH_MS = 2e3;
 /** A boundary failure whose stage is a literal chosen by this module, never derived from the error. */
@@ -30207,16 +30255,6 @@ async function inStage(stage, run) {
 	} catch (error) {
 		throw error instanceof StageFailure ? error : new StageFailure(stage);
 	}
-}
-function stopped(state) {
-	return state === "stale" ? {
-		kind: "stale",
-		body: null
-	} : {
-		kind: "internal-failure",
-		stage: "unclassified",
-		body: null
-	};
 }
 /** T4 requires exactly one context entry per change, so every change is named, Actions included. */
 function dependencyIdentities(changes) {
@@ -30238,7 +30276,7 @@ function dependencyIdentities(changes) {
 * published; the App token never enters this function.
 */
 async function runReview(input) {
-	const started = input.now();
+	const started = input.jobStartedAt ?? input.now();
 	const verified = await verifyCiEvent(input.event, input.eventReads);
 	if (verified.kind === "skip") return {
 		kind: "skipped",
@@ -30268,26 +30306,47 @@ async function runReview(input) {
 		}
 		return mine;
 	};
-	/** Ownership and the PR head must both still hold before anything may be handed off. */
-	const stillCurrent = async () => {
-		if (!await owns()) return "stale";
-		const fresh = await reverifyReviewBinding(binding, input.eventReads);
-		if (fresh.kind === "fresh") return state = "current";
-		state = fresh.kind === "obsolete" ? "stale" : "error";
+	const unverified = (detail) => {
+		state = {
+			kind: "unverified",
+			detail
+		};
 		attempt.abort();
 		return state;
+	};
+	/** Ownership and the PR head must both still hold before anything may be handed off. */
+	const stillCurrent = async () => {
+		let owner;
+		try {
+			owner = await owns();
+		} catch {
+			return unverified({
+				field: "ownership",
+				reason: "unknown"
+			});
+		}
+		if (!owner) return "stale";
+		const fresh = await reverifyReviewBinding(binding, input.eventReads);
+		if (fresh.kind === "fresh") return state = "current";
+		if (fresh.kind === "error") return unverified(freshnessDetail(fresh));
+		state = "stale";
+		attempt.abort();
+		return state;
+	};
+	/** A check that did not return `current`: proof of a moved head, or a failure to verify. */
+	const halted = (check) => check === "stale" ? {
+		kind: "stale",
+		body: null
+	} : {
+		kind: "internal-failure",
+		stage: "freshness",
+		freshness: check.detail,
+		body: null
 	};
 	const guard = (fetch) => guardedFetch(fetch, attempt, owns);
 	const evaluate = async () => {
 		const entry = await stillCurrent();
-		if (entry !== "current") return entry === "stale" ? {
-			kind: "stale",
-			body: null
-		} : {
-			kind: "internal-failure",
-			stage: "unclassified",
-			body: null
-		};
+		if (entry !== "current") return halted(entry);
 		if (!input.llmApiKey) return {
 			kind: "model-unavailable",
 			body: null
@@ -30296,7 +30355,7 @@ async function runReview(input) {
 			...input,
 			githubFetch: guard(input.githubFetch),
 			publicFetch: guard(input.publicFetch)
-		}, binding, started, attempt.signal, () => state, stillCurrent);
+		}, binding, started, attempt.signal, () => state, stillCurrent, halted);
 	};
 	let outcome;
 	const watcher = setInterval(() => void owns().catch(() => void 0), input.ownershipWatchMs ?? OWNERSHIP_WATCH_MS);
@@ -30313,8 +30372,12 @@ async function runReview(input) {
 		clearInterval(watcher);
 	}
 	if (outcome.kind !== "stale") {
-		const final = await stillCurrent().catch(() => "error");
-		if (final !== "current") outcome = stopped(final);
+		const final = await stillCurrent().catch(() => unverified({
+			field: "binding",
+			reason: "unknown"
+		}));
+		const earlierUnverified = outcome.kind === "internal-failure" && outcome.stage === "freshness";
+		if (final === "stale" || final !== "current" && !earlierUnverified) outcome = halted(final);
 	}
 	try {
 		const handoff = await createReviewHandoff(input.claims, claim, outcome.kind, {
@@ -30327,12 +30390,14 @@ async function runReview(input) {
 			kind: "not-eligible",
 			reason: "ownership"
 		};
+		const freshness = outcome.kind === "internal-failure" ? outcome.freshness : void 0;
 		return {
 			kind: "handed-off",
 			outcome: outcome.kind,
 			handoff: handoff.handoff,
 			body: outcome.body,
-			recorded: input.sink.record(handoff.handoff)
+			recorded: input.sink.record(handoff.handoff, freshness),
+			...freshness ? { detail: freshness } : {}
 		};
 	} catch {
 		return {
@@ -30342,7 +30407,7 @@ async function runReview(input) {
 		};
 	}
 }
-async function evaluateEvidence(input, binding, started, signal, state, recheck) {
+async function evaluateEvidence(input, binding, started, signal, state, recheck, halted) {
 	const isCurrent = () => state() === "current";
 	let evidenceSession = "ready";
 	let npmInventory = null;
@@ -30410,7 +30475,7 @@ async function evaluateEvidence(input, binding, started, signal, state, recheck)
 				body: null
 			};
 			const beforeResearch = await recheck();
-			if (beforeResearch !== "current") return stopped(beforeResearch);
+			if (beforeResearch !== "current") return halted(beforeResearch);
 			const researched = await inStage("research", () => runResearch({
 				packet: assembled.packet,
 				trusted: {
@@ -30431,13 +30496,13 @@ async function evaluateEvidence(input, binding, started, signal, state, recheck)
 				body: null
 			};
 			const beforeModel = await recheck();
-			if (beforeModel !== "current") return stopped(beforeModel);
+			if (beforeModel !== "current") return halted(beforeModel);
 			const reviewed = await inStage("assessment", () => reviewPacket({
 				packet: researched.packet,
 				config: trusted.config,
 				apiKey: input.llmApiKey,
 				evaluatedAt: input.evaluationTime,
-				deadlineMs: started + JOB_BUDGET_MS,
+				deadlineMs: started + JOB_BUDGET_MS - FRESHNESS_ALLOWANCE_MS,
 				signalAttempts: researched.signalAttempts,
 				researchIncomplete: researched.unavailable.length > 0,
 				signal,
@@ -30469,21 +30534,20 @@ async function evaluateEvidence(input, binding, started, signal, state, recheck)
 		kind: "invalid-config",
 		body: null
 	};
-	return state() === "stale" ? {
-		kind: "stale",
-		body: null
-	} : {
+	const check = state();
+	return check === "current" ? {
 		kind: "internal-failure",
 		stage: "snapshot",
 		body: null
-	};
+	} : halted(check);
 }
 
 // src/runtime.ts
 /**
 * Snapshot reads (repository, commit, trees, blobs) and freshness reads (workflow, run, pull
 * request, comparison) draw on separate shares, so a heavy snapshot cannot starve the checks that
-* keep a finished review valid. Time is one shared deadline.
+* keep a finished review valid. Snapshot reads share one evidence deadline; freshness reads are
+* exempt from it and end only with the job window, so the checks that follow a slow model can run.
 */
 const W2_GITHUB_LIMITS = Object.freeze({
 	snapshot: EVIDENCE_READ_ALLOCATION.transport.snapshot,
@@ -30592,18 +30656,19 @@ function createGithubTransport(dependencies) {
 			bytes: 0
 		}
 	};
-	const started = dependencies.now();
+	const started = dependencies.startedAt ?? dependencies.now();
 	const read = async (share, url, signal) => {
 		const limits = W2_GITHUB_LIMITS[share];
 		const spent = used[share];
-		if (signal?.aborted || ++spent.requests > limits.maxRequests || dependencies.now() - started >= W2_GITHUB_LIMITS.totalTimeoutMs) return {
+		const window = share === "freshness" ? JOB_BUDGET_MS : W2_GITHUB_LIMITS.totalTimeoutMs;
+		if (signal?.aborted || ++spent.requests > limits.maxRequests || dependencies.now() - started >= window) return {
 			kind: "unavailable",
 			reason: "budget"
 		};
 		const controller = new AbortController();
 		const cancel = () => controller.abort();
 		signal?.addEventListener("abort", cancel, { once: true });
-		const remaining = W2_GITHUB_LIMITS.totalTimeoutMs - (dependencies.now() - started);
+		const remaining = window - (dependencies.now() - started);
 		const timer = setTimeout(() => controller.abort(), Math.min(W2_GITHUB_LIMITS.requestTimeoutMs, remaining));
 		try {
 			const response = await dependencies.fetch(url, {
@@ -30745,6 +30810,21 @@ function platformDependencies() {
 		evaluationTime: () => Date.now()
 	};
 }
+/** The one fixed line for a rehearsal result; no input, error text, or stack is ever echoed. */
+function rehearsalLine(result) {
+	const recorded = "dependabot-review: no-write rehearsal recorded";
+	switch (result.kind) {
+		case "failed": return `${recorded} internal-failure at ${result.stage}; nothing was published.`;
+		case "handed-off": {
+			if (!result.recorded) return "dependabot-review: no-write rehearsal could not record the handoff; nothing was published.";
+			if (result.handoff.kind !== "internal-failure") return `${recorded} ${result.outcome}; nothing was published.`;
+			const detail = result.detail ? ` (${result.detail.field} ${result.detail.reason})` : "";
+			return `${recorded} internal-failure at ${result.handoff.stage}${detail}; nothing was published.`;
+		}
+		case "skipped": return `dependabot-review: event skipped (${result.reason}); nothing was published.`;
+		default: return `dependabot-review: no publishable handoff (${result.reason}); nothing was published.`;
+	}
+}
 /**
 * Runs one no-write rehearsal of the review pipeline. It reads GitHub and public sources and records
 * the intended publication in a sink that cannot write, so the exit code stays non-zero: no status
@@ -30756,6 +30836,7 @@ async function runStartup(writeError, environment = process.env, dependencies = 
 		writeError("dependabot-review: startup self-check failed; no review ran.");
 		return 79;
 	}
+	const jobStartedAt = dependencies.now();
 	const runtime = parseRuntime(environment);
 	if (!runtime) {
 		writeError("dependabot-review: runtime configuration invalid; no review ran.");
@@ -30775,7 +30856,8 @@ async function runStartup(writeError, environment = process.env, dependencies = 
 		const transport = createGithubTransport({
 			token: runtime.githubToken,
 			fetch: dependencies.fetch,
-			now: dependencies.now
+			now: dependencies.now,
+			startedAt: jobStartedAt
 		});
 		const workflow = await resolveWorkflow(runtime, transport);
 		if (!workflow) {
@@ -30785,7 +30867,7 @@ async function runStartup(writeError, environment = process.env, dependencies = 
 		const sink = dependencies.sink ?? createRehearsalSink(null);
 		if (!sink) throw new Error("sink");
 		const claims = dependencies.claims ?? createTestClaimStore();
-		const result = await runReview({
+		writeError(rehearsalLine(await runReview({
 			event: {
 				eventName,
 				payload,
@@ -30804,14 +30886,9 @@ async function runStartup(writeError, environment = process.env, dependencies = 
 			publicFetch: researchFetch(runtime.githubToken, dependencies.fetch),
 			model: dependencies.model,
 			now: dependencies.now,
+			jobStartedAt,
 			evaluationTime: dependencies.evaluationTime()
-		});
-		if (result.kind === "handed-off" && !result.recorded) writeError("dependabot-review: no-write rehearsal could not record the handoff; nothing was published.");
-		else if (result.kind === "failed") writeError(`dependabot-review: no-write rehearsal recorded internal-failure at ${result.stage}; nothing was published.`);
-		else if (result.kind === "handed-off" && result.handoff.kind === "internal-failure") writeError(`dependabot-review: no-write rehearsal recorded internal-failure at ${result.handoff.stage}; nothing was published.`);
-		else if (result.kind === "handed-off") writeError(`dependabot-review: no-write rehearsal recorded ${result.outcome}; nothing was published.`);
-		else if (result.kind === "skipped") writeError(`dependabot-review: event skipped (${result.reason}); nothing was published.`);
-		else writeError(`dependabot-review: no publishable handoff (${result.reason}); nothing was published.`);
+		})));
 	} catch {
 		writeError("dependabot-review: no-write rehearsal recorded internal-failure at unclassified; nothing was published.");
 	}

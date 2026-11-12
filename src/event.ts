@@ -1,3 +1,5 @@
+import { EVIDENCE_REASONS, type EvidenceReason } from './schema.js';
+
 const CONCLUSIONS = [
   'success',
   'failure',
@@ -43,7 +45,15 @@ export type VerificationError = {
   kind: 'error';
   category: 'input' | 'mismatch' | 'read' | 'replay';
   field: ErrorField;
+  /** The fixed reason a read adapter gave for a failed `read`; absent when it gave none. */
+  reason?: EvidenceReason;
 };
+/** A read that failed for a fixed reason; `read` keeps that reason, and nothing else, on the error. */
+export class ReadFailure extends Error {
+  constructor(readonly reason: EvidenceReason) {
+    super('read unavailable');
+  }
+}
 export type EventResult =
   | { kind: 'verified'; binding: ReviewBinding }
   | { kind: 'skip'; reason: 'ineligible' | 'obsolete' | 'duplicate' }
@@ -380,8 +390,21 @@ async function read(
 ): Promise<{ ok: true; value: unknown } | { ok: false; error: VerificationError }> {
   try {
     return { ok: true, value: await operation() };
+  } catch (error) {
+    const category = field === 'replay' ? 'replay' : 'read';
+    const reason = category === 'read' ? readReason(error) : undefined;
+    return { ok: false, error: { ...failure(field, category), ...(reason ? { reason } : {}) } };
+  }
+}
+
+/** The adapter's fixed reason; a thrown value that cannot be inspected has none. */
+function readReason(error: unknown): EvidenceReason | undefined {
+  try {
+    return error instanceof ReadFailure && EVIDENCE_REASONS.includes(error.reason)
+      ? error.reason
+      : undefined;
   } catch {
-    return { ok: false, error: failure(field, field === 'replay' ? 'replay' : 'read') };
+    return undefined;
   }
 }
 

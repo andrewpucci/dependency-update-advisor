@@ -101,7 +101,7 @@ const TYPE_FOR_MODE: Readonly<Record<string, string>> = {
   '120000': 'blob',
   '160000': 'commit',
 };
-class ReadFailure extends Error {
+class GithubReadFailure extends Error {
   constructor(
     readonly reason: EvidenceReason,
     readonly obsolete = false,
@@ -110,10 +110,13 @@ class ReadFailure extends Error {
   }
 }
 function requireRead(condition: unknown, reason: EvidenceReason = 'malformed'): asserts condition {
-  if (!condition) throw new ReadFailure(reason);
+  if (!condition) throw new GithubReadFailure(reason);
 }
 function fixedFailure(error: unknown): Failure {
-  return { kind: 'unavailable', reason: error instanceof ReadFailure ? error.reason : 'unknown' };
+  return {
+    kind: 'unavailable',
+    reason: error instanceof GithubReadFailure ? error.reason : 'unknown',
+  };
 }
 function parseLimits(value: unknown): GithubReadLimits | null {
   if (!record(value)) return null;
@@ -231,7 +234,7 @@ function frozenRecord(item: Record<string, unknown>): Readonly<Record<string, Js
   try {
     JSON.stringify(item);
   } catch {
-    throw new ReadFailure('unsupported');
+    throw new GithubReadFailure('unsupported');
   }
   const pending: unknown[] = [item];
   while (pending.length) {
@@ -324,11 +327,11 @@ class ReadSession implements GithubReadSession {
     return time - this.started;
   }
   private check(): void {
-    if (this.stopped) throw new ReadFailure(this.stopped);
+    if (this.stopped) throw new GithubReadFailure(this.stopped);
     if (this.elapsed() >= this.limits.totalTimeoutMs) {
       this.stopped ??= 'timeout';
       this.active?.abort();
-      throw new ReadFailure('timeout');
+      throw new GithubReadFailure('timeout');
     }
   }
   private consumeEntries(value: unknown): void {
@@ -342,7 +345,7 @@ class ReadSession implements GithubReadSession {
       this.entries += children.length;
       if (this.entries > this.limits.maxJsonEntries) {
         this.stopped ??= 'budget';
-        throw new ReadFailure('budget');
+        throw new GithubReadFailure('budget');
       }
       for (const child of children) pending.push(child);
     }
@@ -351,7 +354,7 @@ class ReadSession implements GithubReadSession {
     const size = Buffer.byteLength(JSON.stringify(value), 'utf8') + bytes;
     if (size > this.limits.maxRetainedBytes - this.retained) {
       this.stopped ??= 'budget';
-      throw new ReadFailure('budget');
+      throw new GithubReadFailure('budget');
     }
     this.retained += size;
   }
@@ -380,11 +383,11 @@ class ReadSession implements GithubReadSession {
     const remaining = this.limits.totalTimeoutMs - this.elapsed();
     if (remaining <= 0) {
       this.stopped ??= 'timeout';
-      throw new ReadFailure('timeout');
+      throw new GithubReadFailure('timeout');
     }
     if (this.requests >= this.limits.maxRequests) {
       this.stopped ??= 'budget';
-      throw new ReadFailure('budget');
+      throw new GithubReadFailure('budget');
     }
     this.requests++;
     return Math.min(this.limits.requestTimeoutMs, remaining);
@@ -404,7 +407,7 @@ class ReadSession implements GithubReadSession {
       if (length > this.limits.maxResponseBytes || this.bytes > this.limits.maxTotalBytes) {
         this.stopped ??= 'budget';
         controller.abort();
-        throw new ReadFailure('budget');
+        throw new GithubReadFailure('budget');
       }
       this.check();
       chunks.push(chunk.value);
@@ -416,11 +419,11 @@ class ReadSession implements GithubReadSession {
     try {
       value = JSON.parse(new TextDecoder('utf-8', { fatal: true }).decode(body));
     } catch {
-      throw new ReadFailure(statusFailure(response));
+      throw new GithubReadFailure(statusFailure(response));
     }
     if (response.status !== 200) {
       this.consumeEntries(value);
-      throw new ReadFailure(httpReason(response, value));
+      throw new GithubReadFailure(httpReason(response, value));
     }
     this.check();
     return value;
@@ -439,7 +442,7 @@ class ReadSession implements GithubReadSession {
         'abort',
         () => {
           cancel();
-          reject(new ReadFailure(expired ? 'timeout' : 'budget'));
+          reject(new GithubReadFailure(expired ? 'timeout' : 'budget'));
         },
         { once: true },
       );
@@ -464,20 +467,20 @@ class ReadSession implements GithubReadSession {
           .then((result) => {
             if (controller.signal.aborted) {
               void result.body?.cancel().catch(() => {});
-              throw new ReadFailure('timeout');
+              throw new GithubReadFailure('timeout');
             }
             return result;
           }),
         aborted,
       ]);
-      if (response.body === null) throw new ReadFailure(statusFailure(response));
+      if (response.body === null) throw new GithubReadFailure(statusFailure(response));
       reader = response.body.getReader();
       requireRead(!response.redirected, 'unknown');
       const body = await this.readBody(reader, aborted, controller);
       return { value: this.parseBody(response, body), headers: response.headers };
     } catch (error) {
-      if (error instanceof ReadFailure) throw error;
-      throw new ReadFailure(reader ? 'truncated' : 'unknown');
+      if (error instanceof GithubReadFailure) throw error;
+      throw new GithubReadFailure(reader ? 'truncated' : 'unknown');
     } finally {
       stopTimer();
       cancel();
@@ -489,9 +492,9 @@ class ReadSession implements GithubReadSession {
     const { value } = await this.get(path);
     this.consumeEntries(value);
     const state = this.classifier.classify(value);
-    if (state.kind === 'obsolete') throw new ReadFailure('conflict', true);
+    if (state.kind === 'obsolete') throw new GithubReadFailure('conflict', true);
     if (state.kind === 'error')
-      throw new ReadFailure(state.category === 'mismatch' ? 'conflict' : 'malformed');
+      throw new GithubReadFailure(state.category === 'mismatch' ? 'conflict' : 'malformed');
     if (state.kind === 'compare') {
       // Page 2 of one-commit pages omits GitHub's first-page file list and patches.
       const comparison = await this.get(
@@ -499,7 +502,7 @@ class ReadSession implements GithubReadSession {
       );
       this.consumeEntries(comparison.value);
       const checked = state.complete(comparison.value);
-      if (checked.kind === 'obsolete') throw new ReadFailure('conflict', true);
+      if (checked.kind === 'obsolete') throw new GithubReadFailure('conflict', true);
       requireRead(checked.kind === 'current');
     }
     requireRead(
@@ -539,7 +542,7 @@ class ReadSession implements GithubReadSession {
       requireRead((await this.metadata()) === count, 'conflict');
     } catch (error) {
       reasons.add(fixedFailure(error).reason);
-      if (error instanceof ReadFailure && error.obsolete) {
+      if (error instanceof GithubReadFailure && error.obsolete) {
         this.stopped ??= 'conflict';
         return result('obsolete');
       }
@@ -633,7 +636,7 @@ class ReadSession implements GithubReadSession {
         this.retain(metadata, bytes.length);
         return { ...metadata, bytes: new Uint8Array(bytes) };
       }
-      throw new ReadFailure('unknown');
+      throw new GithubReadFailure('unknown');
     } catch (error) {
       const failure = fixedFailure(error);
       if (failure.reason === 'budget') this.stopped ??= 'budget';
@@ -702,7 +705,7 @@ class ReadSession implements GithubReadSession {
     requireRead(size === blob.size);
     if (size > this.limits.maxFileBytes || size > this.limits.maxTotalBytes - this.bytes) {
       this.stopped ??= 'budget';
-      throw new ReadFailure('budget');
+      throw new GithubReadFailure('budget');
     }
     this.bytes += size;
     const bytes = Buffer.from(content, 'base64');
@@ -798,7 +801,7 @@ export async function createGithubReadSession(
       }),
     };
   } catch (error) {
-    return error instanceof ReadFailure && error.obsolete
+    return error instanceof GithubReadFailure && error.obsolete
       ? { kind: 'obsolete' }
       : fixedFailure(error);
   }

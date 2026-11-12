@@ -1,5 +1,5 @@
 import { reviewPacket, type AssessmentInput } from './assessment.js';
-import { EVIDENCE_READ_ENVELOPE } from './budget.js';
+import { EVIDENCE_READ_ENVELOPE, FRESHNESS_ALLOWANCE_MS, JOB_BUDGET_MS } from './budget.js';
 import {
   createEvidenceCollectors,
   openEvidenceSession,
@@ -17,11 +17,16 @@ import { guardedFetch } from './adapters.js';
 import { assembleReviewPacket, type PacketGap } from './packet.js';
 import type { DroppedOptional } from './optional-evidence.js';
 import { runResearch } from './research.js';
-import type { ClaimStore, InternalFailureStage, OwnedClaim, ReviewOutcomeKind } from './review.js';
+import {
+  freshnessDetail,
+  type ClaimStore,
+  type FreshnessDetail,
+  type InternalFailureStage,
+  type OwnedClaim,
+  type ReviewOutcomeKind,
+} from './review.js';
 import { withTrustedSnapshot, type SnapshotReads } from './snapshot.js';
 
-/** The job's wall-clock limit; analysis and publication reserve their own time inside it. */
-const JOB_BUDGET_MS = 15 * 60 * 1_000;
 /** How often a pending request is checked against ownership; shorter than any request timeout. */
 const OWNERSHIP_WATCH_MS = 2_000;
 
@@ -31,6 +36,7 @@ export type PipelineInput = Readonly<{
   repository: RepositoryIdentity;
   /** Null means no model is configured; no collector or model request is made. */
   llmApiKey: string | null;
+  /** T1's reads; a read that fails with a `ReadFailure` names its fixed reason. */
   eventReads: EventReads;
   snapshotReads: SnapshotReads;
   claims: ClaimStore;
@@ -42,6 +48,11 @@ export type PipelineInput = Readonly<{
   model?: AssessmentInput['model'];
   /** Monotonic milliseconds. */
   now: () => number;
+  /**
+   * The monotonic time the job started, shared with the GitHub transport so every deadline has one
+   * origin. Defaults to this attempt's own start.
+   */
+  jobStartedAt?: number;
   /** Epoch milliseconds used for policy evaluation and the review timestamp. */
   evaluationTime: number;
   temporaryRoot?: () => Promise<string>;
@@ -61,6 +72,8 @@ export type PipelineResult =
       /** A comment-ready body, only for a complete or accurately rendered incomplete review. */
       body: string | null;
       recorded: boolean;
+      /** Which freshness check failed and why; present only for a `freshness` internal failure. */
+      detail?: FreshnessDetail;
     }>;
 
 type OutcomeDetail = Readonly<{
@@ -70,20 +83,29 @@ type OutcomeDetail = Readonly<{
   /** Optional evidence that fit the packet only after a conservative budget drop. */
   droppedOptional?: readonly DroppedOptional[];
 }>;
+type NonFreshnessStage = Exclude<InternalFailureStage, 'freshness'>;
 type Outcome =
   | (OutcomeDetail &
-      Readonly<{ kind: Exclude<ReviewOutcomeKind, 'internal-failure'>; stage?: never }>)
-  | (OutcomeDetail & Readonly<{ kind: 'internal-failure'; stage: InternalFailureStage }>);
+      Readonly<{
+        kind: Exclude<ReviewOutcomeKind, 'internal-failure'>;
+        stage?: never;
+        freshness?: never;
+      }>)
+  | (OutcomeDetail &
+      Readonly<{ kind: 'internal-failure'; stage: NonFreshnessStage; freshness?: never }>)
+  /** Which freshness check failed and why; only the `freshness` stage carries it. */
+  | (OutcomeDetail &
+      Readonly<{ kind: 'internal-failure'; stage: 'freshness'; freshness: FreshnessDetail }>);
 
 /** A boundary failure whose stage is a literal chosen by this module, never derived from the error. */
 class StageFailure extends Error {
-  constructor(readonly stage: InternalFailureStage) {
+  constructor(readonly stage: NonFreshnessStage) {
     super(stage);
   }
 }
 
 /** Runs one boundary, reporting any exception from it as that stage's fixed failure. */
-async function inStage<T>(stage: InternalFailureStage, run: () => Promise<T>): Promise<T> {
+async function inStage<T>(stage: NonFreshnessStage, run: () => Promise<T>): Promise<T> {
   try {
     return await run();
   } catch (error) {
@@ -91,14 +113,12 @@ async function inStage<T>(stage: InternalFailureStage, run: () => Promise<T>): P
   }
 }
 
-/** `stale` proves the head moved or ownership ended; `error` only means it could not be verified. */
-type Freshness = 'current' | 'stale' | 'error';
-
-function stopped(state: 'stale' | 'error'): Outcome {
-  return state === 'stale'
-    ? { kind: 'stale', body: null }
-    : { kind: 'internal-failure', stage: 'unclassified', body: null };
-}
+/**
+ * `stale` proves the head moved or ownership ended; `unverified` only means it could not be
+ * verified, and names the check that could not.
+ */
+type Freshness = 'current' | 'stale' | Readonly<{ kind: 'unverified'; detail: FreshnessDetail }>;
+type Halt = Exclude<Freshness, 'current'>;
 
 /** T4 requires exactly one context entry per change, so every change is named, Actions included. */
 function dependencyIdentities(changes: readonly unknown[]): { id: string; name: string }[] {
@@ -123,7 +143,7 @@ function dependencyIdentities(changes: readonly unknown[]): { id: string; name: 
  * published; the App token never enters this function.
  */
 export async function runReview(input: PipelineInput): Promise<PipelineResult> {
-  const started = input.now();
+  const started = input.jobStartedAt ?? input.now();
   const verified = await verifyCiEvent(input.event, input.eventReads);
   if (verified.kind === 'skip') return { kind: 'skipped', reason: verified.reason };
   if (verified.kind === 'error') return { kind: 'not-eligible', reason: 'verification' };
@@ -149,23 +169,37 @@ export async function runReview(input: PipelineInput): Promise<PipelineResult> {
     }
     return mine;
   };
-  /** Ownership and the PR head must both still hold before anything may be handed off. */
-  const stillCurrent = async (): Promise<Freshness> => {
-    if (!(await owns())) return 'stale';
-    const fresh = await reverifyReviewBinding(binding, input.eventReads);
-    if (fresh.kind === 'fresh') return (state = 'current');
-    state = fresh.kind === 'obsolete' ? 'stale' : 'error';
+  const unverified = (detail: FreshnessDetail): Freshness => {
+    state = { kind: 'unverified', detail };
     attempt.abort();
     return state;
   };
+  /** Ownership and the PR head must both still hold before anything may be handed off. */
+  const stillCurrent = async (): Promise<Freshness> => {
+    let owner: boolean;
+    try {
+      owner = await owns();
+    } catch {
+      return unverified({ field: 'ownership', reason: 'unknown' });
+    }
+    if (!owner) return 'stale';
+    const fresh = await reverifyReviewBinding(binding, input.eventReads);
+    if (fresh.kind === 'fresh') return (state = 'current');
+    if (fresh.kind === 'error') return unverified(freshnessDetail(fresh));
+    state = 'stale';
+    attempt.abort();
+    return state;
+  };
+  /** A check that did not return `current`: proof of a moved head, or a failure to verify. */
+  const halted = (check: Halt): Outcome =>
+    check === 'stale'
+      ? { kind: 'stale', body: null }
+      : { kind: 'internal-failure', stage: 'freshness', freshness: check.detail, body: null };
   const guard = (fetch: PipelineInput['githubFetch']) => guardedFetch(fetch, attempt, owns);
 
   const evaluate = async (): Promise<Outcome> => {
     const entry = await stillCurrent();
-    if (entry !== 'current')
-      return entry === 'stale'
-        ? { kind: 'stale', body: null }
-        : { kind: 'internal-failure', stage: 'unclassified', body: null };
+    if (entry !== 'current') return halted(entry);
     // With no model configured, no snapshot, collector, or model request is made.
     if (!input.llmApiKey) return { kind: 'model-unavailable', body: null };
     return evaluateEvidence(
@@ -175,6 +209,7 @@ export async function runReview(input: PipelineInput): Promise<PipelineResult> {
       attempt.signal,
       () => state,
       stillCurrent,
+      halted,
     );
   };
 
@@ -195,8 +230,13 @@ export async function runReview(input: PipelineInput): Promise<PipelineResult> {
   // A result is only publishable if the attempt is still the owner's, on the same PR head. A
   // freshness read that fails is a failure to verify, not proof the head moved.
   if (outcome.kind !== 'stale') {
-    const final = await stillCurrent().catch(() => 'error' as const);
-    if (final !== 'current') outcome = stopped(final);
+    const final = await stillCurrent().catch(() =>
+      unverified({ field: 'binding', reason: 'unknown' }),
+    );
+    // An earlier failure to verify names the check that stopped the work; only proof that the
+    // head moved replaces it.
+    const earlierUnverified = outcome.kind === 'internal-failure' && outcome.stage === 'freshness';
+    if (final === 'stale' || (final !== 'current' && !earlierUnverified)) outcome = halted(final);
   }
 
   try {
@@ -207,12 +247,14 @@ export async function runReview(input: PipelineInput): Promise<PipelineResult> {
       ...(outcome.kind === 'internal-failure' ? { stage: outcome.stage } : {}),
     });
     if (handoff.kind !== 'ready') return { kind: 'not-eligible', reason: 'ownership' };
+    const freshness = outcome.kind === 'internal-failure' ? outcome.freshness : undefined;
     return {
       kind: 'handed-off',
       outcome: outcome.kind,
       handoff: handoff.handoff,
       body: outcome.body,
-      recorded: input.sink.record(handoff.handoff),
+      recorded: input.sink.record(handoff.handoff, freshness),
+      ...(freshness ? { detail: freshness } : {}),
     };
   } catch {
     return { kind: 'failed', outcome: 'internal-failure', stage: 'handoff' };
@@ -227,6 +269,8 @@ async function evaluateEvidence(
   state: () => Freshness,
   /** Re-reads ownership and the PR head; anything but `current` means this attempt must stop. */
   recheck: () => Promise<Freshness>,
+  /** The outcome for a re-verification that did not return `current`. */
+  halted: (check: Halt) => Outcome,
 ): Promise<Outcome> {
   const isCurrent = () => state() === 'current';
   let evidenceSession: EvidenceSessionResult['kind'] = 'ready';
@@ -297,7 +341,7 @@ async function evaluateEvidence(
 
         // Public research is only worth starting while this attempt still owns the current head.
         const beforeResearch = await recheck();
-        if (beforeResearch !== 'current') return stopped(beforeResearch);
+        if (beforeResearch !== 'current') return halted(beforeResearch);
         const researched = await inStage('research', () =>
           runResearch({
             packet: assembled.packet,
@@ -315,7 +359,7 @@ async function evaluateEvidence(
           return { kind: 'internal-failure', stage: 'research', body: null };
         // The model is only called while the attempt is still the owner's.
         const beforeModel = await recheck();
-        if (beforeModel !== 'current') return stopped(beforeModel);
+        if (beforeModel !== 'current') return halted(beforeModel);
 
         const reviewed = await inStage('assessment', () =>
           reviewPacket({
@@ -323,7 +367,8 @@ async function evaluateEvidence(
             config: trusted.config,
             apiKey: input.llmApiKey,
             evaluatedAt: input.evaluationTime,
-            deadlineMs: started + JOB_BUDGET_MS,
+            // The final freshness check needs its allowance inside the job window.
+            deadlineMs: started + JOB_BUDGET_MS - FRESHNESS_ALLOWANCE_MS,
             signalAttempts: researched.signalAttempts,
             researchIncomplete: researched.unavailable.length > 0,
             signal,
@@ -355,7 +400,10 @@ async function evaluateEvidence(
   }
   if (snapshot.kind === 'ready') return snapshot.value;
   if (snapshot.kind === 'invalid-config') return { kind: 'invalid-config', body: null };
-  return state() === 'stale'
-    ? { kind: 'stale', body: null }
-    : { kind: 'internal-failure', stage: 'snapshot', body: null };
+  // A failed re-verification inside the callback aborts the attempt, which makes the snapshot
+  // unavailable; that failure belongs to the freshness check, not to the snapshot.
+  const check = state();
+  return check === 'current'
+    ? { kind: 'internal-failure', stage: 'snapshot', body: null }
+    : halted(check);
 }

@@ -1,4 +1,5 @@
-import { expect, test, vi } from 'vite-plus/test';
+import { describe, expect, test, vi } from 'vite-plus/test';
+import { JOB_BUDGET_MS } from './budget.js';
 import {
   createGithubTransport,
   parseRuntime,
@@ -237,6 +238,128 @@ test('limits a late request to the time left in the total deadline', async () =>
   } finally {
     vi.useRealTimers();
   }
+});
+
+describe('freshness reads and the shared evidence deadline', () => {
+  const pastEvidenceDeadline = W2_GITHUB_LIMITS.totalTimeoutMs + 10_000;
+
+  test('serves a freshness read after the shared deadline but still refuses a snapshot read', async () => {
+    let clock = 0;
+    const urls: string[] = [];
+    const transport = createGithubTransport({
+      token: 'read-token',
+      now: () => clock,
+      fetch: async (url) => {
+        urls.push(url);
+        return new Response('{}');
+      },
+    });
+    clock = pastEvidenceDeadline;
+    await expect(transport.readRun(repo, 401)).resolves.toMatchObject({ kind: 'available' });
+    expect(urls).toHaveLength(1);
+    await expect(transport.readBlob(repo, 'a'.repeat(40))).resolves.toEqual({
+      kind: 'unavailable',
+      reason: 'budget',
+    });
+    expect(urls).toHaveLength(1);
+  });
+
+  test('refuses a freshness read after the job window without a request', async () => {
+    let clock = 0;
+    let requests = 0;
+    const transport = createGithubTransport({
+      token: 'read-token',
+      now: () => clock,
+      fetch: async () => {
+        requests += 1;
+        return new Response('{}');
+      },
+    });
+    clock = JOB_BUDGET_MS;
+    await expect(transport.readRun(repo, 401)).resolves.toEqual({
+      kind: 'unavailable',
+      reason: 'budget',
+    });
+    expect(requests).toBe(0);
+  });
+
+  test('measures its windows from the supplied job start, not from when it was created', async () => {
+    let clock = 100_000;
+    let requests = 0;
+    const transport = createGithubTransport({
+      token: 'read-token',
+      now: () => clock,
+      startedAt: 0,
+      fetch: async () => {
+        requests += 1;
+        return new Response('{}');
+      },
+    });
+    // 240 s after the job start, but only 140 s after the transport existed.
+    clock = W2_GITHUB_LIMITS.totalTimeoutMs;
+    await expect(transport.readBlob(repo, 'a'.repeat(40))).resolves.toEqual({
+      kind: 'unavailable',
+      reason: 'budget',
+    });
+    clock = JOB_BUDGET_MS;
+    await expect(transport.readRun(repo, 401)).resolves.toEqual({
+      kind: 'unavailable',
+      reason: 'budget',
+    });
+    expect(requests).toBe(0);
+  });
+
+  test('serves reads right up to each window when the job started after time zero', async () => {
+    const started = 20_000;
+    let clock = 50_000;
+    const transport = createGithubTransport({
+      token: 'read-token',
+      now: () => clock,
+      startedAt: started,
+      fetch: async () => new Response('{}'),
+    });
+    clock = started + W2_GITHUB_LIMITS.totalTimeoutMs - 1_000;
+    await expect(transport.readBlob(repo, 'a'.repeat(40))).resolves.toMatchObject({
+      kind: 'available',
+    });
+    clock = started + JOB_BUDGET_MS - 1_000;
+    await expect(transport.readRun(repo, 401)).resolves.toMatchObject({ kind: 'available' });
+  });
+
+  test.each([
+    ['after the shared deadline', pastEvidenceDeadline, W2_GITHUB_LIMITS.requestTimeoutMs],
+    ['near the job end', JOB_BUDGET_MS - 1_000, 1_000],
+  ])(
+    'times a freshness read made %s out at the smaller of the request timeout and the time left',
+    async (_name, at, timeout) => {
+      vi.useFakeTimers();
+      try {
+        const started = 20_000;
+        let clock = 50_000;
+        const transport = createGithubTransport({
+          token: 'read-token',
+          now: () => clock,
+          startedAt: started,
+          fetch: (_url, init) =>
+            new Promise((_resolve, reject) =>
+              init.signal?.addEventListener('abort', () => reject(new Error('aborted'))),
+            ),
+        });
+        clock = started + at;
+        let settled = false;
+        const pending = transport.readRun(repo, 401).then((result) => {
+          settled = true;
+          return result;
+        });
+        await vi.advanceTimersByTimeAsync(timeout - 1);
+        expect(settled).toBe(false);
+        await vi.advanceTimersByTimeAsync(1);
+        await expect(pending).resolves.toEqual({ kind: 'unavailable', reason: 'timeout' });
+      } finally {
+        vi.useRealTimers();
+      }
+    },
+  );
 });
 
 type Transport = ReturnType<typeof createGithubTransport>;

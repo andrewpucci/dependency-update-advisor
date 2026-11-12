@@ -1,11 +1,13 @@
 import fs from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { expect, test } from 'vite-plus/test';
+import { expect, test, vi } from 'vite-plus/test';
 import { analysisDocument } from '../tests/parity/analysis.js';
 import { upstreamScenario } from '../tests/parity/upstream.js';
 import { uvMetadataScenario } from '../tests/parity/uv-metadata.js';
 import { analyzeMistralBatch } from './analysis/mistral.js';
+import * as pipelineModule from './pipeline.js';
+import * as runtimeModule from './runtime.js';
 import { createTestClaimStore } from './review.js';
 import type { StartupDependencies } from './startup.js';
 import {
@@ -16,6 +18,16 @@ import {
   runStartup,
   selfCheck,
 } from './startup.js';
+
+vi.mock('./pipeline.js', async (original) => {
+  const actual = await original<typeof import('./pipeline.js')>();
+  return { ...actual, runReview: vi.fn(actual.runReview) };
+});
+
+vi.mock('./runtime.js', async (original) => {
+  const actual = await original<typeof import('./runtime.js')>();
+  return { ...actual, createGithubTransport: vi.fn(actual.createGithubTransport) };
+});
 
 const environment = {
   INPUT_GITHUB_TOKEN: 'read-token',
@@ -370,6 +382,131 @@ test('reports a recorded internal failure with its fixed snapshot stage', async 
   expect(code).toBe(NOT_WIRED_EXIT_CODE);
   expect(stderr.join('')).not.toContain(sentinel);
 });
+
+/** A shared monotonic clock that a model step can advance, as a slow model call would. */
+function slowModelDependencies(github: ReturnType<typeof mockGithub>, clock: { now: number }) {
+  const base = dependenciesFor(github, { now: () => clock.now });
+  const analyze = base.model?.analyze;
+  if (!analyze) throw new Error('fixture must configure a model');
+  return {
+    ...base,
+    model: {
+      now: () => clock.now,
+      analyze: ((batch: Parameters<typeof analyzeMistralBatch>[0], options: never) => {
+        clock.now = 300_000;
+        return analyze(batch, options);
+      }) as typeof analyzeMistralBatch,
+    },
+  };
+}
+
+test('records the normal outcome when the model step ends after the 240 s evidence window', async () => {
+  const control = await start(mockGithub({ changes: await upstreamScenario() }));
+  expect(control.stderr).toHaveLength(1);
+  const github = mockGithub({ changes: await upstreamScenario() });
+  const clock = { now: 0 };
+  const late: string[] = [];
+  const base = slowModelDependencies(github, clock);
+  const stderr: string[] = [];
+  const code = await runStartup((line) => stderr.push(line), environmentFor(), {
+    ...base,
+    fetch: async (url, init) => {
+      if (clock.now >= 300_000) late.push(new URL(url).pathname);
+      return base.fetch(url, init);
+    },
+  });
+  expect(clock.now).toBe(300_000);
+  // The final re-verification ran, and made its reads, after the evidence window.
+  expect(late.some((path) => path.endsWith('/actions/runs/401'))).toBe(true);
+  expect(late.some((path) => path.endsWith('/pulls/42'))).toBe(true);
+  expect(stderr).toEqual(control.stderr);
+  expect(stderr.join('')).not.toContain('internal-failure');
+  expect(code).toBe(NOT_WIRED_EXIT_CODE);
+});
+
+test('records a head that moved during a late model step as stale, not as a failure', async () => {
+  const github = mockGithub({ changes: await upstreamScenario() });
+  const clock = { now: 0 };
+  const dependencies = slowModelDependencies(github, clock);
+  const moved = async (url: string, init: RequestInit) => {
+    const response = await github.fetch(url, init);
+    if (clock.now < 250_000 || !new URL(url).pathname.endsWith('/pulls/42')) return response;
+    const body = (await response.json()) as { head: { sha: string } };
+    return Response.json({ ...body, head: { ...body.head, sha: NEXT } });
+  };
+  const stderr: string[] = [];
+  await runStartup((line) => stderr.push(line), environmentFor(), {
+    ...dependencies,
+    fetch: moved,
+  });
+  expect(stderr).toEqual([
+    'dependabot-review: no-write rehearsal recorded stale; nothing was published.',
+  ]);
+});
+
+test('takes one job start before the first GitHub read and hands it to the pipeline', async () => {
+  vi.mocked(pipelineModule.runReview).mockClear();
+  const github = mockGithub();
+  const clock = { now: 7_000 };
+  const base = dependenciesFor(github, { now: () => clock.now });
+  await runStartup((line) => void line, environmentFor(), {
+    ...base,
+    // Workflow resolution is the first GitHub read; time passes while it runs.
+    fetch: async (url, init) => {
+      clock.now += 100_000;
+      return github.fetch(url, init);
+    },
+  });
+  expect(pipelineModule.runReview).toHaveBeenCalledWith(
+    expect.objectContaining({ jobStartedAt: 7_000 }),
+  );
+});
+
+test('gives the transport and the pipeline the same job start, even if the event read is slow', async () => {
+  vi.mocked(pipelineModule.runReview).mockClear();
+  vi.mocked(runtimeModule.createGithubTransport).mockClear();
+  const github = mockGithub();
+  const clock = { now: 7_000 };
+  const base = dependenciesFor(github, { now: () => clock.now });
+  await runStartup((line) => void line, environmentFor(), {
+    ...base,
+    readEvent: async (path) => {
+      clock.now += 50_000;
+      return base.readEvent(path);
+    },
+  });
+  const jobStartedAt = vi.mocked(pipelineModule.runReview).mock.calls[0]?.[0].jobStartedAt;
+  expect(jobStartedAt).toBe(7_000);
+  expect(vi.mocked(runtimeModule.createGithubTransport)).toHaveBeenCalledWith(
+    expect.objectContaining({ startedAt: jobStartedAt }),
+  );
+});
+
+test.each([
+  [404, 'pullRequest missing'],
+  [401, 'pullRequest permission'],
+] as const)(
+  'reports a failed re-verification read (%i) with its fixed field and reason',
+  async (status, detail) => {
+    const github = mockGithub();
+    let pulls = 0;
+    const { stderr, code } = await start(
+      github,
+      {},
+      {
+        fetch: async (url, init) =>
+          new URL(url).pathname.endsWith('/pulls/42') && ++pulls > 1
+            ? new Response(sentinel, { status })
+            : github.fetch(url, init),
+      },
+    );
+    expect(stderr).toEqual([
+      `dependabot-review: no-write rehearsal recorded internal-failure at freshness (${detail}); nothing was published.`,
+    ]);
+    expect(code).toBe(NOT_WIRED_EXIT_CODE);
+    expect(stderr.join('')).not.toContain(sentinel);
+  },
+);
 
 test('skips an ineligible event and a duplicate delivery', async () => {
   const skipped = await start(mockGithub(), { GITHUB_EVENT_NAME: 'push' });
