@@ -808,8 +808,8 @@ test.each([
   },
 );
 
-test('reports the reason of the check that failed, read after the reason was cleared', async () => {
-  // Only the final re-verification (run read #4) fails; no earlier check left a reason behind.
+test('reports the reason of a failing final re-verification when no earlier check failed', async () => {
+  // Only the final re-verification (run read #4) fails.
   const { input, eventReads } = await eventReadsFailingRun(4, 'rate_limit', true);
   const result = await runReview({ ...input, eventReads });
   expect(result).toMatchObject({
@@ -819,40 +819,70 @@ test('reports the reason of the check that failed, read after the reason was cle
   });
 });
 
-test.each([
-  [
-    'clearing',
-    {
-      clearFailureReason: () => {
-        throw new Error(sentinel);
-      },
+test('reports the first failing freshness check, not a later one that also fails', async () => {
+  // Run read #2 (before research) fails with `budget`; the final read #3 also fails, differently.
+  const { input, eventReads } = await eventReadsFailingRun(2, 'budget', true);
+  let runs = 0;
+  const reads = {
+    ...eventReads,
+    readRun: async (repo: RepositoryIdentity, id: number) => {
+      if (runs++ === 3) throw new Error(sentinel);
+      return eventReads.readRun(repo, id);
     },
-    'binding',
-  ],
-  [
-    'reading',
-    {
-      failureReason: () => {
-        throw new Error(sentinel);
-      },
+  };
+  const result = await runReview({ ...input, eventReads: reads });
+  expect(result).toMatchObject({
+    outcome: 'internal-failure',
+    handoff: { stage: 'freshness' },
+    detail: { field: 'run', reason: 'budget' },
+  });
+  expect(JSON.stringify(result)).not.toContain(sentinel);
+});
+
+test('reports a head that moved by the final check as stale, even after an earlier failed check', async () => {
+  // Before research the run read fails to verify; by the final check the PR head has moved.
+  const { input } = await setup({
+    evidence: 'changes',
+    runFailsAt: 2,
+    pullRequestHeads: [HEAD, HEAD, NEXT],
+  });
+  const result = await runReview(input);
+  expect(result).toMatchObject({ kind: 'handed-off', outcome: 'stale', body: null });
+  expect(result).not.toHaveProperty('detail');
+});
+
+test('reports the first failing check even when it had no reason and a later one has one', async () => {
+  // Run read #2 (before research) throws with no reason; the final read fails with `rate_limit`.
+  const { input, eventReads } = await eventReadsFailingRun(2, 'rate_limit', true);
+  let runs = 0;
+  const reads = {
+    ...eventReads,
+    readRun: async (repo: RepositoryIdentity, id: number) => {
+      if (runs++ === 2) throw new Error(sentinel);
+      return eventReads.readRun(repo, id);
     },
-    'run',
-  ],
-] as const)(
-  'reports a recorder that throws while %s its reason as a freshness failure, not a rejection',
-  async (_label, recorder, field) => {
-    const { input } = await setup({ evidence: 'changes', runFailsFrom: 1 });
-    const eventReads = { ...input.eventReads, ...recorder };
-    const result = await runReview({ ...input, eventReads });
-    expect(result).toMatchObject({
-      kind: 'handed-off',
-      outcome: 'internal-failure',
-      handoff: { stage: 'freshness' },
-      detail: { field, reason: 'unknown' },
-    });
-    expect(JSON.stringify(result)).not.toContain(sentinel);
-  },
-);
+  };
+  const result = await runReview({ ...input, eventReads: reads });
+  expect(result).toMatchObject({
+    outcome: 'internal-failure',
+    handoff: { stage: 'freshness' },
+    detail: { field: 'run', reason: 'unknown' },
+  });
+  expect(JSON.stringify(result)).not.toContain(sentinel);
+});
+
+test('reports a failing final check as freshness after an earlier non-freshness failure', async () => {
+  vi.mocked(researchModule.runResearch).mockImplementationOnce(throwSentinel);
+  // Research fails; the final run read (#3) then fails to verify.
+  const { input } = await setup({ evidence: 'changes', runFailsAt: 3 });
+  const result = await runReview(input);
+  expect(result).toMatchObject({
+    outcome: 'internal-failure',
+    handoff: { stage: 'freshness' },
+    detail: { field: 'run', reason: 'unknown' },
+  });
+  expect(JSON.stringify(result)).not.toContain(sentinel);
+});
 
 test('reports a run that no longer matches its binding as a mismatch, not a read failure', async () => {
   const { input } = await setup({ evidence: 'changes' });
@@ -870,34 +900,6 @@ test('reports a run that no longer matches its binding as a mismatch, not a read
     handoff: { stage: 'freshness' },
     detail: { field: 'run', reason: 'mismatch' },
   });
-});
-
-test('clears the remembered read reason before every re-verification', async () => {
-  const { input } = await setup({ evidence: 'changes' });
-  const events: string[] = [];
-  const eventReads = {
-    ...input.eventReads,
-    readRun: async (repo: RepositoryIdentity, id: number) => {
-      events.push('run');
-      return input.eventReads.readRun(repo, id);
-    },
-    failureReason: () => 'rate_limit' as const,
-    clearFailureReason: () => void events.push('clear'),
-  };
-  await runReview({ ...input, eventReads });
-  // The first run read verifies the event; every later one belongs to a re-verification.
-  const later = events.slice(events.indexOf('run') + 1);
-  let cleared = false;
-  let reverifications = 0;
-  for (const event of later) {
-    if (event === 'clear') cleared = true;
-    else {
-      expect(cleared).toBe(true);
-      cleared = false;
-      reverifications += 1;
-    }
-  }
-  expect(reverifications).toBeGreaterThanOrEqual(2);
 });
 
 test('reports a freshness failure whose handoff cannot be recorded as the fixed handoff failure', async () => {

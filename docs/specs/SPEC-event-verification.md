@@ -510,11 +510,28 @@ The result fields and categories follow the contract above. The exported
 type EventResult =
   | { kind: 'verified'; binding: Readonly<ReviewBinding> }
   | { kind: 'skip'; reason: 'ineligible' | 'obsolete' | 'duplicate' }
-  | { kind: 'error'; category: 'input' | 'mismatch' | 'read' | 'replay'; field: ErrorField };
+  | {
+      kind: 'error';
+      category: 'input' | 'mismatch' | 'read' | 'replay';
+      field: ErrorField;
+      reason?: EvidenceReason;
+    };
 ```
 
 No exported binding type or TypeScript brand can replace runtime freshness
 and replay checks at the publication boundary.
+
+### Read-Reason Amendment
+
+**Diagnostic amendment 2, approved 2026-11-11.** The optional `reason` on
+`VerificationError` is the fixed `EvidenceReason` a read adapter gave for a
+failed read. It is set only on a `read` error, only when the failed read threw
+the exported `ReadFailure`, and only when its reason is in the fixed
+`EvidenceReason` vocabulary; every other read failure, and every `replay`
+error, omits it. It is never derived from error text, a response body, or any
+other external value. Consumers that ignore it see the shape above unchanged.
+The pipeline's use of it is in
+[review orchestration](SPEC-review-orchestration.md#diagnostic-amendment-2-freshness-time-allowance-and-stage-detail).
 
 ### T1 interface
 

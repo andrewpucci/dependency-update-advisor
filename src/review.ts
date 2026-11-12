@@ -27,19 +27,16 @@ export type FreshnessDetail = Readonly<{
   reason: EvidenceReason | 'mismatch' | 'input';
 }>;
 const FRESHNESS_FIELDS: readonly string[] = ['run', 'pullRequest', 'comparison'];
-/** Maps T1's fixed freshness error, and the adapter's reason for a failed read, to the detail. */
-export function freshnessDetail(
-  error: VerificationError,
-  adapterReason: EvidenceReason | null,
-): FreshnessDetail {
+/** Maps T1's fixed freshness error, with the reason its read adapter gave, to the detail. */
+export function freshnessDetail(error: VerificationError): FreshnessDetail {
   const field = FRESHNESS_FIELDS.includes(error.field)
     ? (error.field as 'run' | 'pullRequest' | 'comparison')
     : 'binding';
   if (error.category === 'mismatch' || error.category === 'input')
     return { field, reason: error.category };
   const reason =
-    error.category === 'read' && adapterReason && EVIDENCE_REASONS.includes(adapterReason)
-      ? adapterReason
+    error.category === 'read' && error.reason && EVIDENCE_REASONS.includes(error.reason)
+      ? error.reason
       : 'unknown';
   return { field, reason };
 }

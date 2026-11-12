@@ -8908,6 +8908,14 @@ const RUN_STATUSES = [
 	"waiting",
 	"pending"
 ];
+/** A read that failed for a fixed reason; `read` keeps that reason, and nothing else, on the error. */
+var ReadFailure = class extends Error {
+	reason;
+	constructor(reason) {
+		super("read unavailable");
+		this.reason = reason;
+	}
+};
 function failure$6(field, category = "input") {
 	return {
 		kind: "error",
@@ -9089,11 +9097,24 @@ async function read$1(field, operation) {
 			ok: true,
 			value: await operation()
 		};
-	} catch {
+	} catch (error) {
+		const category = field === "replay" ? "replay" : "read";
+		const reason = category === "read" ? readReason(error) : void 0;
 		return {
 			ok: false,
-			error: failure$6(field, field === "replay" ? "replay" : "read")
+			error: {
+				...failure$6(field, category),
+				...reason ? { reason } : {}
+			}
 		};
+	}
+}
+/** The adapter's fixed reason; a thrown value that cannot be inspected has none. */
+function readReason(error) {
+	try {
+		return error instanceof ReadFailure && EVIDENCE_REASONS.includes(error.reason) ? error.reason : void 0;
+	} catch {
+		return;
 	}
 }
 function verifyEventInput(input) {
@@ -19464,13 +19485,9 @@ function collectLicenseSignals(input, output, change, sides) {
 // src/adapters.ts
 /** T1's reads throw on any failure; replay state comes from the claim store, never from GitHub. */
 function createEventReads(transport, claims) {
-	let last = null;
 	const value = async (read) => {
 		const result = await read;
-		if (result.kind !== "available") {
-			last = result.reason;
-			throw new Error("read unavailable");
-		}
+		if (result.kind !== "available") throw new ReadFailure(result.reason);
 		return result.value;
 	};
 	return {
@@ -19478,11 +19495,7 @@ function createEventReads(transport, claims) {
 		readRun: (repository, runId) => value(transport.readRun(repository, runId)),
 		readPullRequest: (repository, pullNumber) => value(transport.readPullRequest(repository, pullNumber)),
 		readComparison: (repository, base, head) => value(transport.readComparison(repository, base, head)),
-		readReplay: (identity) => claims.replay(identity),
-		failureReason: () => last,
-		clearFailureReason: () => {
-			last = null;
-		}
+		readReplay: (identity) => claims.replay(identity)
 	};
 }
 function httpsUrl(url) {
@@ -19571,8 +19584,8 @@ const FRESHNESS_FIELDS = [
 	"pullRequest",
 	"comparison"
 ];
-/** Maps T1's fixed freshness error, and the adapter's reason for a failed read, to the detail. */
-function freshnessDetail(error, adapterReason) {
+/** Maps T1's fixed freshness error, with the reason its read adapter gave, to the detail. */
+function freshnessDetail(error) {
 	const field = FRESHNESS_FIELDS.includes(error.field) ? error.field : "binding";
 	if (error.category === "mismatch" || error.category === "input") return {
 		field,
@@ -19580,7 +19593,7 @@ function freshnessDetail(error, adapterReason) {
 	};
 	return {
 		field,
-		reason: error.category === "read" && adapterReason && EVIDENCE_REASONS.includes(adapterReason) ? adapterReason : "unknown"
+		reason: error.category === "read" && error.reason && EVIDENCE_REASONS.includes(error.reason) ? error.reason : "unknown"
 	};
 }
 const outcomeEligibility = Object.freeze({
@@ -27718,7 +27731,7 @@ const TYPE_FOR_MODE = {
 	"120000": "blob",
 	"160000": "commit"
 };
-var ReadFailure = class extends Error {
+var GithubReadFailure = class extends Error {
 	reason;
 	obsolete;
 	constructor(reason, obsolete = false) {
@@ -27728,12 +27741,12 @@ var ReadFailure = class extends Error {
 	}
 };
 function requireRead(condition, reason = "malformed") {
-	if (!condition) throw new ReadFailure(reason);
+	if (!condition) throw new GithubReadFailure(reason);
 }
 function fixedFailure(error) {
 	return {
 		kind: "unavailable",
-		reason: error instanceof ReadFailure ? error.reason : "unknown"
+		reason: error instanceof GithubReadFailure ? error.reason : "unknown"
 	};
 }
 function parseLimits(value) {
@@ -27829,7 +27842,7 @@ function frozenRecord(item) {
 	try {
 		JSON.stringify(item);
 	} catch {
-		throw new ReadFailure("unsupported");
+		throw new GithubReadFailure("unsupported");
 	}
 	const pending = [item];
 	while (pending.length) {
@@ -27909,11 +27922,11 @@ var ReadSession = class {
 		return time - this.started;
 	}
 	check() {
-		if (this.stopped) throw new ReadFailure(this.stopped);
+		if (this.stopped) throw new GithubReadFailure(this.stopped);
 		if (this.elapsed() >= this.limits.totalTimeoutMs) {
 			this.stopped ??= "timeout";
 			this.active?.abort();
-			throw new ReadFailure("timeout");
+			throw new GithubReadFailure("timeout");
 		}
 	}
 	consumeEntries(value) {
@@ -27927,7 +27940,7 @@ var ReadSession = class {
 			this.entries += children.length;
 			if (this.entries > this.limits.maxJsonEntries) {
 				this.stopped ??= "budget";
-				throw new ReadFailure("budget");
+				throw new GithubReadFailure("budget");
 			}
 			for (const child of children) pending.push(child);
 		}
@@ -27936,7 +27949,7 @@ var ReadSession = class {
 		const size = Buffer.byteLength(JSON.stringify(value), "utf8") + bytes;
 		if (size > this.limits.maxRetainedBytes - this.retained) {
 			this.stopped ??= "budget";
-			throw new ReadFailure("budget");
+			throw new GithubReadFailure("budget");
 		}
 		this.retained += size;
 	}
@@ -27964,11 +27977,11 @@ var ReadSession = class {
 		const remaining = this.limits.totalTimeoutMs - this.elapsed();
 		if (remaining <= 0) {
 			this.stopped ??= "timeout";
-			throw new ReadFailure("timeout");
+			throw new GithubReadFailure("timeout");
 		}
 		if (this.requests >= this.limits.maxRequests) {
 			this.stopped ??= "budget";
-			throw new ReadFailure("budget");
+			throw new GithubReadFailure("budget");
 		}
 		this.requests++;
 		return Math.min(this.limits.requestTimeoutMs, remaining);
@@ -27984,7 +27997,7 @@ var ReadSession = class {
 			if (length > this.limits.maxResponseBytes || this.bytes > this.limits.maxTotalBytes) {
 				this.stopped ??= "budget";
 				controller.abort();
-				throw new ReadFailure("budget");
+				throw new GithubReadFailure("budget");
 			}
 			this.check();
 			chunks.push(chunk.value);
@@ -27996,11 +28009,11 @@ var ReadSession = class {
 		try {
 			value = JSON.parse(new TextDecoder("utf-8", { fatal: true }).decode(body));
 		} catch {
-			throw new ReadFailure(statusFailure(response));
+			throw new GithubReadFailure(statusFailure(response));
 		}
 		if (response.status !== 200) {
 			this.consumeEntries(value);
-			throw new ReadFailure(httpReason$1(response, value));
+			throw new GithubReadFailure(httpReason$1(response, value));
 		}
 		this.check();
 		return value;
@@ -28017,7 +28030,7 @@ var ReadSession = class {
 		const aborted = new Promise((_, reject) => {
 			controller.signal.addEventListener("abort", () => {
 				cancel();
-				reject(new ReadFailure(expired ? "timeout" : "budget"));
+				reject(new GithubReadFailure(expired ? "timeout" : "budget"));
 			}, { once: true });
 		});
 		const stopTimer = startTimer(duration, () => {
@@ -28037,11 +28050,11 @@ var ReadSession = class {
 			}).then((result) => {
 				if (controller.signal.aborted) {
 					result.body?.cancel().catch(() => {});
-					throw new ReadFailure("timeout");
+					throw new GithubReadFailure("timeout");
 				}
 				return result;
 			}), aborted]);
-			if (response.body === null) throw new ReadFailure(statusFailure(response));
+			if (response.body === null) throw new GithubReadFailure(statusFailure(response));
 			reader = response.body.getReader();
 			requireRead(!response.redirected, "unknown");
 			const body = await this.readBody(reader, aborted, controller);
@@ -28050,8 +28063,8 @@ var ReadSession = class {
 				headers: response.headers
 			};
 		} catch (error) {
-			if (error instanceof ReadFailure) throw error;
-			throw new ReadFailure(reader ? "truncated" : "unknown");
+			if (error instanceof GithubReadFailure) throw error;
+			throw new GithubReadFailure(reader ? "truncated" : "unknown");
 		} finally {
 			stopTimer();
 			cancel();
@@ -28063,13 +28076,13 @@ var ReadSession = class {
 		const { value } = await this.get(path);
 		this.consumeEntries(value);
 		const state = this.classifier.classify(value);
-		if (state.kind === "obsolete") throw new ReadFailure("conflict", true);
-		if (state.kind === "error") throw new ReadFailure(state.category === "mismatch" ? "conflict" : "malformed");
+		if (state.kind === "obsolete") throw new GithubReadFailure("conflict", true);
+		if (state.kind === "error") throw new GithubReadFailure(state.category === "mismatch" ? "conflict" : "malformed");
 		if (state.kind === "compare") {
 			const comparison = await this.get(`${repoPath(this.binding.repository)}/compare/${state.baseSha}...${this.binding.headSha}?per_page=1&page=2`);
 			this.consumeEntries(comparison.value);
 			const checked = state.complete(comparison.value);
-			if (checked.kind === "obsolete") throw new ReadFailure("conflict", true);
+			if (checked.kind === "obsolete") throw new GithubReadFailure("conflict", true);
 			requireRead(checked.kind === "current");
 		}
 		requireRead(record(value) && typeof value.changed_files === "number" && Number.isSafeInteger(value.changed_files) && value.changed_files >= 0);
@@ -28104,7 +28117,7 @@ var ReadSession = class {
 			requireRead(await this.metadata() === count, "conflict");
 		} catch (error) {
 			reasons.add(fixedFailure(error).reason);
-			if (error instanceof ReadFailure && error.obsolete) {
+			if (error instanceof GithubReadFailure && error.obsolete) {
 				this.stopped ??= "conflict";
 				return result("obsolete");
 			}
@@ -28208,7 +28221,7 @@ var ReadSession = class {
 					bytes: new Uint8Array(bytes)
 				};
 			}
-			throw new ReadFailure("unknown");
+			throw new GithubReadFailure("unknown");
 		} catch (error) {
 			const failure = fixedFailure(error);
 			if (failure.reason === "budget") this.stopped ??= "budget";
@@ -28259,7 +28272,7 @@ var ReadSession = class {
 		requireRead(size === blob.size);
 		if (size > this.limits.maxFileBytes || size > this.limits.maxTotalBytes - this.bytes) {
 			this.stopped ??= "budget";
-			throw new ReadFailure("budget");
+			throw new GithubReadFailure("budget");
 		}
 		this.bytes += size;
 		const bytes = Buffer.from(content, "base64");
@@ -28346,7 +28359,7 @@ async function createGithubReadSession(input, dependencies) {
 			})
 		};
 	} catch (error) {
-		return error instanceof ReadFailure && error.obsolete ? { kind: "obsolete" } : fixedFailure(error);
+		return error instanceof GithubReadFailure && error.obsolete ? { kind: "obsolete" } : fixedFailure(error);
 	}
 }
 
@@ -30293,27 +30306,16 @@ async function runReview(input) {
 		}
 		return mine;
 	};
-	/** The check that could not verify the attempt, kept so the failure can name it. */
-	let failedCheck = {
-		field: "binding",
-		reason: "unknown"
-	};
 	const unverified = (detail) => {
-		failedCheck = detail;
-		state = "error";
+		state = {
+			kind: "unverified",
+			detail
+		};
 		attempt.abort();
 		return state;
 	};
 	/** Ownership and the PR head must both still hold before anything may be handed off. */
 	const stillCurrent = async () => {
-		try {
-			input.eventReads.clearFailureReason?.();
-		} catch {
-			return unverified({
-				field: "binding",
-				reason: "unknown"
-			});
-		}
 		let owner;
 		try {
 			owner = await owns();
@@ -30326,13 +30328,7 @@ async function runReview(input) {
 		if (!owner) return "stale";
 		const fresh = await reverifyReviewBinding(binding, input.eventReads);
 		if (fresh.kind === "fresh") return state = "current";
-		if (fresh.kind === "error") {
-			let adapterReason = null;
-			try {
-				adapterReason = input.eventReads.failureReason?.() ?? null;
-			} catch {}
-			return unverified(freshnessDetail(fresh, adapterReason));
-		}
+		if (fresh.kind === "error") return unverified(freshnessDetail(fresh));
 		state = "stale";
 		attempt.abort();
 		return state;
@@ -30344,7 +30340,7 @@ async function runReview(input) {
 	} : {
 		kind: "internal-failure",
 		stage: "freshness",
-		freshness: failedCheck,
+		freshness: check.detail,
 		body: null
 	};
 	const guard = (fetch) => guardedFetch(fetch, attempt, owns);
@@ -30376,8 +30372,12 @@ async function runReview(input) {
 		clearInterval(watcher);
 	}
 	if (outcome.kind !== "stale") {
-		const final = await stillCurrent();
-		if (final !== "current") outcome = halted(final);
+		const final = await stillCurrent().catch(() => unverified({
+			field: "binding",
+			reason: "unknown"
+		}));
+		const earlierUnverified = outcome.kind === "internal-failure" && outcome.stage === "freshness";
+		if (final === "stale" || final !== "current" && !earlierUnverified) outcome = halted(final);
 	}
 	try {
 		const handoff = await createReviewHandoff(input.claims, claim, outcome.kind, {
@@ -30390,7 +30390,7 @@ async function runReview(input) {
 			kind: "not-eligible",
 			reason: "ownership"
 		};
-		const freshness = outcome.kind === "internal-failure" && outcome.stage === "freshness" ? outcome.freshness : void 0;
+		const freshness = outcome.kind === "internal-failure" ? outcome.freshness : void 0;
 		return {
 			kind: "handed-off",
 			outcome: outcome.kind,

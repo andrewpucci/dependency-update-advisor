@@ -13,10 +13,9 @@ import {
   type ReviewBinding,
 } from './event.js';
 import { createReviewHandoff, type RehearsalSink, type ReviewHandoff } from './handoff.js';
-import { guardedFetch, type FailureRecorder } from './adapters.js';
+import { guardedFetch } from './adapters.js';
 import { assembleReviewPacket, type PacketGap } from './packet.js';
 import type { DroppedOptional } from './optional-evidence.js';
-import type { EvidenceReason } from './schema.js';
 import { runResearch } from './research.js';
 import {
   freshnessDetail,
@@ -37,8 +36,8 @@ export type PipelineInput = Readonly<{
   repository: RepositoryIdentity;
   /** Null means no model is configured; no collector or model request is made. */
   llmApiKey: string | null;
-  /** T1's reads; an adapter that also remembers each failed read's fixed reason names it. */
-  eventReads: EventReads & Partial<FailureRecorder>;
+  /** T1's reads; a read that fails with a `ReadFailure` names its fixed reason. */
+  eventReads: EventReads;
   snapshotReads: SnapshotReads;
   claims: ClaimStore;
   sink: RehearsalSink;
@@ -84,26 +83,29 @@ type OutcomeDetail = Readonly<{
   /** Optional evidence that fit the packet only after a conservative budget drop. */
   droppedOptional?: readonly DroppedOptional[];
 }>;
+type NonFreshnessStage = Exclude<InternalFailureStage, 'freshness'>;
 type Outcome =
   | (OutcomeDetail &
-      Readonly<{ kind: Exclude<ReviewOutcomeKind, 'internal-failure'>; stage?: never }>)
-  | (OutcomeDetail &
       Readonly<{
-        kind: 'internal-failure';
-        stage: InternalFailureStage;
-        /** Set only with the `freshness` stage. */
-        freshness?: FreshnessDetail;
-      }>);
+        kind: Exclude<ReviewOutcomeKind, 'internal-failure'>;
+        stage?: never;
+        freshness?: never;
+      }>)
+  | (OutcomeDetail &
+      Readonly<{ kind: 'internal-failure'; stage: NonFreshnessStage; freshness?: never }>)
+  /** Which freshness check failed and why; only the `freshness` stage carries it. */
+  | (OutcomeDetail &
+      Readonly<{ kind: 'internal-failure'; stage: 'freshness'; freshness: FreshnessDetail }>);
 
 /** A boundary failure whose stage is a literal chosen by this module, never derived from the error. */
 class StageFailure extends Error {
-  constructor(readonly stage: InternalFailureStage) {
+  constructor(readonly stage: NonFreshnessStage) {
     super(stage);
   }
 }
 
 /** Runs one boundary, reporting any exception from it as that stage's fixed failure. */
-async function inStage<T>(stage: InternalFailureStage, run: () => Promise<T>): Promise<T> {
+async function inStage<T>(stage: NonFreshnessStage, run: () => Promise<T>): Promise<T> {
   try {
     return await run();
   } catch (error) {
@@ -111,8 +113,12 @@ async function inStage<T>(stage: InternalFailureStage, run: () => Promise<T>): P
   }
 }
 
-/** `stale` proves the head moved or ownership ended; `error` only means it could not be verified. */
-type Freshness = 'current' | 'stale' | 'error';
+/**
+ * `stale` proves the head moved or ownership ended; `unverified` only means it could not be
+ * verified, and names the check that could not.
+ */
+type Freshness = 'current' | 'stale' | Readonly<{ kind: 'unverified'; detail: FreshnessDetail }>;
+type Halt = Exclude<Freshness, 'current'>;
 
 /** T4 requires exactly one context entry per change, so every change is named, Actions included. */
 function dependencyIdentities(changes: readonly unknown[]): { id: string; name: string }[] {
@@ -163,21 +169,13 @@ export async function runReview(input: PipelineInput): Promise<PipelineResult> {
     }
     return mine;
   };
-  /** The check that could not verify the attempt, kept so the failure can name it. */
-  let failedCheck: FreshnessDetail = { field: 'binding', reason: 'unknown' };
   const unverified = (detail: FreshnessDetail): Freshness => {
-    failedCheck = detail;
-    state = 'error';
+    state = { kind: 'unverified', detail };
     attempt.abort();
     return state;
   };
   /** Ownership and the PR head must both still hold before anything may be handed off. */
   const stillCurrent = async (): Promise<Freshness> => {
-    try {
-      input.eventReads.clearFailureReason?.();
-    } catch {
-      return unverified({ field: 'binding', reason: 'unknown' });
-    }
     let owner: boolean;
     try {
       owner = await owns();
@@ -187,24 +185,16 @@ export async function runReview(input: PipelineInput): Promise<PipelineResult> {
     if (!owner) return 'stale';
     const fresh = await reverifyReviewBinding(binding, input.eventReads);
     if (fresh.kind === 'fresh') return (state = 'current');
-    if (fresh.kind === 'error') {
-      let adapterReason: EvidenceReason | null = null;
-      try {
-        adapterReason = input.eventReads.failureReason?.() ?? null;
-      } catch {
-        // The reason is optional detail; without it the failure is still reported.
-      }
-      return unverified(freshnessDetail(fresh, adapterReason));
-    }
+    if (fresh.kind === 'error') return unverified(freshnessDetail(fresh));
     state = 'stale';
     attempt.abort();
     return state;
   };
   /** A check that did not return `current`: proof of a moved head, or a failure to verify. */
-  const halted = (check: 'stale' | 'error'): Outcome =>
+  const halted = (check: Halt): Outcome =>
     check === 'stale'
       ? { kind: 'stale', body: null }
-      : { kind: 'internal-failure', stage: 'freshness', freshness: failedCheck, body: null };
+      : { kind: 'internal-failure', stage: 'freshness', freshness: check.detail, body: null };
   const guard = (fetch: PipelineInput['githubFetch']) => guardedFetch(fetch, attempt, owns);
 
   const evaluate = async (): Promise<Outcome> => {
@@ -240,8 +230,13 @@ export async function runReview(input: PipelineInput): Promise<PipelineResult> {
   // A result is only publishable if the attempt is still the owner's, on the same PR head. A
   // freshness read that fails is a failure to verify, not proof the head moved.
   if (outcome.kind !== 'stale') {
-    const final = await stillCurrent();
-    if (final !== 'current') outcome = halted(final);
+    const final = await stillCurrent().catch(() =>
+      unverified({ field: 'binding', reason: 'unknown' }),
+    );
+    // An earlier failure to verify names the check that stopped the work; only proof that the
+    // head moved replaces it.
+    const earlierUnverified = outcome.kind === 'internal-failure' && outcome.stage === 'freshness';
+    if (final === 'stale' || (final !== 'current' && !earlierUnverified)) outcome = halted(final);
   }
 
   try {
@@ -252,10 +247,7 @@ export async function runReview(input: PipelineInput): Promise<PipelineResult> {
       ...(outcome.kind === 'internal-failure' ? { stage: outcome.stage } : {}),
     });
     if (handoff.kind !== 'ready') return { kind: 'not-eligible', reason: 'ownership' };
-    const freshness =
-      outcome.kind === 'internal-failure' && outcome.stage === 'freshness'
-        ? outcome.freshness
-        : undefined;
+    const freshness = outcome.kind === 'internal-failure' ? outcome.freshness : undefined;
     return {
       kind: 'handed-off',
       outcome: outcome.kind,
@@ -278,7 +270,7 @@ async function evaluateEvidence(
   /** Re-reads ownership and the PR head; anything but `current` means this attempt must stop. */
   recheck: () => Promise<Freshness>,
   /** The outcome for a re-verification that did not return `current`. */
-  halted: (check: 'stale' | 'error') => Outcome,
+  halted: (check: Halt) => Outcome,
 ): Promise<Outcome> {
   const isCurrent = () => state() === 'current';
   let evidenceSession: EvidenceSessionResult['kind'] = 'ready';

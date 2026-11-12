@@ -4,6 +4,7 @@ import {
   createPullRequestClassifier,
   verifyCiEvent,
   reverifyReviewBinding,
+  ReadFailure,
   type EventReads,
   type ReviewIdentity,
 } from './event.js';
@@ -145,6 +146,61 @@ test('fails securely when the API run read throws', async () => {
   const result = await verifyCiEvent(f.input, f.reads);
   expect(result).toEqual({ kind: 'error', category: 'read', field: 'run' });
   expect(f.readPullRequest).not.toHaveBeenCalled();
+});
+
+test('keeps the fixed reason of a failed read on the error, and nothing else of it', async () => {
+  const f = fixture();
+  f.readRun.mockRejectedValue(new ReadFailure('rate_limit'));
+  expect(await verifyCiEvent(f.input, f.reads)).toEqual({
+    kind: 'error',
+    category: 'read',
+    field: 'run',
+    reason: 'rate_limit',
+  });
+});
+
+test('keeps no reason for a read that failed without a ReadFailure', async () => {
+  const f = fixture();
+  f.readRun.mockRejectedValue(Object.assign(new Error('synthetic'), { reason: 'budget' }));
+  const result = await verifyCiEvent(f.input, f.reads);
+  expect(result).toEqual({ kind: 'error', category: 'read', field: 'run' });
+  expect(result).not.toHaveProperty('reason');
+});
+
+test('keeps no reason that is outside the fixed vocabulary', async () => {
+  const f = fixture();
+  f.readRun.mockRejectedValue(new ReadFailure('sentinel-reason' as never));
+  const result = await verifyCiEvent(f.input, f.reads);
+  expect(result).toEqual({ kind: 'error', category: 'read', field: 'run' });
+  expect(result).not.toHaveProperty('reason');
+});
+
+test('fails securely when the thrown value cannot even be inspected', async () => {
+  const f = fixture();
+  const hostile = new Proxy(
+    {},
+    {
+      getPrototypeOf: () => {
+        throw new Error('synthetic sensitive text');
+      },
+    },
+  );
+  f.readRun.mockRejectedValue(hostile);
+  expect(await verifyCiEvent(f.input, f.reads)).toEqual({
+    kind: 'error',
+    category: 'read',
+    field: 'run',
+  });
+});
+
+test('keeps no reason for a replay that failed, even from a ReadFailure', async () => {
+  const f = fixture();
+  f.readReplay.mockRejectedValue(new ReadFailure('budget'));
+  expect(await verifyCiEvent(f.input, f.reads)).toEqual({
+    kind: 'error',
+    category: 'replay',
+    field: 'replay',
+  });
 });
 
 test('rejects an object masquerading as an open PR state without coercion', async () => {

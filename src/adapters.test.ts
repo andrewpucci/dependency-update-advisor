@@ -9,6 +9,7 @@ import {
 import { createGithubTransport, W2_GITHUB_LIMITS } from './runtime.js';
 import { createGithubSnapshotReads } from './snapshot.js';
 import { createTestClaimStore } from './review.js';
+import { ReadFailure } from './event.js';
 
 const repository = { id: 101, owner: 'example', name: 'consumer' };
 
@@ -198,32 +199,7 @@ test('starts nothing once the attempt has ended or ownership is lost', async () 
   expect(fetch).toHaveBeenCalledOnce();
 });
 
-test('remembers the fixed reason of the last failed read until it is cleared', async () => {
-  const reads = createEventReads(
-    transportFor((url) =>
-      url.endsWith('/pulls/42') ? new Response('{}', { status: 404 }) : new Response('{}'),
-    ),
-    createTestClaimStore(),
-  );
-  expect(reads.failureReason()).toBeNull();
-  await expect(reads.readPullRequest(repository, 42)).rejects.toThrow();
-  expect(reads.failureReason()).toBe('missing');
-  await expect(reads.readRun(repository, 401)).resolves.toEqual({});
-  expect(reads.failureReason()).toBe('missing');
-  reads.clearFailureReason();
-  expect(reads.failureReason()).toBeNull();
-});
-
-test('does not put error text or response bodies in the remembered reason', async () => {
-  const reads = createEventReads(
-    transportFor(() => new Response('sentinel-body', { status: 500 })),
-    createTestClaimStore(),
-  );
-  await expect(reads.readRun(repository, 401)).rejects.toThrow();
-  expect(reads.failureReason()).toBe('unknown');
-});
-
-test('reports the reason of the most recent failed read, not the first', async () => {
+test('fails a read with the fixed reason of that read, never one left by another', async () => {
   const reads = createEventReads(
     transportFor((url) =>
       url.endsWith('/pulls/42')
@@ -232,8 +208,19 @@ test('reports the reason of the most recent failed read, not the first', async (
     ),
     createTestClaimStore(),
   );
-  await expect(reads.readPullRequest(repository, 42)).rejects.toThrow();
-  expect(reads.failureReason()).toBe('missing');
-  await expect(reads.readRun(repository, 401)).rejects.toThrow();
-  expect(reads.failureReason()).toBe('rate_limit');
+  await expect(reads.readPullRequest(repository, 42)).rejects.toMatchObject({ reason: 'missing' });
+  await expect(reads.readRun(repository, 401)).rejects.toMatchObject({ reason: 'rate_limit' });
+  await expect(reads.readPullRequest(repository, 42)).rejects.toMatchObject({ reason: 'missing' });
+});
+
+test('does not put error text or response bodies in the failed read', async () => {
+  const reads = createEventReads(
+    transportFor(() => new Response('sentinel-body', { status: 500 })),
+    createTestClaimStore(),
+  );
+  const error = await reads.readRun(repository, 401).catch((caught: unknown) => caught);
+  expect(error).toBeInstanceOf(ReadFailure);
+  expect(error).toMatchObject({ reason: 'unknown' });
+  expect(JSON.stringify(error)).not.toContain('sentinel-body');
+  expect((error as Error).message).not.toContain('sentinel-body');
 });

@@ -367,8 +367,13 @@ do that.
    carries a fixed `field` from `ownership`, `run`, `pullRequest`,
    `comparison`, or `binding`, and a fixed `reason`: the `EvidenceReason` the
    read adapter reported, or `mismatch`, `input`, or `unknown` when none
-   applies. The adapter records these in trusted code, never from error text;
-   `ownership` is the claim-store read, which has no `VerificationError`
+   applies. The read adapter's fixed reason travels on the `VerificationError`
+   (`reason`, per the approved amendment in
+   [SPEC-event-verification](SPEC-event-verification.md)) and is mapped in
+   trusted code, never from error text. When several checks fail, the first one
+   that could not verify is reported; a later failure to verify does not
+   replace it, though proof that the head moved still ends the attempt as
+   `stale`. `ownership` is the claim-store read, which has no `VerificationError`
    source today. No other stage carries `field` or `reason`.
 5. **Reporting.** For `freshness` the stderr line is
    `internal-failure at freshness (<field> <reason>)` (for example

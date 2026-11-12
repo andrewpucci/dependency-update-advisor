@@ -121,12 +121,24 @@ test.each([
 ] as const)(
   'maps a %s %s freshness failure with adapter reason %s to a fixed detail',
   (field, category, adapterReason, expected) => {
-    expect(freshnessDetail({ kind: 'error', category, field }, adapterReason)).toEqual(expected);
+    expect(
+      freshnessDetail({
+        kind: 'error',
+        category,
+        field,
+        ...(adapterReason ? { reason: adapterReason } : {}),
+      }),
+    ).toEqual(expected);
   },
 );
 
 test('never reports an adapter reason outside the fixed vocabulary', () => {
   expect(
-    freshnessDetail({ kind: 'error', category: 'read', field: 'run' }, 'sentinel-reason' as never),
+    freshnessDetail({
+      kind: 'error',
+      category: 'read',
+      field: 'run',
+      reason: 'sentinel-reason' as never,
+    }),
   ).toEqual({ field: 'run', reason: 'unknown' });
 });
