@@ -275,25 +275,62 @@ export async function runReview(input: PipelineInput): Promise<PipelineResult> {
       ...(outcome.kind === 'internal-failure' ? { stage: outcome.stage } : {}),
     });
     if (handoff.kind !== 'ready') return { kind: 'not-eligible', reason: 'ownership' };
-    const freshness = outcome.kind === 'internal-failure' ? outcome.freshness : undefined;
-    const recordDetail =
-      freshness ??
-      (outcome.kind === 'model-unavailable'
-        ? { modelUnavailableReason: outcome.modelUnavailableReason }
-        : undefined);
-    const handed = {
-      kind: 'handed-off' as const,
-      handoff: handoff.handoff,
-      body: outcome.body,
-      recorded: input.sink.record(handoff.handoff, recordDetail),
-      ...(freshness ? { detail: freshness } : {}),
-    };
-    return outcome.kind === 'model-unavailable'
-      ? { ...handed, outcome: outcome.kind, modelUnavailableReason: outcome.modelUnavailableReason }
-      : { ...handed, outcome: outcome.kind };
+    return handedOff(input.sink, outcome, handoff.handoff);
   } catch {
     return { kind: 'failed', outcome: 'internal-failure', stage: 'handoff' };
   }
+}
+
+/** Records the handoff in the no-write sink and reports it, with the detail only its kind keeps. */
+function handedOff(
+  sink: PipelineInput['sink'],
+  outcome: Outcome,
+  handoff: ReviewHandoff,
+): PipelineResult {
+  const freshness = outcome.kind === 'internal-failure' ? outcome.freshness : undefined;
+  const recordDetail =
+    freshness ??
+    (outcome.kind === 'model-unavailable'
+      ? { modelUnavailableReason: outcome.modelUnavailableReason }
+      : undefined);
+  const handed = {
+    kind: 'handed-off' as const,
+    handoff,
+    body: outcome.body,
+    recorded: sink.record(handoff, recordDetail),
+    ...(freshness ? { detail: freshness } : {}),
+  };
+  return outcome.kind === 'model-unavailable'
+    ? { ...handed, outcome: outcome.kind, modelUnavailableReason: outcome.modelUnavailableReason }
+    : { ...handed, outcome: outcome.kind };
+}
+
+/** Turns the assessment result into the attempt's outcome, keeping the optional-evidence drops. */
+function assessedOutcome(
+  reviewed: Awaited<ReturnType<typeof reviewPacket>>,
+  droppedOptional: OutcomeDetail['droppedOptional'],
+): Outcome {
+  if (reviewed.kind === 'internal-failure')
+    return {
+      kind: 'internal-failure',
+      stage: 'assessment',
+      body: reviewed.body,
+      ...(reviewed.gaps ? { gaps: reviewed.gaps } : {}),
+      droppedOptional,
+    };
+  if (reviewed.kind === 'model-unavailable')
+    return {
+      kind: 'model-unavailable',
+      modelUnavailableReason: reviewed.reason,
+      body: null,
+      droppedOptional,
+    };
+  return {
+    kind: reviewed.kind,
+    body: reviewed.body,
+    ...(reviewed.gaps ? { gaps: reviewed.gaps } : {}),
+    droppedOptional,
+  };
 }
 
 async function evaluateEvidence(
@@ -410,27 +447,7 @@ async function evaluateEvidence(
             model: input.model,
           }),
         );
-        if (reviewed.kind === 'internal-failure')
-          return {
-            kind: 'internal-failure',
-            stage: 'assessment',
-            body: reviewed.body,
-            ...(reviewed.gaps ? { gaps: reviewed.gaps } : {}),
-            droppedOptional: assembled.droppedOptional,
-          };
-        if (reviewed.kind === 'model-unavailable')
-          return {
-            kind: 'model-unavailable',
-            modelUnavailableReason: reviewed.reason,
-            body: null,
-            droppedOptional: assembled.droppedOptional,
-          };
-        return {
-          kind: reviewed.kind,
-          body: reviewed.body,
-          ...(reviewed.gaps ? { gaps: reviewed.gaps } : {}),
-          droppedOptional: assembled.droppedOptional,
-        };
+        return assessedOutcome(reviewed, assembled.droppedOptional);
       },
     );
   } catch (error) {
