@@ -409,7 +409,7 @@ test('HTTP failure never splits a batch', async () => {
   expect(calls).toBe(1);
   expect(
     result.records.every(
-      (record) => record.state.state === 'unavailable' && record.category === 'http',
+      (record) => record.state.state === 'unavailable' && record.category === 'http-other',
     ),
   ).toBe(true);
   expect(result.diagnostics.truncationSplits).toBe(0);
@@ -577,7 +577,10 @@ test.each([
   ['reference', true, 'rejected'],
   ['policy', true, 'rejected'],
   ['transport', true, 'unavailable'],
-  ['http', true, 'unavailable'],
+  ['http-auth', true, 'unavailable'],
+  ['http-rate-limit', true, 'unavailable'],
+  ['http-server', true, 'unavailable'],
+  ['http-other', true, 'unavailable'],
   ['media-type', true, 'unavailable'],
   ['response-size', true, 'unavailable'],
   ['encoding', true, 'unavailable'],
@@ -666,7 +669,7 @@ test('run-wide preparation checks happen once regardless of batch count', async 
   const units = await import('../units.js');
   const inventory = units.formDecisionUnits({ ...input.inventory.packet, relationships: [] });
   const spy = vi.spyOn(units, 'evaluateUnitPolicy');
-  const analyze = vi.fn(async () => ({ kind: 'unavailable', category: 'http' }) as never);
+  const analyze = vi.fn(async () => ({ kind: 'unavailable', category: 'http-server' }) as never);
   try {
     const result = await analyzeDecisionUnits(
       { ...input, inventory },

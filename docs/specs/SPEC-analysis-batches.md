@@ -15,6 +15,11 @@ undispatched because the request budget ran out carry the M2 category
 `call_budget`, not M1's `budget`. M1's `budget` keeps its meaning of a unit or
 request too large to prepare, so diagnostics can tell the two apart.
 
+Amendment, 2026-11-11: the user approved splitting M1's `http` category into
+`http-auth`, `http-rate-limit`, `http-server`, and `http-other`, in
+[Amendment 4][a4-309] of the W2 spec (#309). M2 settles each exactly as it
+settled `http`: `unavailable`, attempted.
+
 Review revision accepted by the user, 2026-11-07: a result not
 bound to its prepared batch stays `rejected` with `reference`, and its
 attempted flag follows the result as reported, `validated` counting as
@@ -120,17 +125,17 @@ This adopts M1's approved
 and settles the categories it does not name. Each unresolved state carries a
 fixed reason, next action, and coverage limits.
 
-| M1 result or condition                                                                                   | M2 state                           | Attempted   |
-| -------------------------------------------------------------------------------------------------------- | ---------------------------------- | ----------- |
-| `validated`                                                                                              | `assessed` with normalized verdict | yes         |
-| `failed`: `envelope`, `json`, `schema`, `reference`, or `policy`                                         | `rejected`                         | yes         |
-| `failed`: `transport`, `http`, `media-type`, `response-size`, `encoding`, `deadline`, or `cancelled`     | `unavailable`                      | yes         |
-| `truncated` for a multi-unit batch                                                                       | split under item 5                 | yes         |
-| `truncated` for a single unit                                                                            | `unavailable`                      | yes         |
-| `invalid` preparation of a single unit, or pre-call `unavailable` with `configuration`                   | `unavailable`                      | no          |
-| Pre-call `unavailable` with `cancelled` or `deadline`, or not dispatched after request-budget exhaustion | `unattempted`                      | no          |
-| Result not bound to its prepared batch                                                                   | `rejected` with `reference`        | as reported |
-| Any other category                                                                                       | `unavailable`                      | as reported |
+| M1 result or condition                                                                                                                                    | M2 state                           | Attempted   |
+| --------------------------------------------------------------------------------------------------------------------------------------------------------- | ---------------------------------- | ----------- |
+| `validated`                                                                                                                                               | `assessed` with normalized verdict | yes         |
+| `failed`: `envelope`, `json`, `schema`, `reference`, or `policy`                                                                                          | `rejected`                         | yes         |
+| `failed`: `transport`, `http-auth`, `http-rate-limit`, `http-server`, `http-other`, `media-type`, `response-size`, `encoding`, `deadline`, or `cancelled` | `unavailable`                      | yes         |
+| `truncated` for a multi-unit batch                                                                                                                        | split under item 5                 | yes         |
+| `truncated` for a single unit                                                                                                                             | `unavailable`                      | yes         |
+| `invalid` preparation of a single unit, or pre-call `unavailable` with `configuration`                                                                    | `unavailable`                      | no          |
+| Pre-call `unavailable` with `cancelled` or `deadline`, or not dispatched after request-budget exhaustion                                                  | `unattempted`                      | no          |
+| Result not bound to its prepared batch                                                                                                                    | `rejected` with `reference`        | as reported |
+| Any other category                                                                                                                                        | `unavailable`                      | as reported |
 
 A `budget` preparation failure for a multi-unit batch is re-packed under
 item 3 and has no final state of its own. A unit not dispatched after
@@ -250,3 +255,5 @@ test seam, not an interface for binding arbitrary provider replies.
 M2 does not establish live provider behavior, current-head publication,
 workflow credential wiring, packaging, adoption, parity, or cutover. The old
 reviewer remains active until those separate gates pass.
+
+[a4-309]: SPEC-review-orchestration.md#diagnostic-amendment-4-fixed-model-unavailable-reason

@@ -14,7 +14,10 @@ export type MistralCategory =
   | 'cancelled'
   | 'deadline'
   | 'transport'
-  | 'http'
+  | 'http-auth'
+  | 'http-rate-limit'
+  | 'http-server'
+  | 'http-other'
   | 'media-type'
   | 'response-size'
   | 'encoding'
@@ -165,8 +168,22 @@ function lifecycle(
 }
 type Lifecycle = ReturnType<typeof lifecycle>;
 
+/**
+ * The failure class for a response that is not an accepted 200. The status alone picks it; a body,
+ * header, or URL never does, and the number is not kept.
+ */
+function classifyHttp(response: Response): MistralCategory | null {
+  if (response.redirected) return 'http-other';
+  const { status } = response;
+  if (status === 200) return null;
+  if (status === 401 || status === 403) return 'http-auth';
+  if (status === 429) return 'http-rate-limit';
+  return status >= 500 && status <= 599 ? 'http-server' : 'http-other';
+}
+
 async function readResponse(response: Response, limit: number, run: Lifecycle): Promise<string> {
-  requireValue(response.status === 200 && !response.redirected, 'http');
+  const httpClass = classifyHttp(response);
+  if (httpClass) throw new MistralFailure(httpClass);
   requireValue(
     response.headers.get('content-type')?.split(';')[0]?.trim().toLowerCase() ===
       'application/json',

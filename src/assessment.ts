@@ -3,6 +3,7 @@ import { analyzeMistralBatch } from './analysis/mistral.js';
 import type { ConfigResult } from './config.js';
 import type { SignalAttempt } from './evidence/policy-signals.js';
 import type { PacketGap } from './packet.js';
+import { modelUnavailableReason, type ModelUnavailableReason } from './review.js';
 import { renderDecisionBrief } from './reporting.js';
 import type { PacketResult } from './schema.js';
 import { formDecisionUnits, type DecisionCoverage } from './units.js';
@@ -14,7 +15,8 @@ export type AssessmentResult =
       records: readonly UnitRecord[];
       coverage: DecisionCoverage;
     }>
-  | Readonly<{ kind: 'model-unavailable' | 'internal-failure' }>;
+  | Readonly<{ kind: 'model-unavailable'; reason: ModelUnavailableReason }>
+  | Readonly<{ kind: 'internal-failure' }>;
 export type AssessmentInput = Readonly<{
   packet: Packet;
   config: ConfigResult;
@@ -42,7 +44,7 @@ function evidenceComplete(coverage: DecisionCoverage): boolean {
 /** Uses the established M2 batching contract; no raw model data crosses this boundary. */
 export async function assessReviewPacket(input: AssessmentInput): Promise<AssessmentResult> {
   if (!input.config.ok) return { kind: 'internal-failure' };
-  if (!input.apiKey) return { kind: 'model-unavailable' };
+  if (!input.apiKey) return { kind: 'model-unavailable', reason: 'no-key' };
   try {
     const model = input.model;
     const result = await analyzeDecisionUnits(
@@ -55,7 +57,14 @@ export async function assessReviewPacket(input: AssessmentInput): Promise<Assess
       model ? { now: model.now, analyze: model.analyze } : {},
     );
     if (!result.ok) return { kind: 'internal-failure' };
-    if (result.analysisUnavailable) return { kind: 'model-unavailable' };
+    if (result.analysisUnavailable) {
+      // Analysis is unavailable only when no unit was assessed, so every record is unresolved and
+      // carries a category. Records are in inventory order; the first unit names the reason.
+      return {
+        kind: 'model-unavailable',
+        reason: modelUnavailableReason(result.records[0]?.category),
+      };
+    }
     const kind = evidenceComplete(result.coverage) ? 'complete' : 'incomplete-evidence';
     return { kind, records: result.records, coverage: result.coverage };
   } catch {
@@ -64,12 +73,16 @@ export async function assessReviewPacket(input: AssessmentInput): Promise<Assess
 }
 
 export type ReviewResult = Readonly<{
-  kind: 'complete' | 'incomplete-evidence' | 'model-unavailable' | 'internal-failure';
   /** A comment-ready body, present only when the renderer accepted a valid assessment. */
   body: string | null;
   /** Set when the brief was too large to render, which is a limit, not a defect. */
   gaps?: readonly PacketGap[];
-}>;
+}> &
+  (
+    | Readonly<{ kind: 'complete' | 'incomplete-evidence' | 'internal-failure'; reason?: never }>
+    /** Why no model verdict exists; every `model-unavailable` result states one. */
+    | Readonly<{ kind: 'model-unavailable'; reason: ModelUnavailableReason }>
+  );
 export type ReviewInput = AssessmentInput &
   Readonly<{
     signalAttempts: readonly SignalAttempt[];
@@ -83,7 +96,9 @@ export type ReviewInput = AssessmentInput &
  */
 export async function reviewPacket(input: ReviewInput): Promise<ReviewResult> {
   const assessed = await assessReviewPacket(input);
-  if (!('coverage' in assessed)) return { kind: assessed.kind, body: null };
+  if (assessed.kind === 'model-unavailable')
+    return { kind: 'model-unavailable', reason: assessed.reason, body: null };
+  if (!('coverage' in assessed)) return { kind: 'internal-failure', body: null };
   try {
     const rendered = renderDecisionBrief({
       binding: input.packet.binding,

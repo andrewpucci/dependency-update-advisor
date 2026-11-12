@@ -1,4 +1,5 @@
 import type { ReviewIdentity as EventReviewIdentity, VerificationError } from './event.js';
+import type { MistralCategory } from './analysis/mistral.js';
 import { EVIDENCE_REASONS, type EvidenceReason } from './schema.js';
 
 export type ReviewIdentity = EventReviewIdentity;
@@ -39,6 +40,44 @@ export function freshnessDetail(error: VerificationError): FreshnessDetail {
       ? error.reason
       : 'unknown';
   return { field, reason };
+}
+/**
+ * Every category analysis can report for a unit that no model assessment covered: M1's, plus
+ * `call_budget`, the one M2 adds. A fixed literal; it is never built from provider output.
+ */
+export const MODEL_FAILURE_CATEGORIES = [
+  'input',
+  'configuration',
+  'projection',
+  'budget',
+  'reference',
+  'policy',
+  'schema',
+  'call_budget',
+  'cancelled',
+  'deadline',
+  'transport',
+  'http-auth',
+  'http-rate-limit',
+  'http-server',
+  'http-other',
+  'media-type',
+  'response-size',
+  'encoding',
+  'envelope',
+  'json',
+  'length',
+] as const satisfies readonly (MistralCategory | 'call_budget')[];
+/** Why a review ended `model-unavailable`: no usable key, one analysis category, or `unknown`. */
+export type ModelUnavailableReason =
+  | 'no-key'
+  | (typeof MODEL_FAILURE_CATEGORIES)[number]
+  | 'unknown';
+/** Narrows an analysis record's `string` category to the closed list; anything else is `unknown`. */
+export function modelUnavailableReason(category: unknown): ModelUnavailableReason {
+  return MODEL_FAILURE_CATEGORIES.includes(category as never)
+    ? (category as ModelUnavailableReason)
+    : 'unknown';
 }
 export type ReviewOutcomeKind =
   | 'skipped'

@@ -19596,6 +19596,37 @@ function freshnessDetail(error) {
 		reason: error.category === "read" && error.reason && EVIDENCE_REASONS.includes(error.reason) ? error.reason : "unknown"
 	};
 }
+/**
+* Every category analysis can report for a unit that no model assessment covered: M1's, plus
+* `call_budget`, the one M2 adds. A fixed literal; it is never built from provider output.
+*/
+const MODEL_FAILURE_CATEGORIES = [
+	"input",
+	"configuration",
+	"projection",
+	"budget",
+	"reference",
+	"policy",
+	"schema",
+	"call_budget",
+	"cancelled",
+	"deadline",
+	"transport",
+	"http-auth",
+	"http-rate-limit",
+	"http-server",
+	"http-other",
+	"media-type",
+	"response-size",
+	"encoding",
+	"envelope",
+	"json",
+	"length"
+];
+/** Narrows an analysis record's `string` category to the closed list; anything else is `unknown`. */
+function modelUnavailableReason(category) {
+	return MODEL_FAILURE_CATEGORIES.includes(category) ? category : "unknown";
+}
 const outcomeEligibility = Object.freeze({
 	skipped: {
 		kind: "skipped",
@@ -19775,6 +19806,8 @@ function createRehearsalSink(appToken) {
 	return Object.freeze({
 		record: (handoff, detail) => {
 			if (traces.length >= 32) return false;
+			const modelReason = handoff.kind === "model-unavailable" && detail && "modelUnavailableReason" in detail ? modelUnavailableReason(detail.modelUnavailableReason) : void 0;
+			if (handoff.kind === "model-unavailable" && !modelReason) return false;
 			const traceBase = {
 				identity: Object.freeze([...handoff.identity]),
 				generation: handoff.generation,
@@ -19787,10 +19820,11 @@ function createRehearsalSink(appToken) {
 			traces.push(Object.freeze({
 				kind: handoff.kind,
 				...handoff.kind === "internal-failure" ? { stage: handoff.stage } : {},
-				...handoff.kind === "internal-failure" && handoff.stage === "freshness" && detail ? { detail: Object.freeze({
+				...handoff.kind === "internal-failure" && handoff.stage === "freshness" && detail && "field" in detail ? { detail: Object.freeze({
 					field: detail.field,
 					reason: detail.reason
 				}) } : {},
+				...modelReason ? { modelUnavailableReason: modelReason } : {},
 				...traceBase
 			}));
 			return true;
@@ -21424,8 +21458,21 @@ function lifecycle(options, deps, start, timeoutMs) {
 		}
 	};
 }
+/**
+* The failure class for a response that is not an accepted 200. The status alone picks it; a body,
+* header, or URL never does, and the number is not kept.
+*/
+function classifyHttp(response) {
+	if (response.redirected) return "http-other";
+	const { status } = response;
+	if (status === 200) return null;
+	if (status === 401 || status === 403) return "http-auth";
+	if (status === 429) return "http-rate-limit";
+	return status >= 500 && status <= 599 ? "http-server" : "http-other";
+}
 async function readResponse(response, limit, run) {
-	requireValue(response.status === 200 && !response.redirected, "http");
+	const httpClass = classifyHttp(response);
+	if (httpClass) throw new MistralFailure(httpClass);
 	requireValue(response.headers.get("content-type")?.split(";")[0]?.trim().toLowerCase() === "application/json", "media-type");
 	const length = response.headers.get("content-length");
 	requireValue(!length || !/^\d+$/.test(length) || Number(length) <= limit, "response-size");
@@ -21836,7 +21883,10 @@ function recovery(category) {
 	if (category === "budget" || category === "length") return "Inspect the oversized input or response, resolve it, then rerun CI.";
 	if ([
 		"transport",
-		"http",
+		"http-auth",
+		"http-rate-limit",
+		"http-server",
+		"http-other",
 		"media-type",
 		"response-size",
 		"encoding",
@@ -22389,7 +22439,10 @@ function evidenceComplete(coverage) {
 /** Uses the established M2 batching contract; no raw model data crosses this boundary. */
 async function assessReviewPacket(input) {
 	if (!input.config.ok) return { kind: "internal-failure" };
-	if (!input.apiKey) return { kind: "model-unavailable" };
+	if (!input.apiKey) return {
+		kind: "model-unavailable",
+		reason: "no-key"
+	};
 	try {
 		const model = input.model;
 		const result = await analyzeDecisionUnits({
@@ -22405,7 +22458,10 @@ async function assessReviewPacket(input) {
 			analyze: model.analyze
 		} : {});
 		if (!result.ok) return { kind: "internal-failure" };
-		if (result.analysisUnavailable) return { kind: "model-unavailable" };
+		if (result.analysisUnavailable) return {
+			kind: "model-unavailable",
+			reason: modelUnavailableReason(result.records[0]?.category)
+		};
 		return {
 			kind: evidenceComplete(result.coverage) ? "complete" : "incomplete-evidence",
 			records: result.records,
@@ -22421,8 +22477,13 @@ async function assessReviewPacket(input) {
 */
 async function reviewPacket(input) {
 	const assessed = await assessReviewPacket(input);
+	if (assessed.kind === "model-unavailable") return {
+		kind: "model-unavailable",
+		reason: assessed.reason,
+		body: null
+	};
 	if (!("coverage" in assessed)) return {
-		kind: assessed.kind,
+		kind: "internal-failure",
 		body: null
 	};
 	try {
@@ -30353,6 +30414,7 @@ async function runReview(input) {
 		if (entry !== "current") return halted(entry);
 		if (!input.llmApiKey) return {
 			kind: "model-unavailable",
+			modelUnavailableReason: "no-key",
 			body: null
 		};
 		return evaluateEvidence({
@@ -30394,15 +30456,7 @@ async function runReview(input) {
 			kind: "not-eligible",
 			reason: "ownership"
 		};
-		const freshness = outcome.kind === "internal-failure" ? outcome.freshness : void 0;
-		return {
-			kind: "handed-off",
-			outcome: outcome.kind,
-			handoff: handoff.handoff,
-			body: outcome.body,
-			recorded: input.sink.record(handoff.handoff, freshness),
-			...freshness ? { detail: freshness } : {}
-		};
+		return handedOff(input.sink, outcome, handoff.handoff);
 	} catch {
 		return {
 			kind: "failed",
@@ -30410,6 +30464,48 @@ async function runReview(input) {
 			stage: "handoff"
 		};
 	}
+}
+/** Records the handoff in the no-write sink and reports it, with the detail only its kind keeps. */
+function handedOff(sink, outcome, handoff) {
+	const freshness = outcome.kind === "internal-failure" ? outcome.freshness : void 0;
+	const recordDetail = freshness ?? (outcome.kind === "model-unavailable" ? { modelUnavailableReason: outcome.modelUnavailableReason } : void 0);
+	const handed = {
+		kind: "handed-off",
+		handoff,
+		body: outcome.body,
+		recorded: sink.record(handoff, recordDetail),
+		...freshness ? { detail: freshness } : {}
+	};
+	return outcome.kind === "model-unavailable" ? {
+		...handed,
+		outcome: outcome.kind,
+		modelUnavailableReason: outcome.modelUnavailableReason
+	} : {
+		...handed,
+		outcome: outcome.kind
+	};
+}
+/** Turns the assessment result into the attempt's outcome, keeping the optional-evidence drops. */
+function assessedOutcome(reviewed, droppedOptional) {
+	if (reviewed.kind === "internal-failure") return {
+		kind: "internal-failure",
+		stage: "assessment",
+		body: reviewed.body,
+		...reviewed.gaps ? { gaps: reviewed.gaps } : {},
+		droppedOptional
+	};
+	if (reviewed.kind === "model-unavailable") return {
+		kind: "model-unavailable",
+		modelUnavailableReason: reviewed.reason,
+		body: null,
+		droppedOptional
+	};
+	return {
+		kind: reviewed.kind,
+		body: reviewed.body,
+		...reviewed.gaps ? { gaps: reviewed.gaps } : {},
+		droppedOptional
+	};
 }
 async function evaluateEvidence(input, binding, started, signal, state, recheck, halted) {
 	const isCurrent = () => state() === "current";
@@ -30501,7 +30597,7 @@ async function evaluateEvidence(input, binding, started, signal, state, recheck,
 			};
 			const beforeModel = await recheck();
 			if (beforeModel !== "current") return halted(beforeModel);
-			const reviewed = await inStage("assessment", () => reviewPacket({
+			return assessedOutcome(await inStage("assessment", () => reviewPacket({
 				packet: researched.packet,
 				config: trusted.config,
 				apiKey: input.llmApiKey,
@@ -30511,20 +30607,7 @@ async function evaluateEvidence(input, binding, started, signal, state, recheck,
 				researchIncomplete: researched.unavailable.length > 0,
 				signal,
 				model: input.model
-			}));
-			if (reviewed.kind === "internal-failure") return {
-				kind: "internal-failure",
-				stage: "assessment",
-				body: reviewed.body,
-				...reviewed.gaps ? { gaps: reviewed.gaps } : {},
-				droppedOptional: assembled.droppedOptional
-			};
-			return {
-				kind: reviewed.kind,
-				body: reviewed.body,
-				...reviewed.gaps ? { gaps: reviewed.gaps } : {},
-				droppedOptional: assembled.droppedOptional
-			};
+			})), assembled.droppedOptional);
 		});
 	} catch (error) {
 		return {
@@ -30821,7 +30904,10 @@ function rehearsalLine(result) {
 		case "failed": return `${recorded} internal-failure at ${result.stage}; nothing was published.`;
 		case "handed-off": {
 			if (!result.recorded) return "dependabot-review: no-write rehearsal could not record the handoff; nothing was published.";
-			if (result.handoff.kind !== "internal-failure") return `${recorded} ${result.outcome}; nothing was published.`;
+			if (result.handoff.kind !== "internal-failure") {
+				const reason = result.outcome === "model-unavailable" ? ` (${result.modelUnavailableReason})` : "";
+				return `${recorded} ${result.outcome}${reason}; nothing was published.`;
+			}
 			const detail = result.detail ? ` (${result.detail.field} ${result.detail.reason})` : "";
 			return `${recorded} internal-failure at ${result.handoff.stage}${detail}; nothing was published.`;
 		}

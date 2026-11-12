@@ -18,6 +18,14 @@ local batch binding, internal C3 evaluation, the `do_not_merge` blocker rule,
 status, the response-byte rule, and a planning spike for `model_length`.
 Those revisions preceded full-spec approval.
 
+Amendment, 2026-11-11: the user approved the HTTP category split in
+[Amendment 4][a4-309] of the W2 spec, a change to this approved contract
+(#309). The single `http` category becomes four classes, chosen from the
+response status alone: `http-auth` (401, 403),
+`http-rate-limit` (429), `http-server` (500-599), and `http-other` (any other
+status, including a redirected response). Each is a `failed`, attempted result.
+Where this document says "HTTP" as a failure category, read these four.
+
 Specification approval, 2026-11-07: after editing and reviewing this document,
 the user explicitly approved it and invoked `as-plan`. This approves the
 revised specification for planning, including the ordered `model_length`
@@ -115,13 +123,13 @@ No failure has assessments, raw provider text, exception details, or headers.
 M2 must check the expected local binding before converting results to the
 existing C3 `AssessmentState` contract:
 
-| M1 result                           | M2 handoff                                                                                                                       |
-| ----------------------------------- | -------------------------------------------------------------------------------------------------------------------------------- |
-| `validated`                         | Map each original `unitId` to `{ state: 'assessed', verdict }` using the normalized assessment.                                  |
-| `failed`, output validation         | Map every affected unit to `rejected`, with fixed reason/next-action text and explicit coverage limits.                          |
-| `failed`, transport/HTTP/deadline   | Map every affected unit to `unavailable`; preserve independent successful batches.                                               |
-| `truncated`, category `length`      | No usable assessment. M2 may split a multi-unit batch within its own budget; a single-unit truncation remains unavailable.       |
-| `invalid` or pre-call `unavailable` | No HTTP attempt. Preserve each affected unit as unresolved, including `unattempted` for exhausted or cancelled pre-request work. |
+| M1 result                               | M2 handoff                                                                                                                       |
+| --------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------- |
+| `validated`                             | Map each original `unitId` to `{ state: 'assessed', verdict }` using the normalized assessment.                                  |
+| `failed`, output validation             | Map every affected unit to `rejected`, with fixed reason/next-action text and explicit coverage limits.                          |
+| `failed`, transport/HTTP class/deadline | Map every affected unit to `unavailable`; preserve independent successful batches.                                               |
+| `truncated`, category `length`          | No usable assessment. M2 may split a multi-unit batch within its own budget; a single-unit truncation remains unavailable.       |
+| `invalid` or pre-call `unavailable`     | No HTTP attempt. Preserve each affected unit as unresolved, including `unattempted` for exhausted or cancelled pre-request work. |
 
 Call `summarizeDecisionCoverage(inventory, config, evaluatedAt, states)` with
 the same trusted inventory/config/time. An explicit empty states map means
@@ -438,7 +446,8 @@ contains raw content or usable assessments. Keep the original trusted
 inventory/policy available independently of this result.
 
 Categories distinguish configuration/credential, projection/budget, cancellation
-or deadline, transport, HTTP, media type, response size/encoding, envelope,
+or deadline, transport, HTTP class (`http-auth`, `http-rate-limit`,
+`http-server`, `http-other`), media type, response size/encoding, envelope,
 inner JSON, assessment schema/reference/policy, and length truncation. Public
 reasons and next actions come from fixed safe templates, never exception
 messages, provider error bodies, response headers, or supplied text.
@@ -708,7 +717,8 @@ Decision approved 2026-11-07: after reviewing the four-call
 [live spike evidence](https://github.com/andrewpucci/dependency-update-advisor/issues/210),
 the user explicitly approved keeping `model_length` as an ordinary failure
 and continuing the automatic build. Only a well-formed `length` result enables
-M2 splitting; HTTP 400 remains a non-retryable HTTP failure. The incomplete
+M2 splitting; HTTP 400 remains a non-retryable HTTP failure
+(`http-other`). The incomplete
 live evidence is retained rather than treated as proof that `model_length`
 cannot occur. No additional paid calls were authorized by this decision.
 
@@ -716,3 +726,5 @@ This resolves M1.1's decision gate and permits transport implementation.
 No product-scope question remains for M1. Numeric budgets, canonical identity,
 aliases, and exported types are approved for execution. M2 scheduling, live
 workflow/consumer integration, adoption, parity, and cutover remain separate.
+
+[a4-309]: SPEC-review-orchestration.md#diagnostic-amendment-4-fixed-model-unavailable-reason

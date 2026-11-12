@@ -1131,7 +1131,10 @@ test('maps every M2 failure category to its applicable recovery action', async (
   const cases = [
     ...[
       'transport',
-      'http',
+      'http-auth',
+      'http-rate-limit',
+      'http-server',
+      'http-other',
       'media-type',
       'response-size',
       'encoding',

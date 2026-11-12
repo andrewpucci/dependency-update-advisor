@@ -22,6 +22,7 @@ import {
   type ClaimStore,
   type FreshnessDetail,
   type InternalFailureStage,
+  type ModelUnavailableReason,
   type OwnedClaim,
   type ReviewOutcomeKind,
 } from './review.js';
@@ -65,16 +66,23 @@ export type PipelineResult =
   | Readonly<{ kind: 'not-eligible'; reason: 'verification' | 'ownership' }>
   /** The no-write sink failed after a valid handoff was built; it is not publishable. */
   | Readonly<{ kind: 'failed'; outcome: 'internal-failure'; stage: 'handoff' }>
-  | Readonly<{
-      kind: 'handed-off';
-      outcome: ReviewOutcomeKind;
-      handoff: ReviewHandoff;
-      /** A comment-ready body, only for a complete or accurately rendered incomplete review. */
-      body: string | null;
-      recorded: boolean;
-      /** Which freshness check failed and why; present only for a `freshness` internal failure. */
-      detail?: FreshnessDetail;
-    }>;
+  | (HandedOff &
+      Readonly<{
+        outcome: Exclude<ReviewOutcomeKind, 'model-unavailable'>;
+        modelUnavailableReason?: never;
+      }>)
+  /** Why no model verdict exists; every `model-unavailable` hand-off states one. */
+  | (HandedOff &
+      Readonly<{ outcome: 'model-unavailable'; modelUnavailableReason: ModelUnavailableReason }>);
+type HandedOff = Readonly<{
+  kind: 'handed-off';
+  handoff: ReviewHandoff;
+  /** A comment-ready body, only for a complete or accurately rendered incomplete review. */
+  body: string | null;
+  recorded: boolean;
+  /** Which freshness check failed and why; present only for a `freshness` internal failure. */
+  detail?: FreshnessDetail;
+}>;
 
 type OutcomeDetail = Readonly<{
   body: string | null;
@@ -87,15 +95,34 @@ type NonFreshnessStage = Exclude<InternalFailureStage, 'freshness'>;
 type Outcome =
   | (OutcomeDetail &
       Readonly<{
-        kind: Exclude<ReviewOutcomeKind, 'internal-failure'>;
+        kind: Exclude<ReviewOutcomeKind, 'internal-failure' | 'model-unavailable'>;
+        stage?: never;
+        freshness?: never;
+        modelUnavailableReason?: never;
+      }>)
+  /** Why no model verdict exists; every `model-unavailable` outcome states one. */
+  | (OutcomeDetail &
+      Readonly<{
+        kind: 'model-unavailable';
+        modelUnavailableReason: ModelUnavailableReason;
         stage?: never;
         freshness?: never;
       }>)
   | (OutcomeDetail &
-      Readonly<{ kind: 'internal-failure'; stage: NonFreshnessStage; freshness?: never }>)
+      Readonly<{
+        kind: 'internal-failure';
+        stage: NonFreshnessStage;
+        freshness?: never;
+        modelUnavailableReason?: never;
+      }>)
   /** Which freshness check failed and why; only the `freshness` stage carries it. */
   | (OutcomeDetail &
-      Readonly<{ kind: 'internal-failure'; stage: 'freshness'; freshness: FreshnessDetail }>);
+      Readonly<{
+        kind: 'internal-failure';
+        stage: 'freshness';
+        freshness: FreshnessDetail;
+        modelUnavailableReason?: never;
+      }>);
 
 /** A boundary failure whose stage is a literal chosen by this module, never derived from the error. */
 class StageFailure extends Error {
@@ -201,7 +228,8 @@ export async function runReview(input: PipelineInput): Promise<PipelineResult> {
     const entry = await stillCurrent();
     if (entry !== 'current') return halted(entry);
     // With no model configured, no snapshot, collector, or model request is made.
-    if (!input.llmApiKey) return { kind: 'model-unavailable', body: null };
+    if (!input.llmApiKey)
+      return { kind: 'model-unavailable', modelUnavailableReason: 'no-key', body: null };
     return evaluateEvidence(
       { ...input, githubFetch: guard(input.githubFetch), publicFetch: guard(input.publicFetch) },
       binding,
@@ -247,18 +275,62 @@ export async function runReview(input: PipelineInput): Promise<PipelineResult> {
       ...(outcome.kind === 'internal-failure' ? { stage: outcome.stage } : {}),
     });
     if (handoff.kind !== 'ready') return { kind: 'not-eligible', reason: 'ownership' };
-    const freshness = outcome.kind === 'internal-failure' ? outcome.freshness : undefined;
-    return {
-      kind: 'handed-off',
-      outcome: outcome.kind,
-      handoff: handoff.handoff,
-      body: outcome.body,
-      recorded: input.sink.record(handoff.handoff, freshness),
-      ...(freshness ? { detail: freshness } : {}),
-    };
+    return handedOff(input.sink, outcome, handoff.handoff);
   } catch {
     return { kind: 'failed', outcome: 'internal-failure', stage: 'handoff' };
   }
+}
+
+/** Records the handoff in the no-write sink and reports it, with the detail only its kind keeps. */
+function handedOff(
+  sink: PipelineInput['sink'],
+  outcome: Outcome,
+  handoff: ReviewHandoff,
+): PipelineResult {
+  const freshness = outcome.kind === 'internal-failure' ? outcome.freshness : undefined;
+  const recordDetail =
+    freshness ??
+    (outcome.kind === 'model-unavailable'
+      ? { modelUnavailableReason: outcome.modelUnavailableReason }
+      : undefined);
+  const handed = {
+    kind: 'handed-off' as const,
+    handoff,
+    body: outcome.body,
+    recorded: sink.record(handoff, recordDetail),
+    ...(freshness ? { detail: freshness } : {}),
+  };
+  return outcome.kind === 'model-unavailable'
+    ? { ...handed, outcome: outcome.kind, modelUnavailableReason: outcome.modelUnavailableReason }
+    : { ...handed, outcome: outcome.kind };
+}
+
+/** Turns the assessment result into the attempt's outcome, keeping the optional-evidence drops. */
+function assessedOutcome(
+  reviewed: Awaited<ReturnType<typeof reviewPacket>>,
+  droppedOptional: OutcomeDetail['droppedOptional'],
+): Outcome {
+  if (reviewed.kind === 'internal-failure')
+    return {
+      kind: 'internal-failure',
+      stage: 'assessment',
+      body: reviewed.body,
+      ...(reviewed.gaps ? { gaps: reviewed.gaps } : {}),
+      droppedOptional,
+    };
+  if (reviewed.kind === 'model-unavailable')
+    return {
+      kind: 'model-unavailable',
+      modelUnavailableReason: reviewed.reason,
+      body: null,
+      droppedOptional,
+    };
+  return {
+    kind: reviewed.kind,
+    body: reviewed.body,
+    ...(reviewed.gaps ? { gaps: reviewed.gaps } : {}),
+    droppedOptional,
+  };
 }
 
 async function evaluateEvidence(
@@ -375,20 +447,7 @@ async function evaluateEvidence(
             model: input.model,
           }),
         );
-        if (reviewed.kind === 'internal-failure')
-          return {
-            kind: 'internal-failure',
-            stage: 'assessment',
-            body: reviewed.body,
-            ...(reviewed.gaps ? { gaps: reviewed.gaps } : {}),
-            droppedOptional: assembled.droppedOptional,
-          };
-        return {
-          kind: reviewed.kind,
-          body: reviewed.body,
-          ...(reviewed.gaps ? { gaps: reviewed.gaps } : {}),
-          droppedOptional: assembled.droppedOptional,
-        };
+        return assessedOutcome(reviewed, assembled.droppedOptional);
       },
     );
   } catch (error) {
