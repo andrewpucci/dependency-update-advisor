@@ -1,6 +1,6 @@
 const MiB = 1024 * 1024;
 
-/** The job's wall-clock limit; analysis and publication reserve their own time inside it. */
+/** The runner's wall-clock limit for the job, mirroring the workflow's `timeout-minutes`. */
 export const JOB_BUDGET_MS = 15 * 60 * 1_000;
 /**
  * Time the runner spends before `runStartup` takes its job start: the app-token step, action
@@ -8,8 +8,9 @@ export const JOB_BUDGET_MS = 15 * 60 * 1_000;
  */
 export const PRE_STARTUP_ALLOWANCE_MS = 60_000;
 /**
- * The job window measured from the startup job start. Every deadline that must end inside the
- * runner's timeout reads this, never `JOB_BUDGET_MS` directly.
+ * The job window measured from the startup job start. The freshness reads and the analysis
+ * deadline read this, never `JOB_BUDGET_MS` directly; analysis and publication reserve their own
+ * time inside it.
  */
 export const JOB_WINDOW_MS = JOB_BUDGET_MS - PRE_STARTUP_ALLOWANCE_MS;
 /**

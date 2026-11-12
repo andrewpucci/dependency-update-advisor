@@ -456,7 +456,6 @@ test('records a head that moved during a late model step as stale, not as a fail
  * the 600,000 ms analysis cap, sets the model's deadline; the model then runs to just before it.
  */
 async function runWithPreStartupTime(modelRunsToDeadline: boolean) {
-  vi.mocked(pipelineModule.runReview).mockClear();
   const github = mockGithub({ changes: await upstreamScenario() });
   const clock = { now: 60_000 };
   const base = dependenciesFor(github, { now: () => clock.now });
@@ -482,7 +481,11 @@ async function runWithPreStartupTime(modelRunsToDeadline: boolean) {
       const path = new URL(url).pathname;
       if (path.includes('/pulls/42/files')) clock.now = Math.max(clock.now, 290_000);
       const response = await github.fetch(url, init);
-      if (modelEnded) finalReadEnds.push(clock.now);
+      if (modelEnded) {
+        // Each final read takes the full request timeout, as a slow GitHub would make it.
+        clock.now += 15_000;
+        finalReadEnds.push(clock.now);
+      }
       return response;
     },
   });

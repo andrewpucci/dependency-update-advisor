@@ -32,8 +32,7 @@ publication or a production claim backend.
 execution 2026-11-11, implemented on the #306 branch (#310-#312):** the job clock
 starts inside `runStartup`, after time the runner has already spent
 ([#306](https://github.com/andrewpucci/dependency-update-advisor/issues/306)).
-Its `preStartupAllowanceMs` value was chosen by the user on 2026-11-11;
-execution needs separate approval of the plan.
+Its `preStartupAllowanceMs` value was chosen by the user on 2026-11-11.
 
 The user approved this W2 supporting-contract map on 2026-11-08:
 

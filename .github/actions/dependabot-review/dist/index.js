@@ -22461,8 +22461,9 @@ async function reviewPacket(input) {
 // src/budget.ts
 const MiB = 1048576;
 /**
-* The job window measured from the startup job start. Every deadline that must end inside the
-* runner's timeout reads this, never `JOB_BUDGET_MS` directly.
+* The job window measured from the startup job start. The freshness reads and the analysis
+* deadline read this, never `JOB_BUDGET_MS` directly; analysis and publication reserve their own
+* time inside it.
 */
 const JOB_WINDOW_MS = 84e4;
 /**
