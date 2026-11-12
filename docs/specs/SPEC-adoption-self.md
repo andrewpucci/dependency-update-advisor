@@ -59,8 +59,11 @@ GitHub App token.
    contains merged W2 rehearsal code. It was re-pinned to
    `e858ee0a1c21d302ebfcde38c7d973a0d0609de4`, the passing `main` revision that
    contains the fixed-stage diagnostics, so the no-write rehearsal reports
-   `internal-failure at <stage>`. This changes no permission, secret, or
-   trigger.
+   `internal-failure at <stage>`. It was then re-pinned to
+   `351cc6e125afc415195a974ca881223e00453b09`, the passing `main` revision that
+   contains the freshness time allowance and `freshness` stage detail, so a
+   slow run completes or reports `internal-failure at freshness (<field>
+   <reason>)`. Neither re-pin changes a permission, secret, or trigger.
 
 ## Commands
 
