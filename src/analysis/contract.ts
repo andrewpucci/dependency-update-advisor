@@ -15,9 +15,9 @@ export const ANALYSIS_LIMITS = Object.freeze({
   sourceBytes: 2_048,
   unitBytes: 65_536,
   requestBytes: 262_144,
-  completionTokens: 4_096,
-  requestTimeoutMs: 120_000,
-  responseBytes: 3_211_264,
+  completionTokens: 16_384,
+  requestTimeoutMs: 240_000,
+  responseBytes: 12_648_448,
   textBytes: 1_024,
   featureBytes: 512,
   followupBytes: 280,
@@ -41,6 +41,8 @@ export type AnalysisFailure = Readonly<{
 export type AnalysisRequest = Readonly<{
   model: string;
   temperature: 0;
+  /** Mistral rejects greedy sampling (temperature 0) unless top_p is 1. */
+  top_p: 1;
   n: 1;
   stream: false;
   max_tokens: number;

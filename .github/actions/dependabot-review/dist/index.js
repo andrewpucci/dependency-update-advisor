@@ -20981,6 +20981,7 @@ function projected(prepare) {
 		const request = {
 			model: input.config.config.analysis.model,
 			temperature: 0,
+			top_p: 1,
 			n: 1,
 			stream: false,
 			max_tokens: input.limits.completionTokens,
@@ -21294,9 +21295,9 @@ const ANALYSIS_LIMITS = Object.freeze({
 	sourceBytes: 2048,
 	unitBytes: 65536,
 	requestBytes: 262144,
-	completionTokens: 4096,
-	requestTimeoutMs: 12e4,
-	responseBytes: 3211264,
+	completionTokens: 16384,
+	requestTimeoutMs: 24e4,
+	responseBytes: 12648448,
 	textBytes: 1024,
 	featureBytes: 512,
 	followupBytes: 280,
@@ -21509,17 +21510,36 @@ function emptyToolFields(message) {
 	requireValue(message.tool_calls == null || Array.isArray(message.tool_calls) && message.tool_calls.length === 0, "envelope");
 	requireValue(message.function_call == null && (message.refusal == null || message.refusal === ""), "envelope");
 }
+const MAX_CONTENT_CHUNKS = 64;
+/**
+* The review text of a reply. A string is the text itself. A reasoning model returns a bounded
+* array of chunks instead: `thinking` chunks are skipped without reading their content, and the
+* `text` chunks, in order, are the text. Any other shape is an envelope failure.
+*/
+function replyText(content) {
+	if (typeof content === "string") return content;
+	requireValue(Array.isArray(content) && content.length > 0 && content.length <= MAX_CONTENT_CHUNKS, "envelope");
+	let text = "";
+	for (const chunk of content) {
+		requireValue(isPlainObject(chunk), "envelope");
+		if (chunk.type === "thinking") continue;
+		requireValue(chunk.type === "text" && typeof chunk.text === "string", "envelope");
+		text += chunk.text;
+	}
+	return text;
+}
 function document(text) {
 	const envelope = json$2(text, "envelope");
 	requireValue(isPlainObject(envelope) && Array.isArray(envelope.choices) && envelope.choices.length === 1, "envelope");
 	const choice = envelope.choices[0];
 	requireValue(isPlainObject(choice) && choice.index === 0 && isPlainObject(choice.message), "envelope");
 	const message = choice.message;
-	requireValue(message.role === "assistant" && typeof message.content === "string", "envelope");
+	requireValue(message.role === "assistant", "envelope");
+	const content = replyText(message.content);
 	emptyToolFields(message);
 	if (choice.finish_reason === "length") throw new MistralFailure("length");
-	requireValue(choice.finish_reason === "stop" && message.content.trim().length > 0, "envelope");
-	return json$2(message.content, "json");
+	requireValue(choice.finish_reason === "stop" && content.trim().length > 0, "envelope");
+	return json$2(content, "json");
 }
 function result(outcome, snapshot) {
 	return freeze$3({

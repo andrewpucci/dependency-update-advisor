@@ -387,7 +387,8 @@ anchor's sources. Unknown or unavailable evidence cannot satisfy these checks.
    No endpoint, header, tool, or remote URL is accepted from evidence/config.
    The read token and App write token never enter the adapter.
 3. Send the selected model, one choice, non-streaming completion,
-   `temperature: 0` as in the baseline,
+   `temperature: 0` as in the baseline with `top_p: 1` (Mistral rejects
+   greedy sampling without it),
    `response_format: { type: 'json_object' }`, a bounded `max_tokens`, and
    fixed prompt messages. Supply no tools, tool execution, attachments,
    repository access, or provider-side retrieval. Mistral documents the
@@ -403,6 +404,7 @@ anchor's sources. Unknown or unavailable evidence cannot satisfy these checks.
    time, and the caller's remaining analysis deadline. Validate limits before
    I/O. Do not start after cancellation/deadline exhaustion. Timeout covers
    headers and the entire response body, not just the initial `fetch` promise.
+   The values are in Initial resource ceilings below.
    Cancellation must settle the call and release timers/readers even when a
    transport or body stalls; late completion cannot become accepted output.
 6. Accept only a non-streaming HTTP 200 response with `application/json`
@@ -413,8 +415,10 @@ anchor's sources. Unknown or unavailable evidence cannot satisfy these checks.
    than draining an unbounded error body. Reject invalid UTF-8 and JSON.
 7. Validate the provider envelope separately from the inner review document:
    exactly one choice, valid choice index, assistant role, no tool calls,
-   and a supported finish reason. Successful output requires `stop` and a
-   nonempty string message content. Reject null, arrays/content chunks,
+   and a supported finish reason. Successful output requires `stop` and
+   nonempty message content: a string, or an array of chunks accepted by the
+   Reasoning-Model Compatibility Amendment (`thinking` chunks ignored, `text`
+   chunks joined in order). Reject null, any other array or chunk shape,
    refusals, unexpected roles, and tool/function outputs. Ignore only bounded
    provider metadata not consumed by the contract; never return it downstream.
 8. A well-formed single choice with `finish_reason: 'length'` yields the
@@ -435,6 +439,145 @@ anchor's sources. Unknown or unavailable evidence cannot satisfy these checks.
    projection. Return only its detached immutable result. Report the selected
    model in diagnostics; do not require a returned resolved model name to equal
    a configured moving alias or silently switch the requested model.
+
+## Reasoning-Model Compatibility Amendment
+
+**Status: approved for planning and automatic execution, 2026-11-12;
+implemented for #324-#328, pending review and merge; the R1 re-pin and live
+rehearsal (#329) remain.** The user reviewed the open questions (240,000 ms
+timeout; no model change) and approved the amendment, then invoked `as-plan`.
+Scoped to
+[#309](https://github.com/andrewpucci/dependency-update-advisor/issues/309).
+It changes the approved M1 request, envelope, and budget contract, which is
+Ask-first under this spec's boundaries. It does not authorize live publication
+or a production claim backend. Effort tier: L (changes the M1 contract and its
+limits, and amends approved text).
+
+### Evidence
+
+The R1 rehearsal reported `model-unavailable (http-other)` (run 43244142170 on
+`main` at `214fbfc`, recorded on #309). A local probe of the configured model,
+`mistral-large-latest`, with a locally held key found three incompatibilities
+with the current request and parser. The probe is not committed and prints no
+key. Mistral's [chat endpoint reference](https://docs.mistral.ai/api/endpoint/chat)
+and [reasoning guide](https://docs.mistral.ai/capabilities/reasoning) describe
+`reasoning_effort` and chunked content, but do not state the first rule below,
+so these facts were observed on 2026-11-12 and may change:
+
+- **Greedy sampling needs `top_p`.** `temperature: 0` with no `top_p` returns
+  HTTP 400, `type: invalid_request_greedy_sampling`, code `3054`: "top_p must
+  be 1 when using greedy sampling". The same request with `top_p: 1`
+  succeeds, and a `temperature` of `0.1` needs no `top_p`.
+- **The model returns content chunks.** Every successful reply had
+  `message.content` as an array of `thinking` then `text` chunks, never a
+  string. Item 7 of Mistral Transport rejects arrays, so each reply would fail
+  as `envelope`. The `reasoning_effort` values `low`, `medium`, and `high` are
+  accepted; `none` is rejected with HTTP 400 for this model.
+- **Reasoning tokens count against `max_tokens`.** With the real request at
+  `max_tokens: 4096`, six of six fixture batches (2 to 8 units) used 4,095
+  reasoning tokens, returned only a `thinking` chunk, and stopped with
+  `finish_reason: length`. At 16,384, seven of seven complete replies stopped
+  with `stop`, using 4.1k to 8.0k completion tokens (3.2k to 7.0k reasoning).
+  Calls took 58 to 101 s at default effort, against the current 120 s request
+  timeout, so a reply near the new cap would time out.
+
+### Decisions
+
+1. **Request.** Add `top_p: 1` to the fixed request, beside `temperature: 0`,
+   for every model. Send no `reasoning_effort`: only reasoning-capable models
+   accept it (this one rejects `none`), and M1 stays model-agnostic. A
+   configurable effort is a later config change, not part of this amendment.
+2. **Content shapes.** `message.content` is a nonempty string, as today, or a
+   bounded array of chunks. Each chunk is a plain object with a string `type`.
+   A `thinking` chunk is ignored: its content is never read beyond its type,
+   and is never parsed, returned, logged, or placed in diagnostics. A `text`
+   chunk must carry a string `text`. Any other chunk type, a non-object chunk,
+   or a `text` chunk without a string is an `envelope` failure. At most 64
+   chunks are accepted. The `text` chunks, concatenated in order, are the
+   content for every later check. Reasoning output is untrusted model text
+   derived from untrusted evidence, like any other reply.
+3. **Finish reasons.** Validate chunk shape first, then classify. A well-formed
+   array with `finish_reason: 'length'` is the distinct truncated outcome,
+   including a reply with only a `thinking` chunk. A `stop` reply needs a
+   nonempty concatenated `text`; an array with no usable `text` is `envelope`.
+   Item 8's string rules otherwise stand. `tool_calls` stays null or empty.
+4. **Budgets.** The completion-token budget rises from 4,096 to **16,384**,
+   about twice the largest observed completion (8.0k). The per-request timeout
+   rises from 120,000 ms to **240,000 ms**: at the observed 70 to 75 tokens per
+   second, a reply that uses the full cap takes about 230 s. The observed-bytes
+   ceiling follows the stated formula: `16,384 * 128 * 6 + 65,536 =
+   12,648,448`. Each remains clipped to the caller's remaining analysis time,
+   and M2's 600,000 ms analysis maximum, 32-call cap, and concurrency of 2 do
+   not change. Request bytes, units per batch, and every input bound stay as
+   they are. Output cost per call roughly doubles to triples; that is accepted.
+5. **No other change.** Outcomes, categories, diagnostics, redirect and
+   credential rules, the single-request rule, and the inner-document validator
+   are unchanged. This amendment adds no failure category and no diagnostic
+   field.
+6. **Supersedes when implemented.** Item 3 of Mistral Transport gains
+   `top_p: 1`. Item 5 and item 7 are narrowed by decisions 2 and 3: the clause
+   "Reject null, arrays/content chunks" becomes "reject null and any array that
+   decision 2 does not accept". The resource-ceiling rows for completion
+   tokens, per-request timeout, and observed response bytes take the values in
+   decision 4, and the "retain the baseline" reasons are replaced by this
+   evidence. `ANALYSIS_LIMITS` in `src/analysis/contract.ts`, the request in
+   `src/analysis/projection.ts`, and the parser in `src/analysis/mistral.ts`
+   change with them, as do the tests that assert the old request, string-only
+   content, or the old limits.
+7. **Fail-closed preservation.** A reply that is not one string or one accepted
+   chunk array still fails, no reasoning text reaches a result, and an
+   incomplete or invalid reply still yields no assessment.
+
+### Required checks
+
+Write each check first and show it failing on the prior code.
+
+- **Request.** The projected request equals the exact expected object,
+  including `top_p: 1`, `temperature: 0`, and `max_tokens: 16384`, and has no
+  `reasoning_effort` key.
+- **Content table.** Through the real transport with an injected fetch:
+  a nonempty string; `[text]`; `[thinking, text]`; `[text, thinking]`; several
+  `text` chunks concatenated in order; `[thinking]` with `stop`; `[]`;
+  `[thinking]` with `length` (truncated); an unknown chunk type; a chunk that
+  is not an object; a `text` chunk with a non-string `text`; 65 chunks; and
+  `null`. Each maps to the stated outcome, and a sentinel placed in a
+  `thinking` chunk never appears in the result, its diagnostics, or an
+  error.
+- **Limits.** The three limit values, the formula relation between response
+  bytes and completion tokens, and the clipping of the timeout to the
+  remaining analysis time are asserted; an out-of-range value is `budget`.
+- **Inner document.** A valid review document in the `text` chunk passes the
+  unchanged validator and reaches `validated`.
+- **Live verification.** After implementation, a rehearsal on a Dependabot PR
+  reaches `complete` or names a reason, and the result, run, and revision are
+  recorded on #309. This needs the repository secret and is not a CI check.
+
+Named mutations that must each fail a test: dropping `top_p`; sending
+`reasoning_effort`; accepting an unknown chunk type; returning `thinking` text;
+treating a thinking-only `stop` reply as valid; classifying a thinking-only
+`length` reply as `envelope`; concatenating chunks out of order; leaving any of
+the three limits at its old value; and computing response bytes without the
+formula.
+
+### Amendment Boundaries
+
+- **Always:** keep the single request, the redirect and credential rules, and
+  fail-closed envelope validation; discard `thinking` content unread.
+- **Ask first:** send `reasoning_effort` or any other new request field;
+  change the budgets again; add a chunk type, failure category, or diagnostic
+  field; or change the configured model.
+- **Never:** return, log, or render reasoning text; fall back to another model
+  or provider; retry inside M1; or publish an unvalidated reply.
+
+### Open Questions
+
+- **Timeout.** 240,000 ms covers a full-cap reply on the observed throughput.
+  A lower value (for example 180,000 ms) saves little and risks `deadline`
+  failures on slow replies. Best guess: 240,000 ms.
+- **Cost.** Per-call output rises to about 4k to 8k tokens. A non-reasoning
+  pinned model in the R1 consumer config would avoid both the cost and the
+  chunk handling, but it was not tested, and `top_p: 1` is still required. Best
+  guess: proceed with this amendment and leave the model choice as is.
 
 ## Outcomes, Budgets, and Diagnostics
 
@@ -592,12 +735,12 @@ are proposed. M2/W2 still choose their cumulative budgets and publication reserv
 | Repository source excerpt                          | C2's existing 500 code units         | Only already eligible C2 text; its 65,536-byte total context cap still applies.             |
 | Serialized projected unit bytes                    | 65,536                               | Reject a unit whose required structure cannot fit; never remove members/findings.           |
 | Final serialized HTTP request bytes                | 262,144                              | Includes fixed prompts, model/options, JSON string escaping, and envelope.                  |
-| Completion tokens                                  | 4,096                                | Retain the baseline completion budget initially.                                            |
-| Per-request timeout                                | 120,000 ms maximum                   | Retain baseline ceiling, clipped to the caller's remaining analysis time.                   |
+| Completion tokens                                  | 16,384                               | Reasoning tokens count against it; live replies used 4.1k-8.0k (2026-11-12).                |
+| Per-request timeout                                | 240,000 ms maximum                   | Live replies took 58-101 s; clipped to the caller's remaining analysis time.                |
 | Inner content allowance                            | 128 UTF-8 bytes per completion token | Conservative planning allowance, not a documented guarantee for every model/tokenizer.      |
 | Outer JSON escaping multiplier                     | 6                                    | Allows byte-to-`\uXXXX` expansion when content is encoded inside the response envelope.     |
 | Provider envelope allowance                        | 65,536 bytes                         | Bounded metadata overhead beyond generated content.                                         |
-| Observed response bytes                            | 3,211,264                            | `4,096 * 128 * 6 + 65,536`; input C2/T4 limits remain unchanged.                            |
+| Observed response bytes                            | 12,648,448                           | `16,384 * 128 * 6 + 65,536`; input C2/T4 limits remain unchanged.                           |
 | Model reason/rationale/action/impact text          | 1,024 UTF-8 bytes each               | Concise per-unit advice; nonempty when required.                                            |
 | Feature text                                       | 512 UTF-8 bytes                      | At most one capability per unit.                                                            |
 | Follow-up description                              | 280 UTF-8 bytes                      | Does not expand the baseline's 280-character bound.                                         |

@@ -519,6 +519,7 @@ function projected(
     const request: AnalysisRequest = {
       model: input.config.config.analysis!.model,
       temperature: 0,
+      top_p: 1,
       n: 1,
       stream: false,
       max_tokens: input.limits.completionTokens,

@@ -150,7 +150,7 @@ test('rejects fenced/malformed JSON and model schema violations without exposing
   }
 });
 
-test('requires exactly one assistant choice with plain string content before considering length', async () => {
+test('requires exactly one assistant choice with usable content before considering length', async () => {
   const { batch } = await preparedAnalysis();
   const message = { role: 'assistant', content: JSON.stringify(analysisDocument(batch)) };
   const choice = { index: 0, finish_reason: 'length', message };
@@ -736,4 +736,138 @@ test('hostile upstream instructions cannot change model, endpoint, headers or va
   expect(result).toMatchObject({ kind: 'failed', category: 'json' });
   expect(JSON.stringify(result)).not.toContain('SENTINEL');
   expect(fetch).toHaveBeenCalledTimes(1);
+});
+
+test('the larger request limit never outlasts the caller deadline', async () => {
+  const { input } = await preparedAnalysis();
+  const prepared = prepareAnalysisBatch({ ...input, limits: ANALYSIS_LIMITS });
+  if (prepared.kind !== 'prepared') throw new Error('fixture');
+  vi.useFakeTimers();
+  let now = 0;
+  const fetch = vi.fn(() => new Promise<Response>(() => {}));
+  const task = analyzeMistralBatch(
+    prepared.batch,
+    { ...options, deadlineMs: 5_000 },
+    { fetch, now: () => now },
+  );
+  now = 5_000;
+  await vi.advanceTimersByTimeAsync(5_000);
+  expect(await task).toMatchObject({ kind: 'failed', category: 'deadline' });
+  expect(vi.getTimerCount()).toBe(0);
+});
+
+/** A one-choice reply whose assistant `content` is exactly what the caller passes. */
+function replyWith(content: unknown, finish = 'stop') {
+  return Response.json({
+    choices: [
+      {
+        index: 0,
+        finish_reason: finish,
+        message: { role: 'assistant', content, tool_calls: [], refusal: null },
+      },
+    ],
+  });
+}
+const think = (text = 'RAW_THINKING_SENTINEL') => ({
+  type: 'thinking',
+  thinking: [{ type: 'text', text }],
+});
+const say = (text: string) => ({ type: 'text', text });
+
+test.each([
+  ['a nonempty string', (doc: string) => doc, 'validated'],
+  ['[text]', (doc: string) => [say(doc)], 'validated'],
+  ['[thinking, text]', (doc: string) => [think(), say(doc)], 'validated'],
+  ['[text, thinking]', (doc: string) => [say(doc), think()], 'validated'],
+  [
+    'several text chunks joined in order',
+    (doc: string) => [think(), say(doc.slice(0, 10)), say(doc.slice(10))],
+    'validated',
+  ],
+  [
+    'exactly 64 chunks',
+    (doc: string) => [...Array.from({ length: 63 }, () => think('x')), say(doc)],
+    'validated',
+  ],
+])('parses %s content', async (_name, build, kind) => {
+  const { batch } = await preparedAnalysis();
+  const document = JSON.stringify(analysisDocument(batch));
+  const fetch = vi.fn(async () => replyWith(build(document)));
+  const result = await analyzeMistralBatch(batch, options, { fetch, now: () => 0 });
+  expect(result.kind).toBe(kind);
+  // Reasoning text is never read, returned, or placed in diagnostics.
+  expect(JSON.stringify(result)).not.toContain('RAW_THINKING_SENTINEL');
+});
+
+test.each([
+  [
+    'text chunks out of order',
+    (doc: string) => [say(doc.slice(10)), say(doc.slice(0, 10))],
+    'json',
+  ],
+  ['a thinking-only stop reply', () => [think()], 'envelope'],
+  ['an empty chunk array', () => [], 'envelope'],
+  ['whitespace-only text', () => [think(), say('  \n ')], 'envelope'],
+  [
+    'an unknown chunk type',
+    (doc: string) => [{ type: 'image_url', url: 'x' }, say(doc)],
+    'envelope',
+  ],
+  ['a chunk with no type', (doc: string) => [{ text: doc }], 'envelope'],
+  ['a non-object chunk', (doc: string) => ['RAW_CHUNK', say(doc)], 'envelope'],
+  ['a null chunk', (doc: string) => [null, say(doc)], 'envelope'],
+  ['a text chunk without a string', () => [{ type: 'text', text: { RAW: 1 } }], 'envelope'],
+  [
+    'more than 64 chunks',
+    (doc: string) => [...Array.from({ length: 64 }, () => think('x')), say(doc)],
+    'envelope',
+  ],
+  ['null content', () => null, 'envelope'],
+  ['object content', (doc: string) => ({ type: 'text', text: doc }), 'envelope'],
+])('rejects %s', async (_name, build, category) => {
+  const { batch } = await preparedAnalysis();
+  const document = JSON.stringify(analysisDocument(batch));
+  const fetch = vi.fn(async () => replyWith(build(document)));
+  const result = await analyzeMistralBatch(batch, options, { fetch, now: () => 0 });
+  expect(result).toMatchObject({ kind: 'failed', category });
+  expect(JSON.stringify(result)).not.toContain('RAW_');
+  expect(fetch).toHaveBeenCalledTimes(1);
+});
+
+test('a thinking-only reply that stops for length is the truncated outcome', async () => {
+  const { batch } = await preparedAnalysis();
+  for (const content of [[think()], [think(), say('{"assessments":[')]]) {
+    const fetch = vi.fn(async () => replyWith(content, 'length'));
+    const result = await analyzeMistralBatch(batch, options, { fetch, now: () => 0 });
+    expect(result).toMatchObject({ kind: 'truncated', category: 'length', attempted: true });
+    expect(result).not.toHaveProperty('assessments');
+    expect(JSON.stringify(result)).not.toContain('RAW_THINKING_SENTINEL');
+  }
+});
+
+test('chunked content still rejects tool calls, a refusal, and unexpected roles', async () => {
+  const { batch } = await preparedAnalysis();
+  const content = [think(), say(JSON.stringify(analysisDocument(batch)))];
+  for (const patch of [
+    { tool_calls: [{ id: 'tool' }] },
+    { function_call: {} },
+    { refusal: 'No' },
+    { role: 'tool' },
+  ]) {
+    const fetch = vi.fn(async () =>
+      Response.json({
+        choices: [
+          {
+            index: 0,
+            finish_reason: 'stop',
+            message: { role: 'assistant', content, tool_calls: [], refusal: null, ...patch },
+          },
+        ],
+      }),
+    );
+    expect(await analyzeMistralBatch(batch, options, { fetch, now: () => 0 })).toMatchObject({
+      kind: 'failed',
+      category: 'envelope',
+    });
+  }
 });

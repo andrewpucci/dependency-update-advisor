@@ -28,9 +28,11 @@ Its Amendment 2 code and the R1 caller re-pin
 are merged. Amendment 3
 ([#306](https://github.com/andrewpucci/dependency-update-advisor/issues/306))
 adds a 60,000 ms pre-startup allowance to the job window and is merged. The
-next rehearsal ended `model-unavailable` without a cause;
+next rehearsal ended `model-unavailable`;
 [#309](https://github.com/andrewpucci/dependency-update-advisor/issues/309)
-adds a fixed reason (Amendment 4, implemented, pending review and merge).
+added a fixed reason (Amendment 4, merged), which showed Mistral's reasoning
+model needs `top_p`, chunked content, and larger budgets (M1 amendment,
+implemented, pending review and merge; live rehearsal remains).
 Publication and production claim storage remain separate gates.
 
 ## Next action
