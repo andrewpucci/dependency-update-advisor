@@ -19822,6 +19822,20 @@ async function createReviewHandoff(claims, claim, kind, detail = {
 		})
 	};
 }
+function traceDetail(handoff, detail) {
+	const modelReason = handoff.kind === "model-unavailable" && detail && "modelUnavailableReason" in detail ? modelUnavailableReason(detail.modelUnavailableReason) : void 0;
+	if (handoff.kind === "model-unavailable" && !modelReason) return null;
+	const assessmentReason = handoff.kind === "internal-failure" && handoff.stage === "assessment" && detail && "assessmentFailureReason" in detail ? assessmentFailureReason(detail.assessmentFailureReason) : void 0;
+	if (detail && "assessmentFailureReason" in detail && !(handoff.kind === "internal-failure" && handoff.stage === "assessment") || handoff.kind === "internal-failure" && handoff.stage === "assessment" && !assessmentReason) return null;
+	return {
+		modelUnavailableReason: modelReason,
+		assessmentFailureReason: assessmentReason,
+		freshness: handoff.kind === "internal-failure" && handoff.stage === "freshness" && detail && "field" in detail ? Object.freeze({
+			field: detail.field,
+			reason: detail.reason
+		}) : void 0
+	};
+}
 /** A bounded local sink deliberately rejects every usable App token and has no client fallback. */
 function createRehearsalSink(appToken) {
 	if (appToken) return null;
@@ -19829,11 +19843,8 @@ function createRehearsalSink(appToken) {
 	return Object.freeze({
 		record: (handoff, detail, analysisTiming) => {
 			if (traces.length >= 32) return false;
-			const modelReason = handoff.kind === "model-unavailable" && detail && "modelUnavailableReason" in detail ? modelUnavailableReason(detail.modelUnavailableReason) : void 0;
-			if (handoff.kind === "model-unavailable" && !modelReason) return false;
-			const assessmentReason = handoff.kind === "internal-failure" && handoff.stage === "assessment" && detail && "assessmentFailureReason" in detail ? assessmentFailureReason(detail.assessmentFailureReason) : void 0;
-			if (detail && "assessmentFailureReason" in detail && !(handoff.kind === "internal-failure" && handoff.stage === "assessment")) return false;
-			if (handoff.kind === "internal-failure" && handoff.stage === "assessment" && !assessmentReason) return false;
+			const keptDetail = traceDetail(handoff, detail);
+			if (!keptDetail) return false;
 			const timing = copyAnalysisTiming(analysisTiming);
 			const traceBase = {
 				identity: Object.freeze([...handoff.identity]),
@@ -19847,12 +19858,9 @@ function createRehearsalSink(appToken) {
 			traces.push(Object.freeze({
 				kind: handoff.kind,
 				...handoff.kind === "internal-failure" ? { stage: handoff.stage } : {},
-				...handoff.kind === "internal-failure" && handoff.stage === "freshness" && detail && "field" in detail ? { detail: Object.freeze({
-					field: detail.field,
-					reason: detail.reason
-				}) } : {},
-				...modelReason ? { modelUnavailableReason: modelReason } : {},
-				...assessmentReason ? { assessmentFailureReason: assessmentReason } : {},
+				...keptDetail.freshness ? { detail: keptDetail.freshness } : {},
+				...keptDetail.modelUnavailableReason ? { modelUnavailableReason: keptDetail.modelUnavailableReason } : {},
+				...keptDetail.assessmentFailureReason ? { assessmentFailureReason: keptDetail.assessmentFailureReason } : {},
 				...timing ? { analysisTiming: timing } : {},
 				...traceBase
 			}));
@@ -31033,21 +31041,22 @@ function analysisTimingLine(timing) {
 	const label = timing.callsDispatched === 1 ? "call" : "calls";
 	return `analysis ${timing.callsDispatched} ${label} (${durations.join(", ")} ms), max split depth ${timing.maxSplitDepth}`;
 }
+function handedOffRehearsalLine(result) {
+	const recorded = "dependabot-review: no-write rehearsal recorded";
+	if (!result.recorded) return "dependabot-review: no-write rehearsal could not record the handoff; nothing was published.";
+	const timing = result.analysisTiming ? `; ${analysisTimingLine(result.analysisTiming)}` : "";
+	if (result.handoff.kind !== "internal-failure") {
+		const reason = result.outcome === "model-unavailable" ? ` (${result.modelUnavailableReason})` : "";
+		return `${recorded} ${result.outcome}${reason}${timing}; nothing was published.`;
+	}
+	const detail = result.handoff.stage === "assessment" && result.assessmentFailureReason ? ` (${result.assessmentFailureReason})` : result.detail ? ` (${result.detail.field} ${result.detail.reason})` : "";
+	return `${recorded} internal-failure at ${result.handoff.stage}${detail}${timing}; nothing was published.`;
+}
 function rehearsalLine(result) {
 	const recorded = "dependabot-review: no-write rehearsal recorded";
 	switch (result.kind) {
 		case "failed": return `${recorded} internal-failure at ${result.stage}; nothing was published.`;
-		case "handed-off": {
-			if (!result.recorded) return "dependabot-review: no-write rehearsal could not record the handoff; nothing was published.";
-			if (result.handoff.kind !== "internal-failure") {
-				const reason = result.outcome === "model-unavailable" ? ` (${result.modelUnavailableReason})` : "";
-				const timing = result.analysisTiming ? `; ${analysisTimingLine(result.analysisTiming)}` : "";
-				return `${recorded} ${result.outcome}${reason}${timing}; nothing was published.`;
-			}
-			const detail = result.handoff.stage === "assessment" && result.assessmentFailureReason ? ` (${result.assessmentFailureReason})` : result.detail ? ` (${result.detail.field} ${result.detail.reason})` : "";
-			const timing = result.analysisTiming ? `; ${analysisTimingLine(result.analysisTiming)}` : "";
-			return `${recorded} internal-failure at ${result.handoff.stage}${detail}${timing}; nothing was published.`;
-		}
+		case "handed-off": return handedOffRehearsalLine(result);
 		case "skipped": return `dependabot-review: event skipped (${result.reason}); nothing was published.`;
 		default: return `dependabot-review: no publishable handoff (${result.reason}); nothing was published.`;
 	}

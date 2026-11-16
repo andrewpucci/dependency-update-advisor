@@ -172,6 +172,49 @@ export type RehearsalSink = Readonly<{
   traces: () => readonly RehearsalTrace[];
 }>;
 
+type TraceDetail = Readonly<{
+  freshness?: FreshnessDetail;
+  modelUnavailableReason?: ModelUnavailableReason;
+  assessmentFailureReason?: AssessmentFailureReason;
+}>;
+
+function traceDetail(
+  handoff: ReviewHandoff,
+  detail: RehearsalDetail | undefined,
+): TraceDetail | null {
+  const modelReason =
+    handoff.kind === 'model-unavailable' && detail && 'modelUnavailableReason' in detail
+      ? modelUnavailableReason(detail.modelUnavailableReason)
+      : undefined;
+  if (handoff.kind === 'model-unavailable' && !modelReason) return null;
+  const assessmentReason =
+    handoff.kind === 'internal-failure' &&
+    handoff.stage === 'assessment' &&
+    detail &&
+    'assessmentFailureReason' in detail
+      ? assessmentFailureReason(detail.assessmentFailureReason)
+      : undefined;
+  if (
+    (detail &&
+      'assessmentFailureReason' in detail &&
+      !(handoff.kind === 'internal-failure' && handoff.stage === 'assessment')) ||
+    (handoff.kind === 'internal-failure' && handoff.stage === 'assessment' && !assessmentReason)
+  )
+    return null;
+  const freshness =
+    handoff.kind === 'internal-failure' &&
+    handoff.stage === 'freshness' &&
+    detail &&
+    'field' in detail
+      ? Object.freeze({ field: detail.field, reason: detail.reason })
+      : undefined;
+  return {
+    modelUnavailableReason: modelReason,
+    assessmentFailureReason: assessmentReason,
+    freshness,
+  };
+}
+
 /** A bounded local sink deliberately rejects every usable App token and has no client fallback. */
 export function createRehearsalSink(appToken: string | null): RehearsalSink | null {
   if (appToken) return null;
@@ -179,31 +222,8 @@ export function createRehearsalSink(appToken: string | null): RehearsalSink | nu
   return Object.freeze({
     record: (handoff, detail, analysisTiming) => {
       if (traces.length >= 32) return false;
-      // A model-unavailable result must say why; refuse it rather than record a guess.
-      const modelReason =
-        handoff.kind === 'model-unavailable' && detail && 'modelUnavailableReason' in detail
-          ? modelUnavailableReason(detail.modelUnavailableReason)
-          : undefined;
-      if (handoff.kind === 'model-unavailable' && !modelReason) return false;
-      const assessmentReason =
-        handoff.kind === 'internal-failure' &&
-        handoff.stage === 'assessment' &&
-        detail &&
-        'assessmentFailureReason' in detail
-          ? assessmentFailureReason(detail.assessmentFailureReason)
-          : undefined;
-      if (
-        detail &&
-        'assessmentFailureReason' in detail &&
-        !(handoff.kind === 'internal-failure' && handoff.stage === 'assessment')
-      )
-        return false;
-      if (
-        handoff.kind === 'internal-failure' &&
-        handoff.stage === 'assessment' &&
-        !assessmentReason
-      )
-        return false;
+      const keptDetail = traceDetail(handoff, detail);
+      if (!keptDetail) return false;
       const timing = copyAnalysisTiming(analysisTiming);
       const traceBase = {
         identity: Object.freeze([...handoff.identity]) as OwnedClaim['identity'],
@@ -218,14 +238,13 @@ export function createRehearsalSink(appToken: string | null): RehearsalSink | nu
         Object.freeze({
           kind: handoff.kind,
           ...(handoff.kind === 'internal-failure' ? { stage: handoff.stage } : {}),
-          ...(handoff.kind === 'internal-failure' &&
-          handoff.stage === 'freshness' &&
-          detail &&
-          'field' in detail
-            ? { detail: Object.freeze({ field: detail.field, reason: detail.reason }) }
+          ...(keptDetail.freshness ? { detail: keptDetail.freshness } : {}),
+          ...(keptDetail.modelUnavailableReason
+            ? { modelUnavailableReason: keptDetail.modelUnavailableReason }
             : {}),
-          ...(modelReason ? { modelUnavailableReason: modelReason } : {}),
-          ...(assessmentReason ? { assessmentFailureReason: assessmentReason } : {}),
+          ...(keptDetail.assessmentFailureReason
+            ? { assessmentFailureReason: keptDetail.assessmentFailureReason }
+            : {}),
           ...(timing ? { analysisTiming: timing } : {}),
           ...traceBase,
         }) as RehearsalTrace,
