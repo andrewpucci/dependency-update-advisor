@@ -776,7 +776,9 @@ never synthesize either from PR files. Only validated C2 excerpts may reach M1.
 
 ## Diagnostic Amendment 5: Assessment Failure Reason and Analysis Timing
 
-**Status: draft; not approved.** Scoped to
+**Status: approved for planning, 2026-11-15 (the user invoked `as-plan` on
+this reviewed draft, after a fresh-context Opus review, and confirmed the print
+format). Plan and execution approval remain separate gates.** Scoped to
 [#337](https://github.com/andrewpucci/dependency-update-advisor/issues/337)
 (the assessment failure reason) and
 [#334](https://github.com/andrewpucci/dependency-update-advisor/issues/334)

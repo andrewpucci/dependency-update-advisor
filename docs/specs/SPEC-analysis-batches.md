@@ -228,7 +228,7 @@ and `maxSplitDepth`
 are implemented and merged in PR #336. Nothing prints them yet: the companion
 [W2 Amendment 5](SPEC-review-orchestration.md#diagnostic-amendment-5-assessment-failure-reason-and-analysis-timing)
 ([#334](https://github.com/andrewpucci/dependency-update-advisor/issues/334))
-is a draft, not approved.** Effort tier: L (adds fields to M2's exported
+is approved for planning (2026-11-15).** Effort tier: L (adds fields to M2's exported
 diagnostics and amends item 11's closed allowlist). Scoped to a new issue under
 [#309](https://github.com/andrewpucci/dependency-update-advisor/issues/309),
 not to #329. The
@@ -308,7 +308,7 @@ on the exact implementation revision.
 - **Never:** record payload, reasoning, or error text, or let a diagnostic
   change an outcome.
 
-### Companion W2 amendment (draft)
+### Companion W2 amendment
 
 Nothing reads M2's diagnostics today (`src/assessment.ts` drops them), and
 reporting a number is Ask-first under
@@ -316,7 +316,7 @@ reporting a number is Ask-first under
 separate, L-tier W2 amendment, drafted as
 [Amendment 5](SPEC-review-orchestration.md#diagnostic-amendment-5-assessment-failure-reason-and-analysis-timing),
 passes them to the fixed stderr line and trace as bounded integers; until it is
-approved and merged, the new fields are not visible to a maintainer.
+implemented and merged, the new fields are not visible to a maintainer.
 
 ## Boundaries and open planning choices
 
