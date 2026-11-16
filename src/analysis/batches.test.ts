@@ -827,6 +827,60 @@ test('a call ended by cancellation records the elapsed time at the cutoff', asyn
   expect(result.diagnostics.callDurationsMs).toHaveLength(result.diagnostics.callsDispatched);
 });
 
+test('a call ended by the deadline timer records the elapsed time at the cutoff', async () => {
+  const { input } = await analysisScenario();
+  let time = 0;
+  // The effective deadline is 60_005 - 60_000 (publication reserve) = 5 ms on the injected clock.
+  const result = await analyzeDecisionUnits(
+    input,
+    { apiKey: 'test-key', deadlineMs: 60_005 },
+    {
+      now: () => time,
+      analyze: () => {
+        time = 5;
+        return new Promise(() => {});
+      },
+    },
+  );
+  expect(result.ok).toBe(true);
+  if (!result.ok) throw new Error('fixture failed');
+  expect(result.records.every((record) => record.category === 'deadline')).toBe(true);
+  expect(result.diagnostics.callDurationsMs.length).toBeGreaterThan(0);
+  expect(result.diagnostics.callDurationsMs.every((ms) => ms === 5)).toBe(true);
+  expect(result.diagnostics.callDurationsMs).toHaveLength(result.diagnostics.callsDispatched);
+});
+
+test.each([
+  [
+    'a rejected',
+    (advance: () => void) => async () => {
+      advance();
+      throw new Error('transport');
+    },
+  ],
+  [
+    'a synchronously thrown',
+    (advance: () => void) => () => {
+      advance();
+      throw new Error('transport');
+    },
+  ],
+])('%s transport call records the elapsed time at the cutoff', async (_name, failing) => {
+  const { input } = await analysisScenario();
+  let time = 2;
+  const result = await analyzeDecisionUnits(
+    input,
+    { apiKey: 'test-key', deadlineMs: 700_000 },
+    { now: () => time, analyze: failing(() => (time += 9)) },
+  );
+  expect(result.ok).toBe(true);
+  if (!result.ok) throw new Error('fixture failed');
+  expect(result.records.every((record) => record.category === 'transport')).toBe(true);
+  expect(result.diagnostics.callDurationsMs.length).toBeGreaterThan(0);
+  expect(result.diagnostics.callDurationsMs.every((ms) => ms === 9)).toBe(true);
+  expect(result.diagnostics.callDurationsMs).toHaveLength(result.diagnostics.callsDispatched);
+});
+
 test.each([NaN, Infinity])(
   'a clock that turns %s after dispatch still records a non-negative integer',
   async (late) => {
@@ -972,4 +1026,49 @@ test('a preparation-budget re-pack does not add split depth', async () => {
   } finally {
     spy.mockRestore();
   }
+});
+
+test('a preparation-budget re-pack below the first level keeps its parent depth', async () => {
+  const input = await inventoryOf(8);
+  const contract = await import('./contract.js');
+  const prepare = contract.prepareRunBatch;
+  const spy = vi.spyOn(contract, 'prepareRunBatch').mockImplementation((run, value) => {
+    const ids = value as string[];
+    return ids.length === 4
+      ? { kind: 'invalid', category: 'budget', attempted: false }
+      : prepare(run, value);
+  });
+  try {
+    const result = await runWithTruncation(input, (ids) => ids.length === 8 || ids.length === 2);
+    expect(result.ok).toBe(true);
+    if (!result.ok) throw new Error('fixture failed');
+    // 8 truncates (depth 1); each 4-unit half re-packs into 2-unit batches still at depth 1;
+    // each of those four truncates once more, reaching depth 2.
+    expect(result.diagnostics.truncationSplits).toBe(5);
+    expect(result.diagnostics.maxSplitDepth).toBe(2);
+  } finally {
+    spy.mockRestore();
+  }
+});
+
+test('the timing and split-depth fields add only integers to the diagnostics allowlist', async () => {
+  const result = await runWithTruncation(await inventoryOf(8), (ids) => ids.length === 8);
+  expect(result.ok).toBe(true);
+  if (!result.ok) throw new Error('fixture failed');
+  expect(Object.keys(result.diagnostics)).toEqual([
+    'provider',
+    'model',
+    'headSha',
+    'unitCount',
+    'memberCount',
+    'callsDispatched',
+    'truncationSplits',
+    'maxSplitDepth',
+    'callDurationsMs',
+    'stateCounts',
+    'failureCategories',
+  ]);
+  expect(Number.isInteger(result.diagnostics.maxSplitDepth)).toBe(true);
+  expect(result.diagnostics.callDurationsMs.length).toBeGreaterThan(0);
+  expect(result.diagnostics.callDurationsMs.every(Number.isInteger)).toBe(true);
 });
