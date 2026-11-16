@@ -572,8 +572,9 @@ publication spends that reserve.
 ## Diagnostic Amendment 4: Fixed Model-Unavailable Reason
 
 **Status: approved for planning, 2026-11-11, and for automatic execution; code
-implemented for #314-#318, pending review and merge; the R1 re-pin and
-rehearsal (#319) remain.** Scoped to
+implemented for #314-#318 and merged; its closing rehearsal (#319, superseded
+by #329) is recorded on #309 and ended `internal-failure at assessment`, which
+Amendment 5 would name.** Scoped to
 [#309](https://github.com/andrewpucci/dependency-update-advisor/issues/309).
 It adds a reported value, which Amendment 2's boundaries make Ask-first, and
 the user approved splitting `http` by status class and then approved the
@@ -772,6 +773,205 @@ existing limits. Incomplete inventory or failed reads cannot become an empty
 successful context. Supply T4 with the authentic successful C2 result, including
 disabled/unavailable/partial distinctions, and matching `contextRevision`;
 never synthesize either from PR files. Only validated C2 excerpts may reach M1.
+
+## Diagnostic Amendment 5: Assessment Failure Reason and Analysis Timing
+
+**Status: approved for planning, 2026-11-15 (the user invoked `as-plan` on
+this reviewed draft, after a fresh-context Opus review, and confirmed the print
+format). Plan and execution approval remain separate gates.** Scoped to
+[#337](https://github.com/andrewpucci/dependency-update-advisor/issues/337)
+(the assessment failure reason) and
+[#334](https://github.com/andrewpucci/dependency-update-advisor/issues/334)
+(printing M2's timing diagnostics), both under
+[#309](https://github.com/andrewpucci/dependency-update-advisor/issues/309).
+They are one amendment because both add a reported value over the same modules,
+which Amendments 2 and 4 make Ask-first. A fresh-context review of the first
+draft found five blocking gaps, applied here; the user chose the
+`assessment-exception` literal. It does not authorize live publication or a
+production claim backend. Effort tier: L (crosses `assessment`, `review`,
+`pipeline`, `handoff`, and `startup`, and amends approved text).
+
+The first R1 no-write rehearsal on the reasoning-model change ended
+`internal-failure at assessment` (caller run 43798056878, shared workflow pinned
+to `ac232bb`, Dependabot PR #276; the action step ran 346 s). That is neither
+`complete` nor `model-unavailable`, and the fixed line cannot say why. Eight
+causes end at that stage today, on three paths:
+
+- `assessReviewPacket` returns `internal-failure` when the trusted config is not
+  valid (unreachable through the pipeline, which returns `invalid-config`
+  first), when M2 returns `ok: false` (category `input` or `configuration`), and
+  when anything in its `try` throws: M2, `formDecisionUnits`, or the coverage
+  check after M2 returned;
+- `reviewPacket` returns `internal-failure` when the brief renderer rejects a
+  valid assessment (its size limit, or any other category: the renderer turns
+  its own exceptions into category `input`) and when its own render step throws
+  outside the renderer; and
+- an exception escaping `reviewPacket` is caught by the pipeline's stage
+  wrapper and becomes `internal-failure at assessment`.
+
+M2 also returns `callsDispatched`, `callDurationsMs`, and `maxSplitDepth`
+([#331](https://github.com/andrewpucci/dependency-update-advisor/issues/331),
+[#332](https://github.com/andrewpucci/dependency-update-advisor/issues/332)),
+but `assessment` discards M2's diagnostics, so no rehearsal can show them.
+
+1. **Assessment failure reason.** An `internal-failure` at the `assessment`
+   stage carries exactly one `AssessmentFailureReason`, required there, a
+   literal chosen by trusted code from this closed list:
+   - `config` — the trusted config was not valid at assessment (reachable only
+     by calling `assessReviewPacket` directly);
+   - `analysis-input` and `analysis-configuration` — M2 returned `ok: false`
+     with that category;
+   - `analysis-exception` — anything threw inside `assessReviewPacket`'s `try`;
+   - `render-size` — the renderer rejected the brief for size;
+   - `render-rejected` — the renderer rejected it for any other category,
+     including its own exceptions;
+   - `render-exception` — `reviewPacket`'s render step threw outside the
+     renderer; and
+   - `assessment-exception` — an exception escaped `reviewPacket` and the
+     pipeline's stage wrapper labelled it.
+
+   No stage other than `assessment` carries an `AssessmentFailureReason`;
+   `freshness` keeps its own existing detail. The reason is never derived from
+   an exception name or message, a response body or header, a URL, a config
+   value, source content, PR input, a credential, or provider output.
+
+2. **Analysis timing.** `assessReviewPacket` attaches `analysisTiming` to every
+   result it returns after M2 returned `ok: true`: `callsDispatched`,
+   `callDurationsMs` (at most 32 integers, in M2's wave order), and
+   `maxSplitDepth`, copied unchanged from M2's diagnostics. It is therefore
+   present on `complete`, `incomplete-evidence`, an analysis `model-unavailable`,
+   and a render-failure `internal-failure` (the `render-*` reasons), and absent
+   when M2 never ran or returned `ok: false`, on `no-key`, and when anything
+   threw inside `assessReviewPacket`, even after M2 returned. Nothing is
+   computed, rounded, or derived here.
+3. **Fields and plumbing.** The two fields are named `assessmentFailureReason`
+   and `analysisTiming`. `AssessmentResult` and `ReviewResult` carry them, the
+   pipeline's internal outcome carries them, and the pipeline result of a
+   handed-off rehearsal reports them. `RehearsalSink.record`'s
+   optional detail gains `assessmentFailureReason` as a third alternative beside
+   the freshness detail and the model-unavailable reason. `analysisTiming` is a
+   separate, optional argument of `record`, so it reaches the trace on every
+   outcome that carries it, including `complete`, whose detail is `undefined`
+   today; it is never recorded beside a `FreshnessDetail`. The sink narrows
+   the reason to the closed list in item 1, as it does the model-unavailable
+   reason, and refuses a record with an unlisted reason; it copies only the
+   integer fields of `analysisTiming`. The trace retains both. **Neither is on
+   the exported `ReviewHandoff`, the status, or the comment body.**
+4. **Reporting.** The values reach the rehearsal's stderr line and the trace
+   only. The reason, when present, follows the stage; the timing segment, when
+   present, follows the outcome and reason; `; nothing was published.` comes
+   last. The complete forms are:
+
+   ```text
+   dependabot-review: no-write rehearsal recorded internal-failure at assessment (render-rejected); analysis 2 calls (61234, 58100 ms), max split depth 1; nothing was published.
+   dependabot-review: no-write rehearsal recorded complete; analysis 1 call (61234 ms), max split depth 0; nothing was published.
+   dependabot-review: no-write rehearsal recorded model-unavailable (http-server); analysis 0 calls, max split depth 0; nothing was published.
+   dependabot-review: no-write rehearsal recorded internal-failure at assessment (analysis-input); nothing was published.
+   ```
+
+   The reason uses the form Amendment 2 gives `(<field> <reason>)`. The
+   timing segment is `; analysis <n> calls (<ms>, <ms> ms), max split depth
+   <d>`, with `1 call (<ms> ms)` for one call and `analysis 0 calls, max split
+   depth 0` for none; the words `call` and `calls` are literal, not `call(s)`.
+   The segment shows that analysis returned a result and what it recorded. Its
+   absence does not prove that no call was made: M2 can return `ok: false`
+   after calls ran, when its coverage summary fails, and that case carries no
+   timing.
+
+   The user confirmed this prose format on 2026-11-15 (read by a person, not
+   parsed; every duration listed, no `key=value` or summary-only form).
+
+5. **Bounds.** The line stays one line, and every part is an integer or a
+   literal from item 1 or Amendments 2 and 4. M2 clips each call to the
+   remaining analysis time, at most 600,000 ms, and the transport timeout is
+   240,000 ms, so a production value has at most six digits. The printer clamps
+   any value above 999,999 to 999,999, so an injected clock cannot lengthen the
+   line; the carried data is not clamped.
+6. **Fail-closed preservation.** Neither value changes an outcome, status,
+   comment, freshness gate, claim, or write. If a finished assessment is then
+   discarded, the reason and the timing are dropped with it, as Amendment 4
+   item 7 does for its reason. That happens on two paths: the final freshness
+   check turning the outcome into `stale` or `internal-failure at freshness`,
+   and the snapshot's own `active()` re-check after the assessment callback,
+   which the pipeline reports as `stale`, `internal-failure at freshness`, or
+   `internal-failure at snapshot`. Keeping the timing through those conversions
+   is not proposed here; revisit it if rehearsals show slow analysis ending at
+   `freshness`.
+7. **Supersedes when implemented.** This amendment changes, in this file:
+   Amendment 1 item 2 (the form `internal-failure at <stage>`, which gains a
+   reason for `assessment`); Amendment 2 item 5 ("every other stage keeps the
+   exact first-amendment form"); Amendment 4 item 1 ("no other outcome carries
+   a reason"), item 3 ("every other outcome keeps its exact form", which also
+   covers `complete` and `incomplete-evidence` when timing is present), and the
+   item 8 check that `internal-failure` outcomes carry no reason, which becomes
+   "no stage other than `assessment`", and item 8's exact-line check for the
+   shipped bundle. Tests that change with it: exact-shape assertions in
+   `src/assessment.test.ts`; the `assessedOutcome` case in `src/pipeline.test.ts`
+   that resolves a reasonless `internal-failure`, which no longer type-checks
+   (the `inStage` wrapper cases are separate and gain the `assessment-exception`
+   reason); the whole-trace `toEqual` assertions in `src/pipeline.test.ts`,
+   including the `complete` trace, which gain timing; the expected stderr lines
+   in `src/startup.test.ts`; and the exact lines in `tests/action-startup.test.ts`,
+   including the `model-unavailable (<reason>); nothing was published.` line that
+   Amendment 4 item 3 specifies.
+
+### Amendment 5 checks
+
+Each is written first and shown failing on the prior code or a named mutation:
+
+- Each of the eight reasons is produced through its own path and appears as
+  `internal-failure at assessment (<reason>)` on stderr and in the trace:
+  `config` by calling `assessReviewPacket` directly; `analysis-input` and
+  `analysis-configuration` through M2's seam; `analysis-exception` by a throw
+  inside the `try`; `render-size`, `render-rejected`, and `render-exception`
+  through the renderer and `reviewPacket`'s own step; and `assessment-exception`
+  through the pipeline's stage wrapper. A renderer that throws internally
+  reports `render-rejected`, not `render-exception`.
+- A sentinel in a thrown error's message, a response body, a URL, and a
+  credential never reaches stderr or the trace.
+- `analysisTiming` equals M2's diagnostics for a scripted run, including a
+  reordered-completion case, and is absent on `no-key`, for `ok: false`
+  (including a coverage failure after calls ran), and when something throws
+  after M2 returned.
+- The printed segment matches item 4 for 0, 1, 2, and 32 calls, and a duration
+  of 999,999 and of 1,000,000 both print as 999999.
+- A reason or timing is dropped when the final freshness check turns the outcome
+  into `stale` or `internal-failure at freshness`, and when the snapshot's
+  post-callback `active()` re-check discards a finished assessment.
+- The sink refuses a record whose `assessmentFailureReason` is not in the closed
+  list, copies only the integer fields of `analysisTiming`, and records timing
+  on `complete` as well as on the other outcomes.
+- The shipped bundle prints the new line. Its durations come from the real
+  clock, so the test matches them with a digit pattern (`\d{1,6}`) and asserts
+  the call count and split depth exactly; the model-unavailable case runs
+  through the bundle harness, and the render-failure case runs in
+  `src/startup.test.ts`, where the renderer can be made to fail. The bundle is
+  rebuilt and committed in the task that changes the line.
+- No outcome kind, status, or comment text changes.
+
+Named mutations that must each fail a test: mapping two paths to one reason;
+defaulting every path to `config`; labelling a renderer rejection
+`render-exception`; recording a reason on another stage or outcome; adding
+either value to the exported `ReviewHandoff`, the status, or the comment body;
+recomputing or re-ordering the durations; attaching timing on `no-key`;
+omitting the zero-call segment; printing an unclamped value; printing the
+literal `call(s)`; a sink that stores an unlisted reason or the whole timing
+object; timing dropped on `complete`; and keeping the reason or timing after
+either freshness path.
+
+Run the commands in Commands above, plus `npm run complexity -- --base
+origin/main`, on the exact revision.
+
+### Amendment 5 Boundaries
+
+- **Always:** choose reasons in trusted code from the closed list; copy M2's
+  integers unchanged; keep every value on stderr and the trace only.
+- **Ask first:** add or rename a reason, report another number, surface any
+  value in status or comment text, or change a trigger, an App permission, or a
+  secret.
+- **Never:** report a raw error, payload, status code, header, URL, or model
+  text; derive a reason from untrusted data; weaken fail-closed behavior; or
+  start publication or production-claim implementation.
 
 ## Testing Strategy
 

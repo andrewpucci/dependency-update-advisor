@@ -153,8 +153,9 @@ gaps and an introduced vulnerability before parity is claimed.
   execution for M2 #22 after plan approval, 2026-11-07. A
   [timing and split-depth diagnostics amendment](SPEC-analysis-batches.md#timing-and-split-depth-diagnostics-amendment)
   (`callDurationsMs`, `maxSplitDepth`) is approved for planning, 2026-11-15;
-  both fields are implemented (#331, #332), pending review and merge. A
-  companion W2 amendment (#334), not yet drafted, must print the values.
+  both fields are implemented and merged (#331, #332, PR #336). A companion
+  [W2 Amendment 5](SPEC-review-orchestration.md#diagnostic-amendment-5-assessment-failure-reason-and-analysis-timing)
+  (#334, #337), approved for planning 2026-11-15, would print the values.
 - [Mistral transport and single-batch validation](SPEC-mistral-transport.md) —
   approved for execution for M1 #21 in `analysis-providers`, 2026-11-07,
   after the user's edits, plan review, and `as-build auto`.
@@ -284,8 +285,12 @@ gaps and an introduced vulnerability before parity is claimed.
   tasks preserve separate publication, adoption, parity, and cutover gates.
   A fourth amendment ([fixed model-unavailable reason](SPEC-review-orchestration.md#diagnostic-amendment-4-fixed-model-unavailable-reason),
   [#309](https://github.com/andrewpucci/dependency-update-advisor/issues/309))
-  is approved for planning and execution, 2026-11-11; code implemented, pending
-  review and merge, with the R1 re-pin and rehearsal remaining.
+  is approved for planning and execution, 2026-11-11; code merged. Its closing
+  rehearsal (#319, superseded by #329) ended `internal-failure at assessment`.
+  A fifth amendment ([assessment failure reason and analysis timing](SPEC-review-orchestration.md#diagnostic-amendment-5-assessment-failure-reason-and-analysis-timing),
+  [#337](https://github.com/andrewpucci/dependency-update-advisor/issues/337),
+  [#334](https://github.com/andrewpucci/dependency-update-advisor/issues/334))
+  is approved for planning, 2026-11-15, and would name that failure's cause.
 - [Advisory complexity review](SPEC-complexity-review.md) — user-requested
   supporting repository tooling contract; implemented and merged into `main`
   in [PR #65](https://github.com/andrewpucci/dependency-update-advisor/pull/65).

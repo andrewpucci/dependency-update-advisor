@@ -22,12 +22,19 @@ publication/production-claim gates are in the W2 spec.
 split-depth diagnostics, are merged. The [capability map](docs/specs/README.md)
 is authoritative for all contract status and remaining integration gates.
 
+[W2 Amendment 5](docs/specs/SPEC-review-orchestration.md#diagnostic-amendment-5-assessment-failure-reason-and-analysis-timing)
+([#334](https://github.com/andrewpucci/dependency-update-advisor/issues/334),
+[#337](https://github.com/andrewpucci/dependency-update-advisor/issues/337))
+is approved for planning in [#338](https://github.com/andrewpucci/dependency-update-advisor/pull/338).
+It would name `internal-failure at assessment` and print M2 timing; its plan
+and execution approvals remain separate gates.
+
 ## Next action
 
-Complete the no-write R1 rehearsal in [#329](https://github.com/andrewpucci/dependency-update-advisor/issues/329)
-and record its sanitized outcome on [#309](https://github.com/andrewpucci/dependency-update-advisor/issues/309).
-The W2 amendment to print M2 timing diagnostics ([#334](https://github.com/andrewpucci/dependency-update-advisor/issues/334))
-remains a separate, not-yet-drafted contract and does not block #329.
+Review and merge [#338](https://github.com/andrewpucci/dependency-update-advisor/pull/338),
+then approve its execution plan and implementation issues. The follow-up
+rehearsal in [#329](https://github.com/andrewpucci/dependency-update-advisor/issues/329)
+still records its sanitized outcome on [#309](https://github.com/andrewpucci/dependency-update-advisor/issues/309).
 Publication, production claim storage, adoption, parity, and cutover remain
 separate gates.
 
