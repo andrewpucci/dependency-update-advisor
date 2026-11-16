@@ -21668,7 +21668,7 @@ async function analyzeDecisionUnits(input, options, dependencies = {}) {
 	const model = parsedConfig.ok && snapshot.config.ok && isDeepStrictEqual(parsedConfig.config, snapshot.config.config) ? parsedConfig.config.analysis?.model ?? null : null;
 	const unitIds = snapshot.inventory.units.map((unit) => unit.id);
 	const deadlineMs = Math.min(selectedOptions.deadlineMs - PUBLICATION_RESERVE_MS, start + MAX_ANALYSIS_MS);
-	const { records, dispatched, splits, durations } = await scheduleBatches(snapshot, {
+	const { records, dispatched, splits, maxSplitDepth, durations } = await scheduleBatches(snapshot, {
 		...selectedOptions,
 		deadlineMs
 	}, analyze, now, unitIds);
@@ -21699,6 +21699,7 @@ async function analyzeDecisionUnits(input, options, dependencies = {}) {
 			memberCount: snapshot.inventory.packet.changes.length,
 			callsDispatched: dispatched,
 			truncationSplits: splits,
+			maxSplitDepth,
 			callDurationsMs: durations,
 			stateCounts,
 			failureCategories: [...new Set(records.flatMap((record) => record.category ? [record.category] : []))].sort()
@@ -21713,6 +21714,8 @@ async function scheduleBatches(snapshot, options, analyze, now, unitIds) {
 		calls: 0,
 		dispatched: 0,
 		splits: 0,
+		depths: /* @__PURE__ */ new WeakMap(),
+		maxSplitDepth: 0,
 		durations: []
 	};
 	for (let index = 0; index < unitIds.length; index += ANALYSIS_LIMITS.maxUnits) state.queue.push(unitIds.slice(index, index + ANALYSIS_LIMITS.maxUnits));
@@ -21732,7 +21735,7 @@ function prepareWave(state, snapshot, options, analyze, now) {
 		const ids = state.queue.shift();
 		const prepared = prepareBatch(state, snapshot, ids);
 		if (prepared.kind !== "prepared") {
-			if (prepared.category === "budget" && ids.length > 1 && !prepared.runWide) state.queue.unshift(...splitUnits(ids));
+			if (prepared.category === "budget" && ids.length > 1 && !prepared.runWide) state.queue.unshift(...splitAt(state, ids, state.depths.get(ids) ?? 0));
 			else {
 				state.records.push(...unresolved(ids, "unavailable", false, prepared.category, null));
 				if (prepared.category !== "budget") return {
@@ -21784,7 +21787,9 @@ async function collectWave(state, wave) {
 		if (typeof result === "string") state.records.push(...unresolved(ids, "unavailable", true, result, batchId));
 		else if (isSplittable(result, ids, batchId)) {
 			state.splits++;
-			children.push(...splitUnits(ids));
+			const depth = (state.depths.get(ids) ?? 0) + 1;
+			state.maxSplitDepth = Math.max(state.maxSplitDepth, depth);
+			children.push(...splitAt(state, ids, depth));
 		} else state.records.push(...mapResult(ids, batchId, result));
 	}
 	state.queue.unshift(...children);
@@ -21798,6 +21803,12 @@ function isSplittable(result, ids, batchId) {
 function splitUnits(ids) {
 	const midpoint = Math.floor(ids.length / 2);
 	return [ids.slice(0, midpoint), ids.slice(midpoint)];
+}
+/** Splits a batch and records the children's depth: a re-pack keeps it, a truncation adds one. */
+function splitAt(state, ids, childDepth) {
+	const children = splitUnits(ids);
+	for (const child of children) state.depths.set(child, childDepth);
+	return children;
 }
 function finishQueue(state, preparationFailure, options, now) {
 	const category = preparationFailure ?? (options.signal?.aborted ? "cancelled" : now() >= options.deadlineMs ? "deadline" : "call_budget");

@@ -81,7 +81,7 @@ export async function analyzeDecisionUnits(
     selectedOptions.deadlineMs - PUBLICATION_RESERVE_MS,
     start + MAX_ANALYSIS_MS,
   );
-  const { records, dispatched, splits, durations } = await scheduleBatches(
+  const { records, dispatched, splits, maxSplitDepth, durations } = await scheduleBatches(
     snapshot,
     { ...selectedOptions, deadlineMs },
     analyze,
@@ -112,6 +112,7 @@ export async function analyzeDecisionUnits(
       memberCount: snapshot.inventory.packet.changes.length,
       callsDispatched: dispatched,
       truncationSplits: splits,
+      maxSplitDepth,
       callDurationsMs: durations,
       stateCounts,
       failureCategories: [
@@ -131,6 +132,9 @@ type ScheduleState = {
   calls: number;
   dispatched: number;
   splits: number;
+  /** Truncation splits above each queued batch; an absent batch is first-level (depth 0). */
+  depths: WeakMap<string[], number>;
+  maxSplitDepth: number;
   durations: number[];
   run?: ReturnType<typeof prepareAnalysisRun>;
 };
@@ -148,6 +152,8 @@ async function scheduleBatches(
     calls: 0,
     dispatched: 0,
     splits: 0,
+    depths: new WeakMap(),
+    maxSplitDepth: 0,
     durations: [],
   };
   for (let index = 0; index < unitIds.length; index += ANALYSIS_LIMITS.maxUnits)
@@ -182,7 +188,7 @@ function prepareWave(
     const prepared = prepareBatch(state, snapshot, ids);
     if (prepared.kind !== 'prepared') {
       if (prepared.category === 'budget' && ids.length > 1 && !prepared.runWide) {
-        state.queue.unshift(...splitUnits(ids));
+        state.queue.unshift(...splitAt(state, ids, state.depths.get(ids) ?? 0));
       } else {
         state.records.push(...unresolved(ids, 'unavailable', false, prepared.category, null));
         if (prepared.category !== 'budget') return { wave, preparationFailure: prepared.category };
@@ -231,7 +237,9 @@ async function collectWave(state: ScheduleState, wave: WaveEntry[]) {
       state.records.push(...unresolved(ids, 'unavailable', true, result, batchId));
     } else if (isSplittable(result, ids, batchId)) {
       state.splits++;
-      children.push(...splitUnits(ids));
+      const depth = (state.depths.get(ids) ?? 0) + 1;
+      state.maxSplitDepth = Math.max(state.maxSplitDepth, depth);
+      children.push(...splitAt(state, ids, depth));
     } else state.records.push(...mapResult(ids, batchId, result));
   }
   state.queue.unshift(...children);
@@ -258,6 +266,13 @@ function isSplittable(result: MistralResult, ids: string[], batchId: string) {
 function splitUnits(ids: string[]): [string[], string[]] {
   const midpoint = Math.floor(ids.length / 2);
   return [ids.slice(0, midpoint), ids.slice(midpoint)];
+}
+
+/** Splits a batch and records the children's depth: a re-pack keeps it, a truncation adds one. */
+function splitAt(state: ScheduleState, ids: string[], childDepth: number) {
+  const children = splitUnits(ids);
+  for (const child of children) state.depths.set(child, childDepth);
+  return children;
 }
 
 function finishQueue(

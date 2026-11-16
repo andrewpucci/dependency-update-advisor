@@ -858,3 +858,89 @@ test('records no durations when no call is dispatched', async () => {
   if (!result.ok) throw new Error('fixture failed');
   expect(result.diagnostics.callDurationsMs).toEqual([]);
 });
+
+// Split-depth diagnostics (#332): depth counts truncation splits down one lineage, not totals.
+async function inventoryOf(units: number) {
+  const { input } = await analysisScenario({ inventory: { children: units - 3 } });
+  const { formDecisionUnits } = await import('../units.js');
+  const inventory = formDecisionUnits({ ...input.inventory.packet, relationships: [] });
+  expect(inventory.units).toHaveLength(units);
+  return { ...input, inventory };
+}
+
+function runWithTruncation(
+  input: Awaited<ReturnType<typeof inventoryOf>>,
+  truncates: (unitIds: readonly string[]) => boolean,
+) {
+  return analyzeDecisionUnits(
+    input,
+    { apiKey: 'test-key', deadlineMs: 700_000 },
+    {
+      now: () => 0,
+      analyze: (batch, options) =>
+        analyzeMistralBatch(batch, options, {
+          now: () => 0,
+          fetch: async () =>
+            Response.json({
+              choices: [
+                {
+                  index: 0,
+                  finish_reason: truncates(batch.unitIds) ? 'length' : 'stop',
+                  message: { role: 'assistant', content: JSON.stringify(analysisDocument(batch)) },
+                },
+              ],
+            }),
+        }),
+    },
+  );
+}
+
+test.each([
+  ['a halved half that truncates again', (ids: readonly string[]) => ids.length > 2, 3, 2],
+  ['one first-level truncation', (ids: readonly string[]) => ids.length === 8, 1, 1],
+  ['no truncation', () => false, 0, 0],
+])('reports split depth for %s', async (_name, truncates, splits, depth) => {
+  const result = await runWithTruncation(await inventoryOf(8), truncates);
+  expect(result.ok).toBe(true);
+  if (!result.ok) throw new Error('fixture failed');
+  expect(result.diagnostics.truncationSplits).toBe(splits);
+  expect(result.diagnostics.maxSplitDepth).toBe(depth);
+});
+
+test('independent first-level splits in different waves stay at depth 1', async () => {
+  const input = await inventoryOf(24);
+  const first = input.inventory.units.map((unit) => unit.id);
+  // Batches of 8 start at units 0, 8, and 16: the first and third truncate. Waves hold two
+  // calls, so the third batch dispatches only after the first batch's children.
+  const truncating = new Set([first[0], first[16]]);
+  const result = await runWithTruncation(
+    input,
+    (ids) => ids.length === 8 && truncating.has(ids[0]),
+  );
+  expect(result.ok).toBe(true);
+  if (!result.ok) throw new Error('fixture failed');
+  expect(result.diagnostics.truncationSplits).toBe(2);
+  expect(result.diagnostics.maxSplitDepth).toBe(1);
+});
+
+test('a preparation-budget re-pack does not add split depth', async () => {
+  const input = await inventoryOf(8);
+  const contract = await import('./contract.js');
+  const prepare = contract.prepareRunBatch;
+  const spy = vi.spyOn(contract, 'prepareRunBatch').mockImplementation((run, value) => {
+    const ids = value as string[];
+    return ids.length > 4
+      ? { kind: 'invalid', category: 'budget', attempted: false }
+      : prepare(run, value);
+  });
+  try {
+    const result = await runWithTruncation(input, (ids) => ids.length === 4);
+    expect(result.ok).toBe(true);
+    if (!result.ok) throw new Error('fixture failed');
+    // The 8-unit batch re-packs into two 4-unit batches at depth 0; both then truncate once.
+    expect(result.diagnostics.truncationSplits).toBe(2);
+    expect(result.diagnostics.maxSplitDepth).toBe(1);
+  } finally {
+    spy.mockRestore();
+  }
+});
