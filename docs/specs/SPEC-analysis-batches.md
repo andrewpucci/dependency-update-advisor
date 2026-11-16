@@ -220,16 +220,19 @@ compatibility, workflow publication, packaging, adoption, parity, or cutover.
 
 ## Timing and Split-Depth Diagnostics Amendment
 
-**Status: approved for planning, 2026-11-15 (the user invoked `as-plan` on
-this reviewed draft, after a fresh-context Opus review); `callDurationsMs`
+**Status: implemented and merged. The user approved planning on 2026-11-15
+(by invoking `as-plan` on this reviewed draft, after a fresh-context Opus
+review); `callDurationsMs`
 ([#331](https://github.com/andrewpucci/dependency-update-advisor/issues/331))
 and `maxSplitDepth`
 ([#332](https://github.com/andrewpucci/dependency-update-advisor/issues/332))
-are implemented and merged in PR #336. Nothing prints them yet: the companion
+are implemented and merged in PR #336. The companion
 [W2 Amendment 5](SPEC-review-orchestration.md#diagnostic-amendment-5-assessment-failure-reason-and-analysis-timing)
 ([#334](https://github.com/andrewpucci/dependency-update-advisor/issues/334))
-is approved for planning (2026-11-15).** Effort tier: L (adds fields to M2's exported
-diagnostics and amends item 11's closed allowlist). Scoped to a new issue under
+is implemented and merged in PR #345, which prints the values on the
+no-write rehearsal line and trace.** Effort tier: L (adds fields to M2's
+exported diagnostics and amends item 11's closed allowlist). Scoped to a new
+issue under
 [#309](https://github.com/andrewpucci/dependency-update-advisor/issues/309),
 not to #329. The
 [R1 rehearsal evidence amendment](SPEC-adoption-self.md#rehearsal-evidence-amendment)
@@ -310,14 +313,12 @@ on the exact implementation revision.
 
 ### Companion W2 amendment
 
-Nothing reads M2's diagnostics today (`src/assessment.ts` drops them), and
-reporting a number is Ask-first under
+Reporting a number was Ask-first under
 [W2 Amendment 4](SPEC-review-orchestration.md#amendment-4-boundaries). A
 separate, L-tier W2 amendment,
 [Amendment 5](SPEC-review-orchestration.md#diagnostic-amendment-5-assessment-failure-reason-and-analysis-timing)
-(approved for planning, 2026-11-15), passes them to the fixed stderr line and
-trace as bounded integers; until it is implemented and merged, the new fields
-are not visible to a maintainer.
+(implemented and merged in PR #345), passes them to the fixed stderr line and
+trace as bounded integers.
 
 ## Boundaries and open planning choices
 

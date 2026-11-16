@@ -203,12 +203,12 @@ one:
    (`callDurationsMs`, `maxSplitDepth`), which makes M2 return them; and
 2. a W2 amendment,
    [Amendment 5](SPEC-review-orchestration.md#diagnostic-amendment-5-assessment-failure-reason-and-analysis-timing)
-   (approved for planning, 2026-11-15), that prints them as fixed integers,
+   (implemented and merged in PR #345), that prints them as fixed integers,
    because reporting a number is Ask-first under [W2 Amendment 4](SPEC-review-orchestration.md#amendment-4-boundaries).
 
-#329 waits for neither. Once both merge, later rehearsals, including #288's
-live trial, record both values. This adds no behavior, permission, secret, or
-trigger change to R1.
+#329 waited for neither. Both are now merged, so later rehearsals, including
+#288's live trial, record both values. This adds no behavior, permission,
+secret, or trigger change to R1.
 
 ## Open Questions
 
