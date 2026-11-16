@@ -860,8 +860,8 @@ but `assessment` discards M2's diagnostics, so no rehearsal can show them.
      print `analysis 0 calls, max split depth 0`, so a run that dispatched
      nothing is distinguishable from one that never reached analysis.
 
-   Best guess for the format, for the user to confirm before planning; the
-   reason list and the carried values are the contract.
+   The user confirmed this prose format on 2026-11-15 (read by a person, not
+   parsed; every duration listed, no `key=value` or summary-only form).
 
 5. **Bounds.** The line stays one line, and every part is an integer or a
    literal from item 1 or Amendments 2 and 4. M2 clips each call to the
