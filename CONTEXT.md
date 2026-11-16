@@ -31,9 +31,10 @@ and in the trace.
 
 ## Next action
 
-Approve the [#342](https://github.com/andrewpucci/dependency-update-advisor/issues/342)
-R1 caller re-pin to the merged diagnostics, then rehearse and record the
-sanitized outcome on [#309](https://github.com/andrewpucci/dependency-update-advisor/issues/309).
+Decide [#348](https://github.com/andrewpucci/dependency-update-advisor/issues/348):
+the R1 caller re-pin and diagnostics rehearsal are complete, but the no-write
+run ended fail closed at `render-size`. Its sanitized reason and timing are
+recorded on [#309](https://github.com/andrewpucci/dependency-update-advisor/issues/309).
 Publication, production claim storage, adoption, parity, and cutover remain
 separate gates.
 
