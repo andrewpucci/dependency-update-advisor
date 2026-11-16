@@ -66,7 +66,10 @@ GitHub App token.
    <reason>)`. It was then re-pinned to
    `214fbfc284cae4d19d270ec7c8b17e6b7999bb40`, the passing `main` revision that
    contains the pre-startup allowance and the fixed model-unavailable reason, so
-   a rehearsal that ends `model-unavailable` reports `(<reason>)`. No re-pin
+   a rehearsal that ends `model-unavailable` reports `(<reason>)`. It was then
+   re-pinned to `ac232bbedf7d5ad1a6df9a6b3a10d704571c865f`, the passing `main`
+   revision that contains the reasoning-model compatibility change (#330), so
+   the rehearsal can complete against Mistral's reasoning model. No re-pin
    changes a permission, secret, or trigger.
 
 ## Commands
