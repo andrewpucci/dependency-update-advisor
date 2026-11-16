@@ -443,7 +443,7 @@ anchor's sources. Unknown or unavailable evidence cannot satisfy these checks.
 ## Reasoning-Model Compatibility Amendment
 
 **Status: approved for planning and automatic execution, 2026-11-12;
-implemented for #324-#328, pending review and merge; the R1 re-pin and live
+implemented for #324-#328 and merged in PR #330; the R1 re-pin and live
 rehearsal (#329) remain.** The user reviewed the open questions (240,000 ms
 timeout; no model change) and approved the amendment, then invoked `as-plan`.
 Scoped to

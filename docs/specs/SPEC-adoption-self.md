@@ -154,6 +154,58 @@ three mapped secrets, no checkout, artifact, or cache, and no expression in
 5. Reusable-workflow and bundled-action resolution, App permissions, and a
    controlled current-head trial pass before the next adopter starts.
 
+## Rehearsal Evidence Amendment
+
+**Status: approved for planning, 2026-11-15 (the user invoked `as-plan` on
+this reviewed draft, after a fresh-context Opus review). Plan and execution
+approval remain separate gates.** Scoped to
+[#329](https://github.com/andrewpucci/dependency-update-advisor/issues/329),
+the close-out rehearsal after the reasoning-model compatibility change merged
+in [PR #330](https://github.com/andrewpucci/dependency-update-advisor/pull/330).
+#329 supersedes
+[#319](https://github.com/andrewpucci/dependency-update-advisor/issues/319)
+(whose own re-pin, `b370de3`, is already merged), so #319 closes with #329. The
+rehearsal stays no-write and depends on neither #288 nor #289.
+
+### Required first step
+
+The caller is pinned to `214fbfc`, which predates the reasoning-model change
+([#326](https://github.com/andrewpucci/dependency-update-advisor/issues/326)).
+A rehearsal "on that code" first needs the re-pin in #329's acceptance
+criteria: the caller, its test, and the pin sentence in Assumption 4 move to
+the merged `main` SHA, with the caller test red before and green after. No
+re-pin changes a permission, secret, or trigger.
+
+### What #329 records
+
+On #309, sanitized (no payloads, reasoning text, or private links):
+
+- the outcome and, if any, its reason;
+- the run and the exact revision; and
+- the total duration of the action step.
+
+M2's diagnostics (calls dispatched, truncation splits) are never printed: the
+action reports one fixed stderr line, and step timing spans the whole action
+(reads, research, analysis, freshness), so it cannot isolate model calls.
+Per-call durations and whether a half-batch split again are therefore **not
+available on this code**, and the record says so; it never infers them.
+
+### Durable source
+
+Per-call duration and split depth need two separate Ask-first amendments, not
+one:
+
+1. the
+   [M2 timing and split-depth diagnostics amendment](SPEC-analysis-batches.md#timing-and-split-depth-diagnostics-amendment)
+   (`callDurationsMs`, `maxSplitDepth`), which makes M2 return them; and
+2. a W2 amendment, not yet drafted, that prints them as fixed integers,
+   because reporting a number is Ask-first under
+   [W2 Amendment 4](SPEC-review-orchestration.md#amendment-4-boundaries).
+
+#329 waits for neither. Once both merge, later rehearsals, including #288's
+live trial, record both values. This adds no behavior, permission, secret, or
+trigger change to R1.
+
 ## Open Questions
 
 - W2 #26 is merged (2026-11-10) as a no-write rehearsal. Resolved 2026-11-11:

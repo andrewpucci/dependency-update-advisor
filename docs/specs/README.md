@@ -150,7 +150,10 @@ gaps and an introduced vulnerability before parity is claimed.
   `reason` to `VerificationError` for failed reads.
 - [Analysis providers](SPEC-analysis-providers.md) — approved for planning.
 - [Bounded decision-unit analysis](SPEC-analysis-batches.md) — approved for
-  execution for M2 #22 after plan approval, 2026-11-07.
+  execution for M2 #22 after plan approval, 2026-11-07. A
+  [timing and split-depth diagnostics amendment](SPEC-analysis-batches.md#timing-and-split-depth-diagnostics-amendment)
+  (`callDurationsMs`, `maxSplitDepth`) is approved for planning, 2026-11-15;
+  it needs a companion W2 amendment, not yet drafted, to print the values.
 - [Mistral transport and single-batch validation](SPEC-mistral-transport.md) —
   approved for execution for M1 #21 in `analysis-providers`, 2026-11-07,
   after the user's edits, plan review, and `as-build auto`.
@@ -169,8 +172,11 @@ gaps and an introduced vulnerability before parity is claimed.
   A [reasoning-model compatibility amendment](SPEC-mistral-transport.md#reasoning-model-compatibility-amendment)
   ([#309](https://github.com/andrewpucci/dependency-update-advisor/issues/309))
   is approved for planning and execution, 2026-11-12: `top_p`, content chunks,
-  and larger budgets; implemented, pending review and merge, with the R1 re-pin
-  and live rehearsal remaining.
+  and larger budgets; merged in
+  [PR #330](https://github.com/andrewpucci/dependency-update-advisor/pull/330),
+  with the R1 re-pin and live rehearsal
+  ([#329](https://github.com/andrewpucci/dependency-update-advisor/issues/329))
+  remaining.
 - [Immutable GitHub evidence reads](SPEC-github-read.md) — implemented for
   D1 #13 and #101–#107 in `shared-review`, merged into `main`. Caller-supplied
   budgets cover discovery, immutable file bytes, and independent comparison
@@ -231,7 +237,9 @@ gaps and an introduced vulnerability before parity is claimed.
   2026-11-11; supporting consumer record for
   [#27](https://github.com/andrewpucci/dependency-update-advisor/issues/27)
   in `repo-adoption`. W2 #26 is merged as a no-write rehearsal; live
-  publication and the claim backend remain gates for the live trial.
+  publication and the claim backend remain gates for the live trial. A
+  [rehearsal evidence amendment](SPEC-adoption-self.md#rehearsal-evidence-amendment)
+  for the #329 close-out rehearsal is approved for planning, 2026-11-15.
 - [Comment experience](SPEC-comment-experience.md) — approved supporting contract.
 - [Decision brief rendering](SPEC-decision-brief.md) — approved for execution
   for O1 #23; renderer implementation is pending overall review and merge.

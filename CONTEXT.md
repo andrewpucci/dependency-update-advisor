@@ -32,7 +32,7 @@ next rehearsal ended `model-unavailable`;
 [#309](https://github.com/andrewpucci/dependency-update-advisor/issues/309)
 added a fixed reason (Amendment 4, merged), which showed Mistral's reasoning
 model needs `top_p`, chunked content, and larger budgets (M1 amendment,
-implemented, pending review and merge; live rehearsal remains).
+merged in PR #330; the #329 re-pin and live rehearsal remain).
 Publication and production claim storage remain separate gates.
 
 ## Next action
