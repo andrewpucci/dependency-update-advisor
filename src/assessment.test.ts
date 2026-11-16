@@ -68,6 +68,7 @@ vi.mock('./analysis/batches.js', async (original) => {
 });
 
 const sentinel = 'sentinel-model-key';
+const singleCallTiming = { callsDispatched: 1, callDurationsMs: [0], maxSplitDepth: 0 };
 
 async function fixture() {
   const { analysisDocument, analysisScenario } = await import('../tests/parity/analysis.js');
@@ -117,7 +118,12 @@ test('gives no body when the model result is unusable', async () => {
   const { review, garbage } = await fixture();
   const render = vi.spyOn(reportingModule, 'renderDecisionBrief');
   const result = await reviewPacket({ ...review, model: garbage });
-  expect(result).toEqual({ kind: 'model-unavailable', reason: 'json', body: null });
+  expect(result).toEqual({
+    kind: 'model-unavailable',
+    reason: 'json',
+    body: null,
+    analysisTiming: singleCallTiming,
+  });
   expect(render).not.toHaveBeenCalled();
   render.mockRestore();
 });
@@ -146,7 +152,12 @@ test('turns a renderer failure into a status-only failure with no body', async (
     .spyOn(reportingModule, 'renderDecisionBrief')
     .mockReturnValueOnce({ ok: false, category: 'content' });
   const result = await reviewPacket({ ...review, model: complete });
-  expect(result).toEqual({ kind: 'internal-failure', reason: 'render-rejected', body: null });
+  expect(result).toEqual({
+    kind: 'internal-failure',
+    reason: 'render-rejected',
+    body: null,
+    analysisTiming: singleCallTiming,
+  });
   render.mockRestore();
 });
 
@@ -156,7 +167,12 @@ test('turns a renderer exception into a status-only failure with no body', async
     throw new Error(sentinel);
   });
   const result = await reviewPacket({ ...review, model: complete });
-  expect(result).toEqual({ kind: 'internal-failure', reason: 'render-exception', body: null });
+  expect(result).toEqual({
+    kind: 'internal-failure',
+    reason: 'render-exception',
+    body: null,
+    analysisTiming: singleCallTiming,
+  });
   expect(JSON.stringify(result)).not.toContain(sentinel);
   render.mockRestore();
 });
@@ -206,6 +222,7 @@ test('names an oversized brief as a budget gap, and no other renderer failure', 
     reason: 'render-size',
     body: null,
     gaps: [{ source: 'brief', reason: 'budget' }],
+    analysisTiming: singleCallTiming,
   });
   for (const category of ['input', 'reference', 'content'] as const) {
     render.mockReturnValueOnce({ ok: false, category });
@@ -213,6 +230,7 @@ test('names an oversized brief as a budget gap, and no other renderer failure', 
       kind: 'internal-failure',
       reason: 'render-rejected',
       body: null,
+      analysisTiming: singleCallTiming,
     });
   }
   render.mockRestore();
@@ -324,9 +342,18 @@ test.each([...MODEL_FAILURE_CATEGORIES])(
   async (category) => {
     const { review } = await fixture();
     const result = await reviewPacket({ ...review, model: failingModel(() => category) });
-    expect(result).toEqual({ kind: 'model-unavailable', reason: category, body: null });
+    expect(result).toEqual({
+      kind: 'model-unavailable',
+      reason: category,
+      body: null,
+      analysisTiming: singleCallTiming,
+    });
     const assessed = await assessReviewPacket({ ...review, model: failingModel(() => category) });
-    expect(assessed).toEqual({ kind: 'model-unavailable', reason: category });
+    expect(assessed).toEqual({
+      kind: 'model-unavailable',
+      reason: category,
+      analysisTiming: singleCallTiming,
+    });
   },
 );
 
@@ -334,7 +361,12 @@ test('reports a category outside the closed list as unknown, never as the raw te
   const { review } = await fixture();
   const raw = 'RAW_PROVIDER_TEXT sentinel-model-key';
   const result = await reviewPacket({ ...review, model: failingModel(() => raw) });
-  expect(result).toEqual({ kind: 'model-unavailable', reason: 'unknown', body: null });
+  expect(result).toEqual({
+    kind: 'model-unavailable',
+    reason: 'unknown',
+    body: null,
+    analysisTiming: singleCallTiming,
+  });
   expect(JSON.stringify(result)).not.toContain('RAW_PROVIDER_TEXT');
   expect(JSON.stringify(result)).not.toContain(sentinel);
 });
@@ -359,7 +391,11 @@ test('reports the first unit in inventory order, not the alphabetically first ca
   });
   // At least two batches ran with different categories; the first batch holds the first unit.
   expect(new Set(calls).size).toBeGreaterThan(1);
-  expect(result).toEqual({ kind: 'model-unavailable', reason: 'transport' });
+  expect(result).toEqual({
+    kind: 'model-unavailable',
+    reason: 'transport',
+    analysisTiming: { callsDispatched: 2, callDurationsMs: [0, 0], maxSplitDepth: 0 },
+  });
 });
 
 test('carries an assessment reason only on an internal failure', async () => {

@@ -20,6 +20,7 @@ import { runResearch } from './research.js';
 import {
   freshnessDetail,
   type AssessmentFailureReason,
+  type AnalysisTiming,
   type ClaimStore,
   type FreshnessDetail,
   type InternalFailureStage,
@@ -93,6 +94,8 @@ type HandedOff = Readonly<{
   detail?: FreshnessDetail;
   /** Why the assessment stage failed; present only for that fixed stage. */
   assessmentFailureReason?: AssessmentFailureReason;
+  /** M2's fixed diagnostics, present only after it returned an `ok` result. */
+  analysisTiming?: AnalysisTiming;
 }>;
 
 type OutcomeDetail = Readonly<{
@@ -101,6 +104,7 @@ type OutcomeDetail = Readonly<{
   gaps?: readonly PacketGap[];
   /** Optional evidence that fit the packet only after a conservative budget drop. */
   droppedOptional?: readonly DroppedOptional[];
+  analysisTiming?: AnalysisTiming;
 }>;
 type NonFreshnessStage = Exclude<InternalFailureStage, 'freshness'>;
 type Outcome =
@@ -322,8 +326,9 @@ function handedOff(
     kind: 'handed-off' as const,
     handoff,
     body: outcome.body,
-    recorded: sink.record(handoff, recordDetail),
+    recorded: sink.record(handoff, recordDetail, outcome.analysisTiming),
     ...(freshness ? { detail: freshness } : {}),
+    ...(outcome.analysisTiming ? { analysisTiming: outcome.analysisTiming } : {}),
   };
   if (outcome.kind === 'model-unavailable')
     return {
@@ -355,6 +360,7 @@ function assessedOutcome(
       body: reviewed.body,
       ...(reviewed.gaps ? { gaps: reviewed.gaps } : {}),
       droppedOptional,
+      ...(reviewed.analysisTiming ? { analysisTiming: reviewed.analysisTiming } : {}),
     };
   if (reviewed.kind === 'model-unavailable')
     return {
@@ -362,12 +368,14 @@ function assessedOutcome(
       modelUnavailableReason: reviewed.reason,
       body: null,
       droppedOptional,
+      ...(reviewed.analysisTiming ? { analysisTiming: reviewed.analysisTiming } : {}),
     };
   return {
     kind: reviewed.kind,
     body: reviewed.body,
     ...(reviewed.gaps ? { gaps: reviewed.gaps } : {}),
     droppedOptional,
+    ...(reviewed.analysisTiming ? { analysisTiming: reviewed.analysisTiming } : {}),
   };
 }
 

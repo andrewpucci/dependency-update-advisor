@@ -19772,6 +19772,14 @@ function createTestClaimStore() {
 
 // src/handoff.ts
 const MAX_GAPS = 4;
+function copyAnalysisTiming(value) {
+	if (!value || !Number.isSafeInteger(value.callsDispatched) || value.callsDispatched < 0 || !Number.isSafeInteger(value.maxSplitDepth) || value.maxSplitDepth < 0 || value.callDurationsMs.length !== value.callsDispatched || value.callDurationsMs.some((duration) => !Number.isSafeInteger(duration) || duration < 0)) return void 0;
+	return Object.freeze({
+		callsDispatched: value.callsDispatched,
+		callDurationsMs: Object.freeze([...value.callDurationsMs]),
+		maxSplitDepth: value.maxSplitDepth
+	});
+}
 function copyGaps(gaps) {
 	return Object.freeze(gaps.slice(0, MAX_GAPS).map(({ source, reason }) => Object.freeze({
 		source,
@@ -19819,13 +19827,14 @@ function createRehearsalSink(appToken) {
 	if (appToken) return null;
 	const traces = [];
 	return Object.freeze({
-		record: (handoff, detail) => {
+		record: (handoff, detail, analysisTiming) => {
 			if (traces.length >= 32) return false;
 			const modelReason = handoff.kind === "model-unavailable" && detail && "modelUnavailableReason" in detail ? modelUnavailableReason(detail.modelUnavailableReason) : void 0;
 			if (handoff.kind === "model-unavailable" && !modelReason) return false;
 			const assessmentReason = handoff.kind === "internal-failure" && handoff.stage === "assessment" && detail && "assessmentFailureReason" in detail ? assessmentFailureReason(detail.assessmentFailureReason) : void 0;
 			if (detail && "assessmentFailureReason" in detail && !(handoff.kind === "internal-failure" && handoff.stage === "assessment")) return false;
 			if (handoff.kind === "internal-failure" && handoff.stage === "assessment" && !assessmentReason) return false;
+			const timing = copyAnalysisTiming(analysisTiming);
 			const traceBase = {
 				identity: Object.freeze([...handoff.identity]),
 				generation: handoff.generation,
@@ -19844,6 +19853,7 @@ function createRehearsalSink(appToken) {
 				}) } : {},
 				...modelReason ? { modelUnavailableReason: modelReason } : {},
 				...assessmentReason ? { assessmentFailureReason: assessmentReason } : {},
+				...timing ? { analysisTiming: timing } : {},
 				...traceBase
 			}));
 			return true;
@@ -22531,14 +22541,21 @@ async function assessReviewPacket(input) {
 			kind: "internal-failure",
 			reason: result.category === "input" ? "analysis-input" : "analysis-configuration"
 		};
+		const analysisTiming = {
+			callsDispatched: result.diagnostics.callsDispatched,
+			callDurationsMs: result.diagnostics.callDurationsMs,
+			maxSplitDepth: result.diagnostics.maxSplitDepth
+		};
 		if (result.analysisUnavailable) return {
 			kind: "model-unavailable",
-			reason: modelUnavailableReason(result.records[0]?.category)
+			reason: modelUnavailableReason(result.records[0]?.category),
+			analysisTiming
 		};
 		return {
 			kind: evidenceComplete(result.coverage) ? "complete" : "incomplete-evidence",
 			records: result.records,
-			coverage: result.coverage
+			coverage: result.coverage,
+			analysisTiming
 		};
 	} catch {
 		return {
@@ -22556,7 +22573,8 @@ async function reviewPacket(input) {
 	if (assessed.kind === "model-unavailable") return {
 		kind: "model-unavailable",
 		reason: assessed.reason,
-		body: null
+		body: null,
+		...assessed.analysisTiming ? { analysisTiming: assessed.analysisTiming } : {}
 	};
 	if (!("coverage" in assessed)) return {
 		kind: "internal-failure",
@@ -22580,21 +22598,25 @@ async function reviewPacket(input) {
 			gaps: [{
 				source: "brief",
 				reason: "budget"
-			}]
+			}],
+			analysisTiming: assessed.analysisTiming
 		} : {
 			kind: "internal-failure",
 			reason: "render-rejected",
-			body: null
+			body: null,
+			analysisTiming: assessed.analysisTiming
 		};
 		return {
 			kind: input.researchIncomplete ? "incomplete-evidence" : assessed.kind,
-			body: rendered.body
+			body: rendered.body,
+			analysisTiming: assessed.analysisTiming
 		};
 	} catch {
 		return {
 			kind: "internal-failure",
 			reason: "render-exception",
-			body: null
+			body: null,
+			analysisTiming: assessed.analysisTiming
 		};
 	}
 }
@@ -30553,8 +30575,9 @@ function handedOff(sink, outcome, handoff) {
 		kind: "handed-off",
 		handoff,
 		body: outcome.body,
-		recorded: sink.record(handoff, recordDetail),
-		...freshness ? { detail: freshness } : {}
+		recorded: sink.record(handoff, recordDetail, outcome.analysisTiming),
+		...freshness ? { detail: freshness } : {},
+		...outcome.analysisTiming ? { analysisTiming: outcome.analysisTiming } : {}
 	};
 	if (outcome.kind === "model-unavailable") return {
 		...handed,
@@ -30582,19 +30605,22 @@ function assessedOutcome(reviewed, droppedOptional) {
 		assessmentFailureReason: reviewed.reason,
 		body: reviewed.body,
 		...reviewed.gaps ? { gaps: reviewed.gaps } : {},
-		droppedOptional
+		droppedOptional,
+		...reviewed.analysisTiming ? { analysisTiming: reviewed.analysisTiming } : {}
 	};
 	if (reviewed.kind === "model-unavailable") return {
 		kind: "model-unavailable",
 		modelUnavailableReason: reviewed.reason,
 		body: null,
-		droppedOptional
+		droppedOptional,
+		...reviewed.analysisTiming ? { analysisTiming: reviewed.analysisTiming } : {}
 	};
 	return {
 		kind: reviewed.kind,
 		body: reviewed.body,
 		...reviewed.gaps ? { gaps: reviewed.gaps } : {},
-		droppedOptional
+		droppedOptional,
+		...reviewed.analysisTiming ? { analysisTiming: reviewed.analysisTiming } : {}
 	};
 }
 async function evaluateEvidence(input, binding, started, signal, state, recheck, halted) {
@@ -31001,6 +31027,12 @@ function platformDependencies() {
 	};
 }
 /** The one fixed line for a rehearsal result; no input, error text, or stack is ever echoed. */
+function analysisTimingLine(timing) {
+	const durations = timing.callDurationsMs.map((duration) => Math.min(duration, 999999));
+	if (timing.callsDispatched === 0) return `analysis 0 calls, max split depth ${timing.maxSplitDepth}`;
+	const label = timing.callsDispatched === 1 ? "call" : "calls";
+	return `analysis ${timing.callsDispatched} ${label} (${durations.join(", ")} ms), max split depth ${timing.maxSplitDepth}`;
+}
 function rehearsalLine(result) {
 	const recorded = "dependabot-review: no-write rehearsal recorded";
 	switch (result.kind) {
@@ -31009,10 +31041,12 @@ function rehearsalLine(result) {
 			if (!result.recorded) return "dependabot-review: no-write rehearsal could not record the handoff; nothing was published.";
 			if (result.handoff.kind !== "internal-failure") {
 				const reason = result.outcome === "model-unavailable" ? ` (${result.modelUnavailableReason})` : "";
-				return `${recorded} ${result.outcome}${reason}; nothing was published.`;
+				const timing = result.analysisTiming ? `; ${analysisTimingLine(result.analysisTiming)}` : "";
+				return `${recorded} ${result.outcome}${reason}${timing}; nothing was published.`;
 			}
 			const detail = result.handoff.stage === "assessment" && result.assessmentFailureReason ? ` (${result.assessmentFailureReason})` : result.detail ? ` (${result.detail.field} ${result.detail.reason})` : "";
-			return `${recorded} internal-failure at ${result.handoff.stage}${detail}; nothing was published.`;
+			const timing = result.analysisTiming ? `; ${analysisTimingLine(result.analysisTiming)}` : "";
+			return `${recorded} internal-failure at ${result.handoff.stage}${detail}${timing}; nothing was published.`;
 		}
 		case "skipped": return `dependabot-review: event skipped (${result.reason}); nothing was published.`;
 		default: return `dependabot-review: no publishable handoff (${result.reason}); nothing was published.`;

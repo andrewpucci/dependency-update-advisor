@@ -5,6 +5,7 @@ import type { SignalAttempt } from './evidence/policy-signals.js';
 import type { PacketGap } from './packet.js';
 import {
   modelUnavailableReason,
+  type AnalysisTiming,
   type AssessmentFailureReason,
   type ModelUnavailableReason,
 } from './review.js';
@@ -18,8 +19,13 @@ export type AssessmentResult =
       kind: 'complete' | 'incomplete-evidence';
       records: readonly UnitRecord[];
       coverage: DecisionCoverage;
+      analysisTiming: AnalysisTiming;
     }>
-  | Readonly<{ kind: 'model-unavailable'; reason: ModelUnavailableReason }>
+  | Readonly<{
+      kind: 'model-unavailable';
+      reason: ModelUnavailableReason;
+      analysisTiming?: AnalysisTiming;
+    }>
   | Readonly<{ kind: 'internal-failure'; reason: AssessmentFailureReason }>;
 export type AssessmentInput = Readonly<{
   packet: Packet;
@@ -65,16 +71,22 @@ export async function assessReviewPacket(input: AssessmentInput): Promise<Assess
         kind: 'internal-failure',
         reason: result.category === 'input' ? 'analysis-input' : 'analysis-configuration',
       };
+    const analysisTiming: AnalysisTiming = {
+      callsDispatched: result.diagnostics.callsDispatched,
+      callDurationsMs: result.diagnostics.callDurationsMs,
+      maxSplitDepth: result.diagnostics.maxSplitDepth,
+    };
     if (result.analysisUnavailable) {
       // Analysis is unavailable only when no unit was assessed, so every record is unresolved and
       // carries a category. Records are in inventory order; the first unit names the reason.
       return {
         kind: 'model-unavailable',
         reason: modelUnavailableReason(result.records[0]?.category),
+        analysisTiming,
       };
     }
     const kind = evidenceComplete(result.coverage) ? 'complete' : 'incomplete-evidence';
-    return { kind, records: result.records, coverage: result.coverage };
+    return { kind, records: result.records, coverage: result.coverage, analysisTiming };
   } catch {
     return { kind: 'internal-failure', reason: 'analysis-exception' };
   }
@@ -85,6 +97,8 @@ export type ReviewResult = Readonly<{
   body: string | null;
   /** Set when the brief was too large to render, which is a limit, not a defect. */
   gaps?: readonly PacketGap[];
+  /** M2's fixed integer diagnostics, present only after M2 returned an `ok` result. */
+  analysisTiming?: AnalysisTiming;
 }> &
   (
     | Readonly<{ kind: 'complete' | 'incomplete-evidence'; reason?: never }>
@@ -106,7 +120,12 @@ export type ReviewInput = AssessmentInput &
 export async function reviewPacket(input: ReviewInput): Promise<ReviewResult> {
   const assessed = await assessReviewPacket(input);
   if (assessed.kind === 'model-unavailable')
-    return { kind: 'model-unavailable', reason: assessed.reason, body: null };
+    return {
+      kind: 'model-unavailable',
+      reason: assessed.reason,
+      body: null,
+      ...(assessed.analysisTiming ? { analysisTiming: assessed.analysisTiming } : {}),
+    };
   if (!('coverage' in assessed))
     return { kind: 'internal-failure', reason: assessed.reason, body: null };
   try {
@@ -126,13 +145,25 @@ export async function reviewPacket(input: ReviewInput): Promise<ReviewResult> {
             reason: 'render-size',
             body: null,
             gaps: [{ source: 'brief', reason: 'budget' }],
+            analysisTiming: assessed.analysisTiming,
           }
-        : { kind: 'internal-failure', reason: 'render-rejected', body: null };
+        : {
+            kind: 'internal-failure',
+            reason: 'render-rejected',
+            body: null,
+            analysisTiming: assessed.analysisTiming,
+          };
     return {
       kind: input.researchIncomplete ? 'incomplete-evidence' : assessed.kind,
       body: rendered.body,
+      analysisTiming: assessed.analysisTiming,
     };
   } catch {
-    return { kind: 'internal-failure', reason: 'render-exception', body: null };
+    return {
+      kind: 'internal-failure',
+      reason: 'render-exception',
+      body: null,
+      analysisTiming: assessed.analysisTiming,
+    };
   }
 }

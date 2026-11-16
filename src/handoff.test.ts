@@ -271,6 +271,34 @@ test('narrows a stray model-unavailable reason to unknown and copies no other fi
   expect(JSON.stringify(trace)).not.toContain('sentinel-extra');
 });
 
+test('copies valid analysis timing into the rehearsal trace but never the handoff', async () => {
+  const handoff = await handoffOf('complete', 'h');
+  const sink = createRehearsalSink(null);
+  if (!sink) throw new Error('expected sink');
+  const timing = { callsDispatched: 2, callDurationsMs: [12, 34], maxSplitDepth: 1 };
+  expect(sink.record(handoff, undefined, timing)).toBe(true);
+  timing.callDurationsMs[0] = 99;
+  expect(sink.traces()[0]).toMatchObject({
+    analysisTiming: { callsDispatched: 2, callDurationsMs: [12, 34], maxSplitDepth: 1 },
+  });
+  expect(Object.isFrozen(sink.traces()[0]?.analysisTiming)).toBe(true);
+  expect(Object.isFrozen(sink.traces()[0]?.analysisTiming?.callDurationsMs)).toBe(true);
+  expect(handoff).not.toHaveProperty('analysisTiming');
+});
+
+test('omits malformed analysis timing from the rehearsal trace', async () => {
+  const sink = createRehearsalSink(null);
+  if (!sink) throw new Error('expected sink');
+  expect(
+    sink.record(await handoffOf('complete', 'i'), undefined, {
+      callsDispatched: 1,
+      callDurationsMs: [-1],
+      maxSplitDepth: 0,
+    } as never),
+  ).toBe(true);
+  expect(sink.traces()[0]).not.toHaveProperty('analysisTiming');
+});
+
 test('records the model-unavailable reason only for a model-unavailable outcome', async () => {
   const sink = createRehearsalSink(null);
   if (!sink) throw new Error('expected sink');

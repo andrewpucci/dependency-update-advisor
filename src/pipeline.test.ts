@@ -295,6 +295,7 @@ test('runs a current review to a complete, exact-bound handoff recorded without 
       body: 'present',
       gaps: [],
       droppedOptional: { reachability: 0, proof: 0 },
+      analysisTiming: { callsDispatched: 0, callDurationsMs: [], maxSplitDepth: 0 },
     },
   ]);
   expect(githubCalls.length).toBeGreaterThan(0);
@@ -458,6 +459,8 @@ test('a model-unavailable result that fails the final freshness check carries no
   });
   expect(result).not.toHaveProperty('modelUnavailableReason');
   expect(sink.traces()[0]).not.toHaveProperty('modelUnavailableReason');
+  expect(result).not.toHaveProperty('analysisTiming');
+  expect(sink.traces()[0]).not.toHaveProperty('analysisTiming');
 });
 
 test('an assessment failure that fails the final freshness check carries no assessment reason', async () => {
@@ -475,6 +478,8 @@ test('an assessment failure that fails the final freshness check carries no asse
   });
   expect(result).not.toHaveProperty('assessmentFailureReason');
   expect(sink.traces()[0]).not.toHaveProperty('assessmentFailureReason');
+  expect(result).not.toHaveProperty('analysisTiming');
+  expect(sink.traces()[0]).not.toHaveProperty('analysisTiming');
 });
 
 test.each([...MODEL_FAILURE_CATEGORIES])(

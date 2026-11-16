@@ -143,7 +143,7 @@ test('records a current success without publishing, and never exits as a live re
   const github = mockGithub();
   const { code, stderr } = await start(github);
   expect(stderr).toEqual([
-    'dependabot-review: no-write rehearsal recorded complete; nothing was published.',
+    'dependabot-review: no-write rehearsal recorded complete; analysis 0 calls, max split depth 0; nothing was published.',
   ]);
   expect(code).toBe(NOT_WIRED_EXIT_CODE);
   expect(github.urls.length).toBeGreaterThan(0);
@@ -177,7 +177,7 @@ test('accepts the hyphenated input environment names supplied by GitHub Actions'
 
   expect(code).toBe(NOT_WIRED_EXIT_CODE);
   expect(stderr).toEqual([
-    'dependabot-review: no-write rehearsal recorded complete; nothing was published.',
+    'dependabot-review: no-write rehearsal recorded complete; analysis 0 calls, max split depth 0; nothing was published.',
   ]);
 });
 
@@ -213,7 +213,7 @@ test('reports an invalid trusted config as a recorded status-only failure', asyn
 test('reports a failed file listing as recorded incomplete evidence', async () => {
   const { stderr } = await start(mockGithub({ filesFail: true }));
   expect(stderr).toEqual([
-    'dependabot-review: no-write rehearsal recorded incomplete-evidence; nothing was published.',
+    'dependabot-review: no-write rehearsal recorded incomplete-evidence; analysis 0 calls, max split depth 0; nothing was published.',
   ]);
 });
 
@@ -255,7 +255,7 @@ test.each([
     },
   );
   expect(stderr).toEqual([
-    `dependabot-review: no-write rehearsal recorded model-unavailable (${reason}); nothing was published.`,
+    `dependabot-review: no-write rehearsal recorded model-unavailable (${reason}); analysis 1 call (0 ms), max split depth 0; nothing was published.`,
   ]);
   expect(stderr.join('')).not.toContain('RAW_PROVIDER_BODY');
 });
@@ -282,7 +282,7 @@ test.each([...MODEL_FAILURE_CATEGORIES])(
       },
     );
     expect(stderr).toEqual([
-      `dependabot-review: no-write rehearsal recorded model-unavailable (${category}); nothing was published.`,
+      `dependabot-review: no-write rehearsal recorded model-unavailable (${category}); analysis 1 call (0 ms), max split depth 0; nothing was published.`,
     ]);
   },
 );
@@ -302,7 +302,7 @@ test('names a throwing model as transport without echoing the exception text', a
     },
   );
   expect(stderr).toEqual([
-    'dependabot-review: no-write rehearsal recorded model-unavailable (transport); nothing was published.',
+    'dependabot-review: no-write rehearsal recorded model-unavailable (transport); analysis 1 call (0 ms), max split depth 0; nothing was published.',
   ]);
   expect(stderr.join('')).not.toContain(sentinel);
 });
@@ -377,7 +377,8 @@ test('records the normal outcome when the model step ends after the 240 s eviden
   // The final re-verification ran, and made its reads, after the evidence window.
   expect(late.some((path) => path.endsWith('/actions/runs/401'))).toBe(true);
   expect(late.some((path) => path.endsWith('/pulls/42'))).toBe(true);
-  expect(stderr).toEqual(control.stderr);
+  expect(stderr).not.toEqual(control.stderr);
+  expect(stderr[0]).toContain('analysis 1 call (300000 ms), max split depth 0');
   expect(stderr.join('')).not.toContain('internal-failure');
   expect(code).toBe(NOT_WIRED_EXIT_CODE);
 });
@@ -450,7 +451,8 @@ test('leaves the publication reserve intact when the whole pre-startup allowance
   const late = await runWithPreStartupTime(true);
   // The reads of the final freshness check ran, and their stderr matches the control.
   expect(late.finalReadEnds.length).toBeGreaterThan(0);
-  expect(late.stderr).toEqual(control.stderr);
+  expect(late.stderr).not.toEqual(control.stderr);
+  expect(late.stderr[0]).toContain('analysis 1 call (504999 ms), max split depth 0');
   // 900,000 ms runner timeout less the 60,000 ms publication reserve, as a literal.
   expect(Math.max(...late.finalReadEnds)).toBeLessThanOrEqual(840_000);
 });
@@ -659,6 +661,36 @@ test('sends the read token only to api.github.com, never to a registry or any ot
   }
   expect(JSON.stringify(github.headers)).not.toContain('app-token');
   expect(JSON.stringify(github.headers)).not.toContain(sentinel);
+});
+
+test.each([
+  [
+    'two calls',
+    { callsDispatched: 2, callDurationsMs: [12, 34], maxSplitDepth: 1 },
+    'analysis 2 calls (12, 34 ms), max split depth 1',
+  ],
+  [
+    '32 calls with a clamped duration',
+    {
+      callsDispatched: 32,
+      callDurationsMs: [999_999, 1_000_000, ...Array.from({ length: 30 }, () => 7)],
+      maxSplitDepth: 3,
+    },
+    `analysis 32 calls (999999, 999999${', 7'.repeat(30)} ms), max split depth 3`,
+  ],
+] as const)('prints bounded timing for %s', async (_name, analysisTiming, timing) => {
+  vi.mocked(pipelineModule.runReview).mockResolvedValueOnce({
+    kind: 'handed-off',
+    outcome: 'complete',
+    handoff: { kind: 'complete' },
+    body: null,
+    recorded: true,
+    analysisTiming,
+  } as never);
+  const { stderr } = await start(mockGithub());
+  expect(stderr).toEqual([
+    `dependabot-review: no-write rehearsal recorded complete; ${timing}; nothing was published.`,
+  ]);
 });
 
 test.each([

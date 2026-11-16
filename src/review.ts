@@ -98,6 +98,13 @@ export function assessmentFailureReason(value: unknown): AssessmentFailureReason
     ? (value as AssessmentFailureReason)
     : undefined;
 }
+
+/** The bounded integer diagnostics M2 returns after it completes its scheduling work. */
+export type AnalysisTiming = Readonly<{
+  callsDispatched: number;
+  callDurationsMs: readonly number[];
+  maxSplitDepth: number;
+}>;
 export type ReviewOutcomeKind =
   | 'skipped'
   | 'stale'

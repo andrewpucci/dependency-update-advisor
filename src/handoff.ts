@@ -6,6 +6,7 @@ import {
   modelUnavailableReason,
   reviewOutcome,
   type AssessmentFailureReason,
+  type AnalysisTiming,
   type ClaimStore,
   type FreshnessDetail,
   type InternalFailureStage,
@@ -40,6 +41,24 @@ export type HandoffDetail = Readonly<{
   stage?: InternalFailureStage;
 }>;
 const MAX_GAPS = 4;
+
+function copyAnalysisTiming(value: AnalysisTiming | undefined): AnalysisTiming | undefined {
+  if (
+    !value ||
+    !Number.isSafeInteger(value.callsDispatched) ||
+    value.callsDispatched < 0 ||
+    !Number.isSafeInteger(value.maxSplitDepth) ||
+    value.maxSplitDepth < 0 ||
+    value.callDurationsMs.length !== value.callsDispatched ||
+    value.callDurationsMs.some((duration) => !Number.isSafeInteger(duration) || duration < 0)
+  )
+    return undefined;
+  return Object.freeze({
+    callsDispatched: value.callsDispatched,
+    callDurationsMs: Object.freeze([...value.callDurationsMs]),
+    maxSplitDepth: value.maxSplitDepth,
+  });
+}
 
 function copyGaps(gaps: readonly PacketGap[]): readonly PacketGap[] {
   return Object.freeze(
@@ -100,6 +119,7 @@ type RehearsalTraceBase = Readonly<{
   body: ReviewHandoff['body'];
   gaps: ReviewHandoff['gaps'];
   droppedOptional: ReviewHandoff['droppedOptional'];
+  analysisTiming?: AnalysisTiming;
 }>;
 export type RehearsalTrace =
   | (RehearsalTraceBase &
@@ -144,7 +164,11 @@ export type RehearsalSink = Readonly<{
   /**
    * `detail` is kept only for the outcome it describes; it never enters the handoff.
    */
-  record: (handoff: ReviewHandoff, detail?: RehearsalDetail) => boolean;
+  record: (
+    handoff: ReviewHandoff,
+    detail?: RehearsalDetail,
+    analysisTiming?: AnalysisTiming,
+  ) => boolean;
   traces: () => readonly RehearsalTrace[];
 }>;
 
@@ -153,7 +177,7 @@ export function createRehearsalSink(appToken: string | null): RehearsalSink | nu
   if (appToken) return null;
   const traces: RehearsalTrace[] = [];
   return Object.freeze({
-    record: (handoff, detail) => {
+    record: (handoff, detail, analysisTiming) => {
       if (traces.length >= 32) return false;
       // A model-unavailable result must say why; refuse it rather than record a guess.
       const modelReason =
@@ -180,6 +204,7 @@ export function createRehearsalSink(appToken: string | null): RehearsalSink | nu
         !assessmentReason
       )
         return false;
+      const timing = copyAnalysisTiming(analysisTiming);
       const traceBase = {
         identity: Object.freeze([...handoff.identity]) as OwnedClaim['identity'],
         generation: handoff.generation,
@@ -201,6 +226,7 @@ export function createRehearsalSink(appToken: string | null): RehearsalSink | nu
             : {}),
           ...(modelReason ? { modelUnavailableReason: modelReason } : {}),
           ...(assessmentReason ? { assessmentFailureReason: assessmentReason } : {}),
+          ...(timing ? { analysisTiming: timing } : {}),
           ...traceBase,
         }) as RehearsalTrace,
       );
