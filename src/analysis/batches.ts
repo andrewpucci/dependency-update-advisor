@@ -125,15 +125,15 @@ export async function analyzeDecisionUnits(
 
 type BatchOutcome = MistralResult | 'cancelled' | 'deadline' | 'transport';
 type TimedOutcome = Readonly<{ outcome: BatchOutcome; durationMs: number }>;
-type WaveEntry = Readonly<{ ids: string[]; batchId: string; pending: Promise<TimedOutcome> }>;
+/** A queued batch and the truncation splits above it; first-level batches are depth 0. */
+type QueueEntry = Readonly<{ ids: string[]; depth: number }>;
+type WaveEntry = QueueEntry & Readonly<{ batchId: string; pending: Promise<TimedOutcome> }>;
 type ScheduleState = {
-  queue: string[][];
+  queue: QueueEntry[];
   records: UnitRecord[];
   calls: number;
   dispatched: number;
   splits: number;
-  /** Truncation splits above each queued batch; an absent batch is first-level (depth 0). */
-  depths: WeakMap<string[], number>;
   maxSplitDepth: number;
   durations: number[];
   run?: ReturnType<typeof prepareAnalysisRun>;
@@ -152,12 +152,11 @@ async function scheduleBatches(
     calls: 0,
     dispatched: 0,
     splits: 0,
-    depths: new WeakMap(),
     maxSplitDepth: 0,
     durations: [],
   };
   for (let index = 0; index < unitIds.length; index += ANALYSIS_LIMITS.maxUnits)
-    state.queue.push(unitIds.slice(index, index + ANALYSIS_LIMITS.maxUnits));
+    state.queue.push({ ids: unitIds.slice(index, index + ANALYSIS_LIMITS.maxUnits), depth: 0 });
   while (state.queue.length) {
     const { wave, preparationFailure } = prepareWave(state, snapshot, options, analyze, now);
     await collectWave(state, wave);
@@ -184,11 +183,12 @@ function prepareWave(
     now() < options.deadlineMs &&
     !options.signal?.aborted
   ) {
-    const ids = state.queue.shift()!;
+    const entry = state.queue.shift()!;
+    const { ids, depth } = entry;
     const prepared = prepareBatch(state, snapshot, ids);
     if (prepared.kind !== 'prepared') {
       if (prepared.category === 'budget' && ids.length > 1 && !prepared.runWide) {
-        state.queue.unshift(...splitAt(state, ids, state.depths.get(ids) ?? 0));
+        state.queue.unshift(...splitAt(ids, depth));
       } else {
         state.records.push(...unresolved(ids, 'unavailable', false, prepared.category, null));
         if (prepared.category !== 'budget') return { wave, preparationFailure: prepared.category };
@@ -196,12 +196,13 @@ function prepareWave(
       continue;
     }
     if (now() >= options.deadlineMs || options.signal?.aborted) {
-      state.queue.unshift(ids);
+      state.queue.unshift(entry);
       break;
     }
     state.calls++;
     wave.push({
       ids,
+      depth,
       batchId: prepared.batch.batchId,
       pending: timedCall(prepared.batch, options, analyze, now),
     });
@@ -224,9 +225,9 @@ function prepareBatch(
 
 async function collectWave(state: ScheduleState, wave: WaveEntry[]) {
   const timed = await Promise.all(wave.map((item) => item.pending));
-  const children: string[][] = [];
+  const children: QueueEntry[] = [];
   for (let index = 0; index < wave.length; index++) {
-    const { ids, batchId } = wave[index];
+    const { ids, depth, batchId } = wave[index];
     const { outcome: result, durationMs } = timed[index];
     // Durations follow wave order, never completion order, and cover exactly the dispatched calls.
     if (typeof result === 'string' || result.kind === 'validated' || result.attempted) {
@@ -237,9 +238,8 @@ async function collectWave(state: ScheduleState, wave: WaveEntry[]) {
       state.records.push(...unresolved(ids, 'unavailable', true, result, batchId));
     } else if (isSplittable(result, ids, batchId)) {
       state.splits++;
-      const depth = (state.depths.get(ids) ?? 0) + 1;
-      state.maxSplitDepth = Math.max(state.maxSplitDepth, depth);
-      children.push(...splitAt(state, ids, depth));
+      state.maxSplitDepth = Math.max(state.maxSplitDepth, depth + 1);
+      children.push(...splitAt(ids, depth + 1));
     } else state.records.push(...mapResult(ids, batchId, result));
   }
   state.queue.unshift(...children);
@@ -268,11 +268,9 @@ function splitUnits(ids: string[]): [string[], string[]] {
   return [ids.slice(0, midpoint), ids.slice(midpoint)];
 }
 
-/** Splits a batch and records the children's depth: a re-pack keeps it, a truncation adds one. */
-function splitAt(state: ScheduleState, ids: string[], childDepth: number) {
-  const children = splitUnits(ids);
-  for (const child of children) state.depths.set(child, childDepth);
-  return children;
+/** Splits a batch at the children's depth: a re-pack keeps its depth, a truncation adds one. */
+function splitAt(ids: string[], depth: number): QueueEntry[] {
+  return splitUnits(ids).map((child) => ({ ids: child, depth }));
 }
 
 function finishQueue(
@@ -289,8 +287,8 @@ function finishQueue(
         ? 'deadline'
         : 'call_budget');
   const status = preparationFailure ? 'unavailable' : 'unattempted';
-  for (const remaining of state.queue)
-    state.records.push(...unresolved(remaining, status, false, category, null));
+  for (const { ids } of state.queue)
+    state.records.push(...unresolved(ids, status, false, category, null));
 }
 
 function unresolved(

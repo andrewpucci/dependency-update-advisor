@@ -21714,11 +21714,13 @@ async function scheduleBatches(snapshot, options, analyze, now, unitIds) {
 		calls: 0,
 		dispatched: 0,
 		splits: 0,
-		depths: /* @__PURE__ */ new WeakMap(),
 		maxSplitDepth: 0,
 		durations: []
 	};
-	for (let index = 0; index < unitIds.length; index += ANALYSIS_LIMITS.maxUnits) state.queue.push(unitIds.slice(index, index + ANALYSIS_LIMITS.maxUnits));
+	for (let index = 0; index < unitIds.length; index += ANALYSIS_LIMITS.maxUnits) state.queue.push({
+		ids: unitIds.slice(index, index + ANALYSIS_LIMITS.maxUnits),
+		depth: 0
+	});
 	while (state.queue.length) {
 		const { wave, preparationFailure } = prepareWave(state, snapshot, options, analyze, now);
 		await collectWave(state, wave);
@@ -21732,10 +21734,11 @@ async function scheduleBatches(snapshot, options, analyze, now, unitIds) {
 function prepareWave(state, snapshot, options, analyze, now) {
 	const wave = [];
 	while (wave.length < MAX_CONCURRENT_CALLS && state.queue.length && state.calls < MAX_CALLS && now() < options.deadlineMs && !options.signal?.aborted) {
-		const ids = state.queue.shift();
+		const entry = state.queue.shift();
+		const { ids, depth } = entry;
 		const prepared = prepareBatch(state, snapshot, ids);
 		if (prepared.kind !== "prepared") {
-			if (prepared.category === "budget" && ids.length > 1 && !prepared.runWide) state.queue.unshift(...splitAt(state, ids, state.depths.get(ids) ?? 0));
+			if (prepared.category === "budget" && ids.length > 1 && !prepared.runWide) state.queue.unshift(...splitAt(ids, depth));
 			else {
 				state.records.push(...unresolved(ids, "unavailable", false, prepared.category, null));
 				if (prepared.category !== "budget") return {
@@ -21746,12 +21749,13 @@ function prepareWave(state, snapshot, options, analyze, now) {
 			continue;
 		}
 		if (now() >= options.deadlineMs || options.signal?.aborted) {
-			state.queue.unshift(ids);
+			state.queue.unshift(entry);
 			break;
 		}
 		state.calls++;
 		wave.push({
 			ids,
+			depth,
 			batchId: prepared.batch.batchId,
 			pending: timedCall(prepared.batch, options, analyze, now)
 		});
@@ -21778,7 +21782,7 @@ async function collectWave(state, wave) {
 	const timed = await Promise.all(wave.map((item) => item.pending));
 	const children = [];
 	for (let index = 0; index < wave.length; index++) {
-		const { ids, batchId } = wave[index];
+		const { ids, depth, batchId } = wave[index];
 		const { outcome: result, durationMs } = timed[index];
 		if (typeof result === "string" || result.kind === "validated" || result.attempted) {
 			state.dispatched++;
@@ -21787,9 +21791,8 @@ async function collectWave(state, wave) {
 		if (typeof result === "string") state.records.push(...unresolved(ids, "unavailable", true, result, batchId));
 		else if (isSplittable(result, ids, batchId)) {
 			state.splits++;
-			const depth = (state.depths.get(ids) ?? 0) + 1;
-			state.maxSplitDepth = Math.max(state.maxSplitDepth, depth);
-			children.push(...splitAt(state, ids, depth));
+			state.maxSplitDepth = Math.max(state.maxSplitDepth, depth + 1);
+			children.push(...splitAt(ids, depth + 1));
 		} else state.records.push(...mapResult(ids, batchId, result));
 	}
 	state.queue.unshift(...children);
@@ -21804,16 +21807,17 @@ function splitUnits(ids) {
 	const midpoint = Math.floor(ids.length / 2);
 	return [ids.slice(0, midpoint), ids.slice(midpoint)];
 }
-/** Splits a batch and records the children's depth: a re-pack keeps it, a truncation adds one. */
-function splitAt(state, ids, childDepth) {
-	const children = splitUnits(ids);
-	for (const child of children) state.depths.set(child, childDepth);
-	return children;
+/** Splits a batch at the children's depth: a re-pack keeps its depth, a truncation adds one. */
+function splitAt(ids, depth) {
+	return splitUnits(ids).map((child) => ({
+		ids: child,
+		depth
+	}));
 }
 function finishQueue(state, preparationFailure, options, now) {
 	const category = preparationFailure ?? (options.signal?.aborted ? "cancelled" : now() >= options.deadlineMs ? "deadline" : "call_budget");
 	const status = preparationFailure ? "unavailable" : "unattempted";
-	for (const remaining of state.queue) state.records.push(...unresolved(remaining, status, false, category, null));
+	for (const { ids } of state.queue) state.records.push(...unresolved(ids, status, false, category, null));
 }
 function unresolved(unitIds, state, attempted, category, batchId) {
 	return unitIds.map((unitId) => ({
