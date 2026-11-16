@@ -847,20 +847,36 @@ but `assessment` discards M2's diagnostics, so no rehearsal can show them.
 3. **Fields and plumbing.** The two fields are named `assessmentFailureReason`
    and `analysisTiming`. `AssessmentResult` and `ReviewResult` carry them, the
    pipeline's internal outcome carries them, and the pipeline result of a
-   handed-off rehearsal reports them. `RehearsalSink.record`'s optional detail
-   gains `assessmentFailureReason` as a third alternative beside the freshness
-   detail and the model-unavailable reason, plus an optional `analysisTiming`
-   that any alternative may accompany; the trace retains both. **Neither is on
+   handed-off rehearsal reports them. `RehearsalSink.record`'s
+   optional detail gains `assessmentFailureReason` as a third alternative beside
+   the freshness detail and the model-unavailable reason. `analysisTiming` is a
+   separate, optional argument of `record`, so it reaches the trace on every
+   outcome that carries it, including `complete`, whose detail is `undefined`
+   today; it is never recorded beside a `FreshnessDetail`. The sink narrows
+   the reason to the closed list in item 1, as it does the model-unavailable
+   reason, and refuses a record with an unlisted reason; it copies only the
+   integer fields of `analysisTiming`. The trace retains both. **Neither is on
    the exported `ReviewHandoff`, the status, or the comment body.**
 4. **Reporting.** The values reach the rehearsal's stderr line and the trace
-   only. The line keeps its form and the new parts come before `; nothing was
-   published.`:
-   - `internal-failure at assessment (<reason>)`, in the form Amendment 2 uses
-     for `(<field> <reason>)`; and
-   - when `analysisTiming` is present, `; analysis <n> call(s) (<ms>, <ms> ms),
-     max split depth <d>`. One call prints `1 call (<ms> ms)` and zero calls
-     print `analysis 0 calls, max split depth 0`, so a run that dispatched
-     nothing is distinguishable from one that never reached analysis.
+   only. The reason, when present, follows the stage; the timing segment, when
+   present, follows the outcome and reason; `; nothing was published.` comes
+   last. The complete forms are:
+
+   ```text
+   dependabot-review: no-write rehearsal recorded internal-failure at assessment (render-rejected); analysis 2 calls (61234, 58100 ms), max split depth 1; nothing was published.
+   dependabot-review: no-write rehearsal recorded complete; analysis 1 call (61234 ms), max split depth 0; nothing was published.
+   dependabot-review: no-write rehearsal recorded model-unavailable (http-server); analysis 0 calls, max split depth 0; nothing was published.
+   dependabot-review: no-write rehearsal recorded internal-failure at assessment (analysis-input); nothing was published.
+   ```
+
+   The reason uses the form Amendment 2 gives `(<field> <reason>)`. The
+   timing segment is `; analysis <n> calls (<ms>, <ms> ms), max split depth
+   <d>`, with `1 call (<ms> ms)` for one call and `analysis 0 calls, max split
+   depth 0` for none; the words `call` and `calls` are literal, not `call(s)`.
+   The segment shows that analysis returned a result and what it recorded. Its
+   absence does not prove that no call was made: M2 can return `ok: false`
+   after calls ran, when its coverage summary fails, and that case carries no
+   timing.
 
    The user confirmed this prose format on 2026-11-15 (read by a person, not
    parsed; every duration listed, no `key=value` or summary-only form).
@@ -872,11 +888,15 @@ but `assessment` discards M2's diagnostics, so no rehearsal can show them.
    any value above 999,999 to 999,999, so an injected clock cannot lengthen the
    line; the carried data is not clamped.
 6. **Fail-closed preservation.** Neither value changes an outcome, status,
-   comment, freshness gate, claim, or write. If the final freshness check turns
-   the outcome into `stale` or `internal-failure at freshness`, the reason and
-   the timing are dropped with it, as Amendment 4 item 7 does for its reason.
-   Keeping the timing through that conversion is not proposed here; revisit it if
-   rehearsals show slow analysis ending at `freshness`.
+   comment, freshness gate, claim, or write. If a finished assessment is then
+   discarded, the reason and the timing are dropped with it, as Amendment 4
+   item 7 does for its reason. That happens on two paths: the final freshness
+   check turning the outcome into `stale` or `internal-failure at freshness`,
+   and the snapshot's own `active()` re-check after the assessment callback,
+   which the pipeline reports as `stale`, `internal-failure at freshness`, or
+   `internal-failure at snapshot`. Keeping the timing through those conversions
+   is not proposed here; revisit it if rehearsals show slow analysis ending at
+   `freshness`.
 7. **Supersedes when implemented.** This amendment changes, in this file:
    Amendment 1 item 2 (the form `internal-failure at <stage>`, which gains a
    reason for `assessment`); Amendment 2 item 5 ("every other stage keeps the
@@ -884,11 +904,16 @@ but `assessment` discards M2's diagnostics, so no rehearsal can show them.
    a reason"), item 3 ("every other outcome keeps its exact form", which also
    covers `complete` and `incomplete-evidence` when timing is present), and the
    item 8 check that `internal-failure` outcomes carry no reason, which becomes
-   "no stage other than `assessment`". Tests that change with it: exact-shape
-   assertions in `src/assessment.test.ts`; the stage-wrapper case in
-   `src/pipeline.test.ts` that resolves a reasonless `internal-failure`, which
-   no longer type-checks; the expected stderr lines in `src/startup.test.ts`;
-   and the exact lines in `tests/action-startup.test.ts`.
+   "no stage other than `assessment`", and item 8's exact-line check for the
+   shipped bundle. Tests that change with it: exact-shape assertions in
+   `src/assessment.test.ts`; the `assessedOutcome` case in `src/pipeline.test.ts`
+   that resolves a reasonless `internal-failure`, which no longer type-checks
+   (the `inStage` wrapper cases are separate and gain the `assessment-exception`
+   reason); the whole-trace `toEqual` assertions in `src/pipeline.test.ts`,
+   including the `complete` trace, which gain timing; the expected stderr lines
+   in `src/startup.test.ts`; and the exact lines in `tests/action-startup.test.ts`,
+   including the `model-unavailable (<reason>); nothing was published.` line that
+   Amendment 4 item 3 specifies.
 
 ### Amendment 5 checks
 
@@ -905,12 +930,17 @@ Each is written first and shown failing on the prior code or a named mutation:
 - A sentinel in a thrown error's message, a response body, a URL, and a
   credential never reaches stderr or the trace.
 - `analysisTiming` equals M2's diagnostics for a scripted run, including a
-  reordered-completion case, and is absent on `no-key`, for `ok: false`, and
-  when something throws after M2 returned.
+  reordered-completion case, and is absent on `no-key`, for `ok: false`
+  (including a coverage failure after calls ran), and when something throws
+  after M2 returned.
 - The printed segment matches item 4 for 0, 1, 2, and 32 calls, and a duration
   of 999,999 and of 1,000,000 both print as 999999.
 - A reason or timing is dropped when the final freshness check turns the outcome
-  into `stale` or `internal-failure at freshness`.
+  into `stale` or `internal-failure at freshness`, and when the snapshot's
+  post-callback `active()` re-check discards a finished assessment.
+- The sink refuses a record whose `assessmentFailureReason` is not in the closed
+  list, copies only the integer fields of `analysisTiming`, and records timing
+  on `complete` as well as on the other outcomes.
 - The shipped bundle prints the new line. Its durations come from the real
   clock, so the test matches them with a digit pattern (`\d{1,6}`) and asserts
   the call count and split depth exactly; the model-unavailable case runs
@@ -924,8 +954,10 @@ defaulting every path to `config`; labelling a renderer rejection
 `render-exception`; recording a reason on another stage or outcome; adding
 either value to the exported `ReviewHandoff`, the status, or the comment body;
 recomputing or re-ordering the durations; attaching timing on `no-key`;
-omitting the zero-call segment; printing an unclamped value; and keeping the
-reason or timing after the freshness conversion.
+omitting the zero-call segment; printing an unclamped value; printing the
+literal `call(s)`; a sink that stores an unlisted reason or the whole timing
+object; timing dropped on `complete`; and keeping the reason or timing after
+either freshness path.
 
 Run the commands in Commands above, plus `npm run complexity -- --base
 origin/main`, on the exact revision.

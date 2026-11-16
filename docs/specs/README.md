@@ -290,9 +290,7 @@ gaps and an introduced vulnerability before parity is claimed.
   A fifth amendment ([assessment failure reason and analysis timing](SPEC-review-orchestration.md#diagnostic-amendment-5-assessment-failure-reason-and-analysis-timing),
   [#337](https://github.com/andrewpucci/dependency-update-advisor/issues/337),
   [#334](https://github.com/andrewpucci/dependency-update-advisor/issues/334))
-  is approved for planning, 2026-11-15. The first rehearsal on the
-  reasoning-model change ended `internal-failure at assessment`, which it would
-  name.
+  is approved for planning, 2026-11-15, and would name that failure's cause.
 - [Advisory complexity review](SPEC-complexity-review.md) — user-requested
   supporting repository tooling contract; implemented and merged into `main`
   in [PR #65](https://github.com/andrewpucci/dependency-update-advisor/pull/65).

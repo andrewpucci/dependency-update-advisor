@@ -313,10 +313,11 @@ on the exact implementation revision.
 Nothing reads M2's diagnostics today (`src/assessment.ts` drops them), and
 reporting a number is Ask-first under
 [W2 Amendment 4](SPEC-review-orchestration.md#amendment-4-boundaries). A
-separate, L-tier W2 amendment, drafted as
-[Amendment 5](SPEC-review-orchestration.md#diagnostic-amendment-5-assessment-failure-reason-and-analysis-timing),
-passes them to the fixed stderr line and trace as bounded integers; until it is
-implemented and merged, the new fields are not visible to a maintainer.
+separate, L-tier W2 amendment,
+[Amendment 5](SPEC-review-orchestration.md#diagnostic-amendment-5-assessment-failure-reason-and-analysis-timing)
+(approved for planning, 2026-11-15), passes them to the fixed stderr line and
+trace as bounded integers; until it is implemented and merged, the new fields
+are not visible to a maintainer.
 
 ## Boundaries and open planning choices
 
