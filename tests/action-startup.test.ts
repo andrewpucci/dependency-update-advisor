@@ -477,9 +477,10 @@ test.each([
       `dependabot-review: no-write rehearsal recorded model-unavailable (${reason}); nothing was published.\n`,
     );
     // A truncated multi-unit batch is split and retried by M2, so it makes more than one call.
-    if (splits) expect(result.modelCalls.length).toBeGreaterThan(1);
-    else expect(result.modelCalls).toEqual(['POST']);
-    expect(new Set(result.modelCalls)).toEqual(new Set(['POST']));
+    if (splits) {
+      expect(result.modelCalls.length).toBeGreaterThan(1);
+      expect(new Set(result.modelCalls)).toEqual(new Set(['POST']));
+    } else expect(result.modelCalls).toEqual(['POST']);
     expect(result.violations).toEqual([]);
     expect(result.code).toBe(78);
     expect(result.stderr).not.toContain('RAW_THINKING_SENTINEL');

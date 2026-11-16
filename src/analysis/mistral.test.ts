@@ -738,20 +738,28 @@ test('hostile upstream instructions cannot change model, endpoint, headers or va
   expect(fetch).toHaveBeenCalledTimes(1);
 });
 
-test('the larger request limit never outlasts the caller deadline', async () => {
+test('the larger request limit outlasts the old 120 s ceiling but never the caller deadline', async () => {
   const { input } = await preparedAnalysis();
   const prepared = prepareAnalysisBatch({ ...input, limits: ANALYSIS_LIMITS });
   if (prepared.kind !== 'prepared') throw new Error('fixture');
   vi.useFakeTimers();
-  let now = 0;
+  // A nonzero start catches timer arithmetic that confuses absolute and relative times.
+  const start = 1_000_000;
+  let now = start;
+  let settled = false;
   const fetch = vi.fn(() => new Promise<Response>(() => {}));
   const task = analyzeMistralBatch(
     prepared.batch,
-    { ...options, deadlineMs: 5_000 },
+    { ...options, deadlineMs: start + 200_000 },
     { fetch, now: () => now },
-  );
-  now = 5_000;
-  await vi.advanceTimersByTimeAsync(5_000);
+  ).finally(() => {
+    settled = true;
+  });
+  now = start + 199_999;
+  await vi.advanceTimersByTimeAsync(199_999);
+  expect(settled).toBe(false);
+  now = start + 200_000;
+  await vi.advanceTimersByTimeAsync(1);
   expect(await task).toMatchObject({ kind: 'failed', category: 'deadline' });
   expect(vi.getTimerCount()).toBe(0);
 });

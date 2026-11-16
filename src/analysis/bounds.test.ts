@@ -278,5 +278,5 @@ test('the old response ceiling is too small for the new completion budget', asyn
     ...input,
     limits: { ...ANALYSIS_LIMITS, responseBytes: 3_211_264 },
   });
-  expect(result.kind).toBe('invalid');
+  expect(result).toEqual({ kind: 'invalid', attempted: false, category: 'budget' });
 });

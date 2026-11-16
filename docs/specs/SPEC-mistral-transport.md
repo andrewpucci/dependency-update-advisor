@@ -147,7 +147,7 @@ npm test -- --run src/analysis
 The four repository implementation checks and advisory complexity report
 remain the final verification commands. Default tests use only invented
 files/HTTP data and mocked Mistral; no credential or paid request is needed.
-The full-response boundary fixture admits exactly 3,211,264 bytes, including
+The full-response boundary fixture admits exactly 12,648,448 bytes, including
 the recorded completion-byte allowance, worst-case JSON escaping and metadata.
 That synthetic allowance is not a universal tokenizer guarantee.
 
@@ -760,7 +760,7 @@ the provider nests a JSON document as an escaped string and adds metadata.
 It does not enlarge any T4 or C2 input. The spike must record whether its
 observed outputs challenge the allowance; a different allowance needs review.
 Boundary fixtures prove acceptance within this recorded allowance, not a
-universal tokenizer maximum or that all eight rich assessments fit 4,096 tokens.
+universal tokenizer maximum or that all eight rich assessments fit 16,384 tokens.
 
 ### Local identity and aliases
 
