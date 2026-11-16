@@ -425,8 +425,10 @@ test.each([
   'shipped action reports a %s model reply as %s and makes no other write',
   async (modelReply, reason) => {
     const result = await startWithModelReply(modelReply);
-    expect(result.stderr).toBe(
-      `dependabot-review: no-write rehearsal recorded model-unavailable (${reason}); nothing was published.\n`,
+    expect(result.stderr).toMatch(
+      new RegExp(
+        `^dependabot-review: no-write rehearsal recorded model-unavailable \\(${reason}\\); analysis 1 call \\(\\d{1,6} ms\\), max split depth 0; nothing was published\\.\\n$`,
+      ),
     );
     expect(result.modelCalls).toEqual(['POST']);
     expect(result.violations).toEqual([]);
@@ -473,8 +475,13 @@ test.each([
   'shipped action parses reasoning chunks: %s',
   async (_name, modelReply, reason, splits) => {
     const result = await startWithModelReply(modelReply);
-    expect(result.stderr).toBe(
-      `dependabot-review: no-write rehearsal recorded model-unavailable (${reason}); nothing was published.\n`,
+    const calls = result.modelCalls.length;
+    const label = calls === 1 ? 'call' : 'calls';
+    const durations = `\\d{1,6}(?:, \\d{1,6}){${Math.max(calls - 1, 0)}}`;
+    expect(result.stderr).toMatch(
+      new RegExp(
+        `^dependabot-review: no-write rehearsal recorded model-unavailable \\(${reason}\\); analysis ${calls} ${label} \\(${durations} ms\\), max split depth ${splits ? 2 : 0}; nothing was published\\.\\n$`,
+      ),
     );
     // A truncated multi-unit batch is split and retried by M2, so it makes more than one call.
     if (splits) {

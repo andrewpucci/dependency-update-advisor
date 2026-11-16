@@ -79,6 +79,32 @@ export function modelUnavailableReason(category: unknown): ModelUnavailableReaso
     ? (category as ModelUnavailableReason)
     : 'unknown';
 }
+
+/** Trusted labels for the assessment paths a no-write rehearsal may distinguish. */
+export const ASSESSMENT_FAILURE_REASONS = [
+  'config',
+  'analysis-input',
+  'analysis-configuration',
+  'analysis-exception',
+  'render-size',
+  'render-rejected',
+  'render-exception',
+  'assessment-exception',
+] as const;
+export type AssessmentFailureReason = (typeof ASSESSMENT_FAILURE_REASONS)[number];
+/** Narrows an internal assessment label to the closed rehearsal vocabulary. */
+export function assessmentFailureReason(value: unknown): AssessmentFailureReason | undefined {
+  return ASSESSMENT_FAILURE_REASONS.includes(value as AssessmentFailureReason)
+    ? (value as AssessmentFailureReason)
+    : undefined;
+}
+
+/** The bounded integer diagnostics M2 returns after it completes its scheduling work. */
+export type AnalysisTiming = Readonly<{
+  callsDispatched: number;
+  callDurationsMs: readonly number[];
+  maxSplitDepth: number;
+}>;
 export type ReviewOutcomeKind =
   | 'skipped'
   | 'stale'

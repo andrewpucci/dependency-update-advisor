@@ -149,7 +149,7 @@ test('defaults to no body and no gaps, and keeps at most four gaps', async () =>
   expect(many.handoff.gaps).toHaveLength(4);
 });
 
-async function internalFailureHandoff(stage: 'freshness' | 'snapshot') {
+async function internalFailureHandoff(stage: 'assessment' | 'freshness' | 'snapshot') {
   const claims = createTestClaimStore();
   const claimed = await claims.claim([101, 301, 401, 1, 42, 'a'.repeat(40)]);
   if (claimed.kind !== 'owned') throw new Error('fixture must own');
@@ -206,6 +206,35 @@ test('copies only the fixed field and reason into the trace', async () => {
   expect(sink.traces()[0]?.detail).toEqual({ field: 'run', reason: 'budget' });
 });
 
+test('records only a closed assessment failure reason in the trace', async () => {
+  const handoff = await internalFailureHandoff('assessment');
+  const sink = createRehearsalSink(null);
+  if (!sink) throw new Error('expected sink');
+  expect(sink.record(handoff, { assessmentFailureReason: 'render-rejected' })).toBe(true);
+  expect(sink.traces()[0]).toMatchObject({
+    kind: 'internal-failure',
+    stage: 'assessment',
+    assessmentFailureReason: 'render-rejected',
+  });
+  expect(handoff).not.toHaveProperty('assessmentFailureReason');
+  expect(sink.record(handoff, { assessmentFailureReason: 'RAW_PROVIDER_TEXT' } as never)).toBe(
+    false,
+  );
+  expect(sink.traces()).toHaveLength(1);
+});
+
+test('refuses an assessment reason on any other stage or outcome', async () => {
+  const sink = createRehearsalSink(null);
+  if (!sink) throw new Error('expected sink');
+  expect(
+    sink.record(await internalFailureHandoff('snapshot'), { assessmentFailureReason: 'config' }),
+  ).toBe(false);
+  expect(sink.record(await handoffOf('complete', 'g'), { assessmentFailureReason: 'config' })).toBe(
+    false,
+  );
+  expect(sink.traces()).toEqual([]);
+});
+
 async function handoffOf(kind: 'model-unavailable' | 'complete', head: string) {
   const claims = createTestClaimStore();
   const claimed = await claims.claim([101, 301, 401, 1, 44, head.repeat(40)]);
@@ -240,6 +269,34 @@ test('narrows a stray model-unavailable reason to unknown and copies no other fi
   expect(trace).toMatchObject({ modelUnavailableReason: 'unknown' });
   expect(JSON.stringify(trace)).not.toContain('RAW_PROVIDER_TEXT');
   expect(JSON.stringify(trace)).not.toContain('sentinel-extra');
+});
+
+test('copies valid analysis timing into the rehearsal trace but never the handoff', async () => {
+  const handoff = await handoffOf('complete', 'h');
+  const sink = createRehearsalSink(null);
+  if (!sink) throw new Error('expected sink');
+  const timing = { callsDispatched: 2, callDurationsMs: [12, 34], maxSplitDepth: 1 };
+  expect(sink.record(handoff, undefined, timing)).toBe(true);
+  timing.callDurationsMs[0] = 99;
+  expect(sink.traces()[0]).toMatchObject({
+    analysisTiming: { callsDispatched: 2, callDurationsMs: [12, 34], maxSplitDepth: 1 },
+  });
+  expect(Object.isFrozen(sink.traces()[0]?.analysisTiming)).toBe(true);
+  expect(Object.isFrozen(sink.traces()[0]?.analysisTiming?.callDurationsMs)).toBe(true);
+  expect(handoff).not.toHaveProperty('analysisTiming');
+});
+
+test('omits malformed analysis timing from the rehearsal trace', async () => {
+  const sink = createRehearsalSink(null);
+  if (!sink) throw new Error('expected sink');
+  expect(
+    sink.record(await handoffOf('complete', 'i'), undefined, {
+      callsDispatched: 1,
+      callDurationsMs: [-1],
+      maxSplitDepth: 0,
+    } as never),
+  ).toBe(true);
+  expect(sink.traces()[0]).not.toHaveProperty('analysisTiming');
 });
 
 test('records the model-unavailable reason only for a model-unavailable outcome', async () => {

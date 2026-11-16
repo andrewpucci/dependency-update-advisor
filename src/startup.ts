@@ -8,7 +8,7 @@ import fs from 'node:fs/promises';
 import { authenticatedFetch, createEventReads, researchFetch } from './adapters.js';
 import { createRehearsalSink, type RehearsalSink } from './handoff.js';
 import { runReview, type PipelineInput, type PipelineResult } from './pipeline.js';
-import { createTestClaimStore, type ClaimStore } from './review.js';
+import { createTestClaimStore, type AnalysisTiming, type ClaimStore } from './review.js';
 import { createGithubTransport, parseRuntime, resolveWorkflow } from './runtime.js';
 import { createGithubSnapshotReads } from './snapshot.js';
 
@@ -110,23 +110,41 @@ function platformDependencies(): StartupDependencies {
 }
 
 /** The one fixed line for a rehearsal result; no input, error text, or stack is ever echoed. */
+function analysisTimingLine(timing: AnalysisTiming): string {
+  const durations = timing.callDurationsMs.map((duration) => Math.min(duration, 999_999));
+  if (timing.callsDispatched === 0)
+    return `analysis 0 calls, max split depth ${timing.maxSplitDepth}`;
+  const label = timing.callsDispatched === 1 ? 'call' : 'calls';
+  return `analysis ${timing.callsDispatched} ${label} (${durations.join(', ')} ms), max split depth ${timing.maxSplitDepth}`;
+}
+
+function handedOffRehearsalLine(result: Extract<PipelineResult, { kind: 'handed-off' }>): string {
+  const recorded = 'dependabot-review: no-write rehearsal recorded';
+  if (!result.recorded)
+    return 'dependabot-review: no-write rehearsal could not record the handoff; nothing was published.';
+  const timing = result.analysisTiming ? `; ${analysisTimingLine(result.analysisTiming)}` : '';
+  if (result.handoff.kind !== 'internal-failure') {
+    // Only a model-unavailable result states a reason, a fixed literal chosen in trusted code.
+    const reason =
+      result.outcome === 'model-unavailable' ? ` (${result.modelUnavailableReason})` : '';
+    return `${recorded} ${result.outcome}${reason}${timing}; nothing was published.`;
+  }
+  const detail =
+    result.handoff.stage === 'assessment' && result.assessmentFailureReason
+      ? ` (${result.assessmentFailureReason})`
+      : result.detail
+        ? ` (${result.detail.field} ${result.detail.reason})`
+        : '';
+  return `${recorded} internal-failure at ${result.handoff.stage}${detail}${timing}; nothing was published.`;
+}
+
 function rehearsalLine(result: PipelineResult): string {
   const recorded = 'dependabot-review: no-write rehearsal recorded';
   switch (result.kind) {
     case 'failed':
       return `${recorded} internal-failure at ${result.stage}; nothing was published.`;
-    case 'handed-off': {
-      if (!result.recorded)
-        return 'dependabot-review: no-write rehearsal could not record the handoff; nothing was published.';
-      if (result.handoff.kind !== 'internal-failure') {
-        // Only a model-unavailable result states a reason, a fixed literal chosen in trusted code.
-        const reason =
-          result.outcome === 'model-unavailable' ? ` (${result.modelUnavailableReason})` : '';
-        return `${recorded} ${result.outcome}${reason}; nothing was published.`;
-      }
-      const detail = result.detail ? ` (${result.detail.field} ${result.detail.reason})` : '';
-      return `${recorded} internal-failure at ${result.handoff.stage}${detail}; nothing was published.`;
-    }
+    case 'handed-off':
+      return handedOffRehearsalLine(result);
     case 'skipped':
       return `dependabot-review: event skipped (${result.reason}); nothing was published.`;
     default:

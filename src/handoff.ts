@@ -1,9 +1,12 @@
 import type { PacketGap } from './packet.js';
 import type { DroppedOptional } from './optional-evidence.js';
 import {
+  assessmentFailureReason,
   internalFailureStage,
   modelUnavailableReason,
   reviewOutcome,
+  type AssessmentFailureReason,
+  type AnalysisTiming,
   type ClaimStore,
   type FreshnessDetail,
   type InternalFailureStage,
@@ -38,6 +41,24 @@ export type HandoffDetail = Readonly<{
   stage?: InternalFailureStage;
 }>;
 const MAX_GAPS = 4;
+
+function copyAnalysisTiming(value: AnalysisTiming | undefined): AnalysisTiming | undefined {
+  if (
+    !value ||
+    !Number.isSafeInteger(value.callsDispatched) ||
+    value.callsDispatched < 0 ||
+    !Number.isSafeInteger(value.maxSplitDepth) ||
+    value.maxSplitDepth < 0 ||
+    value.callDurationsMs.length !== value.callsDispatched ||
+    value.callDurationsMs.some((duration) => !Number.isSafeInteger(duration) || duration < 0)
+  )
+    return undefined;
+  return Object.freeze({
+    callsDispatched: value.callsDispatched,
+    callDurationsMs: Object.freeze([...value.callDurationsMs]),
+    maxSplitDepth: value.maxSplitDepth,
+  });
+}
 
 function copyGaps(gaps: readonly PacketGap[]): readonly PacketGap[] {
   return Object.freeze(
@@ -98,12 +119,22 @@ type RehearsalTraceBase = Readonly<{
   body: ReviewHandoff['body'];
   gaps: ReviewHandoff['gaps'];
   droppedOptional: ReviewHandoff['droppedOptional'];
+  analysisTiming?: AnalysisTiming;
 }>;
 export type RehearsalTrace =
   | (RehearsalTraceBase &
       Readonly<{
         kind: 'internal-failure';
-        stage: InternalFailureStage;
+        stage: 'assessment';
+        /** Fixed, trusted label for the assessment-stage failure only. */
+        assessmentFailureReason: AssessmentFailureReason;
+        detail?: never;
+      }>)
+  | (RehearsalTraceBase &
+      Readonly<{
+        kind: 'internal-failure';
+        stage: Exclude<InternalFailureStage, 'assessment'>;
+        assessmentFailureReason?: never;
         /** Only with the `freshness` stage: which check failed and why. */
         detail?: FreshnessDetail;
       }>)
@@ -112,6 +143,7 @@ export type RehearsalTrace =
         kind: 'model-unavailable';
         stage?: never;
         detail?: never;
+        assessmentFailureReason?: never;
         /** Why no model verdict exists; a fixed literal, never provider output. */
         modelUnavailableReason: ModelUnavailableReason;
       }>)
@@ -120,34 +152,79 @@ export type RehearsalTrace =
         kind: Exclude<ReviewOutcomeKind, 'internal-failure' | 'model-unavailable'>;
         stage?: never;
         detail?: never;
+        assessmentFailureReason?: never;
         modelUnavailableReason?: never;
       }>);
 /** The only extra a rehearsal may keep beside a handoff; each kind keeps only its own. */
 export type RehearsalDetail =
   | FreshnessDetail
-  | Readonly<{ modelUnavailableReason: ModelUnavailableReason }>;
+  | Readonly<{ modelUnavailableReason: ModelUnavailableReason }>
+  | Readonly<{ assessmentFailureReason: AssessmentFailureReason }>;
 export type RehearsalSink = Readonly<{
   /**
-   * `detail` is kept only for the kind it describes (a `freshness` internal failure, or a
-   * `model-unavailable` result); it never enters the handoff.
+   * `detail` is kept only for the outcome it describes; it never enters the handoff.
    */
-  record: (handoff: ReviewHandoff, detail?: RehearsalDetail) => boolean;
+  record: (
+    handoff: ReviewHandoff,
+    detail?: RehearsalDetail,
+    analysisTiming?: AnalysisTiming,
+  ) => boolean;
   traces: () => readonly RehearsalTrace[];
 }>;
+
+type TraceDetail = Readonly<{
+  freshness?: FreshnessDetail;
+  modelUnavailableReason?: ModelUnavailableReason;
+  assessmentFailureReason?: AssessmentFailureReason;
+}>;
+
+function traceDetail(
+  handoff: ReviewHandoff,
+  detail: RehearsalDetail | undefined,
+): TraceDetail | null {
+  const modelReason =
+    handoff.kind === 'model-unavailable' && detail && 'modelUnavailableReason' in detail
+      ? modelUnavailableReason(detail.modelUnavailableReason)
+      : undefined;
+  if (handoff.kind === 'model-unavailable' && !modelReason) return null;
+  const assessmentReason =
+    handoff.kind === 'internal-failure' &&
+    handoff.stage === 'assessment' &&
+    detail &&
+    'assessmentFailureReason' in detail
+      ? assessmentFailureReason(detail.assessmentFailureReason)
+      : undefined;
+  if (
+    (detail &&
+      'assessmentFailureReason' in detail &&
+      !(handoff.kind === 'internal-failure' && handoff.stage === 'assessment')) ||
+    (handoff.kind === 'internal-failure' && handoff.stage === 'assessment' && !assessmentReason)
+  )
+    return null;
+  const freshness =
+    handoff.kind === 'internal-failure' &&
+    handoff.stage === 'freshness' &&
+    detail &&
+    'field' in detail
+      ? Object.freeze({ field: detail.field, reason: detail.reason })
+      : undefined;
+  return {
+    modelUnavailableReason: modelReason,
+    assessmentFailureReason: assessmentReason,
+    freshness,
+  };
+}
 
 /** A bounded local sink deliberately rejects every usable App token and has no client fallback. */
 export function createRehearsalSink(appToken: string | null): RehearsalSink | null {
   if (appToken) return null;
   const traces: RehearsalTrace[] = [];
   return Object.freeze({
-    record: (handoff, detail) => {
+    record: (handoff, detail, analysisTiming) => {
       if (traces.length >= 32) return false;
-      // A model-unavailable result must say why; refuse it rather than record a guess.
-      const modelReason =
-        handoff.kind === 'model-unavailable' && detail && 'modelUnavailableReason' in detail
-          ? modelUnavailableReason(detail.modelUnavailableReason)
-          : undefined;
-      if (handoff.kind === 'model-unavailable' && !modelReason) return false;
+      const keptDetail = traceDetail(handoff, detail);
+      if (!keptDetail) return false;
+      const timing = copyAnalysisTiming(analysisTiming);
       const traceBase = {
         identity: Object.freeze([...handoff.identity]) as OwnedClaim['identity'],
         generation: handoff.generation,
@@ -161,13 +238,14 @@ export function createRehearsalSink(appToken: string | null): RehearsalSink | nu
         Object.freeze({
           kind: handoff.kind,
           ...(handoff.kind === 'internal-failure' ? { stage: handoff.stage } : {}),
-          ...(handoff.kind === 'internal-failure' &&
-          handoff.stage === 'freshness' &&
-          detail &&
-          'field' in detail
-            ? { detail: Object.freeze({ field: detail.field, reason: detail.reason }) }
+          ...(keptDetail.freshness ? { detail: keptDetail.freshness } : {}),
+          ...(keptDetail.modelUnavailableReason
+            ? { modelUnavailableReason: keptDetail.modelUnavailableReason }
             : {}),
-          ...(modelReason ? { modelUnavailableReason: modelReason } : {}),
+          ...(keptDetail.assessmentFailureReason
+            ? { assessmentFailureReason: keptDetail.assessmentFailureReason }
+            : {}),
+          ...(timing ? { analysisTiming: timing } : {}),
           ...traceBase,
         }) as RehearsalTrace,
       );
