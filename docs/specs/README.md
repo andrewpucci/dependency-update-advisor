@@ -153,7 +153,8 @@ gaps and an introduced vulnerability before parity is claimed.
   execution for M2 #22 after plan approval, 2026-11-07. A
   [timing and split-depth diagnostics amendment](SPEC-analysis-batches.md#timing-and-split-depth-diagnostics-amendment)
   (`callDurationsMs`, `maxSplitDepth`) is approved for planning, 2026-11-15;
-  it needs a companion W2 amendment, not yet drafted, to print the values.
+  both fields are implemented (#331, #332), pending review and merge. A
+  companion W2 amendment (#334), not yet drafted, must print the values.
 - [Mistral transport and single-batch validation](SPEC-mistral-transport.md) —
   approved for execution for M1 #21 in `analysis-providers`, 2026-11-07,
   after the user's edits, plan review, and `as-build auto`.

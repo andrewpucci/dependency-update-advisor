@@ -219,8 +219,14 @@ compatibility, workflow publication, packaging, adoption, parity, or cutover.
 ## Timing and Split-Depth Diagnostics Amendment
 
 **Status: approved for planning, 2026-11-15 (the user invoked `as-plan` on
-this reviewed draft, after a fresh-context Opus review). Plan and execution
-approval remain separate gates.** Effort tier: L (adds fields to M2's exported
+this reviewed draft, after a fresh-context Opus review); `callDurationsMs`
+([#331](https://github.com/andrewpucci/dependency-update-advisor/issues/331))
+and `maxSplitDepth`
+([#332](https://github.com/andrewpucci/dependency-update-advisor/issues/332))
+are implemented on the working branch, pending fresh-context review and merge.
+Nothing prints them yet: the companion W2 amendment
+([#334](https://github.com/andrewpucci/dependency-update-advisor/issues/334))
+is not drafted.** Effort tier: L (adds fields to M2's exported
 diagnostics and amends item 11's closed allowlist). Scoped to a new issue under
 [#309](https://github.com/andrewpucci/dependency-update-advisor/issues/309),
 not to #329. The
