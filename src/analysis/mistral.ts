@@ -231,6 +231,27 @@ function emptyToolFields(message: Record<string, unknown>) {
     'envelope',
   );
 }
+const MAX_CONTENT_CHUNKS = 64;
+/**
+ * The review text of a reply. A string is the text itself. A reasoning model returns a bounded
+ * array of chunks instead: `thinking` chunks are skipped without reading their content, and the
+ * `text` chunks, in order, are the text. Any other shape is an envelope failure.
+ */
+function replyText(content: unknown): string {
+  if (typeof content === 'string') return content;
+  requireValue(
+    Array.isArray(content) && content.length > 0 && content.length <= MAX_CONTENT_CHUNKS,
+    'envelope',
+  );
+  let text = '';
+  for (const chunk of content) {
+    requireValue(isPlainObject(chunk), 'envelope');
+    if (chunk.type === 'thinking') continue;
+    requireValue(chunk.type === 'text' && typeof chunk.text === 'string', 'envelope');
+    text += chunk.text;
+  }
+  return text;
+}
 function document(text: string): unknown {
   const envelope = json(text, 'envelope');
   requireValue(
@@ -243,11 +264,12 @@ function document(text: string): unknown {
     'envelope',
   );
   const message = choice.message;
-  requireValue(message.role === 'assistant' && typeof message.content === 'string', 'envelope');
+  requireValue(message.role === 'assistant', 'envelope');
+  const content = replyText(message.content);
   emptyToolFields(message);
   if (choice.finish_reason === 'length') throw new MistralFailure('length');
-  requireValue(choice.finish_reason === 'stop' && message.content.trim().length > 0, 'envelope');
-  return json(message.content, 'json');
+  requireValue(choice.finish_reason === 'stop' && content.trim().length > 0, 'envelope');
+  return json(content, 'json');
 }
 function result(outcome: Outcome, snapshot?: BatchSnapshot): MistralResult {
   return freeze({

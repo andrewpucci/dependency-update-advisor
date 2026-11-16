@@ -316,3 +316,33 @@ test('does not execute supplied accessors or accept invalid limits, duplicate or
     Object.defineProperty(result.batch.request.messages[1], 'content', { value: 'changed' }),
   ).toThrow();
 });
+
+test('sends the exact fixed request: greedy sampling with top_p 1 and no reasoning effort', async () => {
+  const { input } = await analysisScenario();
+  const result = prepareAnalysisBatch({ ...input, limits: ANALYSIS_LIMITS });
+  if (result.kind !== 'prepared') throw new Error('preparation');
+  const { messages, ...fixed } = result.batch.request;
+  // Mistral rejects temperature 0 without top_p 1 (HTTP 400, code 3054). Reasoning effort is
+  // never sent: reasoning-capable models accept it, others reject it.
+  expect(fixed).toEqual({
+    model: 'synthetic-model',
+    temperature: 0,
+    top_p: 1,
+    n: 1,
+    stream: false,
+    max_tokens: ANALYSIS_LIMITS.completionTokens,
+    response_format: { type: 'json_object' },
+  });
+  expect(Object.keys(result.batch.request)).toEqual([
+    'model',
+    'temperature',
+    'top_p',
+    'n',
+    'stream',
+    'max_tokens',
+    'response_format',
+    'messages',
+  ]);
+  expect(result.batch.request).not.toHaveProperty('reasoning_effort');
+  expect(messages).toHaveLength(2);
+});
