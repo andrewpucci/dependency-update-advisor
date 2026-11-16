@@ -69,8 +69,12 @@ GitHub App token.
    a rehearsal that ends `model-unavailable` reports `(<reason>)`. It was then
    re-pinned to `ac232bbedf7d5ad1a6df9a6b3a10d704571c865f`, the passing `main`
    revision that contains the reasoning-model compatibility change (#330), so
-   the rehearsal can complete against Mistral's reasoning model. No re-pin
-   changes a permission, secret, or trigger.
+   the rehearsal can complete against Mistral's reasoning model. It was then
+   re-pinned to `f74a9201995a1be5472c8c4626c3ae3794f2cdea`, the passing `main`
+   revision that contains the assessment-failure reason and analysis-timing
+   diagnostics (PR #345), so the rehearsal names an assessment failure and
+   reports per-call durations and split depth. No re-pin changes a permission,
+   secret, or trigger.
 
 ## Commands
 
