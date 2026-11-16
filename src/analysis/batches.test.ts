@@ -827,6 +827,35 @@ test('a call ended by cancellation records the elapsed time at the cutoff', asyn
   expect(result.diagnostics.callDurationsMs).toHaveLength(result.diagnostics.callsDispatched);
 });
 
+test.each([NaN, Infinity])(
+  'a clock that turns %s after dispatch still records a non-negative integer',
+  async (late) => {
+    const { input } = await analysisScenario();
+    let time = 0;
+    const result = await analyzeDecisionUnits(
+      input,
+      { apiKey: 'test-key', deadlineMs: 700_000 },
+      {
+        now: () => time,
+        analyze: async (batch, options) => {
+          const outcome = await analyzeMistralBatch(batch, options, {
+            now: () => 0,
+            fetch: async () => validatedReply(batch),
+          });
+          time = late;
+          return outcome;
+        },
+      },
+    );
+    expect(result.ok).toBe(true);
+    if (!result.ok) throw new Error('fixture failed');
+    expect(result.diagnostics.callDurationsMs.length).toBeGreaterThan(0);
+    expect(result.diagnostics.callDurationsMs).toEqual(
+      result.diagnostics.callDurationsMs.map(() => 0),
+    );
+  },
+);
+
 test('an ignored late result records the time it actually settled', async () => {
   const { input } = await analysisScenario();
   let time = 0;

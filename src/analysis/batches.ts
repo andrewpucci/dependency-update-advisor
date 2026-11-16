@@ -349,7 +349,9 @@ async function timedCall(
 ): Promise<TimedOutcome> {
   const startedAt = now();
   const outcome = await boundedCall(batch, options, analyze, now);
-  return { outcome, durationMs: Math.max(0, Math.trunc(now() - startedAt)) };
+  // Only an injected clock can turn non-finite mid-run; the field stays a non-negative integer.
+  const elapsed = Math.trunc(now() - startedAt);
+  return { outcome, durationMs: Number.isFinite(elapsed) ? Math.max(0, elapsed) : 0 };
 }
 
 async function boundedCall(

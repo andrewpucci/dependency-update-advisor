@@ -21860,9 +21860,11 @@ function mapResult(ids, batchId, result) {
 /** Times one call on the injected monotonic clock, from just before M1 is invoked to settlement. */
 async function timedCall(batch, options, analyze, now) {
 	const startedAt = now();
+	const outcome = await boundedCall(batch, options, analyze, now);
+	const elapsed = Math.trunc(now() - startedAt);
 	return {
-		outcome: await boundedCall(batch, options, analyze, now),
-		durationMs: Math.max(0, Math.trunc(now() - startedAt))
+		outcome,
+		durationMs: Number.isFinite(elapsed) ? Math.max(0, elapsed) : 0
 	};
 }
 async function boundedCall(batch, options, analyze, now) {
