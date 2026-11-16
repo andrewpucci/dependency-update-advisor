@@ -250,7 +250,9 @@ action and cannot supply either value.
      elapsed time at that cutoff.
    - A late result that is ignored records the actual time it settled.
    - A call cancelled before M1 is invoked still counts as dispatched, as
-     `callsDispatched` already does, and records 0.
+     `callsDispatched` already does, and records 0. That branch is
+     defensive: the scheduler checks cancellation immediately before starting
+     a call, so no public input reaches it, and it has no behavior check.
    - A result with `attempted: false` is not counted in `callsDispatched` and
      has no entry.
 3. Diagnostics add `maxSplitDepth`: the greatest split depth reached by any
@@ -276,7 +278,7 @@ Each is written first and shown failing on the prior code or a named mutation:
   ones: length equals `callsDispatched`, so the array has no entry for the
   unattempted calls. Mutations: wall-clock instead of monotonic time; one entry
   per scheduled call instead of per dispatched call; completion order; omitting
-  the cutoff entry; omitting the pre-start cancel entry.
+  the cutoff entry.
 - Exact split depths: an 8-unit batch that truncates, then both 4-unit halves
   truncate, gives `truncationSplits` 3 and `maxSplitDepth` exactly 2; one batch
   split once gives 1; no split gives 0. A 24-unit run where two first-level

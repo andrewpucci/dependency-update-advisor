@@ -717,3 +717,144 @@ test('a run-wide budget failure prepares once and leaves every unit unavailable 
     batch.mockRestore();
   }
 });
+
+// Per-call timing diagnostics (#331): durations come from the injected monotonic clock.
+const settle = () => new Promise<void>((resolve) => setTimeout(resolve, 0));
+
+async function twoBatchInventory() {
+  const { input } = await analysisScenario({ inventory: { children: 12 } });
+  const { formDecisionUnits } = await import('../units.js');
+  const inventory = formDecisionUnits({ ...input.inventory.packet, relationships: [] });
+  expect(inventory.units.length).toBeGreaterThan(8);
+  expect(inventory.units.length).toBeLessThanOrEqual(16);
+  return { ...input, inventory };
+}
+
+const validatedReply = (batch: Parameters<typeof analyzeMistralBatch>[0]) =>
+  Response.json({
+    choices: [
+      {
+        index: 0,
+        finish_reason: 'stop',
+        message: { role: 'assistant', content: JSON.stringify(analysisDocument(batch)) },
+      },
+    ],
+  });
+
+test.each([
+  ['forward', [0, 1]],
+  ['reverse', [1, 0]],
+])(
+  'reports per-call durations in wave order when calls complete in %s order',
+  async (_name, order) => {
+    const input = await twoBatchInventory();
+    let time = 0.4;
+    const gates: Array<() => void> = [];
+    const running = analyzeDecisionUnits(
+      input,
+      { apiKey: 'test-key', deadlineMs: 700_000 },
+      {
+        now: () => time,
+        analyze: async (batch, options) => {
+          await new Promise<void>((resolve) => gates.push(resolve));
+          return analyzeMistralBatch(batch, options, {
+            now: () => 0,
+            fetch: async () => validatedReply(batch),
+          });
+        },
+      },
+    );
+    while (gates.length < 2) await settle();
+    // The call released first finishes after 12.9 ms (13.3 - 0.4); the other after 49.6 ms.
+    time = 13.3;
+    gates[order[0]]();
+    await settle();
+    time = 50;
+    gates[order[1]]();
+    const result = await running;
+    expect(result.ok).toBe(true);
+    if (!result.ok) throw new Error('fixture failed');
+    const byIndex = order[0] === 0 ? [12, 49] : [49, 12];
+    expect(result.diagnostics.callDurationsMs).toEqual(byIndex);
+    expect(result.diagnostics.callDurationsMs).toHaveLength(result.diagnostics.callsDispatched);
+  },
+);
+
+test('has one duration entry per dispatched call, none for a call that sent no request', async () => {
+  const input = await twoBatchInventory();
+  let time = 0;
+  let calls = 0;
+  const result = await analyzeDecisionUnits(
+    input,
+    { apiKey: 'test-key', deadlineMs: 700_000 },
+    {
+      now: () => time,
+      analyze: async (batch, options) => {
+        const index = calls++;
+        if (index === 0) return analyzeMistralBatch(batch, { deadlineMs: 700_000 });
+        await settle();
+        time = 40;
+        return analyzeMistralBatch(batch, options, {
+          now: () => 0,
+          fetch: async () => validatedReply(batch),
+        });
+      },
+    },
+  );
+  expect(result.ok).toBe(true);
+  if (!result.ok) throw new Error('fixture failed');
+  expect(calls).toBe(2);
+  expect(result.diagnostics.callsDispatched).toBe(1);
+  expect(result.diagnostics.callDurationsMs).toEqual([40]);
+});
+
+test('a call ended by cancellation records the elapsed time at the cutoff', async () => {
+  const { input } = await analysisScenario();
+  const controller = new AbortController();
+  let time = 3;
+  const running = analyzeDecisionUnits(
+    input,
+    { apiKey: 'test-key', deadlineMs: 700_000, signal: controller.signal },
+    { now: () => time, analyze: () => new Promise(() => {}) },
+  );
+  time = 10;
+  controller.abort();
+  const result = await running;
+  expect(result.ok).toBe(true);
+  if (!result.ok) throw new Error('fixture failed');
+  expect(result.diagnostics.callDurationsMs.length).toBeGreaterThan(0);
+  expect(result.diagnostics.callDurationsMs.every((ms) => ms === 7)).toBe(true);
+  expect(result.diagnostics.callDurationsMs).toHaveLength(result.diagnostics.callsDispatched);
+});
+
+test('an ignored late result records the time it actually settled', async () => {
+  const { input } = await analysisScenario();
+  let time = 0;
+  const result = await analyzeDecisionUnits(
+    input,
+    { apiKey: 'test-key', deadlineMs: 700_000 },
+    {
+      now: () => time,
+      analyze: async (batch, options) => {
+        const outcome = await analyzeMistralBatch(batch, options, {
+          now: () => 0,
+          fetch: async () => validatedReply(batch),
+        });
+        time = 1_000_000;
+        return outcome;
+      },
+    },
+  );
+  expect(result.ok).toBe(true);
+  if (!result.ok) throw new Error('fixture failed');
+  expect(result.diagnostics.callsDispatched).toBeGreaterThan(0);
+  expect(result.diagnostics.callDurationsMs[0]).toBe(1_000_000);
+});
+
+test('records no durations when no call is dispatched', async () => {
+  const { input } = await analysisScenario();
+  const result = await analyzeDecisionUnits(input, { deadlineMs: 700_000 }, { now: () => 0 });
+  expect(result.ok).toBe(true);
+  if (!result.ok) throw new Error('fixture failed');
+  expect(result.diagnostics.callDurationsMs).toEqual([]);
+});

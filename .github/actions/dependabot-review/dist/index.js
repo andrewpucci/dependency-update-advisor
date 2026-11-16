@@ -21668,7 +21668,7 @@ async function analyzeDecisionUnits(input, options, dependencies = {}) {
 	const model = parsedConfig.ok && snapshot.config.ok && isDeepStrictEqual(parsedConfig.config, snapshot.config.config) ? parsedConfig.config.analysis?.model ?? null : null;
 	const unitIds = snapshot.inventory.units.map((unit) => unit.id);
 	const deadlineMs = Math.min(selectedOptions.deadlineMs - PUBLICATION_RESERVE_MS, start + MAX_ANALYSIS_MS);
-	const { records, dispatched, splits } = await scheduleBatches(snapshot, {
+	const { records, dispatched, splits, durations } = await scheduleBatches(snapshot, {
 		...selectedOptions,
 		deadlineMs
 	}, analyze, now, unitIds);
@@ -21699,6 +21699,7 @@ async function analyzeDecisionUnits(input, options, dependencies = {}) {
 			memberCount: snapshot.inventory.packet.changes.length,
 			callsDispatched: dispatched,
 			truncationSplits: splits,
+			callDurationsMs: durations,
 			stateCounts,
 			failureCategories: [...new Set(records.flatMap((record) => record.category ? [record.category] : []))].sort()
 		},
@@ -21711,7 +21712,8 @@ async function scheduleBatches(snapshot, options, analyze, now, unitIds) {
 		records: [],
 		calls: 0,
 		dispatched: 0,
-		splits: 0
+		splits: 0,
+		durations: []
 	};
 	for (let index = 0; index < unitIds.length; index += ANALYSIS_LIMITS.maxUnits) state.queue.push(unitIds.slice(index, index + ANALYSIS_LIMITS.maxUnits));
 	while (state.queue.length) {
@@ -21748,7 +21750,7 @@ function prepareWave(state, snapshot, options, analyze, now) {
 		wave.push({
 			ids,
 			batchId: prepared.batch.batchId,
-			pending: boundedCall(prepared.batch, options, analyze, now)
+			pending: timedCall(prepared.batch, options, analyze, now)
 		});
 	}
 	return {
@@ -21770,16 +21772,17 @@ function prepareBatch(state, snapshot, ids) {
 	};
 }
 async function collectWave(state, wave) {
-	const results = await Promise.all(wave.map((item) => item.pending));
+	const timed = await Promise.all(wave.map((item) => item.pending));
 	const children = [];
 	for (let index = 0; index < wave.length; index++) {
 		const { ids, batchId } = wave[index];
-		const result = results[index];
-		if (typeof result !== "string" && (result.kind === "validated" || result.attempted)) state.dispatched++;
-		if (typeof result === "string") {
+		const { outcome: result, durationMs } = timed[index];
+		if (typeof result === "string" || result.kind === "validated" || result.attempted) {
 			state.dispatched++;
-			state.records.push(...unresolved(ids, "unavailable", true, result, batchId));
-		} else if (isSplittable(result, ids, batchId)) {
+			state.durations.push(durationMs);
+		}
+		if (typeof result === "string") state.records.push(...unresolved(ids, "unavailable", true, result, batchId));
+		else if (isSplittable(result, ids, batchId)) {
 			state.splits++;
 			children.push(...splitUnits(ids));
 		} else state.records.push(...mapResult(ids, batchId, result));
@@ -21838,6 +21841,14 @@ function mapResult(ids, batchId, result) {
 		"reference",
 		"policy"
 	].includes(category) ? "rejected" : !attempted && ["cancelled", "deadline"].includes(category) ? "unattempted" : "unavailable", attempted, category, batchId);
+}
+/** Times one call on the injected monotonic clock, from just before M1 is invoked to settlement. */
+async function timedCall(batch, options, analyze, now) {
+	const startedAt = now();
+	return {
+		outcome: await boundedCall(batch, options, analyze, now),
+		durationMs: Math.max(0, Math.trunc(now() - startedAt))
+	};
 }
 async function boundedCall(batch, options, analyze, now) {
 	const controller = new AbortController();
