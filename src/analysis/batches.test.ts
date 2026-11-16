@@ -717,3 +717,358 @@ test('a run-wide budget failure prepares once and leaves every unit unavailable 
     batch.mockRestore();
   }
 });
+
+// Per-call timing diagnostics (#331): durations come from the injected monotonic clock.
+const settle = () => new Promise<void>((resolve) => setTimeout(resolve, 0));
+
+async function twoBatchInventory() {
+  const { input } = await analysisScenario({ inventory: { children: 12 } });
+  const { formDecisionUnits } = await import('../units.js');
+  const inventory = formDecisionUnits({ ...input.inventory.packet, relationships: [] });
+  expect(inventory.units.length).toBeGreaterThan(8);
+  expect(inventory.units.length).toBeLessThanOrEqual(16);
+  return { ...input, inventory };
+}
+
+const validatedReply = (batch: Parameters<typeof analyzeMistralBatch>[0]) =>
+  Response.json({
+    choices: [
+      {
+        index: 0,
+        finish_reason: 'stop',
+        message: { role: 'assistant', content: JSON.stringify(analysisDocument(batch)) },
+      },
+    ],
+  });
+
+test.each([
+  ['forward', [0, 1]],
+  ['reverse', [1, 0]],
+])(
+  'reports per-call durations in wave order when calls complete in %s order',
+  async (_name, order) => {
+    const input = await twoBatchInventory();
+    let time = 0.4;
+    const gates: Array<() => void> = [];
+    const running = analyzeDecisionUnits(
+      input,
+      { apiKey: 'test-key', deadlineMs: 700_000 },
+      {
+        now: () => time,
+        analyze: async (batch, options) => {
+          await new Promise<void>((resolve) => gates.push(resolve));
+          return analyzeMistralBatch(batch, options, {
+            now: () => 0,
+            fetch: async () => validatedReply(batch),
+          });
+        },
+      },
+    );
+    while (gates.length < 2) await settle();
+    // The call released first finishes after 12.9 ms (13.3 - 0.4); the other after 49.6 ms.
+    time = 13.3;
+    gates[order[0]]();
+    await settle();
+    time = 50;
+    gates[order[1]]();
+    const result = await running;
+    expect(result.ok).toBe(true);
+    if (!result.ok) throw new Error('fixture failed');
+    const byIndex = order[0] === 0 ? [12, 49] : [49, 12];
+    expect(result.diagnostics.callDurationsMs).toEqual(byIndex);
+    expect(result.diagnostics.callDurationsMs).toHaveLength(result.diagnostics.callsDispatched);
+  },
+);
+
+test('has one duration entry per dispatched call, none for a call that sent no request', async () => {
+  const input = await twoBatchInventory();
+  let time = 0;
+  let calls = 0;
+  const result = await analyzeDecisionUnits(
+    input,
+    { apiKey: 'test-key', deadlineMs: 700_000 },
+    {
+      now: () => time,
+      analyze: async (batch, options) => {
+        const index = calls++;
+        if (index === 0) return analyzeMistralBatch(batch, { deadlineMs: 700_000 });
+        await settle();
+        time = 40;
+        return analyzeMistralBatch(batch, options, {
+          now: () => 0,
+          fetch: async () => validatedReply(batch),
+        });
+      },
+    },
+  );
+  expect(result.ok).toBe(true);
+  if (!result.ok) throw new Error('fixture failed');
+  expect(calls).toBe(2);
+  expect(result.diagnostics.callsDispatched).toBe(1);
+  expect(result.diagnostics.callDurationsMs).toEqual([40]);
+});
+
+test('a call ended by cancellation records the elapsed time at the cutoff', async () => {
+  const { input } = await analysisScenario();
+  const controller = new AbortController();
+  let time = 3;
+  const running = analyzeDecisionUnits(
+    input,
+    { apiKey: 'test-key', deadlineMs: 700_000, signal: controller.signal },
+    { now: () => time, analyze: () => new Promise(() => {}) },
+  );
+  time = 10;
+  controller.abort();
+  const result = await running;
+  expect(result.ok).toBe(true);
+  if (!result.ok) throw new Error('fixture failed');
+  expect(result.diagnostics.callDurationsMs.length).toBeGreaterThan(0);
+  expect(result.diagnostics.callDurationsMs.every((ms) => ms === 7)).toBe(true);
+  expect(result.diagnostics.callDurationsMs).toHaveLength(result.diagnostics.callsDispatched);
+});
+
+test('a call ended by the deadline timer records the elapsed time at the cutoff', async () => {
+  const { input } = await analysisScenario();
+  let time = 0;
+  // The effective deadline is 60_005 - 60_000 (publication reserve) = 5 ms on the injected clock.
+  const result = await analyzeDecisionUnits(
+    input,
+    { apiKey: 'test-key', deadlineMs: 60_005 },
+    {
+      now: () => time,
+      analyze: () => {
+        time = 5;
+        return new Promise(() => {});
+      },
+    },
+  );
+  expect(result.ok).toBe(true);
+  if (!result.ok) throw new Error('fixture failed');
+  expect(result.records.every((record) => record.category === 'deadline')).toBe(true);
+  expect(result.diagnostics.callDurationsMs.length).toBeGreaterThan(0);
+  expect(result.diagnostics.callDurationsMs.every((ms) => ms === 5)).toBe(true);
+  expect(result.diagnostics.callDurationsMs).toHaveLength(result.diagnostics.callsDispatched);
+});
+
+test.each([
+  [
+    'a rejected',
+    (advance: () => void) => async () => {
+      advance();
+      throw new Error('transport');
+    },
+  ],
+  [
+    'a synchronously thrown',
+    (advance: () => void) => () => {
+      advance();
+      throw new Error('transport');
+    },
+  ],
+])('%s transport call records the elapsed time at the cutoff', async (_name, failing) => {
+  const { input } = await analysisScenario();
+  let time = 2;
+  const result = await analyzeDecisionUnits(
+    input,
+    { apiKey: 'test-key', deadlineMs: 700_000 },
+    { now: () => time, analyze: failing(() => (time += 9)) },
+  );
+  expect(result.ok).toBe(true);
+  if (!result.ok) throw new Error('fixture failed');
+  expect(result.records.every((record) => record.category === 'transport')).toBe(true);
+  expect(result.diagnostics.callDurationsMs.length).toBeGreaterThan(0);
+  expect(result.diagnostics.callDurationsMs.every((ms) => ms === 9)).toBe(true);
+  expect(result.diagnostics.callDurationsMs).toHaveLength(result.diagnostics.callsDispatched);
+});
+
+test.each([NaN, Infinity])(
+  'a clock that turns %s after dispatch still records a non-negative integer',
+  async (late) => {
+    const { input } = await analysisScenario();
+    let time = 0;
+    const result = await analyzeDecisionUnits(
+      input,
+      { apiKey: 'test-key', deadlineMs: 700_000 },
+      {
+        now: () => time,
+        analyze: async (batch, options) => {
+          const outcome = await analyzeMistralBatch(batch, options, {
+            now: () => 0,
+            fetch: async () => validatedReply(batch),
+          });
+          time = late;
+          return outcome;
+        },
+      },
+    );
+    expect(result.ok).toBe(true);
+    if (!result.ok) throw new Error('fixture failed');
+    expect(result.diagnostics.callDurationsMs.length).toBeGreaterThan(0);
+    expect(result.diagnostics.callDurationsMs).toEqual(
+      result.diagnostics.callDurationsMs.map(() => 0),
+    );
+  },
+);
+
+test('an ignored late result records the time it actually settled', async () => {
+  const { input } = await analysisScenario();
+  let time = 0;
+  const result = await analyzeDecisionUnits(
+    input,
+    { apiKey: 'test-key', deadlineMs: 700_000 },
+    {
+      now: () => time,
+      analyze: async (batch, options) => {
+        const outcome = await analyzeMistralBatch(batch, options, {
+          now: () => 0,
+          fetch: async () => validatedReply(batch),
+        });
+        time = 1_000_000;
+        return outcome;
+      },
+    },
+  );
+  expect(result.ok).toBe(true);
+  if (!result.ok) throw new Error('fixture failed');
+  expect(result.diagnostics.callsDispatched).toBeGreaterThan(0);
+  expect(result.diagnostics.callDurationsMs[0]).toBe(1_000_000);
+});
+
+test('records no durations when no call is dispatched', async () => {
+  const { input } = await analysisScenario();
+  const result = await analyzeDecisionUnits(input, { deadlineMs: 700_000 }, { now: () => 0 });
+  expect(result.ok).toBe(true);
+  if (!result.ok) throw new Error('fixture failed');
+  expect(result.diagnostics.callDurationsMs).toEqual([]);
+});
+
+// Split-depth diagnostics (#332): depth counts truncation splits down one lineage, not totals.
+async function inventoryOf(units: number) {
+  const { input } = await analysisScenario({ inventory: { children: units - 3 } });
+  const { formDecisionUnits } = await import('../units.js');
+  const inventory = formDecisionUnits({ ...input.inventory.packet, relationships: [] });
+  expect(inventory.units).toHaveLength(units);
+  return { ...input, inventory };
+}
+
+function runWithTruncation(
+  input: Awaited<ReturnType<typeof inventoryOf>>,
+  truncates: (unitIds: readonly string[]) => boolean,
+) {
+  return analyzeDecisionUnits(
+    input,
+    { apiKey: 'test-key', deadlineMs: 700_000 },
+    {
+      now: () => 0,
+      analyze: (batch, options) =>
+        analyzeMistralBatch(batch, options, {
+          now: () => 0,
+          fetch: async () =>
+            Response.json({
+              choices: [
+                {
+                  index: 0,
+                  finish_reason: truncates(batch.unitIds) ? 'length' : 'stop',
+                  message: { role: 'assistant', content: JSON.stringify(analysisDocument(batch)) },
+                },
+              ],
+            }),
+        }),
+    },
+  );
+}
+
+test.each([
+  ['a halved half that truncates again', (ids: readonly string[]) => ids.length > 2, 3, 2],
+  ['one first-level truncation', (ids: readonly string[]) => ids.length === 8, 1, 1],
+  ['no truncation', () => false, 0, 0],
+])('reports split depth for %s', async (_name, truncates, splits, depth) => {
+  const result = await runWithTruncation(await inventoryOf(8), truncates);
+  expect(result.ok).toBe(true);
+  if (!result.ok) throw new Error('fixture failed');
+  expect(result.diagnostics.truncationSplits).toBe(splits);
+  expect(result.diagnostics.maxSplitDepth).toBe(depth);
+});
+
+test('independent first-level splits in different waves stay at depth 1', async () => {
+  const input = await inventoryOf(24);
+  const first = input.inventory.units.map((unit) => unit.id);
+  // Batches of 8 start at units 0, 8, and 16: the first and third truncate. Waves hold two
+  // calls, so the third batch dispatches only after the first batch's children.
+  const truncating = new Set([first[0], first[16]]);
+  const result = await runWithTruncation(
+    input,
+    (ids) => ids.length === 8 && truncating.has(ids[0]),
+  );
+  expect(result.ok).toBe(true);
+  if (!result.ok) throw new Error('fixture failed');
+  expect(result.diagnostics.truncationSplits).toBe(2);
+  expect(result.diagnostics.maxSplitDepth).toBe(1);
+});
+
+test('a preparation-budget re-pack does not add split depth', async () => {
+  const input = await inventoryOf(8);
+  const contract = await import('./contract.js');
+  const prepare = contract.prepareRunBatch;
+  const spy = vi.spyOn(contract, 'prepareRunBatch').mockImplementation((run, value) => {
+    const ids = value as string[];
+    return ids.length > 4
+      ? { kind: 'invalid', category: 'budget', attempted: false }
+      : prepare(run, value);
+  });
+  try {
+    const result = await runWithTruncation(input, (ids) => ids.length === 4);
+    expect(result.ok).toBe(true);
+    if (!result.ok) throw new Error('fixture failed');
+    // The 8-unit batch re-packs into two 4-unit batches at depth 0; both then truncate once.
+    expect(result.diagnostics.truncationSplits).toBe(2);
+    expect(result.diagnostics.maxSplitDepth).toBe(1);
+  } finally {
+    spy.mockRestore();
+  }
+});
+
+test('a preparation-budget re-pack below the first level keeps its parent depth', async () => {
+  const input = await inventoryOf(8);
+  const contract = await import('./contract.js');
+  const prepare = contract.prepareRunBatch;
+  const spy = vi.spyOn(contract, 'prepareRunBatch').mockImplementation((run, value) => {
+    const ids = value as string[];
+    return ids.length === 4
+      ? { kind: 'invalid', category: 'budget', attempted: false }
+      : prepare(run, value);
+  });
+  try {
+    const result = await runWithTruncation(input, (ids) => ids.length === 8 || ids.length === 2);
+    expect(result.ok).toBe(true);
+    if (!result.ok) throw new Error('fixture failed');
+    // 8 truncates (depth 1); each 4-unit half re-packs into 2-unit batches still at depth 1;
+    // each of those four truncates once more, reaching depth 2.
+    expect(result.diagnostics.truncationSplits).toBe(5);
+    expect(result.diagnostics.maxSplitDepth).toBe(2);
+  } finally {
+    spy.mockRestore();
+  }
+});
+
+test('the timing and split-depth fields add only integers to the diagnostics allowlist', async () => {
+  const result = await runWithTruncation(await inventoryOf(8), (ids) => ids.length === 8);
+  expect(result.ok).toBe(true);
+  if (!result.ok) throw new Error('fixture failed');
+  expect(Object.keys(result.diagnostics)).toEqual([
+    'provider',
+    'model',
+    'headSha',
+    'unitCount',
+    'memberCount',
+    'callsDispatched',
+    'truncationSplits',
+    'maxSplitDepth',
+    'callDurationsMs',
+    'stateCounts',
+    'failureCategories',
+  ]);
+  expect(Number.isInteger(result.diagnostics.maxSplitDepth)).toBe(true);
+  expect(result.diagnostics.callDurationsMs.length).toBeGreaterThan(0);
+  expect(result.diagnostics.callDurationsMs.every(Number.isInteger)).toBe(true);
+});

@@ -21668,7 +21668,7 @@ async function analyzeDecisionUnits(input, options, dependencies = {}) {
 	const model = parsedConfig.ok && snapshot.config.ok && isDeepStrictEqual(parsedConfig.config, snapshot.config.config) ? parsedConfig.config.analysis?.model ?? null : null;
 	const unitIds = snapshot.inventory.units.map((unit) => unit.id);
 	const deadlineMs = Math.min(selectedOptions.deadlineMs - PUBLICATION_RESERVE_MS, start + MAX_ANALYSIS_MS);
-	const { records, dispatched, splits } = await scheduleBatches(snapshot, {
+	const { records, dispatched, splits, maxSplitDepth, durations } = await scheduleBatches(snapshot, {
 		...selectedOptions,
 		deadlineMs
 	}, analyze, now, unitIds);
@@ -21699,6 +21699,8 @@ async function analyzeDecisionUnits(input, options, dependencies = {}) {
 			memberCount: snapshot.inventory.packet.changes.length,
 			callsDispatched: dispatched,
 			truncationSplits: splits,
+			maxSplitDepth,
+			callDurationsMs: durations,
 			stateCounts,
 			failureCategories: [...new Set(records.flatMap((record) => record.category ? [record.category] : []))].sort()
 		},
@@ -21711,9 +21713,14 @@ async function scheduleBatches(snapshot, options, analyze, now, unitIds) {
 		records: [],
 		calls: 0,
 		dispatched: 0,
-		splits: 0
+		splits: 0,
+		maxSplitDepth: 0,
+		durations: []
 	};
-	for (let index = 0; index < unitIds.length; index += ANALYSIS_LIMITS.maxUnits) state.queue.push(unitIds.slice(index, index + ANALYSIS_LIMITS.maxUnits));
+	for (let index = 0; index < unitIds.length; index += ANALYSIS_LIMITS.maxUnits) state.queue.push({
+		ids: unitIds.slice(index, index + ANALYSIS_LIMITS.maxUnits),
+		depth: 0
+	});
 	while (state.queue.length) {
 		const { wave, preparationFailure } = prepareWave(state, snapshot, options, analyze, now);
 		await collectWave(state, wave);
@@ -21727,10 +21734,11 @@ async function scheduleBatches(snapshot, options, analyze, now, unitIds) {
 function prepareWave(state, snapshot, options, analyze, now) {
 	const wave = [];
 	while (wave.length < MAX_CONCURRENT_CALLS && state.queue.length && state.calls < MAX_CALLS && now() < options.deadlineMs && !options.signal?.aborted) {
-		const ids = state.queue.shift();
+		const entry = state.queue.shift();
+		const { ids, depth } = entry;
 		const prepared = prepareBatch(state, snapshot, ids);
 		if (prepared.kind !== "prepared") {
-			if (prepared.category === "budget" && ids.length > 1 && !prepared.runWide) state.queue.unshift(...splitUnits(ids));
+			if (prepared.category === "budget" && ids.length > 1 && !prepared.runWide) state.queue.unshift(...splitAt(ids, depth));
 			else {
 				state.records.push(...unresolved(ids, "unavailable", false, prepared.category, null));
 				if (prepared.category !== "budget") return {
@@ -21741,14 +21749,15 @@ function prepareWave(state, snapshot, options, analyze, now) {
 			continue;
 		}
 		if (now() >= options.deadlineMs || options.signal?.aborted) {
-			state.queue.unshift(ids);
+			state.queue.unshift(entry);
 			break;
 		}
 		state.calls++;
 		wave.push({
 			ids,
+			depth,
 			batchId: prepared.batch.batchId,
-			pending: boundedCall(prepared.batch, options, analyze, now)
+			pending: timedCall(prepared.batch, options, analyze, now)
 		});
 	}
 	return {
@@ -21770,18 +21779,20 @@ function prepareBatch(state, snapshot, ids) {
 	};
 }
 async function collectWave(state, wave) {
-	const results = await Promise.all(wave.map((item) => item.pending));
+	const timed = await Promise.all(wave.map((item) => item.pending));
 	const children = [];
 	for (let index = 0; index < wave.length; index++) {
-		const { ids, batchId } = wave[index];
-		const result = results[index];
-		if (typeof result !== "string" && (result.kind === "validated" || result.attempted)) state.dispatched++;
-		if (typeof result === "string") {
+		const { ids, depth, batchId } = wave[index];
+		const { outcome: result, durationMs } = timed[index];
+		if (typeof result === "string" || result.kind === "validated" || result.attempted) {
 			state.dispatched++;
-			state.records.push(...unresolved(ids, "unavailable", true, result, batchId));
-		} else if (isSplittable(result, ids, batchId)) {
+			state.durations.push(durationMs);
+		}
+		if (typeof result === "string") state.records.push(...unresolved(ids, "unavailable", true, result, batchId));
+		else if (isSplittable(result, ids, batchId)) {
 			state.splits++;
-			children.push(...splitUnits(ids));
+			state.maxSplitDepth = Math.max(state.maxSplitDepth, depth + 1);
+			children.push(...splitAt(ids, depth + 1));
 		} else state.records.push(...mapResult(ids, batchId, result));
 	}
 	state.queue.unshift(...children);
@@ -21796,10 +21807,17 @@ function splitUnits(ids) {
 	const midpoint = Math.floor(ids.length / 2);
 	return [ids.slice(0, midpoint), ids.slice(midpoint)];
 }
+/** Splits a batch at the children's depth: a re-pack keeps its depth, a truncation adds one. */
+function splitAt(ids, depth) {
+	return splitUnits(ids).map((child) => ({
+		ids: child,
+		depth
+	}));
+}
 function finishQueue(state, preparationFailure, options, now) {
 	const category = preparationFailure ?? (options.signal?.aborted ? "cancelled" : now() >= options.deadlineMs ? "deadline" : "call_budget");
 	const status = preparationFailure ? "unavailable" : "unattempted";
-	for (const remaining of state.queue) state.records.push(...unresolved(remaining, status, false, category, null));
+	for (const { ids } of state.queue) state.records.push(...unresolved(ids, status, false, category, null));
 }
 function unresolved(unitIds, state, attempted, category, batchId) {
 	return unitIds.map((unitId) => ({
@@ -21838,6 +21856,16 @@ function mapResult(ids, batchId, result) {
 		"reference",
 		"policy"
 	].includes(category) ? "rejected" : !attempted && ["cancelled", "deadline"].includes(category) ? "unattempted" : "unavailable", attempted, category, batchId);
+}
+/** Times one call on the injected monotonic clock, from just before M1 is invoked to settlement. */
+async function timedCall(batch, options, analyze, now) {
+	const startedAt = now();
+	const outcome = await boundedCall(batch, options, analyze, now);
+	const elapsed = Math.trunc(now() - startedAt);
+	return {
+		outcome,
+		durationMs: Number.isFinite(elapsed) ? Math.max(0, elapsed) : 0
+	};
 }
 async function boundedCall(batch, options, analyze, now) {
 	const controller = new AbortController();

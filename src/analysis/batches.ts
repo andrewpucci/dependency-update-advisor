@@ -81,7 +81,7 @@ export async function analyzeDecisionUnits(
     selectedOptions.deadlineMs - PUBLICATION_RESERVE_MS,
     start + MAX_ANALYSIS_MS,
   );
-  const { records, dispatched, splits } = await scheduleBatches(
+  const { records, dispatched, splits, maxSplitDepth, durations } = await scheduleBatches(
     snapshot,
     { ...selectedOptions, deadlineMs },
     analyze,
@@ -112,6 +112,8 @@ export async function analyzeDecisionUnits(
       memberCount: snapshot.inventory.packet.changes.length,
       callsDispatched: dispatched,
       truncationSplits: splits,
+      maxSplitDepth,
+      callDurationsMs: durations,
       stateCounts,
       failureCategories: [
         ...new Set(records.flatMap((record) => (record.category ? [record.category] : []))),
@@ -122,13 +124,18 @@ export async function analyzeDecisionUnits(
 }
 
 type BatchOutcome = MistralResult | 'cancelled' | 'deadline' | 'transport';
-type WaveEntry = Readonly<{ ids: string[]; batchId: string; pending: Promise<BatchOutcome> }>;
+type TimedOutcome = Readonly<{ outcome: BatchOutcome; durationMs: number }>;
+/** A queued batch and the truncation splits above it; first-level batches are depth 0. */
+type QueueEntry = Readonly<{ ids: string[]; depth: number }>;
+type WaveEntry = QueueEntry & Readonly<{ batchId: string; pending: Promise<TimedOutcome> }>;
 type ScheduleState = {
-  queue: string[][];
+  queue: QueueEntry[];
   records: UnitRecord[];
   calls: number;
   dispatched: number;
   splits: number;
+  maxSplitDepth: number;
+  durations: number[];
   run?: ReturnType<typeof prepareAnalysisRun>;
 };
 
@@ -139,9 +146,17 @@ async function scheduleBatches(
   now: () => number,
   unitIds: string[],
 ) {
-  const state: ScheduleState = { queue: [], records: [], calls: 0, dispatched: 0, splits: 0 };
+  const state: ScheduleState = {
+    queue: [],
+    records: [],
+    calls: 0,
+    dispatched: 0,
+    splits: 0,
+    maxSplitDepth: 0,
+    durations: [],
+  };
   for (let index = 0; index < unitIds.length; index += ANALYSIS_LIMITS.maxUnits)
-    state.queue.push(unitIds.slice(index, index + ANALYSIS_LIMITS.maxUnits));
+    state.queue.push({ ids: unitIds.slice(index, index + ANALYSIS_LIMITS.maxUnits), depth: 0 });
   while (state.queue.length) {
     const { wave, preparationFailure } = prepareWave(state, snapshot, options, analyze, now);
     await collectWave(state, wave);
@@ -168,11 +183,12 @@ function prepareWave(
     now() < options.deadlineMs &&
     !options.signal?.aborted
   ) {
-    const ids = state.queue.shift()!;
+    const entry = state.queue.shift()!;
+    const { ids, depth } = entry;
     const prepared = prepareBatch(state, snapshot, ids);
     if (prepared.kind !== 'prepared') {
       if (prepared.category === 'budget' && ids.length > 1 && !prepared.runWide) {
-        state.queue.unshift(...splitUnits(ids));
+        state.queue.unshift(...splitAt(ids, depth));
       } else {
         state.records.push(...unresolved(ids, 'unavailable', false, prepared.category, null));
         if (prepared.category !== 'budget') return { wave, preparationFailure: prepared.category };
@@ -180,14 +196,15 @@ function prepareWave(
       continue;
     }
     if (now() >= options.deadlineMs || options.signal?.aborted) {
-      state.queue.unshift(ids);
+      state.queue.unshift(entry);
       break;
     }
     state.calls++;
     wave.push({
       ids,
+      depth,
       batchId: prepared.batch.batchId,
-      pending: boundedCall(prepared.batch, options, analyze, now),
+      pending: timedCall(prepared.batch, options, analyze, now),
     });
   }
   return { wave, preparationFailure: undefined };
@@ -207,19 +224,22 @@ function prepareBatch(
 }
 
 async function collectWave(state: ScheduleState, wave: WaveEntry[]) {
-  const results = await Promise.all(wave.map((item) => item.pending));
-  const children: string[][] = [];
+  const timed = await Promise.all(wave.map((item) => item.pending));
+  const children: QueueEntry[] = [];
   for (let index = 0; index < wave.length; index++) {
-    const { ids, batchId } = wave[index];
-    const result = results[index];
-    if (typeof result !== 'string' && (result.kind === 'validated' || result.attempted))
+    const { ids, depth, batchId } = wave[index];
+    const { outcome: result, durationMs } = timed[index];
+    // Durations follow wave order, never completion order, and cover exactly the dispatched calls.
+    if (typeof result === 'string' || result.kind === 'validated' || result.attempted) {
       state.dispatched++;
+      state.durations.push(durationMs);
+    }
     if (typeof result === 'string') {
-      state.dispatched++;
       state.records.push(...unresolved(ids, 'unavailable', true, result, batchId));
     } else if (isSplittable(result, ids, batchId)) {
       state.splits++;
-      children.push(...splitUnits(ids));
+      state.maxSplitDepth = Math.max(state.maxSplitDepth, depth + 1);
+      children.push(...splitAt(ids, depth + 1));
     } else state.records.push(...mapResult(ids, batchId, result));
   }
   state.queue.unshift(...children);
@@ -248,6 +268,11 @@ function splitUnits(ids: string[]): [string[], string[]] {
   return [ids.slice(0, midpoint), ids.slice(midpoint)];
 }
 
+/** Splits a batch at the children's depth: a re-pack keeps its depth, a truncation adds one. */
+function splitAt(ids: string[], depth: number): QueueEntry[] {
+  return splitUnits(ids).map((child) => ({ ids: child, depth }));
+}
+
 function finishQueue(
   state: ScheduleState,
   preparationFailure: string | undefined,
@@ -262,8 +287,8 @@ function finishQueue(
         ? 'deadline'
         : 'call_budget');
   const status = preparationFailure ? 'unavailable' : 'unattempted';
-  for (const remaining of state.queue)
-    state.records.push(...unresolved(remaining, status, false, category, null));
+  for (const { ids } of state.queue)
+    state.records.push(...unresolved(ids, status, false, category, null));
 }
 
 function unresolved(
@@ -313,6 +338,20 @@ function mapResult(ids: readonly string[], batchId: string, result: MistralResul
         ? 'unattempted'
         : 'unavailable';
   return unresolved(ids, state, attempted, category, batchId);
+}
+
+/** Times one call on the injected monotonic clock, from just before M1 is invoked to settlement. */
+async function timedCall(
+  batch: Parameters<typeof analyzeMistralBatch>[0],
+  options: MistralOptions,
+  analyze: typeof analyzeMistralBatch,
+  now: () => number,
+): Promise<TimedOutcome> {
+  const startedAt = now();
+  const outcome = await boundedCall(batch, options, analyze, now);
+  // Only an injected clock can turn non-finite mid-run; the field stays a non-negative integer.
+  const elapsed = Math.trunc(now() - startedAt);
+  return { outcome, durationMs: Number.isFinite(elapsed) ? Math.max(0, elapsed) : 0 };
 }
 
 async function boundedCall(

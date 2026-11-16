@@ -115,8 +115,10 @@ their presence does not prove workflow integration or production parity.
     validated assessment content. Diagnostics contain only bounded allowlisted
     fields and fixed categories consistent with M1: provider, selected model,
     reviewed head, unit/member counts, calls dispatched, truncation splits,
-    per-state unit counts, and failure categories. Never expose credentials,
-    source excerpts, raw model responses, arbitrary error text, or payloads.
+    maximum split depth (`maxSplitDepth`), per-call durations
+    (`callDurationsMs`), per-state unit counts, and failure categories. Never
+    expose credentials, source excerpts, raw model responses, arbitrary error
+    text, or payloads.
 
 ### State mapping
 
@@ -215,6 +217,105 @@ The complexity report is advisory and measures committed source at `HEAD`.
 For this documentation draft run `npm run lint:md`, `npm run format:check`,
 and `git diff --check`. A mocked integration does not establish live provider
 compatibility, workflow publication, packaging, adoption, parity, or cutover.
+
+## Timing and Split-Depth Diagnostics Amendment
+
+**Status: approved for planning, 2026-11-15 (the user invoked `as-plan` on
+this reviewed draft, after a fresh-context Opus review); `callDurationsMs`
+([#331](https://github.com/andrewpucci/dependency-update-advisor/issues/331))
+and `maxSplitDepth`
+([#332](https://github.com/andrewpucci/dependency-update-advisor/issues/332))
+are implemented on the working branch, pending fresh-context review and merge.
+Nothing prints them yet: the companion W2 amendment
+([#334](https://github.com/andrewpucci/dependency-update-advisor/issues/334))
+is not drafted.** Effort tier: L (adds fields to M2's exported
+diagnostics and amends item 11's closed allowlist). Scoped to a new issue under
+[#309](https://github.com/andrewpucci/dependency-update-advisor/issues/309),
+not to #329. The
+[R1 rehearsal evidence amendment](SPEC-adoption-self.md#rehearsal-evidence-amendment)
+records its first rehearsal without these fields.
+
+### Why
+
+The reasoning-model change raised each call to a 240,000 ms timeout and 16,384
+completion tokens against this spec's unchanged 600,000 ms analysis maximum.
+Diagnostics report `callsDispatched` and `truncationSplits` as counts only, and
+nothing prints them, so a maintainer cannot tell how close calls run to the
+timeout or whether a batch keeps truncating. Job-log step timing spans the whole
+action and cannot supply either value.
+
+### Diagnostics contract
+
+1. Diagnostics add `callDurationsMs`: one integer per call counted in
+   `callsDispatched`, in wave order (the order batches enter a wave, which is
+   queue order and independent of completion order). Its length always equals
+   `callsDispatched`, so it is bounded by the 32-call cap.
+2. A duration is measured inside the scheduler's per-call wrapper, from just
+   before M1 is invoked to the call's settlement, on the injected monotonic
+   deadline clock (never `evaluatedAt`), as a non-negative integer (fractions
+   truncated). M1 records no time itself.
+   - A call that ends as `cancelled`, `deadline`, or `transport` records the
+     elapsed time at that cutoff.
+   - A late result that is ignored records the actual time it settled.
+   - A call cancelled before M1 is invoked still counts as dispatched, as
+     `callsDispatched` already does, and records 0. That branch is
+     defensive: the scheduler checks cancellation immediately before starting
+     a call, so no public input reaches it, and it has no behavior check.
+   - A result with `attempted: false` is not counted in `callsDispatched` and
+     has no entry.
+3. Diagnostics add `maxSplitDepth`: the greatest split depth reached by any
+   truncation split, a non-negative integer. A first-level batch has depth 0;
+   a truncation split of a batch at depth _d_ yields two children at depth
+   _d_ + 1 and records depth _d_ + 1. A preparation-budget re-pack yields
+   children at its parent's depth and does not change `maxSplitDepth`. The
+   midpoint split and the 8-unit batch limit bound it at 3. A value of 2 or
+   more means a half-batch was truncated and split again.
+   `truncationSplits` keeps its meaning.
+4. Both fields are integers only: no payloads, reasoning text, provider
+   bodies, or error text. They change no scheduling, retry, split, state
+   mapping, or outcome. Item 11's field list includes both names; existing
+   fields and order are unchanged.
+
+### Checks
+
+Each is written first and shown failing on the prior code or a named mutation:
+
+- With a fake monotonic clock and controlled transport, `callDurationsMs`
+  equals the scripted per-call durations in wave order, with reordered
+  completion unchanged. A case mixes `attempted: false` results with attempted
+  ones: length equals `callsDispatched`, so the array has no entry for the
+  unattempted calls. Mutations: wall-clock instead of monotonic time; one entry
+  per scheduled call instead of per dispatched call; completion order; omitting
+  the cutoff entry.
+- Exact split depths: an 8-unit batch that truncates, then both 4-unit halves
+  truncate, gives `truncationSplits` 3 and `maxSplitDepth` exactly 2; one batch
+  split once gives 1; no split gives 0. A 24-unit run where two first-level
+  batches truncate in different waves gives `maxSplitDepth` 1. Mutations:
+  counting total splits instead of depth; counting waves that contained a
+  split; incrementing depth on a budget re-pack.
+- Existing record, coverage, and diagnostics assertions pass unchanged, and a
+  sentinel case shows only integers are added.
+
+Commands: those in [Testing and acceptance](#testing-and-acceptance) above,
+on the exact implementation revision.
+
+### Amendment Boundaries
+
+- **Always:** keep the new fields integer-only and derived from the injected
+  clocks and scheduler state; leave scheduling untouched.
+- **Ask first:** add any other diagnostic field, include text, or change a
+  limit.
+- **Never:** record payload, reasoning, or error text, or let a diagnostic
+  change an outcome.
+
+### Companion W2 amendment (not yet drafted)
+
+Nothing reads M2's diagnostics today (`src/assessment.ts` drops them), and
+reporting a number is Ask-first under
+[W2 Amendment 4](SPEC-review-orchestration.md#amendment-4-boundaries). A
+separate, L-tier W2 amendment must pass them to the fixed stderr line and
+trace as bounded integers; until it merges, the new fields are not visible to
+a maintainer. Draft it with this amendment's planning, not inside M2.
 
 ## Boundaries and open planning choices
 
