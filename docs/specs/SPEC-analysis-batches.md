@@ -115,8 +115,10 @@ their presence does not prove workflow integration or production parity.
     validated assessment content. Diagnostics contain only bounded allowlisted
     fields and fixed categories consistent with M1: provider, selected model,
     reviewed head, unit/member counts, calls dispatched, truncation splits,
-    per-state unit counts, and failure categories. Never expose credentials,
-    source excerpts, raw model responses, arbitrary error text, or payloads.
+    maximum split depth (`maxSplitDepth`), per-call durations
+    (`callDurationsMs`), per-state unit counts, and failure categories. Never
+    expose credentials, source excerpts, raw model responses, arbitrary error
+    text, or payloads.
 
 ### State mapping
 
@@ -271,8 +273,8 @@ action and cannot supply either value.
    `truncationSplits` keeps its meaning.
 4. Both fields are integers only: no payloads, reasoning text, provider
    bodies, or error text. They change no scheduling, retry, split, state
-   mapping, or outcome. This supersedes item 11's field list, when
-   implemented, by these two names; existing fields and order are unchanged.
+   mapping, or outcome. Item 11's field list includes both names; existing
+   fields and order are unchanged.
 
 ### Checks
 
