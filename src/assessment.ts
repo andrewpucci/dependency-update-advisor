@@ -3,7 +3,11 @@ import { analyzeMistralBatch } from './analysis/mistral.js';
 import type { ConfigResult } from './config.js';
 import type { SignalAttempt } from './evidence/policy-signals.js';
 import type { PacketGap } from './packet.js';
-import { modelUnavailableReason, type ModelUnavailableReason } from './review.js';
+import {
+  modelUnavailableReason,
+  type AssessmentFailureReason,
+  type ModelUnavailableReason,
+} from './review.js';
 import { renderDecisionBrief } from './reporting.js';
 import type { PacketResult } from './schema.js';
 import { formDecisionUnits, type DecisionCoverage } from './units.js';
@@ -16,7 +20,7 @@ export type AssessmentResult =
       coverage: DecisionCoverage;
     }>
   | Readonly<{ kind: 'model-unavailable'; reason: ModelUnavailableReason }>
-  | Readonly<{ kind: 'internal-failure' }>;
+  | Readonly<{ kind: 'internal-failure'; reason: AssessmentFailureReason }>;
 export type AssessmentInput = Readonly<{
   packet: Packet;
   config: ConfigResult;
@@ -43,7 +47,7 @@ function evidenceComplete(coverage: DecisionCoverage): boolean {
 
 /** Uses the established M2 batching contract; no raw model data crosses this boundary. */
 export async function assessReviewPacket(input: AssessmentInput): Promise<AssessmentResult> {
-  if (!input.config.ok) return { kind: 'internal-failure' };
+  if (!input.config.ok) return { kind: 'internal-failure', reason: 'config' };
   if (!input.apiKey) return { kind: 'model-unavailable', reason: 'no-key' };
   try {
     const model = input.model;
@@ -56,7 +60,11 @@ export async function assessReviewPacket(input: AssessmentInput): Promise<Assess
       { apiKey: input.apiKey, deadlineMs: input.deadlineMs, signal: input.signal },
       model ? { now: model.now, analyze: model.analyze } : {},
     );
-    if (!result.ok) return { kind: 'internal-failure' };
+    if (!result.ok)
+      return {
+        kind: 'internal-failure',
+        reason: result.category === 'input' ? 'analysis-input' : 'analysis-configuration',
+      };
     if (result.analysisUnavailable) {
       // Analysis is unavailable only when no unit was assessed, so every record is unresolved and
       // carries a category. Records are in inventory order; the first unit names the reason.
@@ -68,7 +76,7 @@ export async function assessReviewPacket(input: AssessmentInput): Promise<Assess
     const kind = evidenceComplete(result.coverage) ? 'complete' : 'incomplete-evidence';
     return { kind, records: result.records, coverage: result.coverage };
   } catch {
-    return { kind: 'internal-failure' };
+    return { kind: 'internal-failure', reason: 'analysis-exception' };
   }
 }
 
@@ -79,7 +87,8 @@ export type ReviewResult = Readonly<{
   gaps?: readonly PacketGap[];
 }> &
   (
-    | Readonly<{ kind: 'complete' | 'incomplete-evidence' | 'internal-failure'; reason?: never }>
+    | Readonly<{ kind: 'complete' | 'incomplete-evidence'; reason?: never }>
+    | Readonly<{ kind: 'internal-failure'; reason: AssessmentFailureReason }>
     /** Why no model verdict exists; every `model-unavailable` result states one. */
     | Readonly<{ kind: 'model-unavailable'; reason: ModelUnavailableReason }>
   );
@@ -98,7 +107,8 @@ export async function reviewPacket(input: ReviewInput): Promise<ReviewResult> {
   const assessed = await assessReviewPacket(input);
   if (assessed.kind === 'model-unavailable')
     return { kind: 'model-unavailable', reason: assessed.reason, body: null };
-  if (!('coverage' in assessed)) return { kind: 'internal-failure', body: null };
+  if (!('coverage' in assessed))
+    return { kind: 'internal-failure', reason: assessed.reason, body: null };
   try {
     const rendered = renderDecisionBrief({
       binding: input.packet.binding,
@@ -111,13 +121,18 @@ export async function reviewPacket(input: ReviewInput): Promise<ReviewResult> {
     } as never);
     if (!rendered.ok)
       return rendered.category === 'size'
-        ? { kind: 'internal-failure', body: null, gaps: [{ source: 'brief', reason: 'budget' }] }
-        : { kind: 'internal-failure', body: null };
+        ? {
+            kind: 'internal-failure',
+            reason: 'render-size',
+            body: null,
+            gaps: [{ source: 'brief', reason: 'budget' }],
+          }
+        : { kind: 'internal-failure', reason: 'render-rejected', body: null };
     return {
       kind: input.researchIncomplete ? 'incomplete-evidence' : assessed.kind,
       body: rendered.body,
     };
   } catch {
-    return { kind: 'internal-failure', body: null };
+    return { kind: 'internal-failure', reason: 'render-exception', body: null };
   }
 }

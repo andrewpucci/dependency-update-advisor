@@ -19627,6 +19627,21 @@ const MODEL_FAILURE_CATEGORIES = [
 function modelUnavailableReason(category) {
 	return MODEL_FAILURE_CATEGORIES.includes(category) ? category : "unknown";
 }
+/** Trusted labels for the assessment paths a no-write rehearsal may distinguish. */
+const ASSESSMENT_FAILURE_REASONS = [
+	"config",
+	"analysis-input",
+	"analysis-configuration",
+	"analysis-exception",
+	"render-size",
+	"render-rejected",
+	"render-exception",
+	"assessment-exception"
+];
+/** Narrows an internal assessment label to the closed rehearsal vocabulary. */
+function assessmentFailureReason(value) {
+	return ASSESSMENT_FAILURE_REASONS.includes(value) ? value : void 0;
+}
 const outcomeEligibility = Object.freeze({
 	skipped: {
 		kind: "skipped",
@@ -19808,6 +19823,9 @@ function createRehearsalSink(appToken) {
 			if (traces.length >= 32) return false;
 			const modelReason = handoff.kind === "model-unavailable" && detail && "modelUnavailableReason" in detail ? modelUnavailableReason(detail.modelUnavailableReason) : void 0;
 			if (handoff.kind === "model-unavailable" && !modelReason) return false;
+			const assessmentReason = handoff.kind === "internal-failure" && handoff.stage === "assessment" && detail && "assessmentFailureReason" in detail ? assessmentFailureReason(detail.assessmentFailureReason) : void 0;
+			if (detail && "assessmentFailureReason" in detail && !(handoff.kind === "internal-failure" && handoff.stage === "assessment")) return false;
+			if (handoff.kind === "internal-failure" && handoff.stage === "assessment" && !assessmentReason) return false;
 			const traceBase = {
 				identity: Object.freeze([...handoff.identity]),
 				generation: handoff.generation,
@@ -19825,6 +19843,7 @@ function createRehearsalSink(appToken) {
 					reason: detail.reason
 				}) } : {},
 				...modelReason ? { modelUnavailableReason: modelReason } : {},
+				...assessmentReason ? { assessmentFailureReason: assessmentReason } : {},
 				...traceBase
 			}));
 			return true;
@@ -22486,7 +22505,10 @@ function evidenceComplete(coverage) {
 }
 /** Uses the established M2 batching contract; no raw model data crosses this boundary. */
 async function assessReviewPacket(input) {
-	if (!input.config.ok) return { kind: "internal-failure" };
+	if (!input.config.ok) return {
+		kind: "internal-failure",
+		reason: "config"
+	};
 	if (!input.apiKey) return {
 		kind: "model-unavailable",
 		reason: "no-key"
@@ -22505,7 +22527,10 @@ async function assessReviewPacket(input) {
 			now: model.now,
 			analyze: model.analyze
 		} : {});
-		if (!result.ok) return { kind: "internal-failure" };
+		if (!result.ok) return {
+			kind: "internal-failure",
+			reason: result.category === "input" ? "analysis-input" : "analysis-configuration"
+		};
 		if (result.analysisUnavailable) return {
 			kind: "model-unavailable",
 			reason: modelUnavailableReason(result.records[0]?.category)
@@ -22516,7 +22541,10 @@ async function assessReviewPacket(input) {
 			coverage: result.coverage
 		};
 	} catch {
-		return { kind: "internal-failure" };
+		return {
+			kind: "internal-failure",
+			reason: "analysis-exception"
+		};
 	}
 }
 /**
@@ -22532,6 +22560,7 @@ async function reviewPacket(input) {
 	};
 	if (!("coverage" in assessed)) return {
 		kind: "internal-failure",
+		reason: assessed.reason,
 		body: null
 	};
 	try {
@@ -22546,6 +22575,7 @@ async function reviewPacket(input) {
 		});
 		if (!rendered.ok) return rendered.category === "size" ? {
 			kind: "internal-failure",
+			reason: "render-size",
 			body: null,
 			gaps: [{
 				source: "brief",
@@ -22553,6 +22583,7 @@ async function reviewPacket(input) {
 			}]
 		} : {
 			kind: "internal-failure",
+			reason: "render-rejected",
 			body: null
 		};
 		return {
@@ -22562,6 +22593,7 @@ async function reviewPacket(input) {
 	} catch {
 		return {
 			kind: "internal-failure",
+			reason: "render-exception",
 			body: null
 		};
 	}
@@ -30516,7 +30548,7 @@ async function runReview(input) {
 /** Records the handoff in the no-write sink and reports it, with the detail only its kind keeps. */
 function handedOff(sink, outcome, handoff) {
 	const freshness = outcome.kind === "internal-failure" ? outcome.freshness : void 0;
-	const recordDetail = freshness ?? (outcome.kind === "model-unavailable" ? { modelUnavailableReason: outcome.modelUnavailableReason } : void 0);
+	const recordDetail = freshness ?? (outcome.kind === "internal-failure" && outcome.stage === "assessment" ? { assessmentFailureReason: outcome.assessmentFailureReason } : outcome.kind === "model-unavailable" ? { modelUnavailableReason: outcome.modelUnavailableReason } : void 0);
 	const handed = {
 		kind: "handed-off",
 		handoff,
@@ -30524,11 +30556,20 @@ function handedOff(sink, outcome, handoff) {
 		recorded: sink.record(handoff, recordDetail),
 		...freshness ? { detail: freshness } : {}
 	};
-	return outcome.kind === "model-unavailable" ? {
+	if (outcome.kind === "model-unavailable") return {
 		...handed,
 		outcome: outcome.kind,
 		modelUnavailableReason: outcome.modelUnavailableReason
+	};
+	if (outcome.kind === "internal-failure") return outcome.stage === "assessment" ? {
+		...handed,
+		outcome: outcome.kind,
+		assessmentFailureReason: outcome.assessmentFailureReason
 	} : {
+		...handed,
+		outcome: outcome.kind
+	};
+	return {
 		...handed,
 		outcome: outcome.kind
 	};
@@ -30538,6 +30579,7 @@ function assessedOutcome(reviewed, droppedOptional) {
 	if (reviewed.kind === "internal-failure") return {
 		kind: "internal-failure",
 		stage: "assessment",
+		assessmentFailureReason: reviewed.reason,
 		body: reviewed.body,
 		...reviewed.gaps ? { gaps: reviewed.gaps } : {},
 		droppedOptional
@@ -30658,9 +30700,22 @@ async function evaluateEvidence(input, binding, started, signal, state, recheck,
 			})), assembled.droppedOptional);
 		});
 	} catch (error) {
+		if (error instanceof StageFailure) {
+			if (error.stage === "assessment") return {
+				kind: "internal-failure",
+				stage: "assessment",
+				assessmentFailureReason: "assessment-exception",
+				body: null
+			};
+			return {
+				kind: "internal-failure",
+				stage: error.stage,
+				body: null
+			};
+		}
 		return {
 			kind: "internal-failure",
-			stage: error instanceof StageFailure ? error.stage : "unclassified",
+			stage: "unclassified",
 			body: null
 		};
 	}
@@ -30956,7 +31011,7 @@ function rehearsalLine(result) {
 				const reason = result.outcome === "model-unavailable" ? ` (${result.modelUnavailableReason})` : "";
 				return `${recorded} ${result.outcome}${reason}; nothing was published.`;
 			}
-			const detail = result.detail ? ` (${result.detail.field} ${result.detail.reason})` : "";
+			const detail = result.handoff.stage === "assessment" && result.assessmentFailureReason ? ` (${result.assessmentFailureReason})` : result.detail ? ` (${result.detail.field} ${result.detail.reason})` : "";
 			return `${recorded} internal-failure at ${result.handoff.stage}${detail}; nothing was published.`;
 		}
 		case "skipped": return `dependabot-review: event skipped (${result.reason}); nothing was published.`;

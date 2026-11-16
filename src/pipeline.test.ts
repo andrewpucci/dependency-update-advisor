@@ -460,6 +460,23 @@ test('a model-unavailable result that fails the final freshness check carries no
   expect(sink.traces()[0]).not.toHaveProperty('modelUnavailableReason');
 });
 
+test('an assessment failure that fails the final freshness check carries no assessment reason', async () => {
+  vi.mocked(assessmentModule.reviewPacket).mockResolvedValueOnce({
+    kind: 'internal-failure',
+    reason: 'render-rejected',
+    body: null,
+  });
+  const { input, sink } = await setup({ evidence: 'changes', runFailsAt: 4 });
+  const result = await runReview(input);
+  expect(result).toMatchObject({
+    kind: 'handed-off',
+    outcome: 'internal-failure',
+    handoff: { stage: 'freshness' },
+  });
+  expect(result).not.toHaveProperty('assessmentFailureReason');
+  expect(sink.traces()[0]).not.toHaveProperty('assessmentFailureReason');
+});
+
 test.each([...MODEL_FAILURE_CATEGORIES])(
   'hands off the %s category as the result and trace reason',
   async (category) => {
@@ -1163,6 +1180,7 @@ test.each([
       vi.mocked(collectionModule.createEvidenceCollectors).mockImplementationOnce(() => {
         throw new Error(sentinel);
       }),
+    undefined,
   ],
   [
     'snapshot',
@@ -1178,10 +1196,12 @@ test.each([
         ]);
         throw new Error('unreachable');
       }),
+    undefined,
   ],
   [
     'packet',
     () => vi.mocked(packetModule.assembleReviewPacket).mockImplementationOnce(throwSentinel),
+    undefined,
   ],
   [
     'packet',
@@ -1189,29 +1209,37 @@ test.each([
       vi
         .mocked(packetModule.assembleReviewPacket)
         .mockResolvedValueOnce({ kind: 'internal-failure', detail: sentinel } as never),
+    undefined,
   ],
-  ['research', () => vi.mocked(researchModule.runResearch).mockImplementationOnce(throwSentinel)],
+  [
+    'research',
+    () => vi.mocked(researchModule.runResearch).mockImplementationOnce(throwSentinel),
+    undefined,
+  ],
   [
     'research',
     () =>
       vi
         .mocked(researchModule.runResearch)
         .mockResolvedValueOnce({ kind: 'internal-failure', detail: sentinel } as never),
+    undefined,
   ],
   [
     'assessment',
     () => vi.mocked(assessmentModule.reviewPacket).mockImplementationOnce(throwSentinel),
+    'assessment-exception',
   ],
   [
     'assessment',
     () =>
       vi
         .mocked(assessmentModule.reviewPacket)
-        .mockResolvedValueOnce({ kind: 'internal-failure', body: null }),
+        .mockResolvedValueOnce({ kind: 'internal-failure', reason: 'render-rejected', body: null }),
+    'render-rejected',
   ],
 ] as const)(
   'labels a failed %s boundary (case %#) without exposing its exception',
-  async (stage, fail) => {
+  async (stage, fail, assessmentFailureReason) => {
     const { input, sink } = await setup({ evidence: 'changes' });
     fail();
     const result = await runReview(input);
@@ -1220,8 +1248,14 @@ test.each([
       outcome: 'internal-failure',
       body: null,
       handoff: { stage, body: 'absent' },
+      ...(assessmentFailureReason ? { assessmentFailureReason } : {}),
     });
-    expect(sink.traces()[0]).toMatchObject({ kind: 'internal-failure', stage, body: 'absent' });
+    expect(sink.traces()[0]).toMatchObject({
+      kind: 'internal-failure',
+      stage,
+      body: 'absent',
+      ...(assessmentFailureReason ? { assessmentFailureReason } : {}),
+    });
     expect(JSON.stringify({ result, traces: sink.traces() })).not.toContain(sentinel);
   },
 );

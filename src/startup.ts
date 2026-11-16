@@ -124,7 +124,12 @@ function rehearsalLine(result: PipelineResult): string {
           result.outcome === 'model-unavailable' ? ` (${result.modelUnavailableReason})` : '';
         return `${recorded} ${result.outcome}${reason}; nothing was published.`;
       }
-      const detail = result.detail ? ` (${result.detail.field} ${result.detail.reason})` : '';
+      const detail =
+        result.handoff.stage === 'assessment' && result.assessmentFailureReason
+          ? ` (${result.assessmentFailureReason})`
+          : result.detail
+            ? ` (${result.detail.field} ${result.detail.reason})`
+            : '';
       return `${recorded} internal-failure at ${result.handoff.stage}${detail}; nothing was published.`;
     }
     case 'skipped':

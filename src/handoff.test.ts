@@ -149,7 +149,7 @@ test('defaults to no body and no gaps, and keeps at most four gaps', async () =>
   expect(many.handoff.gaps).toHaveLength(4);
 });
 
-async function internalFailureHandoff(stage: 'freshness' | 'snapshot') {
+async function internalFailureHandoff(stage: 'assessment' | 'freshness' | 'snapshot') {
   const claims = createTestClaimStore();
   const claimed = await claims.claim([101, 301, 401, 1, 42, 'a'.repeat(40)]);
   if (claimed.kind !== 'owned') throw new Error('fixture must own');
@@ -204,6 +204,35 @@ test('copies only the fixed field and reason into the trace', async () => {
   const detail = { field: 'run', reason: 'budget', extra: 'sentinel-extra' } as never;
   sink.record(handoff, detail);
   expect(sink.traces()[0]?.detail).toEqual({ field: 'run', reason: 'budget' });
+});
+
+test('records only a closed assessment failure reason in the trace', async () => {
+  const handoff = await internalFailureHandoff('assessment');
+  const sink = createRehearsalSink(null);
+  if (!sink) throw new Error('expected sink');
+  expect(sink.record(handoff, { assessmentFailureReason: 'render-rejected' })).toBe(true);
+  expect(sink.traces()[0]).toMatchObject({
+    kind: 'internal-failure',
+    stage: 'assessment',
+    assessmentFailureReason: 'render-rejected',
+  });
+  expect(handoff).not.toHaveProperty('assessmentFailureReason');
+  expect(sink.record(handoff, { assessmentFailureReason: 'RAW_PROVIDER_TEXT' } as never)).toBe(
+    false,
+  );
+  expect(sink.traces()).toHaveLength(1);
+});
+
+test('refuses an assessment reason on any other stage or outcome', async () => {
+  const sink = createRehearsalSink(null);
+  if (!sink) throw new Error('expected sink');
+  expect(
+    sink.record(await internalFailureHandoff('snapshot'), { assessmentFailureReason: 'config' }),
+  ).toBe(false);
+  expect(sink.record(await handoffOf('complete', 'g'), { assessmentFailureReason: 'config' })).toBe(
+    false,
+  );
+  expect(sink.traces()).toEqual([]);
 });
 
 async function handoffOf(kind: 'model-unavailable' | 'complete', head: string) {

@@ -19,6 +19,7 @@ import type { DroppedOptional } from './optional-evidence.js';
 import { runResearch } from './research.js';
 import {
   freshnessDetail,
+  type AssessmentFailureReason,
   type ClaimStore,
   type FreshnessDetail,
   type InternalFailureStage,
@@ -68,8 +69,16 @@ export type PipelineResult =
   | Readonly<{ kind: 'failed'; outcome: 'internal-failure'; stage: 'handoff' }>
   | (HandedOff &
       Readonly<{
-        outcome: Exclude<ReviewOutcomeKind, 'model-unavailable'>;
+        outcome: Exclude<ReviewOutcomeKind, 'model-unavailable' | 'internal-failure'>;
         modelUnavailableReason?: never;
+        assessmentFailureReason?: never;
+      }>)
+  | (HandedOff &
+      Readonly<{
+        outcome: 'internal-failure';
+        modelUnavailableReason?: never;
+        /** Why the assessment stage failed; present only for that fixed stage. */
+        assessmentFailureReason?: AssessmentFailureReason;
       }>)
   /** Why no model verdict exists; every `model-unavailable` hand-off states one. */
   | (HandedOff &
@@ -82,6 +91,8 @@ type HandedOff = Readonly<{
   recorded: boolean;
   /** Which freshness check failed and why; present only for a `freshness` internal failure. */
   detail?: FreshnessDetail;
+  /** Why the assessment stage failed; present only for that fixed stage. */
+  assessmentFailureReason?: AssessmentFailureReason;
 }>;
 
 type OutcomeDetail = Readonly<{
@@ -99,6 +110,7 @@ type Outcome =
         stage?: never;
         freshness?: never;
         modelUnavailableReason?: never;
+        assessmentFailureReason?: never;
       }>)
   /** Why no model verdict exists; every `model-unavailable` outcome states one. */
   | (OutcomeDetail &
@@ -107,11 +119,21 @@ type Outcome =
         modelUnavailableReason: ModelUnavailableReason;
         stage?: never;
         freshness?: never;
+        assessmentFailureReason?: never;
       }>)
   | (OutcomeDetail &
       Readonly<{
         kind: 'internal-failure';
-        stage: NonFreshnessStage;
+        stage: Exclude<NonFreshnessStage, 'assessment'>;
+        freshness?: never;
+        modelUnavailableReason?: never;
+        assessmentFailureReason?: never;
+      }>)
+  | (OutcomeDetail &
+      Readonly<{
+        kind: 'internal-failure';
+        stage: 'assessment';
+        assessmentFailureReason: AssessmentFailureReason;
         freshness?: never;
         modelUnavailableReason?: never;
       }>)
@@ -122,6 +144,7 @@ type Outcome =
         stage: 'freshness';
         freshness: FreshnessDetail;
         modelUnavailableReason?: never;
+        assessmentFailureReason?: never;
       }>);
 
 /** A boundary failure whose stage is a literal chosen by this module, never derived from the error. */
@@ -290,9 +313,11 @@ function handedOff(
   const freshness = outcome.kind === 'internal-failure' ? outcome.freshness : undefined;
   const recordDetail =
     freshness ??
-    (outcome.kind === 'model-unavailable'
-      ? { modelUnavailableReason: outcome.modelUnavailableReason }
-      : undefined);
+    (outcome.kind === 'internal-failure' && outcome.stage === 'assessment'
+      ? { assessmentFailureReason: outcome.assessmentFailureReason }
+      : outcome.kind === 'model-unavailable'
+        ? { modelUnavailableReason: outcome.modelUnavailableReason }
+        : undefined);
   const handed = {
     kind: 'handed-off' as const,
     handoff,
@@ -300,9 +325,21 @@ function handedOff(
     recorded: sink.record(handoff, recordDetail),
     ...(freshness ? { detail: freshness } : {}),
   };
-  return outcome.kind === 'model-unavailable'
-    ? { ...handed, outcome: outcome.kind, modelUnavailableReason: outcome.modelUnavailableReason }
-    : { ...handed, outcome: outcome.kind };
+  if (outcome.kind === 'model-unavailable')
+    return {
+      ...handed,
+      outcome: outcome.kind,
+      modelUnavailableReason: outcome.modelUnavailableReason,
+    };
+  if (outcome.kind === 'internal-failure')
+    return outcome.stage === 'assessment'
+      ? {
+          ...handed,
+          outcome: outcome.kind,
+          assessmentFailureReason: outcome.assessmentFailureReason,
+        }
+      : { ...handed, outcome: outcome.kind };
+  return { ...handed, outcome: outcome.kind };
 }
 
 /** Turns the assessment result into the attempt's outcome, keeping the optional-evidence drops. */
@@ -314,6 +351,7 @@ function assessedOutcome(
     return {
       kind: 'internal-failure',
       stage: 'assessment',
+      assessmentFailureReason: reviewed.reason,
       body: reviewed.body,
       ...(reviewed.gaps ? { gaps: reviewed.gaps } : {}),
       droppedOptional,
@@ -451,9 +489,19 @@ async function evaluateEvidence(
       },
     );
   } catch (error) {
+    if (error instanceof StageFailure) {
+      if (error.stage === 'assessment')
+        return {
+          kind: 'internal-failure',
+          stage: 'assessment',
+          assessmentFailureReason: 'assessment-exception',
+          body: null,
+        };
+      return { kind: 'internal-failure', stage: error.stage, body: null };
+    }
     return {
       kind: 'internal-failure',
-      stage: error instanceof StageFailure ? error.stage : 'unclassified',
+      stage: 'unclassified',
       body: null,
     };
   }

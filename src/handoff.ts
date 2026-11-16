@@ -1,9 +1,11 @@
 import type { PacketGap } from './packet.js';
 import type { DroppedOptional } from './optional-evidence.js';
 import {
+  assessmentFailureReason,
   internalFailureStage,
   modelUnavailableReason,
   reviewOutcome,
+  type AssessmentFailureReason,
   type ClaimStore,
   type FreshnessDetail,
   type InternalFailureStage,
@@ -103,7 +105,16 @@ export type RehearsalTrace =
   | (RehearsalTraceBase &
       Readonly<{
         kind: 'internal-failure';
-        stage: InternalFailureStage;
+        stage: 'assessment';
+        /** Fixed, trusted label for the assessment-stage failure only. */
+        assessmentFailureReason: AssessmentFailureReason;
+        detail?: never;
+      }>)
+  | (RehearsalTraceBase &
+      Readonly<{
+        kind: 'internal-failure';
+        stage: Exclude<InternalFailureStage, 'assessment'>;
+        assessmentFailureReason?: never;
         /** Only with the `freshness` stage: which check failed and why. */
         detail?: FreshnessDetail;
       }>)
@@ -112,6 +123,7 @@ export type RehearsalTrace =
         kind: 'model-unavailable';
         stage?: never;
         detail?: never;
+        assessmentFailureReason?: never;
         /** Why no model verdict exists; a fixed literal, never provider output. */
         modelUnavailableReason: ModelUnavailableReason;
       }>)
@@ -120,16 +132,17 @@ export type RehearsalTrace =
         kind: Exclude<ReviewOutcomeKind, 'internal-failure' | 'model-unavailable'>;
         stage?: never;
         detail?: never;
+        assessmentFailureReason?: never;
         modelUnavailableReason?: never;
       }>);
 /** The only extra a rehearsal may keep beside a handoff; each kind keeps only its own. */
 export type RehearsalDetail =
   | FreshnessDetail
-  | Readonly<{ modelUnavailableReason: ModelUnavailableReason }>;
+  | Readonly<{ modelUnavailableReason: ModelUnavailableReason }>
+  | Readonly<{ assessmentFailureReason: AssessmentFailureReason }>;
 export type RehearsalSink = Readonly<{
   /**
-   * `detail` is kept only for the kind it describes (a `freshness` internal failure, or a
-   * `model-unavailable` result); it never enters the handoff.
+   * `detail` is kept only for the outcome it describes; it never enters the handoff.
    */
   record: (handoff: ReviewHandoff, detail?: RehearsalDetail) => boolean;
   traces: () => readonly RehearsalTrace[];
@@ -148,6 +161,25 @@ export function createRehearsalSink(appToken: string | null): RehearsalSink | nu
           ? modelUnavailableReason(detail.modelUnavailableReason)
           : undefined;
       if (handoff.kind === 'model-unavailable' && !modelReason) return false;
+      const assessmentReason =
+        handoff.kind === 'internal-failure' &&
+        handoff.stage === 'assessment' &&
+        detail &&
+        'assessmentFailureReason' in detail
+          ? assessmentFailureReason(detail.assessmentFailureReason)
+          : undefined;
+      if (
+        detail &&
+        'assessmentFailureReason' in detail &&
+        !(handoff.kind === 'internal-failure' && handoff.stage === 'assessment')
+      )
+        return false;
+      if (
+        handoff.kind === 'internal-failure' &&
+        handoff.stage === 'assessment' &&
+        !assessmentReason
+      )
+        return false;
       const traceBase = {
         identity: Object.freeze([...handoff.identity]) as OwnedClaim['identity'],
         generation: handoff.generation,
@@ -168,6 +200,7 @@ export function createRehearsalSink(appToken: string | null): RehearsalSink | nu
             ? { detail: Object.freeze({ field: detail.field, reason: detail.reason }) }
             : {}),
           ...(modelReason ? { modelUnavailableReason: modelReason } : {}),
+          ...(assessmentReason ? { assessmentFailureReason: assessmentReason } : {}),
           ...traceBase,
         }) as RehearsalTrace,
       );

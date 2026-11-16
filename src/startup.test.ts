@@ -327,6 +327,20 @@ test('reports a recorded internal failure with its fixed snapshot stage', async 
   expect(stderr.join('')).not.toContain(sentinel);
 });
 
+test('prints the fixed assessment failure reason without an exception message', async () => {
+  vi.mocked(assessmentModule.reviewPacket).mockResolvedValueOnce({
+    kind: 'internal-failure',
+    reason: 'render-rejected',
+    body: null,
+  });
+  const { stderr, code } = await start(mockGithub({ changes: await upstreamScenario() }));
+  expect(stderr).toEqual([
+    'dependabot-review: no-write rehearsal recorded internal-failure at assessment (render-rejected); nothing was published.',
+  ]);
+  expect(code).toBe(NOT_WIRED_EXIT_CODE);
+  expect(stderr.join('')).not.toContain(sentinel);
+});
+
 /** A shared monotonic clock that a model step can advance, as a slow model call would. */
 function slowModelDependencies(github: ReturnType<typeof mockGithub>, clock: { now: number }) {
   const base = dependenciesFor(github, { now: () => clock.now });

@@ -34,8 +34,32 @@ test('invalid config stays status-only without invoking model analysis', async (
     evaluatedAt: 0,
     deadlineMs: 1,
   });
-  expect(result).toEqual({ kind: 'internal-failure' });
+  expect(result).toEqual({ kind: 'internal-failure', reason: 'config' });
   expect(JSON.stringify(result)).not.toContain('sentinel-model-key');
+});
+
+test.each([
+  ['input', 'analysis-input'],
+  ['configuration', 'analysis-configuration'],
+] as const)('names M2 %s as %s without exposing its detail', async (category, reason) => {
+  const { review, complete } = await fixture();
+  vi.mocked(batchesModule.analyzeDecisionUnits).mockResolvedValueOnce({
+    ok: false,
+    category,
+    detail: sentinel,
+  } as never);
+  await expect(assessReviewPacket({ ...review, model: complete })).resolves.toEqual({
+    kind: 'internal-failure',
+    reason,
+  });
+});
+
+test('names an exception inside assessment without exposing its message', async () => {
+  const { review, complete } = await fixture();
+  vi.mocked(batchesModule.analyzeDecisionUnits).mockRejectedValueOnce(new Error(sentinel));
+  const result = await assessReviewPacket({ ...review, model: complete });
+  expect(result).toEqual({ kind: 'internal-failure', reason: 'analysis-exception' });
+  expect(JSON.stringify(result)).not.toContain(sentinel);
 });
 
 vi.mock('./analysis/batches.js', async (original) => {
@@ -111,7 +135,7 @@ test('does not invoke the model or renderer without a key or with invalid config
       ...review,
       config: { ok: false, error: { file: 'x', category: 'json', field: '$' } },
     }),
-  ).resolves.toEqual({ kind: 'internal-failure', body: null });
+  ).resolves.toEqual({ kind: 'internal-failure', reason: 'config', body: null });
   expect(render).not.toHaveBeenCalled();
   render.mockRestore();
 });
@@ -122,7 +146,7 @@ test('turns a renderer failure into a status-only failure with no body', async (
     .spyOn(reportingModule, 'renderDecisionBrief')
     .mockReturnValueOnce({ ok: false, category: 'content' });
   const result = await reviewPacket({ ...review, model: complete });
-  expect(result).toEqual({ kind: 'internal-failure', body: null });
+  expect(result).toEqual({ kind: 'internal-failure', reason: 'render-rejected', body: null });
   render.mockRestore();
 });
 
@@ -132,7 +156,7 @@ test('turns a renderer exception into a status-only failure with no body', async
     throw new Error(sentinel);
   });
   const result = await reviewPacket({ ...review, model: complete });
-  expect(result).toEqual({ kind: 'internal-failure', body: null });
+  expect(result).toEqual({ kind: 'internal-failure', reason: 'render-exception', body: null });
   expect(JSON.stringify(result)).not.toContain(sentinel);
   render.mockRestore();
 });
@@ -162,7 +186,7 @@ test('invalid config never reaches model analysis', async () => {
       config: { ok: false, error: { file: 'x', category: 'json', field: '$' } },
       model: { now: complete.now, analyze },
     }),
-  ).resolves.toEqual({ kind: 'internal-failure', body: null });
+  ).resolves.toEqual({ kind: 'internal-failure', reason: 'config', body: null });
   expect(analyze).not.toHaveBeenCalled();
 });
 
@@ -179,6 +203,7 @@ test('names an oversized brief as a budget gap, and no other renderer failure', 
   render.mockReturnValueOnce({ ok: false, category: 'size' });
   await expect(reviewPacket({ ...review, model: complete })).resolves.toEqual({
     kind: 'internal-failure',
+    reason: 'render-size',
     body: null,
     gaps: [{ source: 'brief', reason: 'budget' }],
   });
@@ -186,6 +211,7 @@ test('names an oversized brief as a budget gap, and no other renderer failure', 
     render.mockReturnValueOnce({ ok: false, category });
     await expect(reviewPacket({ ...review, model: complete })).resolves.toEqual({
       kind: 'internal-failure',
+      reason: 'render-rejected',
       body: null,
     });
   }
@@ -336,7 +362,7 @@ test('reports the first unit in inventory order, not the alphabetically first ca
   expect(result).toEqual({ kind: 'model-unavailable', reason: 'transport' });
 });
 
-test('carries no reason on any other outcome', async () => {
+test('carries an assessment reason only on an internal failure', async () => {
   const { review, complete } = await fixture();
   const done = await reviewPacket({ ...review, model: complete });
   expect(done).not.toHaveProperty('reason');
@@ -344,7 +370,7 @@ test('carries no reason on any other outcome', async () => {
     ...review,
     config: { ok: false, error: { file: 'x', category: 'json', field: '$' } },
   });
-  expect(invalid).not.toHaveProperty('reason');
+  expect(invalid).toMatchObject({ kind: 'internal-failure', reason: 'config' });
 });
 
 test('the closed reason list covers every category M1 can report', () => {
