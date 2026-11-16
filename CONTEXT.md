@@ -32,7 +32,14 @@ next rehearsal ended `model-unavailable`;
 [#309](https://github.com/andrewpucci/dependency-update-advisor/issues/309)
 added a fixed reason (Amendment 4, merged), which showed Mistral's reasoning
 model needs `top_p`, chunked content, and larger budgets (M1 amendment,
-merged in PR #330; the #329 re-pin and live rehearsal remain).
+merged in PR #330 and re-pinned in #335). The first rehearsal on it ended
+`internal-failure at assessment`
+([#309](https://github.com/andrewpucci/dependency-update-advisor/issues/309)
+comment); a draft
+[W2 Amendment 5](docs/specs/SPEC-review-orchestration.md#diagnostic-amendment-5-assessment-failure-reason-and-analysis-timing)
+([#337](https://github.com/andrewpucci/dependency-update-advisor/issues/337),
+[#334](https://github.com/andrewpucci/dependency-update-advisor/issues/334))
+would name the cause and print M2's timing.
 Publication and production claim storage remain separate gates.
 
 ## Next action

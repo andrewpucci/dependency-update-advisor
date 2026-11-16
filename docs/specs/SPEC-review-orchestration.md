@@ -773,6 +773,118 @@ successful context. Supply T4 with the authentic successful C2 result, including
 disabled/unavailable/partial distinctions, and matching `contextRevision`;
 never synthesize either from PR files. Only validated C2 excerpts may reach M1.
 
+## Diagnostic Amendment 5: Assessment Failure Reason and Analysis Timing
+
+**Status: draft; not approved.** Scoped to
+[#337](https://github.com/andrewpucci/dependency-update-advisor/issues/337)
+(the assessment failure reason) and
+[#334](https://github.com/andrewpucci/dependency-update-advisor/issues/334)
+(printing M2's timing diagnostics), both under
+[#309](https://github.com/andrewpucci/dependency-update-advisor/issues/309).
+They are one amendment because both add a reported value over the same modules,
+which Amendment 4's boundaries make Ask-first. It does not authorize live
+publication or a production claim backend. Effort tier: L (crosses
+`assessment`, `review`, `pipeline`, `handoff`, and `startup`, and amends
+approved text).
+
+The first R1 no-write rehearsal on the reasoning-model change ended
+`internal-failure at assessment` (caller run 43798056878, shared workflow pinned
+to `ac232bb`, Dependabot PR #276; the action step ran 346 s). That is neither
+`complete` nor `model-unavailable`, and the fixed line cannot say why. The
+`assessment` stage has seven distinct causes today, from two paths:
+
+- `assessReviewPacket` returns `internal-failure` when the trusted config is
+  not valid, when M2 returns `ok: false` (category `input` or `configuration`),
+  and when M2 throws;
+- `reviewPacket` returns `internal-failure` when the decision-brief renderer
+  rejects a valid assessment (including its size limit) or throws.
+
+M2 also now returns `callDurationsMs` and `maxSplitDepth`
+([#331](https://github.com/andrewpucci/dependency-update-advisor/issues/331),
+[#332](https://github.com/andrewpucci/dependency-update-advisor/issues/332)),
+but `assessment` discards M2's diagnostics, so no rehearsal can show them.
+
+1. **Assessment failure reason.** An `internal-failure` at the `assessment`
+   stage carries exactly one `AssessmentFailureReason`, required at that stage,
+   a literal chosen by trusted code from this closed list:
+   - `config` — the trusted config was not valid at assessment;
+   - `analysis-input` and `analysis-configuration` — M2 returned `ok: false`
+     with that category;
+   - `analysis-exception` — M2 threw;
+   - `render-size` — the renderer rejected the brief for size;
+   - `render-rejected` — the renderer rejected it for any other category;
+   - `render-exception` — the renderer threw.
+
+   No other stage carries a reason. The reason is never derived from an
+   exception name or message, a response body or header, a URL, a config value,
+   source content, PR input, a credential, or provider output.
+
+2. **Analysis timing.** When M2 returned `ok: true`, the assessment result
+   carries `analysisTiming`: `callsDispatched`, `callDurationsMs` (at most 32
+   integers, in M2's wave order), and `maxSplitDepth`, copied unchanged from
+   M2's diagnostics. It is absent when M2 never ran or returned `ok: false`.
+   It is present on `complete`, `incomplete-evidence`, `model-unavailable`, and
+   an `internal-failure` that follows a successful analysis (the render reasons).
+   Nothing is computed, rounded, or derived here.
+3. **Reporting.** The values reach the rehearsal's stderr line and trace only,
+   never the status or the comment. The existing fixed line keeps its form, and
+   the new parts are appended before `; nothing was published.`:
+   - `internal-failure at assessment (<reason>)`, in the form Amendment 2 uses
+     for `(<field> <reason>)`; and
+   - when `analysisTiming` is present,
+     `; analysis <n> calls (<ms>, <ms>, ...) max split depth <d>`, with the
+     durations in milliseconds and joined by `, `. The segment is omitted for
+     zero calls.
+
+   Best guess for the format, for the user to confirm before planning; the
+   reason list and the carried values are the contract.
+
+4. **Boundaries on the line.** The line stays one line and every part is an
+   integer or a literal from item 1 or Amendment 4. The segment is bounded by
+   M2's 32-call cap and 600,000 ms analysis maximum: at most 32 durations of at
+   most six digits each.
+5. **Supersedes when implemented.** Amendment 4's "no other outcome carries a
+   reason" becomes "only `model-unavailable` and `internal-failure` at the
+   `assessment` stage carry a reason"; Amendment 1's stage list is otherwise
+   unchanged.
+
+### Amendment 5 checks
+
+Each is written first and shown failing on the prior code or a named mutation:
+
+- Each of the seven reasons is produced by a controlled assessment or renderer
+  path and appears in `internal-failure at assessment (<reason>)`. Mutations:
+  mapping two paths to one reason; defaulting every path to `config`.
+- A thrown error carrying a sentinel in its message, a response body, a URL, and
+  a credential never reaches stderr or the trace; the reason is always a
+  literal from the list.
+- `analysisTiming` equals M2's diagnostics for a scripted run, including a
+  reordered-completion case, and is absent when the key is missing, the config
+  is invalid, or M2 returns `ok: false`. Mutations: recomputing durations;
+  reporting in completion order; attaching timing on `no-key`.
+- The printed segment matches the format for 0, 1, and 32 calls and for a
+  value at the digit bound.
+- The shipped action prints the new line: the bundled-action startup test, like
+  the one that proves chunk parsing, runs the committed bundle and asserts the
+  fixed line for a model-unavailable case and a render-failure case. The
+  bundle is rebuilt and committed in the task that changes the line.
+- Existing outcome, status, and comment assertions pass unchanged: no outcome
+  kind, status, or comment text changes.
+
+Run the commands in Commands above, plus `npm run complexity -- --base
+origin/main`, on the exact revision.
+
+### Amendment 5 Boundaries
+
+- **Always:** choose reasons in trusted code from the closed lists; copy M2's
+  integers unchanged; keep every value on stderr and the trace only.
+- **Ask first:** add or rename a reason, report another number, surface any
+  value in status or comment text, or change a trigger, an App permission, or a
+  secret.
+- **Never:** report a raw error, payload, status code, header, URL, or model
+  text; derive a reason from untrusted data; weaken fail-closed behavior; or
+  start publication or production-claim implementation.
+
 ## Testing Strategy
 
 Use source-adjacent `vite-plus/test` tests with injected clock, fetch,
