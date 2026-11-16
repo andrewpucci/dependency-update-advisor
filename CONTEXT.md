@@ -11,63 +11,33 @@
 [T4 packet validation](docs/specs/SPEC-review-packet.md),
 [T5 decision units](docs/specs/SPEC-decision-units.md), and
 [D1 reads](docs/specs/SPEC-github-read.md) are merged into `main`.
-[T4 evidence](https://github.com/andrewpucci/dependency-update-advisor/issues/84)
-and [T5 evidence](https://github.com/andrewpucci/dependency-update-advisor/issues/99)
-record exact-revision checks and remaining integration gates.
-[Advisory complexity review](docs/specs/SPEC-complexity-review.md) is merged.
 The shared workflow remains fail closed and the old reviewer stays active.
-W2 orchestration is merged into `main` as a no-write rehearsal, with
-[C4 Dependabot roots](docs/specs/SPEC-dependabot-roots.md) supplying the
-collectors' trusted roots. Its R1 rehearsal reached the trusted workflow but
-recorded a redacted `internal-failure`; the fixed-stage diagnostic amendment is
-merged. The R1 rehearsal reported `internal-failure at unclassified`;
-[#297](https://github.com/andrewpucci/dependency-update-advisor/issues/297)
-tracked the cause, a final freshness check failing after the transport window.
-Its Amendment 2 code and the R1 caller re-pin
-([#304](https://github.com/andrewpucci/dependency-update-advisor/issues/304))
-are merged. Amendment 3
-([#306](https://github.com/andrewpucci/dependency-update-advisor/issues/306))
-adds a 60,000 ms pre-startup allowance to the job window and is merged. The
-next rehearsal ended `model-unavailable`;
-[#309](https://github.com/andrewpucci/dependency-update-advisor/issues/309)
-added a fixed reason (Amendment 4, merged), which showed Mistral's reasoning
-model needs `top_p`, chunked content, and larger budgets (M1 amendment,
-merged in PR #330 and re-pinned in #335). The first rehearsal on it ended
-`internal-failure at assessment`
-([#309](https://github.com/andrewpucci/dependency-update-advisor/issues/309)
-comment); the approved-for-planning
+[W2 orchestration](docs/specs/SPEC-review-orchestration.md) is merged as a
+no-write rehearsal; [C4 Dependabot roots](docs/specs/SPEC-dependabot-roots.md)
+supplies its collectors' trusted roots. Its diagnostic history and separate
+publication/production-claim gates are in the W2 spec.
+
+[M1 transport](docs/specs/SPEC-mistral-transport.md) and
+[M2 batching](docs/specs/SPEC-analysis-batches.md), including M2 timing and
+split-depth diagnostics, are merged. The [capability map](docs/specs/README.md)
+is authoritative for all contract status and remaining integration gates.
+
 [W2 Amendment 5](docs/specs/SPEC-review-orchestration.md#diagnostic-amendment-5-assessment-failure-reason-and-analysis-timing)
-([#337](https://github.com/andrewpucci/dependency-update-advisor/issues/337),
-[#334](https://github.com/andrewpucci/dependency-update-advisor/issues/334))
-would name the cause and print M2's timing.
-Publication and production claim storage remain separate gates.
+([#334](https://github.com/andrewpucci/dependency-update-advisor/issues/334),
+[#337](https://github.com/andrewpucci/dependency-update-advisor/issues/337))
+is approved for planning in [#338](https://github.com/andrewpucci/dependency-update-advisor/pull/338).
+It would name `internal-failure at assessment` and print M2 timing; its plan
+and execution approvals remain separate gates.
 
 ## Next action
 
-[S1](docs/specs/SPEC-advisory-lookup.md), [S2](docs/specs/SPEC-upstream-evidence.md),
-[S3](docs/specs/SPEC-policy-signals.md), M1 and M2 are merged; their separate
-integration gates remain open.
-[U2 #18](docs/specs/SPEC-uv-relationships.md) and
-[N2 #15](docs/specs/SPEC-npm-relationships.md) are on `main`; #169 and #140 hold
-verification. [#93 reachability](docs/specs/SPEC-reachability-evidence.md) is
-implemented on `issue-93` (#266–#274), pending fresh-context review and merge.
-[#110 snapshot reuse](docs/specs/SPEC-pr-freshness-snapshot.md) awaits review/merge;
-[verification #113](https://github.com/andrewpucci/dependency-update-advisor/issues/113)
-retains remaining gates. W1/W2 must supply bounded reads and exclusive claims
-before T2/T3 writes.
-[O1 #23](docs/specs/SPEC-decision-brief.md) implemented, pending review/merge;
-[verification #232](https://github.com/andrewpucci/dependency-update-advisor/issues/232)
-tracks its remaining gates. W2, C2, adoption, parity and cutover need proof.
-[A1 #24](docs/specs/SPEC-action-package.md) is merged into `main`.
-[W1 #25](docs/specs/SPEC-reusable-workflow.md) is implemented, pending review.
-[W2 #26 review orchestration](docs/specs/SPEC-review-orchestration.md) is
-merged on `main` as the no-write rehearsal. Production claim storage and live
-publication remain separate supporting contracts. #209
-has implemented [shared PyPI release observations](docs/specs/SPEC-shared-release-observations.md)
-and [bounded-reader consolidation](docs/specs/SPEC-bounded-reader-consolidation.md)
-on `issue-209`. Its ordered #260–#264 tasks are pending fresh-context review
-and merge; publication, adoption, parity, and cutover remain separate gates.
+Review and merge [#338](https://github.com/andrewpucci/dependency-update-advisor/pull/338),
+then approve its execution plan and implementation issues. The follow-up
+rehearsal in [#329](https://github.com/andrewpucci/dependency-update-advisor/issues/329)
+still records its sanitized outcome on [#309](https://github.com/andrewpucci/dependency-update-advisor/issues/309).
+Publication, production claim storage, adoption, parity, and cutover remain
+separate gates.
 
 - The [capability map](docs/specs/README.md) indexes module and contract status.
 - The [ADR guide](docs/adr/README.md) indexes durable architecture decisions.
-- Issues/PRs hold tasks and results; `tasks/plan.md` is gitignored.
+- Issues/PRs hold task results; `tasks/plan.md` is gitignored.
