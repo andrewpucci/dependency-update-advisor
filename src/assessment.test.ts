@@ -398,6 +398,52 @@ test('reports the first unit in inventory order, not the alphabetically first ca
   });
 });
 
+test('copies unequal M2 durations in wave order after reordered completion', async () => {
+  const { analysisDocument, analysisScenario } = await import('../tests/parity/analysis.js');
+  const { scenario, input } = await analysisScenario({ inventory: { children: 12 } });
+  if (!scenario.packet.ok) throw new Error('fixture packet');
+  type Batch = Parameters<typeof analyzeMistralBatch>[0];
+  let time = 0.4;
+  const gates: Array<() => void> = [];
+  const result = reviewPacket({
+    packet: scenario.packet.packet,
+    config: input.config,
+    apiKey: sentinel,
+    evaluatedAt: input.evaluatedAt,
+    deadlineMs: 700_000,
+    signalAttempts: scenario.result.attempts,
+    model: {
+      now: () => time,
+      analyze: (async (batch: Batch, options: Parameters<typeof analyzeMistralBatch>[1]) => {
+        await new Promise<void>((resolve) => gates.push(resolve));
+        return analyzeMistralBatch(batch, options, {
+          now: () => 0,
+          fetch: async () =>
+            Response.json({
+              choices: [
+                {
+                  index: 0,
+                  finish_reason: 'stop',
+                  message: { role: 'assistant', content: JSON.stringify(analysisDocument(batch)) },
+                },
+              ],
+            }),
+        });
+      }) as typeof analyzeMistralBatch,
+    },
+  });
+  while (gates.length < 2) await new Promise((resolve) => setTimeout(resolve, 0));
+  // The second call settles first, but M2 diagnostics remain in wave order.
+  time = 13.3;
+  gates[1]!();
+  await new Promise((resolve) => setTimeout(resolve, 0));
+  time = 50;
+  gates[0]!();
+  await expect(result).resolves.toMatchObject({
+    analysisTiming: { callsDispatched: 2, callDurationsMs: [49, 12], maxSplitDepth: 0 },
+  });
+});
+
 test('carries an assessment reason only on an internal failure', async () => {
   const { review, complete } = await fixture();
   const done = await reviewPacket({ ...review, model: complete });

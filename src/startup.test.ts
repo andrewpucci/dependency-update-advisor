@@ -9,7 +9,11 @@ import { analyzeMistralBatch } from './analysis/mistral.js';
 import * as assessmentModule from './assessment.js';
 import * as pipelineModule from './pipeline.js';
 import * as runtimeModule from './runtime.js';
-import { MODEL_FAILURE_CATEGORIES, createTestClaimStore } from './review.js';
+import {
+  ASSESSMENT_FAILURE_REASONS,
+  MODEL_FAILURE_CATEGORIES,
+  createTestClaimStore,
+} from './review.js';
 import type { StartupDependencies } from './startup.js';
 import {
   MAX_EVENT_BYTES,
@@ -327,19 +331,22 @@ test('reports a recorded internal failure with its fixed snapshot stage', async 
   expect(stderr.join('')).not.toContain(sentinel);
 });
 
-test('prints the fixed assessment failure reason without an exception message', async () => {
-  vi.mocked(assessmentModule.reviewPacket).mockResolvedValueOnce({
-    kind: 'internal-failure',
-    reason: 'render-rejected',
-    body: null,
-  });
-  const { stderr, code } = await start(mockGithub({ changes: await upstreamScenario() }));
-  expect(stderr).toEqual([
-    'dependabot-review: no-write rehearsal recorded internal-failure at assessment (render-rejected); nothing was published.',
-  ]);
-  expect(code).toBe(NOT_WIRED_EXIT_CODE);
-  expect(stderr.join('')).not.toContain(sentinel);
-});
+test.each(ASSESSMENT_FAILURE_REASONS)(
+  'prints returned assessment reason %s without an exception message',
+  async (reason) => {
+    vi.mocked(assessmentModule.reviewPacket).mockResolvedValueOnce({
+      kind: 'internal-failure',
+      reason,
+      body: null,
+    });
+    const { stderr, code } = await start(mockGithub({ changes: await upstreamScenario() }));
+    expect(stderr).toEqual([
+      `dependabot-review: no-write rehearsal recorded internal-failure at assessment (${reason}); nothing was published.`,
+    ]);
+    expect(code).toBe(NOT_WIRED_EXIT_CODE);
+    expect(stderr.join('')).not.toContain(sentinel);
+  },
+);
 
 /** A shared monotonic clock that a model step can advance, as a slow model call would. */
 function slowModelDependencies(github: ReturnType<typeof mockGithub>, clock: { now: number }) {
