@@ -25,16 +25,15 @@ is authoritative for all contract status and remaining integration gates.
 [W2 Amendment 5](docs/specs/SPEC-review-orchestration.md#diagnostic-amendment-5-assessment-failure-reason-and-analysis-timing)
 ([#334](https://github.com/andrewpucci/dependency-update-advisor/issues/334),
 [#337](https://github.com/andrewpucci/dependency-update-advisor/issues/337))
-is approved for planning in [#338](https://github.com/andrewpucci/dependency-update-advisor/pull/338).
-It would name `internal-failure at assessment` and print M2 timing; its plan
-and execution approvals remain separate gates.
+is implemented and merged in [PR #345](https://github.com/andrewpucci/dependency-update-advisor/pull/345).
+No-write rehearsals now name assessment failures and print M2 timing on stderr
+and in the trace.
 
 ## Next action
 
-Review and merge [#338](https://github.com/andrewpucci/dependency-update-advisor/pull/338),
-then approve its execution plan and implementation issues. The follow-up
-rehearsal in [#329](https://github.com/andrewpucci/dependency-update-advisor/issues/329)
-still records its sanitized outcome on [#309](https://github.com/andrewpucci/dependency-update-advisor/issues/309).
+Approve the [#342](https://github.com/andrewpucci/dependency-update-advisor/issues/342)
+R1 caller re-pin to the merged diagnostics, then rehearse and record the
+sanitized outcome on [#309](https://github.com/andrewpucci/dependency-update-advisor/issues/309).
 Publication, production claim storage, adoption, parity, and cutover remain
 separate gates.
 

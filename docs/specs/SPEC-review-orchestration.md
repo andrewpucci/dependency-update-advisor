@@ -287,8 +287,9 @@ comment, configuration, permission, token, trigger, or network-write change.
 
 2. **Redacted reporting.** When a no-write rehearsal records an internal
    failure, its bounded stderr line includes only the literal outcome and
-   stage, in the form `internal-failure at <stage>`. The trace may retain that
-   same literal stage with the existing binding and operation ordering. No
+   stage, in the form `internal-failure at <stage>`; Diagnostic Amendment 5
+   adds its fixed reason only for `assessment`. The trace may retain that same
+   literal stage with the existing binding and operation ordering. No
    stage is sent to a status, comment, or future publisher by this amendment.
    The existing fixed startup diagnostics remain the only output for startup
    self-check failures; an uncategorized exception at that boundary maps to
@@ -385,8 +386,9 @@ do that.
    source today. No other stage carries `field` or `reason`.
 5. **Reporting.** For `freshness` the stderr line is
    `internal-failure at freshness (<field> <reason>)` (for example
-   `(run budget)`); every other stage keeps the exact first-amendment form.
-   The trace retains the same literals. The fields appear on the trace and
+   `(run budget)`); `assessment` has Diagnostic Amendment 5's fixed reason,
+   and every other stage keeps the exact first-amendment form. The trace
+   retains the same literals. The fields appear on the trace and
    stderr only, not on the exported `ReviewHandoff` (which gains only the
    `freshness` stage literal). The detail reaches the trace through an optional
    second argument to `RehearsalSink.record` and reaches stderr on the
@@ -573,8 +575,8 @@ publication spends that reserve.
 
 **Status: approved for planning, 2026-11-11, and for automatic execution; code
 implemented for #314-#318 and merged; its closing rehearsal (#319, superseded
-by #329) is recorded on #309 and ended `internal-failure at assessment`, which
-Amendment 5 would name.** Scoped to
+by #329) is recorded on #309 and ended `internal-failure at assessment`, whose
+fixed reason Amendment 5 now names.** Scoped to
 [#309](https://github.com/andrewpucci/dependency-update-advisor/issues/309).
 It adds a reported value, which Amendment 2's boundaries make Ask-first, and
 the user approved splitting `http` by status class and then approved the
@@ -614,15 +616,16 @@ discards it.
      `http-other` (item 4); and
    - `unknown` — a category outside this list.
 
-   No other outcome carries a reason. The reason is never derived from an
-   exception name or message, response body or header, URL, config value, source
-   content, PR input, credential, or provider output. The one input beyond the
-   category is the HTTP status of the model response, read only by item 4's
-   fixed mapping; the number is never reported or stored. The analysis record's
-   category is typed `string`; item 2 narrows it. `configuration` covers more
-   than one cause (a key containing a space or non-ASCII character, and a
-   config with no `analysis` section), so a run that reports it does not say
-   which.
+   No other outcome carries a reason, except an `internal-failure` at
+   `assessment`, which Diagnostic Amendment 5 specifies. The reason is
+   never derived from an exception name or message, response body or header,
+   URL, config value, source content, PR input, credential, or provider output.
+   The one input beyond the category is the HTTP status of the model response,
+   read only by item 4's fixed mapping; the number is never reported or stored.
+   The analysis record's category is typed `string`; item 2 narrows it.
+   `configuration` covers more than one cause (a key containing a space or
+   non-ASCII character, and a config with no `analysis` section), so a run that
+   reports it does not say which.
 
 2. **Selection.** When analysis is unavailable, the reason is the category of
    the first unresolved unit record in inventory order (the order `batches.ts`
@@ -636,8 +639,10 @@ discards it.
    dependabot-review: no-write rehearsal recorded model-unavailable (<reason>); nothing was published.
    ```
 
-   Every other outcome keeps its exact form. The trace retains the same literal
-   on a `modelUnavailableReason` field, present only for `model-unavailable`.
+   Apart from Diagnostic Amendment 5's assessment reason and analysis-timing
+   suffix, every other outcome keeps its exact form. The trace retains the same
+   literal on a `modelUnavailableReason` field, present only for
+   `model-unavailable`.
    `RehearsalSink.record` keeps its optional second argument, which becomes a
    union of Amendment 2's `FreshnessDetail` and the reason; each is stored only
    for its own kind. The reason is not added to `ReviewHandoff`, status text,
@@ -702,19 +707,21 @@ discards it.
    - an empty key reports `no-key` at the pipeline entry and at `assessment`
      (the latter by calling it directly), with no evidence or model request, as
      today;
-   - the shipped bundle emits the exact item 3 line for `no-key` and for one
-     transport category, and no status, comment, App-token request, or other
-     live write occurs, with the only exemption being the model endpoint POST;
+   - the shipped bundle emits the exact item 3 line for `no-key` and the
+     Diagnostic Amendment 5 timing form for one transport category, and no
+     status, comment, App-token request, or other live write occurs, with the
+     only exemption being the model endpoint POST;
    - a `model-unavailable` result followed by a failed final freshness check
      reports `internal-failure at freshness` and carries no reason;
    - a sentinel in an injected exception, response body, URL, or credential
-     never appears in stderr or traces, and `complete`, `incomplete-evidence`,
-     and `internal-failure` outcomes carry no reason.
+     never appears in stderr or traces; `complete` and `incomplete-evidence`
+     carry no reason; and only the `assessment` stage of an `internal-failure`
+     may carry the reason Diagnostic Amendment 5 specifies.
 
    Named mutations that must each fail a test: reporting a constant reason;
    selecting from sorted `failureCategories` instead of record order; passing
    the category string through without the closed-list check; recording a
-   reason on a non-`model-unavailable` outcome; adding it to the exported
+   `model-unavailable` reason on another outcome; adding it to the exported
    `ReviewHandoff` or to the status or comment body; mapping the class from a
    header or body; storing or reporting the status number; sending 401 to
    `http-server` or 429 to `http-auth`; omitting an `http-*` class from
@@ -776,9 +783,12 @@ never synthesize either from PR files. Only validated C2 excerpts may reach M1.
 
 ## Diagnostic Amendment 5: Assessment Failure Reason and Analysis Timing
 
-**Status: approved for planning, 2026-11-15 (the user invoked `as-plan` on
-this reviewed draft, after a fresh-context Opus review, and confirmed the print
-format). Plan and execution approval remain separate gates.** Scoped to
+**Status: implemented and merged in [PR #345](https://github.com/andrewpucci/dependency-update-advisor/pull/345),
+which closes [#337](https://github.com/andrewpucci/dependency-update-advisor/issues/337)
+and [#334](https://github.com/andrewpucci/dependency-update-advisor/issues/334).
+The user approved planning on 2026-11-15 (by invoking `as-plan` on this
+reviewed draft), confirmed the print format, and separately approved
+execution.** Scoped to
 [#337](https://github.com/andrewpucci/dependency-update-advisor/issues/337)
 (the assessment failure reason) and
 [#334](https://github.com/andrewpucci/dependency-update-advisor/issues/334)
@@ -794,8 +804,8 @@ production claim backend. Effort tier: L (crosses `assessment`, `review`,
 The first R1 no-write rehearsal on the reasoning-model change ended
 `internal-failure at assessment` (caller run 43798056878, shared workflow pinned
 to `ac232bb`, Dependabot PR #276; the action step ran 346 s). That is neither
-`complete` nor `model-unavailable`, and the fixed line cannot say why. Eight
-causes end at that stage today, on three paths:
+`complete` nor `model-unavailable`, and the fixed line could not say why.
+Eight causes ended at that stage on three paths:
 
 - `assessReviewPacket` returns `internal-failure` when the trusted config is not
   valid (unreachable through the pipeline, which returns `invalid-config`
@@ -812,7 +822,8 @@ causes end at that stage today, on three paths:
 M2 also returns `callsDispatched`, `callDurationsMs`, and `maxSplitDepth`
 ([#331](https://github.com/andrewpucci/dependency-update-advisor/issues/331),
 [#332](https://github.com/andrewpucci/dependency-update-advisor/issues/332)),
-but `assessment` discards M2's diagnostics, so no rehearsal can show them.
+but `assessment` then discarded M2's diagnostics, so no rehearsal could show
+them.
 
 1. **Assessment failure reason.** An `internal-failure` at the `assessment`
    stage carries exactly one `AssessmentFailureReason`, required there, a
@@ -869,7 +880,7 @@ but `assessment` discards M2's diagnostics, so no rehearsal can show them.
    dependabot-review: no-write rehearsal recorded internal-failure at assessment (analysis-input); nothing was published.
    ```
 
-   The reason uses the form Amendment 2 gives `(<field> <reason>)`. The
+   The reason uses the parenthesized form Amendment 2 introduced. The
    timing segment is `; analysis <n> calls (<ms>, <ms> ms), max split depth
    <d>`, with `1 call (<ms> ms)` for one call and `analysis 0 calls, max split
    depth 0` for none; the words `call` and `calls` are literal, not `call(s)`.
@@ -897,7 +908,7 @@ but `assessment` discards M2's diagnostics, so no rehearsal can show them.
    `internal-failure at snapshot`. Keeping the timing through those conversions
    is not proposed here; revisit it if rehearsals show slow analysis ending at
    `freshness`.
-7. **Supersedes when implemented.** This amendment changes, in this file:
+7. **Implemented supersession.** This amendment changes, in this file:
    Amendment 1 item 2 (the form `internal-failure at <stage>`, which gains a
    reason for `assessment`); Amendment 2 item 5 ("every other stage keeps the
    exact first-amendment form"); Amendment 4 item 1 ("no other outcome carries

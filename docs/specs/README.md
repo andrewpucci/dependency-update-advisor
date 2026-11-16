@@ -153,9 +153,10 @@ gaps and an introduced vulnerability before parity is claimed.
   execution for M2 #22 after plan approval, 2026-11-07. A
   [timing and split-depth diagnostics amendment](SPEC-analysis-batches.md#timing-and-split-depth-diagnostics-amendment)
   (`callDurationsMs`, `maxSplitDepth`) is approved for planning, 2026-11-15;
-  both fields are implemented and merged (#331, #332, PR #336). A companion
+  both fields are implemented and merged (#331, #332, PR #336). The companion
   [W2 Amendment 5](SPEC-review-orchestration.md#diagnostic-amendment-5-assessment-failure-reason-and-analysis-timing)
-  (#334, #337), approved for planning 2026-11-15, would print the values.
+  (#334, #337) is implemented and merged in PR #345, which prints the values
+  on the no-write rehearsal line and trace.
 - [Mistral transport and single-batch validation](SPEC-mistral-transport.md) —
   approved for execution for M1 #21 in `analysis-providers`, 2026-11-07,
   after the user's edits, plan review, and `as-build auto`.
@@ -290,7 +291,8 @@ gaps and an introduced vulnerability before parity is claimed.
   A fifth amendment ([assessment failure reason and analysis timing](SPEC-review-orchestration.md#diagnostic-amendment-5-assessment-failure-reason-and-analysis-timing),
   [#337](https://github.com/andrewpucci/dependency-update-advisor/issues/337),
   [#334](https://github.com/andrewpucci/dependency-update-advisor/issues/334))
-  is approved for planning, 2026-11-15, and would name that failure's cause.
+  is implemented and merged in PR #345, naming that failure's cause and
+  printing M2 timing on the no-write rehearsal line and trace.
 - [Advisory complexity review](SPEC-complexity-review.md) — user-requested
   supporting repository tooling contract; implemented and merged into `main`
   in [PR #65](https://github.com/andrewpucci/dependency-update-advisor/pull/65).
