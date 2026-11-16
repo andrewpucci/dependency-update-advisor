@@ -172,12 +172,12 @@ rehearsal stays no-write and depends on neither #288 nor #289.
 
 ### Required first step
 
-The caller is pinned to `214fbfc`, which predates the reasoning-model change
+The caller was pinned to `214fbfc`, which predates the reasoning-model change
 ([#326](https://github.com/andrewpucci/dependency-update-advisor/issues/326)).
-A rehearsal "on that code" first needs the re-pin in #329's acceptance
-criteria: the caller, its test, and the pin sentence in Assumption 4 move to
-the merged `main` SHA, with the caller test red before and green after. No
-re-pin changes a permission, secret, or trigger.
+A rehearsal "on that code" first needed the re-pin in #329's acceptance
+criteria (merged in PR #335): the caller, its test, and the pin sentence in
+Assumption 4 moved to the merged `main` SHA, with the caller test red before
+and green after. No re-pin changes a permission, secret, or trigger.
 
 ### What #329 records
 
