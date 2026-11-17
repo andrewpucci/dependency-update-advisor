@@ -9514,6 +9514,21 @@ function unjustified(id, value, unit) {
 		test: PENDING_AUDIT
 	};
 }
+/** A workflow job's `timeout-minutes`; the workflow file is checked by check:limits, not by a test. */
+function unjustifiedWorkflow(id, value) {
+	return {
+		id,
+		value,
+		unit: "minutes",
+		protects: PENDING_AUDIT,
+		effect: PENDING_AUDIT,
+		basis: {
+			kind: "unjustified",
+			note: PENDING_AUDIT
+		},
+		test: "none: checked against the workflow file by check:limits (L6)"
+	};
+}
 /** A value computed from other entries; `description` states the relation in words. */
 function derived(id, unit, inputs, formula, description) {
 	return {
@@ -9699,7 +9714,11 @@ const DEFINITIONS = [
 		},
 		test: "src/schema.test.ts > enforces the context fact count independently of excerpt and packet bounds"
 	},
-	unjustified("job.budget", 9e5, "milliseconds"),
+	unjustifiedWorkflow("workflow.dependabotReview.review.timeoutMinutes", 15),
+	unjustifiedWorkflow("workflow.ci.quality.timeoutMinutes", 10),
+	unjustifiedWorkflow("workflow.complexity.report.timeoutMinutes", 10),
+	unjustifiedWorkflow("workflow.complexity.comment.timeoutMinutes", 5),
+	derived("job.budget", "milliseconds", ["workflow.dependabotReview.review.timeoutMinutes"], (minutes) => minutes * 6e4, "The runner's wall-clock limit is the reusable workflow's timeout-minutes, in milliseconds."),
 	unjustified("job.preStartupAllowance", 6e4, "milliseconds"),
 	derived("job.window", "milliseconds", ["job.budget", "job.preStartupAllowance"], (budget, preStartup) => budget - preStartup, "The job window is the runner budget less the time spent before startup."),
 	unjustified("job.freshnessAllowance", 45e3, "milliseconds"),
@@ -9875,7 +9894,12 @@ const DEFINITIONS = [
 	unjustified("analysis.maxConcurrentCalls", 2, "count"),
 	unjustified("analysis.maxAnalysisMs", 6e5, "milliseconds"),
 	unjustified("analysis.publicationReserveMs", 6e4, "milliseconds"),
-	unjustified("analysis.maxContentChunks", 64, "count")
+	unjustified("analysis.maxContentChunks", 64, "count"),
+	unjustified("complexity.threshold", 15, "count"),
+	unjustified("complexity.gitMaxBufferBytes", 32 * MiB, "bytes"),
+	unjustified("complexity.cellInputCodeUnits", 160, "code units"),
+	unjustified("complexity.cellOutputCodeUnits", 200, "code units"),
+	unjustified("complexity.maxListedFindings", 100, "count")
 ];
 const REGISTER = buildRegister(DEFINITIONS);
 function limitEntry(id) {

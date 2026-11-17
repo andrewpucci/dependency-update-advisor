@@ -105,6 +105,13 @@ test('derived limits are wired to the entries they sum or copy', () => {
   expect(dependents(REGISTER, 'job.budget')).toEqual(['job.window']);
 });
 
+test('the job budget is derived from the dependabot review workflow timeout', () => {
+  expect(dependents(REGISTER, 'workflow.dependabotReview.review.timeoutMinutes')).toEqual(
+    expect.arrayContaining(['job.budget', 'job.window']),
+  );
+  expect(limit('job.budget')).toBe(900_000);
+});
+
 /** Each copy of a packet limit, paired with the packet entry whose value it mirrors. */
 const PACKET_COPIES: readonly [LimitId, LimitId][] = [
   ['context.maxDependencies', 'packet.changes'],

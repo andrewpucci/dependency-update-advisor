@@ -1,4 +1,4 @@
-export type LimitUnit = 'bytes' | 'code units' | 'milliseconds' | 'count' | 'tokens';
+export type LimitUnit = 'bytes' | 'code units' | 'milliseconds' | 'minutes' | 'count' | 'tokens';
 
 /** Marks a field the migration has not filled yet; none may remain after phase 2. */
 export const PENDING_AUDIT = 'pending: L7 audit';
@@ -215,6 +215,19 @@ function unjustified<const Id extends string>(id: Id, value: number, unit: Limit
   } as const;
 }
 
+/** A workflow job's `timeout-minutes`; the workflow file is checked by check:limits, not by a test. */
+function unjustifiedWorkflow<const Id extends string>(id: Id, value: number) {
+  return {
+    id,
+    value,
+    unit: 'minutes',
+    protects: PENDING_AUDIT,
+    effect: PENDING_AUDIT,
+    basis: { kind: 'unjustified', note: PENDING_AUDIT },
+    test: 'none: checked against the workflow file by check:limits (L6)',
+  } as const;
+}
+
 /** A value computed from other entries; `description` states the relation in words. */
 function derived<const Id extends string>(
   id: Id,
@@ -360,8 +373,19 @@ const DEFINITIONS = [
     basis: { kind: 'unjustified', note: PENDING_AUDIT },
     test: 'src/schema.test.ts > enforces the context fact count independently of excerpt and packet bounds',
   },
+  // Workflow timeouts, copied from the YAML `timeout-minutes` of each job.
+  unjustifiedWorkflow('workflow.dependabotReview.review.timeoutMinutes', 15),
+  unjustifiedWorkflow('workflow.ci.quality.timeoutMinutes', 10),
+  unjustifiedWorkflow('workflow.complexity.report.timeoutMinutes', 10),
+  unjustifiedWorkflow('workflow.complexity.comment.timeoutMinutes', 5),
   // Job timing, from budget.ts.
-  unjustified('job.budget', 15 * 60 * 1_000, 'milliseconds'),
+  derived(
+    'job.budget',
+    'milliseconds',
+    ['workflow.dependabotReview.review.timeoutMinutes'],
+    (minutes) => minutes * 60_000,
+    "The runner's wall-clock limit is the reusable workflow's timeout-minutes, in milliseconds.",
+  ),
   unjustified('job.preStartupAllowance', 60_000, 'milliseconds'),
   derived(
     'job.window',
@@ -752,6 +776,12 @@ const DEFINITIONS = [
   unjustified('analysis.maxAnalysisMs', 600_000, 'milliseconds'),
   unjustified('analysis.publicationReserveMs', 60_000, 'milliseconds'),
   unjustified('analysis.maxContentChunks', 64, 'count'),
+  // Complexity report, from scripts/complexity/report.mjs.
+  unjustified('complexity.threshold', 15, 'count'),
+  unjustified('complexity.gitMaxBufferBytes', 32 * MiB, 'bytes'),
+  unjustified('complexity.cellInputCodeUnits', 160, 'code units'),
+  unjustified('complexity.cellOutputCodeUnits', 200, 'code units'),
+  unjustified('complexity.maxListedFindings', 100, 'count'),
 ] as const satisfies readonly LimitDefinition[];
 
 export type LimitId = (typeof DEFINITIONS)[number]['id'];

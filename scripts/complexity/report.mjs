@@ -4,10 +4,15 @@ import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { parseArgs } from 'node:util';
+import { limit } from '../../src/limits.ts';
 
-const threshold = 15;
+const threshold = limit('complexity.threshold');
+const maxListed = limit('complexity.maxListedFindings');
 const run = (...args) =>
-  execFileSync('git', args, { encoding: 'utf8', maxBuffer: 32 * 1024 * 1024 });
+  execFileSync('git', args, {
+    encoding: 'utf8',
+    maxBuffer: limit('complexity.gitMaxBufferBytes'),
+  });
 const git = (...args) => run(...args).trim();
 
 export function measure(source, path) {
@@ -67,9 +72,9 @@ export function regressions(head, base) {
 
 const cell = (value) =>
   String(value)
-    .slice(0, 160)
+    .slice(0, limit('complexity.cellInputCodeUnits'))
     .replace(/[&<>|`\r\n]/g, (char) => `&#${char.charCodeAt(0)};`)
-    .slice(0, 200)
+    .slice(0, limit('complexity.cellOutputCodeUnits'))
     .replace(/&[^;]*$/, '');
 
 export function render(head, base, headSha, baseSha) {
@@ -92,13 +97,13 @@ export function render(head, base, headSha, baseSha) {
       '| Function | File | Now | Base |',
       '| --- | --- | ---: | ---: |',
     );
-    for (const fn of changes.slice(0, 100)) {
+    for (const fn of changes.slice(0, maxListed)) {
       lines.push(
         `| <code>${cell(fn.name)}</code> | <code>${cell(fn.path)}:${fn.line}</code> | ${fn.score} | ${fn.before ?? 'new'} |`,
       );
     }
-    if (changes.length > 100)
-      lines.push('', `Showing the first 100 of ${changes.length} findings.`);
+    if (changes.length > maxListed)
+      lines.push('', `Showing the first ${maxListed} of ${changes.length} findings.`);
     lines.push('', 'Advisory: simplify where practical; these findings do not block merging.');
   } else {
     lines.push(`✅ No functions regressed past ${threshold} versus the base.`);
