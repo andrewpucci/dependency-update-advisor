@@ -254,6 +254,13 @@ gaps and an introduced vulnerability before parity is claimed.
   research failures, one read per request per run, budgets scaled to the
   change, and reader-facing evidence states; amends the W2 envelope, S1's
   cache scope, and S3 and research-orchestration stage failures.
+- [Limit register](SPEC-limit-register.md) — approved for planning,
+  2026-11-17; not approved for execution. One
+  register for every limit (maxima, minima, defaults, timeouts, thresholds),
+  with what it protects, its basis, effect, and boundary test; specs cite
+  register ids instead of values; an enforcement check over code, workflows,
+  and specs; adopter configuration whose settings override defaults, with an
+  adopter guide.
 - [Decision brief rendering](SPEC-decision-brief.md) — approved for execution
   for O1 #23; renderer implementation is pending overall review and merge.
   No desktop or narrow preview yet includes the policy guide link.
