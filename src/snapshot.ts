@@ -198,7 +198,7 @@ function validPath(path: unknown): path is string {
   return (
     typeof path === 'string' &&
     path.length > 0 &&
-    Buffer.byteLength(path, 'utf8') <= 1024 &&
+    Buffer.byteLength(path, 'utf8') <= limit('packet.identityBytes') &&
     !path.includes('\\') &&
     !path.startsWith('/') &&
     path.split('/').every((part) => part && part !== '.' && part !== '..')

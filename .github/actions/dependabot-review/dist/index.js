@@ -8571,824 +8571,8 @@ var require_dist = /* @__PURE__ */ __commonJSMin(((exports) => {
 	exports.visitAsync = visit.visitAsync;
 }));
 
-// src/evidence/actions-yaml.ts
-var import_dist = require_dist();
-var YamlFailure = class extends Error {
-	reason;
-	constructor(reason) {
-		super(reason);
-		this.reason = reason;
-	}
-};
-function need$5(value, reason = "malformed") {
-	if (!value) throw new YamlFailure(reason);
-}
-function safeIdentity(value, units = 256) {
-	return typeof value === "string" && value.length > 0 && value.length <= units && Buffer.byteLength(value) <= 1024 && !/[\p{Cc}\p{Cs}]/u.test(value);
-}
-function debit$1(budget, key, limit) {
-	need$5(budget[key] < limit, "budget");
-	budget[key]++;
-}
-const COLLECTION_TOKENS = /* @__PURE__ */ new Set([
-	"block-map",
-	"block-seq",
-	"flow-collection"
-]);
-const STRUCTURAL_TOKENS = /* @__PURE__ */ new Set([
-	...COLLECTION_TOKENS,
-	"scalar",
-	"single-quoted-scalar",
-	"double-quoted-scalar",
-	"block-scalar",
-	"alias"
-]);
-function preflight$1(value, limits, budget) {
-	const stack = [{
-		value,
-		depth: 0
-	}];
-	while (stack.length) {
-		const { value: item, depth } = stack.pop();
-		if (!item || typeof item !== "object") continue;
-		const r = item;
-		const collection = COLLECTION_TOKENS.has(r.type);
-		const next = depth + Number(collection);
-		need$5(next <= limits.maxYamlDepth, "budget");
-		if (STRUCTURAL_TOKENS.has(r.type)) debit$1(budget, "nodes", limits.maxYamlNodes);
-		if (r.type === "tag") need$5([
-			"!!str",
-			"!!int",
-			"!!float",
-			"!!bool",
-			"!!null",
-			"!!map",
-			"!!seq"
-		].includes(r.source), "unsupported");
-		if (r.type === "directive") need$5(r.source === "%YAML 1.2", "unsupported");
-		const children = Object.values(r).flatMap((child) => Array.isArray(child) ? child.toReversed() : [child]);
-		for (const child of children) stack.push({
-			value: child,
-			depth: next
-		});
-	}
-}
-function children$1(node) {
-	if ((0, import_dist.isSeq)(node)) return node.items.filter((n) => n !== null);
-	if (!(0, import_dist.isMap)(node)) return [];
-	return node.items.flatMap((p) => [p.key, p.value].filter((n) => n !== null));
-}
-function aliases$1(root) {
-	const anchors = /* @__PURE__ */ new Map();
-	const targets = /* @__PURE__ */ new Map();
-	const pending = [root];
-	while (pending.length) {
-		const node = pending.pop();
-		if ((0, import_dist.isAlias)(node)) {
-			const target = anchors.get(node.source);
-			need$5(target);
-			targets.set(node, target);
-		} else {
-			if (node.anchor) anchors.set(node.anchor, node);
-			const list = children$1(node);
-			for (let i = list.length - 1; i >= 0; i--) pending.push(list[i]);
-		}
-	}
-	return targets;
-}
-function queueCollection(node, frame, stack) {
-	const depth = frame.depth + 1;
-	if ((0, import_dist.isSeq)(node)) {
-		const out = [];
-		frame.assign(out);
-		for (let i = node.items.length - 1; i >= 0; i--) {
-			const child = node.items[i];
-			need$5(child === null || (0, import_dist.isNode)(child));
-			stack.push({
-				node: child,
-				depth,
-				assign: (v) => {
-					out[i] = v;
-				}
-			});
-		}
-	} else {
-		need$5((0, import_dist.isMap)(node));
-		const out = /* @__PURE__ */ new Map();
-		frame.assign(out);
-		for (let i = node.items.length - 1; i >= 0; i--) {
-			const pair = node.items[i];
-			need$5((0, import_dist.isScalar)(pair.key) && typeof pair.key.value === "string");
-			const key = pair.key.value;
-			need$5(key !== "<<", "unsupported");
-			need$5(pair.value === null || (0, import_dist.isNode)(pair.value));
-			stack.push({
-				node: pair.value,
-				depth,
-				assign: (v) => {
-					out.set(key, v);
-				}
-			});
-		}
-	}
-}
-function expand$2(root, limits, budget) {
-	const targets = aliases$1(root), active = /* @__PURE__ */ new Set();
-	let result = null;
-	const stack = [{
-		node: root,
-		depth: 0,
-		assign: (v) => {
-			result = v;
-		}
-	}];
-	while (stack.length) {
-		const frame = stack.pop();
-		if ("leave" in frame) {
-			active.delete(frame.leave);
-			continue;
-		}
-		const { node, depth, assign } = frame;
-		if (!node) {
-			assign(null);
-			continue;
-		}
-		debit$1(budget, "nodes", limits.maxYamlNodes);
-		need$5(!active.has(node), "unsupported");
-		if ((0, import_dist.isAlias)(node)) {
-			debit$1(budget, "aliases", limits.maxAliasExpansions);
-			stack.push({
-				node: targets.get(node),
-				depth,
-				assign
-			});
-		} else if ((0, import_dist.isScalar)(node)) {
-			need$5(node.value === null || [
-				"string",
-				"number",
-				"boolean"
-			].includes(typeof node.value));
-			assign(node.value);
-		} else {
-			need$5(depth < limits.maxYamlDepth, "budget");
-			active.add(node);
-			stack.push({ leave: node });
-			queueCollection(node, frame, stack);
-		}
-	}
-	return result;
-}
-function use(value, budget, limits) {
-	debit$1(budget, "occurrences", limits.maxOccurrences);
-	need$5(typeof value === "string");
-	need$5(safeIdentity(value, 2048));
-	need$5(!value.includes("${{") && !value.startsWith("docker:"), "unsupported");
-	if (value.startsWith("./")) {
-		need$5(value.slice(2).split("/").every((s) => s && s !== "." && s !== ".." && !/[\\:]/u.test(s)));
-		return {
-			kind: "local",
-			path: value
-		};
-	}
-	const at = value.indexOf("@");
-	need$5(at > 0 && at < value.length - 1);
-	const action = value.slice(0, at), ref = value.slice(at + 1);
-	need$5(safeIdentity(action) && safeIdentity(ref, 1024));
-	need$5(/^[A-Za-z0-9-]+\/[A-Za-z0-9_.-]+(?:\/[A-Za-z0-9_.-]+)*$/u.test(action));
-	need$5(action.split("/").every((s) => s !== "." && s !== ".."));
-	need$5(!/[\s\\]|[?&](?:token|key|password|secret|auth)=/iu.test(ref));
-	return {
-		kind: "external",
-		action,
-		ref,
-		refKind: /^[a-f\d]{40}$/iu.test(ref) ? "sha" : "unknown"
-	};
-}
-function readUse(raw, jobId, stepIndex, state) {
-	try {
-		return use(raw, state.budget, state.limits);
-	} catch (e) {
-		if (e instanceof YamlFailure && e.reason === "budget") throw e;
-		state.gaps.push({
-			jobId,
-			stepIndex,
-			reason: e instanceof YamlFailure ? e.reason : "malformed"
-		});
-		return { kind: "unsupported" };
-	}
-}
-function readStep(step, jobId, stepIndex, state) {
-	if (!(step instanceof Map)) {
-		state.gaps.push({
-			jobId,
-			stepIndex,
-			reason: "malformed"
-		});
-		return {
-			id: null,
-			use: { kind: "unsupported" }
-		};
-	}
-	const id = step.get("id");
-	if (id !== void 0 && !safeIdentity(id)) state.gaps.push({
-		jobId,
-		stepIndex,
-		reason: "malformed"
-	});
-	return {
-		id: safeIdentity(id) ? id : null,
-		use: step.has("uses") ? readUse(step.get("uses"), jobId, stepIndex, state) : null
-	};
-}
-function readJob(jobId, raw, state) {
-	if (!safeIdentity(jobId) || !(raw instanceof Map)) {
-		state.gaps.push({
-			jobId: safeIdentity(jobId) ? jobId : null,
-			stepIndex: null,
-			reason: "malformed"
-		});
-		return null;
-	}
-	const job = {
-		jobId,
-		steps: null,
-		use: null
-	};
-	if (raw.has("uses")) job.use = readUse(raw.get("uses"), jobId, null, state);
-	if (raw.has("steps")) {
-		const steps = raw.get("steps");
-		if (!Array.isArray(steps) || job.use) state.gaps.push({
-			jobId,
-			stepIndex: null,
-			reason: "malformed"
-		});
-		else job.steps = steps.map((step, i) => readStep(step, jobId, i, state));
-	} else if (!job.use) state.gaps.push({
-		jobId,
-		stepIndex: null,
-		reason: "malformed"
-	});
-	return job;
-}
-function extract$3(value, budget, limits) {
-	need$5(value instanceof Map);
-	const rawJobs = value.get("jobs");
-	need$5(rawJobs instanceof Map);
-	const jobs = [], gaps = [];
-	for (const [jobId, raw] of [...rawJobs].sort(([a], [b]) => a < b ? -1 : a > b ? 1 : 0)) {
-		const job = readJob(jobId, raw, {
-			budget,
-			limits,
-			gaps
-		});
-		if (job) jobs.push(job);
-	}
-	return {
-		kind: "parsed",
-		jobs,
-		gaps
-	};
-}
-/** Parses bounded immutable bytes only; caller owns cumulative budget across revisions/files. */
-function readWorkflow(bytes, limits, budget = {
-	nodes: 0,
-	aliases: 0,
-	occurrences: 0
-}) {
-	try {
-		need$5(bytes.byteLength <= limits.maxFileBytes, "budget");
-		const text = new TextDecoder("utf-8", { fatal: true }).decode(bytes);
-		const tokens = [];
-		let documentTokens = 0;
-		for (const token of new import_dist.Parser().parse(text)) {
-			if (token.type === "document") need$5(++documentTokens === 1);
-			preflight$1(token, limits, budget);
-			tokens.push(token);
-		}
-		const docs = [...new import_dist.Composer({
-			version: "1.2",
-			schema: "core",
-			strict: true,
-			stringKeys: true,
-			uniqueKeys: true,
-			merge: false,
-			resolveKnownTags: false,
-			prettyErrors: false,
-			logLevel: "silent"
-		}).compose(tokens)];
-		need$5(docs.length === 1 && docs[0].errors.length === 0);
-		need$5(docs[0].warnings.length === 0, "unsupported");
-		need$5(docs[0].contents);
-		return extract$3(expand$2(docs[0].contents, limits, budget), budget, limits);
-	} catch (e) {
-		return {
-			kind: "unavailable",
-			reason: e instanceof YamlFailure ? e.reason : "malformed"
-		};
-	}
-}
-
-// src/event.ts
-const CONCLUSIONS = [
-	"success",
-	"failure",
-	"neutral",
-	"cancelled",
-	"skipped",
-	"timed_out",
-	"action_required",
-	"stale",
-	"startup_failure"
-];
-const RUN_STATUSES = [
-	"completed",
-	"queued",
-	"in_progress",
-	"requested",
-	"waiting",
-	"pending"
-];
-/** A read that failed for a fixed reason; `read` keeps that reason, and nothing else, on the error. */
-var ReadFailure = class extends Error {
-	reason;
-	constructor(reason) {
-		super("read unavailable");
-		this.reason = reason;
-	}
-};
-function failure$6(field, category = "input") {
-	return {
-		kind: "error",
-		category,
-		field
-	};
-}
-function record(value, keys = []) {
-	return typeof value === "object" && value !== null && !Array.isArray(value) && keys.every((key) => Object.hasOwn(value, key));
-}
-function positiveId(value) {
-	return typeof value === "number" && Number.isSafeInteger(value) && value > 0;
-}
-function text$4(value) {
-	return typeof value === "string" && value.length > 0 && value.trim() === value && !Array.from(value).some((character) => {
-		const code = character.charCodeAt(0);
-		return code < 32 || code === 127;
-	});
-}
-function segment(value) {
-	return text$4(value) && !/[\s/\\]/u.test(value) && value !== "." && value !== "..";
-}
-function sha$4(value) {
-	return typeof value === "string" && value.length === 40 && /^[a-f\d]{40}$/iu.test(value) ? value.toLowerCase() : null;
-}
-function conclusion(value) {
-	return CONCLUSIONS.some((item) => item === value);
-}
-function repository$2(value) {
-	if (!record(value, ["id", "full_name"]) || !positiveId(value.id) || !text$4(value.full_name)) return null;
-	const parts = value.full_name.split("/");
-	if (parts.length !== 2 || !segment(parts[0]) || !segment(parts[1])) return null;
-	return Object.freeze({
-		id: value.id,
-		owner: parts[0].toLowerCase(),
-		name: parts[1].toLowerCase()
-	});
-}
-function expectedRepository(value) {
-	if (!record(value, [
-		"id",
-		"owner",
-		"name"
-	]) || !positiveId(value.id) || !segment(value.owner) || !segment(value.name)) return null;
-	return Object.freeze({
-		id: value.id,
-		owner: value.owner.toLowerCase(),
-		name: value.name.toLowerCase()
-	});
-}
-function workflow$1(value) {
-	if (!record(value, ["id", "path"]) || !positiveId(value.id) || !text$4(value.path)) return null;
-	return Object.freeze({
-		id: value.id,
-		path: value.path
-	});
-}
-function actor(value) {
-	if (!record(value, [
-		"id",
-		"login",
-		"type"
-	]) || !positiveId(value.id) || !text$4(value.login) || !text$4(value.type)) return null;
-	return {
-		id: value.id,
-		login: value.login,
-		type: value.type
-	};
-}
-function isDependabot(value) {
-	return value.login === "dependabot[bot]" && value.type === "Bot";
-}
-function association(value) {
-	if (!record(value, [
-		"number",
-		"base",
-		"head"
-	]) || !positiveId(value.number) || !record(value.base, ["repo"]) || !record(value.head, ["repo", "sha"])) return null;
-	const base = value.base.repo, head = value.head.repo, headSha = sha$4(value.head.sha);
-	if (!record(base, ["id", "name"]) || !record(head, ["id", "name"]) || !positiveId(base.id) || !segment(base.name) || !positiveId(head.id) || !segment(head.name) || !headSha) return null;
-	return {
-		number: value.number,
-		baseId: base.id,
-		baseName: base.name.toLowerCase(),
-		headId: head.id,
-		headName: head.name.toLowerCase(),
-		headSha
-	};
-}
-function run(value) {
-	if (!record(value, [
-		"id",
-		"workflow_id",
-		"run_attempt",
-		"event",
-		"status",
-		"conclusion",
-		"head_sha",
-		"actor",
-		"repository",
-		"head_repository",
-		"pull_requests"
-	]) || !positiveId(value.id) || !positiveId(value.workflow_id) || !positiveId(value.run_attempt) || !text$4(value.event) || !text$4(value.status) || !RUN_STATUSES.includes(value.status) || value.conclusion !== null && !conclusion(value.conclusion) || !Array.isArray(value.pull_requests)) return null;
-	const runActor = actor(value.actor), repo = repository$2(value.repository);
-	const headRepo = repository$2(value.head_repository), headSha = sha$4(value.head_sha);
-	const associations = Array.from(value.pull_requests, association);
-	if (!runActor || !repo || !headRepo || !headSha || !associations.every((item) => item !== null)) return null;
-	return {
-		id: value.id,
-		workflowId: value.workflow_id,
-		attempt: value.run_attempt,
-		event: value.event,
-		status: value.status,
-		conclusion: value.conclusion,
-		headSha,
-		actor: runActor,
-		repository: repo,
-		headRepository: headRepo,
-		associations
-	};
-}
-function pullRequest(value) {
-	if (!record(value, [
-		"number",
-		"state",
-		"merged",
-		"user",
-		"base",
-		"head"
-	]) || !positiveId(value.number) || value.state !== "open" && value.state !== "closed" || typeof value.merged !== "boolean" || !record(value.base, [
-		"repo",
-		"ref",
-		"sha"
-	]) || !text$4(value.base.ref) || Buffer.byteLength(value.base.ref, "utf8") > 1024 || !record(value.head, ["repo", "sha"])) return null;
-	const prActor = actor(value.user), repo = repository$2(value.base.repo);
-	const headRepo = repository$2(value.head.repo), headSha = sha$4(value.head.sha);
-	const baseSha = sha$4(value.base.sha);
-	if (!prActor || !repo || !headRepo || !headSha || !baseSha) return null;
-	return {
-		number: value.number,
-		closed: value.state === "closed" || value.merged,
-		actor: prActor,
-		repository: repo,
-		headRepository: headRepo,
-		headSha,
-		baseRef: value.base.ref,
-		baseSha
-	};
-}
-function comparisonMergeBase(value, baseSha) {
-	if (!record(value, ["base_commit", "merge_base_commit"]) || !record(value.base_commit, ["sha"]) || !record(value.merge_base_commit, ["sha"]) || sha$4(value.base_commit.sha) !== baseSha) return null;
-	return sha$4(value.merge_base_commit.sha);
-}
-function sameRepository(a, b) {
-	return a.id === b.id && a.owner === b.owner && a.name === b.name;
-}
-function sameActor(a, b) {
-	return a.id === b.id && a.login === b.login && a.type === b.type;
-}
-function associatedWith(a, number, base, head) {
-	return a.number === number && a.baseId === base.id && a.baseName === base.name && a.headId === head.id && a.headName === head.name;
-}
-function identity$2(repoId, workflowId, runId, attempt, number, headSha) {
-	return Object.freeze([
-		repoId,
-		workflowId,
-		runId,
-		attempt,
-		number,
-		headSha
-	]);
-}
-function sameIdentity(value, expected) {
-	return Array.isArray(value) && value.length === expected.length && expected.every((item, index) => item === value[index]);
-}
-async function read$1(field, operation) {
-	try {
-		return {
-			ok: true,
-			value: await operation()
-		};
-	} catch (error) {
-		const category = field === "replay" ? "replay" : "read";
-		const reason = category === "read" ? readReason(error) : void 0;
-		return {
-			ok: false,
-			error: {
-				...failure$6(field, category),
-				...reason ? { reason } : {}
-			}
-		};
-	}
-}
-/** The adapter's fixed reason; a thrown value that cannot be inspected has none. */
-function readReason(error) {
-	try {
-		return error instanceof ReadFailure && EVIDENCE_REASONS.includes(error.reason) ? error.reason : void 0;
-	} catch {
-		return;
-	}
-}
-function verifyEventInput(input) {
-	if (!record(input, ["eventName"]) || !text$4(input.eventName)) return failure$6("event");
-	if (input.eventName !== "workflow_run") return {
-		kind: "skip",
-		reason: "ineligible"
-	};
-	if (!record(input, ["payload", "expected"]) || !record(input.payload, ["action"]) || !text$4(input.payload.action)) return failure$6("event");
-	if (input.payload.action !== "completed") return {
-		kind: "skip",
-		reason: "ineligible"
-	};
-	if (!record(input.expected, ["repository", "workflow"])) return failure$6("expected");
-	const expectedRepo = expectedRepository(input.expected.repository);
-	const expectedWorkflow = workflow$1(input.expected.workflow);
-	if (!expectedRepo || !expectedWorkflow) return failure$6("expected");
-	if (!record(input.payload, ["repository", "workflow_run"])) return failure$6("event");
-	const eventRepo = repository$2(input.payload.repository), eventRun = run(input.payload.workflow_run);
-	if (!eventRepo || !eventRun) return failure$6("event");
-	if (eventRun.event !== "pull_request" || !isDependabot(eventRun.actor)) return {
-		kind: "skip",
-		reason: "ineligible"
-	};
-	if (eventRun.status !== "completed") return failure$6("event", "mismatch");
-	if (eventRun.conclusion === null) return failure$6("event");
-	if (!sameRepository(eventRepo, expectedRepo) || !sameRepository(eventRun.repository, expectedRepo) || eventRun.workflowId !== expectedWorkflow.id) return failure$6("event", "mismatch");
-	if (eventRun.associations.length !== 1) return {
-		kind: "skip",
-		reason: "ineligible"
-	};
-	const eventAssociation = eventRun.associations[0];
-	if (!associatedWith(eventAssociation, eventAssociation.number, expectedRepo, eventRun.headRepository) || eventAssociation.headSha !== eventRun.headSha) return failure$6("event", "mismatch");
-	return {
-		kind: "eligible",
-		expectedRepo,
-		expectedWorkflow,
-		eventRun,
-		eventAssociation
-	};
-}
-function verifyCurrentRun(currentRun, event) {
-	const { expectedRepo, expectedWorkflow, eventRun, eventAssociation } = event;
-	if (currentRun.id !== eventRun.id || currentRun.workflowId !== expectedWorkflow.id || !sameRepository(currentRun.repository, expectedRepo) || !sameRepository(currentRun.headRepository, eventRun.headRepository) || !sameActor(currentRun.actor, eventRun.actor) || currentRun.event !== eventRun.event || currentRun.headSha !== eventRun.headSha) return failure$6("run", "mismatch");
-	if (currentRun.attempt > eventRun.attempt) return {
-		kind: "skip",
-		reason: "obsolete"
-	};
-	if (currentRun.attempt !== eventRun.attempt || currentRun.status !== "completed") return failure$6("run", "mismatch");
-	if (currentRun.conclusion === null) return failure$6("run");
-	if (currentRun.conclusion !== eventRun.conclusion) return failure$6("run", "mismatch");
-	if (currentRun.associations.length !== 1) return {
-		kind: "skip",
-		reason: "ineligible"
-	};
-	const currentAssociation = currentRun.associations[0];
-	if (!associatedWith(currentAssociation, eventAssociation.number, expectedRepo, eventRun.headRepository)) return failure$6("run", "mismatch");
-	return {
-		kind: "current",
-		association: currentAssociation,
-		conclusion: currentRun.conclusion
-	};
-}
-function verifyEventPullRequest(value, event, currentAssociation) {
-	const { expectedRepo, eventRun, eventAssociation } = event;
-	const pr = pullRequest(value);
-	if (!pr) return failure$6("pullRequest");
-	if (pr.number !== eventAssociation.number || !sameRepository(pr.repository, expectedRepo) || !sameRepository(pr.headRepository, eventRun.headRepository)) return failure$6("pullRequest", "mismatch");
-	if (!isDependabot(pr.actor)) return {
-		kind: "skip",
-		reason: "ineligible"
-	};
-	if (!sameActor(pr.actor, eventRun.actor)) return failure$6("pullRequest", "mismatch");
-	if (pr.closed || pr.headSha !== eventRun.headSha) return {
-		kind: "skip",
-		reason: "obsolete"
-	};
-	if (currentAssociation.headSha !== eventRun.headSha) return failure$6("run", "mismatch");
-	return {
-		kind: "current",
-		pr
-	};
-}
-function verifyReplay(replay, reviewIdentity) {
-	if (!record(replay, ["identity", "state"]) || !sameIdentity(replay.identity, reviewIdentity)) return failure$6("replay", "replay");
-	if (replay.state === "claimed" || replay.state === "completed") return {
-		kind: "skip",
-		reason: "duplicate"
-	};
-	if (replay.state !== "unseen") return failure$6("replay", "replay");
-}
-/** Read-only identity verification. A binding is a snapshot; W2 must claim it before any write. */
-async function verifyCiEvent(input, reads) {
-	try {
-		const event = verifyEventInput(input);
-		if (event.kind !== "eligible") return event;
-		const { expectedRepo, expectedWorkflow, eventRun, eventAssociation } = event;
-		const workflowRead = await read$1("workflow", () => reads.readWorkflow(expectedRepo, expectedWorkflow.id));
-		if (!workflowRead.ok) return workflowRead.error;
-		const actualWorkflow = workflow$1(workflowRead.value);
-		if (!actualWorkflow) return failure$6("workflow");
-		if (actualWorkflow.id !== expectedWorkflow.id || actualWorkflow.path !== expectedWorkflow.path) return failure$6("workflow", "mismatch");
-		const runRead = await read$1("run", () => reads.readRun(expectedRepo, eventRun.id));
-		if (!runRead.ok) return runRead.error;
-		const currentRun = run(runRead.value);
-		if (!currentRun) return failure$6("run");
-		const checkedRun = verifyCurrentRun(currentRun, event);
-		if (checkedRun.kind !== "current") return checkedRun;
-		const currentAssociation = checkedRun.association;
-		const prRead = await read$1("pullRequest", () => reads.readPullRequest(expectedRepo, eventAssociation.number));
-		if (!prRead.ok) return prRead.error;
-		const checkedPr = verifyEventPullRequest(prRead.value, event, currentAssociation);
-		if (checkedPr.kind !== "current") return checkedPr;
-		const { pr } = checkedPr;
-		const reviewIdentity = identity$2(expectedRepo.id, expectedWorkflow.id, eventRun.id, eventRun.attempt, pr.number, pr.headSha);
-		const replayRead = await read$1("replay", () => reads.readReplay(reviewIdentity));
-		if (!replayRead.ok) return replayRead.error;
-		const replayError = verifyReplay(replayRead.value, reviewIdentity);
-		if (replayError) return replayError;
-		const comparisonRead = await read$1("comparison", () => reads.readComparison(expectedRepo, pr.baseSha, pr.headSha));
-		if (!comparisonRead.ok) return comparisonRead.error;
-		const mergeBaseSha = comparisonMergeBase(comparisonRead.value, pr.baseSha);
-		if (!mergeBaseSha) return failure$6("comparison");
-		return {
-			kind: "verified",
-			binding: Object.freeze({
-				repository: expectedRepo,
-				workflow: expectedWorkflow,
-				runId: eventRun.id,
-				runAttempt: eventRun.attempt,
-				pullNumber: pr.number,
-				headRepository: eventRun.headRepository,
-				headSha: pr.headSha,
-				baseRef: pr.baseRef,
-				baseSha: pr.baseSha,
-				mergeBaseSha,
-				actorId: pr.actor.id,
-				conclusion: checkedRun.conclusion,
-				identity: reviewIdentity
-			})
-		};
-	} catch {
-		return failure$6("event");
-	}
-}
-function binding$1(value) {
-	if (!record(value, [
-		"repository",
-		"workflow",
-		"runId",
-		"runAttempt",
-		"pullNumber",
-		"headRepository",
-		"headSha",
-		"baseRef",
-		"baseSha",
-		"mergeBaseSha",
-		"actorId",
-		"conclusion",
-		"identity"
-	]) || !positiveId(value.runId) || !positiveId(value.runAttempt) || !positiveId(value.pullNumber) || !positiveId(value.actorId) || !conclusion(value.conclusion)) return null;
-	const repo = expectedRepository(value.repository), expectedWorkflow = workflow$1(value.workflow);
-	const headRepo = expectedRepository(value.headRepository), headSha = sha$4(value.headSha);
-	const baseSha = sha$4(value.baseSha), mergeBaseSha = sha$4(value.mergeBaseSha);
-	if (!repo || !expectedWorkflow || !headRepo || !headSha || !baseSha || !mergeBaseSha || !text$4(value.baseRef) || Buffer.byteLength(value.baseRef, "utf8") > 1024) return null;
-	const reviewIdentity = identity$2(repo.id, expectedWorkflow.id, value.runId, value.runAttempt, value.pullNumber, headSha);
-	if (!sameIdentity(value.identity, reviewIdentity)) return null;
-	return Object.freeze({
-		repository: repo,
-		workflow: expectedWorkflow,
-		runId: value.runId,
-		runAttempt: value.runAttempt,
-		pullNumber: value.pullNumber,
-		headRepository: headRepo,
-		headSha,
-		baseRef: value.baseRef,
-		baseSha,
-		mergeBaseSha,
-		actorId: value.actorId,
-		conclusion: value.conclusion,
-		identity: reviewIdentity
-	});
-}
-/** Validate and copy a binding snapshot; this grants no freshness or ownership authority. */
-function parseReviewBinding(value) {
-	try {
-		return binding$1(structuredClone(value));
-	} catch {
-		return null;
-	}
-}
-function verifyBoundRun(current, original) {
-	if (current.id !== original.runId || current.workflowId !== original.workflow.id || !sameRepository(current.repository, original.repository) || !sameRepository(current.headRepository, original.headRepository) || current.headSha !== original.headSha || current.event !== "pull_request" || !isDependabot(current.actor) || current.actor.id !== original.actorId) return failure$6("run", "mismatch");
-	if (current.attempt > original.runAttempt) return { kind: "obsolete" };
-	if (current.attempt !== original.runAttempt || current.status !== "completed") return failure$6("run", "mismatch");
-	if (current.conclusion === null) return failure$6("run");
-	if (current.conclusion !== original.conclusion) return failure$6("run", "mismatch");
-	if (current.associations.length > 1) return failure$6("run", "mismatch");
-	const currentAssociation = current.associations[0];
-	if (currentAssociation && !associatedWith(currentAssociation, original.pullNumber, original.repository, original.headRepository)) return failure$6("run", "mismatch");
-	return {
-		kind: "current",
-		association: currentAssociation
-	};
-}
-function pullRequestMatchesBinding(pr, original) {
-	return pr.number === original.pullNumber && sameRepository(pr.repository, original.repository) && sameRepository(pr.headRepository, original.headRepository) && isDependabot(pr.actor) && pr.actor.id === original.actorId;
-}
-function completeComparison(value, baseSha, originalMergeBaseSha) {
-	try {
-		const mergeBaseSha = comparisonMergeBase(value, baseSha);
-		if (!mergeBaseSha) return failure$6("comparison");
-		return { kind: mergeBaseSha === originalMergeBaseSha ? "current" : "obsolete" };
-	} catch {
-		return failure$6("comparison");
-	}
-}
-function classifyBoundPullRequest(original, value) {
-	try {
-		const pr = pullRequest(value);
-		if (!pr) return failure$6("pullRequest");
-		if (!pullRequestMatchesBinding(pr, original)) return failure$6("pullRequest", "mismatch");
-		if (pr.closed || pr.headSha !== original.headSha || pr.baseRef !== original.baseRef) return { kind: "obsolete" };
-		if (pr.baseSha === original.baseSha) return { kind: "current" };
-		const baseSha = pr.baseSha, mergeBaseSha = original.mergeBaseSha;
-		return Object.freeze({
-			kind: "compare",
-			baseSha,
-			complete: (comparison) => completeComparison(comparison, baseSha, mergeBaseSha)
-		});
-	} catch {
-		return failure$6("pullRequest");
-	}
-}
-/** Validate once; each PR read is independent, and comparison completion owns its snapshot. */
-function createPullRequestClassifier(value) {
-	const original = parseReviewBinding(value);
-	if (!original) return null;
-	return Object.freeze({
-		binding: original,
-		classify: (response) => classifyBoundPullRequest(original, response)
-	});
-}
-/** Recheck an owned attempt after claiming. W2 must separately verify exclusive ownership. */
-async function reverifyReviewBinding(value, reads) {
-	try {
-		const classifier = createPullRequestClassifier(value);
-		if (!classifier) return failure$6("binding");
-		const original = classifier.binding;
-		const runRead = await read$1("run", () => reads.readRun(original.repository, original.runId));
-		if (!runRead.ok) return runRead.error;
-		const current = run(runRead.value);
-		if (!current) return failure$6("run");
-		const checkedRun = verifyBoundRun(current, original);
-		if (checkedRun.kind !== "current") return checkedRun;
-		const currentAssociation = checkedRun.association;
-		const prRead = await read$1("pullRequest", () => reads.readPullRequest(original.repository, original.pullNumber));
-		if (!prRead.ok) return prRead.error;
-		const state = classifier.classify(prRead.value);
-		if (state.kind === "obsolete" || state.kind === "error") return state;
-		if (!currentAssociation || currentAssociation.headSha !== original.headSha) return failure$6("run", "mismatch");
-		if (state.kind === "compare") {
-			const comparison = await read$1("comparison", () => reads.readComparison(original.repository, state.baseSha, original.headSha));
-			if (!comparison.ok) return comparison.error;
-			const checked = state.complete(comparison.value);
-			if (checked.kind === "obsolete" || checked.kind === "error") return checked;
-		}
-		return { kind: "fresh" };
-	} catch {
-		return failure$6("binding");
-	}
-}
-
 // src/limits.ts
+var import_dist = require_dist();
 /** Marks a field the migration has not filled yet; none may remain after phase 2. */
 const PENDING_AUDIT = "pending: L7 audit";
 const BASIS_KINDS = [
@@ -9899,7 +9083,30 @@ const DEFINITIONS = [
 	unjustified("complexity.gitMaxBufferBytes", 32 * MiB, "bytes"),
 	unjustified("complexity.cellInputCodeUnits", 160, "code units"),
 	unjustified("complexity.cellOutputCodeUnits", 200, "code units"),
-	unjustified("complexity.maxListedFindings", 100, "count")
+	unjustified("complexity.maxListedFindings", 100, "count"),
+	unjustified("signals.reasonCodeUnits", 350, "code units"),
+	unjustified("signals.npmMaxMaintainers", 32, "count"),
+	unjustified("pipeline.ownershipWatchMs", 2e3, "milliseconds"),
+	unjustified("research.maxTagCandidates", 100, "count"),
+	unjustified("research.maxTagDepth", 10, "count"),
+	unjustified("research.maxWork", 5e6, "count"),
+	unjustified("research.maxAttempts", 512, "count"),
+	derived("research.maxFindings", "count", ["packet.findings"], copy, "The research finding cap mirrors the packet's finding cap, since research findings land in the packet."),
+	derived("analysis.projectionBytes", "bytes", ["packet.bytes"], (bytes) => 8 * bytes, "The analysis projection's input budget is eight times the packet's byte cap."),
+	unjustified("analysis.maxProjectionDepth", 64, "count"),
+	unjustified("analysis.categoryCodeUnits", 128, "code units"),
+	unjustified("actions.maxUsesCodeUnits", 2048, "code units"),
+	unjustified("actions.maxComparisonVersionCodeUnits", 1024, "code units"),
+	derived("advisories.maxLookups", "count", ["packet.changes"], (changes) => 2 * changes, "The advisory lookup cap is one identity per side of each packet change."),
+	unjustified("npm.maxIntegrityCodeUnits", 1024, "code units"),
+	unjustified("github.compareMaxFiles", 300, "count"),
+	unjustified("github.pageSize", 100, "count"),
+	unjustified("github.treeMaxFiles", 3e3, "count"),
+	unjustified("upstream.releasePageSize", 64, "count"),
+	unjustified("uv.maxCorroborationCodeUnits", 4096, "code units"),
+	unjustified("uv.corroborationWorkPerEntry", 64, "count"),
+	unjustified("handoff.maxTraces", 32, "count"),
+	unjustified("startup.maxReportedDurationMs", 999999, "milliseconds")
 ];
 const REGISTER = buildRegister(DEFINITIONS);
 function limitEntry(id) {
@@ -9909,6 +9116,822 @@ function limitEntry(id) {
 }
 function limit(id) {
 	return limitEntry(id).value;
+}
+
+// src/evidence/actions-yaml.ts
+var YamlFailure = class extends Error {
+	reason;
+	constructor(reason) {
+		super(reason);
+		this.reason = reason;
+	}
+};
+function need$5(value, reason = "malformed") {
+	if (!value) throw new YamlFailure(reason);
+}
+function safeIdentity(value, units = limit("packet.idCodeUnits")) {
+	return typeof value === "string" && value.length > 0 && value.length <= units && Buffer.byteLength(value) <= limit("packet.identityBytes") && !/[\p{Cc}\p{Cs}]/u.test(value);
+}
+function debit$1(budget, key, limit) {
+	need$5(budget[key] < limit, "budget");
+	budget[key]++;
+}
+const COLLECTION_TOKENS = /* @__PURE__ */ new Set([
+	"block-map",
+	"block-seq",
+	"flow-collection"
+]);
+const STRUCTURAL_TOKENS = /* @__PURE__ */ new Set([
+	...COLLECTION_TOKENS,
+	"scalar",
+	"single-quoted-scalar",
+	"double-quoted-scalar",
+	"block-scalar",
+	"alias"
+]);
+function preflight$1(value, limits, budget) {
+	const stack = [{
+		value,
+		depth: 0
+	}];
+	while (stack.length) {
+		const { value: item, depth } = stack.pop();
+		if (!item || typeof item !== "object") continue;
+		const r = item;
+		const collection = COLLECTION_TOKENS.has(r.type);
+		const next = depth + Number(collection);
+		need$5(next <= limits.maxYamlDepth, "budget");
+		if (STRUCTURAL_TOKENS.has(r.type)) debit$1(budget, "nodes", limits.maxYamlNodes);
+		if (r.type === "tag") need$5([
+			"!!str",
+			"!!int",
+			"!!float",
+			"!!bool",
+			"!!null",
+			"!!map",
+			"!!seq"
+		].includes(r.source), "unsupported");
+		if (r.type === "directive") need$5(r.source === "%YAML 1.2", "unsupported");
+		const children = Object.values(r).flatMap((child) => Array.isArray(child) ? child.toReversed() : [child]);
+		for (const child of children) stack.push({
+			value: child,
+			depth: next
+		});
+	}
+}
+function children$1(node) {
+	if ((0, import_dist.isSeq)(node)) return node.items.filter((n) => n !== null);
+	if (!(0, import_dist.isMap)(node)) return [];
+	return node.items.flatMap((p) => [p.key, p.value].filter((n) => n !== null));
+}
+function aliases$1(root) {
+	const anchors = /* @__PURE__ */ new Map();
+	const targets = /* @__PURE__ */ new Map();
+	const pending = [root];
+	while (pending.length) {
+		const node = pending.pop();
+		if ((0, import_dist.isAlias)(node)) {
+			const target = anchors.get(node.source);
+			need$5(target);
+			targets.set(node, target);
+		} else {
+			if (node.anchor) anchors.set(node.anchor, node);
+			const list = children$1(node);
+			for (let i = list.length - 1; i >= 0; i--) pending.push(list[i]);
+		}
+	}
+	return targets;
+}
+function queueCollection(node, frame, stack) {
+	const depth = frame.depth + 1;
+	if ((0, import_dist.isSeq)(node)) {
+		const out = [];
+		frame.assign(out);
+		for (let i = node.items.length - 1; i >= 0; i--) {
+			const child = node.items[i];
+			need$5(child === null || (0, import_dist.isNode)(child));
+			stack.push({
+				node: child,
+				depth,
+				assign: (v) => {
+					out[i] = v;
+				}
+			});
+		}
+	} else {
+		need$5((0, import_dist.isMap)(node));
+		const out = /* @__PURE__ */ new Map();
+		frame.assign(out);
+		for (let i = node.items.length - 1; i >= 0; i--) {
+			const pair = node.items[i];
+			need$5((0, import_dist.isScalar)(pair.key) && typeof pair.key.value === "string");
+			const key = pair.key.value;
+			need$5(key !== "<<", "unsupported");
+			need$5(pair.value === null || (0, import_dist.isNode)(pair.value));
+			stack.push({
+				node: pair.value,
+				depth,
+				assign: (v) => {
+					out.set(key, v);
+				}
+			});
+		}
+	}
+}
+function expand$2(root, limits, budget) {
+	const targets = aliases$1(root), active = /* @__PURE__ */ new Set();
+	let result = null;
+	const stack = [{
+		node: root,
+		depth: 0,
+		assign: (v) => {
+			result = v;
+		}
+	}];
+	while (stack.length) {
+		const frame = stack.pop();
+		if ("leave" in frame) {
+			active.delete(frame.leave);
+			continue;
+		}
+		const { node, depth, assign } = frame;
+		if (!node) {
+			assign(null);
+			continue;
+		}
+		debit$1(budget, "nodes", limits.maxYamlNodes);
+		need$5(!active.has(node), "unsupported");
+		if ((0, import_dist.isAlias)(node)) {
+			debit$1(budget, "aliases", limits.maxAliasExpansions);
+			stack.push({
+				node: targets.get(node),
+				depth,
+				assign
+			});
+		} else if ((0, import_dist.isScalar)(node)) {
+			need$5(node.value === null || [
+				"string",
+				"number",
+				"boolean"
+			].includes(typeof node.value));
+			assign(node.value);
+		} else {
+			need$5(depth < limits.maxYamlDepth, "budget");
+			active.add(node);
+			stack.push({ leave: node });
+			queueCollection(node, frame, stack);
+		}
+	}
+	return result;
+}
+function use(value, budget, limits) {
+	debit$1(budget, "occurrences", limits.maxOccurrences);
+	need$5(typeof value === "string");
+	need$5(safeIdentity(value, limit("actions.maxUsesCodeUnits")));
+	need$5(!value.includes("${{") && !value.startsWith("docker:"), "unsupported");
+	if (value.startsWith("./")) {
+		need$5(value.slice(2).split("/").every((s) => s && s !== "." && s !== ".." && !/[\\:]/u.test(s)));
+		return {
+			kind: "local",
+			path: value
+		};
+	}
+	const at = value.indexOf("@");
+	need$5(at > 0 && at < value.length - 1);
+	const action = value.slice(0, at), ref = value.slice(at + 1);
+	need$5(safeIdentity(action) && safeIdentity(ref, limit("packet.identityBytes")));
+	need$5(/^[A-Za-z0-9-]+\/[A-Za-z0-9_.-]+(?:\/[A-Za-z0-9_.-]+)*$/u.test(action));
+	need$5(action.split("/").every((s) => s !== "." && s !== ".."));
+	need$5(!/[\s\\]|[?&](?:token|key|password|secret|auth)=/iu.test(ref));
+	return {
+		kind: "external",
+		action,
+		ref,
+		refKind: /^[a-f\d]{40}$/iu.test(ref) ? "sha" : "unknown"
+	};
+}
+function readUse(raw, jobId, stepIndex, state) {
+	try {
+		return use(raw, state.budget, state.limits);
+	} catch (e) {
+		if (e instanceof YamlFailure && e.reason === "budget") throw e;
+		state.gaps.push({
+			jobId,
+			stepIndex,
+			reason: e instanceof YamlFailure ? e.reason : "malformed"
+		});
+		return { kind: "unsupported" };
+	}
+}
+function readStep(step, jobId, stepIndex, state) {
+	if (!(step instanceof Map)) {
+		state.gaps.push({
+			jobId,
+			stepIndex,
+			reason: "malformed"
+		});
+		return {
+			id: null,
+			use: { kind: "unsupported" }
+		};
+	}
+	const id = step.get("id");
+	if (id !== void 0 && !safeIdentity(id)) state.gaps.push({
+		jobId,
+		stepIndex,
+		reason: "malformed"
+	});
+	return {
+		id: safeIdentity(id) ? id : null,
+		use: step.has("uses") ? readUse(step.get("uses"), jobId, stepIndex, state) : null
+	};
+}
+function readJob(jobId, raw, state) {
+	if (!safeIdentity(jobId) || !(raw instanceof Map)) {
+		state.gaps.push({
+			jobId: safeIdentity(jobId) ? jobId : null,
+			stepIndex: null,
+			reason: "malformed"
+		});
+		return null;
+	}
+	const job = {
+		jobId,
+		steps: null,
+		use: null
+	};
+	if (raw.has("uses")) job.use = readUse(raw.get("uses"), jobId, null, state);
+	if (raw.has("steps")) {
+		const steps = raw.get("steps");
+		if (!Array.isArray(steps) || job.use) state.gaps.push({
+			jobId,
+			stepIndex: null,
+			reason: "malformed"
+		});
+		else job.steps = steps.map((step, i) => readStep(step, jobId, i, state));
+	} else if (!job.use) state.gaps.push({
+		jobId,
+		stepIndex: null,
+		reason: "malformed"
+	});
+	return job;
+}
+function extract$3(value, budget, limits) {
+	need$5(value instanceof Map);
+	const rawJobs = value.get("jobs");
+	need$5(rawJobs instanceof Map);
+	const jobs = [], gaps = [];
+	for (const [jobId, raw] of [...rawJobs].sort(([a], [b]) => a < b ? -1 : a > b ? 1 : 0)) {
+		const job = readJob(jobId, raw, {
+			budget,
+			limits,
+			gaps
+		});
+		if (job) jobs.push(job);
+	}
+	return {
+		kind: "parsed",
+		jobs,
+		gaps
+	};
+}
+/** Parses bounded immutable bytes only; caller owns cumulative budget across revisions/files. */
+function readWorkflow(bytes, limits, budget = {
+	nodes: 0,
+	aliases: 0,
+	occurrences: 0
+}) {
+	try {
+		need$5(bytes.byteLength <= limits.maxFileBytes, "budget");
+		const text = new TextDecoder("utf-8", { fatal: true }).decode(bytes);
+		const tokens = [];
+		let documentTokens = 0;
+		for (const token of new import_dist.Parser().parse(text)) {
+			if (token.type === "document") need$5(++documentTokens === 1);
+			preflight$1(token, limits, budget);
+			tokens.push(token);
+		}
+		const docs = [...new import_dist.Composer({
+			version: "1.2",
+			schema: "core",
+			strict: true,
+			stringKeys: true,
+			uniqueKeys: true,
+			merge: false,
+			resolveKnownTags: false,
+			prettyErrors: false,
+			logLevel: "silent"
+		}).compose(tokens)];
+		need$5(docs.length === 1 && docs[0].errors.length === 0);
+		need$5(docs[0].warnings.length === 0, "unsupported");
+		need$5(docs[0].contents);
+		return extract$3(expand$2(docs[0].contents, limits, budget), budget, limits);
+	} catch (e) {
+		return {
+			kind: "unavailable",
+			reason: e instanceof YamlFailure ? e.reason : "malformed"
+		};
+	}
+}
+
+// src/event.ts
+const CONCLUSIONS = [
+	"success",
+	"failure",
+	"neutral",
+	"cancelled",
+	"skipped",
+	"timed_out",
+	"action_required",
+	"stale",
+	"startup_failure"
+];
+const RUN_STATUSES = [
+	"completed",
+	"queued",
+	"in_progress",
+	"requested",
+	"waiting",
+	"pending"
+];
+/** A read that failed for a fixed reason; `read` keeps that reason, and nothing else, on the error. */
+var ReadFailure = class extends Error {
+	reason;
+	constructor(reason) {
+		super("read unavailable");
+		this.reason = reason;
+	}
+};
+function failure$6(field, category = "input") {
+	return {
+		kind: "error",
+		category,
+		field
+	};
+}
+function record(value, keys = []) {
+	return typeof value === "object" && value !== null && !Array.isArray(value) && keys.every((key) => Object.hasOwn(value, key));
+}
+function positiveId(value) {
+	return typeof value === "number" && Number.isSafeInteger(value) && value > 0;
+}
+function text$4(value) {
+	return typeof value === "string" && value.length > 0 && value.trim() === value && !Array.from(value).some((character) => {
+		const code = character.charCodeAt(0);
+		return code < 32 || code === 127;
+	});
+}
+function segment(value) {
+	return text$4(value) && !/[\s/\\]/u.test(value) && value !== "." && value !== "..";
+}
+function sha$4(value) {
+	return typeof value === "string" && value.length === 40 && /^[a-f\d]{40}$/iu.test(value) ? value.toLowerCase() : null;
+}
+function conclusion(value) {
+	return CONCLUSIONS.some((item) => item === value);
+}
+function repository$2(value) {
+	if (!record(value, ["id", "full_name"]) || !positiveId(value.id) || !text$4(value.full_name)) return null;
+	const parts = value.full_name.split("/");
+	if (parts.length !== 2 || !segment(parts[0]) || !segment(parts[1])) return null;
+	return Object.freeze({
+		id: value.id,
+		owner: parts[0].toLowerCase(),
+		name: parts[1].toLowerCase()
+	});
+}
+function expectedRepository(value) {
+	if (!record(value, [
+		"id",
+		"owner",
+		"name"
+	]) || !positiveId(value.id) || !segment(value.owner) || !segment(value.name)) return null;
+	return Object.freeze({
+		id: value.id,
+		owner: value.owner.toLowerCase(),
+		name: value.name.toLowerCase()
+	});
+}
+function workflow$1(value) {
+	if (!record(value, ["id", "path"]) || !positiveId(value.id) || !text$4(value.path)) return null;
+	return Object.freeze({
+		id: value.id,
+		path: value.path
+	});
+}
+function actor(value) {
+	if (!record(value, [
+		"id",
+		"login",
+		"type"
+	]) || !positiveId(value.id) || !text$4(value.login) || !text$4(value.type)) return null;
+	return {
+		id: value.id,
+		login: value.login,
+		type: value.type
+	};
+}
+function isDependabot(value) {
+	return value.login === "dependabot[bot]" && value.type === "Bot";
+}
+function association(value) {
+	if (!record(value, [
+		"number",
+		"base",
+		"head"
+	]) || !positiveId(value.number) || !record(value.base, ["repo"]) || !record(value.head, ["repo", "sha"])) return null;
+	const base = value.base.repo, head = value.head.repo, headSha = sha$4(value.head.sha);
+	if (!record(base, ["id", "name"]) || !record(head, ["id", "name"]) || !positiveId(base.id) || !segment(base.name) || !positiveId(head.id) || !segment(head.name) || !headSha) return null;
+	return {
+		number: value.number,
+		baseId: base.id,
+		baseName: base.name.toLowerCase(),
+		headId: head.id,
+		headName: head.name.toLowerCase(),
+		headSha
+	};
+}
+function run(value) {
+	if (!record(value, [
+		"id",
+		"workflow_id",
+		"run_attempt",
+		"event",
+		"status",
+		"conclusion",
+		"head_sha",
+		"actor",
+		"repository",
+		"head_repository",
+		"pull_requests"
+	]) || !positiveId(value.id) || !positiveId(value.workflow_id) || !positiveId(value.run_attempt) || !text$4(value.event) || !text$4(value.status) || !RUN_STATUSES.includes(value.status) || value.conclusion !== null && !conclusion(value.conclusion) || !Array.isArray(value.pull_requests)) return null;
+	const runActor = actor(value.actor), repo = repository$2(value.repository);
+	const headRepo = repository$2(value.head_repository), headSha = sha$4(value.head_sha);
+	const associations = Array.from(value.pull_requests, association);
+	if (!runActor || !repo || !headRepo || !headSha || !associations.every((item) => item !== null)) return null;
+	return {
+		id: value.id,
+		workflowId: value.workflow_id,
+		attempt: value.run_attempt,
+		event: value.event,
+		status: value.status,
+		conclusion: value.conclusion,
+		headSha,
+		actor: runActor,
+		repository: repo,
+		headRepository: headRepo,
+		associations
+	};
+}
+function pullRequest(value) {
+	if (!record(value, [
+		"number",
+		"state",
+		"merged",
+		"user",
+		"base",
+		"head"
+	]) || !positiveId(value.number) || value.state !== "open" && value.state !== "closed" || typeof value.merged !== "boolean" || !record(value.base, [
+		"repo",
+		"ref",
+		"sha"
+	]) || !text$4(value.base.ref) || Buffer.byteLength(value.base.ref, "utf8") > limit("packet.identityBytes") || !record(value.head, ["repo", "sha"])) return null;
+	const prActor = actor(value.user), repo = repository$2(value.base.repo);
+	const headRepo = repository$2(value.head.repo), headSha = sha$4(value.head.sha);
+	const baseSha = sha$4(value.base.sha);
+	if (!prActor || !repo || !headRepo || !headSha || !baseSha) return null;
+	return {
+		number: value.number,
+		closed: value.state === "closed" || value.merged,
+		actor: prActor,
+		repository: repo,
+		headRepository: headRepo,
+		headSha,
+		baseRef: value.base.ref,
+		baseSha
+	};
+}
+function comparisonMergeBase(value, baseSha) {
+	if (!record(value, ["base_commit", "merge_base_commit"]) || !record(value.base_commit, ["sha"]) || !record(value.merge_base_commit, ["sha"]) || sha$4(value.base_commit.sha) !== baseSha) return null;
+	return sha$4(value.merge_base_commit.sha);
+}
+function sameRepository(a, b) {
+	return a.id === b.id && a.owner === b.owner && a.name === b.name;
+}
+function sameActor(a, b) {
+	return a.id === b.id && a.login === b.login && a.type === b.type;
+}
+function associatedWith(a, number, base, head) {
+	return a.number === number && a.baseId === base.id && a.baseName === base.name && a.headId === head.id && a.headName === head.name;
+}
+function identity$2(repoId, workflowId, runId, attempt, number, headSha) {
+	return Object.freeze([
+		repoId,
+		workflowId,
+		runId,
+		attempt,
+		number,
+		headSha
+	]);
+}
+function sameIdentity(value, expected) {
+	return Array.isArray(value) && value.length === expected.length && expected.every((item, index) => item === value[index]);
+}
+async function read$1(field, operation) {
+	try {
+		return {
+			ok: true,
+			value: await operation()
+		};
+	} catch (error) {
+		const category = field === "replay" ? "replay" : "read";
+		const reason = category === "read" ? readReason(error) : void 0;
+		return {
+			ok: false,
+			error: {
+				...failure$6(field, category),
+				...reason ? { reason } : {}
+			}
+		};
+	}
+}
+/** The adapter's fixed reason; a thrown value that cannot be inspected has none. */
+function readReason(error) {
+	try {
+		return error instanceof ReadFailure && EVIDENCE_REASONS.includes(error.reason) ? error.reason : void 0;
+	} catch {
+		return;
+	}
+}
+function verifyEventInput(input) {
+	if (!record(input, ["eventName"]) || !text$4(input.eventName)) return failure$6("event");
+	if (input.eventName !== "workflow_run") return {
+		kind: "skip",
+		reason: "ineligible"
+	};
+	if (!record(input, ["payload", "expected"]) || !record(input.payload, ["action"]) || !text$4(input.payload.action)) return failure$6("event");
+	if (input.payload.action !== "completed") return {
+		kind: "skip",
+		reason: "ineligible"
+	};
+	if (!record(input.expected, ["repository", "workflow"])) return failure$6("expected");
+	const expectedRepo = expectedRepository(input.expected.repository);
+	const expectedWorkflow = workflow$1(input.expected.workflow);
+	if (!expectedRepo || !expectedWorkflow) return failure$6("expected");
+	if (!record(input.payload, ["repository", "workflow_run"])) return failure$6("event");
+	const eventRepo = repository$2(input.payload.repository), eventRun = run(input.payload.workflow_run);
+	if (!eventRepo || !eventRun) return failure$6("event");
+	if (eventRun.event !== "pull_request" || !isDependabot(eventRun.actor)) return {
+		kind: "skip",
+		reason: "ineligible"
+	};
+	if (eventRun.status !== "completed") return failure$6("event", "mismatch");
+	if (eventRun.conclusion === null) return failure$6("event");
+	if (!sameRepository(eventRepo, expectedRepo) || !sameRepository(eventRun.repository, expectedRepo) || eventRun.workflowId !== expectedWorkflow.id) return failure$6("event", "mismatch");
+	if (eventRun.associations.length !== 1) return {
+		kind: "skip",
+		reason: "ineligible"
+	};
+	const eventAssociation = eventRun.associations[0];
+	if (!associatedWith(eventAssociation, eventAssociation.number, expectedRepo, eventRun.headRepository) || eventAssociation.headSha !== eventRun.headSha) return failure$6("event", "mismatch");
+	return {
+		kind: "eligible",
+		expectedRepo,
+		expectedWorkflow,
+		eventRun,
+		eventAssociation
+	};
+}
+function verifyCurrentRun(currentRun, event) {
+	const { expectedRepo, expectedWorkflow, eventRun, eventAssociation } = event;
+	if (currentRun.id !== eventRun.id || currentRun.workflowId !== expectedWorkflow.id || !sameRepository(currentRun.repository, expectedRepo) || !sameRepository(currentRun.headRepository, eventRun.headRepository) || !sameActor(currentRun.actor, eventRun.actor) || currentRun.event !== eventRun.event || currentRun.headSha !== eventRun.headSha) return failure$6("run", "mismatch");
+	if (currentRun.attempt > eventRun.attempt) return {
+		kind: "skip",
+		reason: "obsolete"
+	};
+	if (currentRun.attempt !== eventRun.attempt || currentRun.status !== "completed") return failure$6("run", "mismatch");
+	if (currentRun.conclusion === null) return failure$6("run");
+	if (currentRun.conclusion !== eventRun.conclusion) return failure$6("run", "mismatch");
+	if (currentRun.associations.length !== 1) return {
+		kind: "skip",
+		reason: "ineligible"
+	};
+	const currentAssociation = currentRun.associations[0];
+	if (!associatedWith(currentAssociation, eventAssociation.number, expectedRepo, eventRun.headRepository)) return failure$6("run", "mismatch");
+	return {
+		kind: "current",
+		association: currentAssociation,
+		conclusion: currentRun.conclusion
+	};
+}
+function verifyEventPullRequest(value, event, currentAssociation) {
+	const { expectedRepo, eventRun, eventAssociation } = event;
+	const pr = pullRequest(value);
+	if (!pr) return failure$6("pullRequest");
+	if (pr.number !== eventAssociation.number || !sameRepository(pr.repository, expectedRepo) || !sameRepository(pr.headRepository, eventRun.headRepository)) return failure$6("pullRequest", "mismatch");
+	if (!isDependabot(pr.actor)) return {
+		kind: "skip",
+		reason: "ineligible"
+	};
+	if (!sameActor(pr.actor, eventRun.actor)) return failure$6("pullRequest", "mismatch");
+	if (pr.closed || pr.headSha !== eventRun.headSha) return {
+		kind: "skip",
+		reason: "obsolete"
+	};
+	if (currentAssociation.headSha !== eventRun.headSha) return failure$6("run", "mismatch");
+	return {
+		kind: "current",
+		pr
+	};
+}
+function verifyReplay(replay, reviewIdentity) {
+	if (!record(replay, ["identity", "state"]) || !sameIdentity(replay.identity, reviewIdentity)) return failure$6("replay", "replay");
+	if (replay.state === "claimed" || replay.state === "completed") return {
+		kind: "skip",
+		reason: "duplicate"
+	};
+	if (replay.state !== "unseen") return failure$6("replay", "replay");
+}
+/** Read-only identity verification. A binding is a snapshot; W2 must claim it before any write. */
+async function verifyCiEvent(input, reads) {
+	try {
+		const event = verifyEventInput(input);
+		if (event.kind !== "eligible") return event;
+		const { expectedRepo, expectedWorkflow, eventRun, eventAssociation } = event;
+		const workflowRead = await read$1("workflow", () => reads.readWorkflow(expectedRepo, expectedWorkflow.id));
+		if (!workflowRead.ok) return workflowRead.error;
+		const actualWorkflow = workflow$1(workflowRead.value);
+		if (!actualWorkflow) return failure$6("workflow");
+		if (actualWorkflow.id !== expectedWorkflow.id || actualWorkflow.path !== expectedWorkflow.path) return failure$6("workflow", "mismatch");
+		const runRead = await read$1("run", () => reads.readRun(expectedRepo, eventRun.id));
+		if (!runRead.ok) return runRead.error;
+		const currentRun = run(runRead.value);
+		if (!currentRun) return failure$6("run");
+		const checkedRun = verifyCurrentRun(currentRun, event);
+		if (checkedRun.kind !== "current") return checkedRun;
+		const currentAssociation = checkedRun.association;
+		const prRead = await read$1("pullRequest", () => reads.readPullRequest(expectedRepo, eventAssociation.number));
+		if (!prRead.ok) return prRead.error;
+		const checkedPr = verifyEventPullRequest(prRead.value, event, currentAssociation);
+		if (checkedPr.kind !== "current") return checkedPr;
+		const { pr } = checkedPr;
+		const reviewIdentity = identity$2(expectedRepo.id, expectedWorkflow.id, eventRun.id, eventRun.attempt, pr.number, pr.headSha);
+		const replayRead = await read$1("replay", () => reads.readReplay(reviewIdentity));
+		if (!replayRead.ok) return replayRead.error;
+		const replayError = verifyReplay(replayRead.value, reviewIdentity);
+		if (replayError) return replayError;
+		const comparisonRead = await read$1("comparison", () => reads.readComparison(expectedRepo, pr.baseSha, pr.headSha));
+		if (!comparisonRead.ok) return comparisonRead.error;
+		const mergeBaseSha = comparisonMergeBase(comparisonRead.value, pr.baseSha);
+		if (!mergeBaseSha) return failure$6("comparison");
+		return {
+			kind: "verified",
+			binding: Object.freeze({
+				repository: expectedRepo,
+				workflow: expectedWorkflow,
+				runId: eventRun.id,
+				runAttempt: eventRun.attempt,
+				pullNumber: pr.number,
+				headRepository: eventRun.headRepository,
+				headSha: pr.headSha,
+				baseRef: pr.baseRef,
+				baseSha: pr.baseSha,
+				mergeBaseSha,
+				actorId: pr.actor.id,
+				conclusion: checkedRun.conclusion,
+				identity: reviewIdentity
+			})
+		};
+	} catch {
+		return failure$6("event");
+	}
+}
+function binding$1(value) {
+	if (!record(value, [
+		"repository",
+		"workflow",
+		"runId",
+		"runAttempt",
+		"pullNumber",
+		"headRepository",
+		"headSha",
+		"baseRef",
+		"baseSha",
+		"mergeBaseSha",
+		"actorId",
+		"conclusion",
+		"identity"
+	]) || !positiveId(value.runId) || !positiveId(value.runAttempt) || !positiveId(value.pullNumber) || !positiveId(value.actorId) || !conclusion(value.conclusion)) return null;
+	const repo = expectedRepository(value.repository), expectedWorkflow = workflow$1(value.workflow);
+	const headRepo = expectedRepository(value.headRepository), headSha = sha$4(value.headSha);
+	const baseSha = sha$4(value.baseSha), mergeBaseSha = sha$4(value.mergeBaseSha);
+	if (!repo || !expectedWorkflow || !headRepo || !headSha || !baseSha || !mergeBaseSha || !text$4(value.baseRef) || Buffer.byteLength(value.baseRef, "utf8") > limit("packet.identityBytes")) return null;
+	const reviewIdentity = identity$2(repo.id, expectedWorkflow.id, value.runId, value.runAttempt, value.pullNumber, headSha);
+	if (!sameIdentity(value.identity, reviewIdentity)) return null;
+	return Object.freeze({
+		repository: repo,
+		workflow: expectedWorkflow,
+		runId: value.runId,
+		runAttempt: value.runAttempt,
+		pullNumber: value.pullNumber,
+		headRepository: headRepo,
+		headSha,
+		baseRef: value.baseRef,
+		baseSha,
+		mergeBaseSha,
+		actorId: value.actorId,
+		conclusion: value.conclusion,
+		identity: reviewIdentity
+	});
+}
+/** Validate and copy a binding snapshot; this grants no freshness or ownership authority. */
+function parseReviewBinding(value) {
+	try {
+		return binding$1(structuredClone(value));
+	} catch {
+		return null;
+	}
+}
+function verifyBoundRun(current, original) {
+	if (current.id !== original.runId || current.workflowId !== original.workflow.id || !sameRepository(current.repository, original.repository) || !sameRepository(current.headRepository, original.headRepository) || current.headSha !== original.headSha || current.event !== "pull_request" || !isDependabot(current.actor) || current.actor.id !== original.actorId) return failure$6("run", "mismatch");
+	if (current.attempt > original.runAttempt) return { kind: "obsolete" };
+	if (current.attempt !== original.runAttempt || current.status !== "completed") return failure$6("run", "mismatch");
+	if (current.conclusion === null) return failure$6("run");
+	if (current.conclusion !== original.conclusion) return failure$6("run", "mismatch");
+	if (current.associations.length > 1) return failure$6("run", "mismatch");
+	const currentAssociation = current.associations[0];
+	if (currentAssociation && !associatedWith(currentAssociation, original.pullNumber, original.repository, original.headRepository)) return failure$6("run", "mismatch");
+	return {
+		kind: "current",
+		association: currentAssociation
+	};
+}
+function pullRequestMatchesBinding(pr, original) {
+	return pr.number === original.pullNumber && sameRepository(pr.repository, original.repository) && sameRepository(pr.headRepository, original.headRepository) && isDependabot(pr.actor) && pr.actor.id === original.actorId;
+}
+function completeComparison(value, baseSha, originalMergeBaseSha) {
+	try {
+		const mergeBaseSha = comparisonMergeBase(value, baseSha);
+		if (!mergeBaseSha) return failure$6("comparison");
+		return { kind: mergeBaseSha === originalMergeBaseSha ? "current" : "obsolete" };
+	} catch {
+		return failure$6("comparison");
+	}
+}
+function classifyBoundPullRequest(original, value) {
+	try {
+		const pr = pullRequest(value);
+		if (!pr) return failure$6("pullRequest");
+		if (!pullRequestMatchesBinding(pr, original)) return failure$6("pullRequest", "mismatch");
+		if (pr.closed || pr.headSha !== original.headSha || pr.baseRef !== original.baseRef) return { kind: "obsolete" };
+		if (pr.baseSha === original.baseSha) return { kind: "current" };
+		const baseSha = pr.baseSha, mergeBaseSha = original.mergeBaseSha;
+		return Object.freeze({
+			kind: "compare",
+			baseSha,
+			complete: (comparison) => completeComparison(comparison, baseSha, mergeBaseSha)
+		});
+	} catch {
+		return failure$6("pullRequest");
+	}
+}
+/** Validate once; each PR read is independent, and comparison completion owns its snapshot. */
+function createPullRequestClassifier(value) {
+	const original = parseReviewBinding(value);
+	if (!original) return null;
+	return Object.freeze({
+		binding: original,
+		classify: (response) => classifyBoundPullRequest(original, response)
+	});
+}
+/** Recheck an owned attempt after claiming. W2 must separately verify exclusive ownership. */
+async function reverifyReviewBinding(value, reads) {
+	try {
+		const classifier = createPullRequestClassifier(value);
+		if (!classifier) return failure$6("binding");
+		const original = classifier.binding;
+		const runRead = await read$1("run", () => reads.readRun(original.repository, original.runId));
+		if (!runRead.ok) return runRead.error;
+		const current = run(runRead.value);
+		if (!current) return failure$6("run");
+		const checkedRun = verifyBoundRun(current, original);
+		if (checkedRun.kind !== "current") return checkedRun;
+		const currentAssociation = checkedRun.association;
+		const prRead = await read$1("pullRequest", () => reads.readPullRequest(original.repository, original.pullNumber));
+		if (!prRead.ok) return prRead.error;
+		const state = classifier.classify(prRead.value);
+		if (state.kind === "obsolete" || state.kind === "error") return state;
+		if (!currentAssociation || currentAssociation.headSha !== original.headSha) return failure$6("run", "mismatch");
+		if (state.kind === "compare") {
+			const comparison = await read$1("comparison", () => reads.readComparison(original.repository, state.baseSha, original.headSha));
+			if (!comparison.ok) return comparison.error;
+			const checked = state.complete(comparison.value);
+			if (checked.kind === "obsolete" || checked.kind === "error") return checked;
+		}
+		return { kind: "fresh" };
+	} catch {
+		return failure$6("binding");
+	}
 }
 
 // src/schema.ts
@@ -11283,7 +11306,7 @@ function isPlainObject(value) {
 }
 /** Stricter than D1's transport check: collectors reject every colon, not only a scheme prefix. */
 function isEvidencePath(value) {
-	return typeof value === "string" && value.length > 0 && Buffer.byteLength(value) <= 1024 && !/[\\:\p{Cc}\p{Cs}]/u.test(value) && value.split("/").every((p) => p && p !== "." && p !== "..");
+	return typeof value === "string" && value.length > 0 && Buffer.byteLength(value) <= limit("packet.identityBytes") && !/[\\:\p{Cc}\p{Cs}]/u.test(value) && value.split("/").every((p) => p && p !== "." && p !== "..");
 }
 function byCodeUnit$1(a, b) {
 	return a < b ? -1 : a > b ? 1 : 0;
@@ -13297,8 +13320,8 @@ function parseLimits$1(value) {
 }
 function request(value) {
 	const r = object$2(value), source = object$2(r.source);
-	requireMetadata(typeof r.name === "string" && /^(?:@[a-z\d][a-z\d._-]*\/)?[a-z\d][a-z\d._-]*$/iu.test(r.name) && r.name.length <= 256, "unsupported");
-	requireMetadata(typeof r.version === "string" && /^(?:0|[1-9]\d*)\.(?:0|[1-9]\d*)\.(?:0|[1-9]\d*)(?:-[\da-z-]+(?:\.[\da-z-]+)*)?(?:\+[\da-z-]+(?:\.[\da-z-]+)*)?$/iu.test(r.version) && r.version.length <= 1024, "unsupported");
+	requireMetadata(typeof r.name === "string" && /^(?:@[a-z\d][a-z\d._-]*\/)?[a-z\d][a-z\d._-]*$/iu.test(r.name) && r.name.length <= limit("packet.idCodeUnits"), "unsupported");
+	requireMetadata(typeof r.version === "string" && /^(?:0|[1-9]\d*)\.(?:0|[1-9]\d*)\.(?:0|[1-9]\d*)(?:-[\da-z-]+(?:\.[\da-z-]+)*)?(?:\+[\da-z-]+(?:\.[\da-z-]+)*)?$/iu.test(r.version) && r.version.length <= limit("packet.identityBytes"), "unsupported");
 	requireMetadata(source.kind === "registry" && typeof source.identity === "string", "unsupported");
 	let url;
 	try {
@@ -13308,7 +13331,7 @@ function request(value) {
 	}
 	requireMetadata(url.origin === "https://registry.npmjs.org" && !url.username && !url.password && !url.search && !url.hash, "unsupported");
 	requireMetadata(typeof r.integrity === "string" && r.integrity.length > 0, "missing");
-	requireMetadata(r.integrity.length <= 1024 && hashes(r.integrity).length > 0, "malformed");
+	requireMetadata(r.integrity.length <= limit("npm.maxIntegrityCodeUnits") && hashes(r.integrity).length > 0, "malformed");
 	return {
 		name: r.name,
 		version: r.version,
@@ -13701,16 +13724,13 @@ function interpretNpmLifecycle(change, input) {
 }
 
 // src/evidence/upstream-read.ts
-/** Largest power of two within GitHub's 100-per-page maximum, then each halving. */
-const RELEASE_PAGE_SIZES = [
-	64,
-	32,
-	16,
-	8,
-	4,
-	2,
-	1
-];
+/** Each halving of the register's release page size down to 1, for the page-size retry ladder. */
+function halvingFrom(start) {
+	const sizes = [];
+	for (let size = start; size >= 1; size = Math.floor(size / 2)) sizes.push(size);
+	return sizes;
+}
+const RELEASE_PAGE_SIZES = Object.freeze(halvingFrom(limit("upstream.releasePageSize")));
 var UpstreamFailure = class extends Error {
 	reason;
 	constructor(reason) {
@@ -13725,7 +13745,7 @@ function requireUpstream(value, reason = "malformed") {
 	if (!value) throw new UpstreamFailure(reason);
 }
 function upstreamText(value) {
-	return typeof value === "string" && value.length > 0 && Buffer.byteLength(value) <= 1024 && !/[\p{Cc}\p{Cs}]/u.test(value);
+	return typeof value === "string" && value.length > 0 && Buffer.byteLength(value) <= limit("packet.identityBytes") && !/[\p{Cc}\p{Cs}]/u.test(value);
 }
 function upstreamLimits(value) {
 	requireUpstream(isPlainObject(value));
@@ -14140,7 +14160,7 @@ function observe(read) {
 		};
 	}
 }
-const REASON_CODE_UNITS = 350;
+const REASON_CODE_UNITS = limit("signals.reasonCodeUnits");
 /** Bounds a registry reason by UTF-16 units without splitting a surrogate pair. */
 function boundedReason(value) {
 	const clean = value.replace(/[\p{Cc}\p{Cs}]/gu, " ");
@@ -14773,10 +14793,10 @@ function validate(input) {
 	advisoryCheck(Array.isArray(input.changes) && input.changes.length <= PACKET_LIMITS.changes);
 	advisoryCheck(Array.isArray(input.sources) && input.sources.length <= PACKET_LIMITS.sources);
 	advisoryCheck(Array.isArray(input.findings) && input.findings.length <= PACKET_LIMITS.findings);
-	advisoryCheck(Array.isArray(input.publicIdentities) && input.publicIdentities.length <= PACKET_LIMITS.changes * 2);
+	advisoryCheck(Array.isArray(input.publicIdentities) && input.publicIdentities.length <= limit("advisories.maxLookups"));
 	advisoryCheck(new Set(input.changes.map((c) => c.id)).size === input.changes.length);
 	advisoryCheck(new Set(input.sources.map((s) => s.id)).size === input.sources.length);
-	advisoryCheck(input.actionVersions === void 0 || Array.isArray(input.actionVersions) && input.actionVersions.length <= PACKET_LIMITS.changes * 2);
+	advisoryCheck(input.actionVersions === void 0 || Array.isArray(input.actionVersions) && input.actionVersions.length <= limit("advisories.maxLookups"));
 	advisoryCheck(input.comparisons === void 0 || Array.isArray(input.comparisons) && input.comparisons.length <= PACKET_LIMITS.listEntries);
 	for (const c of input.comparisons ?? []) {
 		const b = input.binding;
@@ -16230,7 +16250,7 @@ function comparisonCommits(data, state) {
 }
 function comparisonFiles(data, state) {
 	requireUpstream(Array.isArray(data.files));
-	state.filesComplete = data.files.length < 300 && data.files.every((file) => isPlainObject(file) && upstreamText(file.filename) && typeof file.patch === "string");
+	state.filesComplete = data.files.length < limit("github.compareMaxFiles") && data.files.every((file) => isPlainObject(file) && upstreamText(file.filename) && typeof file.patch === "string");
 	if (!state.filesComplete) state.reasons.add("truncated");
 	state.patches = data.files.filter((file) => isPlainObject(file) && typeof file.filename === "string" && typeof file.patch === "string").map((file) => file.filename + "\n" + file.patch);
 }
@@ -19549,7 +19569,7 @@ function npmPublishingFacts(value) {
 		account: observe(() => account(data)),
 		maintainers: observe(() => {
 			advisoryCheck(Array.isArray(data.maintainers), "missing");
-			advisoryCheck(data.maintainers.length <= 32, "budget");
+			advisoryCheck(data.maintainers.length <= limit("signals.npmMaxMaintainers"), "budget");
 			return [...new Set(data.maintainers.map((m) => {
 				advisoryCheck(isPlainObject(m) && advisoryText(m.name) && /^[a-z\d_.-]+$/iu.test(m.name));
 				return m.name;
@@ -20791,7 +20811,7 @@ function createRehearsalSink(appToken) {
 	const traces = [];
 	return Object.freeze({
 		record: (handoff, detail, analysisTiming) => {
-			if (traces.length >= 32) return false;
+			if (traces.length >= limit("handoff.maxTraces")) return false;
 			const keptDetail = traceDetail(handoff, detail);
 			if (!keptDetail) return false;
 			const timing = copyAnalysisTiming(analysisTiming);
@@ -21619,9 +21639,9 @@ function requireValue$1(value, category = "input") {
 }
 function snapshotData(value, budget = {
 	entries: PACKET_LIMITS.bytes,
-	bytes: 8 * PACKET_LIMITS.bytes
+	bytes: limit("analysis.projectionBytes")
 }, depth = 0) {
-	requireValue$1(--budget.entries >= 0 && depth <= 64, "budget");
+	requireValue$1(--budget.entries >= 0 && depth <= limit("analysis.maxProjectionDepth"), "budget");
 	if (typeof value === "string") {
 		budget.bytes -= Buffer.byteLength(value);
 		requireValue$1(budget.bytes >= 0, "budget");
@@ -22064,7 +22084,7 @@ function sourceReference(value, scope) {
 	check(ref.side === "base" || ref.side === "head", "reference");
 	const side = ref.side === "base" ? change.value.from : change.value.to;
 	check(side, "reference");
-	const category = text$1(ref.category, 128);
+	const category = text$1(ref.category, limit("analysis.categoryCodeUnits"));
 	const categorySources = change.value.evidence[category]?.sourceIds ?? [];
 	const findingSource = scope.unit.findings.some((finding) => finding.memberId === change.id && finding.references.includes(source.id));
 	const inventorySource = source.value.provenance.kind === "file" && side.sourceId === source.id;
@@ -24442,7 +24462,7 @@ function uninventoried(state, path, side) {
 }
 function comparisonRow(state, value) {
 	const row = own$3(value);
-	need$3(isEvidencePath(row.manifest) && safeIdentity(row.name) && safeIdentity(row.version, 1024));
+	need$3(isEvidencePath(row.manifest) && safeIdentity(row.name) && safeIdentity(row.version, limit("actions.maxComparisonVersionCodeUnits")));
 	need$3(row.change_type === "added" || row.change_type === "removed");
 	const path = row.manifest, action = row.name, version = row.version;
 	const side = row.change_type === "added" ? "head" : "base";
@@ -24685,7 +24705,7 @@ function path$1(value, root = false) {
 	return root && value === "." || isEvidencePath(value);
 }
 function safeText(value, empty = false) {
-	return typeof value === "string" && (empty || value.length > 0) && Buffer.byteLength(value) <= 1024 && characters(value) && !/\/\/(?!git@[^/\s@]*(?:[/\s]|$))[^/\s]*@|[?&](?:token|key|password|secret|auth)=/iu.test(value);
+	return typeof value === "string" && (empty || value.length > 0) && Buffer.byteLength(value) <= limit("packet.identityBytes") && characters(value) && !/\/\/(?!git@[^/\s@]*(?:[/\s]|$))[^/\s]*@|[?&](?:token|key|password|secret|auth)=/iu.test(value);
 }
 function inspect(value, limits, depth = 1, counter = { entries: 0 }) {
 	if (!value || typeof value !== "object") return;
@@ -24781,7 +24801,7 @@ function json$1(bytes, state) {
 function stringMap(value) {
 	const r = object(value), result = {};
 	for (const [k, v] of Object.entries(r).sort(([a], [b]) => a < b ? -1 : a > b ? 1 : 0)) {
-		need$2(safeText(k) && k.length <= 256 && safeText(v, true));
+		need$2(safeText(k) && k.length <= limit("packet.idCodeUnits") && safeText(v, true));
 		result[k] = v;
 	}
 	return result;
@@ -24911,7 +24931,7 @@ function packageNode(root, lockPath, value, sourceId) {
 	const slot = slotName(lockPath);
 	need$2(slot, "unsupported");
 	const name = r.name ?? slot;
-	need$2(safeText(name) && name.length <= 256 && safeText(r.version) && /^(?:0|[1-9]\d*)\.(?:0|[1-9]\d*)\.(?:0|[1-9]\d*)(?:-[\da-z-]+(?:\.[\da-z-]+)*)?(?:\+[\da-z-]+(?:\.[\da-z-]+)*)?$/iu.test(r.version), "unsupported");
+	need$2(safeText(name) && name.length <= limit("packet.idCodeUnits") && safeText(r.version) && /^(?:0|[1-9]\d*)\.(?:0|[1-9]\d*)\.(?:0|[1-9]\d*)(?:-[\da-z-]+(?:\.[\da-z-]+)*)?(?:\+[\da-z-]+(?:\.[\da-z-]+)*)?$/iu.test(r.version), "unsupported");
 	return {
 		instance: {
 			root,
@@ -25218,8 +25238,8 @@ function fileScopes(state, source) {
 	const members = state.changes.filter((c) => [c.from?.sourceId, c.to?.sourceId].includes(source.id) || citesManifest(state, c, source.id)).map((c) => c.id).sort();
 	if (!members.length) return [source];
 	const sources = [];
-	for (let i = 0; i < members.length; i += 32) {
-		const group = members.slice(i, i + 32), ids = new Set(group), id = i === 0 ? source.id : source.id + ":" + i / 32;
+	for (let i = 0; i < members.length; i += limit("packet.listEntries")) {
+		const group = members.slice(i, i + limit("packet.listEntries")), ids = new Set(group), id = i === 0 ? source.id : source.id + ":" + i / limit("packet.listEntries");
 		sources.push({
 			...source,
 			id,
@@ -28738,7 +28758,7 @@ function description(value, result, maxBytes, work) {
 function claims(text) {
 	const found = /* @__PURE__ */ new Map();
 	for (const raw of text.split(/\r?\n/u)) {
-		if (raw.length > 4096) continue;
+		if (raw.length > limit("uv.maxCorroborationCodeUnits")) continue;
 		const line = raw.trim().replace(/\[([A-Za-z0-9.!+_-]{1,1024})\]\(https:\/\/[^\s)]{1,1024}\)/gu, "$1").replaceAll("`", "");
 		const count = /^Resolved uv changes: ([0-9]{1,6})\.?$/u.exec(line);
 		if (count) {
@@ -28930,7 +28950,7 @@ function corroborateUv(result, metadata, value, source, work, maxBytes) {
 			reject(result, source, "unknown", maxBytes);
 			return;
 		}
-		work.spend(64 * (all.length + result.changes.length + result.sources.length + 1) + all.length * result.changes.length);
+		work.spend(limit("uv.corroborationWorkPerEntry") * (all.length + result.changes.length + result.sources.length + 1) + all.length * result.changes.length);
 		const capacity = candidate(result, source, all, result.changes, true, work);
 		if (capacity.sources.length > PACKET_LIMITS.sources || Buffer.byteLength(JSON.stringify(capacity)) > maxBytes) {
 			reject(result, source, "budget", maxBytes);
@@ -29245,7 +29265,7 @@ function nextPage(headers, paths, page) {
 		seen.add(rel);
 		const url = URL.parse(target);
 		requireRead(url && url.origin === ORIGIN && paths.includes(url.pathname) && !url.hash && !url.username && !url.password, "conflict");
-		requireRead(url.searchParams.size === 2 && url.searchParams.get("per_page") === "100", "conflict");
+		requireRead(url.searchParams.size === 2 && url.searchParams.get("per_page") === String(limit("github.pageSize")), "conflict");
 		const number = url.searchParams.get("page");
 		requireRead(number && /^[1-9]\d*$/u.test(number) && Number.isSafeInteger(Number(number)), "conflict");
 		const n = Number(number);
@@ -29515,15 +29535,15 @@ var ReadSession = class {
 		for (let page = 1;; page++) {
 			requireRead(this.pages < this.limits.maxPages, "budget");
 			this.pages++;
-			const response = await this.get(`${path}?per_page=100&page=${page}`);
-			requireRead(Array.isArray(response.value) && response.value.length <= 100);
+			const response = await this.get(`${path}?per_page=${limit("github.pageSize")}&page=${page}`);
+			requireRead(Array.isArray(response.value) && response.value.length <= limit("github.pageSize"));
 			for (const value of response.value) this.addFile(value, files, reasons, seen);
 			const hasNext = nextPage(response.headers, linkPaths, page);
-			if (files.length >= 3e3) {
+			if (files.length >= limit("github.treeMaxFiles")) {
 				reasons.add("truncated");
 				return;
 			}
-			if (response.value.length < 100) {
+			if (response.value.length < limit("github.pageSize")) {
 				requireRead(!hasNext, "conflict");
 				requireRead(files.length === count, "conflict");
 				return;
@@ -30611,16 +30631,16 @@ function limits(share, input) {
 	return {
 		maxRequests,
 		maxPages: maxRequests,
-		maxTagCandidates: 100,
-		maxTagDepth: 10,
+		maxTagCandidates: limit("research.maxTagCandidates"),
+		maxTagDepth: limit("research.maxTagDepth"),
 		maxResponseBytes: Math.min(EVIDENCE_READ_ENVELOPE.maxResponseBytes, maxTotalBytes),
 		maxTotalBytes,
 		maxJsonEntries: MAX_JSON_ENTRIES,
 		maxJsonDepth: MAX_JSON_DEPTH,
-		maxWork: 5e6,
+		maxWork: limit("research.maxWork"),
 		maxRetainedBytes: MAX_RETAINED_BYTES,
-		maxAttempts: 512,
-		maxFindings: 512,
+		maxAttempts: limit("research.maxAttempts"),
+		maxFindings: limit("research.maxFindings"),
 		requestTimeoutMs: Math.min(EVIDENCE_READ_ENVELOPE.requestTimeoutMs, remaining(input)),
 		totalTimeoutMs: remaining(input)
 	};
@@ -31458,7 +31478,7 @@ function validSha(value) {
 	return typeof value === "string" && /^[a-f\d]{40}$/iu.test(value);
 }
 function validPath(path) {
-	return typeof path === "string" && path.length > 0 && Buffer.byteLength(path, "utf8") <= 1024 && !path.includes("\\") && !path.startsWith("/") && path.split("/").every((part) => part && part !== "." && part !== "..");
+	return typeof path === "string" && path.length > 0 && Buffer.byteLength(path, "utf8") <= limit("packet.identityBytes") && !path.includes("\\") && !path.startsWith("/") && path.split("/").every((part) => part && part !== "." && part !== "..");
 }
 function validRef(value) {
 	return typeof value === "string" && value.length > 0 && !Array.from(value).some((character) => character.charCodeAt(0) < 32 || character === "");
@@ -31828,7 +31848,7 @@ async function withTrustedSnapshot(request, use) {
 
 // src/pipeline.ts
 /** How often a pending request is checked against ownership; shorter than any request timeout. */
-const OWNERSHIP_WATCH_MS = 2e3;
+const OWNERSHIP_WATCH_MS = limit("pipeline.ownershipWatchMs");
 /** A boundary failure whose stage is a literal chosen by this module, never derived from the error. */
 var StageFailure = class extends Error {
 	stage;
@@ -32459,7 +32479,7 @@ function platformDependencies() {
 }
 /** The one fixed line for a rehearsal result; no input, error text, or stack is ever echoed. */
 function analysisTimingLine(timing) {
-	const durations = timing.callDurationsMs.map((duration) => Math.min(duration, 999999));
+	const durations = timing.callDurationsMs.map((duration) => Math.min(duration, limit("startup.maxReportedDurationMs")));
 	if (timing.callsDispatched === 0) return `analysis 0 calls, max split depth ${timing.maxSplitDepth}`;
 	const label = timing.callsDispatched === 1 ? "call" : "calls";
 	return `analysis ${timing.callsDispatched} ${label} (${durations.join(", ")} ms), max split depth ${timing.maxSplitDepth}`;

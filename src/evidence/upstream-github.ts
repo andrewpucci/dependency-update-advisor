@@ -11,6 +11,7 @@ import {
   type GithubUpstreamTarget,
 } from './upstream-read.js';
 import type { EvidenceReason } from '../schema.js';
+import { limit } from '../limits.js';
 
 export type UpstreamRepository = Readonly<{ repository: string; directory: string }>;
 export type PackageResearchTarget = Readonly<{
@@ -378,7 +379,7 @@ function comparisonCommits(data: Readonly<Record<string, unknown>>, state: Compa
 function comparisonFiles(data: Readonly<Record<string, unknown>>, state: ComparisonState) {
   requireUpstream(Array.isArray(data.files));
   state.filesComplete =
-    data.files.length < 300 &&
+    data.files.length < limit('github.compareMaxFiles') &&
     data.files.every(
       (file) =>
         isPlainObject(file) && upstreamText(file.filename) && typeof file.patch === 'string',

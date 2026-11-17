@@ -26,6 +26,7 @@ import {
   type YamlBudget,
   type YamlLimits,
 } from './actions-yaml.js';
+import { limit } from '../limits.js';
 
 export type ActionsLimits = YamlLimits & { maxWorkflows: number; maxRetainedBytes: number };
 export type ActionsGap = {
@@ -486,7 +487,11 @@ function uninventoried(state: State, path: string, side: 'base' | 'head'): Evide
 }
 function comparisonRow(state: State, value: unknown) {
   const row = own(value);
-  need(isEvidencePath(row.manifest) && safeIdentity(row.name) && safeIdentity(row.version, 1024));
+  need(
+    isEvidencePath(row.manifest) &&
+      safeIdentity(row.name) &&
+      safeIdentity(row.version, limit('actions.maxComparisonVersionCodeUnits')),
+  );
   need(row.change_type === 'added' || row.change_type === 'removed');
   const path = row.manifest,
     action = row.name,

@@ -222,7 +222,7 @@ export function createRehearsalSink(appToken: string | null): RehearsalSink | nu
   const traces: RehearsalTrace[] = [];
   return Object.freeze({
     record: (handoff, detail, analysisTiming) => {
-      if (traces.length >= 32) return false;
+      if (traces.length >= limit('handoff.maxTraces')) return false;
       const keptDetail = traceDetail(handoff, detail);
       if (!keptDetail) return false;
       const timing = copyAnalysisTiming(analysisTiming);

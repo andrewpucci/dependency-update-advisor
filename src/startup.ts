@@ -112,7 +112,9 @@ function platformDependencies(): StartupDependencies {
 
 /** The one fixed line for a rehearsal result; no input, error text, or stack is ever echoed. */
 function analysisTimingLine(timing: AnalysisTiming): string {
-  const durations = timing.callDurationsMs.map((duration) => Math.min(duration, 999_999));
+  const durations = timing.callDurationsMs.map((duration) =>
+    Math.min(duration, limit('startup.maxReportedDurationMs')),
+  );
   if (timing.callsDispatched === 0)
     return `analysis 0 calls, max split depth ${timing.maxSplitDepth}`;
   const label = timing.callsDispatched === 1 ? 'call' : 'calls';

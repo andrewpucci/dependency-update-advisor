@@ -2,6 +2,7 @@ import { readFileSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import { expect, test } from 'vite-plus/test';
 import { PACKET_LIMITS } from './schema.js';
+import { RELEASE_PAGE_SIZES } from './evidence/upstream-read.js';
 import {
   PENDING_AUDIT,
   REGISTER,
@@ -160,4 +161,18 @@ test('every real test field names an existing test title, or is a documented pla
       expect(source, entry.id).toContain(`test('${title}'`);
     }
   }
+});
+
+test('moved limits that mirror a packet bound are derived from it', () => {
+  expect(dependents(REGISTER, 'packet.changes')).toContain('advisories.maxLookups');
+  expect(dependents(REGISTER, 'packet.bytes')).toContain('analysis.projectionBytes');
+  expect(dependents(REGISTER, 'packet.findings')).toContain('research.maxFindings');
+  expect(limit('advisories.maxLookups')).toBe(2 * PACKET_LIMITS.changes);
+  expect(limit('analysis.projectionBytes')).toBe(8 * PACKET_LIMITS.bytes);
+  expect(limit('research.maxFindings')).toBe(PACKET_LIMITS.findings);
+});
+
+test('RELEASE_PAGE_SIZES halves from the register value down to 1 and is frozen', () => {
+  expect(RELEASE_PAGE_SIZES).toEqual([64, 32, 16, 8, 4, 2, 1]);
+  expect(Object.isFrozen(RELEASE_PAGE_SIZES)).toBe(true);
 });

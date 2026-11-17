@@ -1,4 +1,5 @@
 import { types } from 'node:util';
+import { limit } from '../limits.js';
 
 /** Plain data only: no proxy, foreign prototype, accessor, symbol, or prototype-shaped key. */
 export function isPlainObject(value: unknown): value is Record<string, unknown> {
@@ -22,7 +23,7 @@ export function isEvidencePath(value: unknown): value is string {
   return (
     typeof value === 'string' &&
     value.length > 0 &&
-    Buffer.byteLength(value) <= 1024 &&
+    Buffer.byteLength(value) <= limit('packet.identityBytes') &&
     !/[\\:\p{Cc}\p{Cs}]/u.test(value) &&
     value.split('/').every((p) => p && p !== '.' && p !== '..')
   );

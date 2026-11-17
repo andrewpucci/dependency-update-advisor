@@ -9,6 +9,7 @@ import {
   type DecisionUnit,
 } from '../units.js';
 import { PACKET_LIMITS } from '../schema.js';
+import { limit } from '../limits.js';
 import type { Finding, PolicyEvaluation, RuleTrace } from '../policy.js';
 import type {
   AnalysisLimits,
@@ -59,11 +60,11 @@ export function snapshotData(
   value: unknown,
   budget: { entries: number; bytes: number } = {
     entries: PACKET_LIMITS.bytes,
-    bytes: 8 * PACKET_LIMITS.bytes,
+    bytes: limit('analysis.projectionBytes'),
   },
   depth = 0,
 ): unknown {
-  requireValue(--budget.entries >= 0 && depth <= 64, 'budget');
+  requireValue(--budget.entries >= 0 && depth <= limit('analysis.maxProjectionDepth'), 'budget');
   if (typeof value === 'string') {
     budget.bytes -= Buffer.byteLength(value);
     requireValue(budget.bytes >= 0, 'budget');

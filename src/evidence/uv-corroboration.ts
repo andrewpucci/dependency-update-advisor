@@ -8,6 +8,7 @@ import {
 import type { UvInventory, UvChange, UvObservation } from './uv-graph.js';
 import type { UvMetadata } from './uv.js';
 import { isPlainObject, byCodeUnit } from './common.js';
+import { limit } from '../limits.js';
 import { UvGraphFailure, uvReasons, type GraphWork } from './uv-input.js';
 
 type Claim =
@@ -96,7 +97,7 @@ function description(
 function claims(text: string): Claim[] {
   const found = new Map<string, Claim>();
   for (const raw of text.split(/\r?\n/u)) {
-    if (raw.length > 4096) continue;
+    if (raw.length > limit('uv.maxCorroborationCodeUnits')) continue;
     const line = raw
       .trim()
       .replace(/\[([A-Za-z0-9.!+_-]{1,1024})\]\(https:\/\/[^\s)]{1,1024}\)/gu, '$1')
@@ -316,7 +317,8 @@ export function corroborateUv(
     }
     // Reserve comparison and source-construction work before learning a contradiction.
     work.spend(
-      64 * (all.length + result.changes.length + result.sources.length + 1) +
+      limit('uv.corroborationWorkPerEntry') *
+        (all.length + result.changes.length + result.sources.length + 1) +
         all.length * result.changes.length,
     );
     const capacity = candidate(result, source, all, result.changes, true, work);

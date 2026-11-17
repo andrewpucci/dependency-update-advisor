@@ -5,6 +5,7 @@ import { metadataTarget } from './upstream.js';
 import { resolveAdvisoryTarget } from './advisories.js';
 import { advisoryCheck, advisoryText } from './advisory-read.js';
 import { isPlainObject, byCodeUnit } from './common.js';
+import { limit } from '../limits.js';
 import {
   observe,
   boundedReason,
@@ -79,7 +80,7 @@ export function npmPublishingFacts(value: unknown): NpmPublishingFacts {
     account: observe(() => account(data)),
     maintainers: observe(() => {
       advisoryCheck(Array.isArray(data.maintainers), 'missing');
-      advisoryCheck(data.maintainers.length <= 32, 'budget');
+      advisoryCheck(data.maintainers.length <= limit('signals.npmMaxMaintainers'), 'budget');
       return [
         ...new Set(
           data.maintainers.map((m) => {

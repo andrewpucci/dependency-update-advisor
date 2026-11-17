@@ -1,5 +1,6 @@
 import { Composer, Parser, isAlias, isMap, isNode, isScalar, isSeq, type Node } from 'yaml';
 import type { EvidenceReason } from '../schema.js';
+import { limit } from '../limits.js';
 
 export type YamlLimits = {
   maxFileBytes: number;
@@ -32,12 +33,12 @@ export class YamlFailure extends Error {
 function need(value: unknown, reason: EvidenceReason = 'malformed'): asserts value {
   if (!value) throw new YamlFailure(reason);
 }
-export function safeIdentity(value: unknown, units = 256): value is string {
+export function safeIdentity(value: unknown, units = limit('packet.idCodeUnits')): value is string {
   return (
     typeof value === 'string' &&
     value.length > 0 &&
     value.length <= units &&
-    Buffer.byteLength(value) <= 1024 &&
+    Buffer.byteLength(value) <= limit('packet.identityBytes') &&
     !/[\p{Cc}\p{Cs}]/u.test(value)
   );
 }
@@ -191,7 +192,7 @@ function expand(root: Node, limits: YamlLimits, budget: YamlBudget): Value {
 function use(value: Value, budget: YamlBudget, limits: YamlLimits): WorkflowUse {
   debit(budget, 'occurrences', limits.maxOccurrences);
   need(typeof value === 'string');
-  need(safeIdentity(value, 2048));
+  need(safeIdentity(value, limit('actions.maxUsesCodeUnits')));
   need(!value.includes('${{') && !value.startsWith('docker:'), 'unsupported');
   if (value.startsWith('./')) {
     need(
@@ -206,7 +207,7 @@ function use(value: Value, budget: YamlBudget, limits: YamlLimits): WorkflowUse 
   need(at > 0 && at < value.length - 1);
   const action = value.slice(0, at),
     ref = value.slice(at + 1);
-  need(safeIdentity(action) && safeIdentity(ref, 1024));
+  need(safeIdentity(action) && safeIdentity(ref, limit('packet.identityBytes')));
   need(/^[A-Za-z0-9-]+\/[A-Za-z0-9_.-]+(?:\/[A-Za-z0-9_.-]+)*$/u.test(action));
   need(action.split('/').every((s) => s !== '.' && s !== '..'));
   need(!/[\s\\]|[?&](?:token|key|password|secret|auth)=/iu.test(ref));

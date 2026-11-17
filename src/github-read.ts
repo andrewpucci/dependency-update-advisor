@@ -6,6 +6,7 @@ import {
   type RepositoryIdentity,
 } from './event.js';
 import { PACKET_LIMITS, type EvidenceReason } from './schema.js';
+import { limit } from './limits.js';
 
 export type GithubReadLimits = Readonly<{
   maxRequests: number;
@@ -269,7 +270,8 @@ function nextPage(headers: Headers, paths: readonly string[], page: number): boo
       'conflict',
     );
     requireRead(
-      url.searchParams.size === 2 && url.searchParams.get('per_page') === '100',
+      url.searchParams.size === 2 &&
+        url.searchParams.get('per_page') === String(limit('github.pageSize')),
       'conflict',
     );
     const number = url.searchParams.get('page');
@@ -568,15 +570,17 @@ class ReadSession implements GithubReadSession {
     for (let page = 1; ; page++) {
       requireRead(this.pages < this.limits.maxPages, 'budget');
       this.pages++;
-      const response = await this.get(`${path}?per_page=100&page=${page}`);
-      requireRead(Array.isArray(response.value) && response.value.length <= 100);
+      const response = await this.get(`${path}?per_page=${limit('github.pageSize')}&page=${page}`);
+      requireRead(
+        Array.isArray(response.value) && response.value.length <= limit('github.pageSize'),
+      );
       for (const value of response.value) this.addFile(value, files, reasons, seen);
       const hasNext = nextPage(response.headers, linkPaths, page);
-      if (files.length >= 3000) {
+      if (files.length >= limit('github.treeMaxFiles')) {
         reasons.add('truncated');
         return;
       }
-      if (response.value.length < 100) {
+      if (response.value.length < limit('github.pageSize')) {
         requireRead(!hasNext, 'conflict');
         requireRead(files.length === count, 'conflict');
         return;

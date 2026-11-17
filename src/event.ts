@@ -1,4 +1,5 @@
 import { EVIDENCE_REASONS, type EvidenceReason } from './schema.js';
+import { limit } from './limits.js';
 
 const CONCLUSIONS = [
   'success',
@@ -309,7 +310,7 @@ function pullRequest(value: unknown): PullRequest | null {
     typeof value.merged !== 'boolean' ||
     !record(value.base, ['repo', 'ref', 'sha']) ||
     !text(value.base.ref) ||
-    Buffer.byteLength(value.base.ref, 'utf8') > 1024 ||
+    Buffer.byteLength(value.base.ref, 'utf8') > limit('packet.identityBytes') ||
     !record(value.head, ['repo', 'sha'])
   )
     return null;
@@ -631,7 +632,7 @@ function binding(value: unknown): ReviewBinding | null {
     !baseSha ||
     !mergeBaseSha ||
     !text(value.baseRef) ||
-    Buffer.byteLength(value.baseRef, 'utf8') > 1024
+    Buffer.byteLength(value.baseRef, 'utf8') > limit('packet.identityBytes')
   )
     return null;
   const reviewIdentity = identity(

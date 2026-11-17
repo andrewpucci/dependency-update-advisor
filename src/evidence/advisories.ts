@@ -16,6 +16,7 @@ import {
 } from '../schema.js';
 import type { Finding } from '../policy.js';
 import { freeze, isPlainObject, isEvidencePath } from './common.js';
+import { limit } from '../limits.js';
 import {
   advisoryCheck,
   advisoryLimits,
@@ -499,14 +500,14 @@ function validate(input: AdvisoryInput) {
   advisoryCheck(Array.isArray(input.findings) && input.findings.length <= PACKET_LIMITS.findings);
   advisoryCheck(
     Array.isArray(input.publicIdentities) &&
-      input.publicIdentities.length <= PACKET_LIMITS.changes * 2,
+      input.publicIdentities.length <= limit('advisories.maxLookups'),
   );
   advisoryCheck(new Set(input.changes.map((c) => c.id)).size === input.changes.length);
   advisoryCheck(new Set(input.sources.map((s) => s.id)).size === input.sources.length);
   advisoryCheck(
     input.actionVersions === undefined ||
       (Array.isArray(input.actionVersions) &&
-        input.actionVersions.length <= PACKET_LIMITS.changes * 2),
+        input.actionVersions.length <= limit('advisories.maxLookups')),
   );
   advisoryCheck(
     input.comparisons === undefined ||

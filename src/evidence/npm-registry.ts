@@ -14,6 +14,7 @@ import type { Finding } from '../policy.js';
 import { BoundedClock, boundedGet } from './bounded-request.js';
 import type { ResearchCache } from './research-cache.js';
 import { AdvisoryFailure } from './advisory-read.js';
+import { limit } from '../limits.js';
 
 export type NpmRegistryLimits = Readonly<{
   maxRequests: number;
@@ -81,7 +82,7 @@ function request(value: unknown): Request {
   requireMetadata(
     typeof r.name === 'string' &&
       /^(?:@[a-z\d][a-z\d._-]*\/)?[a-z\d][a-z\d._-]*$/iu.test(r.name) &&
-      r.name.length <= 256,
+      r.name.length <= limit('packet.idCodeUnits'),
     'unsupported',
   );
   requireMetadata(
@@ -89,7 +90,7 @@ function request(value: unknown): Request {
       /^(?:0|[1-9]\d*)\.(?:0|[1-9]\d*)\.(?:0|[1-9]\d*)(?:-[\da-z-]+(?:\.[\da-z-]+)*)?(?:\+[\da-z-]+(?:\.[\da-z-]+)*)?$/iu.test(
         r.version,
       ) &&
-      r.version.length <= 1024,
+      r.version.length <= limit('packet.identityBytes'),
     'unsupported',
   );
   requireMetadata(source.kind === 'registry' && typeof source.identity === 'string', 'unsupported');
@@ -108,7 +109,10 @@ function request(value: unknown): Request {
     'unsupported',
   );
   requireMetadata(typeof r.integrity === 'string' && r.integrity.length > 0, 'missing');
-  requireMetadata(r.integrity.length <= 1024 && hashes(r.integrity).length > 0, 'malformed');
+  requireMetadata(
+    r.integrity.length <= limit('npm.maxIntegrityCodeUnits') && hashes(r.integrity).length > 0,
+    'malformed',
+  );
   return { name: r.name, version: r.version, integrity: r.integrity, source: source.identity };
 }
 function hashes(value: string) {

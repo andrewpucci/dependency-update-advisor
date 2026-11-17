@@ -35,9 +35,10 @@ import {
   type ReviewOutcomeKind,
 } from './review.js';
 import { withTrustedSnapshot, type SnapshotReads } from './snapshot.js';
+import { limit } from './limits.js';
 
 /** How often a pending request is checked against ownership; shorter than any request timeout. */
-const OWNERSHIP_WATCH_MS = 2_000;
+const OWNERSHIP_WATCH_MS = limit('pipeline.ownershipWatchMs');
 
 export type PipelineInput = Readonly<{
   /** The trusted workflow_run event with its expected repository and workflow. */

@@ -23,7 +23,7 @@ export function observe<T>(read: () => T): Observation<T> {
   }
 }
 export type OptionalCategory = 'publishTime' | 'deprecation' | 'trust' | 'publisher' | 'license';
-const REASON_CODE_UNITS = 350;
+const REASON_CODE_UNITS = limit('signals.reasonCodeUnits');
 /** Bounds a registry reason by UTF-16 units without splitting a surrogate pair. */
 export function boundedReason(value: string): string {
   const clean = value.replace(/[\p{Cc}\p{Cs}]/gu, ' ');

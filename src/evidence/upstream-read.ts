@@ -4,9 +4,17 @@ import { freeze, isPlainObject, isEvidencePath } from './common.js';
 import type { EvidenceReason, PackageSource } from '../schema.js';
 import { BoundedClock, boundedGet } from './bounded-request.js';
 import type { ResearchCache } from './research-cache.js';
+import { limit } from '../limits.js';
 
-/** Largest power of two within GitHub's 100-per-page maximum, then each halving. */
-export const RELEASE_PAGE_SIZES = [64, 32, 16, 8, 4, 2, 1] as const;
+/** Each halving of the register's release page size down to 1, for the page-size retry ladder. */
+function halvingFrom(start: number): number[] {
+  const sizes: number[] = [];
+  for (let size = start; size >= 1; size = Math.floor(size / 2)) sizes.push(size);
+  return sizes;
+}
+export const RELEASE_PAGE_SIZES: readonly number[] = Object.freeze(
+  halvingFrom(limit('upstream.releasePageSize')),
+);
 
 export type UpstreamLimits = Readonly<{
   maxRequests: number;
@@ -93,7 +101,7 @@ export function upstreamText(value: unknown): value is string {
   return (
     typeof value === 'string' &&
     value.length > 0 &&
-    Buffer.byteLength(value) <= 1024 &&
+    Buffer.byteLength(value) <= limit('packet.identityBytes') &&
     !/[\p{Cc}\p{Cs}]/u.test(value)
   );
 }

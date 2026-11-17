@@ -3,6 +3,7 @@ import { freeze, isPlainObject } from '../evidence/common.js';
 import type { DecisionUnit } from '../units.js';
 import type { BatchSnapshot } from './projection.js';
 import type { AnalysisCategory, AnalysisFailure } from './contract.js';
+import { limit } from '../limits.js';
 
 export type ResolvedReference =
   | Readonly<{
@@ -129,7 +130,7 @@ function sourceReference(
   check(ref.side === 'base' || ref.side === 'head', 'reference');
   const side = ref.side === 'base' ? change.value.from : change.value.to;
   check(side, 'reference');
-  const category = text(ref.category, 128);
+  const category = text(ref.category, limit('analysis.categoryCodeUnits'));
   const categorySources = change.value.evidence[category]?.sourceIds ?? [];
   const findingSource = scope.unit.findings.some(
     (finding) => finding.memberId === change.id && finding.references.includes(source.id),
