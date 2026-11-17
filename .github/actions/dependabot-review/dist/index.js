@@ -22744,8 +22744,12 @@ function coverageLines({ input }) {
 		...inventoryGaps.map((gap) => `- ${text(gap.ecosystem)}: ${gap.reasons.map(text).join(", ")}. ${gap.nextActions.map(text).join(" ")}`)
 	];
 }
-function findingLines({ input, units }) {
-	const lines = [];
+function findingName(r, member) {
+	return r.units.flatMap((unit) => unit.members).some((item) => item.id !== member.id && item.name === member.name) ? `${text(member.name)} (${uncheckedQualifier(r, member)})` : text(member.name);
+}
+function findingLines(r) {
+	const { input, units } = r;
+	const groups = /* @__PURE__ */ new Map();
 	for (const unit of units) for (const finding of unit.findings) {
 		const member = unit.members.find((item) => item.id === finding.memberId);
 		if (!member || !finding.references.length) throw new RenderFailure("reference");
@@ -22763,9 +22767,12 @@ function findingLines({ input, units }) {
 				url: source.provenance.kind === "upstream" ? source.provenance.url : null
 			}, unit, input);
 		});
-		lines.push(`- ${text(member.name)} — ${readableLabel(finding.kind)}: ${text(finding.rationale)} ${"applicability" in finding ? readableLabel(finding.applicability) : ""} ${"severity" in finding && finding.severity ? text(finding.severity) : ""} ${citations.join(" ")}`);
+		const tail = ` — ${readableLabel(finding.kind)}: ${text(finding.rationale)} ${"applicability" in finding ? readableLabel(finding.applicability) : ""} ${"severity" in finding && finding.severity ? text(finding.severity) : ""} ${citations.join(" ")}`;
+		const members = groups.get(tail) ?? /* @__PURE__ */ new Map();
+		if (!members.has(member.id)) members.set(member.id, findingName(r, member));
+		groups.set(tail, members);
 	}
-	return lines;
+	return [...groups].map(([tail, members]) => `- ${[...members.values()].join(", ")}${tail}`);
 }
 function assessmentLines({ input, units, summary }) {
 	if (!input.coverage.counts.assessedUnits) return [];

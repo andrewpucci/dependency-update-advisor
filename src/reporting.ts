@@ -667,8 +667,16 @@ function coverageLines({ input }: Review): string[] {
   ];
 }
 
-function findingLines({ input, units }: Review): string[] {
-  const lines: string[] = [];
+function findingName(r: Review, member: DecisionUnit['members'][number]): string {
+  const shared = r.units
+    .flatMap((unit) => unit.members)
+    .some((item) => item.id !== member.id && item.name === member.name);
+  return shared ? `${text(member.name)} (${uncheckedQualifier(r, member)})` : text(member.name);
+}
+
+function findingLines(r: Review): string[] {
+  const { input, units } = r;
+  const groups = new Map<string, Map<string, string>>();
   for (const unit of units) {
     for (const finding of unit.findings) {
       const member = unit.members.find((item) => item.id === finding.memberId);
@@ -698,12 +706,13 @@ function findingLines({ input, units }: Review): string[] {
           input,
         );
       });
-      lines.push(
-        `- ${text(member.name)} — ${readableLabel(finding.kind)}: ${text(finding.rationale)} ${'applicability' in finding ? readableLabel(finding.applicability) : ''} ${'severity' in finding && finding.severity ? text(finding.severity) : ''} ${citations.join(' ')}`,
-      );
+      const tail = ` — ${readableLabel(finding.kind)}: ${text(finding.rationale)} ${'applicability' in finding ? readableLabel(finding.applicability) : ''} ${'severity' in finding && finding.severity ? text(finding.severity) : ''} ${citations.join(' ')}`;
+      const members = groups.get(tail) ?? new Map<string, string>();
+      if (!members.has(member.id)) members.set(member.id, findingName(r, member));
+      groups.set(tail, members);
     }
   }
-  return lines;
+  return [...groups].map(([tail, members]) => `- ${[...members.values()].join(', ')}${tail}`);
 }
 
 function assessmentLines({ input, units, summary }: Review): string[] {

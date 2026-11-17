@@ -2041,3 +2041,126 @@ test('names a concrete manual step for each category', () => {
   expect(gap(['budget'], 'installScript')).toContain("review pkg's install scripts");
   expect(gap(['budget'], 'uploadedArtifact')).toContain("review pkg's uploaded artifact evidence");
 });
+
+async function renderLargeInventory() {
+  const { largeInventoryScenario } = await import('../tests/parity/large-inventory.js');
+  const scenario = await largeInventoryScenario({ members: 93, duplicateNames: 2 });
+  const result = renderDecisionBrief(scenario.render);
+  if (!result.ok) throw new Error(`large inventory render failed: ${result.category}`);
+  const lines = result.body
+    .split('\n')
+    .filter((line) => line.startsWith('- ') && line.includes(' — '));
+  return { packet: scenario.packet, body: result.body, lines };
+}
+
+function namesPart(line: string) {
+  return line.slice(2, line.indexOf(' — '));
+}
+
+function tailOf(line: string) {
+  return line.slice(line.indexOf(' — '));
+}
+
+function escapeRegExp(value: string) {
+  return value.replace(/[.*+?^${}()|[\]\\]/gu, '\\$&');
+}
+
+function changeName(change: { to?: unknown; from?: unknown }) {
+  const side = (change.to ?? change.from) as { name?: string; action?: string } | undefined;
+  return side?.name ?? side?.action;
+}
+
+function citationKey(
+  packet: Awaited<ReturnType<typeof renderLargeInventory>>['packet'],
+  sourceId: string,
+) {
+  const source = packet.sources.find((item) => item.id === sourceId);
+  if (!source) throw new Error(`missing source ${sourceId}`);
+  if (source.provenance.kind === 'file') return source.provenance.revision;
+  if (source.provenance.kind === 'upstream') return source.provenance.url;
+  throw new Error(`unexpected provenance ${source.provenance.kind}`);
+}
+
+test('merges findings that share every rendered field into one line each', async () => {
+  const { packet, lines } = await renderLargeInventory();
+  const keys = new Set(
+    packet.findings.map((finding) =>
+      JSON.stringify([
+        finding.kind,
+        finding.rationale,
+        'applicability' in finding ? (finding.applicability ?? null) : null,
+        'severity' in finding ? (finding.severity ?? null) : null,
+        ...finding.references.map((id) => citationKey(packet, id)),
+      ]),
+    ),
+  );
+  const tails = lines.map(tailOf);
+  expect(new Set(tails).size).toBe(tails.length);
+  expect(lines).toHaveLength(keys.size);
+  expect(lines.length).toBeLessThan(packet.findings.length);
+});
+
+test('names every member of a merged finding line', async () => {
+  const { packet, lines } = await renderLargeInventory();
+  const duplicated = new Set<string>();
+  const seen = new Set<string>();
+  for (const change of packet.changes) {
+    const name = changeName(change);
+    if (name === undefined) continue;
+    if (seen.has(name)) duplicated.add(name);
+    seen.add(name);
+  }
+  for (const finding of packet.findings) {
+    const change = packet.changes.find((item) => item.id === finding.memberId);
+    const name = change && changeName(change);
+    if (!change || name === undefined) throw new Error('finding member has no name');
+    // A same-named member must match its own copy's qualifier, which ends with its version.
+    const version = ((change.to ?? change.from) as { version?: string }).version ?? 'unknown';
+    const entry = duplicated.has(name)
+      ? new RegExp(
+          `(?:^|, )${escapeRegExp(name)} \\([^)]*, ${escapeRegExp(version)}\\)(?:,|$)`,
+          'u',
+        )
+      : new RegExp(`(?:^|, )${escapeRegExp(name)}(?:,|$)`, 'u');
+    expect(
+      lines.some((line) => line.includes(`: ${finding.rationale}`) && entry.test(namesPart(line))),
+    ).toBe(true);
+  }
+});
+
+test('qualifies same-named members with distinct qualifiers on a merged line', async () => {
+  const { packet, lines } = await renderLargeInventory();
+  for (const name of ['child-0', 'child-1']) {
+    const qualified = new RegExp(`(?:^|, )${escapeRegExp(name)} \\((npm[^)]*)\\)`, 'gu');
+    const merged = lines
+      .map((line) => [...namesPart(line).matchAll(qualified)].map((match) => match[1]))
+      .find((qualifiers) => qualifiers.length === 2);
+    expect(merged, `${name} copies on one finding line`).toBeDefined();
+    expect(merged![0]).not.toBe(merged![1]);
+    const bare = new RegExp(`(?:^|, )${escapeRegExp(name)}(?:,|$)`, 'u');
+    expect(lines.some((line) => bare.test(namesPart(line)))).toBe(false);
+    expect(packet.changes.filter((change) => changeName(change) === name).length).toBe(2);
+  }
+});
+
+test('keeps release-metadata findings with differing upstream URLs on separate lines', async () => {
+  const { packet, lines } = await renderLargeInventory();
+  const urlsByRationale = new Map<string, Set<string>>();
+  for (const finding of packet.findings) {
+    const keys = finding.references.map((id) => citationKey(packet, id));
+    const bucket = urlsByRationale.get(finding.rationale) ?? new Set<string>();
+    for (const key of keys) bucket.add(key);
+    urlsByRationale.set(finding.rationale, bucket);
+  }
+  const differing = [...urlsByRationale].filter(([, urls]) => urls.size > 1);
+  expect(differing.length).toBeGreaterThan(0);
+  for (const [rationale] of differing) {
+    const rendered = lines.filter((line) => line.includes(`: ${rationale}`));
+    const distinct = new Set(
+      packet.findings
+        .filter((finding) => finding.rationale === rationale)
+        .map((finding) => finding.references.map((id) => citationKey(packet, id)).join('\n')),
+    );
+    expect(rendered).toHaveLength(distinct.size);
+  }
+});

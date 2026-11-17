@@ -1574,7 +1574,7 @@ test.each([
 });
 
 test('hands a group too large to render off as a failure that says so, never as a defect', async () => {
-  const { input, sink } = await setup({ evidence: 'changes', children: 100 });
+  const { input, sink } = await setup({ evidence: 'changes', children: 120 });
   const result = await runReview(input);
   // The brief must not truncate a required unit, so it fails; the prior comment is preserved.
   expect(result).toMatchObject({
