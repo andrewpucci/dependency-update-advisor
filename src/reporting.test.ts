@@ -4,11 +4,13 @@ import { parseReviewConfig } from './config.js';
 import {
   EVIDENCE_REASONS,
   validateReviewPacket,
+  type ChangeEvidence,
   type EvidenceReason,
   type ReviewPacket,
 } from './schema.js';
 import { formDecisionUnits, summarizeDecisionCoverage, type DecisionUnit } from './units.js';
 import { evidenceGap, renderDecisionBrief } from './reporting.js';
+import { limit } from './limits.js';
 
 function emptyBrief() {
   const repository = { id: 101, owner: 'example', name: 'consumer' };
@@ -2041,9 +2043,7 @@ test('names a concrete manual step for each category', () => {
   expect(gap(['budget'], 'uploadedArtifact')).toContain("review pkg's uploaded artifact evidence");
 });
 
-async function renderLargeInventory(
-  options: Omit<LargeInventoryOptions, 'members' | 'duplicateNames'> = {},
-) {
+async function renderLargeInventory(options: Omit<LargeInventoryOptions, 'duplicateNames'> = {}) {
   const { largeInventoryScenario } = await import('../tests/parity/large-inventory.js');
   const scenario = await largeInventoryScenario({ members: 93, duplicateNames: 2, ...options });
   const result = renderDecisionBrief(scenario.render);
@@ -2644,4 +2644,195 @@ test('leaves a member with an attributable finding off its category checked line
     .split('\n')
     .find((line) => line.startsWith('- vulnerability: '));
   expect(vulnerability).toMatch(/(?:for |, )child-0(?:,|\.$)/u);
+});
+
+/** Markdown escaping as the renderer applies it to model text (see `text` in reporting.ts). */
+function renderedText(value: string) {
+  return value.replace(/([\\`*_[\]{}()!|~])/gu, '\\$1').replace(/([@#:])/gu, '$1\u200b');
+}
+
+/** The R1 measurements: 93 members, 21 unresolved, 71 follow-ups, three or four shared gaps. */
+function r1Evidence(memberIndex: number, category: string): ChangeEvidence | null {
+  if (memberIndex === 21) return null;
+  if (category === 'upstream')
+    return { status: 'unavailable', reasons: ['unsupported'], sourceIds: [] };
+  if (category === 'vulnerability')
+    return { status: 'unavailable', reasons: ['budget'], sourceIds: [] };
+  if (category === 'malware') {
+    const reason: EvidenceReason = memberIndex < 10 ? 'budget' : 'missing';
+    return { status: 'unavailable', reasons: [reason], sourceIds: [] };
+  }
+  return null;
+}
+
+test('the R1-shaped fixture fits the body limit and names every required record', async () => {
+  // R1 had 93 units including two same-named pairs: 91 children plus 2 nested copies.
+  const { packet, body, render } = await renderLargeInventory({
+    members: 91,
+    unresolved: 21,
+    followups: 71,
+    evidence: r1Evidence,
+  });
+  expect(render.coverage.inventory.units.filter((unit) => unit.ecosystem === 'npm')).toHaveLength(
+    93,
+  );
+  expect(body.length).toBeLessThanOrEqual(limit('comment.maxBodyCodeUnits'));
+
+  const queueEntries = queueItemsOf(body).flatMap(queueEntriesOf);
+  expect(queueEntries).toHaveLength(21);
+  for (const { unit } of unresolvedOf(render)) {
+    expect(unitQueued(queueEntries, unit), unit.members[0].name).toBe(true);
+    // The queue renders the required categories; other baseline gaps are outside this check.
+    const phrases = unit.evidenceLinks
+      .filter((link) => link.status !== 'available' && REQUIRED_CATEGORIES.includes(link.category))
+      .map((link) => `${link.category} evidence is ${link.status} (${link.reasons.join(', ')})`);
+    for (const phrase of phrases) {
+      const items = queueItemsOf(body).filter((item) => item.includes(phrase));
+      expect(unitQueued(items.flatMap(queueEntriesOf), unit), phrase).toBe(true);
+    }
+  }
+
+  // Gap lines and gap queue items never ask for a CI rerun. An unresolved unit's analysis
+  // reason and its recovery sentence say so, but they are not evidence gaps, so they are set aside.
+  const unitText = [
+    ...new Set(unresolvedOf(render).map(({ reason }) => reason)),
+    'Rerun CI to retry dependency analysis.',
+  ];
+  const gapItems = queueItemsOf(body)
+    .filter((item) => item.includes(' evidence is '))
+    .map((item) => unitText.reduce((text, sentence) => text.split(sentence).join(''), item));
+  const gapText = [...gapItems, ...gapLinesOf(body)];
+  expect(gapText.length).toBeGreaterThan(0);
+  for (const line of gapText) expect(line).not.toMatch(/rerun ci/iu);
+
+  const section = followupSectionOf(body);
+  const descriptions = render.records.flatMap((record) =>
+    (record.assessment?.followups ?? []).map((followup) => followup.description),
+  );
+  // Every unit but child 21 has a gap: 93 units - 1 merge - 21 unresolved = 71 follow-ups, as in R1.
+  expect(descriptions).toHaveLength(71);
+  for (const description of descriptions)
+    expect(section, description).toContain(renderedText(description));
+
+  for (const { link, member } of assessedGapsOf(render)) {
+    const phrase = `${link.category} evidence is ${link.status} (${link.reasons.join(', ')})`;
+    const line = gapLinesOf(body).find((entry) => entry.includes(phrase));
+    expect(line, phrase).toBeDefined();
+    expect(
+      entryPattern(render, member).test(line!.slice(2, line!.indexOf(': '))),
+      member.name,
+    ).toBe(true);
+  }
+
+  const children = packet.changes.filter(
+    (change) => change.ecosystem === 'npm' && changeName(change)?.startsWith('child-'),
+  );
+  const child21 = children[21];
+  const unitIndex = render.coverage.inventory.units.findIndex((unit) =>
+    unit.members.some((member) => member.id === child21.id),
+  );
+  const unit = render.coverage.inventory.units[unitIndex];
+  const record = render.records[unitIndex];
+  expect(record.state.state).toBe('assessed');
+  expect(record.assessment?.verdict).toBe('merge');
+  expect(record.assessment?.followups ?? []).toHaveLength(0);
+  // Baseline links outside the required categories can be unavailable without a policy gap.
+  expect(render.coverage.policyProvenance.assessments.units[unitIndex].gaps).toEqual([]);
+  for (const category of REQUIRED_CATEGORIES)
+    expect(unit.evidenceLinks.find((link) => link.category === category)?.status, category).toBe(
+      'available',
+    );
+  expect(assessedGapsOf(render).filter((entry) => entry.unit === unit)).toHaveLength(0);
+  const assessed = render.records.filter((entry) => entry.state.state === 'assessed').length;
+  expect(coverageSectionOf(body)).toContain(`${assessed} assessed decision unit`);
+});
+
+test('the checked-state fixture lists each required category once and names the partial finding', async () => {
+  // Index 7 in the base packet's child order is child-0 at 2.0.0, the malware scenario's
+  // target; the validated packet orders children differently, so the member is looked up below.
+  const CHILD0_AT_2_0_0 = 7;
+  const { packet, body, render } = await renderLargeInventory({
+    mode: 'malware',
+    evidence: (memberIndex, category, current) =>
+      memberIndex === CHILD0_AT_2_0_0 && category === 'malware' && current
+        ? { status: 'partial', reasons: ['budget'], sourceIds: current.sourceIds }
+        : null,
+  });
+  expect(body.length).toBeLessThanOrEqual(limit('comment.maxBodyCodeUnits'));
+
+  const partialLinks = render.coverage.inventory.units.flatMap((unit) =>
+    unit.evidenceLinks.filter((link) => link.status === 'partial'),
+  );
+  expect(partialLinks.map((link) => link.category)).toEqual(['malware']);
+  const [partialLink] = partialLinks;
+  const member = render.coverage.inventory.units
+    .flatMap((unit) => unit.members)
+    .find((entry) => entry.id === partialLink.memberId)!;
+  expect(member.name).toBe('child-0');
+  expect(member.proposedVersion ?? member.currentVersion).toBe('2.0.0');
+  const child0 = { id: member.id };
+
+  for (const category of REQUIRED_CATEGORIES) {
+    const label = category === 'installScript' ? 'install script' : category;
+    const lines = checkedLineOf(body, label);
+    expect(lines, category).toHaveLength(1);
+    const names = checkedNamesOf(lines[0]);
+    const expected = expectedCheckedNoneFound(render, category);
+    expect(expected.length, category).toBeGreaterThan(0);
+    for (const entry of expected)
+      expect(entryPattern(render, entry).test(names), `${category}: ${entry.name}`).toBe(true);
+    const others = render.coverage.inventory.units
+      .flatMap((unit) => unit.members)
+      .filter((entry) => !expected.includes(entry));
+    for (const entry of others)
+      expect(entryPattern(render, entry).test(names), `${category} lists ${entry.name}`).toBe(
+        false,
+      );
+  }
+  // child-0 at 2.0.0 is the malware target; that copy is not on the malware checked line.
+  expect(entryPattern(render, member).test(checkedNamesOf(checkedLineOf(body, 'malware')[0]))).toBe(
+    false,
+  );
+
+  const malwareFindings = packet.findings.filter(
+    (finding) => finding.kind === 'malware' && finding.memberId === child0.id,
+  );
+  expect(malwareFindings.length).toBeGreaterThan(0);
+  // The Reasons not to merge line names child-0 without its version, so this accepts a bare or
+  // qualified name, and rejects a line that is about the other copy (1.0.0).
+  for (const finding of malwareFindings) {
+    const prefixes = body
+      .split('\n')
+      .filter((line) => line.includes(`: ${finding.rationale}`))
+      .map((line) => line.slice(0, line.indexOf(`: ${finding.rationale}`)));
+    expect(
+      prefixes.some((prefix) => prefix.includes('child-0') && !prefix.includes('1.0.0')),
+      finding.rationale,
+    ).toBe(true);
+  }
+  const gap = gapLinesOf(body).find((line) =>
+    line.includes('malware evidence is partial (budget)'),
+  );
+  expect(gap).toBeDefined();
+  expect(entryPattern(render, member).test(gap!.slice(2, gap!.indexOf(': ')))).toBe(true);
+});
+
+test('the irreducible boundary fixture returns size, not a rendered brief', async () => {
+  const { largeInventoryScenario } = await import('../tests/parity/large-inventory.js');
+  const followupText = (index: number, name: string) =>
+    `Follow-up ${index} for ${name}: ${'Confirm the recorded evidence with a fresh lookup. '.repeat(6)}`.slice(
+      0,
+      270,
+    );
+  const scenario = await largeInventoryScenario({
+    members: 93,
+    duplicateNames: 2,
+    followups: 71,
+    followupsPerUnit: 8,
+    followupText,
+  });
+  // Under the 50,000-code-unit limit, an oversized brief is reported as size; W2 maps this
+  // to `render-size`, which src/pipeline.test.ts "hands a group too large to render off as a
+  // failure that says so, never as a defect" pins for a real oversized brief.
+  expect(renderDecisionBrief(scenario.render)).toMatchObject({ ok: false, category: 'size' });
 });

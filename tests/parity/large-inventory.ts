@@ -1,18 +1,31 @@
 import { analyzeDecisionUnits } from '../../src/analysis/batches.js';
-import { preparedSnapshot, type PreparedAnalysisBatch } from '../../src/analysis/contract.js';
+import {
+  ANALYSIS_LIMITS,
+  preparedSnapshot,
+  type PreparedAnalysisBatch,
+} from '../../src/analysis/contract.js';
 import { analyzeMistralBatch } from '../../src/analysis/mistral.js';
 import { validateReviewPacket, type ChangeEvidence } from '../../src/schema.js';
 import { formDecisionUnits, type UnitInventory } from '../../src/units.js';
 import { analysisDocument, analysisScenario } from './analysis.js';
+import type { SignalScenarioOptions } from './policy-signals.js';
 
 const CHILD_CATEGORIES = ['upstream', 'vulnerability', 'malware', 'installScript'];
 
 export type LargeInventoryOptions = {
   members?: number;
   duplicateNames?: number;
-  evidence?: (memberIndex: number, category: string) => ChangeEvidence | null;
+  mode?: SignalScenarioOptions['mode'];
+  /** `current` is the change's evidence for that category, or undefined when it has none. */
+  evidence?: (
+    memberIndex: number,
+    category: string,
+    current: ChangeEvidence | undefined,
+  ) => ChangeEvidence | null;
   unresolved?: number;
   followups?: number;
+  /** Follow-ups per merge_with_followups unit; the first uses followupText, the rest add ` (n)`. */
+  followupsPerUnit?: number;
   followupText?: (index: number, name: string) => string;
 };
 
@@ -48,7 +61,8 @@ function withEvidence(
         category === 'vulnerability' && memberIndex >= incompleteFrom
           ? { status: 'unavailable', reasons: ['budget'], sourceIds: [] }
           : null;
-      const next = evidence(memberIndex, category) ?? incomplete;
+      const current = (change.evidence as Record<string, ChangeEvidence | undefined>)[category];
+      const next = evidence(memberIndex, category, current) ?? incomplete;
       if (next && category in change.evidence) replaced[category] = next;
     }
     memberIndex++;
@@ -59,6 +73,18 @@ function withEvidence(
 
 function followupText(index: number, name: string) {
   return `Confirm the recorded evidence gap for ${name} (unit ${index}) with a fresh lookup, then rerun the dependency review before merging the pull request.`;
+}
+
+/** Cuts text to at most `bytes` UTF-8 bytes without splitting a character. */
+function truncateUtf8(text: string, bytes: number) {
+  let out = '';
+  let used = 0;
+  for (const character of text) {
+    used += Buffer.byteLength(character);
+    if (used > bytes) break;
+    out += character;
+  }
+  return out;
 }
 
 function completion(finishReason: 'stop' | 'length', content: string) {
@@ -79,6 +105,7 @@ function stubReply(
     order: Map<string, number>;
     names: Map<string, string>;
     followupText: (index: number, name: string) => string;
+    followupsPerUnit: number;
   },
 ) {
   if (batch.unitIds.every((id) => state.unresolved.has(id)))
@@ -89,8 +116,16 @@ function stubReply(
   const assessments = document.assessments.map((entry) => {
     if (entry.verdict !== 'merge_with_followups') return entry;
     const unit = snapshot.units.find((item) => item.alias === entry.unitId)!;
-    const description = state.followupText(state.order.get(unit.id)!, state.names.get(unit.id)!);
-    return { ...entry, followups: [{ description, blocking: false, references: [] }] };
+    const base = state.followupText(state.order.get(unit.id)!, state.names.get(unit.id)!);
+    const followups = Array.from({ length: state.followupsPerUnit }, (_, index) => ({
+      description: truncateUtf8(
+        index === 0 ? base : `${base} (${index + 1})`,
+        ANALYSIS_LIMITS.followupBytes,
+      ),
+      blocking: false,
+      references: [],
+    }));
+    return { ...entry, followups };
   });
   return completion('stop', JSON.stringify({ assessments }));
 }
@@ -107,6 +142,7 @@ export async function largeInventoryScenario(options: LargeInventoryOptions = {}
   const unresolved = options.unresolved ?? 0;
   const followups = options.followups ?? 0;
   const { scenario, input: base } = await analysisScenario({
+    mode: options.mode,
     inventory: { children: members, anchorUnchanged: true, duplicateNames },
   });
   const childCount = base.inventory.packet.changes.filter(isChild).length;
@@ -133,6 +169,7 @@ export async function largeInventoryScenario(options: LargeInventoryOptions = {}
     order: new Map(inventory.units.map((unit, index) => [unit.id, index])),
     names: new Map(inventory.units.map((unit) => [unit.id, unit.members[0].name])),
     followupText: options.followupText ?? followupText,
+    followupsPerUnit: options.followupsPerUnit ?? 1,
   };
   const analysis = await analyzeDecisionUnits(
     input,
