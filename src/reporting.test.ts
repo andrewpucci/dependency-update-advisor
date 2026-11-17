@@ -437,7 +437,8 @@ test.each([false, true])(
       .filter((line) => line.startsWith('- '));
     expect(items).toHaveLength(new Set(held.map((rule) => rule.findingId)).size);
     expect(items[0]).toMatch(
-      /^- orbit: The exact PyPI release supplies the cited release metadata\./u,
+      // orbit also exists in npm, so the uv package is qualified by its ecosystem.
+      /^- orbit \(uv\): The exact PyPI release supplies the cited release metadata\./u,
     );
     expect(analysis.records.some((record) => record.assessment?.blockers.length === 2)).toBe(model);
     for (const rule of ['recentRelease', 'deprecatedRelease']) {
@@ -477,7 +478,8 @@ test('labels each finding-backed hold with the member the finding is about', asy
     .filter((line) => line.startsWith('- '))
     .map((line) => line.slice(2, line.indexOf(':')));
   // Both deprecated members share one group; orbit is not the group's first member.
-  expect(labels.sort()).toEqual(['child-0', 'orbit']);
+  // orbit exists in npm and uv, so its label carries the ecosystem.
+  expect(labels.sort()).toEqual(['child-0', 'orbit (npm)']);
 });
 
 test('renders assessed decision units without treating required evidence gaps as complete', async () => {
@@ -951,7 +953,11 @@ test.each(['child-0', 'orbit'])(
       .filter((line) => line.startsWith('- '));
     expect(reasons).toHaveLength(1);
     expect(reasons[0]).toMatch(
-      new RegExp(`^- ${owner}: The supplied policy requires a hold\\.`, 'u'),
+      // orbit exists in npm and uv, so the npm gap owner is qualified by its ecosystem.
+      new RegExp(
+        `^- ${owner === 'orbit' ? 'orbit \\(npm\\)' : owner}: The supplied policy requires a hold\\.`,
+        'u',
+      ),
     );
   },
 );
@@ -2798,17 +2804,18 @@ test('the checked-state fixture lists each required category once and names the 
     (finding) => finding.kind === 'malware' && finding.memberId === child0.id,
   );
   expect(malwareFindings.length).toBeGreaterThan(0);
-  // The Reasons not to merge line names child-0 without its version, so this accepts a bare or
-  // qualified name, and rejects a line that is about the other copy (1.0.0).
+  // Another child-0 copy (1.0.0) exists, so the Reasons not to merge line must qualify this one.
+  const holds = body
+    .split('## Reasons not to merge')[1]
+    .split('\n## ')[0]
+    .split('\n')
+    .filter((line) => line.startsWith('- '));
   for (const finding of malwareFindings) {
-    const prefixes = body
-      .split('\n')
-      .filter((line) => line.includes(`: ${finding.rationale}`))
-      .map((line) => line.slice(0, line.indexOf(`: ${finding.rationale}`)));
-    expect(
-      prefixes.some((prefix) => prefix.includes('child-0') && !prefix.includes('1.0.0')),
-      finding.rationale,
-    ).toBe(true);
+    const line = holds.find((entry) => entry.includes(`: ${finding.rationale}`));
+    expect(line, finding.rationale).toBeDefined();
+    const label = line!.slice(2, line!.indexOf(`: ${finding.rationale}`));
+    expect(label).toMatch(/ \(npm, .*, 2\.0\.0\)$/u);
+    expect(entryPattern(render, member).test(label), label).toBe(true);
   }
   const gap = gapLinesOf(body).find((line) =>
     line.includes('malware evidence is partial (budget)'),

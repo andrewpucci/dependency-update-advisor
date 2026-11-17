@@ -607,22 +607,29 @@ function distinctText(values: readonly string[]): string {
   return [...new Set(values)].map(text).join(' ');
 }
 
+/** One Reasons-not-to-merge line for a finding-backed hold and the model blockers on it. */
+function findingHoldLine(r: Review, { unit, finding, blockers }: Review['holds'][number]): string {
+  if (!finding || !finding.remediation.length || !finding.validation.length)
+    throw new RenderFailure('content');
+  const member = unit.members.find((entry) => entry.id === finding.memberId);
+  if (!member) throw new RenderFailure('reference');
+  const links = verifiedLinks(r, finding);
+  const evidence = blockers.map((hold) => blockerEvidence(r, hold)).filter(Boolean);
+  const impact = blockers.length
+    ? distinctText(blockers.map(({ blocker }) => blocker.impact))
+    : 'this finding requires a hold.';
+  return `- ${displayName(r, member)}: ${text(finding.rationale)} Impact: ${impact}${evidence.length ? ` Evidence: ${evidence.join(' ')}` : ''} Remediation: ${distinctText([...finding.remediation, ...blockers.flatMap(({ blocker }) => blocker.remediation)])} Validation: ${distinctText([...finding.validation, ...blockers.flatMap(({ blocker }) => blocker.validation)])} ${links.join(' ')}`;
+}
+
 function blockerLines(r: Review): string[] {
   const { holds, modelHolds } = r;
   if (!holds.length && !modelHolds.length) return [];
-  const lines = ['', '## Reasons not to merge', ''];
-  for (const { unit, finding, blockers } of holds) {
-    if (!finding || !finding.remediation.length || !finding.validation.length)
-      throw new RenderFailure('content');
-    const links = verifiedLinks(r, finding);
-    const evidence = blockers.map((hold) => blockerEvidence(r, hold)).filter(Boolean);
-    const impact = blockers.length
-      ? distinctText(blockers.map(({ blocker }) => blocker.impact))
-      : 'this finding requires a hold.';
-    lines.push(
-      `- ${text(unit.members.find((member) => member.id === finding.memberId)?.name ?? '')}: ${text(finding.rationale)} Impact: ${impact}${evidence.length ? ` Evidence: ${evidence.join(' ')}` : ''} Remediation: ${distinctText([...finding.remediation, ...blockers.flatMap(({ blocker }) => blocker.remediation)])} Validation: ${distinctText([...finding.validation, ...blockers.flatMap(({ blocker }) => blocker.validation)])} ${links.join(' ')}`,
-    );
-  }
+  const lines = [
+    '',
+    '## Reasons not to merge',
+    '',
+    ...holds.map((hold) => findingHoldLine(r, hold)),
+  ];
   for (const hold of modelHolds) {
     if (hold.rule?.findingId) continue;
     const { unit, blocker, rule } = hold;
@@ -631,7 +638,7 @@ function blockerLines(r: Review): string[] {
     const member = unit.members.find((entry) => entry.id === memberId);
     if (!member) throw new RenderFailure('reference');
     lines.push(
-      `- ${text(member.name)}: ${text(blocker.reason)} Impact: ${text(blocker.impact)} Evidence: ${evidence || 'The policy requires action on the identified evidence gap.'} Remediation: ${blocker.remediation.map(text).join(' ')} Validation: ${blocker.validation.map(text).join(' ')}`,
+      `- ${displayName(r, member)}: ${text(blocker.reason)} Impact: ${text(blocker.impact)} Evidence: ${evidence || 'The policy requires action on the identified evidence gap.'} Remediation: ${blocker.remediation.map(text).join(' ')} Validation: ${blocker.validation.map(text).join(' ')}`,
     );
   }
   return lines;
