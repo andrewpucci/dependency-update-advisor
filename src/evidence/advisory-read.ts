@@ -40,6 +40,8 @@ export type AdvisoryLookup = Readonly<{
 export type AdvisoryReader = Readonly<{
   read: (target: unknown) => Promise<AdvisoryLookup>;
   close: () => void;
+  /** The reason this reader refuses all further reads, or null while it can still read. */
+  stopped?: () => EvidenceReason | null;
 }>;
 type Dependencies = {
   fetch: (url: string, init: RequestInit) => Promise<Response>;
@@ -422,7 +424,10 @@ class Reader implements AdvisoryReader {
   private busy = false;
   private closed = false;
   /** A rate limit stops only the provider that returned it, for the rest of the session. */
-  private readonly stopped: Record<Provider, EvidenceReason | null> = { github: null, osv: null };
+  private readonly providerStop: Record<Provider, EvidenceReason | null> = {
+    github: null,
+    osv: null,
+  };
   private active: (() => void) | null = null;
   /** Base and head of one package reuse its discovery reads, including a failed one. */
   private readonly discoveries = new Map<string, Discovery>();
@@ -437,8 +442,16 @@ class Reader implements AdvisoryReader {
     this.closed = true;
     this.active?.();
   }
+  /**
+   * The reason this reader refuses every further read: closed, or both providers rate-limited.
+   * A rate limit from one provider stops only that provider's targets, which then fail alone.
+   */
+  stopReason(): EvidenceReason | null {
+    if (this.closed) return 'unknown';
+    return this.providerStop.github && this.providerStop.osv ? 'rate_limit' : null;
+  }
   private remaining(provider: Provider) {
-    const stopped = this.closed ? 'unknown' : this.stopped[provider];
+    const stopped = this.closed ? 'unknown' : this.providerStop[provider];
     advisoryCheck(!this.deps.signal?.aborted && !stopped, stopped ?? 'unknown');
     return this.clock.remaining(stopped);
   }
@@ -472,7 +485,7 @@ class Reader implements AdvisoryReader {
     }
   }
   private stop(provider: Provider, reason: EvidenceReason): never {
-    if (reason === 'rate_limit') this.stopped[provider] = reason;
+    if (reason === 'rate_limit') this.providerStop[provider] = reason;
     throw new AdvisoryFailure(reason);
   }
   private async page(
@@ -663,6 +676,7 @@ function createReader(
       kind: 'ready',
       read: (value: unknown) => reader.read(value),
       close: () => reader.close(),
+      stopped: () => reader.stopReason(),
     });
   } catch {
     return { kind: 'invalid' };

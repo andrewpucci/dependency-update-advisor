@@ -1,9 +1,14 @@
 import { expect, test } from 'vite-plus/test';
-import { createAdvisoryReader } from './advisory-read.js';
+import {
+  AdvisoryFailure,
+  createAdvisoryReader,
+  type AdvisoryReader,
+  type AdvisoryTarget,
+} from './advisory-read.js';
 import { enrichAdvisories } from './advisories.js';
 import { createGithubReadSession } from '../github-read.js';
 import { collectNpmInventory } from './npm.js';
-import { validateReviewPacket, type PacketSource } from '../schema.js';
+import { validateReviewPacket, type PacketChange, type PacketSource } from '../schema.js';
 import { npmScenario } from '../../tests/parity/npm-inventory.js';
 
 export const advisoryLimits = {
@@ -29,8 +34,8 @@ const advisory = {
     { package: { ecosystem: 'npm', name: 'fixture-anchor' }, vulnerable_version_range: '>=1.1.0' },
   ],
 };
-async function fixture(both = false) {
-  const f = npmScenario(1);
+async function fixture(both = false, additions = 1) {
+  const f = npmScenario(additions);
   const opened = await createGithubReadSession(
     {
       binding: f.binding,
@@ -441,4 +446,103 @@ test('duplicate semantic instances and dangling references fail before I/O', asy
   ).toEqual({ kind: 'invalid' });
   expect(calls).toBe(0);
   reader.close();
+});
+
+function realReader(): AdvisoryReader {
+  const reader = createAdvisoryReader(advisoryLimits, {
+    now: () => 0,
+    fetch: async (url) =>
+      Response.json(
+        new URL(url).searchParams.get('affects') === 'fixture-anchor@1.1.0' ? [advisory] : [],
+      ),
+  });
+  if (reader.kind !== 'ready') throw new Error('reader');
+  return reader;
+}
+/** Delegates to the real reader; `fail` throws a malformed read, `stopAfter` stops after N reads. */
+function scriptedReader(
+  options: { fail?: (target: AdvisoryTarget) => boolean; stopAfter?: number } = {},
+): AdvisoryReader {
+  const real = realReader();
+  let reads = 0;
+  return {
+    read: async (target) => {
+      reads++;
+      if (options.fail?.(target as AdvisoryTarget)) throw new AdvisoryFailure('malformed');
+      return real.read(target);
+    },
+    close: () => real.close(),
+    stopped: () =>
+      options.stopAfter !== undefined && reads >= options.stopAfter ? 'rate_limit' : null,
+  };
+}
+function vulnerability(output: { changes: readonly PacketChange[] }, id: string) {
+  return output.changes.find((c) => c.id === id)!.evidence.vulnerability;
+}
+
+test("one member's read failure leaves the others intact", async () => {
+  const { input } = await fixture(false, 3);
+  const members = input.changes.filter((c) => !('basis' in c));
+  const second = members[1];
+  const failName = ((second.to ?? second.from) as { name: string }).name;
+  const baseline = await enrichAdvisories(input, { reader: scriptedReader() });
+  const result = await enrichAdvisories(input, {
+    reader: scriptedReader({ fail: (t) => t.name === failName }),
+  });
+  if (baseline.kind !== 'enriched' || result.kind !== 'enriched') throw new Error('evidence');
+  expect(result.stopped).toBeUndefined();
+  const failed = vulnerability(result, second.id);
+  expect(failed).toEqual({
+    status: 'unavailable',
+    reasons: ['malformed'],
+    sourceIds: [expect.any(String)],
+  });
+  expect(result.sources.map((s) => s.id)).toContain(failed.sourceIds[0]);
+  for (const member of members.filter((c) => c.id !== second.id))
+    expect(vulnerability(result, member.id)).toEqual(vulnerability(baseline, member.id));
+});
+
+test("a failed member's partial additions are removed", async () => {
+  const { input } = await fixture(true, 3);
+  const anchor = input.changes.find((c) => !('basis' in c) && c.from && c.to)!;
+  const fromSide = anchor.from as { name: string; version: string };
+  const baseline = await enrichAdvisories(input, { reader: scriptedReader() });
+  const result = await enrichAdvisories(input, {
+    reader: scriptedReader({
+      fail: (t) => t.name === fromSide.name && t.version === fromSide.version,
+    }),
+  });
+  if (baseline.kind !== 'enriched' || result.kind !== 'enriched') throw new Error('evidence');
+  const inputSourceIds = new Set(input.sources.map((s) => s.id));
+  const appended = (output: { sources: readonly PacketSource[] }) =>
+    output.sources
+      .filter((s) => !inputSourceIds.has(s.id) && s.memberIds.includes(anchor.id))
+      .map((s) => s.id);
+  // The all-success run appends several sources for this member, so the rollback is observable.
+  expect(appended(baseline).length).toBeGreaterThan(1);
+  const failed = vulnerability(result, anchor.id);
+  expect(failed).toEqual({
+    status: 'unavailable',
+    reasons: ['malformed'],
+    sourceIds: [expect.any(String)],
+  });
+  expect(appended(result)).toEqual(failed.sourceIds);
+  expect(result.lookups.filter((l) => l.memberId === anchor.id && l.lookup !== null)).toEqual([]);
+});
+
+test('a stopped reader keeps completed members and marks the rest', async () => {
+  const { input } = await fixture(false, 3);
+  const members = input.changes.filter((c) => !('basis' in c));
+  const baseline = await enrichAdvisories(input, { reader: scriptedReader() });
+  const result = await enrichAdvisories(input, { reader: scriptedReader({ stopAfter: 1 }) });
+  if (baseline.kind !== 'enriched' || result.kind !== 'enriched') throw new Error('evidence');
+  expect(result.stopped).toBe('rate_limit');
+  const [first, ...later] = members;
+  expect(later.length).toBeGreaterThanOrEqual(2);
+  expect(vulnerability(result, first.id)).toEqual(vulnerability(baseline, first.id));
+  for (const member of later)
+    expect(vulnerability(result, member.id)).toMatchObject({
+      status: 'unavailable',
+      reasons: ['rate_limit'],
+    });
 });

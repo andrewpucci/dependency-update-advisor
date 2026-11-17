@@ -175,6 +175,31 @@ test('records an unavailable stage with its reason and continues with the eviden
   expect(result.upstreamAttempts.length).toBeGreaterThan(0);
 });
 
+test('records a stage whose reader stopped early as unavailable with the stop reason', async () => {
+  const { fixture, packet } = await scenario();
+  const actualUpstream = await vi.importActual<typeof import('./evidence/upstream-read.js')>(
+    './evidence/upstream-read.js',
+  );
+  vi.mocked(upstreamReadModule.createUpstreamReader).mockImplementationOnce((...args) => {
+    const opened = actualUpstream.createUpstreamReader(...args);
+    if (opened.kind !== 'ready') return opened;
+    return { ...opened, reader: { ...opened.reader, stopped: () => 'timeout' as const } };
+  });
+  const actualAdvisories = await vi.importActual<typeof import('./evidence/advisories.js')>(
+    './evidence/advisories.js',
+  );
+  vi.mocked(advisoryModule.enrichAdvisories).mockImplementationOnce(async (...args) => {
+    const result = await actualAdvisories.enrichAdvisories(...args);
+    return result.kind === 'enriched' ? { ...result, stopped: 'rate_limit' } : result;
+  });
+  const result = await runResearch(base(fixture, packet));
+  if (result.kind !== 'ready') throw new Error('research');
+  expect(result.unavailable).toEqual([
+    { stage: 'upstream', reason: 'timeout' },
+    { stage: 'advisories', reason: 'rate_limit' },
+  ]);
+});
+
 test('reports each stage start and end to an observer, with the stop reason', async () => {
   const { fixture, packet } = await scenario();
   vi.mocked(advisoryModule.enrichAdvisories).mockResolvedValueOnce({

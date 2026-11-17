@@ -172,6 +172,8 @@ async function enrichAdvisoryStage(
     { reader: opened },
   );
   if (advisories.kind !== 'enriched') return fail('advisories', failure(advisories));
+  // A later task applies the retained members; until then a stopped stage stays unavailable.
+  if (advisories.stopped) return fail('advisories', advisories.stopped);
   replaceEvidence(progress, advisories);
 }
 

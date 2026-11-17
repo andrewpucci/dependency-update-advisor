@@ -72,6 +72,8 @@ export type AdvisoryEnrichment = {
   sources: PacketSource[];
   findings: Finding[];
   lookups: MemberAdvisoryLookup[];
+  /** Set when the reader stopped early; members after the stop carry this reason. */
+  stopped?: EvidenceReason;
 };
 export type AdvisoryResult =
   | Readonly<AdvisoryEnrichment>
@@ -545,20 +547,20 @@ export function prepareAdvisoryInput(
     };
   }
 }
-function budgetGap(output: AdvisoryEnrichment, change: PacketChange) {
+function failureGap(output: AdvisoryEnrichment, change: PacketChange, reason: EvidenceReason) {
   const side = change.to ? 'head' : 'base',
     gap = source(change, side, null);
-  gap.id += ':budget';
-  gap.reasons = ['budget'];
+  gap.id += ':' + reason;
+  gap.reasons = [reason];
   addSource(output, gap);
   change.evidence.vulnerability = {
     status: 'unavailable',
-    reasons: ['budget'],
+    reasons: [reason],
     sourceIds: [gap.id],
   };
-  output.lookups.push({ memberId: change.id, side, lookup: null, reasons: ['budget'] });
+  output.lookups.push({ memberId: change.id, side, lookup: null, reasons: [reason] });
   if (change.to && change.from)
-    output.lookups.push({ memberId: change.id, side: 'base', lookup: null, reasons: ['budget'] });
+    output.lookups.push({ memberId: change.id, side: 'base', lookup: null, reasons: [reason] });
 }
 async function enrichMember(
   input: AdvisoryInput,
@@ -567,19 +569,44 @@ async function enrichMember(
   reader: AdvisoryReader,
   cache: Map<string, AdvisoryLookup>,
 ) {
+  const original = structuredClone(change);
   const checkpoint = {
     sources: output.sources.length,
     findings: output.findings.length,
     lookups: output.lookups.length,
   };
-  const head = change.to ? await collectSide(input, change, 'head', output, reader, cache) : null;
-  const base = change.from ? await collectSide(input, change, 'base', output, reader, cache) : null;
-  attachFindings(change, output, base, head);
+  try {
+    const head = change.to ? await collectSide(input, change, 'head', output, reader, cache) : null;
+    const base = change.from
+      ? await collectSide(input, change, 'base', output, reader, cache)
+      : null;
+    attachFindings(change, output, base, head);
+  } catch (error) {
+    output.sources.length = checkpoint.sources;
+    output.findings.length = checkpoint.findings;
+    output.lookups.length = checkpoint.lookups;
+    Object.assign(change, structuredClone(original));
+    failureGap(output, change, error instanceof AdvisoryFailure ? error.reason : 'unknown');
+    advisoryCheck(fits(output, input), 'budget');
+    return;
+  }
   if (fits(output, input)) return;
   output.sources.length = checkpoint.sources;
   output.findings.length = checkpoint.findings;
   output.lookups.length = checkpoint.lookups;
-  budgetGap(output, change);
+  failureGap(output, change, 'budget');
+  advisoryCheck(fits(output, input), 'budget');
+}
+/** A stopped reader refuses every later read, so members after `last` are unresearched. */
+function markUnresearched(
+  input: AdvisoryInput,
+  output: AdvisoryEnrichment,
+  last: PacketChange,
+  stopped: EvidenceReason,
+) {
+  output.stopped = stopped;
+  for (const rest of output.changes.slice(output.changes.indexOf(last) + 1))
+    if (!('basis' in rest)) failureGap(output, rest, stopped);
   advisoryCheck(fits(output, input), 'budget');
 }
 export async function enrichAdvisories(
@@ -603,6 +630,11 @@ export async function enrichAdvisories(
     for (const change of output.changes) {
       if ('basis' in change) continue;
       await enrichMember(input, output, change, dependencies.reader, cache);
+      const stopped = dependencies.reader.stopped?.() ?? null;
+      if (stopped) {
+        markUnresearched(input, output, change, stopped);
+        break;
+      }
     }
     return freeze(output);
   } catch (error) {

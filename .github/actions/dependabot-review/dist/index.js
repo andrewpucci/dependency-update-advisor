@@ -11226,7 +11226,7 @@ var Reader$1 = class {
 	busy = false;
 	closed = false;
 	/** A rate limit stops only the provider that returned it, for the rest of the session. */
-	stopped = {
+	providerStop = {
 		github: null,
 		osv: null
 	};
@@ -11243,8 +11243,16 @@ var Reader$1 = class {
 		this.closed = true;
 		this.active?.();
 	}
+	/**
+	* The reason this reader refuses every further read: closed, or both providers rate-limited.
+	* A rate limit from one provider stops only that provider's targets, which then fail alone.
+	*/
+	stopReason() {
+		if (this.closed) return "unknown";
+		return this.providerStop.github && this.providerStop.osv ? "rate_limit" : null;
+	}
 	remaining(provider) {
-		const stopped = this.closed ? "unknown" : this.stopped[provider];
+		const stopped = this.closed ? "unknown" : this.providerStop[provider];
 		advisoryCheck(!this.deps.signal?.aborted && !stopped, stopped ?? "unknown");
 		return this.clock.remaining(stopped);
 	}
@@ -11268,7 +11276,7 @@ var Reader$1 = class {
 		}
 	}
 	stop(provider, reason) {
-		if (reason === "rate_limit") this.stopped[provider] = reason;
+		if (reason === "rate_limit") this.providerStop[provider] = reason;
 		throw new AdvisoryFailure(reason);
 	}
 	async page(provider, url, json) {
@@ -11427,7 +11435,8 @@ function createReader(limits, dependencies, kind) {
 		return Object.freeze({
 			kind: "ready",
 			read: (value) => reader.read(value),
-			close: () => reader.close()
+			close: () => reader.close(),
+			stopped: () => reader.stopReason()
 		});
 	} catch {
 		return { kind: "invalid" };
@@ -14231,43 +14240,60 @@ function prepareAdvisoryInput(value) {
 		};
 	}
 }
-function budgetGap(output, change) {
+function failureGap(output, change, reason) {
 	const side = change.to ? "head" : "base", gap = source$1(change, side, null);
-	gap.id += ":budget";
-	gap.reasons = ["budget"];
+	gap.id += ":" + reason;
+	gap.reasons = [reason];
 	addSource(output, gap);
 	change.evidence.vulnerability = {
 		status: "unavailable",
-		reasons: ["budget"],
+		reasons: [reason],
 		sourceIds: [gap.id]
 	};
 	output.lookups.push({
 		memberId: change.id,
 		side,
 		lookup: null,
-		reasons: ["budget"]
+		reasons: [reason]
 	});
 	if (change.to && change.from) output.lookups.push({
 		memberId: change.id,
 		side: "base",
 		lookup: null,
-		reasons: ["budget"]
+		reasons: [reason]
 	});
 }
 async function enrichMember(input, output, change, reader, cache) {
+	const original = structuredClone(change);
 	const checkpoint = {
 		sources: output.sources.length,
 		findings: output.findings.length,
 		lookups: output.lookups.length
 	};
-	const head = change.to ? await collectSide(input, change, "head", output, reader, cache) : null;
-	const base = change.from ? await collectSide(input, change, "base", output, reader, cache) : null;
-	attachFindings(change, output, base, head);
+	try {
+		const head = change.to ? await collectSide(input, change, "head", output, reader, cache) : null;
+		const base = change.from ? await collectSide(input, change, "base", output, reader, cache) : null;
+		attachFindings(change, output, base, head);
+	} catch (error) {
+		output.sources.length = checkpoint.sources;
+		output.findings.length = checkpoint.findings;
+		output.lookups.length = checkpoint.lookups;
+		Object.assign(change, structuredClone(original));
+		failureGap(output, change, error instanceof AdvisoryFailure ? error.reason : "unknown");
+		advisoryCheck(fits(output, input), "budget");
+		return;
+	}
 	if (fits(output, input)) return;
 	output.sources.length = checkpoint.sources;
 	output.findings.length = checkpoint.findings;
 	output.lookups.length = checkpoint.lookups;
-	budgetGap(output, change);
+	failureGap(output, change, "budget");
+	advisoryCheck(fits(output, input), "budget");
+}
+/** A stopped reader refuses every later read, so members after `last` are unresearched. */
+function markUnresearched$1(input, output, last, stopped) {
+	output.stopped = stopped;
+	for (const rest of output.changes.slice(output.changes.indexOf(last) + 1)) if (!("basis" in rest)) failureGap(output, rest, stopped);
 	advisoryCheck(fits(output, input), "budget");
 }
 async function enrichAdvisories(value, dependencies) {
@@ -14288,6 +14314,11 @@ async function enrichAdvisories(value, dependencies) {
 		for (const change of output.changes) {
 			if ("basis" in change) continue;
 			await enrichMember(input, output, change, dependencies.reader, cache);
+			const stopped = dependencies.reader.stopped?.() ?? null;
+			if (stopped) {
+				markUnresearched$1(input, output, change, stopped);
+				break;
+			}
 		}
 		return freeze$3(output);
 	} catch (error) {
@@ -29733,6 +29764,7 @@ async function enrichAdvisoryStage(input, dependencies, readers, progress, fail)
 		...input.comparison?.kind === "available" ? { comparisons: [input.comparison] } : {}
 	}, { reader: opened });
 	if (advisories.kind !== "enriched") return fail("advisories", failure$1(advisories));
+	if (advisories.stopped) return fail("advisories", advisories.stopped);
 	replaceEvidence(progress, advisories);
 }
 async function enrichSignalsStage(input, dependencies, readers, progress, fail, metadata) {
