@@ -8,9 +8,10 @@
 import { writeFileSync } from 'node:fs';
 import { test } from 'vite-plus/test';
 import { authenticatedFetch, researchFetch } from '../../src/adapters.js';
-import { EVIDENCE_READ_ENVELOPE } from '../../src/budget.js';
+import { EVIDENCE_READ_ENVELOPE, RESEARCH_CACHE_LIMITS } from '../../src/budget.js';
 import { createEvidenceCollectors, openEvidenceSession } from '../../src/collection.js';
 import { parseReviewBinding } from '../../src/event.js';
+import { createResearchCache } from '../../src/evidence/research-cache.js';
 import { createDemandRecorder } from '../../src/measurement/demand.js';
 import { assembleReviewPacket } from '../../src/packet.js';
 import { dependencyIdentities } from '../../src/pipeline.js';
@@ -105,6 +106,8 @@ test('measure research read demand', async () => {
   const transport = createGithubTransport({ token, fetch: base, now, startedAt: started });
   const publicFetch = researchFetch(token, base);
   let npmInventory: unknown = null;
+  // As in the pipeline: one cache shared by collection's registry reads and research.
+  const researchCache = createResearchCache(RESEARCH_CACHE_LIMITS);
   let measured: Record<string, number> = {};
   const snapshot = await withTrustedSnapshot(
     { repository, reads: createGithubSnapshotReads(transport) },
@@ -113,6 +116,7 @@ test('measure research read demand', async () => {
         binding: bound,
         dependabot: await trusted.dependabotRoots(),
         registryFetch: publicFetch,
+        researchCache,
         onNpmInventory: (inventory) => (npmInventory = inventory),
         now,
         deadline,
@@ -147,6 +151,7 @@ test('measure research read demand', async () => {
         npmInventory: npmInventory as never,
         comparison: null,
         fetch: publicFetch,
+        cache: researchCache,
         now,
         deadline,
         evaluationTime: Date.now(),

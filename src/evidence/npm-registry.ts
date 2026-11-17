@@ -12,6 +12,7 @@ import {
 import type { NpmNode } from './npm.js';
 import type { Finding } from '../policy.js';
 import { BoundedClock, boundedGet } from './bounded-request.js';
+import type { ResearchCache } from './research-cache.js';
 import { AdvisoryFailure } from './advisory-read.js';
 
 export type NpmRegistryLimits = Readonly<{
@@ -28,6 +29,7 @@ export type NpmRegistryDependencies = Readonly<{
   fetch: (url: string, init: RequestInit) => Promise<Response>;
   now: () => number;
   signal?: AbortSignal;
+  cache?: ResearchCache;
 }>;
 export type NpmMetadataDocument = Readonly<{
   name: string;
@@ -218,7 +220,11 @@ class RegistryReader {
     this.consume(Buffer.byteLength(JSON.stringify(doc)), 'retained', this.limits.maxRetainedBytes);
     return freeze(doc);
   }
-  private async body(response: Response, aborted: Promise<never>): Promise<Buffer> {
+  private async body(
+    response: Response,
+    aborted: Promise<never>,
+    cached: boolean,
+  ): Promise<Buffer> {
     requireMetadata(response.body, 'malformed');
     const reader = response.body.getReader(),
       chunks: Uint8Array[] = [];
@@ -228,7 +234,8 @@ class RegistryReader {
         const chunk = await Promise.race([reader.read(), aborted]);
         if (chunk.done) return Buffer.concat(chunks, size);
         size += chunk.value.byteLength;
-        this.consume(chunk.value.byteLength, 'bytes', this.limits.maxTotalBytes);
+        // A cached response was charged to the reader that fetched it.
+        if (!cached) this.consume(chunk.value.byteLength, 'bytes', this.limits.maxTotalBytes);
         // A per-response cap fails only this read; cumulative budgets stop the attempt.
         requireMetadata(size <= this.limits.maxResponseBytes, 'budget');
         this.remaining();
@@ -248,9 +255,16 @@ class RegistryReader {
           url,
           accept: 'application/json',
           timeoutMs: Math.min(this.limits.requestTimeoutMs, this.remaining()),
+          charge: () => {
+            if (this.requests >= this.limits.maxRequests) {
+              this.stopped = 'budget';
+              throw new RegistryFailure('budget');
+            }
+            this.requests++;
+          },
         },
         () => {},
-        async (response, aborted) => {
+        async (response, aborted, cached) => {
           requireMetadata(
             !response.redirected && (!response.url || response.url === url),
             'unsupported',
@@ -262,7 +276,7 @@ class RegistryReader {
             /^application\/json(?:\s*;|$)/iu.test(response.headers.get('content-type') ?? ''),
             'unsupported',
           );
-          const bytes = await this.body(response, aborted);
+          const bytes = await this.body(response, aborted, cached);
           this.remaining();
           return this.parse(bytes, r, url);
         },
@@ -286,11 +300,6 @@ class RegistryReader {
         key = JSON.stringify([r.name, r.version, r.source]);
       let document = this.cache.get(key);
       if (!document) {
-        if (this.requests >= this.limits.maxRequests) {
-          this.stopped = 'budget';
-          throw new RegistryFailure('budget');
-        }
-        this.requests++;
         try {
           document = await this.fetchDocument(r);
         } catch (error) {

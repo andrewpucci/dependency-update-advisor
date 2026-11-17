@@ -3,6 +3,7 @@ import { copyAdvisoryData, AdvisoryFailure, type AdvisoryLimits } from './adviso
 import { freeze, isPlainObject, isEvidencePath } from './common.js';
 import type { EvidenceReason, PackageSource } from '../schema.js';
 import { BoundedClock, boundedGet } from './bounded-request.js';
+import type { ResearchCache } from './research-cache.js';
 
 export type UpstreamLimits = Readonly<{
   maxRequests: number;
@@ -64,6 +65,7 @@ export type UpstreamDependencies = {
   fetch: (url: string, init: RequestInit) => Promise<Response>;
   now: () => number;
   signal?: AbortSignal;
+  cache?: ResearchCache;
 };
 export class UpstreamFailure extends Error {
   constructor(readonly reason: EvidenceReason) {
@@ -262,17 +264,39 @@ class Reader {
   private readonly nextPages = new Map<string, boolean>();
   private pages = 0;
   private readonly npm: ReturnType<typeof createNpmRegistryReader>;
+  /** Responses served from the run cache; a hit is a read for attempt outcomes, not a charge. */
+  private hits = 0;
+  private readonly deps: UpstreamDependencies;
   constructor(
     readonly limits: UpstreamLimits,
-    private readonly deps: UpstreamDependencies,
+    deps: UpstreamDependencies,
   ) {
+    const cache = deps.cache && this.countingHits(deps.cache);
+    this.deps = { ...deps, cache };
     this.clock = new BoundedClock(limits.totalTimeoutMs, deps);
+    // The nested registry reader shares the cache so an npm hit reaches neither reader's charge.
     this.npm = createNpmRegistryReader(limits, {
       now: deps.now,
       signal: this.controller.signal,
       fetch: (url, init) => this.fetchBounded(url, init),
+      cache,
     });
     requireUpstream(this.npm.kind === 'ready');
+  }
+  private countingHits(cache: ResearchCache): ResearchCache {
+    return {
+      key: (method, url, headers) => cache.key(method, url, headers),
+      lookup: (key) => {
+        const hit = cache.lookup(key);
+        if (hit) this.hits++;
+        return hit;
+      },
+      store: (key, response) => cache.store(key, response),
+    };
+  }
+  /** Live requests plus cache hits: whether a lookup read anything. */
+  private get reads() {
+    return this.requests + this.hits;
   }
   close() {
     this.closed = true;
@@ -328,11 +352,14 @@ class Reader {
   private dispatch(url: string) {
     this.remaining();
     requireUpstream(!this.blocked.has(new URL(url).origin), 'rate_limit');
+    requireUpstream(!this.stopped, this.stopped ?? 'budget');
+  }
+  private charge() {
     if (this.requests >= this.limits.maxRequests) this.stopped = 'budget';
     requireUpstream(!this.stopped, this.stopped ?? 'budget');
     this.requests++;
   }
-  private async body(response: Response, aborted: Promise<never>) {
+  private async body(response: Response, aborted: Promise<never>, cached: boolean) {
     requireUpstream(response.body);
     const reader = response.body.getReader(),
       chunks: Uint8Array[] = [];
@@ -342,7 +369,8 @@ class Reader {
         const chunk = await Promise.race([reader.read(), aborted]);
         if (chunk.done) return Buffer.concat(chunks, size);
         size += chunk.value.byteLength;
-        this.bytes += chunk.value.byteLength;
+        // A cached response was charged to the reader that fetched it.
+        if (!cached) this.bytes += chunk.value.byteLength;
         if (this.bytes > this.limits.maxTotalBytes) this.stopped = 'budget';
         requireUpstream(!this.stopped && size <= this.limits.maxResponseBytes, 'budget');
         this.remaining();
@@ -366,11 +394,12 @@ class Reader {
           accept: 'application/json',
           timeoutMs: Math.min(this.remaining(), this.limits.requestTimeoutMs),
           signal: _init.signal ?? undefined,
+          charge: () => this.charge(),
         },
         (cancel) => {
           this.active = cancel;
         },
-        async (response, aborted) => {
+        async (response, aborted, cached) => {
           requireUpstream(
             !response.redirected && (!response.url || response.url === url),
             'unsupported',
@@ -380,7 +409,9 @@ class Reader {
             if (immediate === 'rate_limit') this.blocked.add(new URL(url).origin);
             throw new UpstreamFailure(immediate);
           }
-          const bytes = response.body ? await this.body(response, aborted) : Buffer.alloc(0);
+          const bytes = response.body
+            ? await this.body(response, aborted, cached)
+            : Buffer.alloc(0);
           if (response.status !== 200) {
             const reason = httpReason(response, bytes);
             if (reason === 'rate_limit') this.blocked.add(new URL(url).origin);
@@ -457,7 +488,7 @@ class Reader {
     key: string | null,
   ): UpstreamLookup {
     let reason = upstreamFailureReason(error);
-    if (key && !this.failures.has(key) && this.requests > before) {
+    if (key && !this.failures.has(key) && this.reads > before) {
       try {
         this.reserve(Buffer.byteLength(key) + Buffer.byteLength(reason));
         this.failures.set(key, reason);
@@ -467,14 +498,14 @@ class Reader {
     }
     return freeze({
       status: 'unavailable',
-      fetched: this.requests > before,
+      fetched: this.reads > before,
       url,
       data: null,
       reasons: [reason],
     });
   }
   async read(value: unknown): Promise<UpstreamLookup> {
-    const before = this.requests;
+    const before = this.reads;
     let url: string | null = null;
     let key: string | null = null;
     if (this.busy)
@@ -496,7 +527,7 @@ class Reader {
       const data = await this.targetData(t, url);
       return freeze({
         status: 'available',
-        fetched: this.requests > before,
+        fetched: this.reads > before,
         url,
         data,
         reasons: [],

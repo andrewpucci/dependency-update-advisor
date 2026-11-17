@@ -1,5 +1,6 @@
 import { expect, test, vi } from 'vite-plus/test';
 import { createAdvisoryReader, createMalwareReader } from './advisory-read.js';
+import { createResearchCache } from './research-cache.js';
 
 const limits = {
   maxRequests: 10,
@@ -364,4 +365,90 @@ test('a joined range over the packet text bound is a budget gap, never truncated
   const result = await r.read(target);
   r.close();
   expect(result).toMatchObject({ complete: false, records: [], reasons: ['budget'] });
+});
+
+const cachedAdvisoryBody = `[${' '.repeat(100)}]`;
+const cachedAdvisoryBytes = Buffer.byteLength(cachedAdvisoryBody);
+const advisoryTarget = (version: string) => ({
+  ecosystem: 'npm' as const,
+  name: 'fixture-cache',
+  version,
+});
+function cachedAdvisoryFetch(calls: string[]) {
+  return async (url: string) => {
+    calls.push(url);
+    return new Response(cachedAdvisoryBody, { headers: { 'content-type': 'application/json' } });
+  };
+}
+test('a cache hit costs no request', async () => {
+  const cache = createResearchCache({ maxEntryBytes: 1 << 20, maxTotalBytes: 1 << 22 });
+  const calls: string[] = [];
+  const deps = { now: () => 0, fetch: cachedAdvisoryFetch(calls), cache };
+  const a = createAdvisoryReader(limits, deps);
+  if (a.kind !== 'ready') throw new Error('reader');
+  const expected = await a.read(advisoryTarget('1.0.0'));
+  a.close();
+  const b = createAdvisoryReader({ ...limits, maxRequests: 1 }, deps);
+  if (b.kind !== 'ready') throw new Error('reader');
+  await b.read(advisoryTarget('2.0.0'));
+  const hit = await b.read(advisoryTarget('1.0.0'));
+  b.close();
+  expect(expected).toMatchObject({ status: 'available', complete: true });
+  expect(hit).toEqual(expected);
+  expect(calls).toHaveLength(2);
+});
+test('a cache hit debits no total bytes', async () => {
+  const cache = createResearchCache({ maxEntryBytes: 1 << 20, maxTotalBytes: 1 << 22 });
+  const calls: string[] = [];
+  const deps = { now: () => 0, fetch: cachedAdvisoryFetch(calls), cache };
+  const a = createAdvisoryReader(limits, deps);
+  if (a.kind !== 'ready') throw new Error('reader');
+  const expected = await a.read(advisoryTarget('1.0.0'));
+  a.close();
+  const fits = cachedAdvisoryBytes + 1;
+  const b = createAdvisoryReader({ ...limits, maxResponseBytes: fits, maxTotalBytes: fits }, deps);
+  if (b.kind !== 'ready') throw new Error('reader');
+  const live = await b.read(advisoryTarget('2.0.0'));
+  const hit = await b.read(advisoryTarget('1.0.0'));
+  b.close();
+  expect(live).toMatchObject({ status: 'available', complete: true });
+  expect(hit).toEqual(expected);
+  expect(calls).toHaveLength(2);
+});
+test('a cached response still respects the per-response cap', async () => {
+  const cache = createResearchCache({ maxEntryBytes: 1 << 20, maxTotalBytes: 1 << 22 });
+  const calls: string[] = [];
+  const deps = { now: () => 0, fetch: cachedAdvisoryFetch(calls), cache };
+  const a = createAdvisoryReader(limits, deps);
+  if (a.kind !== 'ready') throw new Error('reader');
+  await a.read(advisoryTarget('1.0.0'));
+  a.close();
+  const small = cachedAdvisoryBytes - 1;
+  const c = createAdvisoryReader(
+    { ...limits, maxResponseBytes: small, maxTotalBytes: small },
+    deps,
+  );
+  if (c.kind !== 'ready') throw new Error('reader');
+  const result = await c.read(advisoryTarget('1.0.0'));
+  c.close();
+  expect(result).toMatchObject({ status: 'unavailable', complete: false, reasons: ['budget'] });
+  expect(calls).toHaveLength(1);
+});
+test('a cache hit leaves the total-byte share for later live reads', async () => {
+  const cache = createResearchCache({ maxEntryBytes: 1 << 20, maxTotalBytes: 1 << 22 });
+  const calls: string[] = [];
+  const deps = { now: () => 0, fetch: cachedAdvisoryFetch(calls), cache };
+  const a = createAdvisoryReader(limits, deps);
+  if (a.kind !== 'ready') throw new Error('reader');
+  await a.read(advisoryTarget('1.0.0'));
+  a.close();
+  const fits = cachedAdvisoryBytes + 1;
+  const b = createAdvisoryReader({ ...limits, maxResponseBytes: fits, maxTotalBytes: fits }, deps);
+  if (b.kind !== 'ready') throw new Error('reader');
+  const hit = await b.read(advisoryTarget('1.0.0'));
+  const live = await b.read(advisoryTarget('2.0.0'));
+  b.close();
+  expect(hit).toMatchObject({ status: 'available', complete: true });
+  expect(live).toMatchObject({ status: 'available', complete: true });
+  expect(calls).toHaveLength(2);
 });

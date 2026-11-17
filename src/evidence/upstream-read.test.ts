@@ -1,4 +1,6 @@
-import { expect, test, vi } from 'vite-plus/test';
+import { describe, expect, test, vi } from 'vite-plus/test';
+import { createNpmRegistryReader } from './npm-registry.js';
+import { createResearchCache, type ResearchCache } from './research-cache.js';
 import { createUpstreamReader } from './upstream-read.js';
 
 const integrity = 'sha512-' + Buffer.alloc(64, 7).toString('base64');
@@ -248,4 +250,127 @@ test.each([
   const f = setup(async () => Response.json(data, { status: 403, headers }));
   expect((await f.reader.read(target)).reasons).toEqual([reason]);
   f.reader.close();
+});
+
+describe('run-scoped research cache', () => {
+  const shared = () => createResearchCache({ maxEntryBytes: 1 << 20, maxTotalBytes: 1 << 22 });
+  const other = { ...target, name: '@fixture/other', version: '2.0.0' };
+  const otherDocument = {
+    ...document,
+    _id: '@fixture/other@2.0.0',
+    name: other.name,
+    version: other.version,
+  };
+  const live = (status = 200) =>
+    vi.fn(async (url: string) =>
+      url.includes('other')
+        ? Response.json(otherDocument)
+        : status === 200
+          ? Response.json(document)
+          : new Response('{}', { status, headers: { 'content-type': 'application/json' } }),
+    );
+  const registryRead = async (cache: ResearchCache, fetch: ReturnType<typeof live>) => {
+    const registry = createNpmRegistryReader(
+      { ...limits, maxRequests: 10 },
+      { fetch, now: () => 0, cache },
+    );
+    if (registry.kind !== 'ready') throw new Error('registry');
+    const { name, version, integrity: sri, source } = target;
+    return registry.read({ name, version, integrity: sri, source });
+  };
+  const upstream = (cache: ResearchCache, fetch: ReturnType<typeof live>, overrides = {}) => {
+    const opened = createUpstreamReader(
+      { ...limits, ...overrides },
+      { fetch, now: () => 0, cache },
+    );
+    if (opened.kind !== 'ready') throw new Error('reader');
+    return opened.reader;
+  };
+
+  test('an npm document another reader cached costs upstream no request', async () => {
+    const cache = shared();
+    const fetch = live();
+    expect((await registryRead(cache, fetch)).kind).toBe('metadata');
+    const reader = upstream(cache, fetch, { maxRequests: 1 });
+    expect(await reader.read(other)).toMatchObject({ status: 'available', fetched: true });
+    expect(await reader.read(target)).toMatchObject({
+      status: 'available',
+      fetched: true,
+      data: document,
+    });
+    expect(fetch).toHaveBeenCalledTimes(2);
+  });
+
+  test('a cached npm failure is still reported as fetched', async () => {
+    const cache = shared();
+    const fetch = live(404);
+    expect(await registryRead(cache, fetch)).toEqual({ kind: 'unavailable', reason: 'missing' });
+    expect(await upstream(cache, fetch).read(target)).toMatchObject({
+      status: 'unavailable',
+      fetched: true,
+      reasons: ['missing'],
+    });
+    expect(fetch).toHaveBeenCalledTimes(1);
+  });
+
+  test('a cached response debits no total bytes', async () => {
+    const cache = shared();
+    const fetch = live();
+    await registryRead(cache, fetch);
+    const sizes = [document, otherDocument].map((d) => Buffer.byteLength(JSON.stringify(d)));
+    const reader = upstream(cache, fetch, {
+      maxResponseBytes: Math.max(...sizes),
+      maxTotalBytes: sizes[0] + sizes[1] - 1,
+    });
+    expect(await reader.read(other)).toMatchObject({ status: 'available' });
+    expect(await reader.read(target)).toMatchObject({ status: 'available', data: document });
+  });
+
+  test('a direct upstream hit costs no request or total bytes', async () => {
+    const cache = shared();
+    const info = (version: string) => ({ info: { name: 'fixture-widget', version } });
+    const fetch = vi.fn(async (url: string) => Response.json(info(url.split('/')[5])));
+    const py = (version: string) => ({
+      kind: 'pypi',
+      name: 'fixture-widget',
+      version,
+      source: { kind: 'registry', identity: 'https://pypi.org/simple' },
+    });
+    expect(await upstream(cache, fetch).read(py('1.0'))).toMatchObject({ status: 'available' });
+    const size = Buffer.byteLength(JSON.stringify(info('1.0')));
+    const reader = upstream(cache, fetch, {
+      maxRequests: 1,
+      maxResponseBytes: size,
+      maxTotalBytes: 2 * size - 1,
+    });
+    expect(await reader.read(py('2.0'))).toMatchObject({ status: 'available' });
+    expect(await reader.read(py('1.0'))).toMatchObject({ status: 'available', fetched: true });
+    expect(fetch).toHaveBeenCalledTimes(2);
+  });
+
+  test('a cached response still respects the per-response cap', async () => {
+    const cache = shared();
+    const fetch = live();
+    await registryRead(cache, fetch);
+    const size = Buffer.byteLength(JSON.stringify(document));
+    const reader = upstream(cache, fetch, { maxResponseBytes: size - 1 });
+    expect(await reader.read(target)).toMatchObject({ status: 'unavailable', reasons: ['budget'] });
+    expect(fetch).toHaveBeenCalledTimes(1);
+  });
+});
+
+test('an npm lookup past the request share reports budget', async () => {
+  const other = { ...target, name: '@fixture/other', version: '2.0.0' };
+  const f = setup(
+    async (url) =>
+      Response.json(
+        url.includes('other')
+          ? { ...document, _id: '@fixture/other@2.0.0', name: other.name, version: other.version }
+          : document,
+      ),
+    { maxRequests: 1 },
+  );
+  expect(await f.reader.read(target)).toMatchObject({ status: 'available' });
+  expect(await f.reader.read(other)).toMatchObject({ status: 'unavailable', reasons: ['budget'] });
+  expect(f.fetch).toHaveBeenCalledTimes(1);
 });

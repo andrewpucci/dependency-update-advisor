@@ -267,16 +267,20 @@ class TimeReader {
     this.remaining();
   };
   private async fetch(t: Target): Promise<NpmTimesResult> {
-    advisoryCheck(++this.requests <= this.limits.maxRequests, 'budget');
     const timeoutMs = Math.min(this.remaining(), this.limits.requestTimeoutMs);
     const url = 'https://registry.npmjs.org/' + encodeURIComponent(t.name);
     return boundedGet(
       this.deps,
-      { url, accept: 'application/json', timeoutMs },
+      {
+        url,
+        accept: 'application/json',
+        timeoutMs,
+        charge: () => advisoryCheck(++this.requests <= this.limits.maxRequests, 'budget'),
+      },
       (cancel) => {
         this.active = cancel;
       },
-      async (response, aborted) => {
+      async (response, aborted, cached) => {
         validateResponse(response, url);
         advisoryCheck(response.body);
         const stream = response.body.getReader(),
@@ -285,9 +289,10 @@ class TimeReader {
         const state = extractor(t, this.limits, this.spend);
         const debitBytes = (count: number) => {
           size += count;
-          this.bytes += count;
+          if (!cached) this.bytes += count;
           advisoryCheck(
-            size <= this.limits.maxResponseBytes && this.bytes <= this.limits.maxTotalBytes,
+            size <= this.limits.maxResponseBytes &&
+              (cached || this.bytes <= this.limits.maxTotalBytes),
             'budget',
           );
           this.remaining();

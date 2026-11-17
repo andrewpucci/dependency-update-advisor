@@ -6,6 +6,7 @@ import { collectNpmInventory } from './evidence/npm.js';
 import { enrichNpmEvidence } from './evidence/npm-graph.js';
 import { collectUvMetadata } from './evidence/uv.js';
 import { reconcileUvGraph } from './evidence/uv-graph.js';
+import type { ResearchCache } from './evidence/research-cache.js';
 import { createGithubReadSession, type GithubReadSession } from './github-read.js';
 import type { Ecosystem, EvidenceReason } from './schema.js';
 
@@ -78,6 +79,8 @@ export type CollectionInput = Readonly<{
   dependabot: DependabotRootsOutcome;
   /** Credential-free registry fetch; never receives the GitHub token. */
   registryFetch: (url: string, init: RequestInit) => Promise<Response>;
+  /** The run's research cache, so research rereads none of the registry documents read here. */
+  researchCache?: ResearchCache;
   now: Clock;
   /** Receives the authentic npm inventory, which upstream research needs for npm identity proofs. */
   onNpmInventory?: (inventory: unknown) => void;
@@ -204,7 +207,12 @@ export function createEvidenceCollectors(
           ...timeouts(W2_EVIDENCE_LIMITS.registry.requestTimeoutMs, total),
         },
       },
-      { fetch: input.registryFetch, now: input.now, signal: input.signal },
+      {
+        fetch: input.registryFetch,
+        now: input.now,
+        signal: input.signal,
+        cache: input.researchCache,
+      },
     );
     if (enriched.kind !== 'inventory') return noInventory(enriched);
     return {

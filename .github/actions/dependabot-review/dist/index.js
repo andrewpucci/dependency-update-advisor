@@ -10839,6 +10839,16 @@ function deadlineTimer(duration, expire) {
 	return () => clearTimeout(handle);
 }
 /**
+* Stores a response read from `url` itself and returns the copy to consume. A redirected or
+* relocated response is returned unstored, so the reader's own identity check still rejects it;
+* a cached copy carries no URL to check.
+*/
+async function remember(cache, key, url, response, aborted) {
+	if (!cache || key === void 0) return response;
+	if (response.redirected || response.url && response.url !== url) return response;
+	return Promise.race([cache.store(key, response), aborted]);
+}
+/**
 * One credential-free GET, or a POST of a fixed `json` body, raced against its timeout, the
 * caller's signal, and `onCancel` (registered for the reader's close). Every exit aborts the
 * request and releases its body.
@@ -10864,6 +10874,10 @@ async function boundedGet(deps, request, onCancel, consume) {
 		const headers = "headers" in request && request.headers ? { ...request.headers } : { accept: request.accept };
 		const post = request.json !== void 0;
 		if (post) headers["content-type"] = "application/json";
+		const key = deps.cache?.key("GET", request.url, headers);
+		const hit = key === void 0 ? void 0 : deps.cache?.lookup(key);
+		if (hit) return await consume(hit, aborted, true);
+		request.charge?.();
 		const pending = deps.fetch(request.url, {
 			method: post ? "POST" : "GET",
 			redirect: "manual",
@@ -10876,7 +10890,8 @@ async function boundedGet(deps, request, onCancel, consume) {
 			if (controller.signal.aborted && late.body && !late.body.locked) late.body.cancel().catch(() => {});
 		}, () => {});
 		response = await Promise.race([pending, aborted]);
-		return await consume(response, aborted);
+		response = await remember(deps.cache, key, request.url, response, aborted);
+		return await consume(response, aborted, false);
 	} finally {
 		clear();
 		for (const signal of signals) signal.removeEventListener("abort", cancel);
@@ -11233,7 +11248,7 @@ var Reader$1 = class {
 		advisoryCheck(!this.deps.signal?.aborted && !stopped, stopped ?? "unknown");
 		return this.clock.remaining(stopped);
 	}
-	async body(response, aborted, provider) {
+	async body(response, aborted, provider, cached) {
 		advisoryCheck(response.body);
 		const stream = response.body.getReader(), chunks = [];
 		let size = 0;
@@ -11242,8 +11257,8 @@ var Reader$1 = class {
 				const chunk = await Promise.race([stream.read(), aborted]);
 				if (chunk.done) return Buffer.concat(chunks, size);
 				size += chunk.value.byteLength;
-				this.bytes += chunk.value.byteLength;
-				advisoryCheck(size <= this.limits.maxResponseBytes && this.bytes <= this.limits.maxTotalBytes, "budget");
+				if (!cached) this.bytes += chunk.value.byteLength;
+				advisoryCheck(size <= this.limits.maxResponseBytes && (cached || this.bytes <= this.limits.maxTotalBytes), "budget");
 				this.remaining(provider);
 				chunks.push(chunk.value);
 			}
@@ -11258,7 +11273,6 @@ var Reader$1 = class {
 	}
 	async page(provider, url, json) {
 		this.remaining(provider);
-		advisoryCheck(++this.requests <= Math.min(this.limits.maxRequests, this.limits.maxPages), "budget");
 		return boundedGet(this.deps, {
 			url,
 			headers: provider === "osv" ? { accept: "application/json" } : {
@@ -11266,15 +11280,16 @@ var Reader$1 = class {
 				"X-GitHub-Api-Version": "2026-03-10"
 			},
 			timeoutMs: Math.min(this.remaining(provider), this.limits.requestTimeoutMs),
-			json
+			json,
+			charge: () => advisoryCheck(++this.requests <= Math.min(this.limits.maxRequests, this.limits.maxPages), "budget")
 		}, (cancel) => {
 			this.active = cancel;
-		}, async (response, aborted) => {
+		}, async (response, aborted, cached) => {
 			this.remaining(provider);
 			advisoryCheck(!response.redirected && (!response.url || response.url === url), "unsupported");
 			advisoryCheck(response.status < 300 || response.status >= 400, "unsupported");
 			if (httpReason$3(response, null) === "rate_limit") this.stop(provider, "rate_limit");
-			const bytes = await this.body(response, aborted, provider);
+			const bytes = await this.body(response, aborted, provider, cached);
 			let data;
 			try {
 				data = JSON.parse(new TextDecoder("utf-8", { fatal: true }).decode(bytes));
@@ -11591,16 +11606,16 @@ var TimeReader = class {
 		this.remaining();
 	};
 	async fetch(t) {
-		advisoryCheck(++this.requests <= this.limits.maxRequests, "budget");
 		const timeoutMs = Math.min(this.remaining(), this.limits.requestTimeoutMs);
 		const url = "https://registry.npmjs.org/" + encodeURIComponent(t.name);
 		return boundedGet(this.deps, {
 			url,
 			accept: "application/json",
-			timeoutMs
+			timeoutMs,
+			charge: () => advisoryCheck(++this.requests <= this.limits.maxRequests, "budget")
 		}, (cancel) => {
 			this.active = cancel;
-		}, async (response, aborted) => {
+		}, async (response, aborted, cached) => {
 			validateResponse(response, url);
 			advisoryCheck(response.body);
 			const stream = response.body.getReader(), decoder = new TextDecoder("utf-8", { fatal: true });
@@ -11608,8 +11623,8 @@ var TimeReader = class {
 			const state = extractor(t, this.limits, this.spend);
 			const debitBytes = (count) => {
 				size += count;
-				this.bytes += count;
-				advisoryCheck(size <= this.limits.maxResponseBytes && this.bytes <= this.limits.maxTotalBytes, "budget");
+				if (!cached) this.bytes += count;
+				advisoryCheck(size <= this.limits.maxResponseBytes && (cached || this.bytes <= this.limits.maxTotalBytes), "budget");
 				this.remaining();
 			};
 			async function* chunks() {
@@ -12887,7 +12902,7 @@ var RegistryReader = class {
 		this.consume(Buffer.byteLength(JSON.stringify(doc)), "retained", this.limits.maxRetainedBytes);
 		return freeze$2(doc);
 	}
-	async body(response, aborted) {
+	async body(response, aborted, cached) {
 		requireMetadata(response.body, "malformed");
 		const reader = response.body.getReader(), chunks = [];
 		let size = 0;
@@ -12896,7 +12911,7 @@ var RegistryReader = class {
 				const chunk = await Promise.race([reader.read(), aborted]);
 				if (chunk.done) return Buffer.concat(chunks, size);
 				size += chunk.value.byteLength;
-				this.consume(chunk.value.byteLength, "bytes", this.limits.maxTotalBytes);
+				if (!cached) this.consume(chunk.value.byteLength, "bytes", this.limits.maxTotalBytes);
 				requireMetadata(size <= this.limits.maxResponseBytes, "budget");
 				this.remaining();
 				chunks.push(chunk.value);
@@ -12912,13 +12927,20 @@ var RegistryReader = class {
 			return await boundedGet(this.deps, {
 				url,
 				accept: "application/json",
-				timeoutMs: Math.min(this.limits.requestTimeoutMs, this.remaining())
-			}, () => {}, async (response, aborted) => {
+				timeoutMs: Math.min(this.limits.requestTimeoutMs, this.remaining()),
+				charge: () => {
+					if (this.requests >= this.limits.maxRequests) {
+						this.stopped = "budget";
+						throw new RegistryFailure("budget");
+					}
+					this.requests++;
+				}
+			}, () => {}, async (response, aborted, cached) => {
 				requireMetadata(!response.redirected && (!response.url || response.url === url), "unsupported");
 				if (response.status === 429) this.stopped = "rate_limit";
 				requireMetadata(response.status === 200, statusReason(response.status));
 				requireMetadata(/^application\/json(?:\s*;|$)/iu.test(response.headers.get("content-type") ?? ""), "unsupported");
-				const bytes = await this.body(response, aborted);
+				const bytes = await this.body(response, aborted, cached);
 				this.remaining();
 				return this.parse(bytes, r, url);
 			});
@@ -12945,11 +12967,6 @@ var RegistryReader = class {
 			]);
 			let document = this.cache.get(key);
 			if (!document) {
-				if (this.requests >= this.limits.maxRequests) {
-					this.stopped = "budget";
-					throw new RegistryFailure("budget");
-				}
-				this.requests++;
 				try {
 					document = await this.fetchDocument(r);
 				} catch (error) {
@@ -13273,7 +13290,6 @@ function targetUrl(t) {
 }
 var Reader = class {
 	limits;
-	deps;
 	requests = 0;
 	bytes = 0;
 	work = { entries: 0 };
@@ -13294,16 +13310,39 @@ var Reader = class {
 	nextPages = /* @__PURE__ */ new Map();
 	pages = 0;
 	npm;
+	/** Responses served from the run cache; a hit is a read for attempt outcomes, not a charge. */
+	hits = 0;
+	deps;
 	constructor(limits, deps) {
 		this.limits = limits;
-		this.deps = deps;
+		const cache = deps.cache && this.countingHits(deps.cache);
+		this.deps = {
+			...deps,
+			cache
+		};
 		this.clock = new BoundedClock(limits.totalTimeoutMs, deps);
 		this.npm = createNpmRegistryReader(limits, {
 			now: deps.now,
 			signal: this.controller.signal,
-			fetch: (url, init) => this.fetchBounded(url, init)
+			fetch: (url, init) => this.fetchBounded(url, init),
+			cache
 		});
 		requireUpstream(this.npm.kind === "ready");
+	}
+	countingHits(cache) {
+		return {
+			key: (method, url, headers) => cache.key(method, url, headers),
+			lookup: (key) => {
+				const hit = cache.lookup(key);
+				if (hit) this.hits++;
+				return hit;
+			},
+			store: (key, response) => cache.store(key, response)
+		};
+	}
+	/** Live requests plus cache hits: whether a lookup read anything. */
+	get reads() {
+		return this.requests + this.hits;
 	}
 	close() {
 		this.closed = true;
@@ -13359,11 +13398,14 @@ var Reader = class {
 	dispatch(url) {
 		this.remaining();
 		requireUpstream(!this.blocked.has(new URL(url).origin), "rate_limit");
+		requireUpstream(!this.stopped, this.stopped ?? "budget");
+	}
+	charge() {
 		if (this.requests >= this.limits.maxRequests) this.stopped = "budget";
 		requireUpstream(!this.stopped, this.stopped ?? "budget");
 		this.requests++;
 	}
-	async body(response, aborted) {
+	async body(response, aborted, cached) {
 		requireUpstream(response.body);
 		const reader = response.body.getReader(), chunks = [];
 		let size = 0;
@@ -13372,7 +13414,7 @@ var Reader = class {
 				const chunk = await Promise.race([reader.read(), aborted]);
 				if (chunk.done) return Buffer.concat(chunks, size);
 				size += chunk.value.byteLength;
-				this.bytes += chunk.value.byteLength;
+				if (!cached) this.bytes += chunk.value.byteLength;
 				if (this.bytes > this.limits.maxTotalBytes) this.stopped = "budget";
 				requireUpstream(!this.stopped && size <= this.limits.maxResponseBytes, "budget");
 				this.remaining();
@@ -13393,17 +13435,18 @@ var Reader = class {
 				url,
 				accept: "application/json",
 				timeoutMs: Math.min(this.remaining(), this.limits.requestTimeoutMs),
-				signal: _init.signal ?? void 0
+				signal: _init.signal ?? void 0,
+				charge: () => this.charge()
 			}, (cancel) => {
 				this.active = cancel;
-			}, async (response, aborted) => {
+			}, async (response, aborted, cached) => {
 				requireUpstream(!response.redirected && (!response.url || response.url === url), "unsupported");
 				const immediate = httpReason$2(response, Buffer.alloc(0));
 				if (response.status !== 200 && immediate !== "unknown") {
 					if (immediate === "rate_limit") this.blocked.add(new URL(url).origin);
 					throw new UpstreamFailure(immediate);
 				}
-				const bytes = response.body ? await this.body(response, aborted) : Buffer.alloc(0);
+				const bytes = response.body ? await this.body(response, aborted, cached) : Buffer.alloc(0);
 				if (response.status !== 200) {
 					const reason = httpReason$2(response, bytes);
 					if (reason === "rate_limit") this.blocked.add(new URL(url).origin);
@@ -13462,7 +13505,7 @@ var Reader = class {
 	}
 	failedLookup(error, before, url, key) {
 		let reason = upstreamFailureReason(error);
-		if (key && !this.failures.has(key) && this.requests > before) try {
+		if (key && !this.failures.has(key) && this.reads > before) try {
 			this.reserve(Buffer.byteLength(key) + Buffer.byteLength(reason));
 			this.failures.set(key, reason);
 		} catch {
@@ -13470,14 +13513,14 @@ var Reader = class {
 		}
 		return freeze$3({
 			status: "unavailable",
-			fetched: this.requests > before,
+			fetched: this.reads > before,
 			url,
 			data: null,
 			reasons: [reason]
 		});
 	}
 	async read(value) {
-		const before = this.requests;
+		const before = this.reads;
 		let url = null;
 		let key = null;
 		if (this.busy) return {
@@ -13500,7 +13543,7 @@ var Reader = class {
 			const data = await this.targetData(t, url);
 			return freeze$3({
 				status: "available",
-				fetched: this.requests > before,
+				fetched: this.reads > before,
 				url,
 				data,
 				reasons: [],
@@ -22906,6 +22949,100 @@ const EVIDENCE_READ_ALLOCATION = Object.freeze({
 		})
 	})
 });
+/**
+* Bounds for the run-scoped research cache. An entry is at most one response, and the cache never
+* holds more than the registry and research shares that fill it can fetch.
+*/
+const RESEARCH_CACHE_LIMITS = Object.freeze({
+	maxEntryBytes: EVIDENCE_READ_ENVELOPE.maxResponseBytes,
+	maxTotalBytes: EVIDENCE_READ_ALLOCATION.registry.maxTotalBytes + EVIDENCE_READ_ALLOCATION.upstream.maxTotalBytes + EVIDENCE_READ_ALLOCATION.advisory.maxTotalBytes + EVIDENCE_READ_ALLOCATION.signals.maxTotalBytes
+});
+
+// src/evidence/research-cache.ts
+const CACHEABLE_STATUSES = /* @__PURE__ */ new Set([200, 404]);
+function sha256Hex(value) {
+	return createHash("sha256").update(value).digest("hex");
+}
+function normalizeHeaders(headers) {
+	return [...new Headers(headers)].map(([name, value]) => name === "authorization" ? [name, sha256Hex(value)] : [name, value]).sort(([a], [b]) => a < b ? -1 : a > b ? 1 : 0);
+}
+function toResponse(entry) {
+	return new Response(entry.bytes, {
+		status: entry.status,
+		headers: entry.headers
+	});
+}
+/** Re-emits chunks already read from `reader`, then continues reading until done. */
+function passThrough(response, reader, buffered) {
+	const stream = new ReadableStream({
+		start(controller) {
+			for (const chunk of buffered) controller.enqueue(chunk);
+		},
+		async pull(controller) {
+			const { done, value } = await reader.read();
+			if (done) controller.close();
+			else controller.enqueue(value);
+		},
+		cancel(reason) {
+			return reader.cancel(reason);
+		}
+	});
+	return new Response(stream, {
+		status: response.status,
+		headers: response.headers
+	});
+}
+function createResearchCache(options) {
+	const entries = /* @__PURE__ */ new Map();
+	let totalBytes = 0;
+	function commit(key, response, bytes, previousBytes) {
+		totalBytes += bytes.byteLength - previousBytes;
+		const entry = {
+			status: response.status,
+			headers: [...response.headers],
+			bytes
+		};
+		entries.set(key, entry);
+		return toResponse(entry);
+	}
+	return {
+		key(method, url, headers) {
+			return JSON.stringify([
+				method.toUpperCase(),
+				url,
+				normalizeHeaders(headers)
+			]);
+		},
+		lookup(key) {
+			const entry = entries.get(key);
+			return entry === void 0 ? void 0 : toResponse(entry);
+		},
+		async store(key, response) {
+			if (!CACHEABLE_STATUSES.has(response.status)) return response;
+			const previousBytes = entries.get(key)?.bytes.byteLength ?? 0;
+			if (response.body === null) return commit(key, response, /* @__PURE__ */ new Uint8Array(), previousBytes);
+			const reader = response.body.getReader();
+			const buffered = [];
+			let entryBytes = 0;
+			for (;;) {
+				const { done, value } = await reader.read();
+				if (done) break;
+				buffered.push(value);
+				entryBytes += value.byteLength;
+				const overEntry = entryBytes > options.maxEntryBytes;
+				const overTotal = totalBytes - previousBytes + entryBytes > options.maxTotalBytes;
+				if (overEntry || overTotal) return passThrough(response, reader, buffered);
+			}
+			const bytes = new Uint8Array(entryBytes);
+			let offset = 0;
+			for (const chunk of buffered) {
+				bytes.set(chunk, offset);
+				offset += chunk.byteLength;
+			}
+			return commit(key, response, bytes, previousBytes);
+		}
+	};
+}
 
 // src/dependabot-roots.ts
 /** Bounds on the Dependabot configuration file and the roots read from it. */
@@ -28894,7 +29031,8 @@ function createEvidenceCollectors(input) {
 		}, {
 			fetch: input.registryFetch,
 			now: input.now,
-			signal: input.signal
+			signal: input.signal,
+			cache: input.researchCache
 		});
 		if (enriched.kind !== "inventory") return noInventory(enriched);
 		return {
@@ -29328,7 +29466,7 @@ var MetadataReader = class {
 		advisoryCheck(this.operations <= this.limits.maxWork, "budget");
 		this.remaining();
 	}
-	async body(response, aborted) {
+	async body(response, aborted, cached) {
 		advisoryCheck(response.body);
 		const stream = response.body.getReader(), chunks = [];
 		let size = 0;
@@ -29337,8 +29475,8 @@ var MetadataReader = class {
 				const part = await Promise.race([stream.read(), aborted]);
 				if (part.done) break;
 				size += part.value.byteLength;
-				this.bytes += part.value.byteLength;
-				advisoryCheck(size <= this.limits.maxResponseBytes && this.bytes <= this.limits.maxTotalBytes, "budget");
+				if (!cached) this.bytes += part.value.byteLength;
+				advisoryCheck(size <= this.limits.maxResponseBytes && (cached || this.bytes <= this.limits.maxTotalBytes), "budget");
 				this.spend(1);
 				chunks.push(part.value);
 			}
@@ -29349,15 +29487,15 @@ var MetadataReader = class {
 		}
 	}
 	async fetch(query, url) {
-		advisoryCheck(++this.requests <= this.limits.maxRequests, "budget");
 		const request = {
 			url,
 			accept: query.kind === "pypi" ? "application/json" : "application/vnd.pypi.integrity.v1+json",
-			timeoutMs: Math.min(this.remaining(), this.limits.requestTimeoutMs)
+			timeoutMs: Math.min(this.remaining(), this.limits.requestTimeoutMs),
+			charge: () => advisoryCheck(++this.requests <= this.limits.maxRequests, "budget")
 		};
 		return boundedGet(this.deps, request, (cancel) => {
 			this.active = cancel;
-		}, async (response, aborted) => {
+		}, async (response, aborted, cached) => {
 			advisoryCheck(!response.redirected && (!response.url || response.url === url), "unsupported");
 			if (response.status === 404 && query.kind === "pypi-provenance") return {
 				kind: "absent",
@@ -29369,7 +29507,7 @@ var MetadataReader = class {
 				throw new AdvisoryFailure(reason);
 			}
 			advisoryCheck(/^application\/(?:[\w.+-]*\+)?json(?:\s*;|$)/iu.test(response.headers.get("content-type") ?? ""), "unsupported");
-			const bytes = await this.body(response, aborted);
+			const bytes = await this.body(response, aborted, cached);
 			let parsed;
 			try {
 				parsed = JSON.parse(new TextDecoder("utf-8", { fatal: true }).decode(bytes));
@@ -29582,7 +29720,8 @@ async function runResearch(input) {
 	const dependencies = {
 		now: input.now,
 		fetch: input.fetch,
-		signal: input.signal
+		signal: input.signal,
+		cache: input.cache ?? createResearchCache(RESEARCH_CACHE_LIMITS)
 	};
 	const unavailable = [];
 	const readers = [];
@@ -30881,10 +31020,12 @@ async function evaluateEvidence(input, binding, started, signal, state, recheck,
 			isCurrent,
 			temporaryRoot: input.temporaryRoot
 		}, async (trusted) => {
+			const researchCache = createResearchCache(RESEARCH_CACHE_LIMITS);
 			const collectors = createEvidenceCollectors({
 				binding,
 				dependabot: await trusted.dependabotRoots(),
 				registryFetch: input.publicFetch,
+				researchCache,
 				onNpmInventory: (inventory) => npmInventory = inventory,
 				signal,
 				now: input.now,
@@ -30945,6 +31086,7 @@ async function evaluateEvidence(input, binding, started, signal, state, recheck,
 				npmInventory,
 				comparison: null,
 				fetch: input.publicFetch,
+				cache: researchCache,
 				now: input.now,
 				deadline: evidenceDeadline,
 				evaluationTime: input.evaluationTime,

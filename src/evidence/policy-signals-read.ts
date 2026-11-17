@@ -191,7 +191,7 @@ class MetadataReader {
     advisoryCheck(this.operations <= this.limits.maxWork, 'budget');
     this.remaining();
   }
-  private async body(response: Response, aborted: Promise<never>) {
+  private async body(response: Response, aborted: Promise<never>, cached: boolean) {
     advisoryCheck(response.body);
     const stream = response.body.getReader(),
       chunks: Uint8Array[] = [];
@@ -201,9 +201,10 @@ class MetadataReader {
         const part = await Promise.race([stream.read(), aborted]);
         if (part.done) break;
         size += part.value.byteLength;
-        this.bytes += part.value.byteLength;
+        if (!cached) this.bytes += part.value.byteLength;
         advisoryCheck(
-          size <= this.limits.maxResponseBytes && this.bytes <= this.limits.maxTotalBytes,
+          size <= this.limits.maxResponseBytes &&
+            (cached || this.bytes <= this.limits.maxTotalBytes),
           'budget',
         );
         this.spend(1);
@@ -216,11 +217,11 @@ class MetadataReader {
     }
   }
   private async fetch(query: MetadataQuery, url: string): Promise<MetadataRead> {
-    advisoryCheck(++this.requests <= this.limits.maxRequests, 'budget');
     const request = {
       url,
       accept: query.kind === 'pypi' ? 'application/json' : 'application/vnd.pypi.integrity.v1+json',
       timeoutMs: Math.min(this.remaining(), this.limits.requestTimeoutMs),
+      charge: () => advisoryCheck(++this.requests <= this.limits.maxRequests, 'budget'),
     };
     return boundedGet(
       this.deps,
@@ -228,7 +229,7 @@ class MetadataReader {
       (cancel) => {
         this.active = cancel;
       },
-      async (response, aborted) => {
+      async (response, aborted, cached) => {
         advisoryCheck(
           !response.redirected && (!response.url || response.url === url),
           'unsupported',
@@ -246,7 +247,7 @@ class MetadataReader {
           ),
           'unsupported',
         );
-        const bytes = await this.body(response, aborted);
+        const bytes = await this.body(response, aborted, cached);
         let parsed: unknown;
         try {
           parsed = JSON.parse(new TextDecoder('utf-8', { fatal: true }).decode(bytes));

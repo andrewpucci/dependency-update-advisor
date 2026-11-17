@@ -2,6 +2,7 @@ import { types } from 'node:util';
 import { PACKET_LIMITS, type EvidenceReason, type EvidenceStatus } from '../schema.js';
 import { freeze, isPlainObject } from './common.js';
 import { BoundedClock, boundedGet } from './bounded-request.js';
+import type { ResearchCache } from './research-cache.js';
 
 export type AdvisoryLimits = Readonly<{
   maxRequests: number;
@@ -44,6 +45,7 @@ type Dependencies = {
   fetch: (url: string, init: RequestInit) => Promise<Response>;
   now: () => number;
   signal?: AbortSignal;
+  cache?: ResearchCache;
 };
 export class AdvisoryFailure extends Error {
   constructor(readonly reason: EvidenceReason) {
@@ -440,7 +442,12 @@ class Reader implements AdvisoryReader {
     advisoryCheck(!this.deps.signal?.aborted && !stopped, stopped ?? 'unknown');
     return this.clock.remaining(stopped);
   }
-  private async body(response: Response, aborted: Promise<never>, provider: Provider) {
+  private async body(
+    response: Response,
+    aborted: Promise<never>,
+    provider: Provider,
+    cached: boolean,
+  ) {
     advisoryCheck(response.body);
     const stream = response.body.getReader(),
       chunks: Uint8Array[] = [];
@@ -450,9 +457,10 @@ class Reader implements AdvisoryReader {
         const chunk = await Promise.race([stream.read(), aborted]);
         if (chunk.done) return Buffer.concat(chunks, size);
         size += chunk.value.byteLength;
-        this.bytes += chunk.value.byteLength;
+        if (!cached) this.bytes += chunk.value.byteLength;
         advisoryCheck(
-          size <= this.limits.maxResponseBytes && this.bytes <= this.limits.maxTotalBytes,
+          size <= this.limits.maxResponseBytes &&
+            (cached || this.bytes <= this.limits.maxTotalBytes),
           'budget',
         );
         this.remaining(provider);
@@ -473,10 +481,6 @@ class Reader implements AdvisoryReader {
     json?: unknown,
   ): Promise<{ data: unknown; link: string | null }> {
     this.remaining(provider);
-    advisoryCheck(
-      ++this.requests <= Math.min(this.limits.maxRequests, this.limits.maxPages),
-      'budget',
-    );
     return boundedGet(
       this.deps,
       {
@@ -487,11 +491,16 @@ class Reader implements AdvisoryReader {
             : { accept: 'application/vnd.github+json', 'X-GitHub-Api-Version': '2026-03-10' },
         timeoutMs: Math.min(this.remaining(provider), this.limits.requestTimeoutMs),
         json,
+        charge: () =>
+          advisoryCheck(
+            ++this.requests <= Math.min(this.limits.maxRequests, this.limits.maxPages),
+            'budget',
+          ),
       },
       (cancel) => {
         this.active = cancel;
       },
-      async (response, aborted) => {
+      async (response, aborted, cached) => {
         this.remaining(provider);
         advisoryCheck(
           !response.redirected && (!response.url || response.url === url),
@@ -499,7 +508,7 @@ class Reader implements AdvisoryReader {
         );
         advisoryCheck(response.status < 300 || response.status >= 400, 'unsupported');
         if (httpReason(response, null) === 'rate_limit') this.stop(provider, 'rate_limit');
-        const bytes = await this.body(response, aborted, provider);
+        const bytes = await this.body(response, aborted, provider, cached);
         let data: unknown;
         try {
           data = JSON.parse(new TextDecoder('utf-8', { fatal: true }).decode(bytes));

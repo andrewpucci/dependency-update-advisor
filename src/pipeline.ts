@@ -1,5 +1,11 @@
 import { reviewPacket, type AssessmentInput } from './assessment.js';
-import { EVIDENCE_READ_ENVELOPE, FRESHNESS_ALLOWANCE_MS, JOB_WINDOW_MS } from './budget.js';
+import {
+  EVIDENCE_READ_ENVELOPE,
+  FRESHNESS_ALLOWANCE_MS,
+  JOB_WINDOW_MS,
+  RESEARCH_CACHE_LIMITS,
+} from './budget.js';
+import { createResearchCache } from './evidence/research-cache.js';
 import {
   createEvidenceCollectors,
   openEvidenceSession,
@@ -405,10 +411,13 @@ async function evaluateEvidence(
         temporaryRoot: input.temporaryRoot,
       },
       async (trusted): Promise<Outcome> => {
+        // Public registry and research reads share one cache for this run; GitHub reads never do.
+        const researchCache = createResearchCache(RESEARCH_CACHE_LIMITS);
         const collectors = createEvidenceCollectors({
           binding,
           dependabot: await trusted.dependabotRoots(),
           registryFetch: input.publicFetch,
+          researchCache,
           onNpmInventory: (inventory) => (npmInventory = inventory),
           signal,
           now: input.now,
@@ -467,6 +476,7 @@ async function evaluateEvidence(
             npmInventory: npmInventory as never,
             comparison: null,
             fetch: input.publicFetch,
+            cache: researchCache,
             now: input.now,
             deadline: evidenceDeadline,
             evaluationTime: input.evaluationTime,

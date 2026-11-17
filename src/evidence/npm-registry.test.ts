@@ -1,5 +1,6 @@
-import { expect, test, vi } from 'vite-plus/test';
+import { describe, expect, test, vi } from 'vite-plus/test';
 import { createNpmRegistryReader, interpretNpmLifecycle } from './npm-registry.js';
+import { createResearchCache } from './research-cache.js';
 import type { PacketChange, NpmSide } from '../schema.js';
 import type { NpmNode } from './npm.js';
 
@@ -454,4 +455,59 @@ test('declarations retain empty evidence and acquire no lifecycle claims', () =>
     evidence: {},
   };
   expect(interpretNpmLifecycle(change, {})).toEqual({ change, sources: [], findings: [] });
+});
+
+describe('run-scoped research cache', () => {
+  const other = { ...request, name: '@fixture/other', version: '2.0.0' };
+  const otherDocument = document({
+    _id: '@fixture/other@2.0.0',
+    name: other.name,
+    version: other.version,
+  });
+  const json = (value: unknown) =>
+    new Response(JSON.stringify(value), { headers: { 'content-type': 'application/json' } });
+  const setup = () => {
+    const cache = createResearchCache({ maxEntryBytes: 1 << 20, maxTotalBytes: 1 << 22 });
+    const fetch = vi.fn(async (url: string) =>
+      json(url.includes('other') ? otherDocument : document()),
+    );
+    const open = (overrides = {}) => {
+      const created = createNpmRegistryReader(
+        { ...limits, ...overrides },
+        { now: () => 0, fetch, cache },
+      );
+      if (created.kind !== 'ready') throw new Error('expected reader');
+      return created;
+    };
+    return { fetch, open };
+  };
+  const size = Buffer.byteLength(JSON.stringify(document()));
+
+  test('a cache hit costs no request', async () => {
+    const { fetch, open } = setup();
+    expect((await open().read(request)).kind).toBe('metadata');
+    const b = open({ maxRequests: 1 });
+    expect((await b.read(other)).kind).toBe('metadata');
+    expect((await b.read(request)).kind).toBe('metadata');
+    expect(fetch).toHaveBeenCalledTimes(2);
+  });
+
+  test('a cache hit debits no total bytes', async () => {
+    const { open } = setup();
+    await open().read(request);
+    const cap = Math.max(size, Buffer.byteLength(JSON.stringify(otherDocument))) + 1;
+    const b = open({ maxResponseBytes: cap, maxTotalBytes: cap });
+    expect((await b.read(other)).kind).toBe('metadata');
+    expect((await b.read(request)).kind).toBe('metadata');
+  });
+
+  test('a cached response still respects the per-response cap', async () => {
+    const { fetch, open } = setup();
+    await open().read(request);
+    expect(await open({ maxResponseBytes: size - 1 }).read(request)).toEqual({
+      kind: 'unavailable',
+      reason: 'budget',
+    });
+    expect(fetch).toHaveBeenCalledTimes(1);
+  });
 });

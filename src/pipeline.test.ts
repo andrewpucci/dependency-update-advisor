@@ -732,6 +732,14 @@ test('reads public registries through the public fetch only', async () => {
   expect(githubCalls.every((url) => url.startsWith('https://api.github.com/'))).toBe(true);
 });
 
+test('reads each public registry URL once per run, across collection and research', async () => {
+  const { input, publicCalls } = await setup({ evidence: 'changes' });
+  await runReview(input);
+  const registry = publicCalls.filter((url) => url.startsWith('https://registry.npmjs.org/'));
+  expect(registry.length).toBeGreaterThan(0);
+  expect(registry.filter((url, i) => registry.indexOf(url) !== i)).toEqual([]);
+});
+
 test('starts no snapshot or collector read when the head moves right after claiming', async () => {
   const { input, githubCalls, reads } = await setup({ pullRequestHeads: [HEAD, NEXT] });
   const result = await runReview(input);

@@ -1,4 +1,8 @@
-import { EVIDENCE_READ_ALLOCATION, EVIDENCE_READ_ENVELOPE } from './budget.js';
+import {
+  EVIDENCE_READ_ALLOCATION,
+  EVIDENCE_READ_ENVELOPE,
+  RESEARCH_CACHE_LIMITS,
+} from './budget.js';
 import type { GithubComparison } from './github-read.js';
 import { enrichAdvisories } from './evidence/advisories.js';
 import { createAdvisoryReader, createMalwareReader } from './evidence/advisory-read.js';
@@ -10,6 +14,7 @@ import { createPolicySignalReader } from './evidence/policy-signals-read.js';
 import type { PolicyMetadataReader } from './evidence/policy-signals-read.js';
 import { enrichUpstream, type UpstreamAttempt } from './evidence/upstream.js';
 import { createUpstreamReader } from './evidence/upstream-read.js';
+import { createResearchCache, type ResearchCache } from './evidence/research-cache.js';
 import type { NpmInventoryResult } from './evidence/npm.js';
 import type { PacketExpected, PacketResult } from './schema.js';
 import { validateReviewPacket, type EvidenceReason } from './schema.js';
@@ -44,6 +49,8 @@ export type ResearchInput = Readonly<{
   comparison: GithubComparison | null;
   /** Credential-free fetch for public registries and advisory sources. */
   fetch: (url: string, init: RequestInit) => Promise<Response>;
+  /** The run's research cache, shared with collection's registry reads; created here when absent. */
+  cache?: ResearchCache;
   now: () => number;
   /** Absolute time, in `now` units, by which research must be finished. */
   deadline: number;
@@ -242,7 +249,12 @@ function revalidate(input: ResearchInput, progress: ResearchProgress) {
  * is revalidated and replaced by the collected one if it fails.
  */
 export async function runResearch(input: ResearchInput): Promise<ResearchResult> {
-  const dependencies = { now: input.now, fetch: input.fetch, signal: input.signal };
+  const dependencies = {
+    now: input.now,
+    fetch: input.fetch,
+    signal: input.signal,
+    cache: input.cache ?? createResearchCache(RESEARCH_CACHE_LIMITS),
+  };
   const unavailable: { stage: ResearchStage; reason: EvidenceReason }[] = [];
   const readers: Reader[] = [];
   const observe = (observation: ResearchObservation) => {

@@ -1,5 +1,6 @@
 import { expect, test, vi } from 'vite-plus/test';
 import { createNpmPublishTimeReader, publishTimestamp } from './npm-publish-times.js';
+import { createResearchCache } from './research-cache.js';
 import { enrichPolicySignals } from './policy-signals.js';
 import { createMalwareReader } from './advisory-read.js';
 import { createUpstreamReader } from './upstream-read.js';
@@ -252,3 +253,97 @@ test.each(['maxResponseBytes', 'maxWork', 'maxJsonDepth'] as const)(
     r.close();
   },
 );
+
+const npmName = '@fixture/pkg';
+const npmOtherName = '@fixture/pkx';
+const npmBody = (name: string) =>
+  JSON.stringify({
+    name,
+    time: { '1.0.0': '2026-01-01T00:00:00Z', '2.0.0': '2026-02-01T00:00:00Z' },
+  });
+const npmBodyBytes = Buffer.byteLength(npmBody(npmName));
+function npmCachedFetch(calls: string[]) {
+  return async (url: string) => {
+    calls.push(url);
+    const name = decodeURIComponent(url.slice('https://registry.npmjs.org/'.length));
+    return new Response(npmBody(name), { headers: { 'content-type': 'application/json' } });
+  };
+}
+test('a cache hit costs no request', async () => {
+  const cache = createResearchCache({ maxEntryBytes: 1 << 20, maxTotalBytes: 1 << 22 });
+  const calls: string[] = [];
+  const deps = { now: () => 0, fetch: npmCachedFetch(calls), cache };
+  const a = createNpmPublishTimeReader(limits, deps);
+  if (a.kind !== 'ready') throw new Error('reader');
+  const expected = await a.read({ ...target, name: npmName });
+  a.close();
+  const b = createNpmPublishTimeReader({ ...limits, maxRequests: 1 }, deps);
+  if (b.kind !== 'ready') throw new Error('reader');
+  await b.read({ ...target, name: npmOtherName });
+  const hit = await b.read({ ...target, name: npmName });
+  b.close();
+  expect(expected.kind).toBe('times');
+  expect(hit).toEqual(expected);
+  expect(calls).toHaveLength(2);
+});
+test('a cache hit debits no total bytes', async () => {
+  const cache = createResearchCache({ maxEntryBytes: 1 << 20, maxTotalBytes: 1 << 22 });
+  const calls: string[] = [];
+  const deps = { now: () => 0, fetch: npmCachedFetch(calls), cache };
+  const a = createNpmPublishTimeReader(limits, deps);
+  if (a.kind !== 'ready') throw new Error('reader');
+  const expected = await a.read({ ...target, name: npmName });
+  a.close();
+  const fits = npmBodyBytes + 1;
+  const b = createNpmPublishTimeReader(
+    { ...limits, maxResponseBytes: fits, maxTotalBytes: fits },
+    deps,
+  );
+  if (b.kind !== 'ready') throw new Error('reader');
+  const live = await b.read({ ...target, name: npmOtherName });
+  const hit = await b.read({ ...target, name: npmName });
+  b.close();
+  expect(live.kind).toBe('times');
+  expect(hit).toEqual(expected);
+  expect(calls).toHaveLength(2);
+});
+test('a cached response still respects the per-response cap', async () => {
+  const cache = createResearchCache({ maxEntryBytes: 1 << 20, maxTotalBytes: 1 << 22 });
+  const calls: string[] = [];
+  const deps = { now: () => 0, fetch: npmCachedFetch(calls), cache };
+  const a = createNpmPublishTimeReader(limits, deps);
+  if (a.kind !== 'ready') throw new Error('reader');
+  await a.read({ ...target, name: npmName });
+  a.close();
+  const small = npmBodyBytes - 1;
+  const c = createNpmPublishTimeReader(
+    { ...limits, maxResponseBytes: small, maxTotalBytes: small },
+    deps,
+  );
+  if (c.kind !== 'ready') throw new Error('reader');
+  const result = await c.read({ ...target, name: npmName });
+  c.close();
+  expect(result).toEqual({ kind: 'unavailable', reason: 'budget' });
+  expect(calls).toHaveLength(1);
+});
+test('a cache hit leaves the total-byte share for later live reads', async () => {
+  const cache = createResearchCache({ maxEntryBytes: 1 << 20, maxTotalBytes: 1 << 22 });
+  const calls: string[] = [];
+  const deps = { now: () => 0, fetch: npmCachedFetch(calls), cache };
+  const a = createNpmPublishTimeReader(limits, deps);
+  if (a.kind !== 'ready') throw new Error('reader');
+  await a.read({ ...target, name: npmName });
+  a.close();
+  const fits = Buffer.byteLength(npmBody(npmOtherName)) + 1;
+  const b = createNpmPublishTimeReader(
+    { ...limits, maxResponseBytes: fits, maxTotalBytes: fits },
+    deps,
+  );
+  if (b.kind !== 'ready') throw new Error('reader');
+  const hit = await b.read({ ...target, name: npmName });
+  const live = await b.read({ ...target, name: npmOtherName });
+  b.close();
+  expect(hit.kind).toBe('times');
+  expect(live.kind).toBe('times');
+  expect(calls).toHaveLength(2);
+});

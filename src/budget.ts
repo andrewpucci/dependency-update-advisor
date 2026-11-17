@@ -63,3 +63,16 @@ export const EVIDENCE_READ_ALLOCATION = Object.freeze({
     }),
   }),
 });
+
+/**
+ * Bounds for the run-scoped research cache. An entry is at most one response, and the cache never
+ * holds more than the registry and research shares that fill it can fetch.
+ */
+export const RESEARCH_CACHE_LIMITS = Object.freeze({
+  maxEntryBytes: EVIDENCE_READ_ENVELOPE.maxResponseBytes,
+  maxTotalBytes:
+    EVIDENCE_READ_ALLOCATION.registry.maxTotalBytes +
+    EVIDENCE_READ_ALLOCATION.upstream.maxTotalBytes +
+    EVIDENCE_READ_ALLOCATION.advisory.maxTotalBytes +
+    EVIDENCE_READ_ALLOCATION.signals.maxTotalBytes,
+});

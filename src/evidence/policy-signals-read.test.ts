@@ -1,5 +1,6 @@
 import { expect, test, vi } from 'vite-plus/test';
 import { createPolicySignalReader } from './policy-signals-read.js';
+import { createResearchCache } from './research-cache.js';
 import { PACKET_LIMITS } from '../schema.js';
 import { isPlainObject } from './common.js';
 const limits = {
@@ -283,3 +284,95 @@ test.each(['bytes', 'json', 'identity', 'redirect'] as const)(
     r.close();
   },
 );
+
+const cachedPolicyBody = (version: string) =>
+  JSON.stringify({ info: { name: 'fixture', version }, urls: [] });
+const cachedPolicyBytes = Buffer.byteLength(cachedPolicyBody('2.0rc1'));
+const otherPolicyQuery = { ...query, version: '2.0rc2' };
+function cachedPolicyFetch(calls: string[]) {
+  return async (url: string) => {
+    calls.push(url);
+    const version = new URL(url).pathname.split('/')[3];
+    return new Response(cachedPolicyBody(version), {
+      headers: { 'content-type': 'application/json' },
+    });
+  };
+}
+test('a cache hit costs no request', async () => {
+  const cache = createResearchCache({ maxEntryBytes: 1 << 20, maxTotalBytes: 1 << 22 });
+  const calls: string[] = [];
+  const deps = { now: () => 0, fetch: cachedPolicyFetch(calls), cache };
+  const a = createPolicySignalReader(limits, deps);
+  if (a.kind !== 'ready') throw new Error('reader');
+  const expected = await a.read(query);
+  a.close();
+  const b = createPolicySignalReader({ ...limits, maxRequests: 1 }, deps);
+  if (b.kind !== 'ready') throw new Error('reader');
+  await b.read(otherPolicyQuery);
+  const hit = await b.read(query);
+  b.close();
+  expect(expected.kind).toBe('data');
+  expect(hit).toEqual(expected);
+  expect(calls).toHaveLength(2);
+});
+test('a cache hit debits no total bytes', async () => {
+  const cache = createResearchCache({ maxEntryBytes: 1 << 20, maxTotalBytes: 1 << 22 });
+  const calls: string[] = [];
+  const deps = { now: () => 0, fetch: cachedPolicyFetch(calls), cache };
+  const a = createPolicySignalReader(limits, deps);
+  if (a.kind !== 'ready') throw new Error('reader');
+  const expected = await a.read(query);
+  a.close();
+  const fits = cachedPolicyBytes + 1;
+  const b = createPolicySignalReader(
+    { ...limits, maxResponseBytes: fits, maxTotalBytes: fits },
+    deps,
+  );
+  if (b.kind !== 'ready') throw new Error('reader');
+  const live = await b.read(otherPolicyQuery);
+  const hit = await b.read(query);
+  b.close();
+  expect(live.kind).toBe('data');
+  expect(hit).toEqual(expected);
+  expect(calls).toHaveLength(2);
+});
+test('a cached response still respects the per-response cap', async () => {
+  const cache = createResearchCache({ maxEntryBytes: 1 << 20, maxTotalBytes: 1 << 22 });
+  const calls: string[] = [];
+  const deps = { now: () => 0, fetch: cachedPolicyFetch(calls), cache };
+  const a = createPolicySignalReader(limits, deps);
+  if (a.kind !== 'ready') throw new Error('reader');
+  await a.read(query);
+  a.close();
+  const small = cachedPolicyBytes - 1;
+  const c = createPolicySignalReader(
+    { ...limits, maxResponseBytes: small, maxTotalBytes: small },
+    deps,
+  );
+  if (c.kind !== 'ready') throw new Error('reader');
+  const result = await c.read(query);
+  c.close();
+  expect(result).toEqual({ kind: 'unavailable', reason: 'budget' });
+  expect(calls).toHaveLength(1);
+});
+test('a cache hit leaves the total-byte share for later live reads', async () => {
+  const cache = createResearchCache({ maxEntryBytes: 1 << 20, maxTotalBytes: 1 << 22 });
+  const calls: string[] = [];
+  const deps = { now: () => 0, fetch: cachedPolicyFetch(calls), cache };
+  const a = createPolicySignalReader(limits, deps);
+  if (a.kind !== 'ready') throw new Error('reader');
+  await a.read(query);
+  a.close();
+  const fits = Buffer.byteLength(cachedPolicyBody('2.0rc2')) + 1;
+  const b = createPolicySignalReader(
+    { ...limits, maxResponseBytes: fits, maxTotalBytes: fits },
+    deps,
+  );
+  if (b.kind !== 'ready') throw new Error('reader');
+  const hit = await b.read(query);
+  const live = await b.read(otherPolicyQuery);
+  b.close();
+  expect(hit.kind).toBe('data');
+  expect(live.kind).toBe('data');
+  expect(calls).toHaveLength(2);
+});
