@@ -5,6 +5,7 @@ import type { UnitRecord } from './analysis/batches.js';
 import type { SignalAttempt } from './evidence/policy-signals.js';
 import type { ResolvedReference } from './analysis/validation.js';
 import { evidenceGaps } from './policy.js';
+import type { EvidenceReason } from './schema.js';
 
 export type DecisionBriefInput = Readonly<{
   binding: ReviewBinding;
@@ -96,11 +97,67 @@ function recovery(category: string | null): string {
   return 'Investigate the failed review data or validation, correct the cause, then rerun CI.';
 }
 
-function evidenceGap(unit: DecisionUnit, sourceId: string): string {
+type ActionGroup = 'permission' | 'retry' | 'budget' | 'noSource' | 'untrusted';
+
+const REASON_GROUPS: Record<EvidenceReason, ActionGroup> = {
+  rate_limit: 'retry',
+  timeout: 'retry',
+  permission: 'permission',
+  budget: 'budget',
+  missing: 'noSource',
+  unsupported: 'noSource',
+  malformed: 'untrusted',
+  truncated: 'untrusted',
+  conflict: 'untrusted',
+  unknown: 'untrusted',
+};
+
+const RERUN_REASONS: ReadonlySet<EvidenceReason> = new Set(['rate_limit', 'timeout', 'permission']);
+
+const ACTION_ORDER: readonly ActionGroup[] = [
+  'permission',
+  'retry',
+  'budget',
+  'noSource',
+  'untrusted',
+];
+
+function manualStep(category: string, name: string): string {
+  if (category === 'vulnerability' || category === 'malware')
+    return `search the GitHub Advisory Database for ${name}`;
+  if (category === 'installScript') return `review ${name}'s install scripts`;
+  if (category === 'upstream') return `read ${name}'s release notes`;
+  return `review ${name}'s ${readableLabel(category)} evidence`;
+}
+
+function evidenceActions(
+  reasons: readonly EvidenceReason[],
+  category: string,
+  name: string,
+): string {
+  const effective: readonly EvidenceReason[] = reasons.length ? reasons : ['unknown'];
+  const groups = new Set(effective.map((reason) => REASON_GROUPS[reason]));
+  const rerunOnly = effective.every((reason) => RERUN_REASONS.has(reason));
+  const manual = `check it manually: ${manualStep(category, name)}.`;
+  const actions: Partial<Record<ActionGroup, string>> = {};
+  if (groups.has('permission'))
+    actions.permission = rerunOnly
+      ? "Correct the reviewer's token permissions, then rerun CI."
+      : "Correct the reviewer's token permissions.";
+  if (groups.has('retry') && rerunOnly) actions.retry = 'Rerun CI later.';
+  if (groups.has('budget'))
+    actions.budget = `The review could not check this package within its limits; ${manual}`;
+  if (groups.has('noSource')) actions.noSource = `No supported source was found; ${manual}`;
+  if (groups.has('untrusted')) actions.untrusted = `The source could not be trusted; ${manual}`;
+  return ACTION_ORDER.flatMap((group) => actions[group] ?? []).join(' ');
+}
+
+export function evidenceGap(unit: DecisionUnit, sourceId: string): string {
   const link = unit.evidenceLinks.find((entry) => entry.id === sourceId);
   const member = unit.members.find((entry) => entry.id === link?.memberId);
   if (!link || !member) throw new RenderFailure('reference');
-  return `${text(member.name)}: ${readableLabel(link.category)} evidence is ${readableLabel(link.status)} (${link.reasons.map(readableLabel).join(', ')}). Review the ${readableLabel(link.category)} evidence for ${text(member.name)} and rerun CI.`;
+  const name = text(member.name);
+  return `${name}: ${readableLabel(link.category)} evidence is ${readableLabel(link.status)} (${link.reasons.map(readableLabel).join(', ')}). ${evidenceActions(link.reasons, link.category, name)}`;
 }
 
 function unsafeUrl(value: string): boolean {

@@ -1,8 +1,13 @@
 import { expect, test } from 'vite-plus/test';
 import { parseReviewConfig } from './config.js';
-import { validateReviewPacket, type ReviewPacket } from './schema.js';
-import { formDecisionUnits, summarizeDecisionCoverage } from './units.js';
-import { renderDecisionBrief } from './reporting.js';
+import {
+  EVIDENCE_REASONS,
+  validateReviewPacket,
+  type EvidenceReason,
+  type ReviewPacket,
+} from './schema.js';
+import { formDecisionUnits, summarizeDecisionCoverage, type DecisionUnit } from './units.js';
+import { evidenceGap, renderDecisionBrief } from './reporting.js';
 
 function emptyBrief() {
   const repository = { id: 101, owner: 'example', name: 'consumer' };
@@ -1261,7 +1266,7 @@ test('retains the exact next action for assessed evidence gaps and relaxed advic
       entry.category === 'malware' && gapUnit.gaps.some((gap) => gap.sourceId === entry.id),
   )!;
   const member = unit.members.find((entry) => entry.id === link.memberId)!;
-  const gapAction = `${member.name}: malware evidence is ${link.status} (${link.reasons.join(', ')}). Review the malware evidence for ${member.name} and rerun CI.`;
+  const gapAction = `${member.name}: malware evidence is ${link.status} (${link.reasons.join(', ')}). The source could not be trusted; check it manually: search the GitHub Advisory Database for ${member.name}.`;
   const followupSection = (body: string) =>
     body.split('## Non-blocking follow-ups')[1].split('\n## ')[0];
   expect(followupSection(result.body)).toContain(gapAction);
@@ -1963,4 +1968,76 @@ test('policy guide linked from assessments lists every default rule and verdict'
   if (!defaults.ok) throw new Error('default config failed');
   expect(defaults.config.policy.minimumReleaseAgeDays).toBe(1);
   expect(guide).toContain('minimum release age (default one day)');
+});
+
+function gapUnit(reasons: EvidenceReason[], category = 'vulnerability') {
+  return {
+    members: [{ id: 'm1', name: 'pkg' }],
+    evidenceLinks: [{ id: 's1', memberId: 'm1', category, status: 'unavailable', reasons }],
+  } as unknown as DecisionUnit;
+}
+
+function gap(reasons: EvidenceReason[], category?: string): string {
+  return evidenceGap(gapUnit(reasons, category), 's1');
+}
+
+function actionOf(sentence: string): string {
+  return sentence.slice(sentence.indexOf('). ') + 3);
+}
+
+test('every evidence reason has a non-empty action sentence', () => {
+  for (const reason of EVIDENCE_REASONS) {
+    const action = actionOf(gap([reason]));
+    expect(action, reason).not.toBe('');
+    expect(action, reason).toMatch(/\.$/u);
+  }
+});
+
+test.each([['budget'], ['missing'], ['unsupported']] as const)(
+  'a %s gap never asks for a CI rerun, alone or with timeout',
+  (reason) => {
+    for (const reasons of [
+      [reason],
+      [reason, 'timeout'],
+      [reason, 'permission'],
+    ] as EvidenceReason[][]) {
+      expect(gap(reasons), reasons.join(',')).not.toMatch(/rerun ci/iu);
+    }
+  },
+);
+
+test.each([[['timeout']], [['rate_limit', 'timeout']]] as const)(
+  'a retry-only gap %j asks for exactly one later rerun',
+  (reasons) => {
+    const sentence = gap([...reasons]);
+    expect(sentence.split('Rerun CI later.').length - 1).toBe(1);
+  },
+);
+
+test('orders distinct actions by group and renders each once', () => {
+  const budgetThenNoSource = actionOf(gap(['budget', 'missing']));
+  expect(budgetThenNoSource.split('The review could not check').length - 1).toBe(1);
+  expect(budgetThenNoSource.split('No supported source was found').length - 1).toBe(1);
+  expect(budgetThenNoSource.indexOf('The review could not check')).toBeLessThan(
+    budgetThenNoSource.indexOf('No supported source was found'),
+  );
+  const permissionFirst = actionOf(gap(['budget', 'permission']));
+  expect(permissionFirst.indexOf('Correct the reviewer')).toBeLessThan(
+    permissionFirst.indexOf('The review could not check'),
+  );
+  for (const reasons of [
+    ['missing', 'unsupported'],
+    ['malformed', 'truncated', 'conflict', 'unknown'],
+  ] as EvidenceReason[][]) {
+    const action = actionOf(gap(reasons));
+    expect(action.split('check it manually').length - 1, reasons.join(',')).toBe(1);
+  }
+});
+
+test('names a concrete manual step for each category', () => {
+  expect(gap(['budget'], 'vulnerability')).toContain('search the GitHub Advisory Database for pkg');
+  expect(gap(['budget'], 'malware')).toContain('search the GitHub Advisory Database for pkg');
+  expect(gap(['budget'], 'upstream')).toContain("read pkg's release notes");
+  expect(gap(['budget'], 'installScript')).toContain("review pkg's install scripts");
+  expect(gap(['budget'], 'uploadedArtifact')).toContain("review pkg's uploaded artifact evidence");
 });

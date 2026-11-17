@@ -22403,11 +22403,55 @@ function recovery(category) {
 	].includes(category ?? "")) return "Rerun CI to retry dependency analysis.";
 	return "Investigate the failed review data or validation, correct the cause, then rerun CI.";
 }
+const REASON_GROUPS = {
+	rate_limit: "retry",
+	timeout: "retry",
+	permission: "permission",
+	budget: "budget",
+	missing: "noSource",
+	unsupported: "noSource",
+	malformed: "untrusted",
+	truncated: "untrusted",
+	conflict: "untrusted",
+	unknown: "untrusted"
+};
+const RERUN_REASONS = /* @__PURE__ */ new Set([
+	"rate_limit",
+	"timeout",
+	"permission"
+]);
+const ACTION_ORDER = [
+	"permission",
+	"retry",
+	"budget",
+	"noSource",
+	"untrusted"
+];
+function manualStep(category, name) {
+	if (category === "vulnerability" || category === "malware") return `search the GitHub Advisory Database for ${name}`;
+	if (category === "installScript") return `review ${name}'s install scripts`;
+	if (category === "upstream") return `read ${name}'s release notes`;
+	return `review ${name}'s ${readableLabel(category)} evidence`;
+}
+function evidenceActions(reasons, category, name) {
+	const effective = reasons.length ? reasons : ["unknown"];
+	const groups = new Set(effective.map((reason) => REASON_GROUPS[reason]));
+	const rerunOnly = effective.every((reason) => RERUN_REASONS.has(reason));
+	const manual = `check it manually: ${manualStep(category, name)}.`;
+	const actions = {};
+	if (groups.has("permission")) actions.permission = rerunOnly ? "Correct the reviewer's token permissions, then rerun CI." : "Correct the reviewer's token permissions.";
+	if (groups.has("retry") && rerunOnly) actions.retry = "Rerun CI later.";
+	if (groups.has("budget")) actions.budget = `The review could not check this package within its limits; ${manual}`;
+	if (groups.has("noSource")) actions.noSource = `No supported source was found; ${manual}`;
+	if (groups.has("untrusted")) actions.untrusted = `The source could not be trusted; ${manual}`;
+	return ACTION_ORDER.flatMap((group) => actions[group] ?? []).join(" ");
+}
 function evidenceGap(unit, sourceId) {
 	const link = unit.evidenceLinks.find((entry) => entry.id === sourceId);
 	const member = unit.members.find((entry) => entry.id === link?.memberId);
 	if (!link || !member) throw new RenderFailure("reference");
-	return `${text(member.name)}: ${readableLabel(link.category)} evidence is ${readableLabel(link.status)} (${link.reasons.map(readableLabel).join(", ")}). Review the ${readableLabel(link.category)} evidence for ${text(member.name)} and rerun CI.`;
+	const name = text(member.name);
+	return `${name}: ${readableLabel(link.category)} evidence is ${readableLabel(link.status)} (${link.reasons.map(readableLabel).join(", ")}). ${evidenceActions(link.reasons, link.category, name)}`;
 }
 function unsafeUrl(value) {
 	return /\s/u.test(value) || Array.from(value).some((char) => char.charCodeAt(0) < 32 || char.charCodeAt(0) === 127);
