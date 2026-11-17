@@ -1,6 +1,13 @@
 import { expect, test } from 'vite-plus/test';
-import { enrichPolicySignals } from './policy-signals.js';
-import { createMalwareReader } from './advisory-read.js';
+import {
+  enrichPolicySignals,
+  runMemberMalware,
+  type PolicySignalInput,
+  type SignalEnrichment,
+} from './policy-signals.js';
+import { runOptionalSignals, SIGNAL_ATTEMPTS_PER_MEMBER } from './policy-signals-evidence.js';
+import { resolveAdvisoryTarget } from './advisories.js';
+import { createMalwareReader, type AdvisoryReader } from './advisory-read.js';
 import { createUpstreamReader } from './upstream-read.js';
 import { enrichUpstream } from './upstream.js';
 import { upstreamScenario, upstreamTestLimits } from '../../tests/parity/upstream.js';
@@ -214,7 +221,6 @@ test('invalid input cannot trigger network and does not mutate caller data', asy
 });
 test('optional attempt exhaustion keeps a bounded explained result and known deprecation findings', async () => {
   const { f, input } = await fixture();
-  const count = input.changes.filter((c) => !('basis' in c)).length;
   const malware = createMalwareReader(input.limits, {
     now: () => 0,
     fetch: async () => Response.json([]),
@@ -228,17 +234,16 @@ test('optional attempt exhaustion keeps a bounded explained result and known dep
   });
   if (malware.kind !== 'ready' || npm.kind !== 'ready') throw new Error('reader');
   const out = await enrichPolicySignals(
-    {
-      ...input,
-      npmInventory: f.input.npmInventory,
-      limits: { ...input.limits, maxAttempts: count * 6 },
-    },
+    { ...input, npmInventory: f.input.npmInventory },
     { malwareReader: malware, npmReader: npm },
   );
   malware.close();
   expect(out.kind, JSON.stringify(out)).toBe('enriched');
   if (out.kind !== 'enriched') throw new Error('output');
-  expect(out.attempts.length).toBeLessThanOrEqual(count * 6);
+  for (const c of input.changes.filter((c) => !('basis' in c)))
+    expect(out.attempts.filter((a) => a.memberId === c.id).length).toBeLessThanOrEqual(
+      SIGNAL_ATTEMPTS_PER_MEMBER,
+    );
   expect(
     out.changes
       .filter((c) => !('basis' in c))
@@ -247,7 +252,6 @@ test('optional attempt exhaustion keeps a bounded explained result and known dep
   expect(
     out.findings.some((f) => f.kind === 'releaseMetadata' && f.deprecated?.marker === 'deprecated'),
   ).toBe(true);
-  expect(out.changes.some((c) => c.evidence.trust?.reasons.includes('budget'))).toBe(true);
   const packet = validateReviewPacket(
     {
       version: 1,
@@ -319,4 +323,318 @@ test('a removal explains proposed-only signals as unsupported, not budget exhaus
       ).toBe(true);
   }
   expect(out.attempts.some((a) => a.reasons.includes('budget'))).toBe(false);
+});
+
+function npmVictim(input: { changes: readonly ({ id: string; ecosystem: string } & object)[] }) {
+  return input.changes.find((c) => c.ecosystem === 'npm' && !('basis' in c))!;
+}
+function nameOf(change: object): string {
+  const instance = ('to' in change && change.to) || ('from' in change && change.from);
+  return (instance as { name: string }).name;
+}
+test('a tight attempt setting never stops signals: attempts are bounded by structure', async () => {
+  const { f, input } = await fixture(true);
+  const run = async (maxAttempts: number) => {
+    const malware = createMalwareReader(input.limits, {
+      now: () => 0,
+      fetch: async () => Response.json([]),
+    });
+    if (malware.kind !== 'ready') throw new Error('reader');
+    const out = await enrichPolicySignals(
+      { ...input, npmInventory: f.input.npmInventory, limits: { ...input.limits, maxAttempts } },
+      { malwareReader: malware },
+    );
+    malware.close();
+    if (out.kind !== 'enriched') throw new Error(JSON.stringify(out));
+    return out;
+  };
+  const allowed = await run(2000);
+  const tight = await run(1);
+  expect(tight.changes.map((c) => c.evidence.malware)).toEqual(
+    allowed.changes.map((c) => c.evidence.malware),
+  );
+  expect(
+    tight.changes
+      .filter((c) => !('basis' in c))
+      .every((c) => c.evidence.malware.status === 'available'),
+  ).toBe(true);
+});
+test('a member over its attempt allowance loses only its optional signals', async () => {
+  const { f, input } = await fixture(true);
+  const victim = npmVictim(input);
+  const victimName = nameOf(victim);
+  const base = createNpmRegistryReader(upstreamTestLimits, { now: () => 0, fetch: f.fetch });
+  if (base.kind !== 'ready') throw new Error('reader');
+  const run = async (throwForVictim: boolean) => {
+    const malware = createMalwareReader(input.limits, {
+      now: () => 0,
+      fetch: async () => Response.json([]),
+    });
+    if (malware.kind !== 'ready') throw new Error('reader');
+    const npmReader = {
+      read: async (target: unknown) => {
+        if (throwForVictim && JSON.stringify(target).includes(victimName))
+          throw new AdvisoryFailure('budget');
+        return base.read(target);
+      },
+    };
+    const out = await enrichPolicySignals(
+      { ...input, npmInventory: f.input.npmInventory },
+      { malwareReader: malware, npmReader },
+    );
+    malware.close();
+    if (out.kind !== 'enriched') throw new Error(JSON.stringify(out));
+    return out;
+  };
+  const allSuccess = await run(false);
+  const overAllowance = await run(true);
+  const others = (changes: typeof allSuccess.changes) => changes.filter((c) => c.id !== victim.id);
+  expect(others(overAllowance.changes)).toEqual(others(allSuccess.changes));
+  const lost = overAllowance.changes.find((c) => c.id === victim.id)!;
+  const before = allSuccess.changes.find((c) => c.id === victim.id)!;
+  expect(lost.evidence.malware).toEqual(before.evidence.malware);
+  for (const category of ['publishTime', 'deprecation', 'trust', 'publisher'] as const)
+    expect(lost.evidence[category], category).toEqual({
+      status: 'unavailable',
+      reasons: ['budget'],
+      sourceIds: [],
+    });
+  expect(overAllowance.attempts.filter((a) => a.memberId !== victim.id)).toEqual(
+    allSuccess.attempts.filter((a) => a.memberId !== victim.id),
+  );
+});
+test('a member whose malware read throws keeps the stage enriched', async () => {
+  const { input } = await fixture(true);
+  const members = input.changes.filter((c) => !('basis' in c));
+  const victim = members[0];
+  const victimTarget = JSON.stringify(
+    resolveAdvisoryTarget(input, victim, victim.to ? 'head' : 'base'),
+  );
+  const real = createMalwareReader(input.limits, {
+    now: () => 0,
+    fetch: async () => Response.json([]),
+  });
+  if (real.kind !== 'ready') throw new Error('reader');
+  const flaky: AdvisoryReader = {
+    read: async (target) => {
+      if (JSON.stringify(target) === victimTarget) throw new AdvisoryFailure('malformed');
+      return real.read(target);
+    },
+    close: () => real.close(),
+  };
+  const out = await enrichPolicySignals(input, { malwareReader: flaky });
+  flaky.close();
+  if (out.kind !== 'enriched') throw new Error(JSON.stringify(out));
+  expect(out.changes.find((c) => c.id === victim.id)!.evidence.malware).toMatchObject({
+    status: 'unavailable',
+    reasons: ['malformed'],
+  });
+  expect(
+    out.attempts.some(
+      (a) => a.memberId === victim.id && a.category === 'malware' && a.outcome === 'unavailable',
+    ),
+  ).toBe(true);
+  for (const c of members.filter((c) => c.id !== victim.id))
+    expect(out.changes.find((o) => o.id === c.id)!.evidence.malware.status).toBe('available');
+});
+test('optional discoveries that cross the packet byte limit are dropped for that member only', async () => {
+  const { f, input } = await fixture(true);
+  const victim = npmVictim(input);
+  const victimName = nameOf(victim);
+  const run = async (mode: 'deprecated' | 'failing') => {
+    const registry = createNpmRegistryReader(upstreamTestLimits, {
+      now: () => 0,
+      fetch: async (url, init) => {
+        const data = await (await f.fetch(url, init)).json();
+        const name = decodeURIComponent(new URL(url).pathname.split('/')[1]);
+        return Response.json(
+          name === victimName ? { ...data, deprecated: 'Maintained replacement required' } : data,
+        );
+      },
+    });
+    const malware = createMalwareReader(input.limits, {
+      now: () => 0,
+      fetch: async () => Response.json([]),
+    });
+    if (registry.kind !== 'ready' || malware.kind !== 'ready') throw new Error('reader');
+    const npmReader = {
+      read: async (target: unknown) => {
+        if (mode === 'failing' && JSON.stringify(target).includes(victimName))
+          throw new AdvisoryFailure('budget');
+        return registry.read(target);
+      },
+    };
+    const out = await enrichPolicySignals(
+      { ...input, npmInventory: f.input.npmInventory },
+      { malwareReader: malware, npmReader },
+    );
+    malware.close();
+    if (out.kind !== 'enriched') throw new Error(JSON.stringify(out));
+    return out;
+  };
+  const finding = (await run('deprecated')).findings.find(
+    (x) => x.kind === 'releaseMetadata' && x.memberId === victim.id,
+  )!;
+  expect(finding).toBeDefined();
+  // Start from the state where the victim's optional reads failed, then let its collector
+  // discover the finding under a limit that admits that state but not the finding.
+  const baseline = await run('failing');
+  const output = structuredClone(baseline) as SignalEnrichment;
+  const maxRetainedBytes =
+    Buffer.byteLength(JSON.stringify(output)) +
+    Math.floor(Buffer.byteLength(JSON.stringify(finding)) / 2);
+  const change = output.changes.find((c) => c.id === victim.id)!;
+  await runOptionalSignals(
+    { ...input, limits: { ...input.limits, maxRetainedBytes } } as PolicySignalInput,
+    output,
+    change,
+    async () => {
+      output.findings.push(structuredClone(finding));
+    },
+  );
+  expect(
+    output.findings.some((x) => x.kind === 'releaseMetadata' && x.memberId === victim.id),
+  ).toBe(false);
+  for (const category of ['publishTime', 'deprecation', 'trust', 'publisher'] as const)
+    expect(change.evidence[category], category).toEqual({
+      status: 'unavailable',
+      reasons: ['budget'],
+      sourceIds: [],
+    });
+  expect(output.changes.filter((c) => c.id !== victim.id)).toEqual(
+    baseline.changes.filter((c) => c.id !== victim.id),
+  );
+});
+
+test("a member's malware additions that cross the packet byte limit are rolled back alone", async () => {
+  const { input } = await fixture(true);
+  const empty = createMalwareReader(input.limits, {
+    now: () => 0,
+    fetch: async () => Response.json([]),
+  });
+  if (empty.kind !== 'ready') throw new Error('reader');
+  const baseline = await enrichPolicySignals(input, { malwareReader: empty });
+  empty.close();
+  if (baseline.kind !== 'enriched') throw new Error(JSON.stringify(baseline));
+  const victim = npmVictim(input);
+  const positive: AdvisoryReader = {
+    read: async (target) => {
+      const t = target as { ecosystem: string; name: string; version: string };
+      const reader = createMalwareReader(input.limits, {
+        now: () => 0,
+        fetch: async () =>
+          Response.json([
+            {
+              ghsa_id: 'GHSA-aaaa-bbbb-cccc',
+              html_url: 'https://github.com/advisories/GHSA-aaaa-bbbb-cccc',
+              summary: 'Synthetic malware',
+              type: 'malware',
+              severity: 'unknown',
+              withdrawn_at: null,
+              vulnerabilities: [
+                {
+                  package: { ecosystem: t.ecosystem, name: t.name },
+                  vulnerable_version_range: '*',
+                },
+              ],
+            },
+          ]),
+      });
+      if (reader.kind !== 'ready') throw new Error('reader');
+      return reader.read(target);
+    },
+    close: () => {},
+  };
+  const failing: AdvisoryReader = {
+    read: async () => {
+      throw new AdvisoryFailure('budget');
+    },
+    close: () => {},
+  };
+  const start = () => {
+    const output = structuredClone(baseline) as SignalEnrichment;
+    return { output, change: output.changes.find((c) => c.id === victim.id)! };
+  };
+  // The size a failed check leaves, plus less than one malware record and its finding.
+  const failed = start();
+  await runMemberMalware(input, failed.output, failed.change, failing, new Map());
+  const limits = {
+    ...input.limits,
+    maxRetainedBytes: Buffer.byteLength(JSON.stringify(failed.output)) + 50,
+  };
+  const { output, change } = start();
+  await runMemberMalware({ ...input, limits }, output, change, positive, new Map());
+  expect(change.evidence.malware).toMatchObject({ status: 'unavailable', reasons: ['budget'] });
+  expect(output.findings.some((f) => f.memberId === victim.id && f.kind === 'malware')).toBe(false);
+  expect(output.sources.length).toBe(failed.output.sources.length);
+  expect(output.changes.filter((c) => c.id !== victim.id)).toEqual(
+    baseline.changes.filter((c) => c.id !== victim.id),
+  );
+});
+
+test('a released member returns to exactly its pre-member size', async () => {
+  const { f, input } = await fixture(true);
+  const victim = npmVictim(input);
+  const victimName = nameOf(victim);
+  const registry = createNpmRegistryReader(upstreamTestLimits, { now: () => 0, fetch: f.fetch });
+  const malware = createMalwareReader(input.limits, {
+    now: () => 0,
+    fetch: async () => Response.json([]),
+  });
+  if (registry.kind !== 'ready' || malware.kind !== 'ready') throw new Error('reader');
+  const baseline = await enrichPolicySignals(
+    { ...input, npmInventory: f.input.npmInventory },
+    {
+      malwareReader: malware,
+      npmReader: {
+        read: async (target: unknown) => {
+          if (JSON.stringify(target).includes(victimName)) throw new AdvisoryFailure('budget');
+          return registry.read(target);
+        },
+      },
+    },
+  );
+  malware.close();
+  if (baseline.kind !== 'enriched') throw new Error(JSON.stringify(baseline));
+  // The state just before the victim runs: its optional categories hold the budget placeholders.
+  const output = structuredClone(baseline) as SignalEnrichment;
+  const change = output.changes.find((c) => c.id === victim.id)!;
+  for (const a of output.attempts)
+    if (a.memberId === victim.id && a.category !== 'malware')
+      Object.assign(a, {
+        url: null,
+        outcome: 'skipped',
+        reasons: ['budget'],
+        sourceIds: [],
+        truncated: false,
+      });
+  const limit = Buffer.byteLength(JSON.stringify(output));
+  const finding = structuredClone(baseline.findings[0]);
+  await runOptionalSignals(
+    { ...input, limits: { ...input.limits, maxRetainedBytes: limit } } as PolicySignalInput,
+    output,
+    change,
+    async () => {
+      // A real read leaves a URL on the attempt; a discovery then crosses the limit.
+      output.attempts.push({
+        memberId: victim.id,
+        side: change.to ? 'head' : 'base',
+        category: 'deprecation',
+        url: 'https://registry.npmjs.org/' + victimName,
+        outcome: 'unavailable',
+        reasons: ['unknown'],
+        sourceIds: [],
+        truncated: false,
+      });
+      output.findings.push({ ...finding, id: finding.id + ':discovery' });
+    },
+  );
+  expect(Buffer.byteLength(JSON.stringify(output))).toBeLessThanOrEqual(limit);
+  expect(
+    output.attempts.filter((a) => a.memberId === victim.id && a.category !== 'malware'),
+  ).toEqual(
+    ['publishTime', 'deprecation', 'trust', 'publisher', 'license'].map((category) =>
+      expect.objectContaining({ category, url: null, outcome: 'skipped', reasons: ['budget'] }),
+    ),
+  );
 });

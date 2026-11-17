@@ -165,6 +165,19 @@ export function retainSignalFinding(output: SignalEnrichment, finding: Finding) 
   advisoryCheck(!previous || isDeepStrictEqual(previous, finding), 'conflict');
   if (!previous) output.findings.push(finding);
 }
+const OPTIONAL_CATEGORIES = [
+  'publishTime',
+  'deprecation',
+  'trust',
+  'publisher',
+  'license',
+] as const;
+/**
+ * Attempts need no runtime cap: each member's come from fixed call sites over its sides and the
+ * categories (at most 15 by reading the collectors; tests pin it), with no loop over untrusted
+ * data, and members are bounded by `PACKET_LIMITS.changes`.
+ */
+export const SIGNAL_ATTEMPTS_PER_MEMBER = 15;
 export function signalBounds(input: PolicySignalInput, output: SignalEnrichment) {
   advisoryCheck(
     output.changes.every((c) =>
@@ -173,8 +186,7 @@ export function signalBounds(input: PolicySignalInput, output: SignalEnrichment)
     'budget',
   );
   advisoryCheck(
-    output.attempts.length <= input.limits.maxAttempts &&
-      output.sources.length <= PACKET_LIMITS.sources &&
+    output.sources.length <= PACKET_LIMITS.sources &&
       output.findings.length <=
         Math.min(PACKET_LIMITS.findings, input.findings.length + input.limits.maxFindings) &&
       Buffer.byteLength(JSON.stringify(output)) <=
@@ -182,13 +194,6 @@ export function signalBounds(input: PolicySignalInput, output: SignalEnrichment)
     'budget',
   );
 }
-const OPTIONAL_CATEGORIES = [
-  'publishTime',
-  'deprecation',
-  'trust',
-  'publisher',
-  'license',
-] as const;
 /** Reserve explained terminal outcomes before optional reads can spend retention space. */
 export function reserveOptionalSignals(input: PolicySignalInput, output: SignalEnrichment) {
   for (const change of output.changes) {
@@ -230,6 +235,39 @@ function explainUnattempted(output: SignalEnrichment, change: PacketChange) {
       sourceIds: [],
       truncated: false,
     });
+  }
+}
+/**
+ * Checks packet limits after a member's rollback. If the discoveries kept from that member no
+ * longer fit, they are dropped too, so only this member loses its optional signals.
+ */
+function boundOrRelease(
+  input: PolicySignalInput,
+  output: SignalEnrichment,
+  change: PacketChange,
+  snapshot: { sources: PacketSource[]; findings: Finding[] },
+) {
+  try {
+    signalBounds(input, output);
+  } catch {
+    output.sources = [...snapshot.sources];
+    output.findings = [...snapshot.findings];
+    for (const category of OPTIONAL_CATEGORIES) {
+      if (category !== 'license')
+        change.evidence[category] = { status: 'unavailable', reasons: ['budget'], sourceIds: [] };
+      const terminal = output.attempts.find(
+        (a) => a.memberId === change.id && a.category === category,
+      )!;
+      // Exactly the reservation's placeholder, so the state is no larger than before this member.
+      Object.assign(terminal, {
+        url: null,
+        outcome: 'skipped',
+        reasons: ['budget'],
+        sourceIds: [],
+        truncated: false,
+      });
+    }
+    signalBounds(input, output);
   }
 }
 export async function runOptionalSignals(
@@ -284,6 +322,6 @@ export async function runOptionalSignals(
       ];
       terminal.truncated = actual.length > 0;
     }
-    signalBounds(input, output);
+    boundOrRelease(input, output, change, snapshot);
   }
 }

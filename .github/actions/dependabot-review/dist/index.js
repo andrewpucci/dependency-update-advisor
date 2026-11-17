@@ -13718,10 +13718,6 @@ function retainSignalFinding(output, finding) {
 	advisoryCheck(!previous || isDeepStrictEqual(previous, finding), "conflict");
 	if (!previous) output.findings.push(finding);
 }
-function signalBounds(input, output) {
-	advisoryCheck(output.changes.every((c) => Object.values(c.evidence).every((e) => e.sourceIds.length <= PACKET_LIMITS.listEntries)), "budget");
-	advisoryCheck(output.attempts.length <= input.limits.maxAttempts && output.sources.length <= PACKET_LIMITS.sources && output.findings.length <= Math.min(PACKET_LIMITS.findings, input.findings.length + input.limits.maxFindings) && Buffer.byteLength(JSON.stringify(output)) <= Math.min(PACKET_LIMITS.bytes, input.limits.maxRetainedBytes), "budget");
-}
 const OPTIONAL_CATEGORIES = [
 	"publishTime",
 	"deprecation",
@@ -13729,6 +13725,10 @@ const OPTIONAL_CATEGORIES = [
 	"publisher",
 	"license"
 ];
+function signalBounds(input, output) {
+	advisoryCheck(output.changes.every((c) => Object.values(c.evidence).every((e) => e.sourceIds.length <= PACKET_LIMITS.listEntries)), "budget");
+	advisoryCheck(output.sources.length <= PACKET_LIMITS.sources && output.findings.length <= Math.min(PACKET_LIMITS.findings, input.findings.length + input.limits.maxFindings) && Buffer.byteLength(JSON.stringify(output)) <= Math.min(PACKET_LIMITS.bytes, input.limits.maxRetainedBytes), "budget");
+}
 /** Reserve explained terminal outcomes before optional reads can spend retention space. */
 function reserveOptionalSignals(input, output) {
 	for (const change of output.changes) {
@@ -13774,6 +13774,34 @@ function explainUnattempted(output, change) {
 		});
 	}
 }
+/**
+* Checks packet limits after a member's rollback. If the discoveries kept from that member no
+* longer fit, they are dropped too, so only this member loses its optional signals.
+*/
+function boundOrRelease(input, output, change, snapshot) {
+	try {
+		signalBounds(input, output);
+	} catch {
+		output.sources = [...snapshot.sources];
+		output.findings = [...snapshot.findings];
+		for (const category of OPTIONAL_CATEGORIES) {
+			if (category !== "license") change.evidence[category] = {
+				status: "unavailable",
+				reasons: ["budget"],
+				sourceIds: []
+			};
+			const terminal = output.attempts.find((a) => a.memberId === change.id && a.category === category);
+			Object.assign(terminal, {
+				url: null,
+				outcome: "skipped",
+				reasons: ["budget"],
+				sourceIds: [],
+				truncated: false
+			});
+		}
+		signalBounds(input, output);
+	}
+}
 async function runOptionalSignals(input, output, change, collect) {
 	const snapshot = {
 		sources: [...output.sources],
@@ -13813,7 +13841,7 @@ async function runOptionalSignals(input, output, change, collect) {
 			terminal.sourceIds = [...new Set(actual.flatMap((a) => a.sourceIds).filter((id) => refs.has(id)))];
 			terminal.truncated = actual.length > 0;
 		}
-		signalBounds(input, output);
+		boundOrRelease(input, output, change, snapshot);
 	}
 }
 
@@ -14435,6 +14463,9 @@ async function collectMemberMalware(input, output, change, reader, cache) {
 		cache.set(key, lookup);
 		lookup = reconcileMalware(lookup);
 	}
+	recordMemberMalware(input, output, change, side, target, lookup);
+}
+function recordMemberMalware(input, output, change, side, target, lookup) {
 	const priorClaims = priorMalwareClaims(output, change);
 	lookup = checkPriorMalware(lookup, priorClaims);
 	const query = malwareSource(input, change, side, lookup);
@@ -19723,6 +19754,39 @@ async function collectOptionalMember(input, output, change, dependencies, lockfi
 		collectLicenseSignals(input, output, change, {});
 	}
 }
+/**
+* One member's malware check. A failure, including additions that cross a packet limit, rolls back
+* only this member and records its malware as unavailable with the real reason.
+*/
+async function runMemberMalware(input, output, change, reader, cache) {
+	const lengths = [
+		output.sources.length,
+		output.findings.length,
+		output.attempts.length
+	];
+	const malware = structuredClone(change.evidence.malware);
+	try {
+		await collectMemberMalware(input, output, change, reader, cache);
+		signalBounds(input, output);
+	} catch (error) {
+		output.sources.length = lengths[0];
+		output.findings.length = lengths[1];
+		output.attempts.length = lengths[2];
+		change.evidence.malware = malware;
+		const reason = error instanceof AdvisoryFailure ? error.reason : "unknown";
+		const side = change.to ? "head" : "base";
+		const target = resolveAdvisoryTarget(input, change, side);
+		recordMemberMalware(input, output, change, side, target, target ? {
+			target,
+			url: "",
+			status: "unavailable",
+			complete: false,
+			records: [],
+			reasons: [reason]
+		} : null);
+		signalBounds(input, output);
+	}
+}
 /** Required malware runs before optional adapters; input/outputs never share mutable records. */
 async function enrichPolicySignals(value, dependencies) {
 	const prepared = prepareAdvisoryInput(value);
@@ -19742,8 +19806,7 @@ async function enrichPolicySignals(value, dependencies) {
 		const cache = /* @__PURE__ */ new Map();
 		for (const change of output.changes) {
 			if ("basis" in change) continue;
-			await collectMemberMalware(input, output, change, dependencies.malwareReader, cache);
-			signalBounds(input, output);
+			await runMemberMalware(input, output, change, dependencies.malwareReader, cache);
 		}
 		reserveOptionalSignals(input, output);
 		const lockfiles = dependencies.artifactSession && cacheLockfileReads(dependencies.artifactSession);
