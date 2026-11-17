@@ -134,6 +134,17 @@ is a planning choice.
    those required contents cannot fit, return failure; never truncate a
    required item or publish a body above the ceiling.
 
+**Comment Capacity Amendment companion (draft):**
+[#348](https://github.com/andrewpucci/dependency-update-advisor/issues/348)
+proposes, in the
+[comment contract](SPEC-comment-experience.md#comment-capacity-amendment),
+amending requirement 4 to let identical unresolved units share one item that
+names each unit, and requirements 3 and 7 to place a required "checked, none
+found" line per evidence category in Decision coverage and preserve it when
+the body is too large. Repeated deterministic findings and evidence gaps would
+render once, naming every affected package; no required text is shortened.
+Until approved, requirements 3, 4, and 7 apply as written.
+
 ## Structure and style
 
 Use strict TypeScript, Node.js 24 ESM, GitHub Markdown, and source-adjacent

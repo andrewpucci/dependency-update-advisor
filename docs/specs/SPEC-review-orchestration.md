@@ -193,6 +193,11 @@ receives `process.env` or a general fetch function.
    exhausts a share and ends incomplete with a `budget` reason; the 240,000 ms
    deadline, not the request count, bounds a very large group.
 
+   The draft [evidence coverage spec](SPEC-evidence-coverage.md) proposes
+   replacing these fixed research shares with shares scaled to the change and
+   capped by measured ceilings. Until it is approved and implemented, the
+   table above applies.
+
    The snapshot share covers C1's 128 excerpt files with their directories.
    Freshness reads are reserved separately so a heavy snapshot cannot prevent
    the checks that keep a finished review valid. A failed freshness read is
@@ -983,6 +988,19 @@ origin/main`, on the exact revision.
 - **Never:** report a raw error, payload, status code, header, URL, or model
   text; derive a reason from untrusted data; weaken fail-closed behavior; or
   start publication or production-claim implementation.
+
+## Comment Capacity Amendment Companion (Draft)
+
+[#348](https://github.com/andrewpucci/dependency-update-advisor/issues/348)
+proposes, in the
+[comment contract](SPEC-comment-experience.md#comment-capacity-amendment),
+merging repeated deterministic findings and evidence gaps so that an ordinary
+lockfile fan-out fits the comment limit. Until that amendment is approved and
+implemented, a renderer size rejection remains `render-size`. If implemented,
+`render-size` remains the fail-closed `internal-failure` reason, with the
+`brief`/`budget` gap, only when the merged required content cannot fit. It
+does not change any W2 outcome, reason, trace, or stderr form, and it does not
+authorize publication.
 
 ## Testing Strategy
 

@@ -159,6 +159,187 @@ next action, and coverage limit without expanding details. Use the existing
 grouped-PR dry-run fixture and the parity matrix from the shared-review
 cutover spec to compare content with the current reviewer.
 
+## Comment Capacity Amendment
+
+**Status: draft for review.** Scoped to
+[#348](https://github.com/andrewpucci/dependency-update-advisor/issues/348).
+Effort tier: L. It amends this contract and
+[O1 decision brief rendering](SPEC-decision-brief.md) requirements 3, 4, and
+7, and changes the deterministic renderer and its behavior checks. It does not
+authorize publication, a production claim backend, a new action permission,
+a change to M1 model validation, or a live rerun.
+
+### Decision for review
+
+Render each repeated deterministic finding and evidence gap once, naming
+every affected package, instead of once per decision unit. Group unresolved
+units only when their reason, action, and gaps are identical apart from
+package identity, and name each unit in the group. Render the
+[evidence coverage spec's](SPEC-evidence-coverage.md#4-reader-facing-evidence-states)
+three evidence states. Required text is never shortened. A valid lockfile
+fan-out whose distinct required content fits must render rather than return
+`render-size`. This does not make a review complete or authorize
+publication.
+
+### Evidence
+
+The R1 no-write rehearsal on Dependabot PR #276 (head `657f221`) ended
+`render-size` after 12 calls at split depth 0. A local no-write replay of
+that run's recorded GitHub, registry, and model responses reproduced the
+same result. The recording stays outside the repository because it holds raw
+model payloads. Its sanitized measurements:
+
+- 93 standalone decision units: 2 direct and 91 transitive updates, with no
+  direct-update group. 72 were assessed (71 `merge_with_followups`, 1
+  `merge`); 21 were rejected in three whole batches, all category `reference`.
+- 93 units have only 91 distinct package names: `vite-plus` and
+  `@oxc-project/types` each appear twice.
+- The required body, excluding the already optional Package assessments
+  (38,999 code units), is 105,413 code units:
+
+  | Section                 | Code units | Content                                                               |
+  | ----------------------- | ---------: | --------------------------------------------------------------------- |
+  | Non-blocking follow-ups |     51,974 | 253 evidence-gap lines and 71 model follow-ups (10,558 of model text) |
+  | Finding lines           |     35,489 | 183 informational findings, each one of two fixed sentences           |
+  | Decision queue          |     17,134 | 21 rejected units carrying 83 gap texts                               |
+  | Header and coverage     |        816 |                                                                       |
+
+- 276 of the 336 gaps are three repeated conditions: malware, upstream, and
+  vulnerability evidence unavailable for 92 units.
+
+Model prose is about one tenth of the required body. Without it, the
+renderer's own text is about 95,000 code units, so bounding model output
+cannot fit this PR. Repetition across units can: the escaped list of all 93
+package names is about 2,700 code units. A simulation of items 1 and 2 on the
+recorded sections gives a required body of 29,513 code units: Decision queue
+2,218, finding lines 5,879, Non-blocking follow-ups 20,600, and header and
+coverage 816. The simulation is not the implementation; the replay check
+below must confirm the implemented result before any re-pin.
+
+### Proposed contract
+
+1. **Merge identical deterministic records.** Findings with identical kind,
+   rationale, applicability, severity, and rendered citations render as one
+   line that names every affected package. Assessed-unit evidence gaps with
+   the same category, status, and reasons render in Non-blocking follow-ups as
+   one line that names every affected package and states the action once.
+   This is the normal form, not a size fallback. A merged line names each
+   member; it never substitutes a count or "and N others". Members that share
+   a name are distinguished with the qualifier that Unchecked signals already
+   uses (ecosystem, location, and version).
+2. **Group unresolved units only when identical.** Decision-queue units whose
+   reason, recovery action, changed-update count, and complete gap set
+   (each gap's category, status, and reasons) are identical, apart from
+   package identity, may share one item. An unresolved unit's gaps stay in
+   its queue item, not in Non-blocking follow-ups. The item names each unit
+   with its changed-update count, and states the shared gap and one concrete
+   action. Units that differ in any of those fields stay separate. O1
+   requirement 4 is amended to permit this; it still forbids replacing units
+   with an aggregate.
+3. **Render the evidence states.** This amendment owns rendering of the
+   states that the evidence coverage spec defines:
+   - **Found:** each finding renders by its existing rule: a blocker for a
+     hold, otherwise a merged finding line. A category that is `partial` and
+     also has a finding renders both the finding and its coverage gap.
+   - **Checked, none found:** one required line per category, placed in
+     Decision coverage after its counts, that names every package whose
+     category is `available` with no finding. The line has no action. It
+     survives size pressure like a coverage limit. This amends §2.1 of this
+     contract and O1 requirement 3, which place it, and §3.4 of this contract
+     and O1 requirement 7, which add it to the content preserved when the
+     body is too large.
+   - **Not checked:** the merged gap lines of item 1 and the queue items of
+     item 2. Each states the action that the evidence coverage spec assigns
+     to its reasons. A gap says to rerun CI only when that spec's action for
+     every one of its reasons allows it.
+4. **Keep model text per unit.** Model follow-ups, blocker text, and
+   assessment reasons are not merged, deduplicated across units, shortened,
+   or reordered. The renderer adds no model text to merged deterministic
+   lines.
+5. **Fallback and `render-size`.** If the merged body exceeds 50,000 code
+   units, the renderer omits optional sections in the existing priority order
+   with the existing notice. If the required body still exceeds the limit, it
+   returns `size`. W2 reports `render-size`, a fail-closed outcome with the
+   existing `brief`/`budget` gap; the trace and stderr stay redacted as W2
+   specifies. No required text is shortened or truncated.
+6. **No new disclosure channel.** Merged lines add no raw response, source
+   excerpt, error text, credential, URL, or CI result to the comment, trace,
+   or stderr. Package names stay escaped and autolink-neutralized.
+
+The plan chooses the exact merged-line and state-line wording. Those choices
+must satisfy the verification below.
+
+### Required verification
+
+- **Committed synthetic fixture** shaped like the R1 measurements: 93
+  standalone units, including two pairs of same-named members; two shared
+  informational findings per unit; three or four shared unavailable gaps per
+  unit, with reasons `budget`, `missing`, and `unsupported`; 21 unresolved
+  units across at least two distinct gap sets; and 71 model follow-ups of
+  about 150 characters. It renders at or below 50,000 code units. Every
+  member, including each same-named member, appears in each merged record
+  that applies to it, and every unresolved unit, follow-up, action, and
+  required citation is visible. It also includes an assessed `merge` unit
+  with no evidence category, gap, finding, or follow-up, and asserts that the
+  unit is counted in coverage.
+- **Checked-state fixture:** the same 93 units with every required category
+  `available` and no finding, except one `partial` category with a finding,
+  renders at or below 50,000 code units. It shows one "checked, none found"
+  line per category naming each member, and shows both the finding and the
+  gap for the partial category. A variant with optional sections large
+  enough to force omission still shows every checked line in Decision
+  coverage.
+- **Reason-specific actions:** a merged `budget`, `missing`, or `unsupported`
+  gap never says to rerun CI; a gap whose only reasons are `rate_limit` or
+  `timeout` does.
+- **Named mutations fail those checks:** merging records that differ in any
+  rendered field or citation; dropping one member from a merged line;
+  collapsing same-named members; replacing names with a count; grouping
+  unresolved units with different actions or gaps; moving an unresolved unit's
+  gaps into Non-blocking follow-ups; merging, shortening, or dropping model
+  text; rendering a `partial` category with a finding as found only; listing
+  an unchecked package as checked; omitting a checked line under size
+  pressure; and saying to rerun CI for a `budget` gap.
+- **Irreducible boundary:** a fixture whose distinct required records cannot
+  fit after merging still returns `size`, and W2 still reports
+  `internal-failure` with reason `render-size` and the `brief`/`budget` gap.
+- **Preserved checks:** existing escaping, autolink, priority-order,
+  exact-50,000 boundary, and optional-omission checks continue to pass. Full
+  repository checks and the reproducible action-bundle check run on the
+  implementation revision.
+- **Local R1 replay before re-pin:** replaying the recorded R1 responses
+  against the implementation renders a body at or below 50,000 code units
+  that names every member with a required record (92 of the 93), all 21
+  unresolved units, and all 71 follow-ups. The one assessed `merge` unit has
+  no evidence category, gap, finding, or follow-up, so it appears only in the
+  optional Package assessments, as O1 requirement 7 already allows. The
+  sanitized result is recorded on #348. The R1 caller is re-pinned only after
+  this passes.
+
+### Amendment boundaries
+
+- **Always:** account for every required decision-bearing record, name every
+  affected member, preserve trusted links and escaped output, keep the
+  50,000-code-unit bound, and leave the no-write and publication boundary
+  unchanged.
+- **Ask first:** change which records are required, merge or shorten
+  model-authored text, change the size limit, the managed-comment identity,
+  status semantics, workflow permissions, or M1 validation.
+- **Never:** replace named members or units with a count, omit or shorten a
+  blocker, gap, or action, show an unchecked category as checked, expose a raw
+  model response or other sensitive input, or treat a comment as completed
+  publication.
+
+### Out of scope
+
+- M1 validation is unchanged. The 21 `reference` rejections, each failing a
+  whole batch, need their own issue.
+- Evidence availability and reason-to-action mapping are owned by the draft
+  [evidence coverage spec](SPEC-evidence-coverage.md). Upstream, malware, and
+  vulnerability evidence was unavailable for 92 of 93 units because research
+  stages stopped on their limits and discarded completed work, not because
+  checks found nothing.
+
 ## Boundaries
 
 - **Always:** Put decision and next action first; name incomplete evidence;
