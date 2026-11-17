@@ -4,6 +4,7 @@ import { formDecisionUnits, type DecisionCoverage, type DecisionUnit } from './u
 import type { UnitRecord } from './analysis/batches.js';
 import type { SignalAttempt } from './evidence/policy-signals.js';
 import type { ResolvedReference } from './analysis/validation.js';
+import { limit } from './limits.js';
 import { evidenceGaps } from './policy.js';
 import type { EvidenceReason } from './schema.js';
 
@@ -420,7 +421,7 @@ function fitComment(
       ...sections.slice(1).flat(),
       ...(omitted ? ['', 'Some lower-priority detail was omitted to fit the comment.'] : []),
     ].join('\n');
-    if (body.length <= 50_000) return { ok: true, body };
+    if (body.length <= limit('comment.maxBodyCodeUnits')) return { ok: true, body };
     const last = sections.findLastIndex((section) => section.length > 0);
     if (last < 0) return { ok: false, category: 'size' };
     sections[last] = [];
@@ -1080,7 +1081,9 @@ export function renderDecisionBrief(input: DecisionBriefInput): DecisionBriefRes
       '',
       ...attributionLines(input, binding),
     ].join('\n');
-    return body.length <= 50_000 ? { ok: true, body } : { ok: false, category: 'size' };
+    return body.length <= limit('comment.maxBodyCodeUnits')
+      ? { ok: true, body }
+      : { ok: false, category: 'size' };
   } catch (error) {
     return { ok: false, category: error instanceof RenderFailure ? error.category : 'input' };
   }

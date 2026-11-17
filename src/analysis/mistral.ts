@@ -1,4 +1,5 @@
 import { freeze, isPlainObject } from '../evidence/common.js';
+import { limit } from '../limits.js';
 import {
   preparedSnapshot,
   receiveAnalysisReply,
@@ -231,7 +232,7 @@ function emptyToolFields(message: Record<string, unknown>) {
     'envelope',
   );
 }
-const MAX_CONTENT_CHUNKS = 64;
+const MAX_CONTENT_CHUNKS = limit('analysis.maxContentChunks');
 /**
  * The review text of a reply. A string is the text itself. A reasoning model returns a bounded
  * array of chunks instead: `thinking` chunks are skipped without reading their content, and the

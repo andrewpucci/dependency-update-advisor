@@ -10,6 +10,7 @@ import { createRehearsalSink, type RehearsalSink } from './handoff.js';
 import { runReview, type PipelineInput, type PipelineResult } from './pipeline.js';
 import { createTestClaimStore, type AnalysisTiming, type ClaimStore } from './review.js';
 import { createGithubTransport, parseRuntime, resolveWorkflow } from './runtime.js';
+import { limit } from './limits.js';
 import { createGithubSnapshotReads } from './snapshot.js';
 
 /** Distinct from 1, which Node uses when the bundle itself fails to load. */
@@ -66,7 +67,7 @@ export async function selfCheck() {
   };
 }
 
-export const MAX_EVENT_BYTES = 1024 * 1024;
+export const MAX_EVENT_BYTES = limit('startup.maxEventBytes');
 
 export type StartupDependencies = Readonly<{
   /** The platform fetch; wrapped so only GitHub reads carry the read token. */

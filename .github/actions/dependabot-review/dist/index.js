@@ -9824,7 +9824,58 @@ const DEFINITIONS = [
 			structuralTest: "src/evidence/policy-signals.test.ts > optional attempt exhaustion keeps a bounded explained result and known deprecation findings"
 		},
 		test: "src/evidence/policy-signals.test.ts > optional attempt exhaustion keeps a bounded explained result and known deprecation findings"
-	}
+	},
+	unjustified("snapshot.maxBlobBytes", MiB, "bytes"),
+	unjustified("snapshot.maxTreeEntries", 1e4, "count"),
+	derived("github.snapshot.maxRequests", "count", ["evidence.allocation.transport.snapshot.maxRequests"], copy, "The GitHub snapshot share's request cap mirrors the transport snapshot allocation."),
+	derived("github.snapshot.maxTotalBytes", "bytes", ["evidence.allocation.transport.snapshot.maxTotalBytes"], copy, "The GitHub snapshot share's byte cap mirrors the transport snapshot allocation."),
+	derived("github.freshness.maxRequests", "count", ["evidence.allocation.transport.freshness.maxRequests"], copy, "The GitHub freshness share's request cap mirrors the transport freshness allocation."),
+	derived("github.freshness.maxTotalBytes", "bytes", ["evidence.allocation.transport.freshness.maxTotalBytes"], copy, "The GitHub freshness share's byte cap mirrors the transport freshness allocation."),
+	derived("github.maxResponseBytes", "bytes", ["evidence.envelope.maxResponseBytes"], copy, "The GitHub response cap mirrors the evidence envelope's response cap."),
+	derived("github.requestTimeoutMs", "milliseconds", ["evidence.envelope.requestTimeoutMs"], copy, "The GitHub request timeout mirrors the evidence envelope's request timeout."),
+	derived("github.totalTimeoutMs", "milliseconds", ["evidence.envelope.totalTimeoutMs"], copy, "The GitHub total timeout mirrors the evidence envelope's total timeout."),
+	derived("context.maxDependencies", "count", ["packet.changes"], copy, "The context dependency cap mirrors the packet's change cap."),
+	derived("context.maxIdCodeUnits", "code units", ["packet.idCodeUnits"], copy, "The context identifier cap mirrors the packet's identifier cap."),
+	derived("context.maxPathBytes", "bytes", ["packet.identityBytes"], copy, "The context path cap mirrors the packet's identity byte cap that bounds every path."),
+	derived("context.maxSourceContextBytes", "bytes", ["packet.contextBytes"], copy, "The serialized source-context cap mirrors the packet's context byte cap."),
+	derived("context.maxSourceExcerptCodeUnits", "code units", ["packet.excerptCodeUnits"], copy, "The excerpt cap mirrors the packet's excerpt code-unit cap."),
+	derived("context.maxSourceFactsPerDependency", "count", ["packet.facts"], copy, "The fact cap per dependency mirrors the packet's fact cap."),
+	unjustified("context.maxSourceRoots", 16, "count"),
+	unjustified("context.maxSourceCandidates", 128, "count"),
+	unjustified("context.maxTrackedPathEntries", 1e4, "count"),
+	unjustified("context.maxSourceFileBytes", 65536, "bytes"),
+	unjustified("context.maxTotalSourceReadBytes", MiB, "bytes"),
+	unjustified("context.generatedMarkerScanLines", 20, "count"),
+	unjustified("handoff.maxGaps", 4, "count"),
+	unjustified("dependabot.maxFileBytes", 65536, "bytes"),
+	unjustified("dependabot.maxYamlNodes", 2e4, "count"),
+	unjustified("dependabot.maxYamlDepth", 16, "count"),
+	unjustified("dependabot.maxAliasExpansions", 0, "count"),
+	unjustified("dependabot.maxUpdates", 256, "count"),
+	unjustified("dependabot.maxRoots", 256, "count"),
+	derived("dependabot.maxPathBytes", "bytes", ["packet.identityBytes"], copy, "The Dependabot path cap mirrors the packet's identity byte cap that bounds every path."),
+	unjustified("startup.maxEventBytes", MiB, "bytes"),
+	unjustified("config.maxBytes", 16384, "bytes"),
+	unjustified("config.maxModelCodeUnits", 128, "code units"),
+	unjustified("config.maxReleaseAgeDays", 30, "count"),
+	unjustified("comment.maxBodyCodeUnits", 5e4, "code units"),
+	unjustified("analysis.maxUnits", 8, "count"),
+	unjustified("analysis.sourceBytes", 2048, "bytes"),
+	unjustified("analysis.unitBytes", 65536, "bytes"),
+	unjustified("analysis.requestBytes", 262144, "bytes"),
+	unjustified("analysis.completionTokens", 16384, "tokens"),
+	unjustified("analysis.requestTimeoutMs", 24e4, "milliseconds"),
+	unjustified("analysis.responseBytes", 12648448, "bytes"),
+	unjustified("analysis.textBytes", 1024, "bytes"),
+	unjustified("analysis.featureBytes", 512, "bytes"),
+	unjustified("analysis.followupBytes", 280, "bytes"),
+	unjustified("analysis.steps", 8, "count"),
+	unjustified("analysis.references", 32, "count"),
+	unjustified("analysis.maxCalls", 32, "count"),
+	unjustified("analysis.maxConcurrentCalls", 2, "count"),
+	unjustified("analysis.maxAnalysisMs", 6e5, "milliseconds"),
+	unjustified("analysis.publicationReserveMs", 6e4, "milliseconds"),
+	unjustified("analysis.maxContentChunks", 64, "count")
 ];
 const REGISTER = buildRegister(DEFINITIONS);
 function limitEntry(id) {
@@ -20645,7 +20696,7 @@ function createTestClaimStore() {
 }
 
 // src/handoff.ts
-const MAX_GAPS = 4;
+const MAX_GAPS = limit("handoff.maxGaps");
 function copyAnalysisTiming(value) {
 	if (!value || !Number.isSafeInteger(value.callsDispatched) || value.callsDispatched < 0 || !Number.isSafeInteger(value.maxSplitDepth) || value.maxSplitDepth < 0 || value.callDurationsMs.length !== value.callsDispatched || value.callDurationsMs.some((duration) => !Number.isSafeInteger(duration) || duration < 0)) return void 0;
 	return Object.freeze({
@@ -20746,7 +20797,7 @@ function createRehearsalSink(appToken) {
 
 // src/config.ts
 const CONFIG_FILE = ".github/dependabot-review.json";
-const MAX_CONFIG_BYTES = 16384;
+const MAX_CONFIG_BYTES = limit("config.maxBytes");
 const VERDICTS = [
 	"merge",
 	"merge_with_followups",
@@ -20790,7 +20841,7 @@ function validPaths(value, limit, exactFile) {
 function invalidAnalysis(analysis) {
 	if (!objectWithKeys(analysis, ["provider", "model"])) return "analysis";
 	if (analysis.provider !== "mistral") return "analysis.provider";
-	if (typeof analysis.model !== "string" || analysis.model.length < 1 || analysis.model.length > 128 || !/^[A-Za-z0-9][A-Za-z0-9._-]*(?![\s\S])/u.test(analysis.model)) return "analysis.model";
+	if (typeof analysis.model !== "string" || analysis.model.length < 1 || analysis.model.length > limit("config.maxModelCodeUnits") || !/^[A-Za-z0-9][A-Za-z0-9._-]*(?![\s\S])/u.test(analysis.model)) return "analysis.model";
 }
 function invalidContext(context) {
 	if (!objectWithKeys(context, [
@@ -20798,13 +20849,13 @@ function invalidContext(context) {
 		"sendSourceExcerptsToModel",
 		"excerptFiles"
 	])) return "context";
-	if (Object.hasOwn(context, "sourceRoots") && !validPaths(context.sourceRoots, 16, false)) return "context.sourceRoots";
+	if (Object.hasOwn(context, "sourceRoots") && !validPaths(context.sourceRoots, limit("context.maxSourceRoots"), false)) return "context.sourceRoots";
 	if (Object.hasOwn(context, "sendSourceExcerptsToModel") && typeof context.sendSourceExcerptsToModel !== "boolean") return "context.sendSourceExcerptsToModel";
-	if (Object.hasOwn(context, "excerptFiles") && !validPaths(context.excerptFiles, 128, true)) return "context.excerptFiles";
+	if (Object.hasOwn(context, "excerptFiles") && !validPaths(context.excerptFiles, limit("context.maxSourceCandidates"), true)) return "context.excerptFiles";
 }
 function invalidPolicy(policy) {
 	if (!objectWithKeys(policy, ["verdicts", "minimumReleaseAgeDays"])) return "policy";
-	if (Object.hasOwn(policy, "minimumReleaseAgeDays") && (typeof policy.minimumReleaseAgeDays !== "number" || !Number.isInteger(policy.minimumReleaseAgeDays) || policy.minimumReleaseAgeDays < 1 || policy.minimumReleaseAgeDays > 30)) return "policy.minimumReleaseAgeDays";
+	if (Object.hasOwn(policy, "minimumReleaseAgeDays") && (typeof policy.minimumReleaseAgeDays !== "number" || !Number.isInteger(policy.minimumReleaseAgeDays) || policy.minimumReleaseAgeDays < 1 || policy.minimumReleaseAgeDays > limit("config.maxReleaseAgeDays"))) return "policy.minimumReleaseAgeDays";
 	if (Object.hasOwn(policy, "verdicts")) {
 		if (!objectWithKeys(policy.verdicts, Object.keys(DEFAULT_VERDICTS))) return "policy.verdicts";
 		for (const [rule, value] of Object.entries(policy.verdicts)) if (!VERDICTS.some((verdict) => verdict === value)) return `policy.verdicts.${rule}`;
@@ -20837,7 +20888,7 @@ function defaultConfig() {
 }
 /** Validates present JSON; failure never substitutes missing-file defaults. */
 function parseReviewConfig(text) {
-	if (Buffer.byteLength(text, "utf8") > 16384) return failure$5("size");
+	if (Buffer.byteLength(text, "utf8") > MAX_CONFIG_BYTES) return failure$5("size");
 	let document;
 	try {
 		document = JSON.parse(text);
@@ -20933,7 +20984,7 @@ async function readConfigFile(path) {
 	const handle = await fs.open(path, "r");
 	try {
 		if (!(await handle.stat()).isFile()) return failure$5("path");
-		const bytes = Buffer.alloc(16385);
+		const bytes = Buffer.alloc(MAX_CONFIG_BYTES + 1);
 		let count = 0;
 		while (count < bytes.length) {
 			const { bytesRead } = await handle.read({
@@ -20945,7 +20996,7 @@ async function readConfigFile(path) {
 			if (bytesRead === 0) break;
 			count += bytesRead;
 		}
-		if (count > 16384) return failure$5("size");
+		if (count > MAX_CONFIG_BYTES) return failure$5("size");
 		let text;
 		try {
 			text = new TextDecoder("utf-8", {
@@ -22202,18 +22253,18 @@ function parseAssessments(value, snapshot) {
 
 // src/analysis/contract.ts
 const ANALYSIS_LIMITS = Object.freeze({
-	maxUnits: 8,
-	sourceBytes: 2048,
-	unitBytes: 65536,
-	requestBytes: 262144,
-	completionTokens: 16384,
-	requestTimeoutMs: 24e4,
-	responseBytes: 12648448,
-	textBytes: 1024,
-	featureBytes: 512,
-	followupBytes: 280,
-	steps: 8,
-	references: 32
+	maxUnits: limit("analysis.maxUnits"),
+	sourceBytes: limit("analysis.sourceBytes"),
+	unitBytes: limit("analysis.unitBytes"),
+	requestBytes: limit("analysis.requestBytes"),
+	completionTokens: limit("analysis.completionTokens"),
+	requestTimeoutMs: limit("analysis.requestTimeoutMs"),
+	responseBytes: limit("analysis.responseBytes"),
+	textBytes: limit("analysis.textBytes"),
+	featureBytes: limit("analysis.featureBytes"),
+	followupBytes: limit("analysis.followupBytes"),
+	steps: limit("analysis.steps"),
+	references: limit("analysis.references")
 });
 const snapshots = /* @__PURE__ */ new WeakMap();
 const runs = /* @__PURE__ */ new WeakMap();
@@ -22421,7 +22472,7 @@ function emptyToolFields(message) {
 	requireValue(message.tool_calls == null || Array.isArray(message.tool_calls) && message.tool_calls.length === 0, "envelope");
 	requireValue(message.function_call == null && (message.refusal == null || message.refusal === ""), "envelope");
 }
-const MAX_CONTENT_CHUNKS = 64;
+const MAX_CONTENT_CHUNKS = limit("analysis.maxContentChunks");
 /**
 * The review text of a reply. A string is the text itself. A reasoning model returns a bounded
 * array of chunks instead: `thinking` chunks are skipped without reading their content, and the
@@ -22544,10 +22595,10 @@ async function analyzeMistralBatch(batch, options, deps = {
 }
 
 // src/analysis/batches.ts
-const MAX_CALLS = 32;
-const MAX_CONCURRENT_CALLS = 2;
-const MAX_ANALYSIS_MS = 6e5;
-const PUBLICATION_RESERVE_MS = 6e4;
+const MAX_CALLS = limit("analysis.maxCalls");
+const MAX_CONCURRENT_CALLS = limit("analysis.maxConcurrentCalls");
+const MAX_ANALYSIS_MS = limit("analysis.maxAnalysisMs");
+const PUBLICATION_RESERVE_MS = limit("analysis.publicationReserveMs");
 /** Analyze an immutable inventory; deadlineMs is in the monotonic clock domain. */
 async function analyzeDecisionUnits(input, options, dependencies = {}) {
 	const now = dependencies.now ?? (() => performance.now());
@@ -23044,7 +23095,7 @@ function fitComment(head, assessments, requiredFollowups, optional) {
 			...sections.slice(1).flat(),
 			...omitted ? ["", "Some lower-priority detail was omitted to fit the comment."] : []
 		].join("\n");
-		if (body.length <= 5e4) return {
+		if (body.length <= limit("comment.maxBodyCodeUnits")) return {
 			ok: true,
 			body
 		};
@@ -23521,7 +23572,7 @@ function renderDecisionBrief(input) {
 			"",
 			...attributionLines(input, binding)
 		].join("\n");
-		return body.length <= 5e4 ? {
+		return body.length <= limit("comment.maxBodyCodeUnits") ? {
 			ok: true,
 			body
 		} : {
@@ -23837,14 +23888,14 @@ function createResearchCache(options) {
 // src/dependabot-roots.ts
 /** Bounds on the Dependabot configuration file and the roots read from it. */
 const DEPENDABOT_ROOT_LIMITS = Object.freeze({
-	maxFileBytes: 65536,
-	maxYamlNodes: 2e4,
-	maxYamlDepth: 16,
-	maxAliasExpansions: 0,
-	maxUpdates: 256,
-	maxRoots: 256
+	maxFileBytes: limit("dependabot.maxFileBytes"),
+	maxYamlNodes: limit("dependabot.maxYamlNodes"),
+	maxYamlDepth: limit("dependabot.maxYamlDepth"),
+	maxAliasExpansions: limit("dependabot.maxAliasExpansions"),
+	maxUpdates: limit("dependabot.maxUpdates"),
+	maxRoots: limit("dependabot.maxRoots")
 });
-const MAX_PATH_BYTES = 1024;
+const MAX_PATH_BYTES = limit("dependabot.maxPathBytes");
 function fail(reason) {
 	throw new YamlFailure(reason);
 }
@@ -30774,18 +30825,18 @@ async function runResearch(input) {
 }
 
 // src/context.ts
-const MAX_CONTEXT_DEPENDENCIES = 128;
-const MAX_CONTEXT_ID_CODE_UNITS = 256;
-const MAX_CONTEXT_PATH_BYTES = 1024;
-const MAX_SOURCE_ROOTS = 16;
-const MAX_SOURCE_CONTEXT_BYTES = 65536;
-const MAX_TRACKED_PATH_ENTRIES = 1e4;
-const MAX_SOURCE_CANDIDATES = 128;
-const MAX_SOURCE_FILE_BYTES = 65536;
-const MAX_TOTAL_SOURCE_READ_BYTES = 1048576;
-const MAX_SOURCE_EXCERPT_CODE_UNITS = 500;
-const MAX_SOURCE_FACTS_PER_DEPENDENCY = 20;
-const GENERATED_MARKER_SCAN_LINES = 20;
+const MAX_CONTEXT_DEPENDENCIES = limit("context.maxDependencies");
+const MAX_CONTEXT_ID_CODE_UNITS = limit("context.maxIdCodeUnits");
+const MAX_CONTEXT_PATH_BYTES = limit("context.maxPathBytes");
+const MAX_SOURCE_ROOTS = limit("context.maxSourceRoots");
+const MAX_SOURCE_CONTEXT_BYTES = limit("context.maxSourceContextBytes");
+const MAX_TRACKED_PATH_ENTRIES = limit("context.maxTrackedPathEntries");
+const MAX_SOURCE_CANDIDATES = limit("context.maxSourceCandidates");
+const MAX_SOURCE_FILE_BYTES = limit("context.maxSourceFileBytes");
+const MAX_TOTAL_SOURCE_READ_BYTES = limit("context.maxTotalSourceReadBytes");
+const MAX_SOURCE_EXCERPT_CODE_UNITS = limit("context.maxSourceExcerptCodeUnits");
+const MAX_SOURCE_FACTS_PER_DEPENDENCY = limit("context.maxSourceFactsPerDependency");
+const GENERATED_MARKER_SCAN_LINES = limit("context.generatedMarkerScanLines");
 const REASONS = [
 	"no-match",
 	"missing-source",
@@ -31093,7 +31144,7 @@ async function readSource(root, path, remaining) {
 		try {
 			const stat = await handle.stat();
 			if (!stat.isFile()) return failure("path", "context.excerptFiles");
-			const bytes = Buffer.alloc(Math.min(65537, remaining));
+			const bytes = Buffer.alloc(Math.min(MAX_SOURCE_FILE_BYTES + 1, remaining));
 			let count = 0;
 			while (count < bytes.length && count < stat.size) {
 				const { bytesRead } = await handle.read({
@@ -31105,7 +31156,7 @@ async function readSource(root, path, remaining) {
 				if (!bytesRead) return failure("read", "context.excerptFiles");
 				count += bytesRead;
 			}
-			if (count > 65536) return {
+			if (count > MAX_SOURCE_FILE_BYTES) return {
 				ok: true,
 				bytes: count,
 				reason: "file-byte-limit"
@@ -31289,8 +31340,8 @@ async function collectSourceContext(input) {
 }
 
 // src/snapshot.ts
-const MAX_BLOB_BYTES = 1048576;
-const MAX_TREE_ENTRIES = 1e4;
+const MAX_BLOB_BYTES = limit("snapshot.maxBlobBytes");
+const MAX_TREE_ENTRIES = limit("snapshot.maxTreeEntries");
 const CONFIG_PATH = ".github/dependabot-review.json";
 var Unavailable = class extends Error {
 	reason;
@@ -31546,7 +31597,7 @@ var Materializer = class {
 			await fs.symlink(target, destination);
 			return true;
 		}
-		const bytes = content === "payload" ? await this.payload(entry, options.limit ?? 65536) : content === "limit-placeholder" ? new Uint8Array((options.limit ?? 0) + 1) : /* @__PURE__ */ new Uint8Array();
+		const bytes = content === "payload" ? await this.payload(entry, options.limit ?? MAX_SOURCE_FILE_BYTES) : content === "limit-placeholder" ? new Uint8Array((options.limit ?? 0) + 1) : /* @__PURE__ */ new Uint8Array();
 		await fs.writeFile(destination, bytes, { mode: entry.mode === "100755" ? 448 : 384 });
 		return true;
 	}
@@ -32112,11 +32163,17 @@ async function evaluateEvidence(input, binding, started, signal, state, recheck,
 * exempt from it and end only with the job window, so the checks that follow a slow model can run.
 */
 const W2_GITHUB_LIMITS = Object.freeze({
-	snapshot: EVIDENCE_READ_ALLOCATION.transport.snapshot,
-	freshness: EVIDENCE_READ_ALLOCATION.transport.freshness,
-	maxResponseBytes: EVIDENCE_READ_ENVELOPE.maxResponseBytes,
-	requestTimeoutMs: EVIDENCE_READ_ENVELOPE.requestTimeoutMs,
-	totalTimeoutMs: EVIDENCE_READ_ENVELOPE.totalTimeoutMs
+	snapshot: Object.freeze({
+		maxRequests: limit("github.snapshot.maxRequests"),
+		maxTotalBytes: limit("github.snapshot.maxTotalBytes")
+	}),
+	freshness: Object.freeze({
+		maxRequests: limit("github.freshness.maxRequests"),
+		maxTotalBytes: limit("github.freshness.maxTotalBytes")
+	}),
+	maxResponseBytes: limit("github.maxResponseBytes"),
+	requestTimeoutMs: limit("github.requestTimeoutMs"),
+	totalTimeoutMs: limit("github.totalTimeoutMs")
 });
 function plainText(value) {
 	return typeof value === "string" && value.length > 0 && !Array.from(value).some((character) => {
@@ -32352,13 +32409,13 @@ async function selfCheck() {
 		streamJson: await streamJsonParses()
 	};
 }
-const MAX_EVENT_BYTES = 1048576;
+const MAX_EVENT_BYTES = limit("startup.maxEventBytes");
 async function readBoundedEvent(path) {
 	const handle = await fs.open(path, "r");
 	try {
-		const buffer = Buffer.alloc(1048577);
+		const buffer = Buffer.alloc(MAX_EVENT_BYTES + 1);
 		const { bytesRead } = await handle.read(buffer, 0, buffer.length, 0);
-		if (bytesRead > 1048576) throw new Error("event too large");
+		if (bytesRead > MAX_EVENT_BYTES) throw new Error("event too large");
 		return new TextDecoder("utf-8", { fatal: true }).decode(buffer.subarray(0, bytesRead));
 	} finally {
 		await handle.close();

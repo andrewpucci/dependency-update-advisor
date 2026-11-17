@@ -9,7 +9,9 @@ import {
   checkRegister,
   dependents,
   limit,
+  limitEntry,
   type LimitDefinition,
+  type LimitId,
 } from './limits.js';
 
 const unjustified = (id: string, value: number): LimitDefinition => ({
@@ -101,6 +103,37 @@ test('derived limits are wired to the entries they sum or copy', () => {
     expect.arrayContaining(['evidence.envelope.maxTotalBytes', 'research.cache.maxTotalBytes']),
   );
   expect(dependents(REGISTER, 'job.budget')).toEqual(['job.window']);
+});
+
+/** Each copy of a packet limit, paired with the packet entry whose value it mirrors. */
+const PACKET_COPIES: readonly [LimitId, LimitId][] = [
+  ['context.maxDependencies', 'packet.changes'],
+  ['context.maxIdCodeUnits', 'packet.idCodeUnits'],
+  ['context.maxPathBytes', 'packet.identityBytes'],
+  ['context.maxSourceContextBytes', 'packet.contextBytes'],
+  ['context.maxSourceExcerptCodeUnits', 'packet.excerptCodeUnits'],
+  ['context.maxSourceFactsPerDependency', 'packet.facts'],
+  ['dependabot.maxPathBytes', 'packet.identityBytes'],
+];
+
+test('copies wired: a packet copy is a derived mirror of its packet entry', () => {
+  for (const [copy, source] of PACKET_COPIES) {
+    expect(limitEntry(copy).basis, copy).toMatchObject({ kind: 'derived', inputs: [source] });
+    expect(dependents(REGISTER, source), copy).toContain(copy);
+    expect(limit(copy), copy).toBe(limit(source));
+  }
+});
+
+test('copies wired: the source-root and candidate bounds are one entry each, read by config and context', () => {
+  expect(limit('context.maxSourceRoots')).toBe(16);
+  expect(limit('context.maxSourceCandidates')).toBe(128);
+  expect(dependents(REGISTER, 'context.maxSourceRoots')).toEqual([]);
+  expect(dependents(REGISTER, 'context.maxSourceCandidates')).toEqual([]);
+  for (const file of ['src/config.ts', 'src/context.ts']) {
+    const source = readFileSync(fileURLToPath(new URL(`../${file}`, import.meta.url)), 'utf8');
+    expect(source, file).toContain("limit('context.maxSourceRoots')");
+    expect(source, file).toContain("limit('context.maxSourceCandidates')");
+  }
 });
 
 test('every real test field names an existing test title, or is a documented placeholder', () => {

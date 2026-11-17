@@ -12,6 +12,7 @@ import {
   type ReviewIdentity,
   type VerificationError,
 } from './event.js';
+import { limit } from './limits.js';
 
 const MARKER = '<!-- dependabot-intelligent-review -->';
 type Publisher = Readonly<{ appId: number; botUserId: number }>;
@@ -219,7 +220,7 @@ function parsePublication(
     !sameIdentity(result.identity, base.binding.identity) ||
     (result.kind !== 'complete' && result.kind !== 'incomplete') ||
     typeof result.body !== 'string' ||
-    result.body.length > 50000
+    result.body.length > limit('comment.maxBodyCodeUnits')
   )
     return { kind: 'error', category: 'input', field: 'result' };
   const meta = metadata(result.body);

@@ -1,3 +1,4 @@
+import { limit } from './limits.js';
 import type { PacketGap } from './packet.js';
 import type { DroppedOptional } from './optional-evidence.js';
 import {
@@ -40,7 +41,7 @@ export type HandoffDetail = Readonly<{
   /** Required for internal failures; defaults to the safe catch-all for direct callers. */
   stage?: InternalFailureStage;
 }>;
-const MAX_GAPS = 4;
+const MAX_GAPS = limit('handoff.maxGaps');
 
 function copyAnalysisTiming(value: AnalysisTiming | undefined): AnalysisTiming | undefined {
   if (

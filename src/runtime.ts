@@ -1,6 +1,7 @@
-import { EVIDENCE_READ_ALLOCATION, EVIDENCE_READ_ENVELOPE, JOB_WINDOW_MS } from './budget.js';
+import { JOB_WINDOW_MS } from './budget.js';
 import { positiveId, record, type RepositoryIdentity, type WorkflowIdentity } from './event.js';
 import { httpReason } from './github-read.js';
+import { limit } from './limits.js';
 import type { EvidenceReason } from './schema.js';
 
 /**
@@ -10,11 +11,17 @@ import type { EvidenceReason } from './schema.js';
  * exempt from it and end only with the job window, so the checks that follow a slow model can run.
  */
 export const W2_GITHUB_LIMITS = Object.freeze({
-  snapshot: EVIDENCE_READ_ALLOCATION.transport.snapshot,
-  freshness: EVIDENCE_READ_ALLOCATION.transport.freshness,
-  maxResponseBytes: EVIDENCE_READ_ENVELOPE.maxResponseBytes,
-  requestTimeoutMs: EVIDENCE_READ_ENVELOPE.requestTimeoutMs,
-  totalTimeoutMs: EVIDENCE_READ_ENVELOPE.totalTimeoutMs,
+  snapshot: Object.freeze({
+    maxRequests: limit('github.snapshot.maxRequests'),
+    maxTotalBytes: limit('github.snapshot.maxTotalBytes'),
+  }),
+  freshness: Object.freeze({
+    maxRequests: limit('github.freshness.maxRequests'),
+    maxTotalBytes: limit('github.freshness.maxTotalBytes'),
+  }),
+  maxResponseBytes: limit('github.maxResponseBytes'),
+  requestTimeoutMs: limit('github.requestTimeoutMs'),
+  totalTimeoutMs: limit('github.totalTimeoutMs'),
 });
 type Share = 'snapshot' | 'freshness';
 

@@ -1,4 +1,5 @@
 import { freeze } from '../evidence/common.js';
+import { limit } from '../limits.js';
 import {
   prepareRun,
   projectBatch,
@@ -11,18 +12,18 @@ import { parseAssessments, rejectedAnalysis, type AnalysisResult } from './valid
 export type { AnalysisResult, ValidatedAssessment, ResolvedReference } from './validation.js';
 
 export const ANALYSIS_LIMITS = Object.freeze({
-  maxUnits: 8,
-  sourceBytes: 2_048,
-  unitBytes: 65_536,
-  requestBytes: 262_144,
-  completionTokens: 16_384,
-  requestTimeoutMs: 240_000,
-  responseBytes: 12_648_448,
-  textBytes: 1_024,
-  featureBytes: 512,
-  followupBytes: 280,
-  steps: 8,
-  references: 32,
+  maxUnits: limit('analysis.maxUnits'),
+  sourceBytes: limit('analysis.sourceBytes'),
+  unitBytes: limit('analysis.unitBytes'),
+  requestBytes: limit('analysis.requestBytes'),
+  completionTokens: limit('analysis.completionTokens'),
+  requestTimeoutMs: limit('analysis.requestTimeoutMs'),
+  responseBytes: limit('analysis.responseBytes'),
+  textBytes: limit('analysis.textBytes'),
+  featureBytes: limit('analysis.featureBytes'),
+  followupBytes: limit('analysis.followupBytes'),
+  steps: limit('analysis.steps'),
+  references: limit('analysis.references'),
 });
 export type AnalysisLimits = { readonly [K in keyof typeof ANALYSIS_LIMITS]: number };
 export type AnalysisCategory =

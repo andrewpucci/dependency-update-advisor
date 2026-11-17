@@ -1,8 +1,9 @@
 import fs from 'node:fs/promises';
 import { isAbsolute, join, relative, sep } from 'node:path';
+import { limit } from './limits.js';
 
 const CONFIG_FILE = '.github/dependabot-review.json';
-export const MAX_CONFIG_BYTES = 16_384;
+export const MAX_CONFIG_BYTES = limit('config.maxBytes');
 const VERDICTS = ['merge', 'merge_with_followups', 'do_not_merge'] as const;
 
 export type Verdict = (typeof VERDICTS)[number];
@@ -88,7 +89,7 @@ function invalidAnalysis(analysis: unknown): string | undefined {
   if (
     typeof analysis.model !== 'string' ||
     analysis.model.length < 1 ||
-    analysis.model.length > 128 ||
+    analysis.model.length > limit('config.maxModelCodeUnits') ||
     !/^[A-Za-z0-9][A-Za-z0-9._-]*(?![\s\S])/u.test(analysis.model)
   )
     return 'analysis.model';
@@ -98,14 +99,20 @@ function invalidAnalysis(analysis: unknown): string | undefined {
 function invalidContext(context: unknown): string | undefined {
   if (!objectWithKeys(context, ['sourceRoots', 'sendSourceExcerptsToModel', 'excerptFiles']))
     return 'context';
-  if (Object.hasOwn(context, 'sourceRoots') && !validPaths(context.sourceRoots, 16, false))
+  if (
+    Object.hasOwn(context, 'sourceRoots') &&
+    !validPaths(context.sourceRoots, limit('context.maxSourceRoots'), false)
+  )
     return 'context.sourceRoots';
   if (
     Object.hasOwn(context, 'sendSourceExcerptsToModel') &&
     typeof context.sendSourceExcerptsToModel !== 'boolean'
   )
     return 'context.sendSourceExcerptsToModel';
-  if (Object.hasOwn(context, 'excerptFiles') && !validPaths(context.excerptFiles, 128, true))
+  if (
+    Object.hasOwn(context, 'excerptFiles') &&
+    !validPaths(context.excerptFiles, limit('context.maxSourceCandidates'), true)
+  )
     return 'context.excerptFiles';
   return undefined;
 }
@@ -117,7 +124,7 @@ function invalidPolicy(policy: unknown): string | undefined {
     (typeof policy.minimumReleaseAgeDays !== 'number' ||
       !Number.isInteger(policy.minimumReleaseAgeDays) ||
       policy.minimumReleaseAgeDays < 1 ||
-      policy.minimumReleaseAgeDays > 30)
+      policy.minimumReleaseAgeDays > limit('config.maxReleaseAgeDays'))
   )
     return 'policy.minimumReleaseAgeDays';
   if (Object.hasOwn(policy, 'verdicts')) {

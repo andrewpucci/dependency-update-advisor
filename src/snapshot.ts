@@ -18,9 +18,10 @@ import {
 } from './dependabot-roots.js';
 import type { GithubRead, GithubTransport } from './runtime.js';
 import type { EvidenceReason } from './schema.js';
+import { limit } from './limits.js';
 
-const MAX_BLOB_BYTES = 1024 * 1024;
-const MAX_TREE_ENTRIES = 10_000;
+const MAX_BLOB_BYTES = limit('snapshot.maxBlobBytes');
+const MAX_TREE_ENTRIES = limit('snapshot.maxTreeEntries');
 const CONFIG_PATH = '.github/dependabot-review.json';
 
 type SnapshotRead<T> =
