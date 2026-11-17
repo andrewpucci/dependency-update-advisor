@@ -5,6 +5,9 @@ import type { EvidenceReason, PackageSource } from '../schema.js';
 import { BoundedClock, boundedGet } from './bounded-request.js';
 import type { ResearchCache } from './research-cache.js';
 
+/** Largest power of two within GitHub's 100-per-page maximum, then each halving. */
+export const RELEASE_PAGE_SIZES = [64, 32, 16, 8, 4, 2, 1] as const;
+
 export type UpstreamLimits = Readonly<{
   maxRequests: number;
   maxPages: number;
@@ -45,6 +48,7 @@ export type GithubUpstreamTarget = Readonly<{
   base?: string;
   head?: string;
   page?: number;
+  perPage?: number;
 }>;
 export type UpstreamTarget = MetadataTarget | GithubUpstreamTarget;
 export type UpstreamLookup = Readonly<{
@@ -201,6 +205,11 @@ function githubTarget(value: unknown): GithubUpstreamTarget {
     );
   if (['compare', 'releases'].includes(String(value.resource)))
     requireUpstream(Number.isSafeInteger(value.page) && Number(value.page) > 0, 'unsupported');
+  if (value.resource === 'releases')
+    requireUpstream(
+      (RELEASE_PAGE_SIZES as readonly unknown[]).includes(value.perPage),
+      'unsupported',
+    );
   return value as unknown as GithubUpstreamTarget;
 }
 function githubNext(link: string | null, original: string) {
@@ -235,7 +244,7 @@ export function upstreamGithubUrl(t: GithubUpstreamTarget) {
     case 'compare':
       return base + '/compare/' + t.base + '...' + t.head + '?per_page=100&page=' + t.page;
     case 'releases':
-      return base + '/releases?per_page=100&page=' + t.page;
+      return base + '/releases?per_page=' + t.perPage + '&page=' + t.page;
   }
 }
 function targetUrl(t: UpstreamTarget) {

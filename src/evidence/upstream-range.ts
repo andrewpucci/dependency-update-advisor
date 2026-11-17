@@ -18,6 +18,7 @@ import {
   type UpstreamRepository,
   type UpstreamResearch,
 } from './upstream-github.js';
+import { forEachRelease } from './upstream-releases.js';
 import { withinUpstreamRange, compareUpstreamVersions } from './upstream-version.js';
 
 function empty(): UpstreamResearch {
@@ -115,36 +116,23 @@ export async function collectRangeFallback(
     result.repository = repo;
     let count = 0;
     const seen = new Set<string>();
-    for (let page = 1; page <= reader.limits.maxPages; page++) {
-      const lookup = await reader.read({
-        kind: 'github',
-        repository: repo.repository,
-        resource: 'releases',
-        page,
-      });
-      requireUpstream(lookup.status === 'available' && lookup.data, lookup.reasons[0] ?? 'unknown');
-      requireUpstream(Array.isArray(lookup.data.items));
-      for (const item of lookup.data.items) {
-        reader.spend(1);
-        requireUpstream(++count <= reader.limits.maxTagCandidates, 'budget');
-        requireUpstream(isPlainObject(item) && upstreamText(item.tag_name));
-        requireUpstream(!seen.has(item.tag_name), 'conflict');
-        seen.add(item.tag_name);
-        await intermediate(item, before, after, repo, reader, result);
-      }
-      if (!lookup.nextPage) {
-        result.attempts.push({
-          stage: 'range',
-          target: before.version + '...' + after.version,
-          url: 'https://github.com/' + repo.repository + '/releases',
-          outcome: result.sources.length ? 'available' : 'unavailable',
-          reasons: result.reasons,
-          range: { from: before.version, to: after.version },
-        });
-        return result;
-      }
-      requireUpstream(page < reader.limits.maxPages, 'budget');
-    }
+    await forEachRelease(reader, repo.repository, async (item) => {
+      reader.spend(1);
+      requireUpstream(++count <= reader.limits.maxTagCandidates, 'budget');
+      requireUpstream(isPlainObject(item) && upstreamText(item.tag_name));
+      requireUpstream(!seen.has(item.tag_name), 'conflict');
+      seen.add(item.tag_name);
+      await intermediate(item, before, after, repo, reader, result);
+    });
+    result.attempts.push({
+      stage: 'range',
+      target: before.version + '...' + after.version,
+      url: 'https://github.com/' + repo.repository + '/releases',
+      outcome: result.sources.length ? 'available' : 'unavailable',
+      reasons: result.reasons,
+      range: { from: before.version, to: after.version },
+    });
+    return result;
   } catch (error) {
     failed(result, 'range', before.version + '...' + after.version, error);
   }

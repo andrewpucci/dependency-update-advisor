@@ -13178,6 +13178,16 @@ function interpretNpmLifecycle(change, input) {
 }
 
 // src/evidence/upstream-read.ts
+/** Largest power of two within GitHub's 100-per-page maximum, then each halving. */
+const RELEASE_PAGE_SIZES = [
+	64,
+	32,
+	16,
+	8,
+	4,
+	2,
+	1
+];
 var UpstreamFailure = class extends Error {
 	reason;
 	constructor(reason) {
@@ -13270,6 +13280,7 @@ function githubTarget(value) {
 	if (value.resource === "contents") requireUpstream(isEvidencePath(value.path), "unsupported");
 	if (value.resource === "compare") requireUpstream([value.base, value.head].every((sha) => typeof sha === "string" && /^[a-f\d]{40}$/u.test(sha)), "unsupported");
 	if (["compare", "releases"].includes(String(value.resource))) requireUpstream(Number.isSafeInteger(value.page) && Number(value.page) > 0, "unsupported");
+	if (value.resource === "releases") requireUpstream(RELEASE_PAGE_SIZES.includes(value.perPage), "unsupported");
 	return value;
 }
 function githubNext(link, original) {
@@ -13293,7 +13304,7 @@ function upstreamGithubUrl(t) {
 		case "release": return base + "/releases/tags/" + encodeURIComponent(t.ref);
 		case "contents": return base + "/contents/" + t.path.split("/").map(encodeURIComponent).join("/") + "?ref=" + t.sha;
 		case "compare": return base + "/compare/" + t.base + "..." + t.head + "?per_page=100&page=" + t.page;
-		case "releases": return base + "/releases?per_page=100&page=" + t.page;
+		case "releases": return base + "/releases?per_page=" + t.perPage + "&page=" + t.page;
 	}
 }
 function targetUrl(t) {
@@ -17828,6 +17839,37 @@ function withinUpstreamRange(ecosystem, candidate, from, to) {
 	return lower < 0 && upper <= 0;
 }
 
+// src/evidence/upstream-releases.ts
+/**
+* Visits a repository's releases in order, in pages that fit the per-response cap (coverage §1.6).
+* Sizes are powers of two, so a smaller page always starts on a boundary already read.
+*/
+async function forEachRelease(reader, repository, visit) {
+	let perPage = RELEASE_PAGE_SIZES[0];
+	let offset = 0;
+	let requests = 0;
+	for (;;) {
+		requireUpstream(++requests <= reader.limits.maxPages, "budget");
+		const lookup = await reader.read({
+			kind: "github",
+			repository,
+			resource: "releases",
+			page: offset / perPage + 1,
+			perPage
+		});
+		if (lookup.status === "unavailable" && lookup.reasons[0] === "budget" && perPage > 1 && (reader.stopped?.() ?? null) === null) {
+			perPage /= 2;
+			continue;
+		}
+		requireUpstream(lookup.status === "available" && lookup.data, lookup.reasons[0] ?? "unknown");
+		requireUpstream(Array.isArray(lookup.data.items));
+		for (const item of lookup.data.items) await visit(item);
+		offset += lookup.data.items.length;
+		if (!lookup.nextPage) return;
+		requireUpstream(lookup.data.items.length === perPage, "conflict");
+	}
+}
+
 // src/evidence/upstream-actions.ts
 async function observeRef(repository, instance, reader) {
 	if (instance.refKind === "sha") {
@@ -17886,25 +17928,13 @@ async function matchingReleases(repository, sha, tags, reader) {
 	const matches = [];
 	const seen = /* @__PURE__ */ new Set();
 	let candidates = 0;
-	for (let page = 1; page <= reader.limits.maxPages; page++) {
-		const result = await reader.read({
-			kind: "github",
-			repository,
-			resource: "releases",
-			page
-		});
-		requireUpstream(result.status === "available" && result.data, result.reasons[0] ?? "unknown");
-		requireUpstream(Array.isArray(result.data.items));
-		for (const item of result.data.items) {
-			reader.spend(1);
-			requireUpstream(++candidates <= reader.limits.maxTagCandidates, "budget");
-			const match = await releaseAtCommit(repository, sha, item, seen, tags, reader);
-			if (match) matches.push(match);
-		}
-		if (!result.nextPage) return matches;
-		requireUpstream(page < reader.limits.maxPages, "budget");
-	}
-	throw new UpstreamFailure("budget");
+	await forEachRelease(reader, repository, async (item) => {
+		reader.spend(1);
+		requireUpstream(++candidates <= reader.limits.maxTagCandidates, "budget");
+		const match = await releaseAtCommit(repository, sha, item, seen, tags, reader);
+		if (match) matches.push(match);
+	});
+	return matches;
 }
 async function mapping(instance, side, observed, tags, reader) {
 	const repository = instance.action.split("/").slice(0, 2).join("/");
@@ -18197,39 +18227,26 @@ async function collectRangeFallback(before, after, reader) {
 		result.repository = repo;
 		let count = 0;
 		const seen = /* @__PURE__ */ new Set();
-		for (let page = 1; page <= reader.limits.maxPages; page++) {
-			const lookup = await reader.read({
-				kind: "github",
-				repository: repo.repository,
-				resource: "releases",
-				page
-			});
-			requireUpstream(lookup.status === "available" && lookup.data, lookup.reasons[0] ?? "unknown");
-			requireUpstream(Array.isArray(lookup.data.items));
-			for (const item of lookup.data.items) {
-				reader.spend(1);
-				requireUpstream(++count <= reader.limits.maxTagCandidates, "budget");
-				requireUpstream(isPlainObject(item) && upstreamText(item.tag_name));
-				requireUpstream(!seen.has(item.tag_name), "conflict");
-				seen.add(item.tag_name);
-				await intermediate(item, before, after, repo, reader, result);
+		await forEachRelease(reader, repo.repository, async (item) => {
+			reader.spend(1);
+			requireUpstream(++count <= reader.limits.maxTagCandidates, "budget");
+			requireUpstream(isPlainObject(item) && upstreamText(item.tag_name));
+			requireUpstream(!seen.has(item.tag_name), "conflict");
+			seen.add(item.tag_name);
+			await intermediate(item, before, after, repo, reader, result);
+		});
+		result.attempts.push({
+			stage: "range",
+			target: before.version + "..." + after.version,
+			url: "https://github.com/" + repo.repository + "/releases",
+			outcome: result.sources.length ? "available" : "unavailable",
+			reasons: result.reasons,
+			range: {
+				from: before.version,
+				to: after.version
 			}
-			if (!lookup.nextPage) {
-				result.attempts.push({
-					stage: "range",
-					target: before.version + "..." + after.version,
-					url: "https://github.com/" + repo.repository + "/releases",
-					outcome: result.sources.length ? "available" : "unavailable",
-					reasons: result.reasons,
-					range: {
-						from: before.version,
-						to: after.version
-					}
-				});
-				return result;
-			}
-			requireUpstream(page < reader.limits.maxPages, "budget");
-		}
+		});
+		return result;
 	} catch (error) {
 		failed(result, "range", before.version + "..." + after.version, error);
 	}
