@@ -29771,6 +29771,146 @@ function createPolicySignalReader(value, dependencies) {
 	}
 }
 
+// src/revalidation.ts
+const RESEARCH_CATEGORIES = [
+	"upstream",
+	"installScript",
+	"vulnerability",
+	"malware"
+];
+/** The collector's "not researched yet" value, which research replaces with its own result. */
+function isResearchPlaceholder(evidence) {
+	return evidence?.status === "unavailable" && evidence.reasons.length === 1 && evidence.reasons[0] === "missing" && evidence.sourceIds.length === 0;
+}
+/**
+* Replaces a collected change's research placeholders with one evidence value; copies, never
+* mutates. Collected facts, such as an install-script flag read from the lockfile, are kept.
+*/
+function withResearch(change, evidence) {
+	const categories = RESEARCH_CATEGORIES.filter((key) => isResearchPlaceholder(change.evidence[key])).map((key) => [key, evidence]);
+	return {
+		...change,
+		evidence: {
+			...change.evidence,
+			...Object.fromEntries(categories)
+		}
+	};
+}
+/**
+* Keeps every member's research that validates, in priority order within packet limits (coverage
+* §1.4, §1.5). Members are attributed one at a time; an unattributable failure falls back to the
+* collected packet with every member marked malformed.
+*/
+function reconcilePacket(input) {
+	const { collected } = input;
+	const collectedChanges = collected.changes;
+	const collectedSources = collected.sources;
+	const collectedFindings = collected.findings;
+	const enrichedById = new Map(input.enriched.changes.map((change) => [change.id, change]));
+	const collectedSourceIds = new Set(collectedSources.map((source) => source.id));
+	const collectedFindingIds = new Set(collectedFindings.map((finding) => finding.id));
+	const researchSources = input.enriched.sources.filter((source) => !collectedSourceIds.has(source.id));
+	const researchFindings = input.enriched.findings.filter((finding) => !collectedFindingIds.has(finding.id));
+	const members = collectedChanges.filter((change) => !("basis" in change) && JSON.stringify(enrichedById.get(change.id)) !== JSON.stringify(change)).map((change) => change.id);
+	const memberSet = new Set(members);
+	/** A candidate with `kept` members enriched; other members are reverted with `reasonOf`. */
+	const attempt = (kept, reasonOf) => {
+		const keptEveryone = members.every((id) => kept.has(id));
+		const changes = collectedChanges.map((change) => {
+			if (!memberSet.has(change.id)) return change;
+			if (kept.has(change.id)) return enrichedById.get(change.id);
+			return withResearch(change, {
+				status: "unavailable",
+				reasons: [reasonOf.get(change.id) ?? "malformed"],
+				sourceIds: []
+			});
+		});
+		return validateReviewPacket({
+			version: 1,
+			binding: collected.binding,
+			baseSha: collected.baseSha,
+			contextRevision: collected.contextRevision,
+			context: collected.context,
+			coverage: collected.coverage,
+			changes,
+			sources: [...collectedSources, ...researchSources.filter((source) => source.memberIds.some((id) => kept.has(id)))],
+			findings: [...collectedFindings, ...researchFindings.filter((finding) => finding.memberId === null ? keptEveryone : kept.has(finding.memberId))],
+			relationships: collected.relationships,
+			reachability: collected.reachability
+		}, input.trusted);
+	};
+	const whole = (reasons) => {
+		const marked = collectedChanges.map((change) => "basis" in change ? change : withResearch(change, {
+			status: "unavailable",
+			reasons: ["malformed"],
+			sourceIds: []
+		}));
+		const result = validateReviewPacket({
+			version: 1,
+			binding: collected.binding,
+			baseSha: collected.baseSha,
+			contextRevision: collected.contextRevision,
+			context: collected.context,
+			coverage: collected.coverage,
+			changes: marked,
+			sources: collectedSources,
+			findings: collectedFindings,
+			relationships: collected.relationships,
+			reachability: collected.reachability
+		}, input.trusted);
+		return {
+			packet: result.ok ? result.packet : collected,
+			reasons,
+			whole: true
+		};
+	};
+	const everyone = attempt(new Set(members), /* @__PURE__ */ new Map());
+	if (everyone.ok) return {
+		packet: everyone.packet,
+		reasons: [],
+		whole: false
+	};
+	const bad = members.filter((id) => {
+		const alone = attempt(/* @__PURE__ */ new Set([id]), /* @__PURE__ */ new Map());
+		return !alone.ok && alone.error.category !== "budget";
+	});
+	const badSet = new Set(bad);
+	const badReasons = new Map(bad.map((id) => [id, "malformed"]));
+	const malformed = bad.length > 0 ? ["malformed"] : [];
+	const kept = members.filter((id) => !badSet.has(id));
+	const withoutBad = attempt(new Set(kept), badReasons);
+	if (withoutBad.ok) return {
+		packet: withoutBad.packet,
+		reasons: malformed,
+		whole: false
+	};
+	if (withoutBad.error.category !== "budget") return whole(["malformed"]);
+	const rank = new Map(input.priority.map((id, index) => [id, index]));
+	const ordered = [...kept].sort((a, b) => (rank.get(a) ?? Infinity) - (rank.get(b) ?? Infinity));
+	const fits = (count) => {
+		const reasonOf = new Map(badReasons);
+		for (const id of ordered.slice(count)) reasonOf.set(id, "budget");
+		return attempt(new Set(ordered.slice(0, count)), reasonOf);
+	};
+	let best = fits(0);
+	if (!best.ok) return whole(["malformed"]);
+	let low = 0;
+	let high = ordered.length;
+	while (low < high) {
+		const middle = Math.ceil((low + high) / 2);
+		const result = fits(middle);
+		if (result.ok) {
+			low = middle;
+			best = result;
+		} else high = middle - 1;
+	}
+	return {
+		packet: best.ok ? best.packet : collected,
+		reasons: [...malformed, "budget"],
+		whole: false
+	};
+}
+
 // src/research.ts
 const MAX_JSON_ENTRIES = 2e5;
 const MAX_JSON_DEPTH = 32;
@@ -29807,16 +29947,12 @@ const STAGE_CATEGORIES = {
 	signals: ["malware"],
 	revalidation: []
 };
-/** The evidence the collector gives a member before any research has run. */
-function isPlaceholder(evidence) {
-	return evidence?.status === "unavailable" && evidence.reasons.length === 1 && evidence.reasons[0] === "missing" && evidence.sourceIds.length === 0;
-}
 /** Replaces a failed stage's placeholders with the stage's reason; copies, never mutates. */
 function markStage(progress, stage, reason) {
 	progress.changes = progress.changes.map((change) => {
 		if ("basis" in change) return change;
 		const evidence = { ...change.evidence };
-		for (const category of STAGE_CATEGORIES[stage]) if (isPlaceholder(evidence[category])) evidence[category] = {
+		for (const category of STAGE_CATEGORIES[stage]) if (isResearchPlaceholder(evidence[category])) evidence[category] = {
 			status: "unavailable",
 			reasons: [reason],
 			sourceIds: []
@@ -29922,27 +30058,11 @@ async function enrichSignalsStage(input, dependencies, readers, progress, fail, 
 	replaceEvidence(progress, signals);
 	progress.signalAttempts = signals.attempts;
 }
-function revalidate(input, progress) {
-	const { packet } = input;
-	return validateReviewPacket({
-		version: 1,
-		binding: packet.binding,
-		baseSha: packet.baseSha,
-		contextRevision: packet.contextRevision,
-		context: packet.context,
-		coverage: packet.coverage,
-		changes: progress.changes,
-		sources: progress.sources,
-		findings: progress.findings,
-		relationships: packet.relationships,
-		reachability: packet.reachability
-	}, input.trusted);
-}
 /**
 * Runs upstream research, advisory lookup, and policy signals over a validated packet, feeding each
 * stage's proofs and sources to the next. A stage that cannot be established leaves the evidence as
 * collected, so research is never reported as complete without its own result; the enriched packet
-* is revalidated and replaced by the collected one if it fails.
+* is reconciled per member, and only the members whose research fails validation revert.
 */
 async function runResearch(input) {
 	const dependencies = {
@@ -30007,8 +30127,17 @@ async function runResearch(input) {
 			kind: "stage-start",
 			stage: "revalidation"
 		});
-		const candidate = revalidate(input, progress);
-		observe(candidate.ok ? {
+		const reconciled = reconcilePacket({
+			collected: packet,
+			enriched: progress,
+			trusted: input.trusted,
+			priority: researchOrder(packet.changes, input.npmInventory).map((change) => change.id)
+		});
+		for (const reason of reconciled.reasons) unavailable.push({
+			stage: "revalidation",
+			reason
+		});
+		observe(reconciled.reasons.length === 0 ? {
 			kind: "stage-end",
 			stage: "revalidation",
 			outcome: "enriched",
@@ -30017,24 +30146,14 @@ async function runResearch(input) {
 			kind: "stage-end",
 			stage: "revalidation",
 			outcome: "unavailable",
-			reason: "malformed"
+			reason: reconciled.reasons[0] ?? null
 		});
-		if (!candidate.ok) {
-			fail("revalidation", "malformed");
-			return {
-				kind: "ready",
-				packet,
-				unavailable,
-				upstreamAttempts: [],
-				signalAttempts: []
-			};
-		}
 		return {
 			kind: "ready",
-			packet: candidate.packet,
+			packet: reconciled.packet,
 			unavailable,
-			upstreamAttempts: progress.upstreamAttempts,
-			signalAttempts: progress.signalAttempts
+			upstreamAttempts: reconciled.whole ? [] : progress.upstreamAttempts,
+			signalAttempts: reconciled.whole ? [] : progress.signalAttempts
 		};
 	} catch {
 		return { kind: "internal-failure" };

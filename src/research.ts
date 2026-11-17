@@ -17,12 +17,8 @@ import { createUpstreamReader } from './evidence/upstream-read.js';
 import { createResearchCache, type ResearchCache } from './evidence/research-cache.js';
 import type { NpmInventoryResult } from './evidence/npm.js';
 import type { PacketChange, PacketExpected, PacketResult } from './schema.js';
-import {
-  validateReviewPacket,
-  type ChangeEvidence,
-  type EvidenceReason,
-  type NpmSide,
-} from './schema.js';
+import type { ChangeEvidence, EvidenceReason, NpmSide } from './schema.js';
+import { isResearchPlaceholder, reconcilePacket } from './revalidation.js';
 
 type Packet = Extract<PacketResult, { ok: true }>['packet'];
 /** A packet change as the packet exposes it, which is readonly all the way down. */
@@ -124,23 +120,13 @@ const STAGE_CATEGORIES: Record<ResearchStage, readonly string[]> = {
   revalidation: [],
 };
 
-/** The evidence the collector gives a member before any research has run. */
-function isPlaceholder(evidence: ChangeEvidence | undefined): boolean {
-  return (
-    evidence?.status === 'unavailable' &&
-    evidence.reasons.length === 1 &&
-    evidence.reasons[0] === 'missing' &&
-    evidence.sourceIds.length === 0
-  );
-}
-
 /** Replaces a failed stage's placeholders with the stage's reason; copies, never mutates. */
 function markStage(progress: ResearchProgress, stage: ResearchStage, reason: EvidenceReason): void {
   progress.changes = (progress.changes as readonly PacketChange[]).map((change) => {
     if ('basis' in change) return change;
     const evidence: Record<string, ChangeEvidence> = { ...change.evidence };
     for (const category of STAGE_CATEGORIES[stage]) {
-      if (isPlaceholder(evidence[category]))
+      if (isResearchPlaceholder(evidence[category]))
         evidence[category] = { status: 'unavailable', reasons: [reason], sourceIds: [] };
     }
     return { ...change, evidence };
@@ -300,31 +286,11 @@ async function enrichSignalsStage(
   progress.signalAttempts = signals.attempts;
 }
 
-function revalidate(input: ResearchInput, progress: ResearchProgress) {
-  const { packet } = input;
-  return validateReviewPacket(
-    {
-      version: 1,
-      binding: packet.binding,
-      baseSha: packet.baseSha,
-      contextRevision: packet.contextRevision,
-      context: packet.context,
-      coverage: packet.coverage,
-      changes: progress.changes,
-      sources: progress.sources,
-      findings: progress.findings,
-      relationships: packet.relationships,
-      reachability: packet.reachability,
-    },
-    input.trusted,
-  );
-}
-
 /**
  * Runs upstream research, advisory lookup, and policy signals over a validated packet, feeding each
  * stage's proofs and sources to the next. A stage that cannot be established leaves the evidence as
  * collected, so research is never reported as complete without its own result; the enriched packet
- * is revalidated and replaced by the collected one if it fails.
+ * is reconciled per member, and only the members whose research fails validation revert.
  */
 export async function runResearch(input: ResearchInput): Promise<ResearchResult> {
   const dependencies = {
@@ -393,28 +359,29 @@ export async function runResearch(input: ResearchInput): Promise<ResearchResult>
 
     restorePacketOrder(progress, packet);
     observe({ kind: 'stage-start', stage: 'revalidation' });
-    const candidate = revalidate(input, progress);
+    const reconciled = reconcilePacket({
+      collected: packet,
+      enriched: progress,
+      trusted: input.trusted,
+      priority: researchOrder(packet.changes, input.npmInventory).map((change) => change.id),
+    });
+    for (const reason of reconciled.reasons) unavailable.push({ stage: 'revalidation', reason });
     observe(
-      candidate.ok
+      reconciled.reasons.length === 0
         ? { kind: 'stage-end', stage: 'revalidation', outcome: 'enriched', reason: null }
-        : { kind: 'stage-end', stage: 'revalidation', outcome: 'unavailable', reason: 'malformed' },
+        : {
+            kind: 'stage-end',
+            stage: 'revalidation',
+            outcome: 'unavailable',
+            reason: reconciled.reasons[0] ?? null,
+          },
     );
-    if (!candidate.ok) {
-      fail('revalidation', 'malformed');
-      return {
-        kind: 'ready',
-        packet,
-        unavailable,
-        upstreamAttempts: [],
-        signalAttempts: [],
-      };
-    }
     return {
       kind: 'ready',
-      packet: candidate.packet,
+      packet: reconciled.packet,
       unavailable,
-      upstreamAttempts: progress.upstreamAttempts,
-      signalAttempts: progress.signalAttempts,
+      upstreamAttempts: reconciled.whole ? [] : progress.upstreamAttempts,
+      signalAttempts: reconciled.whole ? [] : progress.signalAttempts,
     };
   } catch {
     return { kind: 'internal-failure' };

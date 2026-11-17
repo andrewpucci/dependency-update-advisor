@@ -1,4 +1,4 @@
-import { expect, test, vi } from 'vite-plus/test';
+import { afterEach, expect, test, vi } from 'vite-plus/test';
 import { upstreamScenario } from '../tests/parity/upstream.js';
 import * as advisoryModule from './evidence/advisories.js';
 import * as npmRegistryModule from './evidence/npm-registry.js';
@@ -39,6 +39,7 @@ vi.mock('./evidence/policy-signals-read.js', async (original) => {
   return { ...actual, createPolicySignalReader: vi.fn(actual.createPolicySignalReader) };
 });
 const closed: string[] = [];
+const actualSchema = await vi.importActual<typeof import('./schema.js')>('./schema.js');
 vi.mock('./evidence/advisory-read.js', async (original) => {
   const actual = await original<typeof import('./evidence/advisory-read.js')>();
   const track = (name: string, create: typeof actual.createAdvisoryReader) =>
@@ -76,6 +77,40 @@ vi.mock('./schema.js', async (original) => {
 });
 
 const evaluationTime = Date.parse('2026-11-07T00:00:00Z');
+type Packet = Awaited<ReturnType<typeof scenario>>['packet'];
+const RESEARCH_CATEGORIES = ['upstream', 'installScript', 'vulnerability', 'malware'] as const;
+const MALFORMED = { status: 'unavailable', reasons: ['malformed'], sourceIds: [] };
+
+/**
+ * Counts members that carry enrichment: a non-basis change that differs from its collected version and
+ * has a research category beyond unavailable. Reverted members are unavailable, so they do not count.
+ */
+function enrichedMembers(candidate: unknown, collected: Packet): number {
+  const { changes } = candidate as {
+    changes: { id: string; basis?: unknown; evidence: Record<string, { status: string }> }[];
+  };
+  const before = new Map(collected.changes.map((change) => [change.id, change]));
+  // A member is enriched when research gave one of its categories evidence it did not have.
+  return changes.filter((change) => {
+    const collectedEvidence = before.get(change.id)?.evidence as
+      | Record<string, unknown>
+      | undefined;
+    return (
+      !('basis' in change) &&
+      RESEARCH_CATEGORIES.some(
+        (key) =>
+          ['available', 'partial'].includes(change.evidence[key]?.status ?? '') &&
+          JSON.stringify(change.evidence[key]) !== JSON.stringify(collectedEvidence?.[key]),
+      )
+    );
+  }).length;
+}
+
+afterEach(() => {
+  vi.mocked(schemaModule.validateReviewPacket).mockImplementation(
+    actualSchema.validateReviewPacket,
+  );
+});
 
 async function scenario(options: Parameters<typeof upstreamScenario>[0] = {}) {
   const fixture = await upstreamScenario(options);
@@ -247,14 +282,39 @@ test('ignores observer errors', async () => {
   expect(result.unavailable).toEqual([]);
 });
 
+/** Makes candidates that carry enrichment for two or more members fail validation, as an unattributable failure would. */
+function failWhenTwoMembersEnriched(collected: Packet) {
+  vi.mocked(schemaModule.validateReviewPacket).mockImplementation((candidate, trusted) =>
+    enrichedMembers(candidate, collected) >= 2
+      ? { ok: false, error: { category: 'reference', field: 'sources' } }
+      : actualSchema.validateReviewPacket(candidate, trusted),
+  );
+}
+
+/** Asserts the collected packet is the fallback: every non-basis change marked malformed. */
+function expectMalformedFallback(packet: Packet, changes: Packet['changes']) {
+  for (const change of changes) {
+    if ('basis' in change) continue;
+    const before = packet.changes.find((item) => item.id === change.id);
+    for (const category of RESEARCH_CATEGORIES.filter((key) => key in change.evidence)) {
+      const collected = before?.evidence[category];
+      // Collected facts survive the fallback; only research placeholders become malformed.
+      const placeholder =
+        JSON.stringify(collected) ===
+        JSON.stringify({ status: 'unavailable', reasons: ['missing'], sourceIds: [] });
+      expect(change.evidence[category], `${change.id} ${category}`).toEqual(
+        placeholder ? MALFORMED : collected,
+      );
+    }
+  }
+  expect(changes.map((change) => change.id)).toEqual(packet.changes.map((change) => change.id));
+}
+
 test('reports a failed revalidation to the observer', async () => {
   const { fixture, packet } = await scenario();
-  vi.mocked(schemaModule.validateReviewPacket).mockReturnValueOnce({
-    ok: false,
-    error: { category: 'budget', field: 'sources' },
-  });
+  failWhenTwoMembersEnriched(packet);
   const events: ResearchObservation[] = [];
-  await runResearch({
+  const result = await runResearch({
     ...base(fixture, packet),
     observe: (observation) => events.push(observation),
   });
@@ -264,22 +324,25 @@ test('reports a failed revalidation to the observer', async () => {
     outcome: 'unavailable',
     reason: 'malformed',
   });
+  if (result.kind !== 'ready') throw new Error('research');
+  expectMalformedFallback(packet, result.packet.changes);
 });
 
 test('falls back to the collected packet when the enriched one fails validation', async () => {
   const { fixture, packet } = await scenario();
-  vi.mocked(schemaModule.validateReviewPacket).mockReturnValueOnce({
-    ok: false,
-    error: { category: 'budget', field: 'sources' },
-  });
+  failWhenTwoMembersEnriched(packet);
   const result = await runResearch(base(fixture, packet));
+  if (result.kind !== 'ready') throw new Error('research');
   expect(result).toMatchObject({
     kind: 'ready',
-    packet,
     unavailable: expect.arrayContaining([{ stage: 'revalidation', reason: 'malformed' }]),
     upstreamAttempts: [],
     signalAttempts: [],
   });
+  expect(result.packet.coverage).toEqual(packet.coverage);
+  expect(result.packet.findings).toEqual(packet.findings);
+  expect(result.packet.sources).toEqual(packet.sources);
+  expectMalformedFallback(packet, result.packet.changes);
 });
 
 test('sends no credentials to any public source', async () => {
