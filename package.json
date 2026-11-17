@@ -19,7 +19,7 @@
     "semver": "7.8.6",
     "smol-toml": "1.9.1",
     "spdx-expression-parse": "5.0.0",
-    "stream-json": "3.8.0",
+    "stream-json": "3.9.0",
     "yaml": "2.9.1"
   },
   "devDependencies": {
