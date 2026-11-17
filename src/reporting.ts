@@ -674,6 +674,11 @@ function findingName(r: Review, member: DecisionUnit['members'][number]): string
   return shared ? `${text(member.name)} (${uncheckedQualifier(r, member)})` : text(member.name);
 }
 
+/** Everything after the names; findings with the same tail share one line. */
+function findingTail(finding: DecisionUnit['findings'][number], citations: string[]): string {
+  return ` — ${readableLabel(finding.kind)}: ${text(finding.rationale)} ${'applicability' in finding ? readableLabel(finding.applicability) : ''} ${'severity' in finding && finding.severity ? text(finding.severity) : ''} ${citations.join(' ')}`;
+}
+
 function findingLines(r: Review): string[] {
   const { input, units } = r;
   const groups = new Map<string, Map<string, string>>();
@@ -706,7 +711,7 @@ function findingLines(r: Review): string[] {
           input,
         );
       });
-      const tail = ` — ${readableLabel(finding.kind)}: ${text(finding.rationale)} ${'applicability' in finding ? readableLabel(finding.applicability) : ''} ${'severity' in finding && finding.severity ? text(finding.severity) : ''} ${citations.join(' ')}`;
+      const tail = findingTail(finding, citations);
       const members = groups.get(tail) ?? new Map<string, string>();
       if (!members.has(member.id)) members.set(member.id, findingName(r, member));
       groups.set(tail, members);

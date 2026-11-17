@@ -23035,13 +23035,17 @@ function coverageLines({ input }) {
 function findingName(r, member) {
 	return r.units.flatMap((unit) => unit.members).some((item) => item.id !== member.id && item.name === member.name) ? `${text(member.name)} (${uncheckedQualifier(r, member)})` : text(member.name);
 }
+/** Everything after the names; findings with the same tail share one line. */
+function findingTail(finding, citations) {
+	return ` — ${readableLabel(finding.kind)}: ${text(finding.rationale)} ${"applicability" in finding ? readableLabel(finding.applicability) : ""} ${"severity" in finding && finding.severity ? text(finding.severity) : ""} ${citations.join(" ")}`;
+}
 function findingLines(r) {
 	const { input, units } = r;
 	const groups = /* @__PURE__ */ new Map();
 	for (const unit of units) for (const finding of unit.findings) {
 		const member = unit.members.find((item) => item.id === finding.memberId);
 		if (!member || !finding.references.length) throw new RenderFailure("reference");
-		const citations = finding.references.map((id) => {
+		const tail = findingTail(finding, finding.references.map((id) => {
 			const source = input.coverage.inventory.packet.sources.find((item) => item.id === id);
 			if (!source || !source.memberIds.includes(finding.memberId)) throw new RenderFailure("reference");
 			const side = source.provenance.kind === "file" ? source.provenance.revision : source.provenance.kind === "upstream" ? source.provenance.subjects.find((subject) => subject.memberId === finding.memberId)?.side : void 0;
@@ -23054,8 +23058,7 @@ function findingLines(r) {
 				category: source.kind,
 				url: source.provenance.kind === "upstream" ? source.provenance.url : null
 			}, unit, input);
-		});
-		const tail = ` — ${readableLabel(finding.kind)}: ${text(finding.rationale)} ${"applicability" in finding ? readableLabel(finding.applicability) : ""} ${"severity" in finding && finding.severity ? text(finding.severity) : ""} ${citations.join(" ")}`;
+		}));
 		const members = groups.get(tail) ?? /* @__PURE__ */ new Map();
 		if (!members.has(member.id)) members.set(member.id, findingName(r, member));
 		groups.set(tail, members);
