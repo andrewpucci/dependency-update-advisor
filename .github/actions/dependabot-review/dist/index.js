@@ -9388,22 +9388,310 @@ async function reverifyReviewBinding(value, reads) {
 	}
 }
 
+// src/limits.ts
+/** Marks a field the migration has not filled yet; none may remain after phase 2. */
+const PENDING_AUDIT = "pending: L7 audit";
+const BASIS_KINDS = [
+	"external",
+	"derived",
+	"measured",
+	"safety",
+	"unjustified"
+];
+function isRecord(value) {
+	return typeof value === "object" && value !== null;
+}
+function entryProblems(entry, index) {
+	if (!isRecord(entry) || typeof entry.id !== "string") return [`entry #${index}: id missing or not a string`];
+	return basisProblems(entry, entry.id);
+}
+function basisProblems(entry, id) {
+	const kind = isRecord(entry.basis) ? entry.basis.kind : void 0;
+	if (typeof kind !== "string" || !BASIS_KINDS.includes(kind)) return [`${id}: unknown basis kind ${JSON.stringify(kind)}`];
+	if (kind === "derived") return entry.value === void 0 ? [] : [`${id}: derived entries must not set value`];
+	return typeof entry.value === "number" && Number.isFinite(entry.value) ? [] : [`${id}: value must be a finite number`];
+}
+function duplicateProblems(ids) {
+	const seen = /* @__PURE__ */ new Set();
+	const problems = [];
+	for (const id of ids) {
+		if (seen.has(id)) problems.push(`${id}: duplicate id`);
+		seen.add(id);
+	}
+	return problems;
+}
+function derivedInputs(entry) {
+	const basis = isRecord(entry.basis) ? entry.basis : {};
+	return Array.isArray(basis.inputs) ? basis.inputs : [];
+}
+function isDerived(entry) {
+	return isRecord(entry) && typeof entry.id === "string" && isRecord(entry.basis) && entry.basis.kind === "derived";
+}
+function inputProblems(definitions, known) {
+	return definitions.filter(isDerived).flatMap((entry) => derivedInputs(entry).filter((input) => typeof input !== "string" || !known.has(input)).map((input) => `${entry.id}: derived input ${JSON.stringify(input)} is not defined`));
+}
+function derivedGraph(definitions) {
+	const graph = /* @__PURE__ */ new Map();
+	for (const entry of definitions.filter(isDerived)) {
+		const inputs = derivedInputs(entry).filter((input) => typeof input === "string");
+		graph.set(entry.id, inputs);
+	}
+	return graph;
+}
+/** Every id reachable from `start` by following one or more derived-input edges. */
+function reachable(graph, start) {
+	const seen = /* @__PURE__ */ new Set();
+	const pending = [...graph.get(start) ?? []];
+	for (let next = pending.pop(); next !== void 0; next = pending.pop()) {
+		if (seen.has(next)) continue;
+		seen.add(next);
+		pending.push(...graph.get(next) ?? []);
+	}
+	return seen;
+}
+function cycleProblems(graph) {
+	const reported = /* @__PURE__ */ new Set();
+	const problems = [];
+	for (const id of graph.keys()) {
+		if (reported.has(id) || !reachable(graph, id).has(id)) continue;
+		const members = [...reachable(graph, id)].filter((other) => reachable(graph, other).has(id)).sort();
+		for (const member of members) reported.add(member);
+		problems.push(`derived cycle: ${members.join(" -> ")}`);
+	}
+	return problems;
+}
+function checkRegister(definitions) {
+	const ids = definitions.flatMap((entry) => isRecord(entry) && typeof entry.id === "string" ? [entry.id] : []);
+	const known = new Set(ids);
+	return [
+		...definitions.flatMap((entry, index) => entryProblems(entry, index)),
+		...duplicateProblems(ids),
+		...inputProblems(definitions, known),
+		...cycleProblems(derivedGraph(definitions))
+	];
+}
+function resolveValues(definitions) {
+	const byId = new Map(definitions.map((definition) => [definition.id, definition]));
+	const values = /* @__PURE__ */ new Map();
+	const valueOfId = (id) => {
+		const known = values.get(id);
+		if (known !== void 0) return known;
+		const definition = byId.get(id);
+		if (definition === void 0) throw new Error(`unknown limit id: ${id}`);
+		const { basis } = definition;
+		const value = basis.kind === "derived" ? basis.formula(...basis.inputs.map(valueOfId)) : definition.value;
+		if (value === void 0) throw new Error(`limit ${id} has no value`);
+		values.set(id, value);
+		return value;
+	};
+	for (const definition of definitions) valueOfId(definition.id);
+	return values;
+}
+function buildRegister(definitions) {
+	const problems = checkRegister(definitions);
+	if (problems.length > 0) throw new Error(`invalid limit register:\n${problems.join("\n")}`);
+	const values = resolveValues(definitions);
+	return new Map(definitions.map((definition) => [definition.id, Object.freeze({
+		...definition,
+		value: values.get(definition.id) ?? NaN
+	})]));
+}
+const DEFINITIONS = [
+	{
+		id: "packet.bytes",
+		value: 1048576,
+		unit: "bytes",
+		protects: PENDING_AUDIT,
+		effect: PENDING_AUDIT,
+		basis: {
+			kind: "unjustified",
+			note: PENDING_AUDIT
+		},
+		test: "src/schema.test.ts > enforces the exact serialized packet budget including multibyte text"
+	},
+	{
+		id: "packet.changes",
+		value: 128,
+		unit: "count",
+		protects: PENDING_AUDIT,
+		effect: PENDING_AUDIT,
+		basis: {
+			kind: "unjustified",
+			note: PENDING_AUDIT
+		},
+		test: "src/units.test.ts > keeps the entire accepted 128-change inventory; T4 overflow has no usable packet"
+	},
+	{
+		id: "packet.sources",
+		value: 1024,
+		unit: "count",
+		protects: PENDING_AUDIT,
+		effect: PENDING_AUDIT,
+		basis: {
+			kind: "unjustified",
+			note: PENDING_AUDIT
+		},
+		test: "src/schema.test.ts > accepts 1024 source records and rejects the overflow record"
+	},
+	{
+		id: "packet.findings",
+		value: 512,
+		unit: "count",
+		protects: PENDING_AUDIT,
+		effect: PENDING_AUDIT,
+		basis: {
+			kind: "unjustified",
+			note: PENDING_AUDIT
+		},
+		test: "src/schema.test.ts > accepts 512 findings and rejects the overflow record"
+	},
+	{
+		id: "packet.relationships",
+		value: 256,
+		unit: "count",
+		protects: PENDING_AUDIT,
+		effect: PENDING_AUDIT,
+		basis: {
+			kind: "unjustified",
+			note: PENDING_AUDIT
+		},
+		test: "src/schema.test.ts > accepts 256 distinct proofs and rejects the overflow proof"
+	},
+	{
+		id: "packet.reachability",
+		value: 1024,
+		unit: "count",
+		protects: PENDING_AUDIT,
+		effect: PENDING_AUDIT,
+		basis: {
+			kind: "unjustified",
+			note: PENDING_AUDIT
+		},
+		test: "src/schema.test.ts > accepts exactly 1,024 verdicts and rejects one beyond without trimming"
+	},
+	{
+		id: "packet.pathInstances",
+		value: 32,
+		unit: "count",
+		protects: PENDING_AUDIT,
+		effect: PENDING_AUDIT,
+		basis: {
+			kind: "unjustified",
+			note: PENDING_AUDIT
+		},
+		test: "src/schema.test.ts > enforces the 32-instance path ceiling"
+	},
+	{
+		id: "packet.idCodeUnits",
+		value: 256,
+		unit: "code units",
+		protects: PENDING_AUDIT,
+		effect: PENDING_AUDIT,
+		basis: {
+			kind: "unjustified",
+			note: PENDING_AUDIT
+		},
+		test: "src/schema.test.ts > enforces 256-code-unit IDs and 1024-byte identity strings"
+	},
+	{
+		id: "packet.identityBytes",
+		value: 1024,
+		unit: "bytes",
+		protects: PENDING_AUDIT,
+		effect: PENDING_AUDIT,
+		basis: {
+			kind: "unjustified",
+			note: PENDING_AUDIT
+		},
+		test: "src/schema.test.ts > enforces 256-code-unit IDs and 1024-byte identity strings"
+	},
+	{
+		id: "packet.textBytes",
+		value: 2048,
+		unit: "bytes",
+		protects: PENDING_AUDIT,
+		effect: PENDING_AUDIT,
+		basis: {
+			kind: "unjustified",
+			note: PENDING_AUDIT
+		},
+		test: "src/schema.test.ts > enforces text and reference-list bounds independently of the packet size"
+	},
+	{
+		id: "packet.listEntries",
+		value: 32,
+		unit: "count",
+		protects: PENDING_AUDIT,
+		effect: PENDING_AUDIT,
+		basis: {
+			kind: "unjustified",
+			note: PENDING_AUDIT
+		},
+		test: "src/schema.test.ts > enforces text and reference-list bounds independently of the packet size"
+	},
+	{
+		id: "packet.contextBytes",
+		value: 65536,
+		unit: "bytes",
+		protects: PENDING_AUDIT,
+		effect: PENDING_AUDIT,
+		basis: {
+			kind: "unjustified",
+			note: PENDING_AUDIT
+		},
+		test: "src/schema.test.ts > enforces exactly 65536 serialized context bytes across 128 dependencies"
+	},
+	{
+		id: "packet.excerptCodeUnits",
+		value: 500,
+		unit: "code units",
+		protects: PENDING_AUDIT,
+		effect: PENDING_AUDIT,
+		basis: {
+			kind: "unjustified",
+			note: PENDING_AUDIT
+		},
+		test: "src/schema.test.ts > enforces C2 excerpt code-unit bounds without losing immutable facts"
+	},
+	{
+		id: "packet.facts",
+		value: 20,
+		unit: "count",
+		protects: PENDING_AUDIT,
+		effect: PENDING_AUDIT,
+		basis: {
+			kind: "unjustified",
+			note: PENDING_AUDIT
+		},
+		test: "src/schema.test.ts > enforces the context fact count independently of excerpt and packet bounds"
+	}
+];
+const REGISTER = buildRegister(DEFINITIONS);
+function limitEntry(id) {
+	const entry = REGISTER.get(id);
+	if (entry === void 0) throw new Error(`unknown limit id: ${id}`);
+	return entry;
+}
+function limit(id) {
+	return limitEntry(id).value;
+}
+
 // src/schema.ts
 const PACKET_LIMITS = Object.freeze({
-	bytes: 1048576,
-	changes: 128,
-	sources: 1024,
-	findings: 512,
-	relationships: 256,
-	reachability: 1024,
-	pathInstances: 32,
-	idCodeUnits: 256,
-	identityBytes: 1024,
-	textBytes: 2048,
-	listEntries: 32,
-	contextBytes: 65536,
-	excerptCodeUnits: 500,
-	facts: 20
+	bytes: limit("packet.bytes"),
+	changes: limit("packet.changes"),
+	sources: limit("packet.sources"),
+	findings: limit("packet.findings"),
+	relationships: limit("packet.relationships"),
+	reachability: limit("packet.reachability"),
+	pathInstances: limit("packet.pathInstances"),
+	idCodeUnits: limit("packet.idCodeUnits"),
+	identityBytes: limit("packet.identityBytes"),
+	textBytes: limit("packet.textBytes"),
+	listEntries: limit("packet.listEntries"),
+	contextBytes: limit("packet.contextBytes"),
+	excerptCodeUnits: limit("packet.excerptCodeUnits"),
+	facts: limit("packet.facts")
 });
 const ECOSYSTEMS = [
 	"npm",

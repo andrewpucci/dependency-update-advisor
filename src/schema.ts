@@ -7,22 +7,23 @@ import {
   type RepositoryIdentity,
   type ReviewBinding,
 } from './event.js';
+import { limit } from './limits.js';
 
 export const PACKET_LIMITS = Object.freeze({
-  bytes: 1_048_576,
-  changes: 128,
-  sources: 1_024,
-  findings: 512,
-  relationships: 256,
-  reachability: 1_024,
-  pathInstances: 32,
-  idCodeUnits: 256,
-  identityBytes: 1_024,
-  textBytes: 2_048,
-  listEntries: 32,
-  contextBytes: 65_536,
-  excerptCodeUnits: 500,
-  facts: 20,
+  bytes: limit('packet.bytes'),
+  changes: limit('packet.changes'),
+  sources: limit('packet.sources'),
+  findings: limit('packet.findings'),
+  relationships: limit('packet.relationships'),
+  reachability: limit('packet.reachability'),
+  pathInstances: limit('packet.pathInstances'),
+  idCodeUnits: limit('packet.idCodeUnits'),
+  identityBytes: limit('packet.identityBytes'),
+  textBytes: limit('packet.textBytes'),
+  listEntries: limit('packet.listEntries'),
+  contextBytes: limit('packet.contextBytes'),
+  excerptCodeUnits: limit('packet.excerptCodeUnits'),
+  facts: limit('packet.facts'),
 });
 const ECOSYSTEMS = ['npm', 'actions', 'uv'] as const;
 const REASONS = [
