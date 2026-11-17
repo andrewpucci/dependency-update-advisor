@@ -2462,3 +2462,186 @@ function unitQueued(entries: string[], unit: DecisionUnit) {
       entry.includes(unit.members[0].name) && entry.includes(`${unit.memberCount} changed update`),
   );
 }
+
+const REQUIRED_CATEGORIES = ['upstream', 'vulnerability', 'malware', 'installScript'];
+
+function coverageSectionOf(body: string) {
+  return body.split('## Decision coverage')[1].split('\n## ')[0];
+}
+
+function checkedLinesOf(body: string) {
+  return coverageSectionOf(body)
+    .split('\n')
+    .filter((line) => line.includes(': checked, none found for '));
+}
+
+function checkedLineOf(body: string, category: string) {
+  return checkedLinesOf(body).filter((line) => line.startsWith(`- ${category}: `));
+}
+
+/** Member entries on a checked line, anchored as whole entries, qualified by version when shared. */
+function entryPattern(render: LargeRender, member: DecisionUnit['members'][number]) {
+  const shared = render.coverage.inventory.units
+    .flatMap((unit) => unit.members)
+    .some((item) => item.id !== member.id && item.name === member.name);
+  const version = member.proposedVersion ?? member.currentVersion ?? 'unknown';
+  return new RegExp(
+    shared
+      ? `(?:^|, )${escapeRegExp(member.name)} \\([^)]*, ${escapeRegExp(version)}\\)(?:,|$)`
+      : `(?:^|, )${escapeRegExp(member.name)}(?:,|$)`,
+    'u',
+  );
+}
+
+/** Independently derived from the units, per the evidence coverage spec. */
+function expectedCheckedNoneFound(render: LargeRender, category: string) {
+  const units = render.coverage.inventory.units;
+  return units.flatMap((unit) =>
+    unit.members.filter((member) => {
+      const link = unit.evidenceLinks.find(
+        (entry) => entry.memberId === member.id && entry.category === category,
+      );
+      if (!link || link.status !== 'available') return false;
+      return !units.some((other) =>
+        other.findings.some(
+          (finding) =>
+            finding.memberId === member.id &&
+            finding.references.some((id) => link.sourceIds.includes(id)),
+        ),
+      );
+    }),
+  );
+}
+
+function checkedNamesOf(line: string) {
+  return line.slice(
+    line.indexOf(': checked, none found for ') + ': checked, none found for '.length,
+    -1,
+  );
+}
+
+test('lists each category checked-none-found member once, on one line per category', async () => {
+  const { render, body } = await renderLargeInventory();
+  let categoriesWithLines = 0;
+  for (const category of REQUIRED_CATEGORIES) {
+    const expected = expectedCheckedNoneFound(render, category);
+    const lines = checkedLineOf(body, category === 'installScript' ? 'install script' : category);
+    if (!expected.length) {
+      expect(lines, category).toHaveLength(0);
+      continue;
+    }
+    categoriesWithLines++;
+    expect(lines, category).toHaveLength(1);
+    const names = checkedNamesOf(lines[0]);
+    for (const member of expected) {
+      expect(entryPattern(render, member).test(names), `${category}: ${member.name}`).toBe(true);
+    }
+    const unexpected = render.coverage.inventory.units
+      .flatMap((unit) => unit.members)
+      .filter((member) => !expected.includes(member));
+    for (const member of unexpected) {
+      expect(entryPattern(render, member).test(names), `${category} lists ${member.name}`).toBe(
+        false,
+      );
+    }
+  }
+  expect(categoriesWithLines).toBeGreaterThanOrEqual(2);
+});
+
+test('never lists a member whose category is unavailable on its checked line', async () => {
+  const { render, body } = await renderLargeInventory({ followups: 71 });
+  const [line] = checkedLineOf(body, 'vulnerability');
+  expect(line).toBeDefined();
+  const unavailable = render.coverage.inventory.units
+    .flatMap((unit) =>
+      unit.members.map((member) => ({
+        member,
+        link: unit.evidenceLinks.find(
+          (entry) => entry.memberId === member.id && entry.category === 'vulnerability',
+        ),
+      })),
+    )
+    .filter(({ link }) => link?.status === 'unavailable');
+  expect(unavailable.length).toBeGreaterThan(0);
+  const names = checkedNamesOf(line);
+  for (const { member } of unavailable) {
+    expect(entryPattern(render, member).test(names), member.name).toBe(false);
+  }
+  expect(names).toContain('child-0');
+});
+
+test('never lists a partial member on a checked line', async () => {
+  const { render, body } = await renderLargeInventory({
+    evidence: (memberIndex, category) =>
+      category === 'upstream' && memberIndex === 0
+        ? { status: 'partial', reasons: ['budget'], sourceIds: [] }
+        : null,
+  });
+  const partial = render.coverage.inventory.units.flatMap((unit) =>
+    unit.members.filter((member) =>
+      unit.evidenceLinks.some(
+        (link) =>
+          link.memberId === member.id && link.category === 'upstream' && link.status === 'partial',
+      ),
+    ),
+  );
+  expect(partial).toHaveLength(1);
+  const [line] = checkedLineOf(body, 'upstream');
+  expect(line).toBeDefined();
+  expect(entryPattern(render, partial[0]).test(checkedNamesOf(line))).toBe(false);
+  expect(checkedNamesOf(line)).toContain('child-');
+});
+
+test('keeps checked-none-found lines when optional detail is omitted', async () => {
+  const followupText = (i: number, name: string) =>
+    `Follow-up for ${name} (${i}): ${'Confirm the recorded evidence with a fresh lookup. '.repeat(5)}`.slice(
+      0,
+      270,
+    );
+  const plain = await renderLargeInventory({ followups: 71 });
+  const pressured = await renderLargeInventory({ followups: 71, followupText });
+  expect(pressured.body).toContain('Some lower-priority detail was omitted to fit the comment.');
+  expect(checkedLinesOf(plain.body).length).toBeGreaterThan(0);
+  expect(checkedLinesOf(pressured.body)).toEqual(checkedLinesOf(plain.body));
+});
+
+test('leaves a member with an attributable finding off its category checked line', async () => {
+  const { analysisScenario } = await import('../tests/parity/analysis.js');
+  const { analyzeDecisionUnits } = await import('./analysis/batches.js');
+  const { input, scenario } = await analysisScenario({ mode: 'malware' });
+  const analysis = await analyzeDecisionUnits(input, { deadlineMs: 700_000 }, { now: () => 0 });
+  if (!analysis.ok) throw new Error('analysis fixture failed');
+  const result = renderDecisionBrief({
+    binding: input.inventory.packet.binding,
+    generatedAt: '2026-11-08T00:00:00.000Z',
+    coverage: analysis.coverage,
+    records: analysis.records,
+    analysisUnavailable: analysis.analysisUnavailable,
+    signalAttempts: scenario.result.attempts,
+    signalBinding: scenario.result.binding,
+  });
+  if (!result.ok) throw new Error('render failed');
+  // child-0's malware finding cites its malware evidence, so its malware state is found, not clean.
+  const found = input.inventory.units.flatMap((unit) =>
+    unit.evidenceLinks
+      .filter((link) => link.category === 'malware' && link.status === 'available')
+      .filter((link) =>
+        unit.findings.some(
+          (finding) =>
+            finding.memberId === link.memberId &&
+            finding.references.some((id) => link.sourceIds.includes(id)),
+        ),
+      )
+      .map((link) => unit.members.find((member) => member.id === link.memberId)!.name),
+  );
+  expect(found).toEqual(['child-0']);
+  const malware = result.body.split('\n').find((line) => line.startsWith('- malware: '));
+  expect(malware).toBeDefined();
+  expect(malware).not.toMatch(/(?:for |, )child-0(?:,|\.$)/u);
+  expect(malware).toMatch(/(?:for |, )fixture\/action(?:,|\.$)/u);
+  // The same member stays on a category where nothing was found.
+  const vulnerability = result.body
+    .split('\n')
+    .find((line) => line.startsWith('- vulnerability: '));
+  expect(vulnerability).toMatch(/(?:for |, )child-0(?:,|\.$)/u);
+});

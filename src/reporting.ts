@@ -700,8 +700,35 @@ function queueLines(r: Review): string[] {
   return lines;
 }
 
-function coverageLines({ input }: Review): string[] {
-  const { counts, inventoryGaps } = input.coverage;
+/** One action-free line per required category whose available members have no finding. */
+function checkedNoneFoundLines(r: Review): string[] {
+  const attributed = new Set(
+    r.units.flatMap((unit) =>
+      unit.findings.flatMap((finding) =>
+        finding.references.map((id) => JSON.stringify([finding.memberId, id])),
+      ),
+    ),
+  );
+  return ['upstream', 'vulnerability', 'malware', 'installScript'].flatMap((category) => {
+    const members = r.units.flatMap((unit) =>
+      unit.members.filter((member) => {
+        const link = unit.evidenceLinks.find(
+          (entry) => entry.memberId === member.id && entry.category === category,
+        );
+        return (
+          link?.status === 'available' &&
+          !link.sourceIds.some((id) => attributed.has(JSON.stringify([member.id, id])))
+        );
+      }),
+    );
+    if (!members.length) return [];
+    const names = members.map((member) => displayName(r, member)).join(', ');
+    return [`- ${readableLabel(category)}: checked, none found for ${names}.`];
+  });
+}
+
+function coverageLines(r: Review): string[] {
+  const { counts, inventoryGaps } = r.input.coverage;
   return [
     '',
     '## Decision coverage',
@@ -710,6 +737,7 @@ function coverageLines({ input }: Review): string[] {
     ...(counts.groupedUnits
       ? ['A direct-update group is assessed as one unit, not as separately researched members.']
       : []),
+    ...checkedNoneFoundLines(r),
     ...inventoryGaps.map(
       (gap) =>
         `- ${text(gap.ecosystem)}: ${gap.reasons.map(text).join(', ')}. ${gap.nextActions.map(text).join(' ')}`,
