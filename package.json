@@ -5,6 +5,7 @@
   "scripts": {
     "build": "vp pack && node scripts/license-notices.mjs .github/actions/dependabot-review/dist",
     "complexity": "node scripts/complexity/report.mjs",
+    "measure:demand": "vp test run --config scripts/measure-demand/vitest.config.mjs",
     "test:complexity": "node --test scripts/complexity/report.test.mjs",
     "check": "tsc --project tsconfig.json --noEmit",
     "test": "vp test",

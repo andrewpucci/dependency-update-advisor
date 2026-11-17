@@ -150,3 +150,21 @@ SonarJS runs through the existing Vite+/Oxlint engine with the root lockfile.
 The comment job runs without source checkout and skips closed PRs or outdated
 heads. See the [complexity contract](docs/specs/SPEC-complexity-review.md) for
 workflow permissions, adapter maintenance, and verification requirements.
+
+### Read-demand measurement
+
+The [evidence coverage spec](docs/specs/SPEC-evidence-coverage.md) sets
+research budgets from measured demand. To measure one Dependabot PR, open or
+closed, run:
+
+```sh
+MEASURE_PR=<number> GITHUB_TOKEN=<read token> npm run measure:demand
+```
+
+It reads the PR's snapshot, collectors, and public research sources with the
+model stubbed, and writes nothing to GitHub. `MEASURE_REPO` (default this
+repository), `MEASURE_CI_WORKFLOW` (default `.github/workflows/ci.yml`), and
+`MEASURE_OUT` (a JSON report path) are optional. The report holds counts per
+research stage and host, repeated-URL requests, stage stop reasons, and
+inventory units; it records no URL, header, token, or response body. Share
+only aggregate counts for consumer repositories.

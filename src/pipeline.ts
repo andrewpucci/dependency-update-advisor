@@ -175,7 +175,7 @@ type Freshness = 'current' | 'stale' | Readonly<{ kind: 'unverified'; detail: Fr
 type Halt = Exclude<Freshness, 'current'>;
 
 /** T4 requires exactly one context entry per change, so every change is named, Actions included. */
-function dependencyIdentities(changes: readonly unknown[]): { id: string; name: string }[] {
+export function dependencyIdentities(changes: readonly unknown[]): { id: string; name: string }[] {
   const identities: { id: string; name: string }[] = [];
   for (const change of changes) {
     const value = change as {
