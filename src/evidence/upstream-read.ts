@@ -60,6 +60,8 @@ export type UpstreamReader = Readonly<{
   read: (target: unknown) => Promise<UpstreamLookup>;
   close: () => void;
   spend: (amount: number) => void;
+  /** The reason this reader refuses all further reads, or null while it can still read. */
+  stopped?: () => EvidenceReason | null;
 }>;
 export type UpstreamDependencies = {
   fetch: (url: string, init: RequestInit) => Promise<Response>;
@@ -297,6 +299,10 @@ class Reader {
   /** Live requests plus cache hits: whether a lookup read anything. */
   private get reads() {
     return this.requests + this.hits;
+  }
+  /** Upstream's own stop, or its nested registry reader's, which shares upstream's limits. */
+  stopReason() {
+    return this.stopped ?? (this.npm.kind === 'ready' ? this.npm.stopped() : null);
   }
   close() {
     this.closed = true;
@@ -555,6 +561,7 @@ export function createUpstreamReader(
         read: (t: unknown) => reader.read(t),
         close: () => reader.close(),
         spend: (amount: number) => reader.spend(amount),
+        stopped: () => reader.stopReason(),
       }),
     };
   } catch {

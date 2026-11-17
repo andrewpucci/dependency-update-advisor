@@ -12902,6 +12902,9 @@ var RegistryReader = class {
 		this.consume(Buffer.byteLength(JSON.stringify(doc)), "retained", this.limits.maxRetainedBytes);
 		return freeze$2(doc);
 	}
+	stopReason() {
+		return this.stopped;
+	}
 	async body(response, aborted, cached) {
 		requireMetadata(response.body, "malformed");
 		const reader = response.body.getReader(), chunks = [];
@@ -12995,7 +12998,8 @@ function createNpmRegistryReader(limits, deps) {
 		const reader = new RegistryReader(parseLimits$1(limits), deps);
 		return Object.freeze({
 			kind: "ready",
-			read: (value) => reader.read(value)
+			read: (value) => reader.read(value),
+			stopped: () => reader.stopReason()
 		});
 	} catch {
 		return { kind: "invalid" };
@@ -13344,6 +13348,10 @@ var Reader = class {
 	get reads() {
 		return this.requests + this.hits;
 	}
+	/** Upstream's own stop, or its nested registry reader's, which shares upstream's limits. */
+	stopReason() {
+		return this.stopped ?? (this.npm.kind === "ready" ? this.npm.stopped() : null);
+	}
 	close() {
 		this.closed = true;
 		this.active?.();
@@ -13566,7 +13574,8 @@ function createUpstreamReader(value, deps) {
 				limits,
 				read: (t) => reader.read(t),
 				close: () => reader.close(),
-				spend: (amount) => reader.spend(amount)
+				spend: (amount) => reader.spend(amount),
+				stopped: () => reader.stopReason()
 			})
 		};
 	} catch {
@@ -18476,6 +18485,10 @@ function metadataAttempt(output, change, side, lookup, sourceIds) {
 		})
 	});
 }
+/** The collector's "not researched yet" placeholder is replaced by research reasons, never kept. */
+function priorReasons(evidence) {
+	return evidence.status === "unavailable" && evidence.sourceIds.length === 0 && evidence.reasons.length === 1 && evidence.reasons[0] === "missing" ? [] : [...evidence.reasons];
+}
 function metadataCoverage(change, side, lookup, sourceIds) {
 	if (change.to ? side === "head" : side === "base") {
 		const previous = change.evidence.upstream;
@@ -18485,7 +18498,7 @@ function metadataCoverage(change, side, lookup, sourceIds) {
 			change.evidence.upstream = {
 				status: sourceIds.length || previous.status === "partial" ? "partial" : "unavailable",
 				sourceIds: merged,
-				reasons: [.../* @__PURE__ */ new Set([...previous.reasons, ...sourceIds.length ? ["unsupported"] : lookup.reasons])]
+				reasons: [.../* @__PURE__ */ new Set([...priorReasons(previous), ...sourceIds.length ? ["unsupported"] : lookup.reasons])]
 			};
 		}
 	}
@@ -18619,12 +18632,16 @@ function researchCoverage(change, research, added) {
 	change.evidence.upstream = {
 		status: sourceIds.length ? "partial" : "unavailable",
 		sourceIds,
-		reasons: [.../* @__PURE__ */ new Set([
-			...previous.reasons,
-			...research.reasons,
-			...added.flatMap((s) => s.reasons)
-		])]
+		reasons: researchReasons(previous, research, added)
 	};
+}
+function researchReasons(previous, research, added) {
+	const reasons = /* @__PURE__ */ new Set([
+		...priorReasons(previous),
+		...research.reasons,
+		...added.flatMap((s) => s.reasons)
+	]);
+	return reasons.size ? [...reasons] : [...previous.reasons];
 }
 function attachUpstreamResearch(input, output, change, research) {
 	const added = research.sources.map((doc) => researchSource(input, change, doc, research));
@@ -18766,21 +18783,60 @@ function attachActionMappings(input, output, change, mappings) {
 		};
 	}
 }
-async function enrichChange(input, output, change, reader, pypiReader) {
+function lists(output) {
+	return [
+		output.sources,
+		output.findings,
+		output.attempts,
+		output.publicIdentities,
+		output.actionVersions
+	];
+}
+function checkpoint(output, index) {
+	return {
+		index,
+		change: structuredClone(output.changes[index]),
+		lengths: lists(output).map((l) => l.length)
+	};
+}
+/** Drops everything the member added after `point`, then records why its research stopped. */
+function rollback(output, point, reason) {
+	lists(output).forEach((list, i) => list.length = point.lengths[i]);
+	const change = structuredClone(point.change);
+	const previous = change.evidence.upstream;
+	const reasons = [.../* @__PURE__ */ new Set([...priorReasons(previous), reason])];
+	change.evidence.upstream = previous.sourceIds.length > 0 ? {
+		status: "partial",
+		sourceIds: previous.sourceIds,
+		reasons
+	} : {
+		status: "unavailable",
+		sourceIds: [],
+		reasons: [reason]
+	};
+	output.changes[point.index] = change;
+}
+function markUnresearched(output, from, reason) {
+	for (let index = from; index < output.changes.length; index++) if (!("basis" in output.changes[index])) rollback(output, checkpoint(output, index), reason);
+}
+async function enrichChange(input, output, change, reader, pypiReader, index, mark) {
 	if ("basis" in change) return;
 	if (change.ecosystem === "actions") {
+		mark(checkpoint(output, index));
 		const result = await collectActionResearch(change, reader);
 		attachActionMappings(input, output, change, result.mappings);
 		attachUpstreamResearch(input, output, change, result.research);
 		bounds(output, input.limits, change);
 		return;
 	}
+	mark(checkpoint(output, index));
 	const lookups = /* @__PURE__ */ new Map();
 	for (const side of ["base", "head"]) {
 		const lookup = await metadata$2(input, output, change, side, reader, pypiReader);
 		if (lookup) lookups.set(side, lookup);
 		bounds(output, input.limits, change);
 	}
+	mark(checkpoint(output, index));
 	await packageResearch(input, output, change, lookups, reader);
 	bounds(output, input.limits, change);
 }
@@ -18812,7 +18868,21 @@ async function enrichUpstream(value, dependencies) {
 	};
 	try {
 		bounds(output, input.limits);
-		for (const change of output.changes) await enrichChange(input, output, change, dependencies.reader, dependencies.pypiReader);
+		for (let index = 0; index < output.changes.length; index++) {
+			const marks = [];
+			try {
+				await enrichChange(input, output, output.changes[index], dependencies.reader, dependencies.pypiReader, index, (p) => marks.push(p));
+			} catch (error) {
+				const point = marks.at(-1);
+				if (point) rollback(output, point, upstreamFailureReason(error));
+			}
+			const stopped = dependencies.reader.stopped?.() ?? null;
+			if (stopped) {
+				output.stopped = stopped;
+				markUnresearched(output, index + 1, stopped);
+				break;
+			}
+		}
 		return freeze$3(output);
 	} catch (error) {
 		return {
@@ -29641,6 +29711,7 @@ async function enrichUpstreamStage(input, dependencies, readers, progress, fail,
 		...pypiReader ? { pypiReader } : {}
 	});
 	if (upstream.kind !== "enriched") return fail("upstream", failure$1(upstream));
+	if (upstream.stopped) return fail("upstream", upstream.stopped);
 	replaceEvidence(progress, upstream);
 	progress.publicIdentities = upstream.publicIdentities;
 	progress.actionVersions = upstream.actionVersions;

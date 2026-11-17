@@ -66,6 +66,8 @@ export type UpstreamEnrichment = {
   attempts: UpstreamAttempt[];
   publicIdentities: PublicPackageIdentity[];
   actionVersions: ActionVersionMapping[];
+  /** Set when the reader stopped early; members after the stop carry this reason. */
+  stopped?: EvidenceReason;
 };
 export type UpstreamResult =
   | Readonly<UpstreamEnrichment>
@@ -375,6 +377,15 @@ function metadataAttempt(
     }),
   });
 }
+/** The collector's "not researched yet" placeholder is replaced by research reasons, never kept. */
+function priorReasons(evidence: PacketChange['evidence']['upstream']): EvidenceReason[] {
+  const placeholder =
+    evidence.status === 'unavailable' &&
+    evidence.sourceIds.length === 0 &&
+    evidence.reasons.length === 1 &&
+    evidence.reasons[0] === 'missing';
+  return placeholder ? [] : [...evidence.reasons];
+}
 function metadataCoverage(
   change: PacketChange,
   side: 'base' | 'head',
@@ -391,7 +402,7 @@ function metadataCoverage(
         sourceIds: merged,
         reasons: [
           ...new Set([
-            ...previous.reasons,
+            ...priorReasons(previous),
             ...(sourceIds.length ? ['unsupported' as const] : lookup.reasons),
           ]),
         ],
@@ -543,10 +554,20 @@ function researchCoverage(change: PacketChange, research: UpstreamResearch, adde
   change.evidence.upstream = {
     status: sourceIds.length ? 'partial' : 'unavailable',
     sourceIds,
-    reasons: [
-      ...new Set([...previous.reasons, ...research.reasons, ...added.flatMap((s) => s.reasons)]),
-    ],
+    reasons: researchReasons(previous, research, added),
   };
+}
+function researchReasons(
+  previous: PacketChange['evidence']['upstream'],
+  research: UpstreamResearch,
+  added: PacketSource[],
+): EvidenceReason[] {
+  const reasons = new Set([
+    ...priorReasons(previous),
+    ...research.reasons,
+    ...added.flatMap((s) => s.reasons),
+  ]);
+  return reasons.size ? [...reasons] : [...previous.reasons];
 }
 export function attachUpstreamResearch(
   input: UpstreamInput,
@@ -752,27 +773,69 @@ function attachActionMappings(
       };
   }
 }
+type Checkpoint = Readonly<{
+  index: number;
+  change: PacketChange;
+  lengths: readonly [number, number, number, number, number];
+}>;
+function lists(output: UpstreamEnrichment) {
+  return [
+    output.sources,
+    output.findings,
+    output.attempts,
+    output.publicIdentities,
+    output.actionVersions,
+  ] as const;
+}
+function checkpoint(output: UpstreamEnrichment, index: number): Checkpoint {
+  return {
+    index,
+    change: structuredClone(output.changes[index]),
+    lengths: lists(output).map((l) => l.length) as unknown as Checkpoint['lengths'],
+  };
+}
+/** Drops everything the member added after `point`, then records why its research stopped. */
+function rollback(output: UpstreamEnrichment, point: Checkpoint, reason: EvidenceReason) {
+  lists(output).forEach((list, i) => (list.length = point.lengths[i]));
+  const change = structuredClone(point.change);
+  const previous = change.evidence.upstream;
+  const reasons = [...new Set([...priorReasons(previous), reason])];
+  change.evidence.upstream =
+    previous.sourceIds.length > 0
+      ? { status: 'partial', sourceIds: previous.sourceIds, reasons }
+      : { status: 'unavailable', sourceIds: [], reasons: [reason] };
+  output.changes[point.index] = change;
+}
+function markUnresearched(output: UpstreamEnrichment, from: number, reason: EvidenceReason) {
+  for (let index = from; index < output.changes.length; index++)
+    if (!('basis' in output.changes[index])) rollback(output, checkpoint(output, index), reason);
+}
 async function enrichChange(
   input: UpstreamInput,
   output: UpstreamEnrichment,
   change: PacketChange,
   reader: UpstreamReader,
-  pypiReader?: PolicyMetadataReader,
+  pypiReader: PolicyMetadataReader | undefined,
+  index: number,
+  mark: (point: Checkpoint) => unknown,
 ) {
   if ('basis' in change) return;
   if (change.ecosystem === 'actions') {
+    mark(checkpoint(output, index));
     const result = await collectActionResearch(change, reader);
     attachActionMappings(input, output, change, result.mappings);
     attachUpstreamResearch(input, output, change, result.research);
     bounds(output, input.limits, change);
     return;
   }
+  mark(checkpoint(output, index));
   const lookups = new Map<string, UpstreamLookup>();
   for (const side of ['base', 'head'] as const) {
     const lookup = await metadata(input, output, change, side, reader, pypiReader);
     if (lookup) lookups.set(side, lookup);
     bounds(output, input.limits, change);
   }
+  mark(checkpoint(output, index));
   await packageResearch(input, output, change, lookups, reader);
   bounds(output, input.limits, change);
 }
@@ -806,8 +869,30 @@ export async function enrichUpstream(
   };
   try {
     bounds(output, input.limits);
-    for (const change of output.changes)
-      await enrichChange(input, output, change, dependencies.reader, dependencies.pypiReader);
+    for (let index = 0; index < output.changes.length; index++) {
+      const marks: Checkpoint[] = [];
+      try {
+        await enrichChange(
+          input,
+          output,
+          output.changes[index],
+          dependencies.reader,
+          dependencies.pypiReader,
+          index,
+          (p) => marks.push(p),
+        );
+      } catch (error) {
+        const point = marks.at(-1);
+        if (point) rollback(output, point, upstreamFailureReason(error));
+      }
+      // A stopped reader refuses every later read, so the rest are unresearched, not failed.
+      const stopped = dependencies.reader.stopped?.() ?? null;
+      if (stopped) {
+        output.stopped = stopped;
+        markUnresearched(output, index + 1, stopped);
+        break;
+      }
+    }
     return freeze(output);
   } catch (error) {
     return {

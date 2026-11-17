@@ -139,6 +139,8 @@ async function enrichUpstreamStage(
     { reader: opened.reader, ...(pypiReader ? { pypiReader } : {}) },
   );
   if (upstream.kind !== 'enriched') return fail('upstream', failure(upstream));
+  // A later task applies the retained members; until then a stopped stage stays unavailable.
+  if (upstream.stopped) return fail('upstream', upstream.stopped);
   replaceEvidence(progress, upstream);
   progress.publicIdentities = upstream.publicIdentities;
   progress.actionVersions = upstream.actionVersions;

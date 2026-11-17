@@ -19,8 +19,8 @@ const limits = {
   requestTimeoutMs: 1000,
   totalTimeoutMs: 10_000,
 };
-async function fixture() {
-  const f = await collectAdvisoryNpm('empty', 1);
+async function fixture(additions = 1, overrides: Partial<typeof limits> = {}) {
+  const f = await collectAdvisoryNpm('empty', additions);
   const inventory = structuredClone(f.inventory);
   for (const root of inventory.roots)
     for (const side of [root.base, root.head])
@@ -32,7 +32,7 @@ async function fixture() {
     sources: inventory.sources,
     findings: [],
     npmInventory: inventory,
-    limits,
+    limits: { ...limits, ...overrides },
   };
 }
 function reader() {
@@ -254,4 +254,144 @@ test('an empty registry description still yields a non-empty metadata excerpt', 
     metadata.every((s) => s.provenance.kind === 'upstream' && s.provenance.excerpt.length > 0),
   ).toBe(true);
   opened.reader.close();
+});
+
+/** Registry URL the npm reader requests for one side of a change. */
+function registryUrl(instance: { name: string; version: string }) {
+  return (
+    'https://registry.npmjs.org/' +
+    encodeURIComponent(instance.name) +
+    '/' +
+    encodeURIComponent(instance.version)
+  );
+}
+function registryReader(
+  overrides: Partial<typeof limits>,
+  respond: (url: string) => Response | null = () => null,
+) {
+  const calls: string[] = [];
+  const r = createUpstreamReader(
+    { ...limits, ...overrides },
+    {
+      now: () => 0,
+      fetch: async (url) => {
+        calls.push(url);
+        const custom = respond(url);
+        if (custom) return custom;
+        const parts = new URL(url).pathname.split('/').map(decodeURIComponent);
+        return Response.json({
+          _id: parts[1] + '@' + parts[2],
+          name: parts[1],
+          version: parts[2],
+          dist: { integrity },
+          description: 'Exact version description.',
+        });
+      },
+    },
+  );
+  if (r.kind !== 'ready') throw new Error('reader');
+  return { ...r, calls };
+}
+test("one member's oversized response leaves the others intact", async () => {
+  const input = await fixture(3);
+  const target = input.changes[1].to as { name: string; version: string };
+  const r = registryReader({}, (url) =>
+    url === registryUrl(target)
+      ? Response.json({ description: 'x'.repeat(limits.maxResponseBytes + 1) })
+      : null,
+  );
+  const result = await enrichUpstream(input, { reader: r.reader });
+  expect(result.kind).toBe('enriched');
+  if (result.kind !== 'enriched') throw new Error('enrichment');
+  expect(result).not.toHaveProperty('stopped');
+  const [first, second, ...rest] = result.changes;
+  expect(first.evidence.upstream.status).toBe('partial');
+  expect(second.evidence.upstream.reasons).toContain('budget');
+  expect(second.evidence.upstream.reasons).not.toContain('missing');
+  for (const change of rest) expect(change.evidence.upstream.status).toBe('partial');
+  r.reader.close();
+});
+test("a member's attempt overflow rolls back only that member's research", async () => {
+  const input = await fixture(3);
+  const probe = registryReader({});
+  const normal = await enrichUpstream(input, { reader: probe.reader });
+  probe.reader.close();
+  if (normal.kind !== 'enriched') throw new Error('enrichment');
+  // The last member is the first to cross one attempt fewer than a normal run records.
+  const last = input.changes[3];
+  const maxAttempts = normal.attempts.length - 1;
+  const r = registryReader({ maxAttempts });
+  const result = await enrichUpstream(await fixture(3, { maxAttempts }), { reader: r.reader });
+  r.reader.close();
+  if (result.kind !== 'enriched') throw new Error('enrichment');
+  expect(result).not.toHaveProperty('stopped');
+  // Research overflows after metadata, so the member keeps its metadata and identity only.
+  const upstream = result.changes[3].evidence.upstream;
+  expect(upstream.status).toBe('partial');
+  expect(upstream.reasons).toEqual(['unsupported', 'budget']);
+  expect(upstream.sourceIds).toEqual(normal.changes[3].evidence.upstream.sourceIds);
+  expect(result.publicIdentities.filter((p) => p.memberId === last.id)).toEqual(
+    normal.publicIdentities.filter((p) => p.memberId === last.id),
+  );
+  expect(result.attempts.filter((a) => a.memberId === last.id).map((a) => a.stage)).toEqual([
+    'metadata',
+  ]);
+  expect(result.attempts.length).toBeLessThanOrEqual(maxAttempts);
+  for (const index of [0, 1, 2]) expect(result.changes[index]).toEqual(normal.changes[index]);
+});
+test('share exhaustion keeps completed members and their identities', async () => {
+  const input = await fixture(3);
+  const probe = registryReader({});
+  await enrichUpstream(input, { reader: probe.reader });
+  probe.reader.close();
+  const second = input.changes[1] as {
+    from?: { name: string; version: string } | null;
+    to?: { name: string; version: string } | null;
+  };
+  const secondUrl = registryUrl((second.from ?? second.to)!);
+  const firstMemberRequests = probe.calls.indexOf(secondUrl);
+  expect(firstMemberRequests).toBeGreaterThan(0);
+  const bounded = fixture(3, { maxRequests: firstMemberRequests });
+  const r = registryReader({ maxRequests: firstMemberRequests });
+  const result = await enrichUpstream(await bounded, { reader: r.reader });
+  expect(result.kind).toBe('enriched');
+  if (result.kind !== 'enriched') throw new Error('enrichment');
+  expect(result).toHaveProperty('stopped', 'budget');
+  const firstSides = [input.changes[0].from, input.changes[0].to].filter(Boolean).length;
+  const firstIdentities = result.publicIdentities.filter((p) => p.memberId === input.changes[0].id);
+  expect(firstIdentities).toHaveLength(firstSides);
+  for (const change of result.changes.slice(1))
+    expect(change.evidence.upstream).toEqual({
+      status: 'unavailable',
+      reasons: ['budget'],
+      sourceIds: [],
+    });
+  r.reader.close();
+});
+test('identities established before a stop in the middle of a member survive', async () => {
+  const input = await fixture(3);
+  const updated = input.changes[2] as { id: string; from: unknown; to: unknown };
+  expect(updated.from && updated.to).toBeTruthy();
+  const probe = registryReader({});
+  await enrichUpstream(input, { reader: probe.reader });
+  probe.reader.close();
+  // Only the updated member's base read fits before the share runs out.
+  const maxRequests = probe.calls.indexOf(
+    registryUrl(updated.to as { name: string; version: string }),
+  );
+  expect(maxRequests).toBeGreaterThan(0);
+  const r = registryReader({ maxRequests });
+  const result = await enrichUpstream(await fixture(3, { maxRequests }), { reader: r.reader });
+  r.reader.close();
+  if (result.kind !== 'enriched') throw new Error('enrichment');
+  expect(result.stopped).toBe('budget');
+  expect(
+    result.publicIdentities.filter((p) => p.memberId === updated.id).map((p) => p.side),
+  ).toEqual(['base']);
+  expect(result.changes[2].evidence.upstream.reasons).toEqual(['budget']);
+  expect(result.changes[3].evidence.upstream).toEqual({
+    status: 'unavailable',
+    reasons: ['budget'],
+    sourceIds: [],
+  });
 });

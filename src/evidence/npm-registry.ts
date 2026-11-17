@@ -220,6 +220,9 @@ class RegistryReader {
     this.consume(Buffer.byteLength(JSON.stringify(doc)), 'retained', this.limits.maxRetainedBytes);
     return freeze(doc);
   }
+  stopReason() {
+    return this.stopped;
+  }
   private async body(
     response: Response,
     aborted: Promise<never>,
@@ -326,10 +329,21 @@ class RegistryReader {
 export function createNpmRegistryReader(
   limits: unknown,
   deps: NpmRegistryDependencies,
-): { kind: 'invalid' } | { kind: 'ready'; read: (request: unknown) => Promise<NpmMetadataResult> } {
+):
+  | { kind: 'invalid' }
+  | {
+      kind: 'ready';
+      read: (request: unknown) => Promise<NpmMetadataResult>;
+      /** The reason this reader refuses all further reads, or null while it can still read. */
+      stopped: () => EvidenceReason | null;
+    } {
   try {
     const reader = new RegistryReader(parseLimits(limits), deps);
-    return Object.freeze({ kind: 'ready', read: (value: unknown) => reader.read(value) });
+    return Object.freeze({
+      kind: 'ready',
+      read: (value: unknown) => reader.read(value),
+      stopped: () => reader.stopReason(),
+    });
   } catch {
     return { kind: 'invalid' };
   }
