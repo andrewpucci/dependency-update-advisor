@@ -29783,6 +29783,51 @@ function limits(share, input) {
 function failure$1(result) {
 	return result.kind === "unavailable" && result.reason ? result.reason : "malformed";
 }
+/** The categories each stage owns; a stage's failure marks only these placeholders. */
+const STAGE_CATEGORIES = {
+	upstream: ["upstream", "installScript"],
+	advisories: ["vulnerability"],
+	signals: ["malware"],
+	revalidation: []
+};
+/** The evidence the collector gives a member before any research has run. */
+function isPlaceholder(evidence) {
+	return evidence?.status === "unavailable" && evidence.reasons.length === 1 && evidence.reasons[0] === "missing" && evidence.sourceIds.length === 0;
+}
+/** Replaces a failed stage's placeholders with the stage's reason; copies, never mutates. */
+function markStage(progress, stage, reason) {
+	progress.changes = progress.changes.map((change) => {
+		if ("basis" in change) return change;
+		const evidence = { ...change.evidence };
+		for (const category of STAGE_CATEGORIES[stage]) if (isPlaceholder(evidence[category])) evidence[category] = {
+			status: "unavailable",
+			reasons: [reason],
+			sourceIds: []
+		};
+		return {
+			...change,
+			evidence
+		};
+	});
+}
+function installsScript(inventory, side, revision) {
+	if (!side) return false;
+	return inventory.roots.find((candidate) => candidate.root === side.root)?.[revision].packages[side.lockPath]?.hasInstallScript === true;
+}
+/** Research order (§3.5): direct and added, then install scripts, then the rest; stable within each. */
+function researchOrder(changes, npmInventory) {
+	const rank = (change) => {
+		if (change.role === "direct" || change.kind === "addition") return 0;
+		if (npmInventory && change.ecosystem === "npm" && !("basis" in change) && (installsScript(npmInventory, change.from, "base") || installsScript(npmInventory, change.to, "head"))) return 1;
+		return 2;
+	};
+	return [...changes].sort((a, b) => rank(a) - rank(b));
+}
+/** Puts the changes back in the packet's own order, so the returned packet keeps its shape. */
+function restorePacketOrder(progress, packet) {
+	const position = new Map(packet.changes.map((change, index) => [change.id, index]));
+	progress.changes = [...progress.changes].sort((a, b) => (position.get(a.id) ?? 0) - (position.get(b.id) ?? 0));
+}
 function replaceEvidence(progress, evidence) {
 	progress.changes = evidence.changes;
 	progress.sources = evidence.sources;
@@ -29805,11 +29850,11 @@ async function enrichUpstreamStage(input, dependencies, readers, progress, fail,
 		...pypiReader ? { pypiReader } : {}
 	});
 	if (upstream.kind !== "enriched") return fail("upstream", failure$1(upstream));
-	if (upstream.stopped) return fail("upstream", upstream.stopped);
 	replaceEvidence(progress, upstream);
 	progress.publicIdentities = upstream.publicIdentities;
 	progress.actionVersions = upstream.actionVersions;
 	progress.upstreamAttempts = upstream.attempts;
+	if (upstream.stopped) fail("upstream", upstream.stopped);
 }
 async function enrichAdvisoryStage(input, dependencies, readers, progress, fail) {
 	const limitsForStage = limits(EVIDENCE_READ_ALLOCATION.advisory, input);
@@ -29827,8 +29872,8 @@ async function enrichAdvisoryStage(input, dependencies, readers, progress, fail)
 		...input.comparison?.kind === "available" ? { comparisons: [input.comparison] } : {}
 	}, { reader: opened });
 	if (advisories.kind !== "enriched") return fail("advisories", failure$1(advisories));
-	if (advisories.stopped) return fail("advisories", advisories.stopped);
 	replaceEvidence(progress, advisories);
+	if (advisories.stopped) fail("advisories", advisories.stopped);
 }
 async function enrichSignalsStage(input, dependencies, readers, progress, fail, metadata) {
 	const limitsForStage = limits(EVIDENCE_READ_ALLOCATION.signals, input);
@@ -29919,7 +29964,7 @@ async function runResearch(input) {
 	try {
 		const { packet } = input;
 		const progress = {
-			changes: packet.changes,
+			changes: researchOrder(packet.changes, input.npmInventory),
 			sources: packet.sources,
 			findings: packet.findings,
 			publicIdentities: [],
@@ -29927,16 +29972,20 @@ async function runResearch(input) {
 			upstreamAttempts: [],
 			signalAttempts: []
 		};
-		const fail = (stage, reason) => unavailable.push({
-			stage,
-			reason
-		});
+		const fail = (stage, reason) => {
+			unavailable.push({
+				stage,
+				reason
+			});
+			markStage(progress, stage, reason);
+		};
 		const metadata = createPolicySignalReader(limits(EVIDENCE_READ_ALLOCATION.signals.readers.metadata, input), dependencies);
 		const sharedMetadata = metadata.kind === "ready" ? metadata : null;
 		if (sharedMetadata) readers.push(sharedMetadata);
 		await runStage("upstream", () => enrichUpstreamStage(input, dependencies, readers, progress, fail, sharedMetadata ?? void 0));
 		await runStage("advisories", () => enrichAdvisoryStage(input, dependencies, readers, progress, fail));
 		await runStage("signals", () => enrichSignalsStage(input, dependencies, readers, progress, fail, sharedMetadata));
+		restorePacketOrder(progress, packet);
 		observe({
 			kind: "stage-start",
 			stage: "revalidation"

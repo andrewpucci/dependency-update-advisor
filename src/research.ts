@@ -16,10 +16,17 @@ import { enrichUpstream, type UpstreamAttempt } from './evidence/upstream.js';
 import { createUpstreamReader } from './evidence/upstream-read.js';
 import { createResearchCache, type ResearchCache } from './evidence/research-cache.js';
 import type { NpmInventoryResult } from './evidence/npm.js';
-import type { PacketExpected, PacketResult } from './schema.js';
-import { validateReviewPacket, type EvidenceReason } from './schema.js';
+import type { PacketChange, PacketExpected, PacketResult } from './schema.js';
+import {
+  validateReviewPacket,
+  type ChangeEvidence,
+  type EvidenceReason,
+  type NpmSide,
+} from './schema.js';
 
 type Packet = Extract<PacketResult, { ok: true }>['packet'];
+/** A packet change as the packet exposes it, which is readonly all the way down. */
+type PacketChangeView = Packet['changes'][number];
 type NpmInventory = Extract<NpmInventoryResult, { kind: 'inventory' }>;
 type EnrichedEvidence = { changes: unknown; sources: unknown; findings: unknown };
 type ResearchProgress = EnrichedEvidence & {
@@ -109,6 +116,75 @@ function failure(result: { kind: string; reason?: EvidenceReason }): EvidenceRea
   return result.kind === 'unavailable' && result.reason ? result.reason : 'malformed';
 }
 
+/** The categories each stage owns; a stage's failure marks only these placeholders. */
+const STAGE_CATEGORIES: Record<ResearchStage, readonly string[]> = {
+  upstream: ['upstream', 'installScript'],
+  advisories: ['vulnerability'],
+  signals: ['malware'],
+  revalidation: [],
+};
+
+/** The evidence the collector gives a member before any research has run. */
+function isPlaceholder(evidence: ChangeEvidence | undefined): boolean {
+  return (
+    evidence?.status === 'unavailable' &&
+    evidence.reasons.length === 1 &&
+    evidence.reasons[0] === 'missing' &&
+    evidence.sourceIds.length === 0
+  );
+}
+
+/** Replaces a failed stage's placeholders with the stage's reason; copies, never mutates. */
+function markStage(progress: ResearchProgress, stage: ResearchStage, reason: EvidenceReason): void {
+  progress.changes = (progress.changes as readonly PacketChange[]).map((change) => {
+    if ('basis' in change) return change;
+    const evidence: Record<string, ChangeEvidence> = { ...change.evidence };
+    for (const category of STAGE_CATEGORIES[stage]) {
+      if (isPlaceholder(evidence[category]))
+        evidence[category] = { status: 'unavailable', reasons: [reason], sourceIds: [] };
+    }
+    return { ...change, evidence };
+  });
+}
+
+function installsScript(
+  inventory: NpmInventory,
+  side: NpmSide | null,
+  revision: 'base' | 'head',
+): boolean {
+  if (!side) return false;
+  const root = inventory.roots.find((candidate) => candidate.root === side.root);
+  return root?.[revision].packages[side.lockPath]?.hasInstallScript === true;
+}
+
+/** Research order (§3.5): direct and added, then install scripts, then the rest; stable within each. */
+export function researchOrder<T extends PacketChangeView>(
+  changes: readonly T[],
+  npmInventory: NpmInventory | null,
+): T[] {
+  const rank = (change: T): number => {
+    if (change.role === 'direct' || change.kind === 'addition') return 0;
+    if (
+      npmInventory &&
+      change.ecosystem === 'npm' &&
+      !('basis' in change) &&
+      (installsScript(npmInventory, change.from, 'base') ||
+        installsScript(npmInventory, change.to, 'head'))
+    )
+      return 1;
+    return 2;
+  };
+  return [...changes].sort((a, b) => rank(a) - rank(b));
+}
+
+/** Puts the changes back in the packet's own order, so the returned packet keeps its shape. */
+function restorePacketOrder(progress: ResearchProgress, packet: Packet): void {
+  const position = new Map(packet.changes.map((change, index) => [change.id, index]));
+  progress.changes = [...(progress.changes as readonly PacketChange[])].sort(
+    (a, b) => (position.get(a.id) ?? 0) - (position.get(b.id) ?? 0),
+  );
+}
+
 function replaceEvidence(progress: ResearchProgress, evidence: EnrichedEvidence): void {
   progress.changes = evidence.changes;
   progress.sources = evidence.sources;
@@ -139,12 +215,11 @@ async function enrichUpstreamStage(
     { reader: opened.reader, ...(pypiReader ? { pypiReader } : {}) },
   );
   if (upstream.kind !== 'enriched') return fail('upstream', failure(upstream));
-  // A later task applies the retained members; until then a stopped stage stays unavailable.
-  if (upstream.stopped) return fail('upstream', upstream.stopped);
   replaceEvidence(progress, upstream);
   progress.publicIdentities = upstream.publicIdentities;
   progress.actionVersions = upstream.actionVersions;
   progress.upstreamAttempts = upstream.attempts;
+  if (upstream.stopped) fail('upstream', upstream.stopped);
 }
 
 async function enrichAdvisoryStage(
@@ -172,9 +247,8 @@ async function enrichAdvisoryStage(
     { reader: opened },
   );
   if (advisories.kind !== 'enriched') return fail('advisories', failure(advisories));
-  // A later task applies the retained members; until then a stopped stage stays unavailable.
-  if (advisories.stopped) return fail('advisories', advisories.stopped);
   replaceEvidence(progress, advisories);
+  if (advisories.stopped) fail('advisories', advisories.stopped);
 }
 
 async function enrichSignalsStage(
@@ -282,7 +356,7 @@ export async function runResearch(input: ResearchInput): Promise<ResearchResult>
   try {
     const { packet } = input;
     const progress: ResearchProgress = {
-      changes: packet.changes,
+      changes: researchOrder(packet.changes, input.npmInventory),
       sources: packet.sources,
       findings: packet.findings,
       publicIdentities: [],
@@ -290,8 +364,10 @@ export async function runResearch(input: ResearchInput): Promise<ResearchResult>
       upstreamAttempts: [],
       signalAttempts: [],
     };
-    const fail = (stage: ResearchStage, reason: EvidenceReason) =>
+    const fail = (stage: ResearchStage, reason: EvidenceReason) => {
       unavailable.push({ stage, reason });
+      markStage(progress, stage, reason);
+    };
     const metadata = createPolicySignalReader(
       limits(EVIDENCE_READ_ALLOCATION.signals.readers.metadata, input),
       dependencies,
@@ -315,6 +391,7 @@ export async function runResearch(input: ResearchInput): Promise<ResearchResult>
       enrichSignalsStage(input, dependencies, readers, progress, fail, sharedMetadata),
     );
 
+    restorePacketOrder(progress, packet);
     observe({ kind: 'stage-start', stage: 'revalidation' });
     const candidate = revalidate(input, progress);
     observe(
