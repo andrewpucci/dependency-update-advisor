@@ -23010,14 +23010,63 @@ function blockerLines(r) {
 	}
 	return lines;
 }
-function queueLines({ input, units, summary }) {
+/** Unresolved units with the same reason, recovery, update count, and gaps share one queue item. */
+function queueLines(r) {
+	const { input, units, summary } = r;
 	const lines = [];
 	if (input.coverage.counts.unresolvedUnits) lines.push("", "## Decision queue", "");
+	const linkOf = (unit, sourceId) => {
+		const link = unit.evidenceLinks.find((entry) => entry.id === sourceId);
+		if (!link || !unit.members.some((member) => member.id === link.memberId)) throw new RenderFailure("reference");
+		return link;
+	};
+	const groups = /* @__PURE__ */ new Map();
 	for (const [index, unit] of units.entries()) {
 		const record = input.records[index];
 		if (record.state.state === "assessed") continue;
-		if (!summary.unresolvedUnits.find((entry) => entry.unitId === unit.id)) throw new RenderFailure("content");
-		lines.push(`- ${text(unit.members.map((member) => member.name).join(", "))} (${plural(unit.memberCount, "changed update")}): ${text(record.state.reason)} ${recovery(record.category)} ${summary.units[index].gaps.map((gap) => evidenceGap(unit, gap.sourceId)).join(" ")}`);
+		if (!summary.unresolvedUnits.some((entry) => entry.unitId === unit.id)) throw new RenderFailure("content");
+		const gapKeys = summary.units[index].gaps.map((gap) => {
+			const link = linkOf(unit, gap.sourceId);
+			return JSON.stringify([
+				link.category,
+				link.status,
+				link.reasons
+			]);
+		}).sort();
+		const key = JSON.stringify([
+			record.state.reason,
+			recovery(record.category),
+			unit.memberCount,
+			gapKeys
+		]);
+		const group = groups.get(key) ?? {
+			reason: record.state.reason,
+			category: record.category,
+			indexes: []
+		};
+		group.indexes.push(index);
+		groups.set(key, group);
+	}
+	for (const { reason, category, indexes } of groups.values()) {
+		const [first] = indexes;
+		const gaps = summary.units[first].gaps;
+		const tail = `${text(reason)} ${recovery(category)}`;
+		if (indexes.length === 1) {
+			const unit = units[first];
+			const names = text(unit.members.map((member) => member.name).join(", "));
+			const gapText = gaps.map((gap) => evidenceGap(unit, gap.sourceId)).join(" ");
+			lines.push(`- ${names} (${plural(unit.memberCount, "changed update")}): ${tail} ${gapText}`);
+			continue;
+		}
+		const names = indexes.map((index) => {
+			const unit = units[index];
+			return `${unit.members.map((member) => displayName(r, member)).join(", ")} (${plural(unit.memberCount, "changed update")})`;
+		});
+		const gapText = gaps.map((gap) => {
+			const link = linkOf(units[first], gap.sourceId);
+			return `${readableLabel(link.category)} evidence is ${readableLabel(link.status)} (${link.reasons.map(readableLabel).join(", ")}). ${evidenceActions(link.reasons, link.category, "each listed package", true)}`;
+		}).join(" ");
+		lines.push(`- ${names.join("; ")}: ${tail} ${gapText}`);
 	}
 	return lines;
 }
