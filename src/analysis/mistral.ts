@@ -1,3 +1,4 @@
+import { HTTP_STATUS } from '../format.js';
 import { freeze, isPlainObject } from '../evidence/common.js';
 import { limit } from '../limits.js';
 import {
@@ -176,10 +177,12 @@ type Lifecycle = ReturnType<typeof lifecycle>;
 function classifyHttp(response: Response): MistralCategory | null {
   if (response.redirected) return 'http-other';
   const { status } = response;
-  if (status === 200) return null;
-  if (status === 401 || status === 403) return 'http-auth';
-  if (status === 429) return 'http-rate-limit';
-  return status >= 500 && status <= 599 ? 'http-server' : 'http-other';
+  if (status === HTTP_STATUS.ok) return null;
+  if (status === HTTP_STATUS.unauthorized || status === HTTP_STATUS.forbidden) return 'http-auth';
+  if (status === HTTP_STATUS.tooManyRequests) return 'http-rate-limit';
+  return status >= HTTP_STATUS.serverErrorMin && status <= HTTP_STATUS.max
+    ? 'http-server'
+    : 'http-other';
 }
 
 async function readResponse(response: Response, limit: number, run: Lifecycle): Promise<string> {

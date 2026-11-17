@@ -1,3 +1,9 @@
+import {
+  SELF_CHECK_LICENSE_LIMITS,
+  SELF_CHECK_TOML_LIMITS,
+  SELF_CHECK_WORKFLOW_LIMITS,
+} from './self-check-fixtures.js';
+import { EXIT_CODE } from './format.js';
 import parser from 'stream-json/parser.js';
 import { readWorkflow } from './evidence/actions-yaml.js';
 import { createNpmPublishTimeReader } from './evidence/npm-publish-times.js';
@@ -14,8 +20,8 @@ import { limit } from './limits.js';
 import { createGithubSnapshotReads } from './snapshot.js';
 
 /** Distinct from 1, which Node uses when the bundle itself fails to load. */
-export const NOT_WIRED_EXIT_CODE = 78;
-export const SELF_CHECK_EXIT_CODE = 79;
+export const NOT_WIRED_EXIT_CODE = EXIT_CODE.notWired;
+export const SELF_CHECK_EXIT_CODE = EXIT_CODE.selfCheck;
 
 // Referenced so the bundler keeps the module that owns the stream-json parse path.
 const bundledModules = { createNpmPublishTimeReader };
@@ -38,25 +44,12 @@ async function streamJsonParses(): Promise<boolean> {
 
 /** Runs each production dependency once, with no network, secret, or filesystem access. */
 export async function selfCheck() {
-  const toml = readToml(bytes('a = 1'), {
-    maxFileBytes: 64,
-    maxTomlDepth: 4,
-    maxTomlEntries: 8,
-    maxPackages: 1,
-    maxDeclarations: 1,
-    maxEdges: 1,
-    maxStringBytes: 16,
-    maxRequirementTokens: 4,
-    maxMarkerDepth: 2,
-  });
-  const workflow = readWorkflow(bytes('jobs:\n  a:\n    steps:\n      - uses: ./local\n'), {
-    maxFileBytes: 256,
-    maxYamlNodes: 64,
-    maxYamlDepth: 8,
-    maxAliasExpansions: 0,
-    maxOccurrences: 4,
-  });
-  const license = canonicalLicense('MIT', { maxBytes: 32, maxTokens: 4, maxDepth: 2 });
+  const toml = readToml(bytes('a = 1'), SELF_CHECK_TOML_LIMITS);
+  const workflow = readWorkflow(
+    bytes('jobs:\n  a:\n    steps:\n      - uses: ./local\n'),
+    SELF_CHECK_WORKFLOW_LIMITS,
+  );
+  const license = canonicalLicense('MIT', SELF_CHECK_LICENSE_LIMITS);
   return {
     semver: compareUpstreamVersions('npm', '1.0.0', '1.0.1') === -1,
     pep440: compareUpstreamVersions('uv', '1.0', '1.1') === -1,

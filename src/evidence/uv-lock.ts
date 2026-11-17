@@ -14,6 +14,7 @@ import {
   type UvParseLimits,
   type UvRead,
 } from './uv-toml.js';
+import { FORMAT_VERSION, UINT32_MAX } from '../format.js';
 export type UvSource = { kind: 'registry'; url: string } | { kind: 'editable'; path: '.' };
 export type UvSelector = {
   name: string;
@@ -48,7 +49,7 @@ export type UvPackage = {
 };
 export type UvLock = {
   version: 1;
-  revision: 3 | 5;
+  revision: (typeof FORMAT_VERSION.uvLockRevisions)[number];
   requiresPython: string | null;
   resolutionMarkers: string[] | null;
   packages: UvPackage[];
@@ -348,9 +349,12 @@ function packages(raw: unknown, limits: UvParseLimits, budget: UvBudget, gaps: U
   }
   return [...values.values()].sort((a, b) => byCodeUnit(a.key, b.key));
 }
-function integer(value: unknown, max = 2 ** 32 - 1): number {
+function integer(value: unknown, max = UINT32_MAX): number {
   need(typeof value === 'bigint' && value >= 0n && value <= BigInt(max));
   return Number(value);
+}
+function isUvRevision(value: number): value is UvLock['revision'] {
+  return FORMAT_VERSION.uvLockRevisions.some((r) => r === value);
 }
 function extract(
   raw: Record<string, unknown>,
@@ -359,7 +363,7 @@ function extract(
 ): UvRead<UvLock> {
   const schema = integer(raw.version),
     revision = raw.revision === undefined ? 0 : integer(raw.revision);
-  need(schema === 1 && (revision === 3 || revision === 5), 'unsupported');
+  need(schema === 1 && isUvRevision(revision), 'unsupported');
   const gaps: UvEntryGap[] = [];
   const value: UvLock = {
     version: 1,

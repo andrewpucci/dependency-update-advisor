@@ -21,6 +21,8 @@ type Description = {
   headSha: string;
   text: string;
 };
+const DESCRIPTION_KEYS = ['status', 'repository', 'pullNumber', 'headSha', 'text'] as const;
+const REPOSITORY_KEYS = ['id', 'owner', 'name'] as const;
 function failedSource(result: UvInventory, work: GraphWork): PacketSource {
   return {
     id: work.id('dependabot', [result.binding.identity, result.binding.baseSha, 'unavailable']),
@@ -68,12 +70,16 @@ function description(
   maxBytes: number,
   work: GraphWork,
 ): Description {
-  if (!shape(value) || value.status !== 'available' || Object.keys(value).length !== 5)
+  if (
+    !shape(value) ||
+    value.status !== 'available' ||
+    Object.keys(value).length !== DESCRIPTION_KEYS.length
+  )
     throw new UvGraphFailure('malformed');
   const b = result.binding;
   if (
     !shape(value.repository) ||
-    Object.keys(value.repository).length !== 3 ||
+    Object.keys(value.repository).length !== REPOSITORY_KEYS.length ||
     typeof value.repository.id !== 'number' ||
     typeof value.repository.owner !== 'string' ||
     typeof value.repository.name !== 'string' ||

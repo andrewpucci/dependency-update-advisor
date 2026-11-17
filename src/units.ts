@@ -1,4 +1,9 @@
-import type { Ecosystem, EvidenceReason, PacketResult } from './schema.js';
+import {
+  EVIDENCE_REASONS,
+  type Ecosystem,
+  type EvidenceReason,
+  type PacketResult,
+} from './schema.js';
 import {
   evaluatePolicy,
   isOptionalSignal,
@@ -23,18 +28,6 @@ export type GroupingReason =
   | 'ambiguous_anchors'
   | 'reachability_unproven'
   | 'proven_relationship';
-const reasonRanks = {
-  permission: 0,
-  rate_limit: 1,
-  timeout: 2,
-  missing: 3,
-  malformed: 4,
-  unsupported: 5,
-  truncated: 6,
-  budget: 7,
-  conflict: 8,
-  unknown: 9,
-} satisfies Record<EvidenceReason, number>;
 export type EvidenceLink = Readonly<{
   id: string;
   memberId: string;
@@ -174,7 +167,9 @@ function projectMembers(
           category,
           status: entry.status,
           sourceIds: [...entry.sourceIds].sort(),
-          reasons: [...entry.reasons].sort((a, b) => reasonRanks[a] - reasonRanks[b]),
+          reasons: [...entry.reasons].sort(
+            (a, b) => EVIDENCE_REASONS.indexOf(a) - EVIDENCE_REASONS.indexOf(b),
+          ),
         };
       }),
   );
@@ -464,7 +459,9 @@ export function summarizeDecisionCoverage(
   const inventoryGaps: InventoryGap[] = (['npm', 'actions', 'uv'] as const).flatMap((ecosystem) => {
     const coverage = inventory.packet.coverage[ecosystem];
     if (coverage.status !== 'partial' && coverage.status !== 'unavailable') return [];
-    const reasons = [...coverage.reasons].sort((a, b) => reasonRanks[a] - reasonRanks[b]);
+    const reasons = [...coverage.reasons].sort(
+      (a, b) => EVIDENCE_REASONS.indexOf(a) - EVIDENCE_REASONS.indexOf(b),
+    );
     return [
       {
         ecosystem,

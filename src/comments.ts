@@ -1,3 +1,4 @@
+import { HTTP_STATUS } from './format.js';
 import {
   dispatchFailure,
   parseReviewBinding,
@@ -109,7 +110,11 @@ async function selectComment(
       complete: response.complete,
       data: response.data,
     });
-    if (snapshot.status !== 200 || snapshot.complete !== true || !Array.isArray(snapshot.data))
+    if (
+      snapshot.status !== HTTP_STATUS.ok ||
+      snapshot.complete !== true ||
+      !Array.isArray(snapshot.data)
+    )
       throw new Error('comments');
     const comments: OwnedComment[] = [];
     for (const value of snapshot.data) {
@@ -285,7 +290,10 @@ async function writeComment(
     if (!record(response)) return writeError('acknowledgement');
     const ack = structuredClone({ status: response.status, data: response.data });
     if (rejectedStatus(ack.status)) return writeError('rejection');
-    const comment = ack.status === (selected ? 200 : 201) ? ownedComment(ack.data, input) : null;
+    const comment =
+      ack.status === (selected ? HTTP_STATUS.ok : HTTP_STATUS.created)
+        ? ownedComment(ack.data, input)
+        : null;
     if (!comment || comment.body !== input.body || (selected && comment.id !== selected.id))
       return writeError('acknowledgement');
     return Object.freeze({
@@ -310,7 +318,7 @@ async function rereadComment(
     );
     if (!record(response)) return false;
     const snapshot = structuredClone({ status: response.status, data: response.data });
-    const comment = snapshot.status === 200 ? ownedComment(snapshot.data, input) : null;
+    const comment = snapshot.status === HTTP_STATUS.ok ? ownedComment(snapshot.data, input) : null;
     return comment !== null && comment.id === selected.id && comment.body === selected.body;
   } catch {
     return false;

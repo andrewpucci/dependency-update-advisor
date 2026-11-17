@@ -1,3 +1,4 @@
+import { CHAR_CODE, GIT_SHA_HEX_LENGTH, REVIEW_IDENTITY } from './format.js';
 import { isDeepStrictEqual, types } from 'node:util';
 import type { Finding } from './policy.js';
 import type { SourceContextResult } from './context.js';
@@ -26,6 +27,7 @@ export const PACKET_LIMITS = Object.freeze({
   facts: limit('packet.facts'),
 });
 const ECOSYSTEMS = ['npm', 'actions', 'uv'] as const;
+const DIRECT_ROLES = ['production', 'development', 'peer', 'optional'] as const;
 const REASONS = [
   'permission',
   'rate_limit',
@@ -320,9 +322,23 @@ function text(
   requireValue(value.length <= units && Buffer.byteLength(value) <= bytes, field, 'budget');
   for (const character of value) {
     const code = character.charCodeAt(0);
-    requireValue(!(code >= 0xd800 && code <= 0xdfff && character.length === 1), field);
-    const lineBreak = (multiline && (code === 10 || code === 13)) || (tabs && code === 9);
-    requireValue(lineBreak || (code >= 32 && (code < 127 || code > 159)), field);
+    requireValue(
+      !(
+        code >= CHAR_CODE.surrogateFirst &&
+        code <= CHAR_CODE.surrogateLast &&
+        character.length === 1
+      ),
+      field,
+    );
+    const lineBreak =
+      (multiline && (code === CHAR_CODE.lineFeed || code === CHAR_CODE.carriageReturn)) ||
+      (tabs && code === CHAR_CODE.tab);
+    requireValue(
+      lineBreak ||
+        (code >= CHAR_CODE.firstPrintable &&
+          (code < CHAR_CODE.delete || code > CHAR_CODE.lastC1Control)),
+      field,
+    );
   }
   return value;
 }
@@ -359,7 +375,9 @@ function positive(value: unknown, field: Field): number {
 }
 function sha(value: unknown, field: Field) {
   requireValue(
-    typeof value === 'string' && value.length === 40 && /^[a-f\d]{40}$/iu.test(value),
+    typeof value === 'string' &&
+      value.length === GIT_SHA_HEX_LENGTH &&
+      /^[a-f\d]{40}$/iu.test(value),
     field,
     'identity',
   );
@@ -404,8 +422,8 @@ function binding(value: unknown): ReviewBinding {
     'binding',
   );
   const workflow = object(r.workflow, ['id', 'path'], [], 'binding');
-  const tuple = array(r.identity, 6, 'binding');
-  requireValue(tuple.length === 6, 'binding', 'identity');
+  const tuple = array(r.identity, REVIEW_IDENTITY.length, 'binding');
+  requireValue(tuple.length === REVIEW_IDENTITY.length, 'binding', 'identity');
   const copy = {
     repository: repository(r.repository, 'binding'),
     workflow: { id: positive(workflow.id, 'binding'), path: path(workflow.path, 'binding') },
@@ -419,7 +437,10 @@ function binding(value: unknown): ReviewBinding {
     baseSha: sha(r.baseSha, 'binding'),
     mergeBaseSha: sha(r.mergeBaseSha, 'binding'),
     conclusion: text(r.conclusion, 'binding'),
-    identity: [...tuple.slice(0, 5).map((v) => positive(v, 'binding')), sha(tuple[5], 'binding')],
+    identity: [
+      ...tuple.slice(0, REVIEW_IDENTITY.shaIndex).map((v) => positive(v, 'binding')),
+      sha(tuple[REVIEW_IDENTITY.shaIndex], 'binding'),
+    ],
   };
   const parsed = parseReviewBinding(copy);
   requireValue(parsed, 'binding', 'identity');
@@ -565,7 +586,7 @@ function nullableText(value: unknown, field: Field) {
 }
 function ecosystemList(value: unknown) {
   const result = distinct(
-    array(value, 3, 'sources').map((v) => choice(v, ECOSYSTEMS, 'sources')),
+    array(value, ECOSYSTEMS.length, 'sources').map((v) => choice(v, ECOSYSTEMS, 'sources')),
     'sources',
   );
   requireValue(result.length > 0, 'sources');
@@ -614,7 +635,9 @@ function provenance(value: unknown, e: PacketExpected): SourceProvenance {
       'identity',
     );
     const absent = distinct(
-      array(r.absentEcosystems, 3, 'sources').map((v) => choice(v, ECOSYSTEMS, 'sources')),
+      array(r.absentEcosystems, ECOSYSTEMS.length, 'sources').map((v) =>
+        choice(v, ECOSYSTEMS, 'sources'),
+      ),
       'sources',
     );
     return {
@@ -939,8 +962,8 @@ function change(value: unknown): PacketChange {
   if (r.directRoles !== undefined) {
     requireValue(facts.role === 'direct', 'changes');
     result.directRoles = distinct(
-      array(r.directRoles, 4, 'changes').map((v) =>
-        choice(v, ['production', 'development', 'peer', 'optional'], 'changes'),
+      array(r.directRoles, DIRECT_ROLES.length, 'changes').map((v) =>
+        choice(v, DIRECT_ROLES, 'changes'),
       ),
       'changes',
     );

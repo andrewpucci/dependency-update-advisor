@@ -1,4 +1,4 @@
-import type { Verdict } from '../config.js';
+import { VERDICTS, type Verdict } from '../config.js';
 import { freeze, isPlainObject } from '../evidence/common.js';
 import type { DecisionUnit } from '../units.js';
 import type { BatchSnapshot } from './projection.js';
@@ -261,7 +261,6 @@ function followup(value: unknown, scope: Scope): ValidatedFollowup {
   };
 }
 
-const verdictRanks = { merge: 0, merge_with_followups: 1, do_not_merge: 2 } as const;
 function capability(value: unknown, scope: Scope): ValidatedCapability {
   const entry = object(value, [
     'kind',
@@ -334,10 +333,10 @@ function assessment(value: unknown, snapshot: BatchSnapshot): ValidatedAssessmen
   const unit = snapshot.units.find((item) => item.alias === entry.unitId)?.value;
   check(unit, 'reference');
   const scope = { snapshot, unit };
-  check(typeof entry.verdict === 'string' && Object.hasOwn(verdictRanks, entry.verdict));
+  check(typeof entry.verdict === 'string' && VERDICTS.some((listed) => listed === entry.verdict));
   const verdict = entry.verdict as Verdict;
   const policy = snapshot.policy.units.find((item) => item.id === unit.id)!;
-  check(verdictRanks[verdict] >= verdictRanks[policy.effectiveCeiling], 'policy');
+  check(VERDICTS.indexOf(verdict) >= VERDICTS.indexOf(policy.effectiveCeiling), 'policy');
   const findingIds = unique(
     list(entry.findingIds, snapshot.limits.references).map((alias) => {
       const finding = snapshot.findings.find((item) => item.alias === alias);

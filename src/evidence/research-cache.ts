@@ -1,4 +1,5 @@
 import { createHash } from 'node:crypto';
+import { HTTP_STATUS } from '../format.js';
 
 export type ResearchCacheOptions = Readonly<{ maxEntryBytes: number; maxTotalBytes: number }>;
 
@@ -13,7 +14,7 @@ export type ResearchCache = {
 
 type Entry = { status: number; headers: [string, string][]; bytes: Uint8Array<ArrayBuffer> };
 
-const CACHEABLE_STATUSES = new Set([200, 404]);
+const CACHEABLE_STATUSES = new Set<number>([HTTP_STATUS.ok, HTTP_STATUS.notFound]);
 
 function sha256Hex(value: string): string {
   return createHash('sha256').update(value).digest('hex');

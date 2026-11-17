@@ -1,3 +1,4 @@
+import { CHAR_CODE, HTTP_STATUS } from './format.js';
 import { JOB_WINDOW_MS } from './budget.js';
 import { positiveId, record, type RepositoryIdentity, type WorkflowIdentity } from './event.js';
 import { httpReason } from './github-read.js';
@@ -78,7 +79,7 @@ function plainText(value: unknown): value is string {
     value.length > 0 &&
     !Array.from(value).some((character) => {
       const code = character.charCodeAt(0);
-      return code < 32 || code === 127;
+      return code < CHAR_CODE.firstPrintable || code === CHAR_CODE.delete;
     })
   );
 }
@@ -214,7 +215,7 @@ export function createGithubTransport(dependencies: TransportDependencies): Gith
       if (!body) return { kind: 'unavailable', reason: 'budget' };
       const value = json(body);
       // Error bodies feed github-read's classifier so permission, missing, and rate limits stay distinct.
-      if (response.status !== 200)
+      if (response.status !== HTTP_STATUS.ok)
         return { kind: 'unavailable', reason: httpReason(response, value ?? null) };
       return value === undefined
         ? { kind: 'unavailable', reason: 'malformed' }

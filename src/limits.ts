@@ -806,6 +806,8 @@ const DEFINITIONS = [
   ),
   unjustified('analysis.maxProjectionDepth', 64, 'count'),
   unjustified('analysis.categoryCodeUnits', 128, 'code units'),
+  unjustified('analysis.maxTokenCodeUnits', 128, 'code units'),
+  unjustified('analysis.responseEnvelopeBytes', 65_536, 'bytes'),
   unjustified('actions.maxUsesCodeUnits', 2_048, 'code units'),
   unjustified('actions.maxComparisonVersionCodeUnits', 1_024, 'code units'),
   derived(

@@ -19,6 +19,7 @@ import {
   longestFittingPrefix,
 } from './common.js';
 import { limit } from '../limits.js';
+import { CHAR_CODE, FORMAT_VERSION } from '../format.js';
 
 type Limits = Readonly<{
   maxFileBytes: number;
@@ -117,7 +118,11 @@ function object(value: unknown): Record<string, unknown> {
 function characters(value: string) {
   return [...value].every((c) => {
     const n = c.codePointAt(0)!;
-    return n >= 32 && (n < 127 || n > 159) && !(n >= 0xd800 && n <= 0xdfff);
+    return (
+      n >= CHAR_CODE.firstPrintable &&
+      (n < CHAR_CODE.delete || n > CHAR_CODE.lastC1Control) &&
+      !(n >= CHAR_CODE.surrogateFirst && n <= CHAR_CODE.surrogateLast)
+    );
   });
 }
 function path(value: unknown, root = false): value is string {
@@ -330,7 +335,7 @@ function packageSource(value: unknown): PackageSource {
     return { kind, identity };
   }
   const git = value.startsWith('git+https:');
-  const url = new URL(git ? value.slice(4) : value);
+  const url = new URL(git ? value.slice('git+'.length) : value);
   need(url.protocol === 'https:' && !url.username && !url.password, 'unsupported');
   return {
     kind: git ? 'git' : url.hostname === 'registry.npmjs.org' ? 'registry' : 'url',
@@ -409,7 +414,7 @@ function lockPackages(
     declarations: NpmRootSide['declarations'];
   },
 ) {
-  need(data.lockfileVersion === 3, 'unsupported');
+  need(data.lockfileVersion === FORMAT_VERSION.npmLockfile, 'unsupported');
   const packages = object(data.packages),
     file = (root === '.' ? '' : root + '/') + 'package-lock.json';
   try {

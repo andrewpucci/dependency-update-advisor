@@ -8,6 +8,7 @@ import {
   BoundedClock,
   type BoundedDependencies,
 } from './bounded-request.js';
+import { HTTP_STATUS } from '../format.js';
 
 export type MetadataQuery = {
   kind: 'pypi' | 'pypi-provenance';
@@ -79,15 +80,18 @@ export function metadataUrl(value: unknown): { query: MetadataQuery; url: string
 }
 function httpReason(response: Response): EvidenceReason {
   if (
-    response.status === 429 ||
-    (response.status === 403 &&
+    response.status === HTTP_STATUS.tooManyRequests ||
+    (response.status === HTTP_STATUS.forbidden &&
       (response.headers.has('retry-after') ||
         response.headers.get('x-ratelimit-remaining') === '0'))
   )
     return 'rate_limit';
-  if ([401, 403].includes(response.status)) return 'permission';
-  if (response.status === 404) return 'missing';
-  return response.status >= 300 && response.status < 400 ? 'unsupported' : 'unknown';
+  if (response.status === HTTP_STATUS.unauthorized || response.status === HTTP_STATUS.forbidden)
+    return 'permission';
+  if (response.status === HTTP_STATUS.notFound) return 'missing';
+  return response.status >= HTTP_STATUS.redirectMin && response.status < HTTP_STATUS.clientErrorMin
+    ? 'unsupported'
+    : 'unknown';
 }
 function boundedDescription(value: unknown) {
   if (typeof value !== 'string') return value;
@@ -234,9 +238,9 @@ class MetadataReader {
           !response.redirected && (!response.url || response.url === url),
           'unsupported',
         );
-        if (response.status === 404 && query.kind === 'pypi-provenance')
+        if (response.status === HTTP_STATUS.notFound && query.kind === 'pypi-provenance')
           return { kind: 'absent', url };
-        if (response.status !== 200) {
+        if (response.status !== HTTP_STATUS.ok) {
           const reason = httpReason(response);
           if (reason === 'rate_limit') this.stopped = reason;
           throw new AdvisoryFailure(reason);

@@ -1,3 +1,4 @@
+import { CHAR_CODE } from './format.js';
 import fs from 'node:fs/promises';
 import { isAbsolute, join, relative, sep } from 'node:path';
 import type { ConfigResult, ReviewConfig } from './config.js';
@@ -96,7 +97,9 @@ function failure(
 
 function control(character: string): boolean {
   const code = character.charCodeAt(0);
-  return code < 32 || (code >= 127 && code <= 159);
+  return (
+    code < CHAR_CODE.firstPrintable || (code >= CHAR_CODE.delete && code <= CHAR_CODE.lastC1Control)
+  );
 }
 
 function canonicalPath(path: string, allowHidden = false, allowGlob = false): boolean {
@@ -611,7 +614,8 @@ export async function sourceContextCandidates(
 function sourceExcerpt(trimmed: string): string {
   let excerpt = trimmed.slice(0, MAX_SOURCE_EXCERPT_CODE_UNITS);
   const last = excerpt.charCodeAt(excerpt.length - 1);
-  if (last >= 0xd800 && last <= 0xdbff) excerpt = excerpt.slice(0, -1);
+  if (last >= CHAR_CODE.surrogateFirst && last <= CHAR_CODE.highSurrogateLast)
+    excerpt = excerpt.slice(0, -1);
   return excerpt;
 }
 

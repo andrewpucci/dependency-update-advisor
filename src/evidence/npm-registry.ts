@@ -15,6 +15,7 @@ import { BoundedClock, boundedGet } from './bounded-request.js';
 import type { ResearchCache } from './research-cache.js';
 import { AdvisoryFailure } from './advisory-read.js';
 import { limit } from '../limits.js';
+import { CHAR_CODE, DIGEST_BYTES, HTTP_STATUS } from '../format.js';
 
 export type NpmRegistryLimits = Readonly<{
   maxRequests: number;
@@ -116,7 +117,7 @@ function request(value: unknown): Request {
   return { name: r.name, version: r.version, integrity: r.integrity, source: source.identity };
 }
 function hashes(value: string) {
-  const lengths: Record<string, number> = { sha1: 20, sha256: 32, sha384: 48, sha512: 64 };
+  const lengths: Record<string, number> = DIGEST_BYTES;
   return value
     .trim()
     .split(/\s+/u)
@@ -151,10 +152,11 @@ function freeze<T>(value: T): T {
   return value;
 }
 function statusReason(status: number): EvidenceReason {
-  if (status >= 300 && status < 400) return 'unsupported';
-  if (status === 401 || status === 403) return 'permission';
-  if (status === 404) return 'missing';
-  if (status === 429) return 'rate_limit';
+  if (status >= HTTP_STATUS.redirectMin && status < HTTP_STATUS.clientErrorMin)
+    return 'unsupported';
+  if (status === HTTP_STATUS.unauthorized || status === HTTP_STATUS.forbidden) return 'permission';
+  if (status === HTTP_STATUS.notFound) return 'missing';
+  if (status === HTTP_STATUS.tooManyRequests) return 'rate_limit';
   return 'unknown';
 }
 class RegistryReader {
@@ -277,8 +279,8 @@ class RegistryReader {
             'unsupported',
           );
           // A throttling registry will refuse later reads too; stop rather than spend requests.
-          if (response.status === 429) this.stopped = 'rate_limit';
-          requireMetadata(response.status === 200, statusReason(response.status));
+          if (response.status === HTTP_STATUS.tooManyRequests) this.stopped = 'rate_limit';
+          requireMetadata(response.status === HTTP_STATUS.ok, statusReason(response.status));
           requireMetadata(
             /^application\/json(?:\s*;|$)/iu.test(response.headers.get('content-type') ?? ''),
             'unsupported',
@@ -368,10 +370,12 @@ function commandText(value: string) {
   for (const char of value) {
     const code = char.codePointAt(0)!;
     requireMetadata(
-      code === 9 ||
-        code === 10 ||
-        code === 13 ||
-        (code >= 32 && (code < 127 || code > 159) && (code < 0xd800 || code > 0xdfff)),
+      code === CHAR_CODE.tab ||
+        code === CHAR_CODE.lineFeed ||
+        code === CHAR_CODE.carriageReturn ||
+        (code >= CHAR_CODE.firstPrintable &&
+          (code < CHAR_CODE.delete || code > CHAR_CODE.lastC1Control) &&
+          (code < CHAR_CODE.surrogateFirst || code > CHAR_CODE.surrogateLast)),
     );
   }
 }

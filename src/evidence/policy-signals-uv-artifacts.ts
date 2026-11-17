@@ -6,6 +6,7 @@ import { readToml, type UvParseLimits } from './uv-toml.js';
 import { advisoryCheck, advisoryText } from './advisory-read.js';
 import { isPlainObject, byCodeUnit } from './common.js';
 import { observe, type Observation } from './policy-signals.js';
+import { FORMAT_VERSION } from '../format.js';
 
 export type UvArtifact = { filename: string; sha256: string };
 export type LockfileReader = Pick<GithubReadSession, 'readFile'>;
@@ -94,7 +95,8 @@ export async function readUvArtifacts(
     );
     const data = parsed.value;
     advisoryCheck(
-      (data.version === 1 || data.version === 1n) && [3, 5].includes(Number(data.revision)),
+      (data.version === 1 || data.version === 1n) &&
+        FORMAT_VERSION.uvLockRevisions.some((r) => r === Number(data.revision)),
       'unsupported',
     );
     advisoryCheck(Array.isArray(data.package));
@@ -145,7 +147,7 @@ export async function readUvArtifacts(
       );
       const filename = decodeURIComponent(url.pathname.split('/').at(-1)!);
       advisoryCheck(advisoryText(filename) && !/[/\\?#\s]/u.test(filename), 'unsupported');
-      return { filename, sha256: raw.hash.slice(7).toLowerCase() };
+      return { filename, sha256: raw.hash.slice('sha256:'.length).toLowerCase() };
     });
     advisoryCheck(new Set(artifacts.map((a) => a.filename)).size === artifacts.length, 'conflict');
     return artifacts;

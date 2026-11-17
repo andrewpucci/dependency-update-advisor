@@ -5,6 +5,7 @@ import type { EvidenceReason, PackageSource } from '../schema.js';
 import { BoundedClock, boundedGet } from './bounded-request.js';
 import type { ResearchCache } from './research-cache.js';
 import { limit } from '../limits.js';
+import { HTTP_STATUS } from '../format.js';
 
 /** Each halving of the register's release page size down to 1, for the page-size retry ladder. */
 function halvingFrom(start: number): number[] {
@@ -138,21 +139,22 @@ function httpReason(response: Response, bytes: Buffer): EvidenceReason {
     /* Status still supplies a bounded failure. */
   }
   if (
-    response.status === 429 ||
-    (response.status === 403 &&
+    response.status === HTTP_STATUS.tooManyRequests ||
+    (response.status === HTTP_STATUS.forbidden &&
       (response.headers.get('x-ratelimit-remaining') === '0' ||
         response.headers.has('retry-after') ||
         /secondary rate limit/iu.test(message)))
   )
     return 'rate_limit';
   if (
-    response.status === 401 ||
-    (response.status === 403 &&
+    response.status === HTTP_STATUS.unauthorized ||
+    (response.status === HTTP_STATUS.forbidden &&
       /Resource not accessible by (?:integration|personal access token)/u.test(message))
   )
     return 'permission';
-  if (response.status >= 300 && response.status < 400) return 'unsupported';
-  return response.status === 404 ? 'missing' : 'unknown';
+  if (response.status >= HTTP_STATUS.redirectMin && response.status < HTTP_STATUS.clientErrorMin)
+    return 'unsupported';
+  return response.status === HTTP_STATUS.notFound ? 'missing' : 'unknown';
 }
 function metadataTarget(value: unknown): MetadataTarget {
   requireUpstream(
@@ -428,14 +430,14 @@ class Reader {
             'unsupported',
           );
           const immediate = httpReason(response, Buffer.alloc(0));
-          if (response.status !== 200 && immediate !== 'unknown') {
+          if (response.status !== HTTP_STATUS.ok && immediate !== 'unknown') {
             if (immediate === 'rate_limit') this.blocked.add(new URL(url).origin);
             throw new UpstreamFailure(immediate);
           }
           const bytes = response.body
             ? await this.body(response, aborted, cached)
             : Buffer.alloc(0);
-          if (response.status !== 200) {
+          if (response.status !== HTTP_STATUS.ok) {
             const reason = httpReason(response, bytes);
             if (reason === 'rate_limit') this.blocked.add(new URL(url).origin);
             throw new UpstreamFailure(reason);
@@ -447,7 +449,7 @@ class Reader {
             'unsupported',
           );
           this.remaining();
-          return new Response(bytes, { status: 200, headers: response.headers });
+          return new Response(bytes, { status: HTTP_STATUS.ok, headers: response.headers });
         },
       );
     } catch (error) {

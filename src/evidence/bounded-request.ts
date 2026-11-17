@@ -2,6 +2,7 @@ import type { EvidenceReason } from '../schema.js';
 import { advisoryCheck, AdvisoryFailure } from './advisory-read.js';
 import { isPlainObject } from './common.js';
 import type { ResearchCache } from './research-cache.js';
+import { MAX_TIMER_MS } from '../format.js';
 
 export type BoundedLimits = {
   maxRequests: number;
@@ -49,7 +50,7 @@ export function boundedLimits(value: unknown): BoundedLimits {
   advisoryCheck(
     Number(value.maxResponseBytes) <= Number(value.maxTotalBytes) &&
       Number(value.requestTimeoutMs) <= Number(value.totalTimeoutMs) &&
-      Number(value.requestTimeoutMs) <= 2 ** 31 - 1,
+      Number(value.requestTimeoutMs) <= MAX_TIMER_MS,
   );
   return Object.fromEntries(keys.map((k) => [k, value[k]])) as BoundedLimits;
 }
@@ -79,7 +80,7 @@ function deadlineTimer(duration: number, expire: () => void) {
   let remaining = duration,
     handle: ReturnType<typeof setTimeout>;
   const schedule = () => {
-    const interval = Math.min(remaining, 2 ** 31 - 1);
+    const interval = Math.min(remaining, MAX_TIMER_MS);
     handle = setTimeout(() => {
       remaining -= interval;
       if (remaining > 0) schedule();

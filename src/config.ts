@@ -1,10 +1,11 @@
+import { CHAR_CODE } from './format.js';
 import fs from 'node:fs/promises';
 import { isAbsolute, join, relative, sep } from 'node:path';
 import { limit } from './limits.js';
 
 const CONFIG_FILE = '.github/dependabot-review.json';
 export const MAX_CONFIG_BYTES = limit('config.maxBytes');
-const VERDICTS = ['merge', 'merge_with_followups', 'do_not_merge'] as const;
+export const VERDICTS = ['merge', 'merge_with_followups', 'do_not_merge'] as const;
 
 export type Verdict = (typeof VERDICTS)[number];
 
@@ -66,7 +67,10 @@ function validPath(value: unknown, exactFile: boolean): value is string {
     value.includes('\\') ||
     Array.from(value).some((character) => {
       const code = character.charCodeAt(0);
-      return code < 32 || (code >= 127 && code <= 159);
+      return (
+        code < CHAR_CODE.firstPrintable ||
+        (code >= CHAR_CODE.delete && code <= CHAR_CODE.lastC1Control)
+      );
     }) ||
     (exactFile && /[*?[\]{}]/u.test(value))
   )

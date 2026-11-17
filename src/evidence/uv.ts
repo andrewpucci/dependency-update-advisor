@@ -144,13 +144,13 @@ function array(value: unknown): unknown[] {
   );
   return value;
 }
+const INPUT_KEYS = ['binding', 'configRevision', 'roots', 'limits'] as const;
 function input(value: unknown): Input {
   const raw = table(value),
     limits = table(raw.limits),
     b = table(raw.binding);
   need(
-    Object.keys(raw).length === 4 &&
-      ['binding', 'configRevision', 'roots', 'limits'].every((k) => Object.hasOwn(raw, k)),
+    Object.keys(raw).length === INPUT_KEYS.length && INPUT_KEYS.every((k) => Object.hasOwn(raw, k)),
   );
   for (const key of ['repository', 'headRepository', 'workflow']) table(b[key]);
   array(b.identity);

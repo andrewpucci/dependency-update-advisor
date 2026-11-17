@@ -3,6 +3,7 @@ import { PACKET_LIMITS, type EvidenceReason, type EvidenceStatus } from '../sche
 import { freeze, isPlainObject } from './common.js';
 import { BoundedClock, boundedGet } from './bounded-request.js';
 import type { ResearchCache } from './research-cache.js';
+import { HTTP_STATUS } from '../format.js';
 
 export type AdvisoryLimits = Readonly<{
   maxRequests: number;
@@ -357,23 +358,23 @@ function httpReason(response: Response, data: unknown): EvidenceReason {
   const message = isPlainObject(data) && typeof data.message === 'string' ? data.message : '';
   const retry = response.headers.get('retry-after');
   if (
-    response.status === 429 ||
-    (response.status === 403 &&
+    response.status === HTTP_STATUS.tooManyRequests ||
+    (response.status === HTTP_STATUS.forbidden &&
       (response.headers.get('x-ratelimit-remaining') === '0' ||
         (retry !== null && /^\d+$/u.test(retry)) ||
         /secondary rate limit/iu.test(message)))
   )
     return 'rate_limit';
   if (
-    response.status === 401 ||
-    (response.status === 403 &&
+    response.status === HTTP_STATUS.unauthorized ||
+    (response.status === HTTP_STATUS.forbidden &&
       [
         'Resource not accessible by integration',
         'Resource not accessible by personal access token',
       ].includes(message))
   )
     return 'permission';
-  return response.status === 404 ? 'missing' : 'unknown';
+  return response.status === HTTP_STATUS.notFound ? 'missing' : 'unknown';
 }
 function continuation(link: string | null, original: string, seen: Set<string>): string | null {
   if (!link) return null;
@@ -519,7 +520,11 @@ class Reader implements AdvisoryReader {
           !response.redirected && (!response.url || response.url === url),
           'unsupported',
         );
-        advisoryCheck(response.status < 300 || response.status >= 400, 'unsupported');
+        advisoryCheck(
+          response.status < HTTP_STATUS.redirectMin ||
+            response.status >= HTTP_STATUS.clientErrorMin,
+          'unsupported',
+        );
         if (httpReason(response, null) === 'rate_limit') this.stop(provider, 'rate_limit');
         const bytes = await this.body(response, aborted, provider, cached);
         let data: unknown;
@@ -527,10 +532,10 @@ class Reader implements AdvisoryReader {
           data = JSON.parse(new TextDecoder('utf-8', { fatal: true }).decode(bytes));
         } catch {
           throw new AdvisoryFailure(
-            response.status === 200 ? 'malformed' : httpReason(response, null),
+            response.status === HTTP_STATUS.ok ? 'malformed' : httpReason(response, null),
           );
         }
-        if (response.status !== 200) this.stop(provider, httpReason(response, data));
+        if (response.status !== HTTP_STATUS.ok) this.stop(provider, httpReason(response, data));
         advisoryCheck(
           /^application\/(?:json|vnd.github\+json)(?:\s*;|$)/iu.test(
             response.headers.get('content-type') ?? '',

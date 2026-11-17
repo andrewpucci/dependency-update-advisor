@@ -12,6 +12,7 @@ import {
   type BoundedDependencies,
   type BoundedLimits,
 } from './bounded-request.js';
+import { HTTP_STATUS, ISO_DATE_TIME } from '../format.js';
 
 export type PublishTimeLimits = BoundedLimits;
 type Target = {
@@ -86,17 +87,17 @@ export function publishTimestamp(value: unknown, evaluationTime: number): number
     !/^\d{4}-\d\d-\d\dT\d\d:\d\d:\d\d(?:\.\d+)?(?:Z|[+-]\d\d:\d\d)$/u.test(value)
   )
     return null;
-  const year = Number(value.slice(0, 4)),
-    month = Number(value.slice(5, 7)),
-    day = Number(value.slice(8, 10));
+  const year = Number(value.slice(...ISO_DATE_TIME.year)),
+    month = Number(value.slice(...ISO_DATE_TIME.month)),
+    day = Number(value.slice(...ISO_DATE_TIME.day));
   if (
     month < 1 ||
-    month > 12 ||
+    month > ISO_DATE_TIME.maxMonth ||
     day < 1 ||
     day > new Date(Date.UTC(year, month, 0)).getUTCDate() ||
-    Number(value.slice(11, 13)) > 23 ||
-    Number(value.slice(14, 16)) > 59 ||
-    Number(value.slice(17, 19)) > 59
+    Number(value.slice(...ISO_DATE_TIME.hour)) > ISO_DATE_TIME.maxHour ||
+    Number(value.slice(...ISO_DATE_TIME.minute)) > ISO_DATE_TIME.maxMinute ||
+    Number(value.slice(...ISO_DATE_TIME.second)) > ISO_DATE_TIME.maxSecond
   )
     return null;
   const time = Date.parse(value);
@@ -112,7 +113,8 @@ function extractor(t: Target, limits: PublishTimeLimits, spend: () => void) {
     capture: string | null = null,
     nameSeen = false,
     timeSeen = false;
-  const keyLimit = Math.max(4, ...t.versions.map((v) => v.length));
+  // Long enough to recognize the `name` and `time` keys and every version key.
+  const keyLimit = Math.max('name'.length, 'time'.length, ...t.versions.map((v) => v.length));
   function selected() {
     const f = frames.at(-1);
     return frames.length === 2 &&
@@ -223,14 +225,15 @@ function extractor(t: Target, limits: PublishTimeLimits, spend: () => void) {
 }
 function validateResponse(response: Response, url: string) {
   advisoryCheck(!response.redirected && (!response.url || response.url === url), 'unsupported');
-  if (response.status === 429) throw new AdvisoryFailure('rate_limit');
-  if (response.status !== 200)
+  if (response.status === HTTP_STATUS.tooManyRequests) throw new AdvisoryFailure('rate_limit');
+  if (response.status !== HTTP_STATUS.ok)
     throw new AdvisoryFailure(
-      response.status === 404
+      response.status === HTTP_STATUS.notFound
         ? 'missing'
-        : [401, 403].includes(response.status)
+        : response.status === HTTP_STATUS.unauthorized || response.status === HTTP_STATUS.forbidden
           ? 'permission'
-          : response.status >= 300 && response.status < 400
+          : response.status >= HTTP_STATUS.redirectMin &&
+              response.status < HTTP_STATUS.clientErrorMin
             ? 'unsupported'
             : 'unknown',
     );

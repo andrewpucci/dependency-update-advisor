@@ -1,3 +1,4 @@
+import { CHAR_CODE, GIT_SHA_HEX_LENGTH, HTTP_STATUS } from './format.js';
 import { EVIDENCE_REASONS, type EvidenceReason } from './schema.js';
 import { limit } from './limits.js';
 
@@ -130,9 +131,9 @@ export function rejectedStatus(status: unknown): boolean {
   return (
     typeof status === 'number' &&
     Number.isInteger(status) &&
-    status >= 100 &&
-    status <= 599 &&
-    (status < 200 || status > 299)
+    status >= HTTP_STATUS.min &&
+    status <= HTTP_STATUS.max &&
+    (status < HTTP_STATUS.successMin || status > HTTP_STATUS.successMax)
   );
 }
 
@@ -152,7 +153,7 @@ function text(value: unknown): value is string {
     value.trim() === value &&
     !Array.from(value).some((character) => {
       const code = character.charCodeAt(0);
-      return code < 32 || code === 127;
+      return code < CHAR_CODE.firstPrintable || code === CHAR_CODE.delete;
     })
   );
 }
@@ -162,7 +163,9 @@ function segment(value: unknown): value is string {
 }
 
 function sha(value: unknown): string | null {
-  return typeof value === 'string' && value.length === 40 && /^[a-f\d]{40}$/iu.test(value)
+  return typeof value === 'string' &&
+    value.length === GIT_SHA_HEX_LENGTH &&
+    /^[a-f\d]{40}$/iu.test(value)
     ? value.toLowerCase()
     : null;
 }

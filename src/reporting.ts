@@ -1,3 +1,4 @@
+import { AUTOLINK_SAFE_HEX_PREFIX, CHAR_CODE, ISO_DATE_TIME } from './format.js';
 import { isDeepStrictEqual } from 'node:util';
 import { parseReviewBinding, type ReviewBinding } from './event.js';
 import { formDecisionUnits, type DecisionCoverage, type DecisionUnit } from './units.js';
@@ -41,7 +42,11 @@ function text(value: string): string {
     .replace(/([@#:])/gu, '$1\u200b')
     .replace(/\bwww\./giu, 'www.\u200b')
     .replace(/\b(gh)-(?=\d)/giu, '$1-\u200b')
-    .replace(/\b[\da-f]{7,40}\b/giu, (value) => value.slice(0, 6) + '\u200b' + value.slice(6))
+    .replace(
+      /\b[\da-f]{7,40}\b/giu,
+      (value) =>
+        value.slice(0, AUTOLINK_SAFE_HEX_PREFIX) + '\u200b' + value.slice(AUTOLINK_SAFE_HEX_PREFIX),
+    )
     .replace(/[\r\n]+/gu, ' ');
 }
 
@@ -165,7 +170,10 @@ export function evidenceGap(unit: DecisionUnit, sourceId: string): string {
 function unsafeUrl(value: string): boolean {
   return (
     /\s/u.test(value) ||
-    Array.from(value).some((char) => char.charCodeAt(0) < 32 || char.charCodeAt(0) === 127)
+    Array.from(value).some(
+      (char) =>
+        char.charCodeAt(0) < CHAR_CODE.firstPrintable || char.charCodeAt(0) === CHAR_CODE.delete,
+    )
   );
 }
 
@@ -179,7 +187,7 @@ function vettedLink(title: string, value: string): string {
 function utcTimestamp(value: string): boolean {
   const match = /^(\d{4}-\d\d-\d\dT\d\d:\d\d:\d\d)(?:\.(\d{1,3}))?(?:Z|\+00:00)$/u.exec(value);
   if (!match) return false;
-  const canonical = `${match[1]}.${(match[2] ?? '').padEnd(3, '0')}Z`;
+  const canonical = `${match[1]}.${(match[2] ?? '').padEnd(ISO_DATE_TIME.millisecondDigits, '0')}Z`;
   return new Date(value).toISOString() === canonical;
 }
 
