@@ -37,6 +37,8 @@ type Options = {
   uvArtifacts?: boolean;
   partialActionsInventory?: boolean;
   actionChange?: 'owner' | 'mutable';
+  anchorUnchanged?: boolean;
+  duplicateNames?: number;
 };
 function packageNode(name: string, version: string) {
   return {
@@ -56,12 +58,19 @@ function npmFiles(head: boolean, options: Options) {
   const packages = {
     '': manifest,
     'node_modules/orbit': {
-      ...packageNode('orbit', version),
+      ...packageNode('orbit', options.anchorUnchanged ? '1.0.0' : version),
       dependencies: Object.fromEntries(names.map((n) => [n, '*'])),
     },
     ...(options.declaration ? { 'node_modules/steady': packageNode('steady', '1.0.0') } : {}),
     ...Object.fromEntries(
       names.map((name) => ['node_modules/' + name, packageNode(name, version)]),
+    ),
+    // Same-named nested additions at a different version than the hoisted copy, as in R1.
+    ...Object.fromEntries(
+      Array.from({ length: head ? (options.duplicateNames ?? 0) : 0 }, (_, i) => [
+        'node_modules/orbit/node_modules/child-' + i,
+        packageNode('child-' + i, '1.0.0'),
+      ]),
     ),
   };
   return {
