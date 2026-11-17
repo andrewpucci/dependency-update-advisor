@@ -18,6 +18,7 @@ import { createResearchCache, type ResearchCache } from './evidence/research-cac
 import type { NpmInventoryResult } from './evidence/npm.js';
 import type { PacketChange, PacketExpected, PacketResult } from './schema.js';
 import type { ChangeEvidence, EvidenceReason, NpmSide } from './schema.js';
+import { limit } from './limits.js';
 import { isResearchPlaceholder, reconcilePacket } from './revalidation.js';
 
 type Packet = Extract<PacketResult, { ok: true }>['packet'];
@@ -73,9 +74,9 @@ export type ResearchResult =
     }>
   | Readonly<{ kind: 'internal-failure' }>;
 
-const MAX_JSON_ENTRIES = 200_000;
-const MAX_JSON_DEPTH = 32;
-const MAX_RETAINED_BYTES = 2_000_000;
+const MAX_JSON_ENTRIES = limit('research.maxJsonEntries');
+const MAX_JSON_DEPTH = limit('research.maxJsonDepth');
+const MAX_RETAINED_BYTES = limit('research.maxRetainedBytes');
 
 function remaining(input: Pick<ResearchInput, 'now' | 'deadline'>): number {
   return Math.max(

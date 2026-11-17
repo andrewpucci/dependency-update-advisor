@@ -90,15 +90,34 @@ test('checkRegister reports duplicate ids, missing values, stray values, and cyc
   ]);
 });
 
+test('derived limits are wired to the entries they sum or copy', () => {
+  expect(dependents(REGISTER, 'evidence.allocation.signals.readers.malware.maxRequests')).toEqual(
+    expect.arrayContaining([
+      'evidence.allocation.signals.maxRequests',
+      'evidence.envelope.maxRequests',
+    ]),
+  );
+  expect(dependents(REGISTER, 'evidence.allocation.registry.maxTotalBytes')).toEqual(
+    expect.arrayContaining(['evidence.envelope.maxTotalBytes', 'research.cache.maxTotalBytes']),
+  );
+  expect(dependents(REGISTER, 'job.budget')).toEqual(['job.window']);
+});
+
 test('every real test field names an existing test title, or is a documented placeholder', () => {
   for (const entry of REGISTER.values()) {
-    if (entry.test === PENDING_AUDIT || entry.test.startsWith('none:')) continue;
-    const separator = ' > ';
-    const at = entry.test.indexOf(separator);
-    const file = entry.test.slice(0, at);
-    const title = entry.test.slice(at + separator.length);
-    expect(file, entry.id).toMatch(/^src\/[\w.-]+\.test\.ts$/);
-    const source = readFileSync(fileURLToPath(new URL(`../${file}`, import.meta.url)), 'utf8');
-    expect(source, entry.id).toContain(`test('${title}'`);
+    const tests = [entry.test];
+    if (entry.basis.kind === 'derived' && entry.basis.structuralTest !== undefined) {
+      tests.push(entry.basis.structuralTest);
+    }
+    for (const test of tests) {
+      if (test === PENDING_AUDIT || test.startsWith('none:')) continue;
+      const separator = ' > ';
+      const at = test.indexOf(separator);
+      const file = test.slice(0, at);
+      const title = test.slice(at + separator.length);
+      expect(file, entry.id).toMatch(/^src\/(?:[\w.-]+\/)*[\w.-]+\.test\.ts$/);
+      const source = readFileSync(fileURLToPath(new URL(`../${file}`, import.meta.url)), 'utf8');
+      expect(source, entry.id).toContain(`test('${title}'`);
+    }
   }
 });

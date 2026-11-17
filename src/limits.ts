@@ -197,6 +197,42 @@ export function dependents(register: ReadonlyMap<string, Limit>, id: string): st
   return [...found].sort();
 }
 
+const MiB = 1024 * 1024;
+
+const sum = (...values: number[]): number => values.reduce((total, value) => total + value, 0);
+const copy = (value: number): number => value;
+
+/** A hand-picked value whose basis, protected behavior, and test are not audited yet. */
+function unjustified<const Id extends string>(id: Id, value: number, unit: LimitUnit) {
+  return {
+    id,
+    value,
+    unit,
+    protects: PENDING_AUDIT,
+    effect: PENDING_AUDIT,
+    basis: { kind: 'unjustified', note: PENDING_AUDIT },
+    test: PENDING_AUDIT,
+  } as const;
+}
+
+/** A value computed from other entries; `description` states the relation in words. */
+function derived<const Id extends string>(
+  id: Id,
+  unit: LimitUnit,
+  inputs: readonly string[],
+  formula: (...values: number[]) => number,
+  description: string,
+) {
+  return {
+    id,
+    unit,
+    protects: PENDING_AUDIT,
+    effect: PENDING_AUDIT,
+    basis: { kind: 'derived', inputs, formula, description },
+    test: PENDING_AUDIT,
+  } as const;
+}
+
 const DEFINITIONS = [
   {
     id: 'packet.bytes',
@@ -323,6 +359,254 @@ const DEFINITIONS = [
     effect: PENDING_AUDIT,
     basis: { kind: 'unjustified', note: PENDING_AUDIT },
     test: 'src/schema.test.ts > enforces the context fact count independently of excerpt and packet bounds',
+  },
+  // Job timing, from budget.ts.
+  unjustified('job.budget', 15 * 60 * 1_000, 'milliseconds'),
+  unjustified('job.preStartupAllowance', 60_000, 'milliseconds'),
+  derived(
+    'job.window',
+    'milliseconds',
+    ['job.budget', 'job.preStartupAllowance'],
+    (budget, preStartup) => budget - preStartup,
+    'The job window is the runner budget less the time spent before startup.',
+  ),
+  unjustified('job.freshnessAllowance', 45_000, 'milliseconds'),
+  // Evidence read envelope and its reader shares, from budget.ts.
+  derived(
+    'evidence.envelope.maxRequests',
+    'count',
+    [
+      'evidence.allocation.transport.maxRequests',
+      'evidence.allocation.session.maxRequests',
+      'evidence.allocation.registry.maxRequests',
+      'evidence.allocation.upstream.maxRequests',
+      'evidence.allocation.advisory.maxRequests',
+      'evidence.allocation.signals.maxRequests',
+    ],
+    sum,
+    "The envelope's request cap is the sum of the six reader shares.",
+  ),
+  unjustified('evidence.envelope.maxResponseBytes', MiB, 'bytes'),
+  derived(
+    'evidence.envelope.maxTotalBytes',
+    'bytes',
+    [
+      'evidence.allocation.transport.maxTotalBytes',
+      'evidence.allocation.session.maxTotalBytes',
+      'evidence.allocation.registry.maxTotalBytes',
+      'evidence.allocation.upstream.maxTotalBytes',
+      'evidence.allocation.advisory.maxTotalBytes',
+      'evidence.allocation.signals.maxTotalBytes',
+    ],
+    sum,
+    "The envelope's byte cap is the sum of the six reader shares' byte caps.",
+  ),
+  unjustified('evidence.envelope.requestTimeoutMs', 15_000, 'milliseconds'),
+  unjustified('evidence.envelope.totalTimeoutMs', 240_000, 'milliseconds'),
+  derived(
+    'evidence.allocation.transport.maxRequests',
+    'count',
+    [
+      'evidence.allocation.transport.snapshot.maxRequests',
+      'evidence.allocation.transport.freshness.maxRequests',
+    ],
+    sum,
+    'The transport share is the snapshot requests plus the reserved freshness requests.',
+  ),
+  derived(
+    'evidence.allocation.transport.maxTotalBytes',
+    'bytes',
+    [
+      'evidence.allocation.transport.snapshot.maxTotalBytes',
+      'evidence.allocation.transport.freshness.maxTotalBytes',
+    ],
+    sum,
+    'The transport byte share is the snapshot bytes plus the reserved freshness bytes.',
+  ),
+  unjustified('evidence.allocation.transport.snapshot.maxRequests', 200, 'count'),
+  unjustified('evidence.allocation.transport.snapshot.maxTotalBytes', 9 * MiB, 'bytes'),
+  unjustified('evidence.allocation.transport.freshness.maxRequests', 24, 'count'),
+  unjustified('evidence.allocation.transport.freshness.maxTotalBytes', 3 * MiB, 'bytes'),
+  unjustified('evidence.allocation.session.maxRequests', 160, 'count'),
+  unjustified('evidence.allocation.session.maxTotalBytes', 12 * MiB, 'bytes'),
+  unjustified('evidence.allocation.registry.maxRequests', 64, 'count'),
+  unjustified('evidence.allocation.registry.maxTotalBytes', 4 * MiB, 'bytes'),
+  unjustified('evidence.allocation.upstream.maxRequests', 240, 'count'),
+  unjustified('evidence.allocation.upstream.maxTotalBytes', 15 * MiB, 'bytes'),
+  unjustified('evidence.allocation.advisory.maxRequests', 80, 'count'),
+  unjustified('evidence.allocation.advisory.maxTotalBytes', 5 * MiB, 'bytes'),
+  derived(
+    'evidence.allocation.signals.maxRequests',
+    'count',
+    [
+      'evidence.allocation.signals.readers.malware.maxRequests',
+      'evidence.allocation.signals.readers.publishTimes.maxRequests',
+      'evidence.allocation.signals.readers.registry.maxRequests',
+      'evidence.allocation.signals.readers.metadata.maxRequests',
+      'evidence.allocation.signals.readers.upstream.maxRequests',
+    ],
+    sum,
+    "The signals share is the sum of its five readers' request caps.",
+  ),
+  derived(
+    'evidence.allocation.signals.maxTotalBytes',
+    'bytes',
+    [
+      'evidence.allocation.signals.readers.malware.maxTotalBytes',
+      'evidence.allocation.signals.readers.publishTimes.maxTotalBytes',
+      'evidence.allocation.signals.readers.registry.maxTotalBytes',
+      'evidence.allocation.signals.readers.metadata.maxTotalBytes',
+      'evidence.allocation.signals.readers.upstream.maxTotalBytes',
+    ],
+    sum,
+    "The signals byte share is the sum of its five readers' byte caps.",
+  ),
+  unjustified('evidence.allocation.signals.readers.malware.maxRequests', 40, 'count'),
+  unjustified('evidence.allocation.signals.readers.malware.maxTotalBytes', 1.5 * MiB, 'bytes'),
+  unjustified('evidence.allocation.signals.readers.publishTimes.maxRequests', 40, 'count'),
+  unjustified('evidence.allocation.signals.readers.publishTimes.maxTotalBytes', 1.5 * MiB, 'bytes'),
+  unjustified('evidence.allocation.signals.readers.registry.maxRequests', 64, 'count'),
+  unjustified('evidence.allocation.signals.readers.registry.maxTotalBytes', 2 * MiB, 'bytes'),
+  unjustified('evidence.allocation.signals.readers.metadata.maxRequests', 16, 'count'),
+  unjustified('evidence.allocation.signals.readers.metadata.maxTotalBytes', 0.5 * MiB, 'bytes'),
+  unjustified('evidence.allocation.signals.readers.upstream.maxRequests', 16, 'count'),
+  unjustified('evidence.allocation.signals.readers.upstream.maxTotalBytes', 0.5 * MiB, 'bytes'),
+  // Research cache, from budget.ts.
+  derived(
+    'research.cache.maxEntryBytes',
+    'bytes',
+    ['evidence.envelope.maxResponseBytes'],
+    copy,
+    "A cached entry is at most one response, so it is capped at the envelope's response cap.",
+  ),
+  derived(
+    'research.cache.maxTotalBytes',
+    'bytes',
+    [
+      'evidence.allocation.registry.maxTotalBytes',
+      'evidence.allocation.upstream.maxTotalBytes',
+      'evidence.allocation.advisory.maxTotalBytes',
+      'evidence.allocation.signals.maxTotalBytes',
+    ],
+    sum,
+    'The cache holds at most the registry, upstream, advisory, and signals byte shares.',
+  ),
+  // W2 evidence readers, from collection.ts.
+  derived(
+    'w2.session.maxRequests',
+    'count',
+    ['evidence.allocation.session.maxRequests'],
+    copy,
+    "The session reader's request cap is its allocation share's request cap.",
+  ),
+  unjustified('w2.session.maxPages', 10, 'count'),
+  unjustified('w2.session.maxFiles', 1_000, 'count'),
+  unjustified('w2.session.maxJsonEntries', 200_000, 'count'),
+  derived(
+    'w2.session.maxResponseBytes',
+    'bytes',
+    ['evidence.envelope.maxResponseBytes'],
+    copy,
+    "The session reader's response cap is the envelope's response cap.",
+  ),
+  unjustified('w2.session.maxFileBytes', 500_000, 'bytes'),
+  derived(
+    'w2.session.maxTotalBytes',
+    'bytes',
+    ['evidence.allocation.session.maxTotalBytes'],
+    copy,
+    "The session reader's byte cap is its allocation share's byte cap.",
+  ),
+  unjustified('w2.session.maxRetainedBytes', 2_000_000, 'bytes'),
+  derived(
+    'w2.session.requestTimeoutMs',
+    'milliseconds',
+    ['evidence.envelope.requestTimeoutMs'],
+    copy,
+    "The session reader's request timeout is the envelope's request timeout.",
+  ),
+  unjustified('w2.npm.maxFileBytes', 500_000, 'bytes'),
+  unjustified('w2.npm.maxJsonDepth', 32, 'count'),
+  unjustified('w2.npm.maxJsonEntries', 100_000, 'count'),
+  unjustified('w2.npm.maxRoots', 10, 'count'),
+  unjustified('w2.npm.maxRetainedBytes', 2_000_000, 'bytes'),
+  unjustified('w2.actions.maxFileBytes', 100_000, 'bytes'),
+  unjustified('w2.actions.maxWorkflows', 20, 'count'),
+  unjustified('w2.actions.maxYamlNodes', 100_000, 'count'),
+  unjustified('w2.actions.maxYamlDepth', 32, 'count'),
+  unjustified('w2.actions.maxAliasExpansions', 100, 'count'),
+  unjustified('w2.actions.maxOccurrences', 1_000, 'count'),
+  unjustified('w2.actions.maxRetainedBytes', 2_000_000, 'bytes'),
+  unjustified('w2.uv.maxFileBytes', 100_000, 'bytes'),
+  unjustified('w2.uv.maxTomlDepth', 32, 'count'),
+  unjustified('w2.uv.maxTomlEntries', 100_000, 'count'),
+  unjustified('w2.uv.maxPackages', 1_000, 'count'),
+  unjustified('w2.uv.maxDeclarations', 1_000, 'count'),
+  unjustified('w2.uv.maxEdges', 1_000, 'count'),
+  unjustified('w2.uv.maxStringBytes', 4_096, 'bytes'),
+  unjustified('w2.uv.maxRequirementTokens', 200, 'count'),
+  unjustified('w2.uv.maxMarkerDepth', 16, 'count'),
+  unjustified('w2.uv.maxRoots', 20, 'count'),
+  unjustified('w2.uv.maxRetainedBytes', 1_000_000, 'bytes'),
+  unjustified('w2.graph.maxGraphWork', 500_000, 'count'),
+  unjustified('w2.graph.maxRetainedBytes', 2_000_000, 'bytes'),
+  derived(
+    'w2.registry.maxRequests',
+    'count',
+    ['evidence.allocation.registry.maxRequests'],
+    copy,
+    "The registry reader's request cap is its allocation share's request cap.",
+  ),
+  derived(
+    'w2.registry.maxResponseBytes',
+    'bytes',
+    ['evidence.envelope.maxResponseBytes'],
+    copy,
+    "The registry reader's response cap is the envelope's response cap.",
+  ),
+  derived(
+    'w2.registry.maxTotalBytes',
+    'bytes',
+    ['evidence.allocation.registry.maxTotalBytes'],
+    copy,
+    "The registry reader's byte cap is its allocation share's byte cap.",
+  ),
+  unjustified('w2.registry.maxJsonEntries', 100_000, 'count'),
+  unjustified('w2.registry.maxJsonDepth', 32, 'count'),
+  derived(
+    'w2.registry.requestTimeoutMs',
+    'milliseconds',
+    ['evidence.envelope.requestTimeoutMs'],
+    copy,
+    "The registry reader's request timeout is the envelope's request timeout.",
+  ),
+  derived(
+    'w2.totalTimeoutMs',
+    'milliseconds',
+    ['evidence.envelope.totalTimeoutMs'],
+    copy,
+    "The W2 total timeout is the envelope's total timeout.",
+  ),
+  // Research readers, from research.ts.
+  unjustified('research.maxJsonEntries', 200_000, 'count'),
+  unjustified('research.maxJsonDepth', 32, 'count'),
+  unjustified('research.maxRetainedBytes', 2_000_000, 'bytes'),
+  // Policy signals, from policy-signals-evidence.ts.
+  {
+    id: 'signals.attemptsPerMember',
+    unit: 'count',
+    protects: PENDING_AUDIT,
+    effect: PENDING_AUDIT,
+    basis: {
+      kind: 'derived',
+      inputs: [],
+      formula: () => 15,
+      description:
+        'Each member gets at most 15 signal attempts, one per fixed call site over its sides and the optional categories; no loop runs over untrusted data.',
+      structuralTest:
+        'src/evidence/policy-signals.test.ts > optional attempt exhaustion keeps a bounded explained result and known deprecation findings',
+    },
+    test: 'src/evidence/policy-signals.test.ts > optional attempt exhaustion keeps a bounded explained result and known deprecation findings',
   },
 ] as const satisfies readonly LimitDefinition[];
 

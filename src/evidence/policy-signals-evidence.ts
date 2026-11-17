@@ -8,6 +8,7 @@ import {
 } from '../schema.js';
 import type { Finding } from '../policy.js';
 import { advisoryCheck, AdvisoryFailure } from './advisory-read.js';
+import { limit } from '../limits.js';
 import { UpstreamFailure } from './upstream-read.js';
 import type { Observation, PolicySignalInput, SignalEnrichment } from './policy-signals.js';
 
@@ -177,7 +178,7 @@ const OPTIONAL_CATEGORIES = [
  * categories (at most 15 by reading the collectors; tests pin it), with no loop over untrusted
  * data, and members are bounded by `PACKET_LIMITS.changes`.
  */
-export const SIGNAL_ATTEMPTS_PER_MEMBER = 15;
+export const SIGNAL_ATTEMPTS_PER_MEMBER = limit('signals.attemptsPerMember');
 export function signalBounds(input: PolicySignalInput, output: SignalEnrichment) {
   advisoryCheck(
     output.changes.every((c) =>
