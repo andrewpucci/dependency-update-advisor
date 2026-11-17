@@ -22721,7 +22721,7 @@ function manualStep(category, name) {
 	if (category === "upstream") return `read ${name}'s release notes`;
 	return `review ${name}'s ${readableLabel(category)} evidence`;
 }
-function evidenceActions(reasons, category, name) {
+function evidenceActions(reasons, category, name, plural = false) {
 	const effective = reasons.length ? reasons : ["unknown"];
 	const groups = new Set(effective.map((reason) => REASON_GROUPS[reason]));
 	const rerunOnly = effective.every((reason) => RERUN_REASONS.has(reason));
@@ -22729,7 +22729,7 @@ function evidenceActions(reasons, category, name) {
 	const actions = {};
 	if (groups.has("permission")) actions.permission = rerunOnly ? "Correct the reviewer's token permissions, then rerun CI." : "Correct the reviewer's token permissions.";
 	if (groups.has("retry") && rerunOnly) actions.retry = "Rerun CI later.";
-	if (groups.has("budget")) actions.budget = `The review could not check this package within its limits; ${manual}`;
+	if (groups.has("budget")) actions.budget = `The review could not check ${plural ? "these packages" : "this package"} within its limits; ${manual}`;
 	if (groups.has("noSource")) actions.noSource = `No supported source was found; ${manual}`;
 	if (groups.has("untrusted")) actions.untrusted = `The source could not be trusted; ${manual}`;
 	return ACTION_ORDER.flatMap((group) => actions[group] ?? []).join(" ");
@@ -23032,7 +23032,7 @@ function coverageLines({ input }) {
 		...inventoryGaps.map((gap) => `- ${text(gap.ecosystem)}: ${gap.reasons.map(text).join(", ")}. ${gap.nextActions.map(text).join(" ")}`)
 	];
 }
-function findingName(r, member) {
+function displayName(r, member) {
 	return r.units.flatMap((unit) => unit.members).some((item) => item.id !== member.id && item.name === member.name) ? `${text(member.name)} (${uncheckedQualifier(r, member)})` : text(member.name);
 }
 /** Everything after the names; findings with the same tail share one line. */
@@ -23060,7 +23060,7 @@ function findingLines(r) {
 			}, unit, input);
 		}));
 		const members = groups.get(tail) ?? /* @__PURE__ */ new Map();
-		if (!members.has(member.id)) members.set(member.id, findingName(r, member));
+		if (!members.has(member.id)) members.set(member.id, displayName(r, member));
 		groups.set(tail, members);
 	}
 	return [...groups].map(([tail, members]) => `- ${[...members.values()].join(", ")}${tail}`);
@@ -23092,7 +23092,34 @@ function assessmentLines({ input, units, summary }) {
 	}
 	return lines;
 }
-function followupLines({ input, units, summary }) {
+/** Gaps with the same category, status, and reasons share one line that names each member. */
+function gapLines(r, assessedGaps) {
+	const groups = /* @__PURE__ */ new Map();
+	for (const { unit, gap } of assessedGaps) {
+		const link = unit.evidenceLinks.find((entry) => entry.id === gap.sourceId);
+		const member = unit.members.find((entry) => entry.id === link?.memberId);
+		if (!link || !member) throw new RenderFailure("reference");
+		const key = JSON.stringify([
+			link.category,
+			link.status,
+			link.reasons
+		]);
+		const group = groups.get(key) ?? {
+			link,
+			members: /* @__PURE__ */ new Map()
+		};
+		group.members.set(member.id, member);
+		groups.set(key, group);
+	}
+	return [...groups.values()].map(({ link, members }) => {
+		const list = [...members.values()];
+		const single = list.length === 1;
+		const subject = single ? text(list[0].name) : "each listed package";
+		return `- ${list.map((member) => displayName(r, member)).join(", ")}: ${readableLabel(link.category)} evidence is ${readableLabel(link.status)} (${link.reasons.map(readableLabel).join(", ")}). ${evidenceActions(link.reasons, link.category, subject, !single)}`;
+	});
+}
+function followupLines(r) {
+	const { input, units, summary } = r;
 	const assessedGaps = summary.units.flatMap((unit, index) => input.records[index].assessment ? unit.gaps.map((gap) => ({
 		unit: units[index],
 		gap
@@ -23106,7 +23133,7 @@ function followupLines({ input, units, summary }) {
 		"",
 		"## Non-blocking follow-ups",
 		"",
-		...assessedGaps.map(({ unit, gap }) => `- ${evidenceGap(unit, gap.sourceId)}`),
+		...gapLines(r, assessedGaps),
 		...followups.map(({ unit, followup }) => `- ${text(unit.members.map((member) => member.name).join(", "))}: ${text(followup.description)} ${followup.references.map((ref) => reference(ref, unit, input)).join(" ")}`)
 	];
 }

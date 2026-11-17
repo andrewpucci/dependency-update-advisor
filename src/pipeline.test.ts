@@ -9,6 +9,7 @@ import { analysisDocument } from '../tests/parity/analysis.js';
 import { snapshotReads, treeEntry } from '../tests/parity/snapshot-reads.js';
 import { upstreamScenario } from '../tests/parity/upstream.js';
 import { uvMetadataScenario } from '../tests/parity/uv-metadata.js';
+import { ANALYSIS_LIMITS } from './analysis/contract.js';
 import { analyzeMistralBatch } from './analysis/mistral.js';
 import type { EventReads, RepositoryIdentity, ReviewIdentity } from './event.js';
 import { createEventReads } from './adapters.js';
@@ -157,7 +158,30 @@ type Overrides = Partial<PipelineInput> & {
   visibility?: 'public' | 'private';
   /** Contents of src/app.ts in the default branch. */
   source?: string;
+  /** Distinct maximum-length model follow-ups on each `merge_with_followups` unit. */
+  followupsPerUnit?: number;
 };
+
+/** Model text the renderer may never merge or shorten, so it can force a required body over the limit. */
+function withFollowups(document: ReturnType<typeof analysisDocument>, perUnit: number) {
+  const assessments = document.assessments.map((entry) =>
+    entry.verdict === 'merge_with_followups'
+      ? {
+          ...entry,
+          followups: Array.from({ length: perUnit }, (_, index) => ({
+            description:
+              `Follow-up ${index} for ${entry.unitId}: ${'Confirm the recorded evidence with a fresh lookup. '.repeat(5)}`.slice(
+                0,
+                ANALYSIS_LIMITS.followupBytes,
+              ),
+            blocking: false,
+            references: [] as unknown[],
+          })),
+        }
+      : entry,
+  );
+  return { ...document, assessments };
+}
 
 const unchanged = { 'pyproject.toml': null, 'uv.lock': null };
 
@@ -186,6 +210,7 @@ async function setup(overrides: Overrides = {}) {
     source: _source,
     evidence: _evidence,
     children: _children,
+    followupsPerUnit: _followupsPerUnit,
     ...rest
   } = overrides;
   const { event, run, pullRequest } = t1();
@@ -244,7 +269,11 @@ async function setup(overrides: Overrides = {}) {
                 finish_reason: 'stop',
                 message: {
                   role: 'assistant',
-                  content: JSON.stringify(analysisDocument(batch as never)),
+                  content: JSON.stringify(
+                    overrides.followupsPerUnit
+                      ? withFollowups(analysisDocument(batch as never), overrides.followupsPerUnit)
+                      : analysisDocument(batch as never),
+                  ),
                 },
               },
             ],
@@ -1574,7 +1603,8 @@ test.each([
 });
 
 test('hands a group too large to render off as a failure that says so, never as a defect', async () => {
-  const { input, sink } = await setup({ evidence: 'changes', children: 120 });
+  // Model follow-ups are required and never merged, so these push the body over the limit.
+  const { input, sink } = await setup({ evidence: 'changes', children: 100, followupsPerUnit: 4 });
   const result = await runReview(input);
   // The brief must not truncate a required unit, so it fails; the prior comment is preserved.
   expect(result).toMatchObject({

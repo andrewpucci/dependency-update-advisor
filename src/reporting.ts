@@ -134,6 +134,7 @@ function evidenceActions(
   reasons: readonly EvidenceReason[],
   category: string,
   name: string,
+  plural = false,
 ): string {
   const effective: readonly EvidenceReason[] = reasons.length ? reasons : ['unknown'];
   const groups = new Set(effective.map((reason) => REASON_GROUPS[reason]));
@@ -146,7 +147,7 @@ function evidenceActions(
       : "Correct the reviewer's token permissions.";
   if (groups.has('retry') && rerunOnly) actions.retry = 'Rerun CI later.';
   if (groups.has('budget'))
-    actions.budget = `The review could not check this package within its limits; ${manual}`;
+    actions.budget = `The review could not check ${plural ? 'these packages' : 'this package'} within its limits; ${manual}`;
   if (groups.has('noSource')) actions.noSource = `No supported source was found; ${manual}`;
   if (groups.has('untrusted')) actions.untrusted = `The source could not be trusted; ${manual}`;
   return ACTION_ORDER.flatMap((group) => actions[group] ?? []).join(' ');
@@ -667,7 +668,7 @@ function coverageLines({ input }: Review): string[] {
   ];
 }
 
-function findingName(r: Review, member: DecisionUnit['members'][number]): string {
+function displayName(r: Review, member: DecisionUnit['members'][number]): string {
   const shared = r.units
     .flatMap((unit) => unit.members)
     .some((item) => item.id !== member.id && item.name === member.name);
@@ -713,7 +714,7 @@ function findingLines(r: Review): string[] {
       });
       const tail = findingTail(finding, citations);
       const members = groups.get(tail) ?? new Map<string, string>();
-      if (!members.has(member.id)) members.set(member.id, findingName(r, member));
+      if (!members.has(member.id)) members.set(member.id, displayName(r, member));
       groups.set(tail, members);
     }
   }
@@ -755,7 +756,38 @@ function assessmentLines({ input, units, summary }: Review): string[] {
   return lines;
 }
 
-function followupLines({ input, units, summary }: Review): string[] {
+/** Gaps with the same category, status, and reasons share one line that names each member. */
+function gapLines(
+  r: Review,
+  assessedGaps: { unit: DecisionUnit; gap: { sourceId: string } }[],
+): string[] {
+  const groups = new Map<
+    string,
+    {
+      link: DecisionUnit['evidenceLinks'][number];
+      members: Map<string, DecisionUnit['members'][number]>;
+    }
+  >();
+  for (const { unit, gap } of assessedGaps) {
+    const link = unit.evidenceLinks.find((entry) => entry.id === gap.sourceId);
+    const member = unit.members.find((entry) => entry.id === link?.memberId);
+    if (!link || !member) throw new RenderFailure('reference');
+    const key = JSON.stringify([link.category, link.status, link.reasons]);
+    const group = groups.get(key) ?? { link, members: new Map() };
+    group.members.set(member.id, member);
+    groups.set(key, group);
+  }
+  return [...groups.values()].map(({ link, members }) => {
+    const list = [...members.values()];
+    const single = list.length === 1;
+    const subject = single ? text(list[0].name) : 'each listed package';
+    const names = list.map((member) => displayName(r, member)).join(', ');
+    return `- ${names}: ${readableLabel(link.category)} evidence is ${readableLabel(link.status)} (${link.reasons.map(readableLabel).join(', ')}). ${evidenceActions(link.reasons, link.category, subject, !single)}`;
+  });
+}
+
+function followupLines(r: Review): string[] {
+  const { input, units, summary } = r;
   const assessedGaps = summary.units.flatMap((unit, index) =>
     input.records[index].assessment ? unit.gaps.map((gap) => ({ unit: units[index], gap })) : [],
   );
@@ -768,7 +800,7 @@ function followupLines({ input, units, summary }: Review): string[] {
     '',
     '## Non-blocking follow-ups',
     '',
-    ...assessedGaps.map(({ unit, gap }) => `- ${evidenceGap(unit, gap.sourceId)}`),
+    ...gapLines(r, assessedGaps),
     ...followups.map(
       ({ unit, followup }) =>
         `- ${text(unit.members.map((member) => member.name).join(', '))}: ${text(followup.description)} ${followup.references.map((ref) => reference(ref, unit, input)).join(' ')}`,

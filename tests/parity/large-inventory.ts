@@ -13,6 +13,7 @@ export type LargeInventoryOptions = {
   evidence?: (memberIndex: number, category: string) => ChangeEvidence | null;
   unresolved?: number;
   followups?: number;
+  followupText?: (index: number, name: string) => string;
 };
 
 type Packet = UnitInventory['packet'];
@@ -77,6 +78,7 @@ function stubReply(
     unresolved: Set<string>;
     order: Map<string, number>;
     names: Map<string, string>;
+    followupText: (index: number, name: string) => string;
   },
 ) {
   if (batch.unitIds.every((id) => state.unresolved.has(id)))
@@ -87,7 +89,7 @@ function stubReply(
   const assessments = document.assessments.map((entry) => {
     if (entry.verdict !== 'merge_with_followups') return entry;
     const unit = snapshot.units.find((item) => item.alias === entry.unitId)!;
-    const description = followupText(state.order.get(unit.id)!, state.names.get(unit.id)!);
+    const description = state.followupText(state.order.get(unit.id)!, state.names.get(unit.id)!);
     return { ...entry, followups: [{ description, blocking: false, references: [] }] };
   });
   return completion('stop', JSON.stringify({ assessments }));
@@ -130,6 +132,7 @@ export async function largeInventoryScenario(options: LargeInventoryOptions = {}
     ),
     order: new Map(inventory.units.map((unit, index) => [unit.id, index])),
     names: new Map(inventory.units.map((unit) => [unit.id, unit.members[0].name])),
+    followupText: options.followupText ?? followupText,
   };
   const analysis = await analyzeDecisionUnits(
     input,

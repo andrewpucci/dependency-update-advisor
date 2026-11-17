@@ -1,4 +1,5 @@
 import { expect, test } from 'vite-plus/test';
+import type { LargeInventoryOptions } from '../tests/parity/large-inventory.js';
 import { parseReviewConfig } from './config.js';
 import {
   EVIDENCE_REASONS,
@@ -2042,15 +2043,47 @@ test('names a concrete manual step for each category', () => {
   expect(gap(['budget'], 'uploadedArtifact')).toContain("review pkg's uploaded artifact evidence");
 });
 
-async function renderLargeInventory() {
+async function renderLargeInventory(
+  options: Omit<LargeInventoryOptions, 'members' | 'duplicateNames'> = {},
+) {
   const { largeInventoryScenario } = await import('../tests/parity/large-inventory.js');
-  const scenario = await largeInventoryScenario({ members: 93, duplicateNames: 2 });
+  const scenario = await largeInventoryScenario({ members: 93, duplicateNames: 2, ...options });
   const result = renderDecisionBrief(scenario.render);
   if (!result.ok) throw new Error(`large inventory render failed: ${result.category}`);
   const lines = result.body
     .split('\n')
     .filter((line) => line.startsWith('- ') && line.includes(' — '));
-  return { packet: scenario.packet, body: result.body, lines };
+  return { packet: scenario.packet, body: result.body, lines, render: scenario.render };
+}
+
+type LargeRender = Awaited<ReturnType<typeof renderLargeInventory>>['render'];
+
+function followupSectionOf(body: string) {
+  return body.split('## Non-blocking follow-ups')[1].split('\n## ')[0];
+}
+
+function gapLinesOf(body: string) {
+  return followupSectionOf(body)
+    .split('\n')
+    .filter((line) => line.startsWith('- ') && line.includes(' evidence is '));
+}
+
+function assessedGapsOf(render: LargeRender) {
+  return render.coverage.policyProvenance.assessments.units.flatMap((evaluation, index) => {
+    if (!render.records[index].assessment) return [];
+    const unit = render.coverage.inventory.units[index];
+    return evaluation.gaps.map((gap) => {
+      const link = unit.evidenceLinks.find((entry) => entry.id === gap.sourceId)!;
+      const member = unit.members.find((entry) => entry.id === link.memberId)!;
+      return { unit, link, member };
+    });
+  });
+}
+
+function timeoutOnFirstFive(memberIndex: number, category: string) {
+  return category === 'vulnerability' && memberIndex < 5
+    ? { status: 'unavailable' as const, reasons: ['timeout' as const], sourceIds: [] }
+    : null;
 }
 
 function namesPart(line: string) {
@@ -2163,4 +2196,97 @@ test('keeps release-metadata findings with differing upstream URLs on separate l
     );
     expect(rendered).toHaveLength(distinct.size);
   }
+});
+
+test('merges assessed-unit gaps with the same category, status, and reasons into one line each', async () => {
+  const { body, render } = await renderLargeInventory({
+    followups: 71,
+    evidence: timeoutOnFirstFive,
+  });
+  const gaps = assessedGapsOf(render);
+  const keys = new Set(
+    gaps.map(({ link }) => JSON.stringify([link.category, link.status, link.reasons])),
+  );
+  expect(keys.size).toBe(2);
+  expect(gapLinesOf(body)).toHaveLength(keys.size);
+  expect(keys.size).toBeLessThan(gaps.length);
+});
+
+test('names every assessed gap member on its merged line, qualifying shared names', async () => {
+  const { body, render } = await renderLargeInventory({
+    followups: 71,
+    evidence: timeoutOnFirstFive,
+  });
+  const lines = gapLinesOf(body);
+  const memberCount = (name: string) =>
+    render.coverage.inventory.units
+      .flatMap((unit) => unit.members)
+      .filter((member) => member.name === name).length;
+  let sharedNamed = 0;
+  for (const { link, member } of assessedGapsOf(render)) {
+    const name = member.name;
+    const shared = memberCount(name) > 1;
+    sharedNamed += shared ? 1 : 0;
+    const version = member.proposedVersion ?? member.currentVersion ?? 'unknown';
+    const entry = shared
+      ? new RegExp(
+          `(?:^|, )${escapeRegExp(name)} \\([^)]*, ${escapeRegExp(version)}\\)(?:,|$)`,
+          'u',
+        )
+      : new RegExp(`(?:^|, )${escapeRegExp(name)}(?:,|$)`, 'u');
+    const phrase = `${link.category} evidence is ${link.status} (${link.reasons.join(', ')})`;
+    expect(
+      lines.some((line) => line.includes(phrase) && entry.test(line.slice(2, line.indexOf(': ')))),
+      name,
+    ).toBe(true);
+  }
+  expect(sharedNamed).toBeGreaterThan(0);
+  for (const line of lines) expect(line).not.toMatch(/\d+ others?/u);
+});
+
+test('states the plural action once on the merged budget line', async () => {
+  const { body } = await renderLargeInventory({ followups: 71 });
+  const budget = gapLinesOf(body).filter((line) =>
+    line.includes('check these packages within its limits'),
+  );
+  expect(budget).toHaveLength(1);
+  const [line] = budget;
+  expect(
+    line.split('search the GitHub Advisory Database for each listed package.').length - 1,
+  ).toBe(1);
+  expect(line.slice(line.indexOf('). ') + 3)).not.toMatch(/child-/u);
+});
+
+test('renders a one-member gap group exactly as evidenceGap does', async () => {
+  const { body, render } = await renderLargeInventory({
+    followups: 71,
+    evidence: (memberIndex, category) =>
+      category === 'vulnerability' && memberIndex === 3
+        ? { status: 'unavailable', reasons: ['timeout'], sourceIds: [] }
+        : null,
+  });
+  const matches = assessedGapsOf(render).filter(
+    ({ link }) => link.category === 'vulnerability' && link.reasons.join() === 'timeout',
+  );
+  expect(matches).toHaveLength(1);
+  const [{ unit, link }] = matches;
+  expect(gapLinesOf(body)).toContain(`- ${evidenceGap(unit, link.id)}`);
+});
+
+test('keeps each model follow-up as its own line in record order', async () => {
+  const sentence = 'Confirm the recorded evidence gap with a fresh lookup before merging.';
+  const { body, render } = await renderLargeInventory({
+    followups: 71,
+    followupText: () => sentence,
+  });
+  const found = followupSectionOf(body)
+    .split('\n')
+    .filter((line) => line.includes(sentence));
+  expect(found).toHaveLength(71);
+  const expectedNames = render.records.flatMap((record, index) =>
+    (record.assessment?.followups ?? []).map(() =>
+      render.coverage.inventory.units[index].members.map((member) => member.name).join(', '),
+    ),
+  );
+  expect(found.map((line) => line.slice(2, line.indexOf(': ')))).toEqual(expectedNames);
 });
