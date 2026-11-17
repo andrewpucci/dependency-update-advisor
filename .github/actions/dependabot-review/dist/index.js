@@ -29586,6 +29586,31 @@ async function runResearch(input) {
 	};
 	const unavailable = [];
 	const readers = [];
+	const observe = (observation) => {
+		try {
+			input.observe?.(observation);
+		} catch {}
+	};
+	const runStage = async (stage, run) => {
+		observe({
+			kind: "stage-start",
+			stage
+		});
+		const before = unavailable.length;
+		await run();
+		const failed = unavailable.slice(before).find((entry) => entry.stage === stage);
+		observe(failed ? {
+			kind: "stage-end",
+			stage,
+			outcome: "unavailable",
+			reason: failed.reason
+		} : {
+			kind: "stage-end",
+			stage,
+			outcome: "enriched",
+			reason: null
+		});
+	};
 	try {
 		const { packet } = input;
 		const progress = {
@@ -29604,10 +29629,25 @@ async function runResearch(input) {
 		const metadata = createPolicySignalReader(limits(EVIDENCE_READ_ALLOCATION.signals.readers.metadata, input), dependencies);
 		const sharedMetadata = metadata.kind === "ready" ? metadata : null;
 		if (sharedMetadata) readers.push(sharedMetadata);
-		await enrichUpstreamStage(input, dependencies, readers, progress, fail, sharedMetadata ?? void 0);
-		await enrichAdvisoryStage(input, dependencies, readers, progress, fail);
-		await enrichSignalsStage(input, dependencies, readers, progress, fail, sharedMetadata);
+		await runStage("upstream", () => enrichUpstreamStage(input, dependencies, readers, progress, fail, sharedMetadata ?? void 0));
+		await runStage("advisories", () => enrichAdvisoryStage(input, dependencies, readers, progress, fail));
+		await runStage("signals", () => enrichSignalsStage(input, dependencies, readers, progress, fail, sharedMetadata));
+		observe({
+			kind: "stage-start",
+			stage: "revalidation"
+		});
 		const candidate = revalidate(input, progress);
+		observe(candidate.ok ? {
+			kind: "stage-end",
+			stage: "revalidation",
+			outcome: "enriched",
+			reason: null
+		} : {
+			kind: "stage-end",
+			stage: "revalidation",
+			outcome: "unavailable",
+			reason: "malformed"
+		});
 		if (!candidate.ok) {
 			fail("revalidation", "malformed");
 			return {

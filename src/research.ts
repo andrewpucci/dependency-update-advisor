@@ -26,6 +26,15 @@ type ResearchProgress = EnrichedEvidence & {
 type Reader = { close: () => void };
 type Fail = (stage: ResearchStage, reason: EvidenceReason) => void;
 export type ResearchStage = 'upstream' | 'advisories' | 'signals' | 'revalidation';
+/** A stage boundary reported to an optional observer; carries no request data. */
+export type ResearchObservation =
+  | Readonly<{ kind: 'stage-start'; stage: ResearchStage }>
+  | Readonly<{
+      kind: 'stage-end';
+      stage: ResearchStage;
+      outcome: 'enriched' | 'unavailable';
+      reason: EvidenceReason | null;
+    }>;
 export type ResearchInput = Readonly<{
   packet: Packet;
   trusted: PacketExpected;
@@ -40,6 +49,8 @@ export type ResearchInput = Readonly<{
   deadline: number;
   evaluationTime: number;
   signal?: AbortSignal;
+  /** Receives stage boundaries in order; its errors are ignored. */
+  observe?: (observation: ResearchObservation) => void;
 }>;
 export type ResearchResult =
   | Readonly<{
@@ -234,6 +245,24 @@ export async function runResearch(input: ResearchInput): Promise<ResearchResult>
   const dependencies = { now: input.now, fetch: input.fetch, signal: input.signal };
   const unavailable: { stage: ResearchStage; reason: EvidenceReason }[] = [];
   const readers: Reader[] = [];
+  const observe = (observation: ResearchObservation) => {
+    try {
+      input.observe?.(observation);
+    } catch {
+      // An observer cannot change the research result.
+    }
+  };
+  const runStage = async (stage: ResearchStage, run: () => Promise<void>) => {
+    observe({ kind: 'stage-start', stage });
+    const before = unavailable.length;
+    await run();
+    const failed = unavailable.slice(before).find((entry) => entry.stage === stage);
+    observe(
+      failed
+        ? { kind: 'stage-end', stage, outcome: 'unavailable', reason: failed.reason }
+        : { kind: 'stage-end', stage, outcome: 'enriched', reason: null },
+    );
+  };
   try {
     const { packet } = input;
     const progress: ResearchProgress = {
@@ -253,18 +282,30 @@ export async function runResearch(input: ResearchInput): Promise<ResearchResult>
     );
     const sharedMetadata = metadata.kind === 'ready' ? metadata : null;
     if (sharedMetadata) readers.push(sharedMetadata);
-    await enrichUpstreamStage(
-      input,
-      dependencies,
-      readers,
-      progress,
-      fail,
-      sharedMetadata ?? undefined,
+    await runStage('upstream', () =>
+      enrichUpstreamStage(
+        input,
+        dependencies,
+        readers,
+        progress,
+        fail,
+        sharedMetadata ?? undefined,
+      ),
     );
-    await enrichAdvisoryStage(input, dependencies, readers, progress, fail);
-    await enrichSignalsStage(input, dependencies, readers, progress, fail, sharedMetadata);
+    await runStage('advisories', () =>
+      enrichAdvisoryStage(input, dependencies, readers, progress, fail),
+    );
+    await runStage('signals', () =>
+      enrichSignalsStage(input, dependencies, readers, progress, fail, sharedMetadata),
+    );
 
+    observe({ kind: 'stage-start', stage: 'revalidation' });
     const candidate = revalidate(input, progress);
+    observe(
+      candidate.ok
+        ? { kind: 'stage-end', stage: 'revalidation', outcome: 'enriched', reason: null }
+        : { kind: 'stage-end', stage: 'revalidation', outcome: 'unavailable', reason: 'malformed' },
+    );
     if (!candidate.ok) {
       fail('revalidation', 'malformed');
       return {

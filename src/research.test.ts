@@ -7,7 +7,7 @@ import * as signalReadModule from './evidence/policy-signals-read.js';
 import * as advisoryReadModule from './evidence/advisory-read.js';
 import * as upstreamReadModule from './evidence/upstream-read.js';
 import { EVIDENCE_READ_ALLOCATION, EVIDENCE_READ_ENVELOPE } from './budget.js';
-import { runResearch } from './research.js';
+import { runResearch, type ResearchObservation } from './research.js';
 import * as schemaModule from './schema.js';
 import { validateReviewPacket } from './schema.js';
 
@@ -173,6 +173,61 @@ test('records an unavailable stage with its reason and continues with the eviden
   if (result.kind !== 'ready') return;
   expect(result.unavailable).toEqual([{ stage: 'advisories', reason: 'budget' }]);
   expect(result.upstreamAttempts.length).toBeGreaterThan(0);
+});
+
+test('reports each stage start and end to an observer, with the stop reason', async () => {
+  const { fixture, packet } = await scenario();
+  vi.mocked(advisoryModule.enrichAdvisories).mockResolvedValueOnce({
+    kind: 'unavailable',
+    reason: 'budget',
+  });
+  const events: ResearchObservation[] = [];
+  await runResearch({
+    ...base(fixture, packet),
+    observe: (observation) => events.push(observation),
+  });
+  expect(events).toEqual([
+    { kind: 'stage-start', stage: 'upstream' },
+    { kind: 'stage-end', stage: 'upstream', outcome: 'enriched', reason: null },
+    { kind: 'stage-start', stage: 'advisories' },
+    { kind: 'stage-end', stage: 'advisories', outcome: 'unavailable', reason: 'budget' },
+    { kind: 'stage-start', stage: 'signals' },
+    { kind: 'stage-end', stage: 'signals', outcome: 'enriched', reason: null },
+    { kind: 'stage-start', stage: 'revalidation' },
+    { kind: 'stage-end', stage: 'revalidation', outcome: 'enriched', reason: null },
+  ]);
+});
+
+test('ignores observer errors', async () => {
+  const { fixture, packet } = await scenario();
+  const result = await runResearch({
+    ...base(fixture, packet),
+    observe: () => {
+      throw new Error('observer');
+    },
+  });
+  expect(result.kind).toBe('ready');
+  if (result.kind !== 'ready') return;
+  expect(result.unavailable).toEqual([]);
+});
+
+test('reports a failed revalidation to the observer', async () => {
+  const { fixture, packet } = await scenario();
+  vi.mocked(schemaModule.validateReviewPacket).mockReturnValueOnce({
+    ok: false,
+    error: { category: 'budget', field: 'sources' },
+  });
+  const events: ResearchObservation[] = [];
+  await runResearch({
+    ...base(fixture, packet),
+    observe: (observation) => events.push(observation),
+  });
+  expect(events.at(-1)).toEqual({
+    kind: 'stage-end',
+    stage: 'revalidation',
+    outcome: 'unavailable',
+    reason: 'malformed',
+  });
 });
 
 test('falls back to the collected packet when the enriched one fails validation', async () => {
