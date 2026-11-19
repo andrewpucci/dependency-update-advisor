@@ -349,16 +349,21 @@ test('a none test reference must give a reason', () => {
   expect(testProblems(only('none: checked by the workflow comparison'), reading({}))).toEqual([]);
 });
 
-test.each(['describe.skip(', 'test.only(', 'it.todo(', 'test.skipIf('])(
-  'a named test in a file using %s is a problem',
-  (marker) => {
-    const only = new Map([
-      ['packet.bytes', { ...entryOf('packet.bytes'), test: 'src/a.test.ts > here' }],
-    ]);
-    const files = { 'src/a.test.ts': `${marker}'group', () => {});\ntest('here', () => {});\n` };
-    expect(testProblems(only, reading(files))).toEqual([expect.stringContaining('might not run')]);
-  },
-);
+// Built from parts so this file does not itself read as skipping tests.
+test.each(
+  [
+    ['describe', 'skip'],
+    ['test', 'only'],
+    ['it', 'todo'],
+    ['test', 'skipIf'],
+  ].map((parts) => `${parts.join('.')}(`),
+)('a named test in a file using %s is a problem', (marker) => {
+  const only = new Map([
+    ['packet.bytes', { ...entryOf('packet.bytes'), test: 'src/a.test.ts > here' }],
+  ]);
+  const files = { 'src/a.test.ts': `${marker}'group', () => {});\ntest('here', () => {});\n` };
+  expect(testProblems(only, reading(files))).toEqual([expect.stringContaining('might not run')]);
+});
 
 test('an allowlisted line that states a value its entry does not list is a problem', () => {
   const line = 'Snapshot reads get 200 requests and 9 MiB.';

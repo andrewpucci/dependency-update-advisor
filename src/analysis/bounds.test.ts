@@ -251,6 +251,21 @@ test('a shared vetted URL cannot lend one member the other member’s source ali
   };
   row.reason.references = [ref];
   expect((await validate(batch, document)).kind).toBe('validated');
+  // A category names one of a fixed set of evidence keys; any other, however long, is rejected.
+  for (const category of ['malware-and-more', 'u'.repeat(129), 'u'.repeat(5_000), ' '])
+    expect(
+      (
+        await validate(batch, {
+          ...document,
+          assessments: document.assessments.map((entry) =>
+            entry === row
+              ? { ...row, reason: { ...row.reason, references: [{ ...ref, category }] } }
+              : entry,
+          ),
+        })
+      ).kind,
+      category.slice(0, 20),
+    ).toBe('failed');
   ref.sourceId = sources[1].alias;
   expect((await validate(batch, document)).kind).toBe('failed');
 });

@@ -1427,9 +1427,12 @@ const DEFINITIONS = [
     test: 'src/context.test.ts > total returned bytes, including overflow probes, never exceed one MiB',
     note: 'awaiting L8 measurement',
   }),
-  unjustified('context.generatedMarkerScanLines', 20, 'count'),
-  // Handoff, from handoff.ts.
-  unjustified('handoff.maxGaps', 4, 'count'),
+  unjustified('context.generatedMarkerScanLines', 20, 'count', {
+    protects:
+      "Limits generated-file detection to a file's head, where generators write their markers, so a marker deep in a source file does not exclude it.",
+    effect: 'A generated marker after line 20 is ignored, and the file stays eligible.',
+    note: 'no recorded reason',
+  }),
   // Dependabot roots, from dependabot-roots.ts.
   unjustified('dependabot.maxFileBytes', 65_536, 'bytes', {
     protects:
@@ -1514,7 +1517,14 @@ const DEFINITIONS = [
       'A model over 128 code units, or one that fails the pattern, fails the config with field analysis.model.',
     note: 'no recorded reason',
   }),
-  unjustified('config.maxReleaseAgeDays', 30, 'count'),
+  unjustified('config.maxReleaseAgeDays', 30, 'count', {
+    protects:
+      "A mistyped release-age window (say 365) would hold every update as too new for a year; the range keeps an adopter's setting to plausible windows.",
+    effect:
+      'A window below 1 or above 30 fails the config with field policy.minimumReleaseAgeDays.',
+    test: 'src/config.test.ts > rejects window $value in parser and schema',
+    note: 'no recorded reason',
+  }),
   // Comment bodies, from comments.ts.
   unjustified('comment.maxBodyCodeUnits', 50_000, 'code units', {
     protects:
@@ -1660,7 +1670,14 @@ const DEFINITIONS = [
     note: 'no recorded reason',
   }),
   // Complexity report, from scripts/complexity/report.mjs.
-  unjustified('complexity.threshold', 15, 'count'),
+  unjustified('complexity.threshold', 15, 'count', {
+    protects:
+      "Flags new or worsened functions too complex to review reliably, the advisory gate the maintainer's review rules name.",
+    effect:
+      'Functions above the threshold that are new or worse are listed as advisory; nothing fails.',
+    test: 'scripts/complexity/report.test.mjs > reports only new or worse functions above 15, matching duplicates by rank',
+    note: 'no recorded reason',
+  }),
   unjustified('complexity.gitMaxBufferBytes', 32 * MiB, 'bytes', {
     protects:
       "git output is buffered in memory by execFileSync; without a cap a large ls-tree or show would grow the script's memory without limit.",
@@ -1776,7 +1793,6 @@ const DEFINITIONS = [
     effect: 'Input deeper than 64 levels throws a budget error and no snapshot is taken.',
     note: 'no recorded reason',
   }),
-  unjustified('analysis.categoryCodeUnits', 128, 'code units'),
   unjustified('analysis.maxTokenCodeUnits', 128, 'code units', {
     protects:
       'Sets the assumed code units per token in the reply-byte formula (completionTokens * 128 * 6 plus the envelope), so the reply byte cap covers the largest legal reply.',
@@ -1793,8 +1809,6 @@ const DEFINITIONS = [
     test: 'src/analysis/bounds.test.ts > every declared resource limit rejects larger, unsafe, fractional and incompatible values before a usable handle',
     note: 'awaiting L8 measurement',
   }),
-  unjustified('actions.maxUsesCodeUnits', 2_048, 'code units'),
-  unjustified('actions.maxComparisonVersionCodeUnits', 1_024, 'code units'),
   derived(
     'advisories.maxLookups',
     'count',
@@ -1858,8 +1872,6 @@ const DEFINITIONS = [
       'Work that exceeds the graph budget stops corroboration with reason budget, while the validated inventory is kept.',
     note: 'awaiting L8 measurement',
   }),
-  // A chosen ceiling for uv.lock integers (TOML allows 64-bit): the largest uint32.
-  unjustified('uv.maxLockInteger', 2 ** 32 - 1, 'count'),
   unjustified('handoff.maxTraces', 32, 'count', {
     protects:
       'The rehearsal sink is a local, bounded record of runs; an unbounded trace list would grow memory with each run.',
@@ -1868,9 +1880,23 @@ const DEFINITIONS = [
     test: 'src/handoff.test.ts > bounds the rehearsal trace at 32 records and refuses the next',
     note: 'no recorded reason',
   }),
-  unjustified('startup.maxReportedDurationMs', 999_999, 'milliseconds'),
+  unjustified('startup.maxReportedDurationMs', 999_999, 'milliseconds', {
+    protects:
+      'Keeps the one-line stderr timing summary bounded: an injected or faulty clock cannot lengthen the line, since each call prints at most six digits.',
+    effect:
+      'A duration above the cap prints as the cap in the stderr timing line; the carried timing data is not clamped.',
+    test: 'src/startup.test.ts > prints bounded timing for %s',
+    note: 'reason stated in SPEC-review-orchestration.md (Bounds): the largest six-digit value, above the 600,000 ms analysis maximum',
+  }),
   // Spec values at or below this floor are not checked by check:limits, from scripts/limits/check.ts.
-  unjustified('checkLimits.specValueFloor', 64, 'count'),
+  unjustified('checkLimits.specValueFloor', 64, 'count', {
+    protects:
+      'Keeps the spec allowlist reviewable: register values of 64 or less match about 800 unrelated spec lines, so check:limits checks only larger values.',
+    effect:
+      'Spec lines with register values at or below 64 are not checked; larger values must be allowlisted by trimmed text.',
+    note: 'no recorded reason',
+    test: 'tests/limits/check-limits.test.ts > a register value at the spec floor, or a non-whole number, is not a problem',
+  }),
 ] as const satisfies readonly LimitDefinition[];
 
 export type LimitId = (typeof DEFINITIONS)[number]['id'];

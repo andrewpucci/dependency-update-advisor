@@ -192,7 +192,9 @@ function expand(root: Node, limits: YamlLimits, budget: YamlBudget): Value {
 function use(value: Value, budget: YamlBudget, limits: YamlLimits): WorkflowUse {
   debit(budget, 'occurrences', limits.maxOccurrences);
   need(typeof value === 'string');
-  need(safeIdentity(value, limit('actions.maxUsesCodeUnits')));
+  // The byte bound inside safeIdentity binds first (a string never has more UTF-16 units than
+  // UTF-8 bytes), so it is also the code-unit bound; the default would be the 256-unit id cap.
+  need(safeIdentity(value, limit('packet.identityBytes')));
   need(!value.includes('${{') && !value.startsWith('docker:'), 'unsupported');
   if (value.startsWith('./')) {
     need(

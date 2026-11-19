@@ -15,7 +15,6 @@ import {
   type UvRead,
 } from './uv-toml.js';
 import { FORMAT_VERSION } from '../format.js';
-import { limit } from '../limits.js';
 export type UvSource = { kind: 'registry'; url: string } | { kind: 'editable'; path: '.' };
 export type UvSelector = {
   name: string;
@@ -350,7 +349,8 @@ function packages(raw: unknown, limits: UvParseLimits, budget: UvBudget, gaps: U
   }
   return [...values.values()].sort((a, b) => byCodeUnit(a.key, b.key));
 }
-function integer(value: unknown, max = limit('uv.maxLockInteger')): number {
+/** A non-negative TOML integer, read exactly: past MAX_SAFE_INTEGER a Number cannot hold it. */
+function integer(value: unknown, max = Number.MAX_SAFE_INTEGER): number {
   need(typeof value === 'bigint' && value >= 0n && value <= BigInt(max));
   return Number(value);
 }

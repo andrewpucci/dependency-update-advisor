@@ -130,7 +130,7 @@ test('records bounded counts when packet fitting drops optional evidence', async
   expect(sink.traces()[0].droppedOptional).toEqual({ reachability: 2, proof: 1 });
 });
 
-test('defaults to no body and no gaps, and keeps at most four gaps', async () => {
+test('defaults to no body and no gaps, and keeps every gap it is given', async () => {
   const claims = createTestClaimStore();
   const claimed = await claims.claim([101, 301, 401, 1, 42, 'a'.repeat(40)]);
   if (claimed.kind !== 'owned') throw new Error('fixture must own');
@@ -146,7 +146,8 @@ test('defaults to no body and no gaps, and keeps at most four gaps', async () =>
     gaps: Array.from({ length: 9 }, () => ({ source: 'uv' as const, reason: 'unknown' as const })),
   });
   if (many.kind !== 'ready') throw new Error('expected handoff');
-  expect(many.handoff.gaps).toHaveLength(4);
+  // Gaps come from five sources (each ecosystem, the packet, the brief); none may be hidden.
+  expect(many.handoff.gaps).toHaveLength(9);
 });
 
 async function internalFailureHandoff(stage: 'assessment' | 'freshness' | 'snapshot') {

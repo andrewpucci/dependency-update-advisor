@@ -9622,8 +9622,11 @@ const DEFINITIONS = [
 		test: "src/context.test.ts > total returned bytes, including overflow probes, never exceed one MiB",
 		note: "awaiting L8 measurement"
 	}),
-	unjustified("context.generatedMarkerScanLines", 20, "count"),
-	unjustified("handoff.maxGaps", 4, "count"),
+	unjustified("context.generatedMarkerScanLines", 20, "count", {
+		protects: "Limits generated-file detection to a file's head, where generators write their markers, so a marker deep in a source file does not exclude it.",
+		effect: "A generated marker after line 20 is ignored, and the file stays eligible.",
+		note: "no recorded reason"
+	}),
 	unjustified("dependabot.maxFileBytes", 65536, "bytes", {
 		protects: "The Dependabot config is parsed in memory, so its size is capped before any YAML parsing.",
 		effect: "A file over 65,536 bytes is not parsed. The whole file is unavailable with reason budget, and no roots are kept.",
@@ -9681,7 +9684,12 @@ const DEFINITIONS = [
 		effect: "A model over 128 code units, or one that fails the pattern, fails the config with field analysis.model.",
 		note: "no recorded reason"
 	}),
-	unjustified("config.maxReleaseAgeDays", 30, "count"),
+	unjustified("config.maxReleaseAgeDays", 30, "count", {
+		protects: "A mistyped release-age window (say 365) would hold every update as too new for a year; the range keeps an adopter's setting to plausible windows.",
+		effect: "A window below 1 or above 30 fails the config with field policy.minimumReleaseAgeDays.",
+		test: "src/config.test.ts > rejects window $value in parser and schema",
+		note: "no recorded reason"
+	}),
 	unjustified("comment.maxBodyCodeUnits", 5e4, "code units", {
 		protects: "The comment body must fit the platform's comment size limit before the write; the renderer rejects oversize bodies instead of truncating them. The repo does not cite the platform figure.",
 		effect: "Oversize publication input fails with category input and no write. The renderer omits optional sections, then fails with size.",
@@ -9788,7 +9796,12 @@ const DEFINITIONS = [
 		test: "src/analysis/mistral.test.ts > rejects %s",
 		note: "no recorded reason"
 	}),
-	unjustified("complexity.threshold", 15, "count"),
+	unjustified("complexity.threshold", 15, "count", {
+		protects: "Flags new or worsened functions too complex to review reliably, the advisory gate the maintainer's review rules name.",
+		effect: "Functions above the threshold that are new or worse are listed as advisory; nothing fails.",
+		test: "scripts/complexity/report.test.mjs > reports only new or worse functions above 15, matching duplicates by rank",
+		note: "no recorded reason"
+	}),
 	unjustified("complexity.gitMaxBufferBytes", 32 * MiB, "bytes", {
 		protects: "git output is buffered in memory by execFileSync; without a cap a large ls-tree or show would grow the script's memory without limit.",
 		effect: "Output over the cap makes execFileSync throw, so the run fails and produces no report for that revision.",
@@ -9863,7 +9876,6 @@ const DEFINITIONS = [
 		effect: "Input deeper than 64 levels throws a budget error and no snapshot is taken.",
 		note: "no recorded reason"
 	}),
-	unjustified("analysis.categoryCodeUnits", 128, "code units"),
 	unjustified("analysis.maxTokenCodeUnits", 128, "code units", {
 		protects: "Sets the assumed code units per token in the reply-byte formula (completionTokens * 128 * 6 plus the envelope), so the reply byte cap covers the largest legal reply.",
 		effect: "Caller limits whose responseBytes is below the formula fail preparation as budget (projection.ts:132-137). A reply over responseBytes fails as response-size at runtime.",
@@ -9876,8 +9888,6 @@ const DEFINITIONS = [
 		test: "src/analysis/bounds.test.ts > every declared resource limit rejects larger, unsafe, fractional and incompatible values before a usable handle",
 		note: "awaiting L8 measurement"
 	}),
-	unjustified("actions.maxUsesCodeUnits", 2048, "code units"),
-	unjustified("actions.maxComparisonVersionCodeUnits", 1024, "code units"),
 	derived("advisories.maxLookups", "count", ["packet.changes"], (changes) => 2 * changes, "The advisory lookup cap is one identity per side of each packet change.", {
 		protects: "Public identity and action-version lookups sent to advisory sources are bounded to one per side of each packet change, so lookup requests cannot grow past the change count (outbound requests).",
 		effect: "An input with more lookups than the cap fails validation before any lookup is sent, with reason malformed by advisoryCheck's default."
@@ -9919,15 +9929,24 @@ const DEFINITIONS = [
 		effect: "Work that exceeds the graph budget stops corroboration with reason budget, while the validated inventory is kept.",
 		note: "awaiting L8 measurement"
 	}),
-	unjustified("uv.maxLockInteger", 2 ** 32 - 1, "count"),
 	unjustified("handoff.maxTraces", 32, "count", {
 		protects: "The rehearsal sink is a local, bounded record of runs; an unbounded trace list would grow memory with each run.",
 		effect: "The 33rd record is refused: record returns false and no trace is kept; existing traces are kept.",
 		test: "src/handoff.test.ts > bounds the rehearsal trace at 32 records and refuses the next",
 		note: "no recorded reason"
 	}),
-	unjustified("startup.maxReportedDurationMs", 999999, "milliseconds"),
-	unjustified("checkLimits.specValueFloor", 64, "count")
+	unjustified("startup.maxReportedDurationMs", 999999, "milliseconds", {
+		protects: "Keeps the one-line stderr timing summary bounded: an injected or faulty clock cannot lengthen the line, since each call prints at most six digits.",
+		effect: "A duration above the cap prints as the cap in the stderr timing line; the carried timing data is not clamped.",
+		test: "src/startup.test.ts > prints bounded timing for %s",
+		note: "reason stated in SPEC-review-orchestration.md (Bounds): the largest six-digit value, above the 600,000 ms analysis maximum"
+	}),
+	unjustified("checkLimits.specValueFloor", 64, "count", {
+		protects: "Keeps the spec allowlist reviewable: register values of 64 or less match about 800 unrelated spec lines, so check:limits checks only larger values.",
+		effect: "Spec lines with register values at or below 64 are not checked; larger values must be allowlisted by trimmed text.",
+		note: "no recorded reason",
+		test: "tests/limits/check-limits.test.ts > a register value at the spec floor, or a non-whole number, is not a problem"
+	})
 ];
 const REGISTER = buildRegister(DEFINITIONS);
 function limitEntry(id) {
@@ -10108,7 +10127,7 @@ function expand$2(root, limits, budget) {
 function use(value, budget, limits) {
 	debit$1(budget, "occurrences", limits.maxOccurrences);
 	need$5(typeof value === "string");
-	need$5(safeIdentity(value, limit("actions.maxUsesCodeUnits")));
+	need$5(safeIdentity(value, limit("packet.identityBytes")));
 	need$5(!value.includes("${{") && !value.startsWith("docker:"), "unsupported");
 	if (value.startsWith("./")) {
 		need$5(value.slice(2).split("/").every((s) => s && s !== "." && s !== ".." && !/[\\:]/u.test(s)));
@@ -21557,7 +21576,6 @@ function createTestClaimStore() {
 }
 
 // src/handoff.ts
-const MAX_GAPS = limit("handoff.maxGaps");
 function copyAnalysisTiming(value) {
 	if (!value || !Number.isSafeInteger(value.callsDispatched) || value.callsDispatched < 0 || !Number.isSafeInteger(value.maxSplitDepth) || value.maxSplitDepth < 0 || value.callDurationsMs.length !== value.callsDispatched || value.callDurationsMs.some((duration) => !Number.isSafeInteger(duration) || duration < 0)) return void 0;
 	return Object.freeze({
@@ -21566,8 +21584,9 @@ function copyAnalysisTiming(value) {
 		maxSplitDepth: value.maxSplitDepth
 	});
 }
+/** Every gap is kept: a handoff that hid one would report evidence as more complete than it is. */
 function copyGaps(gaps) {
-	return Object.freeze(gaps.slice(0, MAX_GAPS).map(({ source, reason }) => Object.freeze({
+	return Object.freeze(gaps.map(({ source, reason }) => Object.freeze({
 		source,
 		reason
 	})));
@@ -22884,7 +22903,8 @@ function sourceReference(value, scope) {
 	check(ref.side === "base" || ref.side === "head", "reference");
 	const side = ref.side === "base" ? change.value.from : change.value.to;
 	check(side, "reference");
-	const category = text$1(ref.category, limit("analysis.categoryCodeUnits"));
+	check(typeof ref.category === "string" && ref.category.trim().length > 0);
+	const category = ref.category;
 	const categorySources = change.value.evidence[category]?.sourceIds ?? [];
 	const findingSource = scope.unit.findings.some((finding) => finding.memberId === change.id && finding.references.includes(source.id));
 	const inventorySource = source.value.provenance.kind === "file" && side.sourceId === source.id;
@@ -25257,7 +25277,7 @@ function uninventoried(state, path, side) {
 }
 function comparisonRow(state, value) {
 	const row = own$3(value);
-	need$3(isEvidencePath(row.manifest) && safeIdentity(row.name) && safeIdentity(row.version, limit("actions.maxComparisonVersionCodeUnits")));
+	need$3(isEvidencePath(row.manifest) && safeIdentity(row.name) && safeIdentity(row.version, limit("packet.identityBytes")));
 	need$3(row.change_type === "added" || row.change_type === "removed");
 	const path = row.manifest, action = row.name, version = row.version;
 	const side = row.change_type === "added" ? "head" : "base";
@@ -27501,7 +27521,8 @@ function packages(raw, limits, budget, gaps) {
 	}
 	return [...values.values()].sort((a, b) => byCodeUnit$1(a.key, b.key));
 }
-function integer(value, max = limit("uv.maxLockInteger")) {
+/** A non-negative TOML integer, read exactly: past MAX_SAFE_INTEGER a Number cannot hold it. */
+function integer(value, max = Number.MAX_SAFE_INTEGER) {
 	need$4(typeof value === "bigint" && value >= 0n && value <= BigInt(max));
 	return Number(value);
 }

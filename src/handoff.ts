@@ -41,7 +41,6 @@ export type HandoffDetail = Readonly<{
   /** Required for internal failures; defaults to the safe catch-all for direct callers. */
   stage?: InternalFailureStage;
 }>;
-const MAX_GAPS = limit('handoff.maxGaps');
 
 function copyAnalysisTiming(value: AnalysisTiming | undefined): AnalysisTiming | undefined {
   if (
@@ -61,10 +60,9 @@ function copyAnalysisTiming(value: AnalysisTiming | undefined): AnalysisTiming |
   });
 }
 
+/** Every gap is kept: a handoff that hid one would report evidence as more complete than it is. */
 function copyGaps(gaps: readonly PacketGap[]): readonly PacketGap[] {
-  return Object.freeze(
-    gaps.slice(0, MAX_GAPS).map(({ source, reason }) => Object.freeze({ source, reason })),
-  );
+  return Object.freeze(gaps.map(({ source, reason }) => Object.freeze({ source, reason })));
 }
 function countDroppedOptional(dropped: readonly DroppedOptional[]): OptionalEvidenceDropCounts {
   let reachability = 0,

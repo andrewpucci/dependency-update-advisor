@@ -495,7 +495,8 @@ function comparisonRow(state: State, value: unknown) {
   need(
     isEvidencePath(row.manifest) &&
       safeIdentity(row.name) &&
-      safeIdentity(row.version, limit('actions.maxComparisonVersionCodeUnits')),
+      // The identity byte bound binds first, so it is also the code-unit bound here.
+      safeIdentity(row.version, limit('packet.identityBytes')),
   );
   need(row.change_type === 'added' || row.change_type === 'removed');
   const path = row.manifest,
