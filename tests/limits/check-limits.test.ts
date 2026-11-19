@@ -5,6 +5,7 @@ import {
   PENDING_AMENDMENT,
   citationProblems,
   migrationProblems,
+  schemaProblems,
   specProblems,
   testProblems,
   workflowProblems,
@@ -254,6 +255,49 @@ test('closing migration reports pending fields and pending allowlist lines', () 
     false,
   );
   expect(migrationProblems(only, true, pending)).toEqual([]);
+});
+
+const SCHEMA = 'schemas/example.json';
+const schemaWith = (maxLength: number, minLength = 1) => ({
+  file: SCHEMA,
+  text: JSON.stringify({ properties: { model: { minLength, maxLength } } }),
+});
+const MODEL_BOUND = { [`${SCHEMA}#/properties/model/maxLength`]: 'config.maxModelCodeUnits' };
+
+test('a schema bound matching its mapped register entry passes', () => {
+  expect(schemaProblems(REGISTER, [schemaWith(128)], MODEL_BOUND)).toEqual([]);
+});
+
+test('a schema bound that differs from its register entry is a problem', () => {
+  expect(schemaProblems(REGISTER, [schemaWith(129)], MODEL_BOUND)).toEqual([
+    expect.stringContaining('schema bound 129 differs from config.maxModelCodeUnits (128)'),
+  ]);
+});
+
+test('a schema bound with no mapping, or a mapping to an unknown id, is a problem', () => {
+  expect(schemaProblems(REGISTER, [schemaWith(128)], {})).toEqual([
+    expect.stringContaining('has no register entry'),
+  ]);
+  expect(
+    schemaProblems(REGISTER, [schemaWith(128)], {
+      [`${SCHEMA}#/properties/model/maxLength`]: 'config.nope',
+    }),
+  ).toEqual([expect.stringContaining('config.nope, which is not in the register')]);
+});
+
+test('a mapping to a bound the schema lacks is a problem', () => {
+  const extra = {
+    ...MODEL_BOUND,
+    [`${SCHEMA}#/properties/gone/maxItems`]: 'context.maxSourceRoots',
+  };
+  expect(schemaProblems(REGISTER, [schemaWith(128)], extra)).toEqual([
+    expect.stringContaining('names a bound the schema lacks'),
+  ]);
+});
+
+test('schema bounds of 0 and 1 are positivity checks, not limits', () => {
+  const text = JSON.stringify({ properties: { a: { minLength: 1, minimum: 0 } } });
+  expect(schemaProblems(REGISTER, [{ file: SCHEMA, text }], {})).toEqual([]);
 });
 
 test('the real tree passes check:limits', () => {

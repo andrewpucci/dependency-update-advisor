@@ -192,6 +192,73 @@ export function specProblems(
   return problems;
 }
 
+/**
+ * Where a published JSON schema repeats a register value. Ajv's strict mode rejects unknown
+ * keywords, so the schema cannot cite the register itself; this map ties each bound to its entry.
+ */
+export const SCHEMA_BOUNDS: Readonly<Record<string, string>> = Object.freeze({
+  'schemas/review-config-v1.json#/properties/analysis/properties/model/maxLength':
+    'config.maxModelCodeUnits',
+  'schemas/review-config-v1.json#/properties/context/properties/sourceRoots/maxItems':
+    'context.maxSourceRoots',
+  'schemas/review-config-v1.json#/properties/context/properties/excerptFiles/maxItems':
+    'context.maxSourceCandidates',
+  'schemas/review-config-v1.json#/properties/policy/properties/minimumReleaseAgeDays/maximum':
+    'config.maxReleaseAgeDays',
+});
+
+const BOUND_KEYWORDS = new Set([
+  'maximum',
+  'exclusiveMaximum',
+  'minimum',
+  'exclusiveMinimum',
+  'maxLength',
+  'minLength',
+  'maxItems',
+  'minItems',
+  'maxProperties',
+  'minProperties',
+]);
+
+/** Every numeric bound keyword in a JSON document, keyed `file#/json/pointer`. */
+function schemaBounds(file: string, node: unknown, path = ''): [string, number][] {
+  if (typeof node !== 'object' || node === null) return [];
+  return Object.entries(node).flatMap(([key, value]): [string, number][] => {
+    const pointer = `${path}/${key}`;
+    if (BOUND_KEYWORDS.has(key) && typeof value === 'number')
+      return [[`${file}#${pointer}`, value]];
+    return schemaBounds(file, value, pointer);
+  });
+}
+
+/**
+ * A schema bound above 1 must map to a register entry with the same value, and every mapping must
+ * point at a bound that exists. Bounds of 0 and 1 are positivity checks, not limits.
+ */
+export function schemaProblems(
+  register: ReadonlyMap<string, Limit>,
+  schemas: readonly SourceFile[],
+  bounds: Readonly<Record<string, string>> = SCHEMA_BOUNDS,
+): string[] {
+  const found = schemas.flatMap(({ file, text }) => schemaBounds(file, JSON.parse(text)));
+  const problems = found.flatMap(([pointer, value]): string[] => {
+    if (value <= 1) return [];
+    const id = bounds[pointer];
+    if (id === undefined)
+      return [`${pointer}: schema bound ${value} has no register entry in SCHEMA_BOUNDS`];
+    const entry = register.get(id);
+    if (entry === undefined) return [`${pointer}: maps to ${id}, which is not in the register`];
+    return entry.value === value
+      ? []
+      : [`${pointer}: schema bound ${value} differs from ${id} (${entry.value})`];
+  });
+  const present = new Set(found.map(([pointer]) => pointer));
+  for (const pointer of Object.keys(bounds))
+    if (!present.has(pointer))
+      problems.push(`${pointer}: SCHEMA_BOUNDS names a bound the schema lacks`);
+  return problems;
+}
+
 /** Every `limit:<id>` citation in the docs must name an id in the register. */
 export function citationProblems(
   register: ReadonlyMap<string, Limit>,
@@ -298,6 +365,9 @@ function main(): void {
   const workflows = readdirSync(join(ROOT, '.github/workflows'))
     .filter((name) => /\.ya?ml$/.test(name))
     .map((name) => repoFile(`.github/workflows/${name}`));
+  const schemas = readdirSync(join(ROOT, 'schemas'))
+    .filter((name) => name.endsWith('.json'))
+    .map((name) => repoFile(`schemas/${name}`));
   const allowlist = JSON.parse(
     readFileSync(join(ROOT, 'scripts/limits/spec-allowlist.json'), 'utf8'),
   ) as AllowedSpecLine[];
@@ -305,6 +375,7 @@ function main(): void {
     ...workflowProblems(REGISTER, workflows),
     ...specProblems(REGISTER, floor, specs, allowlist),
     ...citationProblems(REGISTER, docs),
+    ...schemaProblems(REGISTER, schemas),
     ...testProblems(REGISTER, readRepoFile),
     ...migrationProblems(REGISTER, MIGRATION_OPEN, allowlist),
   ];
@@ -315,7 +386,7 @@ function main(): void {
     return;
   }
   console.log(
-    `check:limits passed: ${REGISTER.size} limits, ${specs.length} spec files, ${docs.length} docs, ${workflows.length} workflows, ${allowlist.length} allowlisted spec lines`,
+    `check:limits passed: ${REGISTER.size} limits, ${specs.length} spec files, ${docs.length} docs, ${workflows.length} workflows, ${schemas.length} schemas, ${allowlist.length} allowlisted spec lines`,
   );
 }
 
