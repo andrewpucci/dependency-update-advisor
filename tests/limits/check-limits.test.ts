@@ -271,10 +271,11 @@ test('a test title that appears only in a comment is a problem', () => {
 });
 
 test('closing migration reports pending fields and pending allowlist lines', () => {
-  const derived = [...REGISTER.values()].find(
-    (entry) => entry.basis.kind === 'derived' && entry.test === PENDING_AUDIT,
-  );
-  if (!derived) throw new Error('expected a derived entry with a pending test');
+  // A derived entry whose test the audit has not filled, built here so the real register's
+  // progress cannot make this test vacuous.
+  const found = [...REGISTER.values()].find((entry) => entry.basis.kind === 'derived');
+  if (!found) throw new Error('expected a derived entry');
+  const derived: Limit = { ...found, test: PENDING_AUDIT };
   const only = new Map([[derived.id, derived]]);
   const pending = [{ file: SPEC, line: 'x', values: [128], reason: `${PENDING_AMENDMENT} (L10)` }];
   const settled = [{ file: SPEC, line: 'y', values: [128], reason: 'an example, not a limit' }];

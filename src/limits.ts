@@ -1821,6 +1821,7 @@ const DEFINITIONS = [
       'The number of attempt records one enrichment can carry is bounded, so the output built from them stays within memory and output size (memory).',
     effect: 'Output with more attempts than the cap fails the enrichment with reason budget.',
     note: 'awaiting L8 measurement',
+    test: 'src/evidence/upstream.test.ts > upstream bounds keep exactly research.maxAttempts attempts and refuse one more',
   }),
   derived(
     'research.maxFindings',
@@ -1883,6 +1884,7 @@ const DEFINITIONS = [
         'Public identity and action-version lookups sent to advisory sources are bounded to one per side of each packet change, so lookup requests cannot grow past the change count (outbound requests).',
       effect:
         "An input with more lookups than the cap fails validation before any lookup is sent, with reason malformed by advisoryCheck's default.",
+      test: 'src/evidence/advisories.test.ts > accepts exactly advisories.maxLookups public identities and refuses one more',
     },
   ),
   unjustified('npm.maxIntegrityCodeUnits', 1_024, 'code units', {

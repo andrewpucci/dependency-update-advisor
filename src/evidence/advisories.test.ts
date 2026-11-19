@@ -5,7 +5,8 @@ import {
   type AdvisoryReader,
   type AdvisoryTarget,
 } from './advisory-read.js';
-import { enrichAdvisories } from './advisories.js';
+import { enrichAdvisories, prepareAdvisoryInput } from './advisories.js';
+import { limit } from '../limits.js';
 import { createGithubReadSession } from '../github-read.js';
 import { collectNpmInventory } from './npm.js';
 import { validateReviewPacket, type PacketChange, type PacketSource } from '../schema.js';
@@ -545,4 +546,90 @@ test('a stopped reader keeps completed members and marks the rest', async () => 
       status: 'unavailable',
       reasons: ['rate_limit'],
     });
+});
+
+test('accepts exactly advisories.maxLookups public identities and refuses one more', async () => {
+  const { input } = await fixture(true);
+  const anchor = input.changes.find(
+    (c) =>
+      c.ecosystem === 'npm' &&
+      c.from &&
+      c.to &&
+      input.publicIdentities.some((p) => p.memberId === c.id && p.side === 'base'),
+  )!;
+  // Two lookups per change, one per side: packet.changes two-sided changes reach the cap. Each copy
+  // is a distinct package with its own copy of the anchor's lock file sources (copy 0 is the anchor).
+  const copies = limit('advisories.maxLookups') / 2;
+  const sides = ['base', 'head'] as const;
+  const fileSources = input.sources.filter(
+    (s) => !s.id.startsWith('public:') && s.memberIds.includes(anchor.id),
+  );
+  const copy = (i: number) => ({
+    id: i === 0 ? anchor.id : `${anchor.id}#${i}`,
+    suffix: i === 0 ? '' : `#${i}`,
+    name: (name: string) => (i === 0 ? name : `${name}-copy-${i}`),
+  });
+  const plan = Array.from({ length: copies }, (_, i) => copy(i));
+  const changes = plan.map(({ id, suffix, name }) => ({
+    ...anchor,
+    id,
+    from: {
+      ...anchor.from!,
+      name: name((anchor.from as { name: string }).name),
+      sourceId: anchor.from!.sourceId + suffix,
+    },
+    to: {
+      ...anchor.to!,
+      name: name((anchor.to as { name: string }).name),
+      sourceId: anchor.to!.sourceId + suffix,
+    },
+  })) as PacketChange[];
+  const inventorySources = plan.flatMap(({ id, suffix }) =>
+    fileSources.map((s) => ({ ...s, id: s.id + suffix, memberIds: [id] })),
+  );
+  const identities = plan.flatMap(({ id, name }) =>
+    sides.map((side) => {
+      const original = input.publicIdentities.find(
+        (p) => p.memberId === anchor.id && p.side === side,
+      )!;
+      return {
+        ...original,
+        memberId: id,
+        name: name(original.name),
+        sourceIds: [`public:${id}:${side}`],
+      };
+    }),
+  );
+  const proofs = plan.flatMap(({ id }) =>
+    sides.map((side) => {
+      const original = input.sources.find((s) => s.id === `public:${anchor.id}:${side}`)!;
+      const provenance = original.provenance as Extract<
+        PacketSource['provenance'],
+        { kind: 'upstream' }
+      >;
+      return {
+        ...original,
+        id: `public:${id}:${side}`,
+        memberIds: [id],
+        provenance: {
+          ...provenance,
+          subjects: provenance.subjects.map((subject) => ({ ...subject, memberId: id })),
+        },
+      };
+    }),
+  );
+  const atLimit = {
+    ...input,
+    // Room to copy the larger input, so the copy budget is not what stops it.
+    limits: { ...input.limits, maxJsonEntries: 200_000, maxRetainedBytes: 5_000_000 },
+    changes,
+    sources: [...inventorySources, ...proofs],
+    publicIdentities: identities,
+  };
+  expect(identities).toHaveLength(limit('advisories.maxLookups'));
+  expect(prepareAdvisoryInput(atLimit).ok).toBe(true);
+  // A 257th lookup must repeat a (member, side) pair, since packet.changes caps the changes at 128;
+  // the length check refuses it before the pair check does.
+  const onePast = { ...atLimit, publicIdentities: [...identities, identities[0]] };
+  expect(prepareAdvisoryInput(onePast).ok).toBe(false);
 });

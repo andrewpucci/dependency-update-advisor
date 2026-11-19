@@ -9921,7 +9921,8 @@ const DEFINITIONS = [
 	unjustified("research.maxAttempts", 512, "count", {
 		protects: "The number of attempt records one enrichment can carry is bounded, so the output built from them stays within memory and output size (memory).",
 		effect: "Output with more attempts than the cap fails the enrichment with reason budget.",
-		note: "awaiting L8 measurement"
+		note: "awaiting L8 measurement",
+		test: "src/evidence/upstream.test.ts > upstream bounds keep exactly research.maxAttempts attempts and refuse one more"
 	}),
 	derived("research.maxFindings", "count", ["packet.findings"], copy, "The research finding cap mirrors the packet's finding cap, since research findings land in the packet.", {
 		protects: "Research findings land in the packet, so the research finding cap mirrors the packet findings cap and bounds packet size (packet size).",
@@ -9953,7 +9954,8 @@ const DEFINITIONS = [
 	}),
 	derived("advisories.maxLookups", "count", ["packet.changes"], (changes) => 2 * changes, "The advisory lookup cap is one identity per side of each packet change.", {
 		protects: "Public identity and action-version lookups sent to advisory sources are bounded to one per side of each packet change, so lookup requests cannot grow past the change count (outbound requests).",
-		effect: "An input with more lookups than the cap fails validation before any lookup is sent, with reason malformed by advisoryCheck's default."
+		effect: "An input with more lookups than the cap fails validation before any lookup is sent, with reason malformed by advisoryCheck's default.",
+		test: "src/evidence/advisories.test.ts > accepts exactly advisories.maxLookups public identities and refuses one more"
 	}),
 	unjustified("npm.maxIntegrityCodeUnits", 1024, "code units", {
 		protects: "The integrity string from the untrusted npm registry is bounded before the hash parser splits and matches it, so the parse cannot do unbounded work (CPU).",

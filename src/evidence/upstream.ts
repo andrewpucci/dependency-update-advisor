@@ -343,6 +343,11 @@ function bounds(output: UpstreamEnrichment, limits: UpstreamLimits, current?: Pa
     'budget',
   );
 }
+/**
+ * The retained-output bounds, exported for its boundary test: no fixture records 512 attempts, so
+ * the test builds an output of exactly that many.
+ */
+export const upstreamBounds = bounds;
 function metadataAttempt(
   output: UpstreamEnrichment,
   change: PacketChange,

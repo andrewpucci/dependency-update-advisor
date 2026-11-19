@@ -1,6 +1,7 @@
 import { expect, test } from 'vite-plus/test';
 import { collectAdvisoryNpm, collectAdvisoryUv } from '../../tests/parity/advisories.js';
-import { enrichUpstream, attachUpstreamResearch } from './upstream.js';
+import { enrichUpstream, attachUpstreamResearch, upstreamBounds } from './upstream.js';
+import { limit } from '../limits.js';
 import { createUpstreamReader } from './upstream-read.js';
 
 const integrity = 'sha512-' + Buffer.alloc(64, 7).toString('base64');
@@ -408,4 +409,27 @@ test('identities established before a stop in the middle of a member survive', a
     reasons: ['budget'],
     sourceIds: [],
   });
+});
+
+test('upstream bounds keep exactly research.maxAttempts attempts and refuse one more', async () => {
+  const input = await fixture(3);
+  const probe = registryReader({});
+  const normal = await enrichUpstream(input, { reader: probe.reader });
+  probe.reader.close();
+  if (normal.kind !== 'enriched') throw new Error('enrichment');
+  const cap = limit('research.maxAttempts');
+  // Room for the padded attempts, so the attempt count, not retained bytes, is what binds.
+  const limits = { ...input.limits, maxAttempts: cap, maxRetainedBytes: limit('packet.bytes') };
+  const padded = (count: number) => ({
+    ...normal,
+    attempts: Array.from({ length: count }, (_, i) => normal.attempts[i % normal.attempts.length]),
+  });
+  expect(() => upstreamBounds(padded(cap), limits)).not.toThrow();
+  let reason: unknown;
+  try {
+    upstreamBounds(padded(cap + 1), limits);
+  } catch (error) {
+    reason = (error as { reason?: unknown }).reason;
+  }
+  expect(reason).toBe('budget');
 });
