@@ -183,6 +183,28 @@ test('only the unlisted line in a file with an allowlisted one is a problem', ()
   expect(problems).toEqual([expect.stringContaining(`${SPEC}:2:`)]);
 });
 
+test.each([
+  ['Parse at most 16 KiB of JSON.', 'config.maxBytes'],
+  ['The packet holds at most 1 MiB.', 'packet.bytes'],
+  [
+    'Each signals reader gets 1.5 MiB.',
+    'evidence.allocation.signals.readers.malware.maxTotalBytes',
+  ],
+  ['Evidence reads end after 240 seconds.', 'evidence.envelope.totalTimeoutMs'],
+  ['Evidence reads end after 4 minutes.', 'evidence.envelope.totalTimeoutMs'],
+  ['The job has 15 minutes.', 'job.budget'],
+])('a value written with a unit is a stated value: %s', (line, id) => {
+  const problems = specProblems(REGISTER, FLOOR, [{ file: SPEC, text: `${line}\n` }], []);
+  expect(problems).toEqual([expect.stringContaining(String(entryOf(id).value))]);
+});
+
+test('a unit only matches entries measured in that unit', () => {
+  // 3 seconds is 3,000 ms, and github.treeMaxFiles is 3,000 files: not the same limit.
+  expect(entryOf('github.treeMaxFiles').value).toBe(3000);
+  const text = 'Retry after 3 seconds.\nTake 10 steps.\nUse 128 KiB of scratch.\n';
+  expect(specProblems(REGISTER, FLOOR, [{ file: SPEC, text }], [])).toEqual([]);
+});
+
 test('issue references and URLs are not stated values', () => {
   const text = 'Tracked in #50000 and https://example.com/pull/50000 and [x](https://e.com/128).\n';
   expect(specProblems(REGISTER, FLOOR, [{ file: SPEC, text }], [])).toEqual([]);

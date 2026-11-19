@@ -1228,5 +1228,83 @@
     "line": "authoritative, including the combined 128-change ceiling across ecosystems.",
     "values": [128],
     "reason": "pending amendment (L10): approved spec states the value"
+  },
+  {
+    "file": "docs/specs/SPEC-evidence-coverage.md",
+    "line": "404s from tag candidates. Two releases-list responses exceeded the 1 MiB",
+    "values": [1048576],
+    "reason": "pending amendment (L10): approved spec states the value"
+  },
+  {
+    "file": "docs/specs/SPEC-reachability-evidence.md",
+    "line": "- Overflow rejects the packet; it never trims. The existing 1 MiB packet byte",
+    "values": [1048576],
+    "reason": "pending amendment (L10): approved spec states the value"
+  },
+  {
+    "file": "docs/specs/SPEC-reachability-evidence.md",
+    "line": "| Near-1 MiB mixed packet with optional evidence                                                              | Assembler drops optional evidence in the stated order, records limits, accepts the packet; no change dropped and no group forms from a partial drop.              |",
+    "values": [1048576],
+    "reason": "pending amendment (L10): approved spec states the value"
+  },
+  {
+    "file": "docs/specs/SPEC-review-config.md",
+    "line": "2. Parse at most 16 KiB of JSON. Require `version: 1` and reject unknown",
+    "values": [16384],
+    "reason": "pending amendment (L10): approved spec states the value"
+  },
+  {
+    "file": "docs/specs/SPEC-review-orchestration.md",
+    "line": "| Freshness (workflow, run, PR, compare)    | 24       | 3 MiB   |",
+    "values": [3145728],
+    "reason": "pending amendment (L10): approved spec states the value"
+  },
+  {
+    "file": "docs/specs/SPEC-review-orchestration.md",
+    "line": "| npm registry details                      | 64       | 4 MiB   |",
+    "values": [4194304],
+    "reason": "pending amendment (L10): approved spec states the value"
+  },
+  {
+    "file": "docs/specs/SPEC-review-orchestration.md",
+    "line": "| Signals: malware                          | 40       | 1.5 MiB |",
+    "values": [1572864],
+    "reason": "pending amendment (L10): approved spec states the value"
+  },
+  {
+    "file": "docs/specs/SPEC-review-orchestration.md",
+    "line": "| Signals: npm publish times                | 40       | 1.5 MiB |",
+    "values": [1572864],
+    "reason": "pending amendment (L10): approved spec states the value"
+  },
+  {
+    "file": "docs/specs/SPEC-review-orchestration.md",
+    "line": "| Signals: npm registry policy              | 64       | 2 MiB   |",
+    "values": [2097152],
+    "reason": "pending amendment (L10): approved spec states the value"
+  },
+  {
+    "file": "docs/specs/SPEC-review-orchestration.md",
+    "line": "| Signals: PyPI metadata                    | 16       | 0.5 MiB |",
+    "values": [524288],
+    "reason": "pending amendment (L10): approved spec states the value"
+  },
+  {
+    "file": "docs/specs/SPEC-review-orchestration.md",
+    "line": "| Signals: Actions upstream                 | 16       | 0.5 MiB |",
+    "values": [524288],
+    "reason": "pending amendment (L10): approved spec states the value"
+  },
+  {
+    "file": "docs/specs/SPEC-review-packet.md",
+    "line": "and 1 MiB ceilings are unchanged.",
+    "values": [1048576],
+    "reason": "pending amendment (L10): approved spec states the value"
+  },
+  {
+    "file": "docs/specs/SPEC-shared-release-observations.md",
+    "line": "requests and 0.5 MiB). S2 consumes the validated result without spending the",
+    "values": [524288],
+    "reason": "pending amendment (L10): approved spec states the value"
   }
 ]

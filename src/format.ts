@@ -69,6 +69,12 @@ export const ISO_DATE_TIME = Object.freeze({
 
 export const MS_PER_DAY = 86_400_000;
 
+/** Binary byte units, as specs write sizes (`16 KiB`, `1.5 MiB`). */
+export const BINARY_BYTES = Object.freeze({ KiB: 1024, MiB: 1024 ** 2, GiB: 1024 ** 3 });
+
+/** Durations in milliseconds, as specs write timeouts (`240 seconds`, `15 minutes`). */
+export const DURATION_MS = Object.freeze({ second: 1000, minute: 60_000, hour: 3_600_000 });
+
 /** The largest delay `setTimeout` accepts: a signed 32-bit integer. */
 export const MAX_TIMER_MS = 2 ** 31 - 1;
 

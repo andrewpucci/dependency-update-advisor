@@ -2,6 +2,7 @@ import { readdirSync, readFileSync } from 'node:fs';
 import { basename, join, resolve } from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import { isAlias, isMap, isScalar, isSeq, parseDocument } from 'yaml';
+import type * as Format from '../../src/format.js';
 import type * as Limits from '../../src/limits.js';
 
 const ROOT = fileURLToPath(new URL('../../', import.meta.url));
@@ -10,6 +11,9 @@ const ROOT = fileURLToPath(new URL('../../', import.meta.url));
 const { PENDING_AUDIT, REGISTER, limit } = (await import(
   pathToFileURL(join(ROOT, 'src/limits.ts')).href
 )) as typeof Limits;
+const { BINARY_BYTES, DURATION_MS } = (await import(
+  pathToFileURL(join(ROOT, 'src/format.ts')).href
+)) as typeof Format;
 type Limit = Limits.Limit;
 
 export type SourceFile = { file: string; text: string };
@@ -114,14 +118,39 @@ export function workflowProblems(
   return problems;
 }
 
-/** The register values a line states as a whole number: plain, comma-, or underscore-grouped. */
-export function statedValues(line: string, values: readonly number[]): number[] {
+/** A number followed by a size or duration unit (`16 KiB`, `1.5 MiB`, `240 seconds`). */
+const UNIT_VALUE = /(?<![\w.,])(\d+(?:\.\d+)?)\s*(KiB|MiB|GiB|seconds?|minutes?|min|hours?)\b/g;
+
+/** The register unit a spec unit converts to, and its size in that unit. */
+function unitScale(unit: string): { unit: string; scale: number } {
+  if (unit in BINARY_BYTES)
+    return { unit: 'bytes', scale: BINARY_BYTES[unit as keyof typeof BINARY_BYTES] };
+  const duration = unit.startsWith('hour') ? 'hour' : unit.startsWith('min') ? 'minute' : 'second';
+  return { unit: 'milliseconds', scale: DURATION_MS[duration] };
+}
+
+export type StatedEntry = { value: number; unit: string };
+
+/**
+ * The register values a line states: a whole number (plain, comma-, or underscore-grouped)
+ * equal to any value, or a number with a size or duration unit that converts to the value of an
+ * entry in that unit.
+ */
+export function statedValues(line: string, entries: readonly StatedEntry[]): number[] {
+  const text = line.replace(NOT_A_VALUE, ' ');
+  const values = entries.map((entry) => entry.value);
   const stated = new Set<number>();
-  for (const [run] of line.replace(NOT_A_VALUE, ' ').matchAll(NUMBER_RUN)) {
+  // A number with a unit is compared only after conversion: 128 KiB is not 128 changes.
+  for (const [run] of text.replace(UNIT_VALUE, ' ').matchAll(NUMBER_RUN)) {
     const token = run.replace(/[.,]+$/, '');
     if (!WHOLE_NUMBER.test(token)) continue;
     const value = Number(token.replace(/[,_]/g, ''));
     if (values.includes(value)) stated.add(value);
+  }
+  for (const [, amount, unit] of text.matchAll(UNIT_VALUE)) {
+    const { unit: target, scale } = unitScale(unit ?? '');
+    const value = Number(amount) * scale;
+    if (entries.some((entry) => entry.unit === target && entry.value === value)) stated.add(value);
   }
   return [...stated];
 }
@@ -138,7 +167,7 @@ export function specProblems(
   specs: readonly SourceFile[],
   allowlist: readonly AllowedSpecLine[],
 ): string[] {
-  const values = [...register.values()].map((entry) => entry.value).filter((v) => v > floor);
+  const values = [...register.values()].filter((entry) => entry.value > floor);
   const allowed = new Set(allowlist.map((entry) => specKey(entry.file, entry.line)));
   const stating = new Set<string>();
   const problems: string[] = [];

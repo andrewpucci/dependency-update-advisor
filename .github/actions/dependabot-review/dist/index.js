@@ -141,6 +141,18 @@ const ISO_DATE_TIME = Object.freeze({
 	millisecondDigits: 3
 });
 const MS_PER_DAY = 864e5;
+/** Binary byte units, as specs write sizes (`16 KiB`, `1.5 MiB`). */
+const BINARY_BYTES = Object.freeze({
+	KiB: 1024,
+	MiB: 1024 ** 2,
+	GiB: 1024 ** 3
+});
+/** Durations in milliseconds, as specs write timeouts (`240 seconds`, `15 minutes`). */
+const DURATION_MS = Object.freeze({
+	second: 1e3,
+	minute: 6e4,
+	hour: 36e5
+});
 /** The largest delay `setTimeout` accepts: a signed 32-bit integer. */
 const MAX_TIMER_MS = 2 ** 31 - 1;
 /** The largest unsigned 32-bit integer, the default bound for lockfile integers. */
