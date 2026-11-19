@@ -9228,7 +9228,8 @@ const DEFINITIONS = [
 	unjustified("uv.maxCorroborationCodeUnits", 4096, "code units"),
 	unjustified("uv.corroborationWorkPerEntry", 64, "count"),
 	unjustified("handoff.maxTraces", 32, "count"),
-	unjustified("startup.maxReportedDurationMs", 999999, "milliseconds")
+	unjustified("startup.maxReportedDurationMs", 999999, "milliseconds"),
+	unjustified("checkLimits.specValueFloor", 64, "count")
 ];
 const REGISTER = buildRegister(DEFINITIONS);
 function limitEntry(id) {

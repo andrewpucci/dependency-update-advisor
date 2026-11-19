@@ -826,6 +826,8 @@ const DEFINITIONS = [
   unjustified('uv.corroborationWorkPerEntry', 64, 'count'),
   unjustified('handoff.maxTraces', 32, 'count'),
   unjustified('startup.maxReportedDurationMs', 999_999, 'milliseconds'),
+  // Spec values at or below this floor are not checked by check:limits, from scripts/limits/check.ts.
+  unjustified('checkLimits.specValueFloor', 64, 'count'),
 ] as const satisfies readonly LimitDefinition[];
 
 export type LimitId = (typeof DEFINITIONS)[number]['id'];
