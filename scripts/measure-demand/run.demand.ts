@@ -2,22 +2,101 @@
  * Measures research read demand for one Dependabot PR, open or closed, with no model call and no
  * write. Usage: MEASURE_PR=276 GITHUB_TOKEN=... npm run measure:demand
  * Optional: MEASURE_REPO (default andrewpucci/dependency-update-advisor), MEASURE_CI_WORKFLOW
- * (default .github/workflows/ci.yml), MEASURE_OUT (write the JSON report to this path).
+ * (default .github/workflows/ci.yml), MEASURE_OUT (write the JSON report to this path),
+ * MEASURE_SCALE (a positive integer; multiplies the read budget, see `isReadBudget`, so the run
+ * shows demand the current shares would cut off; a report with `censored` stages is still capped).
  * The report holds counts only: no URL, header, token, or response body.
  */
 import { writeFileSync } from 'node:fs';
-import { test } from 'vite-plus/test';
+import { test, vi } from 'vite-plus/test';
 import { authenticatedFetch, researchFetch } from '../../src/adapters.js';
-import { EVIDENCE_READ_ENVELOPE, RESEARCH_CACHE_LIMITS } from '../../src/budget.js';
+import {
+  EVIDENCE_READ_ALLOCATION,
+  EVIDENCE_READ_ENVELOPE,
+  RESEARCH_CACHE_LIMITS,
+} from '../../src/budget.js';
 import { createEvidenceCollectors, openEvidenceSession } from '../../src/collection.js';
 import { parseReviewBinding } from '../../src/event.js';
 import { createResearchCache } from '../../src/evidence/research-cache.js';
-import { createDemandRecorder } from '../../src/measurement/demand.js';
+import { limit } from '../../src/limits.js';
+import {
+  createDemandRecorder,
+  labelShare,
+  type DemandPhase,
+} from '../../src/measurement/demand.js';
 import { assembleReviewPacket } from '../../src/packet.js';
 import { dependencyIdentities } from '../../src/pipeline.js';
 import { runResearch } from '../../src/research.js';
 import { createGithubTransport } from '../../src/runtime.js';
 import { createGithubSnapshotReads, withTrustedSnapshot } from '../../src/snapshot.js';
+
+// Mock factories run before imports, so they share the recorder's phase through this holder.
+const hooks = vi.hoisted(() => ({ phase: (): DemandPhase => 'pre-research' }));
+
+vi.mock('../../src/limits.js', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('../../src/limits.js')>();
+  const { scaledDefinitions } = await import('../../src/measurement/scale.js');
+  const factor = Number(process.env.MEASURE_SCALE ?? '1');
+  const register = actual.buildRegister(scaledDefinitions(actual.REGISTER, factor));
+  const limitEntry = (id: string) => {
+    const entry = register.get(id);
+    if (entry === undefined) throw new Error(`unknown limit id: ${id}`);
+    return entry;
+  };
+  return { ...actual, REGISTER: register, limitEntry, limit: (id: string) => limitEntry(id).value };
+});
+
+// Each research reader's requests count against its allocation share.
+vi.mock('../../src/evidence/upstream-read.js', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('../../src/evidence/upstream-read.js')>();
+  const { labelReader } = await import('../../src/measurement/demand.js');
+  const phase = () => hooks.phase();
+  return {
+    ...actual,
+    createUpstreamReader: labelReader('upstream', actual.createUpstreamReader, phase),
+  };
+});
+vi.mock('../../src/evidence/advisory-read.js', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('../../src/evidence/advisory-read.js')>();
+  const { labelReader } = await import('../../src/measurement/demand.js');
+  const phase = () => hooks.phase();
+  return {
+    ...actual,
+    createAdvisoryReader: labelReader('advisory', actual.createAdvisoryReader, phase),
+    createMalwareReader: labelReader('malware', actual.createMalwareReader, phase),
+  };
+});
+vi.mock('../../src/evidence/npm-publish-times.js', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('../../src/evidence/npm-publish-times.js')>();
+  const { labelReader } = await import('../../src/measurement/demand.js');
+  const phase = () => hooks.phase();
+  return {
+    ...actual,
+    createNpmPublishTimeReader: labelReader(
+      'publishTimes',
+      actual.createNpmPublishTimeReader,
+      phase,
+    ),
+  };
+});
+vi.mock('../../src/evidence/npm-registry.js', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('../../src/evidence/npm-registry.js')>();
+  const { labelReader } = await import('../../src/measurement/demand.js');
+  const phase = () => hooks.phase();
+  return {
+    ...actual,
+    createNpmRegistryReader: labelReader('npmRegistry', actual.createNpmRegistryReader, phase),
+  };
+});
+vi.mock('../../src/evidence/policy-signals-read.js', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('../../src/evidence/policy-signals-read.js')>();
+  const { labelReader } = await import('../../src/measurement/demand.js');
+  const phase = () => hooks.phase();
+  return {
+    ...actual,
+    createPolicySignalReader: labelReader('metadata', actual.createPolicySignalReader, phase),
+  };
+});
 
 const env = process.env;
 const [owner, name] = (env.MEASURE_REPO ?? 'andrewpucci/dependency-update-advisor').split('/');
@@ -99,11 +178,18 @@ test('measure research read demand', async () => {
   if (!token || !Number.isSafeInteger(pr)) throw new Error('GITHUB_TOKEN and MEASURE_PR required');
   const now = () => performance.now();
   const recorder = createDemandRecorder(now);
+  hooks.phase = recorder.phase;
   const base = recorder.wrap((url, init) => fetch(url, init));
   const { binding: bound, repository } = await binding(token, pr);
   const started = now();
   const deadline = started + EVIDENCE_READ_ENVELOPE.totalTimeoutMs;
-  const transport = createGithubTransport({ token, fetch: base, now, startedAt: started });
+  // Freshness reads never run here (isCurrent is always true), so transport is all snapshot.
+  const transport = createGithubTransport({
+    token,
+    fetch: labelShare('transport', base),
+    now,
+    startedAt: started,
+  });
   const publicFetch = researchFetch(token, base);
   let npmInventory: unknown = null;
   // As in the pipeline: one cache shared by collection's registry reads and research.
@@ -115,7 +201,7 @@ test('measure research read demand', async () => {
       const collectors = createEvidenceCollectors({
         binding: bound,
         dependabot: await trusted.dependabotRoots(),
-        registryFetch: publicFetch,
+        registryFetch: labelShare('registry', publicFetch),
         researchCache,
         onNpmInventory: (inventory) => (npmInventory = inventory),
         now,
@@ -134,7 +220,7 @@ test('measure research read demand', async () => {
         openSession: async () => {
           const opened = await openEvidenceSession({
             binding: bound,
-            fetch: authenticatedFetch(token, base),
+            fetch: authenticatedFetch(token, labelShare('session', base)),
             now,
             deadline,
           });
@@ -167,6 +253,12 @@ test('measure research read demand', async () => {
     measuredAt: new Date().toISOString(),
     totalMs: Math.round(now() - started),
     result: snapshot,
+    scale: Number(env.MEASURE_SCALE ?? '1'),
+    effectiveLimits: {
+      envelope: EVIDENCE_READ_ENVELOPE,
+      allocation: EVIDENCE_READ_ALLOCATION,
+      researchMaxAttempts: limit('research.maxAttempts'),
+    },
     ...recorder.report(measured),
   };
   const text = JSON.stringify(report, null, 2);
