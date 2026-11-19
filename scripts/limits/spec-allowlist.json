@@ -1306,5 +1306,35 @@
     "line": "requests and 0.5 MiB). S2 consumes the validated result without spending the",
     "values": [524288],
     "reason": "pending amendment (L10): approved spec states the value"
+  },
+  {
+    "file": "docs/specs/SPEC-advisory-lookup.md",
+    "line": "The workflow token gets 1,000 REST requests per hour per repository",
+    "values": [1000],
+    "reason": "external: quotes GitHub's documented limit (GitHub Docs, checked 2026-11-19), not a register value"
+  },
+  {
+    "file": "docs/specs/SPEC-advisory-lookup.md",
+    "line": "any of package or package@version\", up to 1,000 packages, as long as the",
+    "values": [1000],
+    "reason": "external: quotes GitHub's documented limit (GitHub Docs, checked 2026-11-19), not a register value"
+  },
+  {
+    "file": "docs/specs/SPEC-upstream-evidence.md",
+    "line": "budget is 1,000 requests per hour per repository; GraphQL has its own budget",
+    "values": [1000],
+    "reason": "external: quotes GitHub's documented limit (GitHub Docs, checked 2026-11-19), not a register value"
+  },
+  {
+    "file": "docs/specs/SPEC-upstream-evidence.md",
+    "line": "of 1,000 points per hour per repository",
+    "values": [1000],
+    "reason": "external: quotes GitHub's documented limit (GitHub Docs, checked 2026-11-19), not a register value"
+  },
+  {
+    "file": "docs/specs/SPEC-advisory-lookup.md",
+    "line": "size. Record what GitHub does above 1,000 targets. A probe on 2026-11-19",
+    "values": [1000],
+    "reason": "external: quotes GitHub's documented limit (GitHub Docs, checked 2026-11-19), not a register value"
   }
 ]

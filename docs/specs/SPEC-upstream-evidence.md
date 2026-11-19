@@ -426,3 +426,125 @@ analysis, rendering, publication, packaging, consumer adoption, parity, and
 cutover remain separate gates. Local mixed fixtures exercise actual
 D1/N1/N2/X1/U1/U2/S2/S1/T4/T5/C3 handoffs with synthetic S3 scaffolding; they
 do not certify these remaining gates or authorize retiring the old reviewer.
+
+## Batched Tag Existence Amendment
+
+**Status: approved for planning, 2026-11-19.** The user explicitly approved
+the reviewed draft after a fresh-context review whose blocking findings were
+resolved. Plan and execution approval remain separate gates, and approval
+does not set any limit value. Scoped to
+[#380](https://github.com/andrewpucci/dependency-update-advisor/issues/380)
+(limit register L8). Effort tier: L. It amends "Discovery, Ranges, and
+Fallbacks" and "Network, Work, and Privacy Bounds" by adding one read route.
+Candidate selection and every proof step are unchanged.
+
+### Why
+
+Measured on 2026-11-19, 174 of PR #276's 227 upstream requests were 404s on
+exact tag candidates. Packages whose repository metadata names a directory
+probe only `<name>@<version>`, so each platform binary in a monorepo (for
+example the `@oxlint/binding-*` packages) probes its own tag, on both sides of
+a comparison. The discovery rule requires each candidate, so the fix is to ask
+about many candidates at once, not to probe fewer. The workflow token's REST
+budget is 1,000 requests per hour per repository; GraphQL has its own budget
+of 1,000 points per hour per repository
+([GraphQL rate limits](https://docs.github.com/en/graphql/overview/rate-limits-and-query-limits-for-the-graphql-api),
+checked 2026-11-19).
+
+### Decision for review
+
+1. **Existence query.** Before a stage resolves any member's candidates, a
+   pre-pass collects every exact candidate tag that stage will probe, for all
+   its members and both sides of each comparison, and asks GitHub's GraphQL
+   API whether each exists.
+   Each candidate is one aliased `repository(owner, name)` field selecting
+   `ref(qualifiedName: "refs/tags/<tag>")` and its target's object ID, plus
+   the repository's `nameWithOwner`. The
+   query text is a fixed shape built locally, and every owner, name, and tag
+   is passed as a variable. No mutation, and no caller-supplied query text.
+2. **Absent means missing.** A candidate is `missing`, exactly as a REST 404
+   would make it, only when no error names its alias, its alias is present,
+   its repository resolves with a `nameWithOwner` equal to the requested one
+   ignoring case, and its `ref` is null. It costs no REST request. Its
+   attempt is recorded as today, with the release-tag page link and reason
+   `missing`; no REST URL is cited. Tag names are compared exactly (2026-11-19:
+   `V5.0.2` was null where `v5.0.2` exists).
+3. **Present continues as today.** A candidate that exists goes through the
+   existing REST path: exact ref, tag peeling, package correspondence, and
+   the recheck. The GraphQL object ID is never proof.
+4. **Incomplete answers fall back.** GitHub reports a missing repository as
+   a null alias with an error whose path names that alias (probed
+   2026-11-19). An error naming an alias, a null repository, or a
+   `nameWithOwner` that differs ignoring case (a renamed repository, which
+   REST would redirect) makes that alias's candidates fall back to today's
+   REST probe. An error without a path, missing data, a timeout, an oversized
+   response, or a redirect makes the whole query fall back. No candidate is
+   `missing` from an incomplete answer.
+5. **Rate limits.** GraphQL's primary limit is a separate budget, so
+   exhausting it makes the query fall back to REST and does not block the
+   origin. A secondary limit is shared by REST and GraphQL, so it stops
+   dispatch on the origin as a REST rate limit does today, and unsettled
+   candidates get `rate_limit`.
+6. **Bounds.** A query counts as one request against the share of the stage
+   that sent it, and its bytes count against that share, not any member's
+   allowance. The query also
+   selects `rateLimit { cost }`, so a measurement can record the point cost
+   (five lookups cost 1 point in the 2026-11-19 probe). A register entry
+   bounds candidates per query; the plan proposes its value after the
+   equivalence check, as an Ask-first decision. Dispatch stays sequential and
+   deterministic.
+7. **Reuse within the run.** Answers are kept for the run in an existence
+   map keyed by repository and exact tag, so later stages and sibling packages
+   reuse them. GraphQL requests never go through the shared research cache,
+   whose key (method, URL, headers) does not include the request body; every
+   query is a POST to the same URL. The map is discarded when the run ends.
+8. **Route.** `POST https://api.github.com/graphql`, with the research token.
+   Without a token, candidates are probed over REST as today. Redirects are
+   rejected.
+
+### Verification
+
+- **Recorded equivalence check.** Before the batch path is enabled, check
+  PR #276's real candidates both ways and record that every REST 404 is a
+  GraphQL null and every GraphQL null is a REST 404. A probe on 2026-11-19
+  agreed on four tags, including `@` and `/` in tag names
+  (`plugin-legacy@5.0.0` and `v3.2.0` found; `@vitejs/plugin-legacy@5.0.0`
+  and `@vitest/ui@3.2.0` absent in both).
+- **Remeasure.** Rerun `npm run measure:demand` over the L8 corpus; L8's
+  fitted upstream rate comes from that run.
+
+### Fixtures
+
+- An absent candidate is `missing` with no REST request.
+- A present candidate is proved over REST exactly as today.
+- An error naming one alias falls back for that alias only; the others keep
+  their answers.
+- An error without a path, and a missing `data` object, fall back for the
+  whole query.
+- A renamed repository (`nameWithOwner` differs ignoring case) falls back to
+  REST, where the redirect is rejected as today; a case-only difference does
+  not.
+- GraphQL's primary limit exhausted: the query falls back to REST. A secondary
+  limit: dispatch stops and unsettled candidates get `rate_limit`.
+- A missing candidate's attempt cites the release-tag page link, not a REST
+  URL.
+- Two different queries in one run both reach the network.
+- Sibling packages in one repository share one query.
+
+### Amendment boundaries
+
+- **Always:** keep every candidate the discovery rule requires, prove every
+  found tag over REST, and fall back to REST on any incomplete answer.
+- **Ask first:** the candidates-per-query value, using GraphQL for anything
+  other than tag existence, or keeping answers across runs.
+- **Never:** treat a GraphQL object ID as proof, mark a candidate missing from
+  an incomplete answer, or send caller-supplied query text.
+
+### Out of scope
+
+Packages in a monorepo that tags releases repository-wide never resolve
+under the `<name>@<version>` rule. Checked 2026-11-19: `vitest-dev/vitest`
+has no tags starting with `@vitest` and tags releases `v<version>`, so every
+`@vitest/*` package's candidate misses. Fixing that adds candidates, so it
+interacts with this amendment, but it is a coverage question for its own
+amendment.

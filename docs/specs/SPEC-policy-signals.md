@@ -517,3 +517,50 @@ none of GitHub's malware advisories. A malware discovery is separate from a
 reviewed discovery and is never reused for it. S1's failure, bounds,
 citation, and known-limit rules apply unchanged, and malware coverage keeps
 its existing provider scope. `npm` malware queries are unchanged.
+
+## Batched Malware Lookup Amendment
+
+**Status: approved for planning, 2026-11-19.** The user explicitly approved
+the reviewed draft after a fresh-context review whose blocking findings were
+resolved. Plan and execution approval remain separate gates, and approval
+does not set any limit value. Scoped to
+[#380](https://github.com/andrewpucci/dependency-update-advisor/issues/380).
+Effort tier: L, reviewed together with the
+[S1 batched lookup amendment](SPEC-advisory-lookup.md#batched-lookup-amendment).
+
+Malware checks use S1's batch, clearing, attribution, fallback, and
+provenance rules with `type=malware`. Malware and reviewed queries stay
+separate: a batch never mixes types, and a reviewed result never clears a
+malware check. A target cleared by a complete malware batch has the same
+outcome as an exact malware query that returned no active matching records.
+Measured on 2026-11-19, exact malware queries made 102 of PR #276's 556 GitHub
+requests, and every one returned an empty list.
+
+A malware record that names exactly one batched package is attributed to
+that target from the batch, so an active record emits `malware` with
+`affects_proposed` even if a later request fails, as "Malware and severity"
+requires today. A target named by a record that names two or more batched
+packages gets the exact singleton malware query, whose result decides; if
+that query fails, the target's malware check is incomplete with the query's
+reason.
+
+### Verification
+
+The S1 equivalence check includes a known npm malware package, queried with
+`type=malware` both ways.
+
+### Fixtures
+
+- An active malware record naming one batched package, then a failed request:
+  the `malware` finding is kept.
+- A malware record naming two batched packages, then a failed singleton
+  query: the check is incomplete with the query's reason, and no finding is
+  emitted.
+- A reviewed advisory for a target does not clear its malware check.
+
+### Amendment boundaries
+
+- **Always:** keep malware and reviewed queries separate, and keep a known
+  attributable malware record when later requests fail.
+- **Ask first:** anything S1's amendment marks Ask first.
+- **Never:** clear a malware check from a reviewed result or a partial batch.
