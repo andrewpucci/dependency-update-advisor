@@ -782,6 +782,8 @@ const DEFINITIONS = [
   unjustified('complexity.cellInputCodeUnits', 160, 'code units'),
   unjustified('complexity.cellOutputCodeUnits', 200, 'code units'),
   unjustified('complexity.maxListedFindings', 100, 'count'),
+  // The demand measurement runs one whole review per test, from scripts/measure-demand.
+  unjustified('measureDemand.testTimeoutMs', 900_000, 'milliseconds'),
   // Limits moved from call sites by the L5 register sweep (issue #377).
   unjustified('signals.reasonCodeUnits', 350, 'code units'),
   unjustified('signals.npmMaxMaintainers', 32, 'count'),

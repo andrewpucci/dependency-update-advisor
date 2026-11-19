@@ -7,9 +7,11 @@ import { afterAll, expect, test } from 'vite-plus/test';
 const dir = join(process.cwd(), 'lint-planted');
 afterAll(() => rmSync(dir, { recursive: true, force: true }));
 
-function lint(source: string): string[] {
-  mkdirSync(dir, { recursive: true });
-  const file = join(dir, `planted-${process.pid}-${Math.random().toString(36).slice(2)}.ts`);
+/** Lints `source` as a file named `name` in its own scratch directory. */
+function lint(source: string, name = 'planted.ts'): string[] {
+  const own = join(dir, `${process.pid}-${Math.random().toString(36).slice(2)}`);
+  mkdirSync(own, { recursive: true });
+  const file = join(own, name);
   writeFileSync(file, source);
   let output: string;
   try {
@@ -46,6 +48,12 @@ test.each([
   ['an object field', 'export const limits = { pageSize: 300 };\n'],
 ])('a limit written with %s fails lint', (_label, source) => {
   expect(lint(source)).not.toEqual([]);
+});
+
+test('a timeout in a tool config fails lint like any other limit', () => {
+  // Tool configs are not exempt: a test-runner timeout is a tooling threshold.
+  const config = 'export default { test: { testTimeout: 900_000 } };\n';
+  expect(lint(config, 'vitest.config.mjs')).toContain('eslint(no-magic-numbers)');
 });
 
 test('counters, steps, and pairs pass', () => {

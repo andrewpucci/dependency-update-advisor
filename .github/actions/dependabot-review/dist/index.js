@@ -9216,6 +9216,7 @@ const DEFINITIONS = [
 	unjustified("complexity.cellInputCodeUnits", 160, "code units"),
 	unjustified("complexity.cellOutputCodeUnits", 200, "code units"),
 	unjustified("complexity.maxListedFindings", 100, "count"),
+	unjustified("measureDemand.testTimeoutMs", 9e5, "milliseconds"),
 	unjustified("signals.reasonCodeUnits", 350, "code units"),
 	unjustified("signals.npmMaxMaintainers", 32, "count"),
 	unjustified("pipeline.ownershipWatchMs", 2e3, "milliseconds"),

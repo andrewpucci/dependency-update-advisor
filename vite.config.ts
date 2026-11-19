@@ -56,9 +56,6 @@ export default defineConfig({
           '**/*.test.ts',
           '**/*.test.mjs',
           'tests/**',
-          // Tool configuration, not reviewer behavior.
-          '**/vite.config.*',
-          '**/vitest.config.*',
           // The rule's own definition.
           'scripts/lint/**',
         ],
