@@ -1,6 +1,8 @@
 /**
  * Measures research read demand for one Dependabot PR, open or closed, with no model call and no
- * write. Usage: MEASURE_PR=276 GITHUB_TOKEN=... npm run measure:demand
+ * write. A closed PR is measured as if open (see `reopenPullRequest`); the report counts the
+ * reads that shim changed in `reopenedPullReads`. The run fails, after writing its report, when
+ * research does not complete. Usage: MEASURE_PR=276 GITHUB_TOKEN=... npm run measure:demand
  * Optional: MEASURE_REPO (default andrewpucci/dependency-update-advisor), MEASURE_CI_WORKFLOW
  * (default .github/workflows/ci.yml), MEASURE_OUT (write the JSON report to this path),
  * MEASURE_SCALE (a positive integer; multiplies the read budget, see `isReadBudget`, so the run
@@ -24,6 +26,7 @@ import {
   labelShare,
   type DemandPhase,
 } from '../../src/measurement/demand.js';
+import { reopenPullRequest } from '../../src/measurement/reopen.js';
 import { assembleReviewPacket } from '../../src/packet.js';
 import { dependencyIdentities } from '../../src/pipeline.js';
 import { runResearch } from '../../src/research.js';
@@ -191,6 +194,7 @@ test('measure research read demand', async () => {
     startedAt: started,
   });
   const publicFetch = researchFetch(token, base);
+  const reopened = reopenPullRequest(labelShare('session', base), pr);
   let npmInventory: unknown = null;
   // As in the pipeline: one cache shared by collection's registry reads and research.
   const researchCache = createResearchCache(RESEARCH_CACHE_LIMITS);
@@ -220,7 +224,7 @@ test('measure research read demand', async () => {
         openSession: async () => {
           const opened = await openEvidenceSession({
             binding: bound,
-            fetch: authenticatedFetch(token, labelShare('session', base)),
+            fetch: authenticatedFetch(token, reopened.fetch),
             now,
             deadline,
           });
@@ -254,6 +258,7 @@ test('measure research read demand', async () => {
     totalMs: Math.round(now() - started),
     result: snapshot,
     scale: Number(env.MEASURE_SCALE ?? '1'),
+    reopenedPullReads: reopened.rewrites(),
     effectiveLimits: {
       envelope: EVIDENCE_READ_ENVELOPE,
       allocation: EVIDENCE_READ_ALLOCATION,
@@ -264,4 +269,6 @@ test('measure research read demand', async () => {
   const text = JSON.stringify(report, null, 2);
   if (env.MEASURE_OUT) writeFileSync(env.MEASURE_OUT, text + '\n');
   console.log(text);
+  if (Object.keys(measured).length === 0)
+    throw new Error(`research did not complete: ${JSON.stringify(snapshot)}`);
 });
