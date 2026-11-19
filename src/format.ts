@@ -78,9 +78,6 @@ export const DURATION_MS = Object.freeze({ second: 1000, minute: 60_000, hour: 3
 /** The largest delay `setTimeout` accepts: a signed 32-bit integer. */
 export const MAX_TIMER_MS = 2 ** 31 - 1;
 
-/** The largest unsigned 32-bit integer, the default bound for lockfile integers. */
-export const UINT32_MAX = 2 ** 32 - 1;
-
 /** File modes for the private snapshot workspace. */
 export const FILE_MODE = Object.freeze({
   privateDirectory: 0o700,

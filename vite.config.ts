@@ -56,8 +56,6 @@ export default defineConfig({
           '**/*.test.ts',
           '**/*.test.mjs',
           'tests/**',
-          // The rule's own definition.
-          'scripts/lint/**',
         ],
         rules: { 'no-magic-numbers': 'off', 'limits/no-literal-limit': 'off' },
       },

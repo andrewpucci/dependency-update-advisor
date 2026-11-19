@@ -155,8 +155,6 @@ const DURATION_MS = Object.freeze({
 });
 /** The largest delay `setTimeout` accepts: a signed 32-bit integer. */
 const MAX_TIMER_MS = 2 ** 31 - 1;
-/** The largest unsigned 32-bit integer, the default bound for lockfile integers. */
-const UINT32_MAX = 2 ** 32 - 1;
 /** File modes for the private snapshot workspace. */
 const FILE_MODE = Object.freeze({
 	privateDirectory: 448,
@@ -9240,6 +9238,7 @@ const DEFINITIONS = [
 	unjustified("upstream.releasePageSize", 64, "count"),
 	unjustified("uv.maxCorroborationCodeUnits", 4096, "code units"),
 	unjustified("uv.corroborationWorkPerEntry", 64, "count"),
+	unjustified("uv.maxLockInteger", 2 ** 32 - 1, "count"),
 	unjustified("handoff.maxTraces", 32, "count"),
 	unjustified("startup.maxReportedDurationMs", 999999, "milliseconds"),
 	unjustified("checkLimits.specValueFloor", 64, "count")
@@ -26816,7 +26815,7 @@ function packages(raw, limits, budget, gaps) {
 	}
 	return [...values.values()].sort((a, b) => byCodeUnit$1(a.key, b.key));
 }
-function integer(value, max = UINT32_MAX) {
+function integer(value, max = limit("uv.maxLockInteger")) {
 	need$4(typeof value === "bigint" && value >= 0n && value <= BigInt(max));
 	return Number(value);
 }

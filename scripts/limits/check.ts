@@ -26,7 +26,11 @@ const WORKFLOW_PREFIX = 'workflow.';
 const TEST_SEPARATOR = ' > ';
 const NUMBER_RUN = /[\w.,]+/g;
 const WHOLE_NUMBER = /^(?:\d+|\d{1,3}(?:[,_]\d{3})+)$/;
-const CITATION = /`limit:([^`\s]+)`/g;
+/** A `limit:<id>` citation, backticked or bare; an id is dotted (`packet.bytes`). */
+const CITATION = /(?<![\w-])limit:([A-Za-z][\w]*(?:\.[\w]+)+)/g;
+const NONE = 'none:';
+/** Markers that make a test file skip or narrow its tests, so a named test might never run. */
+const SKIPPING = /\b(?:test|it|describe)\.(?:skip|skipIf|only|todo)\b/;
 /** Issue and PR references (`#350`) and URLs name things, never limits. */
 const NOT_A_VALUE = /https?:\/\/\S+|#\d+/g;
 /** Allowlist reasons that only hold during migration. */
@@ -157,6 +161,11 @@ export function statedValues(line: string, entries: readonly StatedEntry[]): num
 
 const specKey = (file: string, line: string): string => `${file}\n${line}`;
 
+function sameValues(listed: readonly number[], stated: readonly number[]): boolean {
+  const sorted = (values: readonly number[]) => [...values].sort((a, b) => a - b).join(',');
+  return sorted(listed) === sorted(stated);
+}
+
 /**
  * A spec line stating a register value above the floor must be allowlisted by its trimmed text.
  * An allowlist entry is stale when no spec line with a stated value has that text.
@@ -168,7 +177,7 @@ export function specProblems(
   allowlist: readonly AllowedSpecLine[],
 ): string[] {
   const values = [...register.values()].filter((entry) => entry.value > floor);
-  const allowed = new Set(allowlist.map((entry) => specKey(entry.file, entry.line)));
+  const allowed = new Map(allowlist.map((entry) => [specKey(entry.file, entry.line), entry]));
   const stating = new Set<string>();
   const problems: string[] = [];
   for (const { file, text } of specs) {
@@ -177,9 +186,15 @@ export function specProblems(
       const stated = statedValues(line, values);
       if (stated.length === 0) return;
       stating.add(specKey(file, line));
-      if (!allowed.has(specKey(file, line))) {
+      const entry = allowed.get(specKey(file, line));
+      if (entry === undefined) {
         problems.push(
           `${file}:${index + 1}: states register value ${stated.join(', ')} and is not allowlisted`,
+        );
+      } else if (!sameValues(entry.values, stated)) {
+        // The reason covers the values it lists; a value the line gains needs its own review.
+        problems.push(
+          `${file}:${index + 1}: allowlist lists ${entry.values.join(', ')} but the line states ${stated.join(', ')}`,
         );
       }
     });
@@ -277,8 +292,15 @@ function testReferences(entry: Limit): string[] {
   const structural = entry.basis.kind === 'derived' ? entry.basis.structuralTest : undefined;
   return [entry.test, structural].filter(
     (reference): reference is string =>
-      reference !== undefined && reference !== PENDING_AUDIT && !reference.startsWith('none:'),
+      reference !== undefined && reference !== PENDING_AUDIT && !reference.startsWith(NONE),
   );
+}
+
+/** A `none:` reference must say why there is no test. */
+function noneProblems(entry: Limit): string[] {
+  return entry.test.startsWith(NONE) && entry.test.slice(NONE.length).trim() === ''
+    ? [`${entry.id}: test "none:" gives no reason`]
+    : [];
 }
 
 function referenceProblems(
@@ -292,6 +314,8 @@ function referenceProblems(
   const title = reference.slice(at + TEST_SEPARATOR.length);
   const source = readFile(file);
   if (source === null) return [`${id}: test file ${file} does not exist`];
+  if (SKIPPING.test(source))
+    return [`${id}: ${file} skips or narrows tests, so the named test might not run`];
   // A live call at the start of a line: a title that only appears in a comment does not count.
   const live = source.split('\n').some((line) => line.trimStart().startsWith(`test('${title}'`));
   return live ? [] : [`${id}: no test('${title}' in ${file}`];
@@ -302,9 +326,12 @@ export function testProblems(
   register: ReadonlyMap<string, Limit>,
   readFile: (path: string) => string | null,
 ): string[] {
-  return [...register.values()].flatMap((entry) =>
-    testReferences(entry).flatMap((reference) => referenceProblems(entry.id, reference, readFile)),
-  );
+  return [...register.values()].flatMap((entry) => [
+    ...noneProblems(entry),
+    ...testReferences(entry).flatMap((reference) =>
+      referenceProblems(entry.id, reference, readFile),
+    ),
+  ]);
 }
 
 function pendingFields(entry: Limit): string[] {

@@ -144,25 +144,6 @@ test('copies wired: the source-root and candidate bounds are one entry each, rea
   }
 });
 
-test('every real test field names an existing test title, or is a documented placeholder', () => {
-  for (const entry of REGISTER.values()) {
-    const tests = [entry.test];
-    if (entry.basis.kind === 'derived' && entry.basis.structuralTest !== undefined) {
-      tests.push(entry.basis.structuralTest);
-    }
-    for (const test of tests) {
-      if (test === PENDING_AUDIT || test.startsWith('none:')) continue;
-      const separator = ' > ';
-      const at = test.indexOf(separator);
-      const file = test.slice(0, at);
-      const title = test.slice(at + separator.length);
-      expect(file, entry.id).toMatch(/^src\/(?:[\w.-]+\/)*[\w.-]+\.test\.ts$/);
-      const source = readFileSync(fileURLToPath(new URL(`../${file}`, import.meta.url)), 'utf8');
-      expect(source, entry.id).toContain(`test('${title}'`);
-    }
-  }
-});
-
 test('moved limits that mirror a packet bound are derived from it', () => {
   expect(dependents(REGISTER, 'packet.changes')).toContain('advisories.maxLookups');
   expect(dependents(REGISTER, 'packet.bytes')).toContain('analysis.projectionBytes');

@@ -362,13 +362,13 @@
   {
     "file": "docs/specs/SPEC-mistral-transport.md",
     "line": "requests, each capped at 4 MiB, 4,096 completion tokens, and 120 seconds,",
-    "values": [4096],
+    "values": [4096, 4194304],
     "reason": "pending amendment (L10): approved spec states the value"
   },
   {
     "file": "docs/specs/SPEC-mistral-transport.md",
     "line": "bounded separately to 64 levels, 1,048,576 entries, and 8 MiB of string values",
-    "values": [1048576],
+    "values": [1048576, 8388608],
     "reason": "pending amendment (L10): approved spec states the value"
   },
   {
@@ -650,7 +650,7 @@
   {
     "file": "docs/specs/SPEC-reachability-evidence.md",
     "line": "- Packet-wide budgets: the 1,024 cap and the 1 MiB ceiling are per packet, but",
-    "values": [1024],
+    "values": [1024, 1048576],
     "reason": "pending amendment (L10): approved spec states the value"
   },
   {
@@ -692,13 +692,13 @@
   {
     "file": "docs/specs/SPEC-review-orchestration.md",
     "line": "Approved execution envelope, amended 2026-11-09: 944 total requests, 1 MiB",
-    "values": [944],
+    "values": [944, 1048576],
     "reason": "pending amendment (L10): approved spec states the value"
   },
   {
     "file": "docs/specs/SPEC-review-orchestration.md",
     "line": "per response, 54 MiB total response bytes, a 15,000 ms request timeout, and",
-    "values": [15000],
+    "values": [15000, 56623104],
     "reason": "pending amendment (L10): approved spec states the value"
   },
   {
@@ -710,25 +710,25 @@
   {
     "file": "docs/specs/SPEC-review-orchestration.md",
     "line": "| Snapshot reads (repository, commit, tree) | 200      | 9 MiB   |",
-    "values": [200],
+    "values": [200, 9437184],
     "reason": "pending amendment (L10): approved spec states the value"
   },
   {
     "file": "docs/specs/SPEC-review-orchestration.md",
     "line": "| GitHub evidence session                   | 160      | 12 MiB  |",
-    "values": [160],
+    "values": [160, 12582912],
     "reason": "pending amendment (L10): approved spec states the value"
   },
   {
     "file": "docs/specs/SPEC-review-orchestration.md",
     "line": "| Upstream evidence                         | 240      | 15 MiB  |",
-    "values": [240],
+    "values": [240, 15728640],
     "reason": "pending amendment (L10): approved spec states the value"
   },
   {
     "file": "docs/specs/SPEC-review-orchestration.md",
     "line": "| Advisory lookup                           | 80       | 5 MiB   |",
-    "values": [80],
+    "values": [80, 5242880],
     "reason": "pending amendment (L10): approved spec states the value"
   },
   {

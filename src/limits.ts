@@ -826,6 +826,8 @@ const DEFINITIONS = [
   unjustified('upstream.releasePageSize', 64, 'count'),
   unjustified('uv.maxCorroborationCodeUnits', 4_096, 'code units'),
   unjustified('uv.corroborationWorkPerEntry', 64, 'count'),
+  // A chosen ceiling for uv.lock integers (TOML allows 64-bit): the largest uint32.
+  unjustified('uv.maxLockInteger', 2 ** 32 - 1, 'count'),
   unjustified('handoff.maxTraces', 32, 'count'),
   unjustified('startup.maxReportedDurationMs', 999_999, 'milliseconds'),
   // Spec values at or below this floor are not checked by check:limits, from scripts/limits/check.ts.

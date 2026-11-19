@@ -1,9 +1,10 @@
 import { definePlugin, defineRule } from 'vite-plus/lint/plugins';
 
 /**
- * oxlint's `no-magic-numbers` skips a literal that initializes a named constant or an object
- * field, which is exactly how a new limit usually appears (`const MAX_BODY = 50_000`). This rule
- * reports those, so every limit lives in src/limits.ts with its reason. The same values
+ * oxlint's `no-magic-numbers` skips a literal that initializes a variable, which is exactly how a
+ * new limit usually appears (`const MAX_BODY = 50_000`). This rule reports those, so every limit
+ * lives in src/limits.ts with its reason. Object fields need no handler here: `no-magic-numbers`
+ * reports them itself (`detectObjects`). The same values
  * `no-magic-numbers` ignores are ignored here: counters start at 0, and 1, -1, and 2 are
  * structural (steps, sentinels, pairs, halves).
  */
@@ -47,9 +48,6 @@ export default definePlugin({
           // `const`, `let`, and `var` alike: a limit can start as any of them.
           VariableDeclarator(node) {
             check(node.init);
-          },
-          Property(node) {
-            if (node.parent?.type === 'ObjectExpression') check(node.value);
           },
         };
       },

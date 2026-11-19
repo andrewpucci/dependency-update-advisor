@@ -300,6 +300,43 @@ test('schema bounds of 0 and 1 are positivity checks, not limits', () => {
   expect(schemaProblems(REGISTER, [{ file: SCHEMA, text }], {})).toEqual([]);
 });
 
+test('a bare limit citation is checked like a backticked one', () => {
+  const docs = [{ file: SPEC, text: 'See limit:packet.nope and limit:packet.bytes.\n' }];
+  expect(citationProblems(REGISTER, docs)).toEqual([expect.stringContaining('limit:packet.nope')]);
+  const prose = [{ file: SPEC, text: 'The rate limit: 5 per minute, and no-limit:x.y.\n' }];
+  expect(citationProblems(REGISTER, prose)).toEqual([]);
+});
+
+test('a none test reference must give a reason', () => {
+  const only = (test: string) => new Map([['packet.bytes', { ...entryOf('packet.bytes'), test }]]);
+  expect(testProblems(only('none:'), reading({}))).toEqual([
+    expect.stringContaining('gives no reason'),
+  ]);
+  expect(testProblems(only('none:   '), reading({}))).toHaveLength(1);
+  expect(testProblems(only('none: checked by the workflow comparison'), reading({}))).toEqual([]);
+});
+
+test.each(['describe.skip(', 'test.only(', 'it.todo(', 'test.skipIf('])(
+  'a named test in a file using %s is a problem',
+  (marker) => {
+    const only = new Map([
+      ['packet.bytes', { ...entryOf('packet.bytes'), test: 'src/a.test.ts > here' }],
+    ]);
+    const files = { 'src/a.test.ts': `${marker}'group', () => {});\ntest('here', () => {});\n` };
+    expect(testProblems(only, reading(files))).toEqual([expect.stringContaining('might not run')]);
+  },
+);
+
+test('an allowlisted line that states a value its entry does not list is a problem', () => {
+  const line = 'Snapshot reads get 200 requests and 9 MiB.';
+  const listed = (values: number[]) => [{ file: SPEC, line, values, reason: 'x' }];
+  const specs = [{ file: SPEC, text: `${line}\n` }];
+  expect(specProblems(REGISTER, FLOOR, specs, listed([200]))).toEqual([
+    expect.stringContaining('allowlist lists 200 but the line states'),
+  ]);
+  expect(specProblems(REGISTER, FLOOR, specs, listed([9 * 1024 * 1024, 200]))).toEqual([]);
+});
+
 test('the real tree passes check:limits', () => {
   const output = execFileSync(process.execPath, ['scripts/limits/check.ts'], {
     cwd: ROOT,
