@@ -2,13 +2,14 @@ import { execFileSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 import { expect, test } from 'vite-plus/test';
 import {
+  PENDING_AMENDMENT,
   citationProblems,
   migrationProblems,
   specProblems,
   testProblems,
   workflowProblems,
 } from '../../scripts/limits/check.js';
-import { REGISTER, limit, type Limit } from '../../src/limits.js';
+import { PENDING_AUDIT, REGISTER, limit, type Limit } from '../../src/limits.js';
 
 const ROOT = fileURLToPath(new URL('../../', import.meta.url));
 const FLOOR = limit('checkLimits.specValueFloor');
@@ -143,6 +144,94 @@ test('an unjustified entry is a problem only while migration is closed', () => {
     expect.stringContaining('packet.bytes'),
   );
   expect(migrationProblems(REGISTER, true)).toEqual([]);
+});
+
+test('a step-level timeout is checked like a job timeout', () => {
+  const step = {
+    file: '.github/workflows/ci.yml',
+    text: 'jobs:\n  quality:\n    timeout-minutes: 10\n    steps:\n      - run: npm test\n        timeout-minutes: 600\n',
+  };
+  const problems = workflowProblems(REGISTER, [
+    ...CLEAN_WORKFLOWS.slice(0, 1),
+    step,
+    CLEAN_WORKFLOWS[2],
+  ]);
+  expect(problems).toEqual([
+    expect.stringContaining('job quality step 0 has timeout-minutes but no register entry'),
+  ]);
+});
+
+test('a timeout written through an alias or expression is a problem', () => {
+  for (const value of ['*t', '${{ inputs.minutes }}']) {
+    const aliased = {
+      file: '.github/workflows/ci.yml',
+      text: `x: &t 10\njobs:\n  quality:\n    timeout-minutes: ${value}\n`,
+    };
+    expect(
+      workflowProblems(REGISTER, [CLEAN_WORKFLOWS[0], aliased, CLEAN_WORKFLOWS[2]]),
+      value,
+    ).toContainEqual(expect.stringContaining('must be a literal number'));
+  }
+});
+
+test('only the unlisted line in a file with an allowlisted one is a problem', () => {
+  const text = 'Bodies hold at most 50,000 code units.\nPackets hold at most 128 changes.\n';
+  const allowlist = [
+    { file: SPEC, line: 'Bodies hold at most 50,000 code units.', values: [50_000], reason: 'x' },
+  ];
+  const problems = specProblems(REGISTER, FLOOR, [{ file: SPEC, text }], allowlist);
+  expect(problems).toEqual([expect.stringContaining(`${SPEC}:2:`)]);
+});
+
+test('issue references and URLs are not stated values', () => {
+  const text = 'Tracked in #50000 and https://example.com/pull/50000 and [x](https://e.com/128).\n';
+  expect(specProblems(REGISTER, FLOOR, [{ file: SPEC, text }], [])).toEqual([]);
+});
+
+test('a structural test reference is checked like the entry test', () => {
+  const entry = entryOf('signals.attemptsPerMember');
+  if (entry.basis.kind !== 'derived') throw new Error('expected a derived entry');
+  const broken = new Map([
+    [
+      entry.id,
+      {
+        ...entry,
+        test: 'none: x',
+        basis: { ...entry.basis, structuralTest: 'src/a.test.ts > gone' },
+      },
+    ],
+  ]);
+  expect(testProblems(broken, reading({ 'src/a.test.ts': "test('here', () => {});\n" }))).toEqual([
+    expect.stringContaining("no test('gone'"),
+  ]);
+});
+
+test('a test title that appears only in a comment is a problem', () => {
+  const only = new Map([
+    ['packet.bytes', { ...entryOf('packet.bytes'), test: 'src/a.test.ts > gone' }],
+  ]);
+  const files = { 'src/a.test.ts': "// test('gone', () => {});\nconst s = \"test('gone'\";\n" };
+  expect(testProblems(only, reading(files))).toHaveLength(1);
+});
+
+test('closing migration reports pending fields and pending allowlist lines', () => {
+  const derived = [...REGISTER.values()].find(
+    (entry) => entry.basis.kind === 'derived' && entry.test === PENDING_AUDIT,
+  );
+  if (!derived) throw new Error('expected a derived entry with a pending test');
+  const only = new Map([[derived.id, derived]]);
+  const pending = [{ file: SPEC, line: 'x', values: [128], reason: `${PENDING_AMENDMENT} (L10)` }];
+  const settled = [{ file: SPEC, line: 'y', values: [128], reason: 'an example, not a limit' }];
+  expect(migrationProblems(only, false, pending)).toEqual(
+    expect.arrayContaining([
+      expect.stringContaining(`${derived.id}: test is still`),
+      expect.stringContaining('pending amendment still allowlisted'),
+    ]),
+  );
+  expect(migrationProblems(only, false, settled).some((p) => p.includes('allowlisted'))).toBe(
+    false,
+  );
+  expect(migrationProblems(only, true, pending)).toEqual([]);
 });
 
 test('the real tree passes check:limits', () => {

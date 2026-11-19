@@ -1,7 +1,7 @@
 import { readdirSync, readFileSync } from 'node:fs';
 import { basename, join, resolve } from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
-import { isMap, isScalar, parseDocument } from 'yaml';
+import { isAlias, isMap, isScalar, isSeq, parseDocument } from 'yaml';
 import type * as Limits from '../../src/limits.js';
 
 const ROOT = fileURLToPath(new URL('../../', import.meta.url));
@@ -23,6 +23,10 @@ const TEST_SEPARATOR = ' > ';
 const NUMBER_RUN = /[\w.,]+/g;
 const WHOLE_NUMBER = /^(?:\d+|\d{1,3}(?:[,_]\d{3})+)$/;
 const CITATION = /`limit:([^`\s]+)`/g;
+/** Issue and PR references (`#350`) and URLs name things, never limits. */
+const NOT_A_VALUE = /https?:\/\/\S+|#\d+/g;
+/** Allowlist reasons that only hold during migration. */
+export const PENDING_AMENDMENT = 'pending amendment';
 
 function lineOf(text: string, offset: number): number {
   return text.slice(0, offset).split('\n').length;
@@ -32,9 +36,63 @@ function camelCase(stem: string): string {
   return stem.replace(/-([a-z0-9])/g, (_, next: string) => next.toUpperCase());
 }
 
-function timeoutId(file: string, jobId: string): string {
+function timeoutId(file: string, jobId: string, step?: number): string {
   const stem = basename(file).replace(/\.ya?ml$/, '');
-  return `${WORKFLOW_PREFIX}${camelCase(stem)}.${jobId}.timeoutMinutes`;
+  const where = step === undefined ? jobId : `${jobId}.steps.${step}`;
+  return `${WORKFLOW_PREFIX}${camelCase(stem)}.${where}.timeoutMinutes`;
+}
+
+type Timeout = { id: string; node: unknown; label: string };
+
+/** Every `timeout-minutes` in a job: the job's own, then each step's (by position). */
+function jobTimeouts(file: string, jobId: string, job: unknown): Timeout[] {
+  if (!isMap(job)) return [];
+  const timeouts: Timeout[] = [];
+  const own = job.get('timeout-minutes', true);
+  if (own !== undefined)
+    timeouts.push({ id: timeoutId(file, jobId), node: own, label: `job ${jobId}` });
+  const steps = job.get('steps', true);
+  if (isSeq(steps))
+    steps.items.forEach((step, index) => {
+      const value = isMap(step) ? step.get('timeout-minutes', true) : undefined;
+      if (value !== undefined)
+        timeouts.push({
+          id: timeoutId(file, jobId, index),
+          node: value,
+          label: `job ${jobId} step ${index}`,
+        });
+    });
+  return timeouts;
+}
+
+/** Every `timeout-minutes` in one workflow file, with the file and line it is on. */
+function workflowTimeouts({ file, text }: SourceFile): { where: string; timeout: Timeout }[] {
+  const jobs = parseDocument(text).get('jobs', true);
+  if (!isMap(jobs)) return [];
+  return jobs.items.flatMap((pair) => {
+    const jobId = String(isScalar(pair.key) ? pair.key.value : pair.key);
+    return jobTimeouts(file, jobId, pair.value).map((timeout) => {
+      const range = (timeout.node as { range?: [number] }).range;
+      return { where: `${file}:${lineOf(text, range?.[0] ?? 0)}`, timeout };
+    });
+  });
+}
+
+/** The problem with one `timeout-minutes`, if any: it must be a literal matching its entry. */
+function timeoutProblem(
+  register: ReadonlyMap<string, Limit>,
+  where: string,
+  { id, node, label }: Timeout,
+): string | undefined {
+  // An alias or expression hides the number from this check, so the value must be literal.
+  if (isAlias(node) || !isScalar(node) || typeof node.value !== 'number')
+    return `${where}: ${label} timeout-minutes must be a literal number`;
+  const entry = register.get(id);
+  if (entry === undefined)
+    return `${where}: ${label} has timeout-minutes but no register entry ${id}`;
+  if (entry.value !== node.value)
+    return `${where}: ${label} timeout-minutes ${String(node.value)} differs from ${id} (${entry.value})`;
+  return undefined;
 }
 
 /** Each job's `timeout-minutes` must match its register entry, and each entry must have a job. */
@@ -42,28 +100,12 @@ export function workflowProblems(
   register: ReadonlyMap<string, Limit>,
   workflows: readonly SourceFile[],
 ): string[] {
-  const problems: string[] = [];
-  const found = new Set<string>();
-  for (const { file, text } of workflows) {
-    const jobs = parseDocument(text).get('jobs', true);
-    if (!isMap(jobs)) continue;
-    for (const pair of jobs.items) {
-      const jobId = String(isScalar(pair.key) ? pair.key.value : pair.key);
-      const timeout = isMap(pair.value) ? pair.value.get('timeout-minutes', true) : undefined;
-      if (!isScalar(timeout)) continue;
-      const id = timeoutId(file, jobId);
-      const where = `${file}:${lineOf(text, timeout.range?.[0] ?? 0)}`;
-      const entry = register.get(id);
-      found.add(id);
-      if (entry === undefined) {
-        problems.push(`${where}: job ${jobId} has timeout-minutes but no register entry ${id}`);
-      } else if (entry.value !== timeout.value) {
-        problems.push(
-          `${where}: job ${jobId} timeout-minutes ${String(timeout.value)} differs from ${id} (${entry.value})`,
-        );
-      }
-    }
-  }
+  const timeouts = workflows.flatMap(workflowTimeouts);
+  const found = new Set(timeouts.map(({ timeout }) => timeout.id));
+  const problems = timeouts.flatMap(({ where, timeout }) => {
+    const problem = timeoutProblem(register, where, timeout);
+    return problem ? [problem] : [];
+  });
   for (const id of register.keys()) {
     if (id.startsWith(WORKFLOW_PREFIX) && !found.has(id)) {
       problems.push(`${id}: no job with timeout-minutes in the workflow files`);
@@ -75,7 +117,7 @@ export function workflowProblems(
 /** The register values a line states as a whole number: plain, comma-, or underscore-grouped. */
 export function statedValues(line: string, values: readonly number[]): number[] {
   const stated = new Set<number>();
-  for (const [run] of line.matchAll(NUMBER_RUN)) {
+  for (const [run] of line.replace(NOT_A_VALUE, ' ').matchAll(NUMBER_RUN)) {
     const token = run.replace(/[.,]+$/, '');
     if (!WHOLE_NUMBER.test(token)) continue;
     const value = Number(token.replace(/[,_]/g, ''));
@@ -154,7 +196,9 @@ function referenceProblems(
   const title = reference.slice(at + TEST_SEPARATOR.length);
   const source = readFile(file);
   if (source === null) return [`${id}: test file ${file} does not exist`];
-  return source.includes(`test('${title}'`) ? [] : [`${id}: no test('${title}' in ${file}`];
+  // A live call at the start of a line: a title that only appears in a comment does not count.
+  const live = source.split('\n').some((line) => line.trimStart().startsWith(`test('${title}'`));
+  return live ? [] : [`${id}: no test('${title}' in ${file}`];
 }
 
 /** Each test reference must name an existing file and a test title in it. */
@@ -167,15 +211,39 @@ export function testProblems(
   );
 }
 
-/** While migration is closed, no entry may still be a hand-picked unjustified value. */
+function pendingFields(entry: Limit): string[] {
+  const structural = entry.basis.kind === 'derived' ? entry.basis.structuralTest : undefined;
+  const fields: [string, string | undefined][] = [
+    ['protects', entry.protects],
+    ['effect', entry.effect],
+    ['test', entry.test],
+    ['structuralTest', structural],
+  ];
+  return fields.filter(([, value]) => value === PENDING_AUDIT).map(([name]) => name);
+}
+
+/**
+ * Once migration closes, nothing may still wait on it: no unjustified entry, no field left at
+ * PENDING_AUDIT, and no allowlisted spec line kept only as a pending amendment.
+ */
 export function migrationProblems(
   register: ReadonlyMap<string, Limit>,
   migrationOpen: boolean,
+  allowlist: readonly AllowedSpecLine[] = [],
 ): string[] {
   if (migrationOpen) return [];
-  return [...register.values()]
-    .filter((entry) => entry.basis.kind === 'unjustified')
-    .map((entry) => `${entry.id}: unjustified entry while migration is closed`);
+  const entries = [...register.values()].flatMap((entry) => [
+    ...(entry.basis.kind === 'unjustified'
+      ? [`${entry.id}: unjustified entry while migration is closed`]
+      : []),
+    ...pendingFields(entry).map(
+      (field) => `${entry.id}: ${field} is still ${PENDING_AUDIT} while migration is closed`,
+    ),
+  ]);
+  const lines = allowlist
+    .filter((entry) => entry.reason.startsWith(PENDING_AMENDMENT))
+    .map((entry) => `${entry.file}: pending amendment still allowlisted: "${entry.line}"`);
+  return [...entries, ...lines];
 }
 
 function repoFile(path: string): SourceFile {
@@ -209,7 +277,7 @@ function main(): void {
     ...specProblems(REGISTER, floor, specs, allowlist),
     ...citationProblems(REGISTER, docs),
     ...testProblems(REGISTER, readRepoFile),
-    ...migrationProblems(REGISTER, MIGRATION_OPEN),
+    ...migrationProblems(REGISTER, MIGRATION_OPEN, allowlist),
   ];
   if (problems.length > 0) {
     for (const problem of problems) console.error(problem);

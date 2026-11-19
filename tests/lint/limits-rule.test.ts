@@ -35,6 +35,19 @@ test('a named constant holding a limit outside the register fails lint', () => {
   expect(lint('export const MAX_BODY = 50_000;\n')).toContain('limits(no-literal-limit)');
 });
 
+test.each([
+  ['let', 'export let bodyCap = 50_000;\n'],
+  ['var', 'export var bodyCap = 50_000;\n'],
+  ['a BigInt', 'export const bodyCap = 50_000n;\n'],
+  ['a unary plus', 'export const bodyCap = +50_000;\n'],
+  ['a negative number', 'export const offset = -500;\n'],
+  // The rule keys on the literal, not on the name looking like a limit.
+  ['a name that does not say limit', 'export const pageSize = 300;\n'],
+  ['an object field', 'export const limits = { pageSize: 300 };\n'],
+])('a limit written with %s fails lint', (_label, source) => {
+  expect(lint(source)).not.toEqual([]);
+});
+
 test('counters, steps, and pairs pass', () => {
   expect(
     lint(

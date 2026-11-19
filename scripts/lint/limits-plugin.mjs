@@ -9,16 +9,21 @@ import { definePlugin, defineRule } from 'vite-plus/lint/plugins';
  */
 const IGNORED = new Set([0, 1, -1, 2]);
 
-function numericValue(node) {
-  if (node?.type === 'Literal' && typeof node.value === 'number') return node.value;
-  if (
-    node?.type === 'UnaryExpression' &&
-    node.operator === '-' &&
-    node.argument?.type === 'Literal' &&
-    typeof node.argument.value === 'number'
-  )
-    return -node.argument.value;
+function literalValue(node) {
+  if (node?.type !== 'Literal') return undefined;
+  if (typeof node.value === 'number') return node.value;
+  // A BigInt literal (`50_000n`) holds a limit as surely as a number does.
+  if (typeof node.value === 'bigint' || typeof node.bigint === 'string')
+    return Number(node.bigint ?? node.value);
   return undefined;
+}
+
+function numericValue(node) {
+  if (node?.type === 'UnaryExpression' && (node.operator === '-' || node.operator === '+')) {
+    const value = literalValue(node.argument);
+    return value === undefined ? undefined : node.operator === '-' ? -value : value;
+  }
+  return literalValue(node);
 }
 
 export default definePlugin({
@@ -39,8 +44,9 @@ export default definePlugin({
           context.report({ node, messageId: 'literal', data: { value: String(value) } });
         };
         return {
+          // `const`, `let`, and `var` alike: a limit can start as any of them.
           VariableDeclarator(node) {
-            if (node.parent?.kind === 'const') check(node.init);
+            check(node.init);
           },
           Property(node) {
             if (node.parent?.type === 'ObjectExpression') check(node.value);

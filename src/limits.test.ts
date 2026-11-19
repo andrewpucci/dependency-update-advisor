@@ -176,3 +176,21 @@ test('RELEASE_PAGE_SIZES halves from the register value down to 1 and is frozen'
   expect(RELEASE_PAGE_SIZES).toEqual([64, 32, 16, 8, 4, 2, 1]);
   expect(Object.isFrozen(RELEASE_PAGE_SIZES)).toBe(true);
 });
+
+test('checkRegister rejects a value that is not a finite number', () => {
+  for (const value of [Number.NaN, Number.POSITIVE_INFINITY, Number.NEGATIVE_INFINITY])
+    expect(checkRegister([unjustified('a', value)]), String(value)).toEqual([
+      expect.stringMatching(/a: value/),
+    ]);
+});
+
+test('checkRegister reports a self-loop and a cycle through three entries', () => {
+  expect(checkRegister([derived('x', ['x'], (x) => x)])).toEqual([expect.stringMatching(/cycle/)]);
+  expect(
+    checkRegister([
+      derived('x', ['y'], (y) => y),
+      derived('y', ['z'], (z) => z),
+      derived('z', ['x'], (x) => x),
+    ]),
+  ).toEqual([expect.stringMatching(/cycle/)]);
+});

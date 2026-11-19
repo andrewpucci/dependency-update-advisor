@@ -7,26 +7,8 @@
   },
   {
     "file": "docs/specs/README.md",
-    "line": "and merged into `main` in [PR #100](https://github.com/andrewpucci/dependency-update-advisor/pull/100).",
-    "values": [100],
-    "reason": "pending amendment (L10): approved spec states the value"
-  },
-  {
-    "file": "docs/specs/README.md",
     "line": "Includes T4/T5 declaration records and combined 128-record accounting;",
     "values": [128],
-    "reason": "pending amendment (L10): approved spec states the value"
-  },
-  {
-    "file": "docs/specs/README.md",
-    "line": "([#350](https://github.com/andrewpucci/dependency-update-advisor/issues/350))",
-    "values": [350],
-    "reason": "pending amendment (L10): approved spec states the value"
-  },
-  {
-    "file": "docs/specs/README.md",
-    "line": "and tasks #240–#248; supporting contract for",
-    "values": [240],
     "reason": "pending amendment (L10): approved spec states the value"
   },
   {
@@ -51,12 +33,6 @@
     "file": "docs/specs/SPEC-actions-inventory.md",
     "line": "| More than 128 combined packet changes; mutated returned data                                              | Existing packet rejection preserved; no silent trimming or shared mutation.                                            |",
     "values": [128],
-    "reason": "pending amendment (L10): approved spec states the value"
-  },
-  {
-    "file": "docs/specs/SPEC-actions-inventory.md",
-    "line": "[#280](https://github.com/andrewpucci/dependency-update-advisor/issues/280)",
-    "values": [280],
     "reason": "pending amendment (L10): approved spec states the value"
   },
   {
@@ -205,7 +181,7 @@
   },
   {
     "file": "docs/specs/SPEC-config-parser.md",
-    "line": "A model ID contains 1–128 ASCII characters matching",
+    "line": "A model ID contains 1\u2013128 ASCII characters matching",
     "values": [128],
     "reason": "pending amendment (L10): approved spec states the value"
   },
@@ -240,12 +216,6 @@
     "reason": "pending amendment (L10): approved spec states the value"
   },
   {
-    "file": "docs/specs/SPEC-decision-units.md",
-    "line": "[PR #100](https://github.com/andrewpucci/dependency-update-advisor/pull/100), merged",
-    "values": [100],
-    "reason": "pending amendment (L10): approved spec states the value"
-  },
-  {
     "file": "docs/specs/SPEC-dependabot-roots.md",
     "line": "Limits approved 2026-11-08: 65,536 bytes, 20,000 YAML nodes, depth 16, 0",
     "values": [65536, 20000],
@@ -267,12 +237,6 @@
     "file": "docs/specs/SPEC-event-verification.md",
     "line": "- 3 of 92 open `nodejs/node` PRs and 5 of 100 open `home-assistant/core` PRs",
     "values": [100],
-    "reason": "pending amendment (L10): approved spec states the value"
-  },
-  {
-    "file": "docs/specs/SPEC-evidence-coverage.md",
-    "line": "[#350](https://github.com/andrewpucci/dependency-update-advisor/issues/350)",
-    "values": [350],
     "reason": "pending amendment (L10): approved spec states the value"
   },
   {
@@ -415,7 +379,7 @@
   },
   {
     "file": "docs/specs/SPEC-mistral-transport.md",
-    "line": "trusted configuration. Its model syntax is 1–128 ASCII characters matching",
+    "line": "trusted configuration. Its model syntax is 1\u2013128 ASCII characters matching",
     "values": [128],
     "reason": "pending amendment (L10): approved spec states the value"
   },
@@ -997,7 +961,7 @@
   },
   {
     "file": "docs/specs/SPEC-review-orchestration.md",
-    "line": "- `http-server` — status 500 through 599; and",
+    "line": "- `http-server` \u2014 status 500 through 599; and",
     "values": [500],
     "reason": "pending amendment (L10): approved spec states the value"
   },
@@ -1069,7 +1033,7 @@
   },
   {
     "file": "docs/specs/SPEC-review-packet.md",
-    "line": "| IDs and package names                                           | 1–256 UTF-16 code units, matching C2's existing bound                              |",
+    "line": "| IDs and package names                                           | 1\u2013256 UTF-16 code units, matching C2's existing bound                              |",
     "values": [256],
     "reason": "pending amendment (L10): approved spec states the value"
   },
@@ -1233,12 +1197,6 @@
     "file": "docs/specs/SPEC-upstream-evidence.md",
     "line": "2,048-byte source text, 32-entry lists, and the complete packet byte cap.",
     "values": [2048],
-    "reason": "pending amendment (L10): approved spec states the value"
-  },
-  {
-    "file": "docs/specs/SPEC-uv-metadata.md",
-    "line": "After the PR #160 review on 2026-11-01, the user approved two amendments:",
-    "values": [160],
     "reason": "pending amendment (L10): approved spec states the value"
   },
   {
