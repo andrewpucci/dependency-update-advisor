@@ -303,6 +303,24 @@ function noneProblems(entry: Limit): string[] {
     : [];
 }
 
+const QUOTES = ["'", '"', '`'];
+
+/**
+ * Whether a source line opens the named test. A live call at the start of a line counts; a title
+ * that only appears in a comment does not. A `test.each` title is named by its template (it holds a
+ * `%` or `$` placeholder), which sits as the first argument of the returned function, often on its own
+ * line.
+ */
+function namesTest(line: string, title: string): boolean {
+  return QUOTES.some(
+    (quote) =>
+      line.startsWith(`test(${quote}${title}${quote}`) ||
+      (/[%$]/.test(title) &&
+        (line.startsWith(`${quote}${title}${quote}`) ||
+          line.includes(`)(${quote}${title}${quote}`))),
+  );
+}
+
 function referenceProblems(
   id: string,
   reference: string,
@@ -316,8 +334,7 @@ function referenceProblems(
   if (source === null) return [`${id}: test file ${file} does not exist`];
   if (SKIPPING.test(source))
     return [`${id}: ${file} skips or narrows tests, so the named test might not run`];
-  // A live call at the start of a line: a title that only appears in a comment does not count.
-  const live = source.split('\n').some((line) => line.trimStart().startsWith(`test('${title}'`));
+  const live = source.split('\n').some((line) => namesTest(line.trimStart(), title));
   return live ? [] : [`${id}: no test('${title}' in ${file}`];
 }
 

@@ -229,6 +229,39 @@ test('a structural test reference is checked like the entry test', () => {
   ]);
 });
 
+test('a test.each template or a double-quoted title names a test', () => {
+  const only = (title: string) =>
+    new Map([['packet.bytes', { ...entryOf('packet.bytes'), test: `src/a.test.ts > ${title}` }]]);
+  const files = {
+    'src/a.test.ts': [
+      "test.each([1, 2])('accepts %s entries', () => {});",
+      'test.each([',
+      '  [',
+      "    'a table label',",
+      '    1,',
+      '  ],',
+      "])('uses %s', () => {});",
+      'test.each(cases)(',
+      "  'rejects window $value in the parser',",
+      '  () => {},',
+      ');',
+      'test("handles the share\'s byte limit", () => {});',
+      '',
+    ].join('\n'),
+  };
+  for (const title of [
+    'accepts %s entries',
+    'rejects window $value in the parser',
+    "handles the share's byte limit",
+  ])
+    expect(testProblems(only(title), reading(files)), title).toEqual([]);
+  // An expanded title is not the template, and a placeholder-free title must be a test() call.
+  expect(testProblems(only('accepts 1 entries'), reading(files))).toHaveLength(1);
+  expect(testProblems(only('handles the share'), reading(files))).toHaveLength(1);
+  // A table row's label is not a test title.
+  expect(testProblems(only('a table label'), reading(files))).toHaveLength(1);
+});
+
 test('a test title that appears only in a comment is a problem', () => {
   const only = new Map([
     ['packet.bytes', { ...entryOf('packet.bytes'), test: 'src/a.test.ts > gone' }],
