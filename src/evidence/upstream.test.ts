@@ -339,6 +339,20 @@ test("a member's attempt overflow rolls back only that member's research", async
   expect(result.attempts.length).toBeLessThanOrEqual(maxAttempts);
   for (const index of [0, 1, 2]) expect(result.changes[index]).toEqual(normal.changes[index]);
 });
+test('an enrichment whose attempts exactly fill its cap keeps every member research', async () => {
+  // The fixture yields a fixed attempt count, not the register's 512, so the cap is the count
+  // the normal run records; the one-attempt-short case is pinned by the overflow test above.
+  const input = await fixture(3);
+  const probe = registryReader({});
+  const normal = await enrichUpstream(input, { reader: probe.reader });
+  probe.reader.close();
+  if (normal.kind !== 'enriched') throw new Error('enrichment');
+  const maxAttempts = normal.attempts.length;
+  const r = registryReader({ maxAttempts });
+  const result = await enrichUpstream(await fixture(3, { maxAttempts }), { reader: r.reader });
+  r.reader.close();
+  expect(result).toEqual(normal);
+});
 test('share exhaustion keeps completed members and their identities', async () => {
   const input = await fixture(3);
   const probe = registryReader({});

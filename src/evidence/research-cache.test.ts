@@ -1,5 +1,6 @@
 import { expect, test } from 'vite-plus/test';
 import { createResearchCache } from './research-cache.js';
+import { RESEARCH_CACHE_LIMITS } from '../budget.js';
 
 const LIMITS = { maxEntryBytes: 1024, maxTotalBytes: 4096 };
 
@@ -97,4 +98,36 @@ test('separate caches share nothing', async () => {
   await cacheA.store(key, new Response('one', { status: 200 }));
   expect(cacheA.lookup(key)).toBeDefined();
   expect(cacheB.lookup(key)).toBeUndefined();
+});
+test('stores an entry of exactly the register entry cap and passes one byte more through', async () => {
+  const { maxEntryBytes } = RESEARCH_CACHE_LIMITS;
+  const cache = createResearchCache({ ...RESEARCH_CACHE_LIMITS });
+  const atLimit = cache.key('GET', 'https://registry.npmjs.org/entry-at-cap');
+  await cache.store(atLimit, new Response(new Uint8Array(maxEntryBytes), { status: 200 }));
+  expect(cache.lookup(atLimit)).toBeDefined();
+
+  const overLimit = cache.key('GET', 'https://registry.npmjs.org/entry-over-cap');
+  const returned = await cache.store(
+    overLimit,
+    new Response(new Uint8Array(maxEntryBytes + 1), { status: 200 }),
+  );
+  expect((await returned.arrayBuffer()).byteLength).toBe(maxEntryBytes + 1);
+  expect(cache.lookup(overLimit)).toBeUndefined();
+});
+test('stores entries up to exactly the register total and passes the next byte through', async () => {
+  const { maxEntryBytes, maxTotalBytes } = RESEARCH_CACHE_LIMITS;
+  const cache = createResearchCache({ ...RESEARCH_CACHE_LIMITS });
+  let stored = 0;
+  for (let i = 0; stored < maxTotalBytes; i++) {
+    const size = Math.min(maxEntryBytes, maxTotalBytes - stored);
+    const key = cache.key('GET', `https://registry.npmjs.org/fill-${i}`);
+    await cache.store(key, new Response(new Uint8Array(size), { status: 200 }));
+    expect(cache.lookup(key)).toBeDefined();
+    stored += size;
+  }
+
+  const overTotal = cache.key('GET', 'https://registry.npmjs.org/one-past-total');
+  const returned = await cache.store(overTotal, new Response(new Uint8Array(1), { status: 200 }));
+  expect((await returned.arrayBuffer()).byteLength).toBe(1);
+  expect(cache.lookup(overTotal)).toBeUndefined();
 });

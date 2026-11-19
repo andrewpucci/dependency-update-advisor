@@ -1,5 +1,6 @@
 import { expect, test, vi } from 'vite-plus/test';
 import { createNpmPublishTimeReader, publishTimestamp } from './npm-publish-times.js';
+import { limit } from '../limits.js';
 import { createResearchCache } from './research-cache.js';
 import { enrichPolicySignals } from './policy-signals.js';
 import { createMalwareReader } from './advisory-read.js';
@@ -326,6 +327,60 @@ test('a cached response still respects the per-response cap', async () => {
   expect(result).toEqual({ kind: 'unavailable', reason: 'budget' });
   expect(calls).toHaveLength(1);
 });
+test('the publish-time request share allows exactly its count and refuses the next lookup unsent', async () => {
+  const cap = limit('evidence.allocation.signals.readers.publishTimes.maxRequests');
+  const calls: string[] = [];
+  const r = createNpmPublishTimeReader(
+    { ...limits, maxRequests: cap, maxRetainedBytes: 1 << 20 },
+    { now: () => 0, fetch: npmCachedFetch(calls) },
+  );
+  if (r.kind !== 'ready') throw new Error('reader');
+  for (let i = 0; i < cap; i++)
+    expect(await r.read({ ...target, name: `fixture-pkg-${i}` })).toMatchObject({ kind: 'times' });
+  expect(await r.read({ ...target, name: `fixture-pkg-${cap}` })).toMatchObject({
+    kind: 'unavailable',
+    reason: 'budget',
+  });
+  r.close();
+  expect(calls).toHaveLength(cap);
+});
+
+test('the publish-time byte share allows exactly its total and refuses the read that exceeds it', async () => {
+  const total = limit('evidence.allocation.signals.readers.publishTimes.maxTotalBytes');
+  const half = Math.floor(total / 2);
+  // The first body spends half the share; the second spends `second` bytes more.
+  const secondRead = async (second: number) => {
+    const sized = (name: string, bytes: number) => {
+      const body = (pad: number) =>
+        JSON.stringify({ ...JSON.parse(npmBody(name)), pad: 'x'.repeat(pad) });
+      return new Response(body(bytes - Buffer.byteLength(body(0))), {
+        headers: { 'content-type': 'application/json' },
+      });
+    };
+    const r = createNpmPublishTimeReader(
+      { ...limits, maxResponseBytes: total, maxTotalBytes: total, maxRetainedBytes: 1 << 20 },
+      {
+        now: () => 0,
+        fetch: async (url) =>
+          sized(
+            decodeURIComponent(url.slice('https://registry.npmjs.org/'.length)),
+            url.endsWith('fixture-a') ? half : second,
+          ),
+      },
+    );
+    if (r.kind !== 'ready') throw new Error('reader');
+    const first = await r.read({ ...target, name: 'fixture-a' });
+    const next = await r.read({ ...target, name: 'fixture-b' });
+    r.close();
+    return { first, next };
+  };
+  expect((await secondRead(total - half)).next).toMatchObject({ kind: 'times' });
+  expect((await secondRead(total - half + 1)).next).toEqual({
+    kind: 'unavailable',
+    reason: 'budget',
+  });
+});
+
 test('a cache hit leaves the total-byte share for later live reads', async () => {
   const cache = createResearchCache({ maxEntryBytes: 1 << 20, maxTotalBytes: 1 << 22 });
   const calls: string[] = [];

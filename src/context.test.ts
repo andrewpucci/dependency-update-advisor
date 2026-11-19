@@ -3,6 +3,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, expect, test, vi } from 'vite-plus/test';
 import { loadTrustedReviewConfig, parseReviewConfig } from './config.js';
+import { limit } from './limits.js';
 import {
   collectSourceContext,
   validateSourceContextInput,
@@ -1104,4 +1105,68 @@ test('dependency identities are bounded and cannot share IDs', async () => {
       error: { category: 'input' },
     });
   }
+});
+
+test('the generated-marker window covers exactly the registered number of leading lines', async () => {
+  const window = limit('context.generatedMarkerScanLines');
+  const lines = (markerAt: number) =>
+    Array.from({ length: window + 2 }, (_, i) =>
+      i === markerAt
+        ? '// @generated'
+        : i === window + 1
+          ? 'import value from "example-package";'
+          : 'const filler = 1;',
+    ).join('\n');
+  const root = await fixture();
+  await source(root, 'src/a.ts', lines(window - 1));
+  expect(await collectSourceContext(enabled(root))).toMatchObject({
+    ok: true,
+    dependencies: [{ facts: [] }],
+  });
+  await source(root, 'src/a.ts', lines(window));
+  expect(await collectSourceContext(enabled(root))).toMatchObject({
+    ok: true,
+    dependencies: [{ facts: [{ path: 'src/a.ts' }] }],
+  });
+});
+
+test('the serialized context cap admits the exact reserved size and refuses one byte more', async () => {
+  const cap = limit('context.maxSourceContextBytes');
+  const maxIdCodeUnits = limit('context.maxIdCodeUnits');
+  const count = limit('context.maxDependencies');
+  const root = await fixture();
+  // Measures the reserved empty-context JSON that fitsContextBudget hands to Buffer.byteLength.
+  const probe = async (extra: number) => {
+    const request = enabled(root);
+    let left = extra;
+    request.dependencies = Array.from({ length: count }, (_, i) => {
+      const dependency = { id: `unit-${i}`, name: 'n' };
+      for (const field of ['id', 'name'] as const) {
+        const add = Math.min(left, maxIdCodeUnits - dependency[field].length);
+        dependency[field] += 'x'.repeat(add);
+        left -= add;
+      }
+      return dependency;
+    });
+    const spy = vi.spyOn(Buffer, 'byteLength');
+    let result: Awaited<ReturnType<typeof collectSourceContext>>;
+    let calls: unknown[][] = [];
+    try {
+      result = await collectSourceContext(request);
+      calls = spy.mock.calls.slice();
+    } finally {
+      spy.mockRestore();
+    }
+    const reserved = calls
+      .map(([text]) => text)
+      .find((text) => typeof text === 'string' && text.includes('"facts":[]'));
+    return { result, bytes: Buffer.byteLength(String(reserved), 'utf8') };
+  };
+  const base = await probe(0);
+  const atLimit = await probe(cap - base.bytes);
+  expect(atLimit.bytes).toBe(cap);
+  expect(atLimit.result).toMatchObject({ ok: true });
+  const overLimit = await probe(cap - base.bytes + 1);
+  expect(overLimit.bytes).toBe(cap + 1);
+  expect(overLimit.result).toMatchObject({ ok: false, error: { category: 'budget' } });
 });

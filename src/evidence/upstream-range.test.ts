@@ -2,6 +2,7 @@ import { createHash } from 'node:crypto';
 import { expect, test } from 'vite-plus/test';
 import { createUpstreamReader } from './upstream-read.js';
 import { collectRangeFallback, collectChangelog } from './upstream-range.js';
+import { limit } from '../limits.js';
 
 const limits = {
   maxRequests: 100,
@@ -100,4 +101,53 @@ test('downgrades cannot reuse upgrade release intervals', async () => {
   const f = fixture();
   expect((await collectRangeFallback(after, before, f.reader)).status).toBe('unavailable');
   f.reader.close();
+});
+/** A repository whose release listing holds `count` releases older than the range, paged as asked. */
+function releaseListing(count: number) {
+  const release = (i: number) => ({
+    id: i + 1,
+    tag_name: `v0.0.${i}`,
+    draft: false,
+    published_at: '2026-10-01T00:00:00Z',
+    name: `v0.0.${i}`,
+    body: 'Notes outside the range.',
+    html_url: `https://github.com/fixture/orbit/releases/tag/v0.0.${i}`,
+  });
+  return createUpstreamReader(
+    { ...limits, maxTagCandidates: limit('research.maxTagCandidates') },
+    {
+      now: () => 0,
+      fetch: async (url) => {
+        const u = new URL(url),
+          path = u.pathname.replace('/repos/fixture/orbit', '');
+        if (!path) return Response.json({ private: false, full_name: 'fixture/orbit' });
+        if (path !== '/releases') return Response.json({}, { status: 404 });
+        const perPage = Number(u.searchParams.get('per_page'));
+        const page = Number(u.searchParams.get('page'));
+        const start = (page - 1) * perPage;
+        const items = Array.from(
+          { length: Math.max(0, Math.min(perPage, count - start)) },
+          (_, i) => release(start + i),
+        );
+        if (start + perPage >= count) return Response.json(items);
+        const next = new URL(url);
+        next.searchParams.set('page', String(page + 1));
+        return Response.json(items, { headers: { link: `<${next}>; rel="next"` } });
+      },
+    },
+  );
+}
+test('range release candidates are counted up to the register cap and refused one past it', async () => {
+  const cap = limit('research.maxTagCandidates');
+  const atCap = releaseListing(cap);
+  if (atCap.kind !== 'ready') throw new Error('reader');
+  const exact = await collectRangeFallback(before, after, atCap.reader);
+  expect(exact.reasons).not.toContain('budget');
+  atCap.reader.close();
+
+  const over = releaseListing(cap + 1);
+  if (over.kind !== 'ready') throw new Error('reader');
+  const past = await collectRangeFallback(before, after, over.reader);
+  expect(past.reasons).toContain('budget');
+  over.reader.close();
 });

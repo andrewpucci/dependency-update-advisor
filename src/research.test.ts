@@ -10,6 +10,7 @@ import * as upstreamReadModule from './evidence/upstream-read.js';
 import * as policySignalsModule from './evidence/policy-signals.js';
 import { EVIDENCE_READ_ALLOCATION, EVIDENCE_READ_ENVELOPE } from './budget.js';
 import { researchOrder, runResearch, type ResearchObservation } from './research.js';
+import { limit } from './limits.js';
 import type { PacketChange } from './schema.js';
 import * as schemaModule from './schema.js';
 import { validateReviewPacket } from './schema.js';
@@ -635,4 +636,126 @@ test('orders research by priority, handing advisory lookup that order and return
   expect(result.packet.changes.map((entry) => entry.id)).toEqual(
     packet.changes.map((entry) => entry.id),
   );
+});
+
+const REGISTRY_NAME = 'example-package';
+const REGISTRY_VERSION = '1.0.0';
+const REGISTRY_INTEGRITY = 'sha512-' + Buffer.alloc(64).toString('base64');
+const REGISTRY_URL = `https://registry.npmjs.org/${REGISTRY_NAME}/${REGISTRY_VERSION}`;
+
+/** A registry reader whose only limits are the research register values under test. */
+function registryReader(
+  limits: { maxJsonEntries: number; maxRetainedBytes: number },
+  body: unknown,
+) {
+  const MiB8 = 8 * 1024 * 1024;
+  const opened = npmRegistryModule.createNpmRegistryReader(
+    {
+      maxRequests: 4,
+      maxResponseBytes: MiB8,
+      maxTotalBytes: MiB8,
+      maxJsonDepth: 32,
+      requestTimeoutMs: 1000,
+      totalTimeoutMs: 10000,
+      ...limits,
+    },
+    {
+      fetch: async () =>
+        new Response(JSON.stringify(body), { headers: { 'content-type': 'application/json' } }),
+      now: () => 0,
+    },
+  );
+  if (opened.kind !== 'ready') throw new Error('expected a ready registry reader');
+  return opened;
+}
+const registryRequest = {
+  name: REGISTRY_NAME,
+  version: REGISTRY_VERSION,
+  integrity: REGISTRY_INTEGRITY,
+  source: { kind: 'registry', identity: 'https://registry.npmjs.org/' },
+};
+function registryDocument(extra: unknown) {
+  return {
+    name: REGISTRY_NAME,
+    version: REGISTRY_VERSION,
+    _id: `${REGISTRY_NAME}@${REGISTRY_VERSION}`,
+    dist: { integrity: REGISTRY_INTEGRITY },
+    ...(extra as Record<string, unknown>),
+  };
+}
+
+test('the npm registry reader counts exactly research.maxJsonEntries entries and refuses one more', async () => {
+  const maxJsonEntries = limit('research.maxJsonEntries');
+  // Counted entries: the root's five values, dist's integrity, and each element of extra.
+  const fixedEntries = 6;
+  const entriesFor = (elements: number) =>
+    registryDocument({ extra: Array.from({ length: elements }, () => 0) });
+  const atLimit = registryReader(
+    { maxJsonEntries, maxRetainedBytes: limit('research.maxRetainedBytes') },
+    entriesFor(maxJsonEntries - fixedEntries),
+  );
+  expect(await atLimit.read(registryRequest)).toMatchObject({ kind: 'metadata' });
+
+  const pastLimit = registryReader(
+    { maxJsonEntries, maxRetainedBytes: limit('research.maxRetainedBytes') },
+    entriesFor(maxJsonEntries - fixedEntries + 1),
+  );
+  expect(await pastLimit.read(registryRequest)).toEqual({ kind: 'unavailable', reason: 'budget' });
+  expect(pastLimit.stopped()).toBe('budget');
+});
+
+test('the npm registry reader retains exactly research.maxRetainedBytes and refuses one byte more', async () => {
+  const maxRetainedBytes = limit('research.maxRetainedBytes');
+  // The retained record is { name, version, url, data }, so its size is set by the padding in data.
+  const retainedWith = (padding: number) =>
+    Buffer.byteLength(
+      JSON.stringify({
+        name: REGISTRY_NAME,
+        version: REGISTRY_VERSION,
+        url: REGISTRY_URL,
+        data: registryDocument({ pad: 'x'.repeat(padding) }),
+      }),
+    );
+  const padding = maxRetainedBytes - retainedWith(0);
+  expect(retainedWith(padding)).toBe(maxRetainedBytes);
+  const atLimit = registryReader(
+    { maxJsonEntries: limit('research.maxJsonEntries'), maxRetainedBytes },
+    registryDocument({ pad: 'x'.repeat(padding) }),
+  );
+  expect(await atLimit.read(registryRequest)).toMatchObject({ kind: 'metadata' });
+
+  const pastLimit = registryReader(
+    { maxJsonEntries: limit('research.maxJsonEntries'), maxRetainedBytes },
+    registryDocument({ pad: 'x'.repeat(padding + 1) }),
+  );
+  expect(await pastLimit.read(registryRequest)).toEqual({ kind: 'unavailable', reason: 'budget' });
+});
+
+test('the upstream reader spends exactly research.maxWork units and refuses the next one', () => {
+  const maxWork = limit('research.maxWork');
+  const share = EVIDENCE_READ_ALLOCATION.upstream;
+  const opened = upstreamReadModule.createUpstreamReader(
+    {
+      maxRequests: share.maxRequests,
+      maxPages: share.maxRequests,
+      maxTagCandidates: limit('research.maxTagCandidates'),
+      maxTagDepth: limit('research.maxTagDepth'),
+      maxResponseBytes: Math.min(EVIDENCE_READ_ENVELOPE.maxResponseBytes, share.maxTotalBytes),
+      maxTotalBytes: share.maxTotalBytes,
+      maxJsonEntries: limit('research.maxJsonEntries'),
+      maxJsonDepth: limit('research.maxJsonDepth'),
+      maxWork,
+      maxRetainedBytes: limit('research.maxRetainedBytes'),
+      maxAttempts: limit('research.maxAttempts'),
+      requestTimeoutMs: EVIDENCE_READ_ENVELOPE.requestTimeoutMs,
+      totalTimeoutMs: EVIDENCE_READ_ENVELOPE.totalTimeoutMs,
+    },
+    { fetch: async () => new Response('{}'), now: () => 0 },
+  );
+  if (opened.kind !== 'ready') throw new Error('expected a ready upstream reader');
+  const { reader } = opened;
+  reader.spend(maxWork);
+  expect(reader.stopped?.()).toBeNull();
+  expect(() => reader.spend(1)).toThrow();
+  expect(reader.stopped?.()).toBe('budget');
 });

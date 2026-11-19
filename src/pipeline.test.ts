@@ -15,6 +15,7 @@ import type { EventReads, RepositoryIdentity, ReviewIdentity } from './event.js'
 import { createEventReads } from './adapters.js';
 import { createRehearsalSink } from './handoff.js';
 import { runReview, type PipelineInput } from './pipeline.js';
+import { limit } from './limits.js';
 import {
   ASSESSMENT_FAILURE_REASONS,
   MODEL_FAILURE_CATEGORIES,
@@ -1219,6 +1220,45 @@ test('measures every deadline from the shared job start, not from its own clock'
   expect(assessmentModule.reviewPacket).toHaveBeenCalledWith(
     expect.objectContaining({ deadlineMs: 695_000 }),
   );
+});
+
+test('ends analysis job.freshnessAllowance before the job window closes', async () => {
+  vi.mocked(assessmentModule.reviewPacket).mockClear();
+  const { input } = await setup({ evidence: 'changes' });
+  await runReview(input);
+  const [call] = vi.mocked(assessmentModule.reviewPacket).mock.calls;
+  const deadline = limit('job.window') - limit('job.freshnessAllowance');
+  expect(call?.[0].deadlineMs).toBe(deadline);
+});
+
+test('checks ownership every pipeline.ownershipWatchMs while a request is pending', async () => {
+  const interval = limit('pipeline.ownershipWatchMs');
+  const claims = createTestClaimStore();
+  const { input } = await setup({ claims });
+  vi.useFakeTimers();
+  try {
+    let signal: AbortSignal | undefined;
+    let started: () => void = () => undefined;
+    const pendingFetch = new Promise<void>((resolve) => (started = resolve));
+    const running = runReview({
+      ...input,
+      githubFetch: (_url, init) =>
+        new Promise<Response>((_resolve, reject) => {
+          signal = init.signal ?? undefined;
+          init.signal?.addEventListener('abort', () => reject(new Error('aborted')));
+          started();
+        }),
+    });
+    running.catch(() => undefined);
+    await pendingFetch;
+    await vi.advanceTimersByTimeAsync(interval - 1);
+    expect(signal?.aborted).toBe(false);
+    await claims.claim([101, 301, 402, 1, 42, NEXT]);
+    await vi.advanceTimersByTimeAsync(1);
+    expect(signal?.aborted).toBe(true);
+  } finally {
+    vi.useRealTimers();
+  }
 });
 
 test('wires the clock, model key, signal attempts, and npm inventory into research and review', async () => {

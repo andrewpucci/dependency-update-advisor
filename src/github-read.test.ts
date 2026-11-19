@@ -1,5 +1,6 @@
 import { expect, test, vi } from 'vite-plus/test';
 import { createGithubReadSession, type GithubReadLimits } from './github-read.js';
+import { limit } from './limits.js';
 
 const HEAD = 'a'.repeat(40);
 const BASE = 'b'.repeat(40);
@@ -1184,4 +1185,112 @@ test('deep JSON that cannot be serialized stays an explicit comparison limit', a
     records: [dependency()],
     reasons: ['unsupported'],
   });
+});
+
+test('the session stops at exactly evidence.allocation.session.maxRequests requests', async () => {
+  const maxRequests = limit('evidence.allocation.session.maxRequests');
+  const f = fixture([json(pr()), ...Array.from({ length: maxRequests }, () => json([]))], {
+    maxRequests,
+  });
+  const session = await ready(f);
+  for (let attempt = 1; attempt < maxRequests; attempt++)
+    expect(await session.readComparison()).toMatchObject({ kind: 'available' });
+  expect(f.fetch).toHaveBeenCalledTimes(maxRequests);
+  expect(await session.readComparison()).toMatchObject({
+    kind: 'unavailable',
+    reasons: ['budget'],
+  });
+  expect(f.fetch).toHaveBeenCalledTimes(maxRequests);
+  session.close();
+});
+
+test('the session refuses the read that passes evidence.allocation.session.maxTotalBytes', async () => {
+  const total = limit('evidence.allocation.session.maxTotalBytes');
+  const initial = Buffer.byteLength(JSON.stringify(pr()));
+  const empty = Buffer.byteLength(JSON.stringify([{ pad: '' }]));
+  const atLimit = JSON.stringify([{ pad: 'x'.repeat(total - initial - empty) }]);
+  const f = fixture([json(pr()), new Response(atLimit), json([])], {
+    maxResponseBytes: total,
+    maxTotalBytes: total,
+    maxRetainedBytes: 2 * total,
+  });
+  const session = await ready(f);
+  expect(Buffer.byteLength(atLimit)).toBe(total - initial);
+  expect(await session.readComparison()).toMatchObject({ kind: 'available' });
+  expect(await session.readComparison()).toMatchObject({
+    kind: 'unavailable',
+    reasons: ['budget'],
+  });
+  session.close();
+});
+
+test('discovery reads exactly w2.session.maxPages pages and keeps the rows it read', async () => {
+  const maxPages = limit('w2.session.maxPages');
+  const pageSize = limit('github.pageSize');
+  const page = (start: number, count: number) =>
+    json(Array.from({ length: count }, (_, i) => row(start + i)));
+  const shortPages = (maxPages - 1) * pageSize + Math.floor(pageSize / 2);
+  const atLimit = fixture(
+    [
+      json(pr(shortPages)),
+      json(pr(shortPages)),
+      ...Array.from({ length: maxPages }, (_, p) =>
+        page(p * pageSize, p === maxPages - 1 ? Math.floor(pageSize / 2) : pageSize),
+      ),
+      json(pr(shortPages)),
+    ],
+    { maxPages },
+  );
+  const complete = await (await ready(atLimit)).discoverFiles();
+  expect(complete).toMatchObject({ kind: 'available', complete: true, reasons: [] });
+  expect(complete.files).toHaveLength(shortPages);
+  expect(atLimit.fetch.mock.calls.filter(([url]) => url.includes('/files?'))).toHaveLength(
+    maxPages,
+  );
+
+  const fullTotal = maxPages * pageSize;
+  const pastLimit = fixture(
+    [
+      json(pr(fullTotal)),
+      json(pr(fullTotal)),
+      ...Array.from({ length: maxPages }, (_, p) => page(p * pageSize, pageSize)),
+      json(pr(fullTotal)),
+    ],
+    { maxPages },
+  );
+  const partial = await (await ready(pastLimit)).discoverFiles();
+  expect(partial).toMatchObject({ kind: 'partial', complete: false });
+  expect(partial.reasons).toContain('budget');
+  expect(partial.files).toHaveLength(fullTotal);
+  expect(pastLimit.fetch.mock.calls.filter(([url]) => url.includes('/files?'))).toHaveLength(
+    maxPages,
+  );
+});
+
+test('a page of exactly github.pageSize rows is accepted and a longer page is malformed', async () => {
+  const pageSize = limit('github.pageSize');
+  const rows = (count: number) => json(Array.from({ length: count }, (_, i) => row(i)));
+  const atLimit = fixture([
+    json(pr(pageSize)),
+    json(pr(pageSize)),
+    rows(pageSize),
+    json([]),
+    json(pr(pageSize)),
+  ]);
+  expect(await (await ready(atLimit)).discoverFiles()).toMatchObject({
+    kind: 'available',
+    complete: true,
+    files: expect.arrayContaining([expect.objectContaining({ path: 'file-0.json' })]),
+  });
+  expect(atLimit.fetch.mock.calls[2]![0]).toContain(`per_page=${pageSize}`);
+
+  const pastLimit = fixture([
+    json(pr(pageSize + 1)),
+    json(pr(pageSize + 1)),
+    rows(pageSize + 1),
+    json(pr(pageSize + 1)),
+  ]);
+  const result = await (await ready(pastLimit)).discoverFiles();
+  expect(result).toMatchObject({ kind: 'unavailable', complete: false, files: [] });
+  expect(result.reasons).toEqual(['malformed']);
 });

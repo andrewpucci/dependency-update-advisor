@@ -9050,12 +9050,14 @@ const DEFINITIONS = [
 	}),
 	derived("job.budget", "milliseconds", ["workflow.dependabotReview.review.timeoutMinutes"], (minutes) => minutes * 6e4, "The runner's wall-clock limit is the reusable workflow's timeout-minutes, in milliseconds.", {
 		protects: "The runner's wall-clock limit for the review job; every pipeline deadline is measured against it.",
-		effect: "Not reached directly; it is the input to job.window, which sets the pipeline's deadlines."
+		effect: "Not reached directly; it is the input to job.window, which sets the pipeline's deadlines.",
+		test: "none: derived into job.window; no code compares against job.budget itself. JOB_BUDGET_MS (src/budget.ts:4) is read only by budget.test.ts, and job.window (src/budget.ts:15) is compared in src/runtime.ts:187 (now - started >= window) and used as the analysis deadline in src/pipeline.ts:500"
 	}),
 	unjustified("job.preStartupAllowance", 6e4, "milliseconds", {
 		protects: "The pipeline clock starts at runStartup, after the runner has spent time on the app-token step, action download, Node load and self-check; this allowance keeps the window inside the runner's timeout.",
 		effect: "Shortens the job window by 60,000 ms, so the analysis and freshness deadlines move earlier; it converts no outcome to success.",
-		note: "awaiting L8 measurement"
+		note: "awaiting L8 measurement",
+		test: "none: subtracted only inside job.window (src/budget.ts:9 and :15); the window is enforced by src/runtime.ts:187, covered by the existing test in src/runtime.test.ts:267, and the analysis deadline at src/pipeline.ts:500 is pinned by the existing deadline tests"
 	}),
 	derived("job.window", "milliseconds", ["job.budget", "job.preStartupAllowance"], (budget, preStartup) => budget - preStartup, "The job window is the runner budget less the time spent before startup.", {
 		protects: "Marks the end of the time the pipeline may use for reads and analysis, measured from job start and kept before the runner's timeout.",
@@ -9065,7 +9067,8 @@ const DEFINITIONS = [
 	unjustified("job.freshnessAllowance", 45e3, "milliseconds", {
 		protects: "Reserves time at the end of the job window for the three sequential freshness reads, so the final re-verification finishes before the runner's timeout.",
 		effect: "Analysis must end 45,000 ms before the window end, since the analysis deadline is started + JOB_WINDOW_MS - FRESHNESS_ALLOWANCE_MS.",
-		note: "awaiting L8 measurement"
+		note: "awaiting L8 measurement",
+		test: "src/pipeline.test.ts > ends analysis job.freshnessAllowance before the job window closes"
 	}),
 	derived("evidence.envelope.maxRequests", "count", [
 		"evidence.allocation.transport.maxRequests",
@@ -9076,12 +9079,14 @@ const DEFINITIONS = [
 		"evidence.allocation.signals.maxRequests"
 	], sum, "The envelope's request cap is the sum of the six reader shares.", {
 		protects: "Caps total GitHub and registry requests across all pre-analysis evidence reads, since GitHub requests share one rate limit and the evidence time is bounded.",
-		effect: "No single check enforces this total; each reader is capped by its share, so the total is reached only when every share is spent and each then returns budget."
+		effect: "No single check enforces this total; each reader is capped by its share, so the total is reached only when every share is spent and each then returns budget.",
+		test: "none: sum of the six reader shares (src/budget.ts:24, built from src/budget.ts:39-90); each reader stops at its own share (for example src/github-read.ts:396), and only budget.test.ts:53-54 and research.test.ts:414 read the total"
 	}),
 	unjustified("evidence.envelope.maxResponseBytes", MiB, "bytes", {
 		protects: "A response body is buffered before its size is checked, so one oversized response could exhaust runner memory; the cap bounds each response.",
 		effect: "A response over the cap fails only its own read with budget and its body is cancelled; other reads continue.",
-		note: "awaiting L8 measurement"
+		note: "awaiting L8 measurement",
+		test: "src/evidence/npm-registry.test.ts > a response exactly at the envelope per-response cap reads; one byte more fails only that read"
 	}),
 	derived("evidence.envelope.maxTotalBytes", "bytes", [
 		"evidence.allocation.transport.maxTotalBytes",
@@ -9092,7 +9097,8 @@ const DEFINITIONS = [
 		"evidence.allocation.signals.maxTotalBytes"
 	], sum, "The envelope's byte cap is the sum of the six reader shares' byte caps.", {
 		protects: "Caps total response bytes across all pre-analysis evidence reads, so buffered responses cannot exhaust runner memory in aggregate.",
-		effect: "Reached only when every share's byte cap is spent; each reader then returns budget, and no reader borrows from another."
+		effect: "Reached only when every share's byte cap is spent; each reader then returns budget, and no reader borrows from another.",
+		test: "none: derived sum of the six share byte caps (src/budget.ts:23-29); no code compares against the envelope's maxTotalBytes itself (src/budget.ts:26 defines it, src/research.ts:99 uses each share's maxTotalBytes, and each share is enforced by its reader, e.g. src/evidence/npm-registry.ts:247)."
 	}),
 	unjustified("evidence.envelope.requestTimeoutMs", 15e3, "milliseconds", {
 		protects: "One stalled request must not hold the job until the runner kills it; the timeout frees the time for the reads that follow, including freshness reads.",
@@ -9108,11 +9114,13 @@ const DEFINITIONS = [
 	}),
 	derived("evidence.allocation.transport.maxRequests", "count", ["evidence.allocation.transport.snapshot.maxRequests", "evidence.allocation.transport.freshness.maxRequests"], sum, "The transport share is the snapshot requests plus the reserved freshness requests.", {
 		protects: "Caps GitHub snapshot and freshness requests together against the shared GitHub rate limit.",
-		effect: "Each part is capped separately; the transport total is reached only when both are spent, and then each read returns budget."
+		effect: "Each part is capped separately; the transport total is reached only when both are spent, and then each read returns budget.",
+		test: "none: sum of the snapshot and freshness shares; runtime.ts compares each share separately (src/runtime.ts:186 ++spent.requests > limits.maxRequests, with limits = W2_GITHUB_LIMITS.snapshot or .freshness, runtime.ts:16-21), and budget.test.ts:62-64 only asserts the sum"
 	}),
 	derived("evidence.allocation.transport.maxTotalBytes", "bytes", ["evidence.allocation.transport.snapshot.maxTotalBytes", "evidence.allocation.transport.freshness.maxTotalBytes"], sum, "The transport byte share is the snapshot bytes plus the reserved freshness bytes.", {
 		protects: "Caps GitHub snapshot and freshness response bytes together against runner memory and transfer.",
-		effect: "Each part is capped separately; the transport byte total is reached only when both are spent, and then the next read returns budget."
+		effect: "Each part is capped separately; the transport byte total is reached only when both are spent, and then the next read returns budget.",
+		test: "none: sum of the snapshot and freshness byte shares; runtime.ts caps each share separately (src/runtime.ts:211 uses limits.maxTotalBytes of the share), and budget.test.ts:65-67 only asserts the sum"
 	}),
 	unjustified("evidence.allocation.transport.snapshot.maxRequests", 200, "count", {
 		protects: "Caps snapshot reads (repository, commit, trees, blobs) so a heavy snapshot cannot use the freshness share or the GitHub rate limit.",
@@ -9141,42 +9149,50 @@ const DEFINITIONS = [
 	unjustified("evidence.allocation.session.maxRequests", 160, "count", {
 		protects: "Caps requests of the GitHub evidence session reader so one review cannot exceed the GitHub rate limit or the evidence time.",
 		effect: "The request past the cap returns budget and no request is sent; other readers are not borrowed from.",
-		note: "awaiting L8 measurement"
+		note: "awaiting L8 measurement",
+		test: "src/github-read.test.ts > the session stops at exactly evidence.allocation.session.maxRequests requests"
 	}),
 	unjustified("evidence.allocation.session.maxTotalBytes", 12 * MiB, "bytes", {
 		protects: "Caps response bytes of the GitHub evidence session reader against runner memory.",
 		effect: "A response past the share's remaining bytes returns budget and the reader stops; other shares are unaffected.",
-		note: "awaiting L8 measurement"
+		note: "awaiting L8 measurement",
+		test: "src/github-read.test.ts > the session refuses the read that passes evidence.allocation.session.maxTotalBytes"
 	}),
 	unjustified("evidence.allocation.registry.maxRequests", 64, "count", {
 		protects: "Caps npm registry detail requests for one review so a large dependency set cannot spend the shared evidence time on registry reads.",
 		effect: "The request past the cap returns budget and no request is sent.",
-		note: "awaiting L8 measurement"
+		note: "awaiting L8 measurement",
+		test: "src/evidence/npm-registry.test.ts > the registry request share allows exactly its count and refuses the next read unsent"
 	}),
 	unjustified("evidence.allocation.registry.maxTotalBytes", 4 * MiB, "bytes", {
 		protects: "Caps response bytes of npm registry detail reads so they cannot exhaust runner memory or the envelope.",
 		effect: "A response past the share's remaining bytes returns budget and the reader stops; other shares are unaffected.",
-		note: "awaiting L8 measurement"
+		note: "awaiting L8 measurement",
+		test: "src/evidence/npm-registry.test.ts > the registry byte share allows exactly its total and refuses the read that exceeds it"
 	}),
 	unjustified("evidence.allocation.upstream.maxRequests", 240, "count", {
 		protects: "Caps upstream research requests (GitHub and registry lookups) that scale with the changed group, so a large group cannot take the shared evidence time or the GitHub rate limit.",
 		effect: "The upstream reader stops with budget at the cap, and the stage keeps the evidence already gathered.",
-		note: "awaiting L8 measurement"
+		note: "awaiting L8 measurement",
+		test: "src/evidence/upstream-read.test.ts > upstream reader spends exactly its request share and refuses the request past it"
 	}),
 	unjustified("evidence.allocation.upstream.maxTotalBytes", 15 * MiB, "bytes", {
 		protects: "Caps response bytes of upstream research reads so they cannot exhaust runner memory.",
 		effect: "A response past the share's remaining bytes is refused with budget and the upstream reader stops.",
-		note: "awaiting L8 measurement"
+		note: "awaiting L8 measurement",
+		test: "src/evidence/upstream-read.test.ts > upstream reader accepts a byte share exactly and refuses the byte past it"
 	}),
 	unjustified("evidence.allocation.advisory.maxRequests", 80, "count", {
 		protects: "Caps advisory lookups per changed package so a large group cannot take the shared evidence time.",
 		effect: "Requests past the cap return budget; the stage keeps the advisory evidence already read.",
-		note: "awaiting L8 measurement"
+		note: "awaiting L8 measurement",
+		test: "src/evidence/advisory-read.test.ts > advisory reader spends exactly its request share and refuses the lookup past it"
 	}),
 	unjustified("evidence.allocation.advisory.maxTotalBytes", 5 * MiB, "bytes", {
 		protects: "Caps response bytes of advisory reads so they cannot exhaust runner memory.",
 		effect: "A response past the share's remaining bytes is refused with budget and the advisory reader stops.",
-		note: "awaiting L8 measurement"
+		note: "awaiting L8 measurement",
+		test: "src/evidence/advisory-read.test.ts > advisory reader accepts a byte share exactly and refuses the byte past it"
 	}),
 	derived("evidence.allocation.signals.maxRequests", "count", [
 		"evidence.allocation.signals.readers.malware.maxRequests",
@@ -9186,7 +9202,8 @@ const DEFINITIONS = [
 		"evidence.allocation.signals.readers.upstream.maxRequests"
 	], sum, "The signals share is the sum of its five readers' request caps.", {
 		protects: "Caps the signals stage's total requests across its five readers so the stage stays inside the envelope.",
-		effect: "Reached only when all five readers are spent; each then returns budget."
+		effect: "Reached only when all five readers are spent; each then returns budget.",
+		test: "none: sum of the five signal reader shares (src/budget.ts:70); the signals stage passes it to enrichPolicySignals (src/research.ts:275), which reads only maxAttempts (src/evidence/policy-signals.ts:171-172), and each reader stops at its own share (for example src/evidence/policy-signals-read.ts:228)"
 	}),
 	derived("evidence.allocation.signals.maxTotalBytes", "bytes", [
 		"evidence.allocation.signals.readers.malware.maxTotalBytes",
@@ -9196,61 +9213,73 @@ const DEFINITIONS = [
 		"evidence.allocation.signals.readers.upstream.maxTotalBytes"
 	], sum, "The signals byte share is the sum of its five readers' byte caps.", {
 		protects: "Caps the signals stage's total response bytes across its five readers against runner memory.",
-		effect: "Reached only when all five readers' byte caps are spent; each then returns budget."
+		effect: "Reached only when all five readers' byte caps are spent; each then returns budget.",
+		test: "none: sum of the five signal reader byte shares (src/budget.ts:71); the signals stage passes it to enrichPolicySignals (src/research.ts:275), which reads only maxFindings and maxRetainedBytes (src/evidence/policy-signals-evidence.ts:192-194), and each reader stops at its own byte share"
 	}),
 	unjustified("evidence.allocation.signals.readers.malware.maxRequests", 40, "count", {
 		protects: "Caps malware-signal lookups at one per extra changed package, so the signals stage cannot exhaust the envelope.",
 		effect: "The lookup past the cap returns budget and the malware reader stops, keeping results already read.",
-		note: "awaiting L8 measurement"
+		note: "awaiting L8 measurement",
+		test: "src/evidence/advisory-read.test.ts > malware reader spends exactly its request share and refuses the lookup past it"
 	}),
 	unjustified("evidence.allocation.signals.readers.malware.maxTotalBytes", 1.5 * MiB, "bytes", {
 		protects: "Caps malware-signal response bytes so they cannot exhaust runner memory.",
 		effect: "A response past the share's remaining bytes returns budget and the reader stops.",
-		note: "awaiting L8 measurement"
+		note: "awaiting L8 measurement",
+		test: "src/evidence/advisory-read.test.ts > malware reader accepts a byte share exactly and refuses the byte past it"
 	}),
 	unjustified("evidence.allocation.signals.readers.publishTimes.maxRequests", 40, "count", {
 		protects: "Caps npm publish-time lookups at one per extra changed package, so the signals stage stays inside its share.",
 		effect: "The lookup past the cap is refused with budget and no request is sent.",
-		note: "awaiting L8 measurement"
+		note: "awaiting L8 measurement",
+		test: "src/evidence/npm-publish-times.test.ts > the publish-time request share allows exactly its count and refuses the next lookup unsent"
 	}),
 	unjustified("evidence.allocation.signals.readers.publishTimes.maxTotalBytes", 1.5 * MiB, "bytes", {
 		protects: "Caps npm publish-time response bytes so they cannot exhaust runner memory.",
 		effect: "A response past the share's remaining bytes returns budget and the reader stops.",
-		note: "awaiting L8 measurement"
+		note: "awaiting L8 measurement",
+		test: "src/evidence/npm-publish-times.test.ts > the publish-time byte share allows exactly its total and refuses the read that exceeds it"
 	}),
 	unjustified("evidence.allocation.signals.readers.registry.maxRequests", 64, "count", {
 		protects: "Caps npm registry policy requests in the signals stage, separate from the W2 registry share, so the stage stays inside the envelope.",
 		effect: "The request past the cap returns budget and no request is sent.",
-		note: "awaiting L8 measurement"
+		note: "awaiting L8 measurement",
+		test: "src/evidence/npm-registry.test.ts > the signals registry request share allows exactly its count and refuses the next read unsent"
 	}),
 	unjustified("evidence.allocation.signals.readers.registry.maxTotalBytes", 2 * MiB, "bytes", {
 		protects: "Caps npm registry policy response bytes so they cannot exhaust runner memory.",
 		effect: "A response past the share's remaining bytes returns budget and the reader stops.",
-		note: "awaiting L8 measurement"
+		note: "awaiting L8 measurement",
+		test: "src/evidence/npm-registry.test.ts > the signals registry byte share allows exactly its total and refuses the read that exceeds it"
 	}),
 	unjustified("evidence.allocation.signals.readers.metadata.maxRequests", 16, "count", {
 		protects: "Caps PyPI metadata requests in the signals stage so the stage stays inside the envelope.",
 		effect: "The request past the cap returns budget and the metadata reader stops.",
-		note: "awaiting L8 measurement"
+		note: "awaiting L8 measurement",
+		test: "src/evidence/policy-signals-read.test.ts > metadata reader spends exactly its request share and refuses the request past it"
 	}),
 	unjustified("evidence.allocation.signals.readers.metadata.maxTotalBytes", .5 * MiB, "bytes", {
 		protects: "Caps PyPI metadata response bytes so they cannot exhaust runner memory.",
 		effect: "A response past the share's remaining bytes returns budget and the reader stops.",
-		note: "awaiting L8 measurement"
+		note: "awaiting L8 measurement",
+		test: "src/evidence/policy-signals-read.test.ts > metadata reader accepts a byte share exactly and refuses the byte past it"
 	}),
 	unjustified("evidence.allocation.signals.readers.upstream.maxRequests", 16, "count", {
 		protects: "Caps GitHub Actions upstream requests in the signals stage so the stage stays inside the envelope.",
 		effect: "The request past the cap returns budget and the upstream reader stops.",
-		note: "awaiting L8 measurement"
+		note: "awaiting L8 measurement",
+		test: "src/evidence/upstream-read.test.ts > signals upstream reader spends exactly its request share and refuses the request past it"
 	}),
 	unjustified("evidence.allocation.signals.readers.upstream.maxTotalBytes", .5 * MiB, "bytes", {
 		protects: "Caps GitHub Actions upstream response bytes so they cannot exhaust runner memory.",
 		effect: "A response past the share's remaining bytes is refused with budget and the upstream reader stops.",
-		note: "awaiting L8 measurement"
+		note: "awaiting L8 measurement",
+		test: "src/evidence/upstream-read.test.ts > signals upstream reader accepts a byte share exactly and refuses the byte past it"
 	}),
 	derived("research.cache.maxEntryBytes", "bytes", ["evidence.envelope.maxResponseBytes"], copy, "A cached entry is at most one response, so it is capped at the envelope's response cap.", {
 		protects: "One cached response cannot exceed the envelope's response cap, so a single body cannot fill the run's research cache (memory).",
-		effect: "A response over the cap is not stored, but the caller still receives all of its bytes."
+		effect: "A response over the cap is not stored, but the caller still receives all of its bytes.",
+		test: "src/evidence/research-cache.test.ts > stores an entry of exactly the register entry cap and passes one byte more through"
 	}),
 	derived("research.cache.maxTotalBytes", "bytes", [
 		"evidence.allocation.registry.maxTotalBytes",
@@ -9259,7 +9288,8 @@ const DEFINITIONS = [
 		"evidence.allocation.signals.maxTotalBytes"
 	], sum, "The cache holds at most the registry, upstream, advisory, and signals byte shares.", {
 		protects: "Total cache bytes are bounded by the byte shares that fill the cache, so repeated fetches cannot grow the run's memory without limit (memory).",
-		effect: "An entry that would push the cache past its total is not stored, but the response is still returned."
+		effect: "An entry that would push the cache past its total is not stored, but the response is still returned.",
+		test: "src/evidence/research-cache.test.ts > stores entries up to exactly the register total and passes the next byte through"
 	}),
 	derived("w2.session.maxRequests", "count", ["evidence.allocation.session.maxRequests"], copy, "The session reader's request cap is its allocation share's request cap.", {
 		protects: "Bounds the GitHub API requests one review session may dispatch, so PR-driven reads cannot run past the session's share of the evidence envelope; the spec requires explicit request budgets.",
@@ -9269,7 +9299,8 @@ const DEFINITIONS = [
 	unjustified("w2.session.maxPages", 10, "count", {
 		protects: "Bounds PR-file listing requests to 10 pages (1,000 rows at GitHub's 100-per-page size), so a PR's file list cannot drive unbounded paging.",
 		effect: "Requesting a page beyond the cap throws budget before dispatch, discovery is partial with reason budget, and rows already read are kept.",
-		note: "awaiting L8 measurement"
+		note: "awaiting L8 measurement",
+		test: "src/github-read.test.ts > discovery reads exactly w2.session.maxPages pages and keeps the rows it read"
 	}),
 	unjustified("w2.session.maxFiles", 1e3, "count", {
 		protects: "Caps PR-file rows examined per session, so an oversized file list cannot make the reader parse and retain unbounded rows.",
@@ -9313,7 +9344,8 @@ const DEFINITIONS = [
 	unjustified("w2.npm.maxFileBytes", 5e5, "bytes", {
 		protects: "Caps the decoded bytes of one PR-controlled package-lock.json before JSON parsing, so a huge lockfile cannot make the npm reader parse unbounded data (memory and CPU).",
 		effect: "A file over the cap is refused with budget before parsing, so the inventory is not claimed complete.",
-		note: "awaiting L8 measurement"
+		note: "awaiting L8 measurement",
+		test: "src/evidence/npm.test.ts > the file byte cap admits a lockfile of exactly the registered size and refuses one byte more"
 	}),
 	unjustified("w2.npm.maxJsonDepth", 32, "count", {
 		protects: "Caps nesting depth of PR-controlled package-lock.json input, so deeply nested JSON cannot exhaust the stack or CPU in the depth walk and parser.",
@@ -9324,17 +9356,20 @@ const DEFINITIONS = [
 	unjustified("w2.npm.maxJsonEntries", 1e5, "count", {
 		protects: "Caps cumulative JSON entries across PR-controlled lockfiles, so many or wide objects cannot drive unbounded parse and walk work.",
 		effect: "Crossing the cumulative count throws budget, and the file yields a budget gap so inventory is not claimed complete.",
-		note: "awaiting L8 measurement"
+		note: "awaiting L8 measurement",
+		test: "src/evidence/npm.test.ts > the cumulative JSON entry cap admits exactly the registered count and refuses one more"
 	}),
 	unjustified("w2.npm.maxRoots", 10, "count", {
 		protects: "Caps the number of changed npm roots read in one run, so a PR touching many package directories cannot multiply lockfile reads beyond the session budget.",
 		effect: "Roots past the cap are not read; a budget gap is recorded for the whole inventory and the first sorted roots are kept.",
-		note: "awaiting L8 measurement"
+		note: "awaiting L8 measurement",
+		test: "src/evidence/npm.test.ts > the changed npm root cap reads exactly the registered number of roots and records a budget gap for the rest"
 	}),
 	unjustified("w2.npm.maxRetainedBytes", 2e6, "bytes", {
 		protects: "Caps the serialized npm inventory bytes kept in memory and handed to the graph stage.",
 		effect: "The inventory is trimmed to the longest prefix that fits with a budget gap; if no prefix fits the result is unavailable with reason budget.",
-		note: "awaiting L8 measurement"
+		note: "awaiting L8 measurement",
+		test: "src/evidence/npm.test.ts > the retained inventory cap keeps a whole inventory at its exact serialized size and trims one byte under it"
 	}),
 	unjustified("w2.actions.maxFileBytes", 1e5, "bytes", {
 		protects: "Caps the bytes of one PR-controlled workflow file before YAML parsing, so a huge workflow cannot make the YAML parser run unbounded (memory and CPU).",
@@ -9474,12 +9509,14 @@ const DEFINITIONS = [
 	unjustified("w2.registry.maxJsonEntries", 1e5, "count", {
 		protects: "Caps cumulative JSON entries in registry documents, so a very large registry document cannot drive unbounded parse work.",
 		effect: "Crossing the cap throws budget and the read is unavailable with reason budget.",
-		note: "awaiting L8 measurement"
+		note: "awaiting L8 measurement",
+		test: "src/evidence/npm-registry.test.ts > registry JSON entries at the cap parse and one more entry is a budget failure"
 	}),
 	unjustified("w2.registry.maxJsonDepth", 32, "count", {
 		protects: "Caps nesting depth in registry documents, so deep JSON cannot exhaust the stack or CPU in the walker.",
 		effect: "Exceeding the depth throws budget and the read is unavailable with reason budget.",
-		note: "no recorded reason"
+		note: "no recorded reason",
+		test: "src/evidence/npm-registry.test.ts > registry JSON nesting at the depth cap parses and one level deeper is a budget failure"
 	}),
 	derived("w2.registry.requestTimeoutMs", "milliseconds", ["evidence.envelope.requestTimeoutMs"], copy, "The registry reader's request timeout is the envelope's request timeout.", {
 		protects: "Bounds one registry request and its stalled body, so a hung registry response cannot hold the job.",
@@ -9494,17 +9531,20 @@ const DEFINITIONS = [
 	unjustified("research.maxJsonEntries", 2e5, "count", {
 		protects: "Untrusted upstream JSON cannot make a research reader parse an unbounded number of entries (CPU and memory).",
 		effect: "Exceeding the cap fails that reader's read with reason budget; the stage stops and is recorded unavailable with its reason.",
-		note: "awaiting L8 measurement"
+		note: "awaiting L8 measurement",
+		test: "src/research.test.ts > the npm registry reader counts exactly research.maxJsonEntries entries and refuses one more"
 	}),
 	unjustified("research.maxJsonDepth", 32, "count", {
 		protects: "Untrusted upstream JSON cannot nest deeper than the cap, so parsing cannot exhaust the stack or CPU.",
 		effect: "Input nested deeper than the cap fails that reader's read with reason budget; the stage is recorded unavailable.",
-		note: "no recorded reason"
+		note: "no recorded reason",
+		test: "src/evidence/advisory-read.test.ts > advisory JSON depth accepts the register depth exactly and refuses one level deeper"
 	}),
 	unjustified("research.maxRetainedBytes", 2e6, "bytes", {
 		protects: "Bytes a research stage keeps from untrusted responses are bounded, so retained evidence cannot exhaust memory.",
 		effect: "Exceeding the cap sets the stage stop to budget; the stage stops, keeps the members it already retained, and records the stop.",
-		note: "awaiting L8 measurement"
+		note: "awaiting L8 measurement",
+		test: "src/research.test.ts > the npm registry reader retains exactly research.maxRetainedBytes and refuses one byte more"
 	}),
 	{
 		id: "signals.attemptsPerMember",
@@ -9523,12 +9563,14 @@ const DEFINITIONS = [
 	unjustified("snapshot.maxBlobBytes", MiB, "bytes", {
 		protects: "A repository blob larger than the cap is refused before it is fetched, so one file cannot make the snapshot read unbounded bytes (memory and network).",
 		effect: "The blob is refused before fetching with reason budget; the snapshot read is reported unusable with that reason.",
-		note: "awaiting L8 measurement"
+		note: "awaiting L8 measurement",
+		test: "src/snapshot.test.ts > a link target at snapshot.maxBlobBytes is read and one byte more is refused unfetched"
 	}),
 	unjustified("snapshot.maxTreeEntries", 1e4, "count", {
 		protects: "The total number of tree entries listed from GitHub is bounded, so a very large repository cannot make the snapshot listing unbounded (memory and requests).",
 		effect: "Once the running count exceeds the cap, the listing throws Unavailable with the default reason unknown, and the snapshot is reported unusable.",
-		note: "awaiting L8 measurement"
+		note: "awaiting L8 measurement",
+		test: "src/snapshot.test.ts > a listing at snapshot.maxTreeEntries is read and one more entry is refused"
 	}),
 	derived("github.snapshot.maxRequests", "count", ["evidence.allocation.transport.snapshot.maxRequests"], copy, "The GitHub snapshot share's request cap mirrors the transport snapshot allocation.", {
 		protects: "Snapshot reads have their own request share, so a heavy snapshot cannot use up the requests that freshness checks need after a slow model run (time and API quota).",
@@ -9582,7 +9624,8 @@ const DEFINITIONS = [
 	}),
 	derived("context.maxSourceContextBytes", "bytes", ["packet.contextBytes"], copy, "The serialized source-context cap mirrors the packet's context byte cap.", {
 		protects: "The packet rejects a context whose serialized JSON exceeds 65,536 bytes (budget), so the collector must stop before that point.",
-		effect: "An empty context over the cap fails with category budget (src/context.ts:312). During collection the fact that would overflow is dropped with reason context-byte-limit and collection stops, keeping facts already added (partial)."
+		effect: "An empty context over the cap fails with category budget (src/context.ts:312). During collection the fact that would overflow is dropped with reason context-byte-limit and collection stops, keeping facts already added (partial).",
+		test: "src/context.test.ts > the serialized context cap admits the exact reserved size and refuses one byte more"
 	}),
 	derived("context.maxSourceExcerptCodeUnits", "code units", ["packet.excerptCodeUnits"], copy, "The excerpt cap mirrors the packet's excerpt code-unit cap.", {
 		protects: "The packet caps each excerpt at 500 code units, so the collector must cut excerpts to that length before building facts.",
@@ -9597,12 +9640,14 @@ const DEFINITIONS = [
 	unjustified("context.maxSourceRoots", 16, "count", {
 		protects: "Each configured root is walked with lstat and matched against the inventory, so an unbounded root list would make config validation and path checks unbounded.",
 		effect: "A config with more than 16 sourceRoots fails validation (field context.sourceRoots, category config), so the config is rejected.",
-		note: "no recorded reason"
+		note: "no recorded reason",
+		test: "src/config.test.ts > the source root cap admits exactly the registered count and rejects one more"
 	}),
 	unjustified("context.maxSourceCandidates", 128, "count", {
 		protects: "Each excerpt file is stat-checked and matched against the tracked inventory, so the number of excerpt files is capped.",
 		effect: "More than 128 excerptFiles fails config validation. The runtime candidate-limit (src/context.ts:586-590) would stop scanning with reason candidate-limit, but validated config keeps the selected set at 128 or fewer, so that branch cannot trigger.",
-		note: "awaiting L8 measurement"
+		note: "awaiting L8 measurement",
+		test: "src/config.test.ts > the excerpt file cap admits exactly the registered count and rejects one more"
 	}),
 	unjustified("context.maxTrackedPathEntries", 1e4, "count", {
 		protects: "The tracked-file inventory is streamed one entry at a time, and the cap stops the scan on an arbitrarily large repository.",
@@ -9625,7 +9670,8 @@ const DEFINITIONS = [
 	unjustified("context.generatedMarkerScanLines", 20, "count", {
 		protects: "Limits generated-file detection to a file's head, where generators write their markers, so a marker deep in a source file does not exclude it.",
 		effect: "A generated marker after line 20 is ignored, and the file stays eligible.",
-		note: "no recorded reason"
+		note: "no recorded reason",
+		test: "src/context.test.ts > the generated-marker window covers exactly the registered number of leading lines"
 	}),
 	unjustified("dependabot.maxFileBytes", 65536, "bytes", {
 		protects: "The Dependabot config is parsed in memory, so its size is capped before any YAML parsing.",
@@ -9636,7 +9682,8 @@ const DEFINITIONS = [
 	unjustified("dependabot.maxYamlNodes", 2e4, "count", {
 		protects: "The count of YAML nodes is capped before composition, so untrusted config cannot force unbounded parser work.",
 		effect: "Exceeding 20,000 nodes fails the whole file with budget, and no roots are read.",
-		note: "awaiting L8 measurement"
+		note: "awaiting L8 measurement",
+		test: "src/dependabot-roots.test.ts > the YAML node cap admits exactly the registered node count and refuses one node more"
 	}),
 	unjustified("dependabot.maxYamlDepth", 16, "count", {
 		protects: "YAML nesting is capped, so the parse and compose cannot recurse without bound on untrusted input.",
@@ -9682,7 +9729,8 @@ const DEFINITIONS = [
 	unjustified("config.maxModelCodeUnits", 128, "code units", {
 		protects: "The configured model ID is passed to the analysis provider request; an unbounded string could flow into it, and the cap with the ASCII pattern keeps it a valid identifier.",
 		effect: "A model over 128 code units, or one that fails the pattern, fails the config with field analysis.model.",
-		note: "no recorded reason"
+		note: "no recorded reason",
+		test: "src/config.test.ts > the model cap admits exactly the registered code units and rejects one more"
 	}),
 	unjustified("config.maxReleaseAgeDays", 30, "count", {
 		protects: "A mistyped release-age window (say 365) would hold every update as too new for a year; the range keeps an adopter's setting to plausible windows.",
@@ -9699,7 +9747,8 @@ const DEFINITIONS = [
 	unjustified("analysis.maxUnits", 8, "count", {
 		protects: "A batch's units share one request and one reply. The reviewed batch size (2 to 8 units) was measured against the completion budget, so a larger batch risks length truncation.",
 		effect: "Batches are packed to at most 8 units; the rest become separate batches. A prepared batch with more units is refused, and a reply with more rows is refused.",
-		note: "awaiting L8 measurement"
+		note: "awaiting L8 measurement",
+		test: "src/analysis/batches.test.ts > a batch packs exactly the registered unit count and the next unit starts a new batch"
 	}),
 	unjustified("analysis.sourceBytes", 2048, "bytes", {
 		protects: "The upstream excerpt sent to the model is cut to a byte cap, so one source cannot inflate the request.",
@@ -9782,7 +9831,8 @@ const DEFINITIONS = [
 	unjustified("analysis.maxAnalysisMs", 6e5, "milliseconds", {
 		protects: "Analysis time is capped at the spec's 600 s maximum, so the stage cannot outlast the job's time budget.",
 		effect: "The effective deadline is the earlier of the caller deadline minus the reserve and start plus 600 s. No call dispatches at or after it; in-flight calls end with deadline.",
-		note: "awaiting L8 measurement"
+		note: "awaiting L8 measurement",
+		test: "src/analysis/batches.test.ts > no call dispatches at or after the registered analysis time cap from the start"
 	}),
 	unjustified("analysis.publicationReserveMs", 6e4, "milliseconds", {
 		protects: "Publication needs time after analysis. Without a reserve, a call could consume the whole deadline and leave nothing to publish.",
@@ -9805,27 +9855,32 @@ const DEFINITIONS = [
 	unjustified("complexity.gitMaxBufferBytes", 32 * MiB, "bytes", {
 		protects: "git output is buffered in memory by execFileSync; without a cap a large ls-tree or show would grow the script's memory without limit.",
 		effect: "Output over the cap makes execFileSync throw, so the run fails and produces no report for that revision.",
-		note: "awaiting L8 measurement"
+		note: "awaiting L8 measurement",
+		test: "none: the buffer for git output in the advisory complexity report; a run over it fails the report job, which never gates a merge"
 	}),
 	unjustified("complexity.cellInputCodeUnits", 160, "code units", {
 		protects: "Function names and paths come from the reviewed PR; unbounded cells would inflate the comment past its body ceiling.",
 		effect: "Each value is cut to the input cap before escaping, so a long name shows truncated with no error.",
-		note: "no recorded reason"
+		note: "no recorded reason",
+		test: "none: a display truncation in the advisory complexity report table, which never gates a merge"
 	}),
 	unjustified("complexity.cellOutputCodeUnits", 200, "code units", {
 		protects: "Escaped cell text can grow well past its input length, so an output cap keeps each cell bounded in the comment.",
 		effect: "Escaped text is cut to the output cap, then a trailing partial entity is removed, so no broken entity is shown.",
-		note: "no recorded reason"
+		note: "no recorded reason",
+		test: "none: a display truncation in the advisory complexity report table, which never gates a merge"
 	}),
 	unjustified("complexity.maxListedFindings", 100, "count", {
 		protects: "The regression table lists at most this many rows so the comment stays within its body ceiling; the total count is still reported.",
 		effect: "The table shows the first 100 rows and the line 'Showing the first 100 of N findings'.",
-		note: "no recorded reason"
+		note: "no recorded reason",
+		test: "none: a display cap in the advisory complexity report, which says how many findings it omitted and never gates a merge"
 	}),
 	unjustified("measureDemand.testTimeoutMs", 9e5, "milliseconds", {
 		protects: "A hung review run inside the demand measurement would otherwise run indefinitely; the timeout ends that test. It equals the 15-minute review job limit.",
 		effect: "A test past the timeout fails under vitest's timeout behavior, which is not read in this repo.",
-		note: "awaiting L8 measurement"
+		note: "awaiting L8 measurement",
+		test: "none: the timeout of the manual demand measurement, which needs a live token and is not part of npm test"
 	}),
 	unjustified("signals.reasonCodeUnits", 350, "code units", {
 		protects: "Registry deprecation text is untrusted; an unbounded reason would bloat the packet's text and the comment.",
@@ -9836,27 +9891,32 @@ const DEFINITIONS = [
 	unjustified("signals.npmMaxMaintainers", 32, "count", {
 		protects: "A registry response can list an unbounded number of maintainers; the cap stops an oversized list from entering the publisher facts.",
 		effect: "Above 32 maintainers, the maintainers check fails with budget and that observation is recorded as unchecked.",
-		note: "no recorded reason"
+		note: "no recorded reason",
+		test: "src/evidence/policy-signals-npm.test.ts > a maintainer list at the registered cap is kept and one more is unchecked for budget"
 	}),
 	unjustified("pipeline.ownershipWatchMs", 2e3, "milliseconds", {
 		protects: "A lost claim must stop a pending request within the watch interval, and the code requires that interval to be shorter than any request timeout, so lost work does not keep running (work after ownership is lost).",
 		effect: "Each tick checks ownership; when ownership is lost the pending request is aborted.",
-		note: "no recorded reason"
+		note: "no recorded reason",
+		test: "src/pipeline.test.ts > checks ownership every pipeline.ownershipWatchMs while a request is pending"
 	}),
 	unjustified("research.maxTagCandidates", 100, "count", {
 		protects: "Release and tag candidates from untrusted upstream data are bounded, so tag matching cannot grow requests or CPU without limit (requests and CPU).",
 		effect: "The candidate past the cap fails with reason budget; the upstream stage stops with that reason.",
-		note: "awaiting L8 measurement"
+		note: "awaiting L8 measurement",
+		test: "src/evidence/upstream-range.test.ts > range release candidates are counted up to the register cap and refused one past it"
 	}),
 	unjustified("research.maxTagDepth", 10, "count", {
 		protects: "The annotated-tag chain followed from an untrusted GitHub ref is bounded, so peeling cannot loop or cost unbounded requests (requests).",
 		effect: "A chain deeper than the cap fails with reason budget.",
-		note: "no recorded reason"
+		note: "no recorded reason",
+		test: "src/evidence/upstream-github.test.ts > annotated tag chains resolve up to the register depth and fail one tag deeper"
 	}),
 	unjustified("research.maxWork", 5e6, "count", {
 		protects: "The work a research reader does on untrusted data is bounded, so one stage cannot consume unbounded CPU (CPU).",
 		effect: "Spending past the cap sets the stop to budget and throws; the stage stops and its stop is recorded as unavailable.",
-		note: "awaiting L8 measurement"
+		note: "awaiting L8 measurement",
+		test: "src/research.test.ts > the upstream reader spends exactly research.maxWork units and refuses the next one"
 	}),
 	unjustified("research.maxAttempts", 512, "count", {
 		protects: "The number of attempt records one enrichment can carry is bounded, so the output built from them stays within memory and output size (memory).",
@@ -9865,16 +9925,19 @@ const DEFINITIONS = [
 	}),
 	derived("research.maxFindings", "count", ["packet.findings"], copy, "The research finding cap mirrors the packet's finding cap, since research findings land in the packet.", {
 		protects: "Research findings land in the packet, so the research finding cap mirrors the packet findings cap and bounds packet size (packet size).",
-		effect: "Advisory findings past the cap fail the reader with reason budget."
+		effect: "Advisory findings past the cap fail the reader with reason budget.",
+		test: "src/evidence/advisory-read.test.ts > advisory findings accept the register cap exactly and refuse the finding past it"
 	}),
 	derived("analysis.projectionBytes", "bytes", ["packet.bytes"], (bytes) => 8 * bytes, "The analysis projection's input budget is eight times the packet's byte cap.", {
 		protects: "Input work during snapshot (the parsed reply or inventory and its detached copy) is capped at eight packet-byte caps, so crafted JSON cannot allocate without bound.",
-		effect: "Exceeding the byte budget throws a budget error and no snapshot or batch is produced. Nothing partial is kept."
+		effect: "Exceeding the byte budget throws a budget error and no snapshot or batch is produced. Nothing partial is kept.",
+		test: "src/analysis/projection.test.ts > the snapshot byte budget admits exactly eight packet caps of input and refuses one byte more"
 	}),
 	unjustified("analysis.maxProjectionDepth", 64, "count", {
 		protects: "Snapshot recursion depth is capped at 64, so deeply nested input cannot exhaust the call stack.",
 		effect: "Input deeper than 64 levels throws a budget error and no snapshot is taken.",
-		note: "no recorded reason"
+		note: "no recorded reason",
+		test: "src/analysis/projection.test.ts > the snapshot depth cap admits a leaf at the registered depth and refuses one level deeper"
 	}),
 	unjustified("analysis.maxTokenCodeUnits", 128, "code units", {
 		protects: "Sets the assumed code units per token in the reply-byte formula (completionTokens * 128 * 6 plus the envelope), so the reply byte cap covers the largest legal reply.",
@@ -9895,17 +9958,20 @@ const DEFINITIONS = [
 	unjustified("npm.maxIntegrityCodeUnits", 1024, "code units", {
 		protects: "The integrity string from the untrusted npm registry is bounded before the hash parser splits and matches it, so the parse cannot do unbounded work (CPU).",
 		effect: "A longer integrity string fails the registry document with reason malformed, so the package's registry evidence is unavailable.",
-		note: "no recorded reason"
+		note: "no recorded reason",
+		test: "src/evidence/npm-registry.test.ts > an integrity string at the code-unit cap binds and one more code unit is malformed"
 	}),
 	unjustified("github.compareMaxFiles", 300, "count", {
 		protects: "A compare response with the cap or more changed files may be incomplete, so the list is marked truncated instead of being treated as complete (evidence completeness).",
 		effect: "At or above the cap, filesComplete is false and the reason truncated is recorded; the patches already read are kept.",
-		note: "no recorded reason"
+		note: "no recorded reason",
+		test: "src/evidence/upstream-github.test.ts > a comparison keeps its file list complete below the register file cap and truncates at it"
 	}),
 	unjustified("github.pageSize", 100, "count", {
 		protects: "GitHub returns at most 100 entries per page, so the reader requests 100 and treats a longer page as malformed (outside platform limit).",
 		effect: "A page longer than 100 fails the read as malformed (src/github-read.ts:581); a Link URL with a different per_page is a conflict (src/github-read.ts:280); a short page ends pagination (src/github-read.ts:589).",
-		note: "awaiting L9 citation"
+		note: "awaiting L9 citation",
+		test: "src/github-read.test.ts > a page of exactly github.pageSize rows is accepted and a longer page is malformed"
 	}),
 	unjustified("github.treeMaxFiles", 3e3, "count", {
 		protects: "GitHub's pull-request files endpoint stops at 3,000 files, so a list at that size is incomplete and must be marked truncated (outside platform limit).",
@@ -9922,12 +9988,14 @@ const DEFINITIONS = [
 	unjustified("uv.maxCorroborationCodeUnits", 4096, "code units", {
 		protects: "Lines over the cap are skipped before the claim regex runs, so untrusted changelog text cannot make the matcher do unbounded work (CPU).",
 		effect: "A longer line is skipped and yields no claim; the remaining lines are still read.",
-		note: "no recorded reason"
+		note: "no recorded reason",
+		test: "src/evidence/uv-corroboration.test.ts > a changelog line at the registered code-unit cap is read and one code unit longer is skipped"
 	}),
 	unjustified("uv.corroborationWorkPerEntry", 64, "count", {
 		protects: "Each corroborated entry reserves a fixed work cost before any contradiction is learned, so corroboration cannot run past the work budget (CPU).",
 		effect: "Work that exceeds the graph budget stops corroboration with reason budget, while the validated inventory is kept.",
-		note: "awaiting L8 measurement"
+		note: "awaiting L8 measurement",
+		test: "none: a multiplier inside the corroboration reservation at src/evidence/uv-corroboration.ts:326; the sum is spent against the graph work budget, which graphWork enforces (src/evidence/uv-input.ts:59-61, left < 0 throws budget) with the limit w2.graph.maxGraphWork (src/collection.ts:60)"
 	}),
 	unjustified("handoff.maxTraces", 32, "count", {
 		protects: "The rehearsal sink is a local, bounded record of runs; an unbounded trace list would grow memory with each run.",

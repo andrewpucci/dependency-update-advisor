@@ -2,6 +2,7 @@ import { describe, expect, test, vi } from 'vite-plus/test';
 import { createNpmRegistryReader } from './npm-registry.js';
 import { createResearchCache, type ResearchCache } from './research-cache.js';
 import { createUpstreamReader } from './upstream-read.js';
+import { EVIDENCE_READ_ALLOCATION } from '../budget.js';
 
 const integrity = 'sha512-' + Buffer.alloc(64, 7).toString('base64');
 const limits = {
@@ -373,4 +374,86 @@ test('an npm lookup past the request share reports budget', async () => {
   expect(await f.reader.read(target)).toMatchObject({ status: 'available' });
   expect(await f.reader.read(other)).toMatchObject({ status: 'unavailable', reasons: ['budget'] });
   expect(f.fetch).toHaveBeenCalledTimes(1);
+});
+/** An npm document for the version named in the request path, padded to `size` bytes when given. */
+function versionBody(url: string, size?: number) {
+  const version = decodeURIComponent(url.split('/').pop() ?? '');
+  const json = JSON.stringify({ ...document, _id: `@fixture/widget@${version}`, version });
+  if (size === undefined) return json;
+  // Whitespace after the opening brace keeps the document valid JSON at the exact size.
+  return `{${' '.repeat(size - json.length)}${json.slice(1)}`;
+}
+const versionTarget = (version: string) => ({ ...target, version });
+function requestShareBudget(share: number) {
+  const f = setup(async (url) => Response.json(JSON.parse(versionBody(url))), {
+    maxRequests: share,
+  });
+  return f;
+}
+test('upstream reader spends exactly its request share and refuses the request past it', async () => {
+  const share = EVIDENCE_READ_ALLOCATION.upstream.maxRequests;
+  const f = requestShareBudget(share);
+  for (let i = 0; i < share; i++)
+    expect(await f.reader.read(versionTarget(`1.0.${i}`))).toMatchObject({ status: 'available' });
+  expect(await f.reader.read(versionTarget(`1.0.${share}`))).toMatchObject({
+    status: 'unavailable',
+    reasons: ['budget'],
+  });
+  expect(f.fetch).toHaveBeenCalledTimes(share);
+  f.reader.close();
+});
+test('signals upstream reader spends exactly its request share and refuses the request past it', async () => {
+  const share = EVIDENCE_READ_ALLOCATION.signals.readers.upstream.maxRequests;
+  const f = requestShareBudget(share);
+  for (let i = 0; i < share; i++)
+    expect(await f.reader.read(versionTarget(`1.0.${i}`))).toMatchObject({ status: 'available' });
+  expect(await f.reader.read(versionTarget(`1.0.${share}`))).toMatchObject({
+    status: 'unavailable',
+    reasons: ['budget'],
+  });
+  expect(f.fetch).toHaveBeenCalledTimes(share);
+  f.reader.close();
+});
+/** Two npm reads whose bodies total `total + overflow` bytes; each body alone fits the share. */
+function byteShareReader(total: number, overflow: number) {
+  const first = Math.floor(total / 2);
+  const sizes = [first, total - first + overflow];
+  let calls = 0;
+  return setup(
+    async (url) =>
+      new Response(versionBody(url, sizes[calls++]), {
+        headers: { 'content-type': 'application/json' },
+      }),
+    { maxResponseBytes: total, maxTotalBytes: total },
+  );
+}
+test('upstream reader accepts a byte share exactly and refuses the byte past it', async () => {
+  const total = EVIDENCE_READ_ALLOCATION.upstream.maxTotalBytes;
+  const exact = byteShareReader(total, 0);
+  await exact.reader.read(versionTarget('1.0.0'));
+  expect(await exact.reader.read(versionTarget('1.0.1'))).toMatchObject({ status: 'available' });
+  exact.reader.close();
+
+  const over = byteShareReader(total, 1);
+  await over.reader.read(versionTarget('1.0.0'));
+  expect(await over.reader.read(versionTarget('1.0.1'))).toMatchObject({
+    status: 'unavailable',
+    reasons: ['budget'],
+  });
+  over.reader.close();
+});
+test('signals upstream reader accepts a byte share exactly and refuses the byte past it', async () => {
+  const total = EVIDENCE_READ_ALLOCATION.signals.readers.upstream.maxTotalBytes;
+  const exact = byteShareReader(total, 0);
+  await exact.reader.read(versionTarget('1.0.0'));
+  expect(await exact.reader.read(versionTarget('1.0.1'))).toMatchObject({ status: 'available' });
+  exact.reader.close();
+
+  const over = byteShareReader(total, 1);
+  await over.reader.read(versionTarget('1.0.0'));
+  expect(await over.reader.read(versionTarget('1.0.1'))).toMatchObject({
+    status: 'unavailable',
+    reasons: ['budget'],
+  });
+  over.reader.close();
 });

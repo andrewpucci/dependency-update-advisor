@@ -3,6 +3,7 @@ import { createPolicySignalReader } from './policy-signals-read.js';
 import { createResearchCache } from './research-cache.js';
 import { PACKET_LIMITS } from '../schema.js';
 import { isPlainObject } from './common.js';
+import { EVIDENCE_READ_ALLOCATION } from '../budget.js';
 const limits = {
   maxRequests: 10,
   maxResponseBytes: 20000,
@@ -375,4 +376,69 @@ test('a cache hit leaves the total-byte share for later live reads', async () =>
   expect(hit.kind).toBe('data');
   expect(live.kind).toBe('data');
   expect(calls).toHaveLength(2);
+});
+/** A PyPI release document for the version named in the request path, padded to `size` bytes. */
+function releaseVersionQuery(version: string) {
+  return { ...query, version };
+}
+function releaseDocument(url: string, size?: number) {
+  const version = new URL(url).pathname.split('/')[3];
+  const json = JSON.stringify({ info: { name: query.name, version }, urls: [] });
+  if (size === undefined) return json;
+  // Whitespace after the opening brace keeps the document valid JSON at the exact size.
+  return `{${' '.repeat(size - json.length)}${json.slice(1)}`;
+}
+test('metadata reader spends exactly its request share and refuses the request past it', async () => {
+  const share = EVIDENCE_READ_ALLOCATION.signals.readers.metadata.maxRequests;
+  let requests = 0;
+  const r = createPolicySignalReader(
+    { ...limits, maxRequests: share },
+    {
+      now: () => 0,
+      fetch: async (url) => {
+        requests++;
+        return Response.json(JSON.parse(releaseDocument(url)));
+      },
+    },
+  );
+  if (r.kind !== 'ready') throw new Error('reader');
+  for (let i = 0; i < share; i++)
+    expect(await r.read(releaseVersionQuery(`1.${i}`))).toMatchObject({ kind: 'data' });
+  expect(await r.read(releaseVersionQuery(`1.${share}`))).toEqual({
+    kind: 'unavailable',
+    reason: 'budget',
+  });
+  r.close();
+  expect(requests).toBe(share);
+});
+test('metadata reader accepts a byte share exactly and refuses the byte past it', async () => {
+  const total = EVIDENCE_READ_ALLOCATION.signals.readers.metadata.maxTotalBytes;
+  const first = Math.floor(total / 2);
+  const readWithSecondSize = async (secondOverflow: number) => {
+    const sizes = [first, total - first + secondOverflow];
+    let calls = 0;
+    const r = createPolicySignalReader(
+      { ...limits, maxResponseBytes: total, maxTotalBytes: total },
+      {
+        now: () => 0,
+        fetch: async (url) => {
+          const size = sizes[calls++];
+          return new Response(releaseDocument(url, size), {
+            headers: { 'content-type': 'application/json' },
+          });
+        },
+      },
+    );
+    if (r.kind !== 'ready') throw new Error('reader');
+    const results = [
+      await r.read(releaseVersionQuery('1.0')),
+      await r.read(releaseVersionQuery('1.1')),
+    ];
+    r.close();
+    return results;
+  };
+  const [, atLimit] = await readWithSecondSize(0);
+  expect(atLimit).toMatchObject({ kind: 'data' });
+  const [, pastLimit] = await readWithSecondSize(1);
+  expect(pastLimit).toEqual({ kind: 'unavailable', reason: 'budget' });
 });
