@@ -199,6 +199,8 @@ test('measure research read demand', async () => {
   // As in the pipeline: one cache shared by collection's registry reads and research.
   const researchCache = createResearchCache(RESEARCH_CACHE_LIMITS);
   let measured: Record<string, number> = {};
+  // Packet assembly turns a thrown session failure into internal-failure; keep why it failed.
+  let sessionOutcome = 'not opened';
   const snapshot = await withTrustedSnapshot(
     { repository, reads: createGithubSnapshotReads(transport) },
     async (trusted) => {
@@ -228,13 +230,17 @@ test('measure research read demand', async () => {
             now,
             deadline,
           });
+          sessionOutcome = opened.kind;
           if (opened.kind !== 'ready') throw new Error('no evidence session');
           return opened.session;
         },
         collectors,
         inventorySource: null,
       } as never);
-      if (assembled.kind !== 'ready') return { packet: assembled.kind };
+      if (assembled.kind === 'incomplete') return { packet: assembled.kind, gaps: assembled.gaps };
+      if (assembled.kind === 'context-failure')
+        return { packet: assembled.kind, category: assembled.category };
+      if (assembled.kind !== 'ready') return { packet: assembled.kind, session: sessionOutcome };
       const researched = await runResearch({
         packet: assembled.packet,
         trusted: { ...trustedBase, context: assembled.packet.context as never },
