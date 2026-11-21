@@ -131,3 +131,53 @@ test.each(Object.keys(readers) as (keyof typeof readers)[])(
     }
   },
 );
+
+test('sends a fixed JSON body as a credential-free POST and leaves GET unchanged', async () => {
+  const seen: RequestInit[] = [];
+  const fetch = async (_url: string, init: RequestInit) => {
+    seen.push(init);
+    return Response.json({});
+  };
+  for (const json of [{ package: { name: 'pkg' }, version: '1.0.0' }, undefined])
+    await boundedGet(
+      { now: () => 0, fetch },
+      {
+        url: 'https://example.test/q',
+        headers: { accept: 'application/json' },
+        timeoutMs: 100,
+        json,
+      },
+      () => {},
+      async (response) => response.json(),
+    );
+  expect(seen[0]).toMatchObject({
+    method: 'POST',
+    redirect: 'manual',
+    credentials: 'omit',
+    headers: { accept: 'application/json', 'content-type': 'application/json' },
+    body: '{"package":{"name":"pkg"},"version":"1.0.0"}',
+  });
+  expect(seen[1]).toMatchObject({
+    method: 'GET',
+    redirect: 'manual',
+    credentials: 'omit',
+    headers: { accept: 'application/json' },
+  });
+  expect(seen[1]).not.toHaveProperty('body');
+});
+test('a POST keeps the request timeout', async () => {
+  vi.useFakeTimers();
+  try {
+    const task = boundedGet(
+      { now: () => 0, fetch: () => new Promise<Response>(() => {}) },
+      { url: 'https://example.test/q', accept: 'application/json', timeoutMs: 1, json: {} },
+      () => {},
+      async (response) => response.json(),
+    );
+    const timedOut = expect(task).rejects.toMatchObject({ reason: 'timeout' });
+    await vi.advanceTimersByTimeAsync(1);
+    await timedOut;
+  } finally {
+    vi.useRealTimers();
+  }
+});

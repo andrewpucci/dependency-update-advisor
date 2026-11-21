@@ -1,0 +1,16 @@
+{
+  "recorded": "2026-11-20",
+  "note": "Live OSV response, trimmed to validated fields.",
+  "request": {
+    "url": "https://api.osv.dev/v1/query",
+    "body": {
+      "package": {
+        "ecosystem": "PyPI",
+        "name": "pyyaml"
+      },
+      "version": "6.0.2"
+    }
+  },
+  "status": 200,
+  "body": {}
+}

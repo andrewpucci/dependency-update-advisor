@@ -44,8 +44,11 @@ export const EVIDENCE_READ_ALLOCATION = Object.freeze({
   session: Object.freeze({ maxRequests: 160, maxTotalBytes: 12 * MiB }),
   registry: Object.freeze({ maxRequests: 64, maxTotalBytes: 4 * MiB }),
   // Research reads scale with the group: measured at about 7 upstream (5 GitHub plus 2 registry),
-  // 2 advisory, and 1 each malware and publish-time request per extra package, so these cover a
-  // group of 32 packages.
+  // 2 advisory, and 1 each malware and publish-time request per extra npm package, so these cover
+  // a group of 32 npm packages. pip and Actions malware lookups take at least 2 requests (stored-name
+  // discovery, then the versioned query) and Actions reviewed lookups 3 per update, so the malware
+  // share covers about 20 such packages and the advisory share about 26 Actions updates; S1's
+  // Package Name Form Amendment states this limit.
   upstream: Object.freeze({ maxRequests: 240, maxTotalBytes: 15 * MiB }),
   advisory: Object.freeze({ maxRequests: 80, maxTotalBytes: 5 * MiB }),
   signals: Object.freeze({

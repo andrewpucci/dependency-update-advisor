@@ -1002,6 +1002,33 @@ implemented, a renderer size rejection remains `render-size`. If implemented,
 does not change any W2 outcome, reason, trace, or stderr form, and it does not
 authorize publication.
 
+## Amendment 6: OSV Query in the No-Write Guard
+
+**Status: approved for execution, 2026-11-20.** The user explicitly approved
+this amendment after the shipped bundle's no-write guard flagged the OSV query
+added by the S1
+[Package Name Form Amendment](SPEC-advisory-lookup.md#package-name-form-amendment).
+Tracked in [#398](https://github.com/andrewpucci/dependency-update-advisor/issues/398)
+with that change. Effort tier: L.
+
+It amends Amendment 4's named mutation "loosening the shipped-bundle no-write
+guard beyond the one model endpoint". OSV's query endpoint accepts only POST,
+so a PyPI reviewed-vulnerability lookup is a POST that reads data and writes
+nothing.
+
+1. The guard exempts exactly two requests: the one model call, as before, and
+   a `POST` to `https://api.osv.dev/v1/query` with no `authorization` header.
+2. Any other non-GET request stays a live write, including a different OSV
+   path, an OSV request that carries any credential, a PUT to the OSV URL, and
+   every status or comment write. GET credential and path rules are unchanged.
+3. The named mutation now reads: loosening the guard beyond the model endpoint
+   and the unauthenticated OSV query. Each of these mutations must fail the
+   guard's unit test: exempting every `api.osv.dev` URL, exempting an OSV
+   query that carries a credential, and exempting any method other than POST
+   to the OSV URL.
+
+This changes no W2 outcome, reason, trace, stderr form, or publication rule.
+
 ## Testing Strategy
 
 Use source-adjacent `vite-plus/test` tests with injected clock, fetch,

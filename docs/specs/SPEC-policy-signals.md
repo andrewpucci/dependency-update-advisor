@@ -502,3 +502,18 @@ metadata/absence semantics, artifact handling, license-parser support, the
 streaming metadata extractor and any parser it needs, any exact dependency
 pins, and caller budget allocation. These implementation choices require
 separate plan approval before execution.
+
+## Package Name Form Amendment
+
+**Status: approved for planning, 2026-11-20,** with the S1 amendment;
+implemented with it for #403, pending review and merge.
+Plan and execution approval remain separate gates. Effort tier: L,
+with the [S1 amendment](SPEC-advisory-lookup.md#package-name-form-amendment)
+it follows. Malware queries for `pip` and `actions` targets use S1's GitHub
+two-step lookup with `type=malware` in every request: package-only discovery
+of the stored name forms, then one versioned query listing every discovered
+form, or the normalized name when none. OSV is not used for malware: it has
+none of GitHub's malware advisories. A malware discovery is separate from a
+reviewed discovery and is never reused for it. S1's failure, bounds,
+citation, and known-limit rules apply unchanged, and malware coverage keeps
+its existing provider scope. `npm` malware queries are unchanged.
