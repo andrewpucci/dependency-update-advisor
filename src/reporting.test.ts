@@ -3014,15 +3014,19 @@ test('the R1-shaped fixture fits the body limit and names every required record'
   expect(coverageSectionOf(body)).toContain(`${assessed} assessed decision unit`);
 });
 
-test('renders the checked lines directly after the coverage counts', async () => {
+test('renders the checked lines after the coverage counts and before the finding lines', async () => {
   const { body } = await renderLargeInventory();
   const lines = coverageSectionOf(body)
     .split('\n')
-    .filter((line) => line.startsWith('- '));
-  const checked = checkedLinesOf(body);
+    .filter((line) => line.trim() !== '');
+  const counts = lines.findIndex((line) => /^\d+ changed updates?; /u.test(line));
+  expect(counts, 'the coverage counts open the section').toBe(0);
+  const checked = checkedLinesOf(body).map((line) => lines.indexOf(line));
   expect(checked.length, 'fixture has checked lines').toBeGreaterThan(0);
-  expect(lines.length, 'fixture has lines after the checked ones').toBeGreaterThan(checked.length);
-  expect(lines.slice(0, checked.length)).toEqual(checked);
+  for (const index of checked) expect(index).toBeGreaterThan(counts);
+  const findings = lines.flatMap((line, index) => (line.includes(' — ') ? [index] : []));
+  expect(findings.length, 'fixture has finding lines').toBeGreaterThan(0);
+  expect(Math.max(...checked)).toBeLessThan(Math.min(...findings));
 });
 
 test('the checked-state fixture lists each required category once and names the partial finding', async () => {
