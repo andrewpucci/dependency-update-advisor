@@ -926,3 +926,112 @@ target a batch cannot settle.
   accounting.
 
 <!-- markdownlint-enable MD024 -->
+
+## Batching Reconciliation Amendment
+
+**Status: draft for review, 2026-11-20.** The user approved decisions D1–D4
+below on 2026-11-20 in
+[#408](https://github.com/andrewpucci/dependency-update-advisor/issues/408).
+This section records them; it is not approved until a fresh-context review
+passes and the user approves it. Plan and execution approval remain separate
+gates, and no limit value changes. Effort tier: L. It reconciles the
+[Batched Lookup Amendment](#batched-lookup-amendment), approved 2026-11-19
+before the name form change, with the
+[Package Name Form Amendment](#package-name-form-amendment), approved
+2026-11-20. Neither section's text is edited; where they conflict, this
+section decides. The
+[policy signals spec](SPEC-policy-signals.md#batching-reconciliation-amendment)
+applies it to malware queries.
+
+### Why the amendments conflict
+
+The Batched Lookup Amendment batches the one exact GitHub query each target
+had on 2026-11-19. The Package Name Form Amendment then replaced that query
+for every target except npm: `pip` reviewed lookups go to OSV, and Actions
+reviewed lookups and `pip` and Actions malware lookups discover stored name
+forms before one versioned query. A versioned query depends on its target's
+own discovery, so the batch rules cannot apply to it unchanged.
+
+### Reconciliation decisions
+
+1. **`pip` reviewed lookups are not batched (D1).** OSV requests do not use
+   the GitHub request budget that batching protects. OSV's
+   `POST /v1/querybatch` returns only each record's `id` and `modified`, so it
+   cannot check `github_reviewed`, and OSV's documentation does not claim it
+   returns the same set as `/v1/query`. Batching would also widen W2
+   Amendment 6's no-write exemption. `querybatch` stays an Ask-first option.
+2. **npm keeps the batch rules (D2), with three changes.**
+   - An attributed record's several same-package entries are joined into one
+     range, as Package Name Form item 8 requires, instead of failing.
+   - A GitHub rate limit stops GitHub requests only, as Package Name Form
+     item 9 requires. Batch item 3's "which stops all requests in the session"
+     no longer holds.
+   - The batch page size is fitted to an npm example measured by C2, not to
+     the `Pillow@8.0.0` singleton page in batch item 2. The value is still an
+     Ask-first decision at C3.
+3. **Discovery is batched across targets (D3).** Discovery for Actions
+   reviewed lookups and for `pip` and Actions malware lookups lists the
+   spellings of several targets of one ecosystem and advisory type in one
+   package-only query. The batch keeps Package Name Form item 6's URL cap
+   (`limit:advisory.discovery.urlBytes`), page size
+   (`limit:advisory.discovery.pageSize`), cursor rules, and separator-run
+   limit.
+   - **Settling.** A target is settled only when every request carrying any
+     of its spellings has completed.
+   - **Validation.** Every returned record must name at least one batched
+     target in canonical form. Otherwise the batch is `malformed`.
+   - **Clearing.** A target with no record in a complete discovery batch is
+     cleared without its versioned query. It cites the unfetched versioned
+     URL that would reproduce the empty result, and its source text says it
+     was checked in a batched query, as batch item 7 does for npm. This
+     reverses Package Name Form item 7's "always sends" for cleared targets
+     only.
+   - **Hits.** A target with a discovery hit gets its versioned query, as
+     today. Discovery never attributes a record: a malware hit followed by a
+     failed versioned query is incomplete, with no finding.
+   - **Fallback.** An incomplete batch clears nothing, and its targets fall
+     back to per-target discovery.
+4. **Superseded text (D4).**
+   - Batched Lookup Amendment items 1–7 apply to npm only; versioned batches
+     are npm only.
+   - Batched Lookup Amendment item 9 is replaced by the Package Name Form
+     Amendment.
+   - The equivalence check drops `Pillow@8.0.0` as a seed.
+   - Package Name Form item 7 gains the clearing exception in decision 3.
+   - The Package Name Form boundary "Never … cite a URL that was not
+     fetched" gains the same exception: a cleared discovery target cites its
+     unfetched versioned URL with batched source text.
+
+### Reconciliation verification
+
+- **C1** records the targets the reader settles, not discovery spellings or
+  OSV lookups.
+- **C2's equivalence check** is seeded with `lodash@4.17.20`,
+  `@babel/traverse@7.22.0`, a known npm malware package,
+  `tj-actions/changed-files@45.0.7`, and `flo-pro-adk`, plus a name with three
+  or more separators. It adds a discovery comparison: every stored form that
+  per-target discovery finds is returned and named by its discovery batch.
+- **C5** settles both batch kinds.
+
+### Reconciliation fixtures
+
+- The attributed-record survival fixture is npm only.
+- A discovery hit followed by a failed versioned query: the lookup is
+  incomplete, and no finding is emitted.
+- An empty complete discovery batch clears each target, citing its
+  unfetched versioned URL.
+- A record in a discovery batch that names no batched target in canonical
+  form: the batch is `malformed`.
+- A discovery batch whose second request fails: the targets whose spellings
+  it carried fall back to per-target discovery.
+
+### Reconciliation boundaries
+
+- **Always:** clear a discovery target only from a complete batch, send the
+  versioned query for every discovery hit, and keep npm's batch rules as
+  approved except where decision 2 changes them.
+- **Ask first:** `querybatch`, and every value the batch amendments mark Ask
+  first.
+- **Never:** batch `pip` reviewed lookups through OSV without a new decision,
+  attribute a record from discovery, or clear a target whose spellings are in
+  an incomplete request.

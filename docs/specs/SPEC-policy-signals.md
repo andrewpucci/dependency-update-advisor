@@ -564,3 +564,30 @@ The S1 equivalence check includes a known npm malware package, queried with
   attributable malware record when later requests fail.
 - **Ask first:** anything S1's amendment marks Ask first.
 - **Never:** clear a malware check from a reviewed result or a partial batch.
+
+## Batching Reconciliation Amendment
+
+**Status: draft for review, 2026-11-20,** with the
+[S1 reconciliation](SPEC-advisory-lookup.md#batching-reconciliation-amendment)
+it follows. Decisions D1–D4 were approved by the user on 2026-11-20 in
+[#408](https://github.com/andrewpucci/dependency-update-advisor/issues/408).
+Neither the [Batched Malware Lookup Amendment](#batched-malware-lookup-amendment)
+nor the [Package Name Form Amendment](#package-name-form-amendment) is
+edited; where they conflict, this section decides.
+
+- **npm only.** Attribution from a batch record, and keeping a known
+  attributable malware record when later requests fail, apply to npm malware
+  queries only.
+- **`pip` and Actions.** Malware discovery is batched under S1 decision 3. A
+  target cleared by a complete malware discovery batch cites its unfetched
+  versioned malware URL. A discovery hit gets its versioned malware query; if
+  that query fails, the malware check is incomplete with the query's reason,
+  and no finding is emitted.
+- **Types stay separate.** A malware discovery batch never carries a reviewed
+  target, and a reviewed result never clears a malware check.
+
+### Reconciliation fixtures
+
+- A `pip` malware discovery hit, then a failed versioned query: the check is
+  incomplete, and no `malware` finding is emitted.
+- The attributed-record survival fixture uses an npm target.

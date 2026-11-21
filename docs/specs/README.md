@@ -103,6 +103,9 @@ gaps and an introduced vulnerability before parity is claimed.
   [#398](https://github.com/andrewpucci/dependency-update-advisor/issues/398).
   A [batched lookup amendment](SPEC-advisory-lookup.md#batched-lookup-amendment)
   is approved for planning (#380, 2026-11-19).
+  A [batching reconciliation amendment](SPEC-advisory-lookup.md#batching-reconciliation-amendment)
+  that reconciles the two is a draft for review
+  ([#408](https://github.com/andrewpucci/dependency-update-advisor/issues/408)).
 - [Advisory policy signals](SPEC-policy-signals.md) — implemented, pending
   review and merge, supporting S3 #53
   contract in `shared-review`; explicit malware queries and exact-version
