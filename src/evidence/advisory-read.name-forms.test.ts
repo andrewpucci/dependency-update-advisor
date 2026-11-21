@@ -649,6 +649,17 @@ test('a GitHub rate limit stops GitHub requests but not an OSV lookup', async ()
   reader.close();
   expect(github).toBe(1);
 });
+test('the reader reports a stop only when no provider can still read', async () => {
+  const reader = ready(createAdvisoryReader, async () => Response.json({}, { status: 429 }));
+  expect(reader.stopped?.()).toBeNull();
+  await reader.read(tj);
+  // GitHub is stopped, but an OSV target can still be read, so later members are not unresearched.
+  expect(reader.stopped?.()).toBeNull();
+  await reader.read(pyyaml);
+  expect(reader.stopped?.()).toBe('rate_limit');
+  reader.close();
+  expect(reader.stopped?.()).toBe('unknown');
+});
 test('close stops OSV lookups too', async () => {
   const answer = osvAnswer({});
   const reader = osvReader(answer.fetch);
