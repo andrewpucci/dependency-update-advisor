@@ -1,0 +1,125 @@
+{
+  "recorded": "2026-11-20",
+  "note": "Live OSV response, trimmed to validated fields.",
+  "request": {
+    "url": "https://api.osv.dev/v1/query",
+    "body": {
+      "package": {
+        "ecosystem": "PyPI",
+        "name": "pyyaml"
+      },
+      "version": "3.13"
+    }
+  },
+  "status": 200,
+  "body": {
+    "vulns": [
+      {
+        "id": "GHSA-8q59-q68h-6hv4",
+        "summary": "Improper Input Validation in PyYAML",
+        "database_specific": {
+          "github_reviewed": true,
+          "severity": "CRITICAL"
+        },
+        "affected": [
+          {
+            "package": {
+              "ecosystem": "PyPI",
+              "name": "pyyaml"
+            },
+            "ranges": [
+              {
+                "type": "ECOSYSTEM",
+                "events": [
+                  {
+                    "introduced": "0"
+                  },
+                  {
+                    "fixed": "5.4"
+                  }
+                ]
+              }
+            ]
+          }
+        ]
+      },
+      {
+        "id": "GHSA-rprw-h62v-c2w7",
+        "summary": "PyYAML insecurely deserializes YAML strings leading to arbitrary code execution",
+        "database_specific": {
+          "github_reviewed": true,
+          "severity": "CRITICAL"
+        },
+        "affected": [
+          {
+            "package": {
+              "ecosystem": "PyPI",
+              "name": "pyyaml"
+            },
+            "ranges": [
+              {
+                "type": "ECOSYSTEM",
+                "events": [
+                  {
+                    "introduced": "0"
+                  },
+                  {
+                    "fixed": "5.1"
+                  }
+                ]
+              }
+            ]
+          }
+        ]
+      },
+      {
+        "id": "PYSEC-2018-49",
+        "affected": [
+          {
+            "package": {
+              "ecosystem": "PyPI",
+              "name": "pyyaml"
+            },
+            "ranges": [
+              {
+                "type": "ECOSYSTEM",
+                "events": [
+                  {
+                    "introduced": "0"
+                  },
+                  {
+                    "fixed": "5.1"
+                  }
+                ]
+              }
+            ]
+          }
+        ]
+      },
+      {
+        "id": "PYSEC-2021-142",
+        "affected": [
+          {
+            "package": {
+              "ecosystem": "PyPI",
+              "name": "pyyaml"
+            },
+            "ranges": [
+              {
+                "type": "ECOSYSTEM",
+                "events": [
+                  {
+                    "introduced": "0"
+                  },
+                  {
+                    "fixed": "5.4"
+                  }
+                ]
+              }
+            ]
+          }
+        ]
+      }
+    ]
+  }
+}

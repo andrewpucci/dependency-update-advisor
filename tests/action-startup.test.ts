@@ -207,14 +207,17 @@ test('shipped action reports the no-key reason without any evidence request', ()
 const MODEL_ENDPOINT = 'https://api.mistral.ai/v1/chat/completions';
 type Request = { method: string; url: string; authorization: string | null };
 
+const OSV_QUERY = 'https://api.osv.dev/v1/query';
 /**
- * True for any request a no-write rehearsal must never make. Only the one model call, a POST to
- * the Mistral endpoint carrying the model key, is exempt; every other write, status or comment
+ * True for any request a no-write rehearsal must never make. Two requests are exempt: the one
+ * model call, a POST to the Mistral endpoint carrying the model key, and the OSV query, a POST
+ * that only reads and carries no credential (W2 Amendment 6). Every other write, status or comment
  * path, or credential other than the read token is a defect.
  */
 function isLiveWrite({ method, url, authorization }: Request, modelKey: string): boolean {
   if (method === 'POST' && url === MODEL_ENDPOINT && authorization === `Bearer ${modelKey}`)
     return false;
+  if (method === 'POST' && url === OSV_QUERY && authorization === null) return false;
   return (
     method !== 'GET' ||
     /\/(statuses|comments)(\/|$)/.test(new URL(url).pathname) ||
@@ -222,6 +225,16 @@ function isLiveWrite({ method, url, authorization }: Request, modelKey: string):
   );
 }
 
+test('the no-write guard exempts the credential-free OSV query and nothing else at OSV', () => {
+  const key = 'model-key';
+  const query = { method: 'POST', url: OSV_QUERY, authorization: null };
+  expect(isLiveWrite(query, key)).toBe(false);
+  expect(isLiveWrite({ ...query, authorization: 'Bearer read-token' }, key)).toBe(true);
+  expect(isLiveWrite({ ...query, authorization: `Bearer ${key}` }, key)).toBe(true);
+  expect(isLiveWrite({ ...query, method: 'PUT' }, key)).toBe(true);
+  expect(isLiveWrite({ ...query, url: 'https://api.osv.dev/v1/querybatch' }, key)).toBe(true);
+  expect(isLiveWrite({ ...query, url: 'https://api.osv.dev/v1/vulns/GHSA-x' }, key)).toBe(true);
+});
 test('the no-write guard exempts exactly the one model call', () => {
   const key = 'model-key';
   const call = { method: 'POST', url: MODEL_ENDPOINT, authorization: `Bearer ${key}` };
@@ -372,6 +385,7 @@ async function startWithModelReply(modelReply: ModelReply) {
         id: number;
         redirect?: RequestRedirect;
         credentials?: RequestCredentials;
+        body?: string | null;
       },
     ) => {
       try {
@@ -393,6 +407,7 @@ async function startWithModelReply(modelReply: ModelReply) {
           redirect: message.redirect,
           credentials: message.credentials,
           headers,
+          ...(typeof message.body === 'string' ? { body: message.body } : {}),
         });
         reply({
           id: message.id,

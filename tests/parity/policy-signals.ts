@@ -10,6 +10,7 @@ import { enrichPolicySignals } from '../../src/evidence/policy-signals.js';
 import { validateReviewPacket } from '../../src/schema.js';
 import { formDecisionUnits, evaluateUnitPolicy } from '../../src/units.js';
 import { parseReviewConfig } from '../../src/config.js';
+import { viaAdvisoryHttp } from './advisory-http.js';
 import { createGithubReadSession } from '../../src/github-read.js';
 
 export type SignalScenarioOptions = {
@@ -61,7 +62,7 @@ export async function policySignalScenario(options: SignalScenarioOptions = {}) 
   const fixture = await upstreamScenario({ ...options.inventory, uvArtifacts: withArtifacts }),
     requests: string[] = [];
   let phase: 'research' | 'signals' = 'research';
-  const fetch = async (url: string, init: RequestInit) => {
+  const fetch = viaAdvisoryHttp(async (url: string, init: RequestInit) => {
     requests.push(url);
     const u = new URL(url),
       parts = u.pathname.split('/').map(decodeURIComponent);
@@ -200,7 +201,7 @@ export async function policySignalScenario(options: SignalScenarioOptions = {}) 
       });
     }
     return fixture.fetch(url, init);
-  };
+  });
   const open = createUpstreamReader(upstreamTestLimits, { now: () => 0, fetch });
   if (open.kind !== 'ready') throw new Error('reader');
   const upstream = await enrichUpstream(fixture.input, open);

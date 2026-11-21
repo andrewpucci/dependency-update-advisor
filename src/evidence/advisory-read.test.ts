@@ -50,10 +50,12 @@ const record = {
     { package: { ecosystem: 'npm', name: target.name }, vulnerable_version_range: '<2.0.0' },
   ],
 };
-test.each(['npm', 'pip', 'actions'] as const)(
+// pip and actions malware discover stored names first; their positive-prefix cases are in
+// advisory-read.name-forms.test.ts.
+test.each(['npm'] as const)(
   'malware reader explicitly queries %s and retains positive prefix on final-page failure',
   async (ecosystem) => {
-    const name = ecosystem === 'actions' ? 'fixture/action' : 'fixture';
+    const name = 'fixture';
     let calls = 0;
     const r = createMalwareReader(limits, {
       now: () => 0,
@@ -299,7 +301,12 @@ test.each([
       { package: { ecosystem: 'pip', name: target.name }, vulnerable_version_range: '*' },
     ],
   },
-  { vulnerabilities: [...record.vulnerabilities, ...record.vulnerabilities] },
+  {
+    vulnerabilities: [
+      ...record.vulnerabilities,
+      { package: { ecosystem: 'npm', name: target.name }, vulnerable_version_range: '' },
+    ],
+  },
 ])('unexpected advisory shape %j stays unknown', async (extra) => {
   const r = reader(async () => Response.json([{ ...record, ...extra }]));
   const result = await r.read(target);
@@ -328,4 +335,33 @@ test('a malformed later record preserves an independently validated positive pre
   expect(result.complete).toBe(false);
   expect(result.records).toHaveLength(1);
   expect(result.status).toBe('partial');
+});
+
+test('keeps every range when an advisory lists the package more than once', async () => {
+  const twice = {
+    ...record,
+    vulnerabilities: [
+      ...record.vulnerabilities,
+      {
+        package: { ecosystem: 'npm', name: target.name },
+        vulnerable_version_range: '>=3.0.0, <3.1.0',
+      },
+      { package: { ecosystem: 'npm', name: 'other' }, vulnerable_version_range: '<9.0.0' },
+    ],
+  };
+  const r = reader(async () => Response.json([twice]));
+  const result = await r.read(target);
+  r.close();
+  expect(result.complete).toBe(true);
+  expect(result.records[0].range).toBe('<2.0.0 || >=3.0.0, <3.1.0');
+});
+test('a joined range over the packet text bound is a budget gap, never truncated', async () => {
+  const long = Array.from({ length: 80 }, (_, i) => ({
+    package: { ecosystem: 'npm', name: target.name },
+    vulnerable_version_range: `>=${i}.0.0, <${i}.0.1`,
+  }));
+  const r = reader(async () => Response.json([{ ...record, vulnerabilities: long }]));
+  const result = await r.read(target);
+  r.close();
+  expect(result).toMatchObject({ complete: false, records: [], reasons: ['budget'] });
 });

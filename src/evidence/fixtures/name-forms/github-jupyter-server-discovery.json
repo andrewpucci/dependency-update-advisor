@@ -1,0 +1,68 @@
+{
+  "recorded": "2026-11-19",
+  "note": "Live GitHub package-only response, subset of records, trimmed to validated fields. The request URL is the probe that recorded it (two spellings, per_page=100), not a request the reader sends; tests use only the body.",
+  "request": {
+    "url": "https://api.github.com/advisories?ecosystem=pip&affects=jupyter-server%2Cjupyter_server&type=reviewed&per_page=100"
+  },
+  "status": 200,
+  "body": [
+    {
+      "ghsa_id": "GHSA-c3mw-737p-c7g2",
+      "html_url": "https://github.com/advisories/GHSA-c3mw-737p-c7g2",
+      "summary": "Jupyter Server: 5xx request logging leaks token-bearing Referer header values",
+      "type": "reviewed",
+      "severity": "high",
+      "withdrawn_at": null,
+      "vulnerabilities": [
+        {
+          "package": {
+            "ecosystem": "pip",
+            "name": "jupyter_server"
+          },
+          "vulnerable_version_range": "<= 2.20.0"
+        }
+      ]
+    },
+    {
+      "ghsa_id": "GHSA-24qx-w28j-9m6p",
+      "html_url": "https://github.com/advisories/GHSA-24qx-w28j-9m6p",
+      "summary": "Jupyter Server has a  CORS Origin Validation Bypass via `re.match()` in `allow_origin_pat`",
+      "type": "reviewed",
+      "severity": "high",
+      "withdrawn_at": null,
+      "vulnerabilities": [
+        {
+          "package": {
+            "ecosystem": "pip",
+            "name": "jupyter-server"
+          },
+          "vulnerable_version_range": "<= 2.17.0"
+        }
+      ]
+    },
+    {
+      "ghsa_id": "GHSA-q874-g24w-4q9g",
+      "html_url": "https://github.com/advisories/GHSA-q874-g24w-4q9g",
+      "summary": "Jupyter server Token bruteforcing",
+      "type": "reviewed",
+      "severity": "high",
+      "withdrawn_at": null,
+      "vulnerabilities": [
+        {
+          "package": {
+            "ecosystem": "pip",
+            "name": "jupyter-server"
+          },
+          "vulnerable_version_range": ">= 0, < 1.17.1"
+        },
+        {
+          "package": {
+            "ecosystem": "pip",
+            "name": "jupyter-server"
+          },
+          "vulnerable_version_range": "= 2.0.0a0"
+        }
+      ]
+    }
+  ]
+}
