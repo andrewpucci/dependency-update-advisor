@@ -209,11 +209,12 @@ describe('research cache seam', () => {
         () => {},
         body,
       );
-    await read({ package: { name: 'pyyaml' } });
-    await read({ package: { name: 'django' } });
-    await read({ package: { name: 'pyyaml' } });
+    await read({ package: { name: 'pyyaml' }, version: '3.13' });
+    await read({ package: { name: 'pyyaml' }, version: '6.0.2' });
+    await read({ package: { name: 'django' }, version: '3.13' });
+    await read({ package: { name: 'pyyaml' }, version: '3.13' });
     await read();
-    expect(source.fetches).toBe(3);
+    expect(source.fetches).toBe(4);
   });
 
   test('a hit is not fetched or charged and is consumed as cached', async () => {

@@ -649,17 +649,24 @@ test('a GitHub rate limit stops GitHub requests but not an OSV lookup', async ()
   reader.close();
   expect(github).toBe(1);
 });
-test('the reader reports a stop only when no provider can still read', async () => {
-  const reader = ready(createAdvisoryReader, async () => Response.json({}, { status: 429 }));
-  expect(reader.stopped?.()).toBeNull();
-  await reader.read(tj);
-  // GitHub is stopped, but an OSV target can still be read, so later members are not unresearched.
-  expect(reader.stopped?.()).toBeNull();
-  await reader.read(pyyaml);
-  expect(reader.stopped?.()).toBe('rate_limit');
-  reader.close();
-  expect(reader.stopped?.()).toBe('unknown');
-});
+test.each([
+  ['GitHub', 'OSV'],
+  ['OSV', 'GitHub'],
+])(
+  'the reader reports a stop only when no provider can still read (%s rate-limited first)',
+  async (first) => {
+    const reader = ready(createAdvisoryReader, async () => Response.json({}, { status: 429 }));
+    const [one, two] = first === 'GitHub' ? [tj, pyyaml] : [pyyaml, tj];
+    expect(reader.stopped?.()).toBeNull();
+    await reader.read(one);
+    // One provider is stopped, but the other can still read, so later members are not unresearched.
+    expect(reader.stopped?.()).toBeNull();
+    await reader.read(two);
+    expect(reader.stopped?.()).toBe('rate_limit');
+    reader.close();
+    expect(reader.stopped?.()).toBe('unknown');
+  },
+);
 test('close stops OSV lookups too', async () => {
   const answer = osvAnswer({});
   const reader = osvReader(answer.fetch);
@@ -759,9 +766,13 @@ test('a continuation URL of exactly 4,096 bytes is followed; one byte longer is 
   }
 });
 
-test('one run cache answers each pip package from its own OSV query', async () => {
-  // Every OSV query is a POST to one URL, so only the request body tells two packages apart.
-  const server = served(fixture('osv-pyyaml-3.13'), fixture('osv-django-4.2.0'));
+test('one run cache answers each pip package and version from its own OSV query', async () => {
+  // Every OSV query is a POST to one URL, so only the request body tells packages and versions apart.
+  const server = served(
+    fixture('osv-pyyaml-3.13'),
+    fixture('osv-pyyaml-6.0.2'),
+    fixture('osv-django-4.2.0'),
+  );
   const cache = createResearchCache({ maxEntryBytes: 1_048_576, maxTotalBytes: 8_388_608 });
   const read = async (name: string, version: string) => {
     const reader = createAdvisoryReader(limits, { fetch: server.fetch, now: () => 0, cache });
@@ -771,9 +782,12 @@ test('one run cache answers each pip package from its own OSV query', async () =
     return result;
   };
   const yaml = await read('pyyaml', '3.13');
+  // Base and head of one package differ only by the body's version.
+  const fixed = await read('pyyaml', '6.0.2');
   const django = await read('django', '4.2.0');
   const again = await read('django', '4.2.0');
   expect(yaml).toMatchObject({ complete: true, status: 'available' });
+  expect(fixed).toMatchObject({ complete: true, records: [] });
   expect(django).toMatchObject({ complete: true, status: 'available' });
   expect(django.records.map((r) => r.id).sort()).toEqual(
     (fixture('osv-django-4.2.0').body as { vulns: { id: string }[] }).vulns
@@ -784,6 +798,7 @@ test('one run cache answers each pip package from its own OSV query', async () =
   expect(again.records).toEqual(django.records);
   expect(server.requests.map((r) => r.body)).toEqual([
     osvQuery('pyyaml', '3.13'),
+    osvQuery('pyyaml', '6.0.2'),
     osvQuery('django', '4.2.0'),
   ]);
 });
