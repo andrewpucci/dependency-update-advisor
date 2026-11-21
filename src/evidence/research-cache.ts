@@ -4,8 +4,11 @@ import { HTTP_STATUS } from '../format.js';
 export type ResearchCacheOptions = Readonly<{ maxEntryBytes: number; maxTotalBytes: number }>;
 
 export type ResearchCache = {
-  /** Deterministic key: METHOD, full URL, and headers (names lowercased, sorted); an authorization value is replaced by its SHA-256 hex. */
-  key(method: string, url: string, headers?: HeadersInit): string;
+  /**
+   * Deterministic key: METHOD, full URL, headers (names lowercased, sorted; an authorization value
+   * is replaced by its SHA-256 hex), and the exact request body, which tells OSV queries apart.
+   */
+  key(method: string, url: string, headers?: HeadersInit, body?: string): string;
   /** A fresh Response for a stored entry, or undefined. Each call returns a new Response object with the same status, headers, and bytes. */
   lookup(key: string): Response | undefined;
   /** Stores a 200 or 404 response if it fits; returns a Response the caller must use instead of `response`. */
@@ -71,8 +74,8 @@ export function createResearchCache(options: ResearchCacheOptions): ResearchCach
   }
 
   return {
-    key(method, url, headers) {
-      return JSON.stringify([method.toUpperCase(), url, normalizeHeaders(headers)]);
+    key(method, url, headers, body) {
+      return JSON.stringify([method.toUpperCase(), url, normalizeHeaders(headers), body ?? null]);
     },
 
     lookup(key) {

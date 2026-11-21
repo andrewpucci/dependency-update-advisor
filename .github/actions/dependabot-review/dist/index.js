@@ -12331,7 +12331,8 @@ async function boundedGet(deps, request, onCancel, consume) {
 		const headers = "headers" in request && request.headers ? { ...request.headers } : { accept: request.accept };
 		const post = request.json !== void 0;
 		if (post) headers["content-type"] = "application/json";
-		const key = deps.cache?.key("GET", request.url, headers);
+		const body = post ? JSON.stringify(request.json) : void 0;
+		const key = deps.cache?.key(post ? "POST" : "GET", request.url, headers, body);
 		const hit = key === void 0 ? void 0 : deps.cache?.lookup(key);
 		if (hit) return await consume(hit, aborted, true);
 		request.charge?.();
@@ -12340,7 +12341,7 @@ async function boundedGet(deps, request, onCancel, consume) {
 			redirect: "manual",
 			credentials: "omit",
 			headers,
-			...post ? { body: JSON.stringify(request.json) } : {},
+			...body === void 0 ? {} : { body },
 			signal: controller.signal
 		});
 		pending.then((late) => {
@@ -24780,11 +24781,12 @@ function createResearchCache(options) {
 		return toResponse(entry);
 	}
 	return {
-		key(method, url, headers) {
+		key(method, url, headers, body) {
 			return JSON.stringify([
 				method.toUpperCase(),
 				url,
-				normalizeHeaders(headers)
+				normalizeHeaders(headers),
+				body ?? null
 			]);
 		},
 		lookup(key) {

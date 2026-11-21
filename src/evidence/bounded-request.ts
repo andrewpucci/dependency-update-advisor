@@ -140,7 +140,8 @@ export async function boundedGet<T>(
         : { accept: request.accept! };
     const post = request.json !== undefined;
     if (post) headers['content-type'] = 'application/json';
-    const key = deps.cache?.key('GET', request.url, headers);
+    const body = post ? JSON.stringify(request.json) : undefined;
+    const key = deps.cache?.key(post ? 'POST' : 'GET', request.url, headers, body);
     const hit = key === undefined ? undefined : deps.cache?.lookup(key);
     if (hit) return await consume(hit, aborted, true);
     request.charge?.();
@@ -149,7 +150,7 @@ export async function boundedGet<T>(
       redirect: 'manual',
       credentials: 'omit',
       headers,
-      ...(post ? { body: JSON.stringify(request.json) } : {}),
+      ...(body === undefined ? {} : { body }),
       signal: controller.signal,
     });
     void pending.then(

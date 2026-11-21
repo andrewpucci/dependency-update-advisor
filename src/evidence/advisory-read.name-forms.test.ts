@@ -1,6 +1,7 @@
 import { readFileSync } from 'node:fs';
 import { expect, test } from 'vite-plus/test';
 import { createAdvisoryReader, createMalwareReader } from './advisory-read.js';
+import { createResearchCache } from './research-cache.js';
 
 const limits = {
   maxRequests: 20,
@@ -745,4 +746,33 @@ test('a continuation URL of exactly 4,096 bytes is followed; one byte longer is 
     expect(followed).toBe(extra === 0);
     if (extra === 1) expect(result).toMatchObject({ complete: false, reasons: ['budget'] });
   }
+});
+
+test('one run cache answers each pip package from its own OSV query', async () => {
+  // Every OSV query is a POST to one URL, so only the request body tells two packages apart.
+  const server = served(fixture('osv-pyyaml-3.13'), fixture('osv-django-4.2.0'));
+  const cache = createResearchCache({ maxEntryBytes: 1_048_576, maxTotalBytes: 8_388_608 });
+  const read = async (name: string, version: string) => {
+    const reader = createAdvisoryReader(limits, { fetch: server.fetch, now: () => 0, cache });
+    if (reader.kind !== 'ready') throw new Error('reader');
+    const result = await reader.read({ ecosystem: 'pip', name, version });
+    reader.close();
+    return result;
+  };
+  const yaml = await read('pyyaml', '3.13');
+  const django = await read('django', '4.2.0');
+  const again = await read('django', '4.2.0');
+  expect(yaml).toMatchObject({ complete: true, status: 'available' });
+  expect(django).toMatchObject({ complete: true, status: 'available' });
+  expect(django.records.map((r) => r.id).sort()).toEqual(
+    (fixture('osv-django-4.2.0').body as { vulns: { id: string }[] }).vulns
+      .map((v) => v.id)
+      .filter((id) => id.startsWith('GHSA'))
+      .sort(),
+  );
+  expect(again.records).toEqual(django.records);
+  expect(server.requests.map((r) => r.body)).toEqual([
+    osvQuery('pyyaml', '3.13'),
+    osvQuery('django', '4.2.0'),
+  ]);
 });

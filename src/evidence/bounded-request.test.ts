@@ -199,6 +199,23 @@ describe('research cache seam', () => {
     };
   };
 
+  test('a POST is keyed by its exact body', async () => {
+    const shared = cache();
+    const source = counting();
+    const read = (json?: unknown) =>
+      boundedGet(
+        { now: () => 0, fetch: source.fetch, cache: shared },
+        json === undefined ? request : { ...request, json },
+        () => {},
+        body,
+      );
+    await read({ package: { name: 'pyyaml' } });
+    await read({ package: { name: 'django' } });
+    await read({ package: { name: 'pyyaml' } });
+    await read();
+    expect(source.fetches).toBe(3);
+  });
+
   test('a hit is not fetched or charged and is consumed as cached', async () => {
     const shared = cache();
     const source = counting();
