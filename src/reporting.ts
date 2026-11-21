@@ -695,7 +695,7 @@ function queueLines(r: Review): string[] {
     const tail = `${text(reason)} ${recovery(category)}`;
     if (indexes.length === 1) {
       const unit = units[first];
-      const names = text(unit.members.map((member) => member.name).join(', '));
+      const names = unit.members.map((member) => displayName(r, member)).join(', ');
       const gapText = gaps.map((gap) => evidenceGap(unit, gap.sourceId)).join(' ');
       lines.push(`- ${names} (${plural(unit.memberCount, 'changed update')}): ${tail} ${gapText}`);
       continue;
@@ -896,7 +896,7 @@ function followupLines(r: Review): string[] {
     ...gapLines(r, assessedGaps),
     ...followups.map(
       ({ unit, followup }) =>
-        `- ${text(unit.members.map((member) => member.name).join(', '))}: ${text(followup.description)} ${followup.references.map((ref) => reference(ref, unit, input)).join(' ')}`,
+        `- ${unit.members.map((member) => displayName(r, member)).join(', ')}: ${text(followup.description)} ${followup.references.map((ref) => reference(ref, unit, input)).join(' ')}`,
     ),
   ];
 }
