@@ -2139,7 +2139,7 @@ test('merges findings that share every rendered field into one line each', async
 });
 
 test('names every member of a merged finding line', async () => {
-  const { packet, lines } = await renderLargeInventory();
+  const { packet, lines, render } = await renderLargeInventory();
   const duplicated = new Set<string>();
   const seen = new Set<string>();
   for (const change of packet.changes) {
@@ -2152,14 +2152,16 @@ test('names every member of a merged finding line', async () => {
     const change = packet.changes.find((item) => item.id === finding.memberId);
     const name = change && changeName(change);
     if (!change || name === undefined) throw new Error('finding member has no name');
-    // A same-named member must match its own copy's qualifier, which ends with its version.
-    const version = ((change.to ?? change.from) as { version?: string }).version ?? 'unknown';
-    const entry = duplicated.has(name)
-      ? new RegExp(
-          `(?:^|, )${escapeRegExp(name)} \\([^)]*, ${escapeRegExp(version)}\\)(?:,|$)`,
-          'u',
-        )
-      : new RegExp(`(?:^|, )${escapeRegExp(name)}(?:,|$)`, 'u');
+    // A same-named member must match its own copy's exact qualifier.
+    const member = render.coverage.inventory.units
+      .flatMap((unit) => unit.members)
+      .find((item) => item.id === finding.memberId)!;
+    expect(duplicated.has(name)).toBe(
+      render.coverage.inventory.units
+        .flatMap((unit) => unit.members)
+        .some((item) => item.id !== member.id && item.name === member.name),
+    );
+    const entry = entryPattern(render, member);
     expect(
       lines.some((line) => line.includes(`: ${finding.rationale}`) && entry.test(namesPart(line))),
     ).toBe(true);
@@ -2227,16 +2229,7 @@ test('keeps findings that differ only in kind, applicability, or severity on sep
     const units = inventory.units;
     return [a, b].map((finding) => {
       const member = units.flatMap((unit) => unit.members).find((m) => m.id === finding.memberId)!;
-      const shared = units
-        .flatMap((unit) => unit.members)
-        .some((m) => m.id !== member.id && m.name === member.name);
-      const version = member.proposedVersion ?? member.currentVersion ?? 'unknown';
-      const entry = new RegExp(
-        shared
-          ? `(?:^|, )${escapeRegExp(member.name)} \\([^)]*, ${escapeRegExp(version)}\\)(?:,|$)`
-          : `(?:^|, )${escapeRegExp(member.name)}(?:,|$)`,
-        'u',
-      );
+      const entry = memberPattern(inventory, member);
       return findingLines.findIndex(
         (line) => line.includes(`: ${finding.rationale}`) && entry.test(namesPart(line)),
       );
@@ -2310,13 +2303,7 @@ test('names every assessed gap member on its merged line, qualifying shared name
     const name = member.name;
     const shared = memberCount(name) > 1;
     sharedNamed += shared ? 1 : 0;
-    const version = member.proposedVersion ?? member.currentVersion ?? 'unknown';
-    const entry = shared
-      ? new RegExp(
-          `(?:^|, )${escapeRegExp(name)} \\([^)]*, ${escapeRegExp(version)}\\)(?:,|$)`,
-          'u',
-        )
-      : new RegExp(`(?:^|, )${escapeRegExp(name)}(?:,|$)`, 'u');
+    const entry = entryPattern(render, member);
     const phrase = `${link.category} evidence is ${link.status} (${link.reasons.join(', ')})`;
     expect(
       lines.some((line) => line.includes(phrase) && entry.test(line.slice(2, line.indexOf(': ')))),
@@ -2665,17 +2652,76 @@ test('qualifies same-named members on single-unit queue items and follow-up line
     ).toBe(true);
 });
 
+test("keeps each same-named unresolved copy's own gaps on its queue item", async () => {
+  const probe = await renderLargeInventory({ unresolved: 21, followups: 71 });
+  const children = probe.packet.changes.filter((change) =>
+    changeName(change)?.startsWith('child-'),
+  );
+  const copies = children.flatMap((change, index) =>
+    changeName(change) === 'child-1' ? [index] : [],
+  );
+  expect(copies, 'fixture has two child-1 copies').toHaveLength(2);
+  const { body, render } = await renderLargeInventory({
+    unresolved: 21,
+    followups: 71,
+    evidence: (memberIndex, category) => {
+      if (memberIndex === copies[0] && category === 'vulnerability')
+        return { status: 'unavailable', reasons: ['budget'], sourceIds: [] };
+      if (memberIndex === copies[1] && category === 'malware')
+        return { status: 'unavailable', reasons: ['missing'], sourceIds: [] };
+      return null;
+    },
+  });
+  const units = render.coverage.inventory.units;
+  const copyUnits = units.flatMap((unit, index) =>
+    render.records[index].state.state !== 'assessed' && unit.members[0].name === 'child-1'
+      ? [index]
+      : [],
+  );
+  expect(copyUnits, 'both child-1 copies are unresolved').toHaveLength(2);
+  const phrases = copyUnits.map((index) =>
+    render.coverage.policyProvenance.assessments.units[index].gaps.map((gap) => {
+      const link = units[index].evidenceLinks.find((entry) => entry.id === gap.sourceId)!;
+      return `${link.category} evidence is ${link.status} (${link.reasons.join(', ')})`;
+    }),
+  );
+  expect(phrases[0], 'the copies carry different gaps').not.toEqual(phrases[1]);
+  for (const [n, index] of copyUnits.entries()) {
+    const member = units[index].members[0];
+    const item = queueItemsOf(body).find((entry) =>
+      queueEntriesOf(entry).some((name) =>
+        entryPattern(render, member).test(name.replace(/ \(\d+ changed updates?\)$/u, '')),
+      ),
+    );
+    expect(item, member.name).toBeDefined();
+    for (const phrase of phrases[n]) expect(item, phrase).toContain(phrase);
+    for (const phrase of phrases[1 - n]) expect(item, phrase).not.toContain(phrase);
+    expectQueueItemActions(render, item!);
+  }
+});
+
 test('renders every model follow-up citation on its line', async () => {
   const { body, render } = await renderLargeInventory({ followups: 71, followupCitations: true });
   const followups = render.records.flatMap((record) => record.assessment?.followups ?? []);
   expect(followups).toHaveLength(71);
   for (const followup of followups) expect(followup.references).toHaveLength(1);
+  const sides = followups.map((followup) => {
+    const [ref] = followup.references;
+    if (ref.kind !== 'source') throw new Error('follow-up cites a non-source reference');
+    return ref.side;
+  });
+  expect(new Set(sides), 'fixture cites both lockfile sides').toEqual(new Set(['base', 'head']));
   const lines = followupSectionOf(body)
     .split('\n')
     .filter((line) => line.startsWith('- ') && !line.includes(' evidence is '));
   expect(lines).toHaveLength(71);
-  for (const line of lines)
-    expect(line.split('Proposed repository file evidence').length - 1, line).toBe(1);
+  // Follow-up lines are in record order, so each line shows its own follow-up's citation.
+  for (const [index, line] of lines.entries()) {
+    const own = sides[index] === 'base' ? 'Base' : 'Proposed';
+    const other = sides[index] === 'base' ? 'Proposed' : 'Base';
+    expect(line.endsWith(` ${own} repository file evidence`), line).toBe(true);
+    expect(line, line).not.toContain(`${other} repository file evidence`);
+  }
 });
 
 function recoveryOf(category: string | null) {
@@ -2715,15 +2761,20 @@ function expectQueueItemActions(render: LargeRender, item: string) {
   expect(item.split(recoveryText).length - 1, item).toBe(1);
   const unit = units[index];
   const gaps = render.coverage.policyProvenance.assessments.units[index].gaps;
-  const gapText = gaps
-    .map((gap) =>
-      entries.length > 1 ? groupedGap(unit, gap.sourceId) : evidenceGap(unit, gap.sourceId),
-    )
-    .join(' ');
-  expect(item.endsWith(` ${gapText}`), item).toBe(true);
+  const sentences = gaps.map((gap) =>
+    entries.length > 1 ? groupedGap(unit, gap.sourceId) : evidenceGap(unit, gap.sourceId),
+  );
+  // After the recovery action come exactly the unit's gap sentences, each once. The spec asks
+  // only for a deterministic order, so the order itself is not pinned here.
+  let rest = item.slice(item.indexOf(recoveryText) + recoveryText.length);
+  for (const sentence of sentences) {
+    expect(rest.split(sentence).length - 1, `${sentence} in ${item}`).toBe(1);
+    rest = rest.replace(sentence, '');
+  }
+  expect(rest.trim(), item).toBe('');
 }
 
-test('renders a single unresolved unit with two gaps and their exact actions in order', async () => {
+test('renders a single unresolved unit with two gaps, each exact action once, deterministically', async () => {
   const { body, render } = await renderLargeInventory({
     unresolved: 1,
     followups: 71,
@@ -2744,6 +2795,8 @@ test('renders a single unresolved unit with two gaps and their exact actions in 
   expect(items).toHaveLength(1);
   expect(queueEntriesOf(items[0])).toHaveLength(1);
   expectQueueItemActions(render, items[0]);
+  const again = renderDecisionBrief(render);
+  expect(again.ok && again.body).toBe(body);
 });
 
 /** Whether a queue entry names the unit's first member with its changed-update count. */
@@ -2772,14 +2825,31 @@ function checkedLineOf(body: string, category: string) {
 
 /** Member entries on a checked line, anchored as whole entries, qualified by version when shared. */
 function entryPattern(render: LargeRender, member: DecisionUnit['members'][number]) {
-  const shared = render.coverage.inventory.units
+  return memberPattern(render.coverage.inventory, member);
+}
+
+/**
+ * A names-list entry for `member`. A member sharing its name and ecosystem with another carries
+ * the exact qualifier the spec names: ecosystem, location, and version.
+ */
+function memberPattern(
+  inventory: LargeRender['coverage']['inventory'],
+  member: DecisionUnit['members'][number],
+) {
+  const shared = inventory.units
     .flatMap((unit) => unit.members)
-    .some((item) => item.id !== member.id && item.name === member.name);
+    .some(
+      (item) =>
+        item.id !== member.id && item.name === member.name && item.ecosystem === member.ecosystem,
+    );
+  if (!shared) return new RegExp(`(?:^|, )${escapeRegExp(member.name)}(?:,|$)`, 'u');
+  const change = inventory.packet.changes.find((item) => item.id === member.id);
+  const side = change?.to ?? change?.from;
+  if (!side || !('root' in side)) throw new Error(`no root side for ${member.name}`);
   const version = member.proposedVersion ?? member.currentVersion ?? 'unknown';
+  const qualifier = `${member.ecosystem}, root ${side.root}, ${version}`;
   return new RegExp(
-    shared
-      ? `(?:^|, )${escapeRegExp(member.name)} \\([^)]*, ${escapeRegExp(version)}\\)(?:,|$)`
-      : `(?:^|, )${escapeRegExp(member.name)}(?:,|$)`,
+    `(?:^|, )${escapeRegExp(member.name)} \\(${escapeRegExp(qualifier)}\\)(?:,|$)`,
     'u',
   );
 }
