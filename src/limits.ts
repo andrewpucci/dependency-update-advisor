@@ -724,6 +724,36 @@ const DEFINITIONS = [
     note: 'awaiting L8 measurement',
     test: 'src/evidence/advisory-read.test.ts > malware reader accepts a byte share exactly and refuses the byte past it',
   }),
+  unjustified('advisory.discovery.pageSize', 50, 'count', {
+    protects:
+      'A stored-name discovery page of heavily advised packages fits the 1 MiB per-response cap (a 100-record pillow page did not).',
+    effect:
+      'Discovery asks for this many records per page and follows every page under the cursor rules.',
+    note: "approved 2026-11-20 from GitHub probes recorded in S1's Package Name Form Amendment; no repository command reproduces them",
+    test: 'src/evidence/advisory-read.name-forms.test.ts > a long name splits discovery so every spelling is sent once with cursor headroom',
+  }),
+  unjustified('advisory.discovery.urlBytes', 4096, 'bytes', {
+    protects: 'Discovery URLs stay under the length GitHub accepted (414 at 8,259 bytes).',
+    effect:
+      'Spellings split across as many discovery requests as the cap requires; a continuation URL over it is budget.',
+    note: "approved 2026-11-20 from GitHub probes recorded in S1's Package Name Form Amendment; no repository command reproduces them",
+    test: 'src/evidence/advisory-read.name-forms.test.ts > a continuation URL of exactly 4,096 bytes is followed; one byte longer is budget',
+  }),
+  unjustified('advisory.discovery.cursorHeadroomBytes', 256, 'bytes', {
+    protects:
+      "Each discovery request's first URL leaves room under the URL cap for GitHub's `after` cursor.",
+    effect: 'A first discovery URL is filled to at most the URL cap minus this headroom.',
+    note: "approved 2026-11-20 from GitHub probes recorded in S1's Package Name Form Amendment; no repository command reproduces them",
+    test: 'src/evidence/advisory-read.name-forms.test.ts > discovery fills a request up to exactly 256 bytes under the cap',
+  }),
+  unjustified('advisory.discovery.spellingCeiling', 243, 'count', {
+    protects:
+      'A pip name with many separators cannot fan out into an unbounded number of discovery requests.',
+    effect:
+      'A name with more spellings (more than 5 separators) is unsupported before any request.',
+    note: "approved 2026-11-20 from GitHub probes recorded in S1's Package Name Form Amendment; no repository command reproduces them",
+    test: 'src/evidence/advisory-read.name-forms.test.ts > a name over the spelling ceiling sends no request',
+  }),
   unjustified('evidence.allocation.signals.readers.publishTimes.maxRequests', 40, 'count', {
     protects:
       'Caps npm publish-time lookups at one per extra changed package, so the signals stage stays inside its share.',

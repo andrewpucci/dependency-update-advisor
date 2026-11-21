@@ -9228,6 +9228,30 @@ const DEFINITIONS = [
 		note: "awaiting L8 measurement",
 		test: "src/evidence/advisory-read.test.ts > malware reader accepts a byte share exactly and refuses the byte past it"
 	}),
+	unjustified("advisory.discovery.pageSize", 50, "count", {
+		protects: "A stored-name discovery page of heavily advised packages fits the 1 MiB per-response cap (a 100-record pillow page did not).",
+		effect: "Discovery asks for this many records per page and follows every page under the cursor rules.",
+		note: "approved 2026-11-20 from GitHub probes recorded in S1's Package Name Form Amendment; no repository command reproduces them",
+		test: "src/evidence/advisory-read.name-forms.test.ts > a long name splits discovery so every spelling is sent once with cursor headroom"
+	}),
+	unjustified("advisory.discovery.urlBytes", 4096, "bytes", {
+		protects: "Discovery URLs stay under the length GitHub accepted (414 at 8,259 bytes).",
+		effect: "Spellings split across as many discovery requests as the cap requires; a continuation URL over it is budget.",
+		note: "approved 2026-11-20 from GitHub probes recorded in S1's Package Name Form Amendment; no repository command reproduces them",
+		test: "src/evidence/advisory-read.name-forms.test.ts > a continuation URL of exactly 4,096 bytes is followed; one byte longer is budget"
+	}),
+	unjustified("advisory.discovery.cursorHeadroomBytes", 256, "bytes", {
+		protects: "Each discovery request's first URL leaves room under the URL cap for GitHub's `after` cursor.",
+		effect: "A first discovery URL is filled to at most the URL cap minus this headroom.",
+		note: "approved 2026-11-20 from GitHub probes recorded in S1's Package Name Form Amendment; no repository command reproduces them",
+		test: "src/evidence/advisory-read.name-forms.test.ts > discovery fills a request up to exactly 256 bytes under the cap"
+	}),
+	unjustified("advisory.discovery.spellingCeiling", 243, "count", {
+		protects: "A pip name with many separators cannot fan out into an unbounded number of discovery requests.",
+		effect: "A name with more spellings (more than 5 separators) is unsupported before any request.",
+		note: "approved 2026-11-20 from GitHub probes recorded in S1's Package Name Form Amendment; no repository command reproduces them",
+		test: "src/evidence/advisory-read.name-forms.test.ts > a name over the spelling ceiling sends no request"
+	}),
 	unjustified("evidence.allocation.signals.readers.publishTimes.maxRequests", 40, "count", {
 		protects: "Caps npm publish-time lookups at one per extra changed package, so the signals stage stays inside its share.",
 		effect: "The lookup past the cap is refused with budget and no request is sent.",
@@ -12459,9 +12483,16 @@ const GHSA_ID = /^GHSA-[a-z\d]{4}-[a-z\d]{4}-[a-z\d]{4}$/u;
 /** The OSV endpoint; a complete empty PyPI reviewed lookup cites it. */
 const OSV_QUERY_URL = "https://api.osv.dev/v1/query";
 /** Approved register values for stored-name discovery (S1 Package Name Form Amendment). */
-const DISCOVERY_PAGE_SIZE = "50";
-const DISCOVERY_URL_CAP = 4096;
-const SPELLING_CEILING = 243;
+const DISCOVERY_PAGE_SIZE = String(limit("advisory.discovery.pageSize"));
+const DISCOVERY_URL_CAP = limit("advisory.discovery.urlBytes");
+const DISCOVERY_CURSOR_HEADROOM = limit("advisory.discovery.cursorHeadroomBytes");
+const SPELLING_CEILING = limit("advisory.discovery.spellingCeiling");
+/** PEP 503 treats each of these as the same separator. */
+const PIP_SEPARATORS = [
+	"-",
+	"_",
+	"."
+];
 function githubUrl(ecosystem, affects, kind, perPage = "100") {
 	const url = new URL("https://api.github.com/advisories");
 	url.search = new URLSearchParams({
@@ -12480,19 +12511,15 @@ function canonical$3(ecosystem, name) {
 /** Every spelling of a normalized PyPI name with each separator replaced by `-`, `_`, or `.`. */
 function pipSpellings(name) {
 	const parts = name.split("-");
-	advisoryCheck(3 ** (parts.length - 1) <= SPELLING_CEILING, "unsupported");
+	advisoryCheck(PIP_SEPARATORS.length ** (parts.length - 1) <= SPELLING_CEILING, "unsupported");
 	let spellings = [parts[0]];
-	for (const part of parts.slice(1)) spellings = spellings.flatMap((s) => [
-		"-",
-		"_",
-		"."
-	].map((sep) => s + sep + part));
+	for (const part of parts.slice(1)) spellings = spellings.flatMap((s) => PIP_SEPARATORS.map((sep) => s + sep + part));
 	return spellings;
 }
 /** Package-only discovery URLs, each with room left under the cap for a pagination cursor. */
 function discoveryUrls(t, kind) {
 	const spellings = t.ecosystem === "pip" ? pipSpellings(t.name) : [t.name];
-	const limit = 3840;
+	const limit = DISCOVERY_URL_CAP - DISCOVERY_CURSOR_HEADROOM;
 	const urls = [];
 	let chunk = [];
 	for (const spelling of spellings) {

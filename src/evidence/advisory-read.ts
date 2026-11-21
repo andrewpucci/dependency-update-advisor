@@ -4,6 +4,7 @@ import { freeze, isPlainObject } from './common.js';
 import { BoundedClock, boundedGet } from './bounded-request.js';
 import type { ResearchCache } from './research-cache.js';
 import { HTTP_STATUS } from '../format.js';
+import { limit } from '../limits.js';
 
 export type AdvisoryLimits = Readonly<{
   maxRequests: number;
@@ -144,10 +145,12 @@ const GHSA_ID = /^GHSA-[a-z\d]{4}-[a-z\d]{4}-[a-z\d]{4}$/u;
 /** The OSV endpoint; a complete empty PyPI reviewed lookup cites it. */
 export const OSV_QUERY_URL = 'https://api.osv.dev/v1/query';
 /** Approved register values for stored-name discovery (S1 Package Name Form Amendment). */
-const DISCOVERY_PAGE_SIZE = '50';
-const DISCOVERY_URL_CAP = 4096;
-const DISCOVERY_CURSOR_HEADROOM = 256;
-const SPELLING_CEILING = 243;
+const DISCOVERY_PAGE_SIZE = String(limit('advisory.discovery.pageSize'));
+const DISCOVERY_URL_CAP = limit('advisory.discovery.urlBytes');
+const DISCOVERY_CURSOR_HEADROOM = limit('advisory.discovery.cursorHeadroomBytes');
+const SPELLING_CEILING = limit('advisory.discovery.spellingCeiling');
+/** PEP 503 treats each of these as the same separator. */
+const PIP_SEPARATORS = ['-', '_', '.'] as const;
 function githubUrl(
   ecosystem: AdvisoryTarget['ecosystem'],
   affects: readonly string[],
@@ -171,10 +174,10 @@ function canonical(ecosystem: AdvisoryTarget['ecosystem'], name: string): string
 /** Every spelling of a normalized PyPI name with each separator replaced by `-`, `_`, or `.`. */
 function pipSpellings(name: string): string[] {
   const parts = name.split('-');
-  advisoryCheck(3 ** (parts.length - 1) <= SPELLING_CEILING, 'unsupported');
+  advisoryCheck(PIP_SEPARATORS.length ** (parts.length - 1) <= SPELLING_CEILING, 'unsupported');
   let spellings = [parts[0]];
   for (const part of parts.slice(1))
-    spellings = spellings.flatMap((s) => ['-', '_', '.'].map((sep) => s + sep + part));
+    spellings = spellings.flatMap((s) => PIP_SEPARATORS.map((sep) => s + sep + part));
   return spellings;
 }
 /** Package-only discovery URLs, each with room left under the cap for a pagination cursor. */
