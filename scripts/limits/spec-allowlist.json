@@ -1336,5 +1336,221 @@
     "line": "size. Record what GitHub does above 1,000 targets. A probe on 2026-11-19",
     "values": [1000],
     "reason": "external: quotes GitHub's documented limit (GitHub Docs, checked 2026-11-19), not a register value"
+  },
+  {
+    "file": "docs/specs/SPEC-advisory-lookup.md",
+    "line": "GitHub probes on 2026-11-19 (`type=reviewed`, `per_page=100`):",
+    "values": [100],
+    "reason": "pending amendment (L10): approved spec states the value"
+  },
+  {
+    "file": "docs/specs/SPEC-advisory-lookup.md",
+    "line": "is filled to at most 256 bytes under the cap, which leaves room for the",
+    "values": [256],
+    "reason": "pending amendment (L10): approved spec states the value"
+  },
+  {
+    "file": "docs/specs/SPEC-advisory-lookup.md",
+    "line": "provenance URL bound (`PACKET_LIMITS.identityBytes`, 1,024 bytes) is",
+    "values": [1024],
+    "reason": "pending amendment (L10): approved spec states the value"
+  },
+  {
+    "file": "docs/specs/SPEC-advisory-lookup.md",
+    "line": "separator, 944\u2013998 bytes for three-separator names such as",
+    "values": [944],
+    "reason": "pending amendment (L10): approved spec states the value"
+  },
+  {
+    "file": "docs/specs/SPEC-advisory-lookup.md",
+    "line": "size. TensorFlow 2.4.0 was 3,983,856 bytes on 2026-11-20, over the 1 MiB",
+    "values": [1048576],
+    "reason": "pending amendment (L10): approved spec states the value"
+  },
+  {
+    "file": "docs/specs/SPEC-advisory-lookup.md",
+    "line": "(80 requests) covers about 26 Actions updates instead of about 40. `npm`",
+    "values": [80],
+    "reason": "pending amendment (L10): approved spec states the value"
+  },
+  {
+    "file": "docs/specs/SPEC-advisory-lookup.md",
+    "line": "advised `pip` updates exhaust the advisory share's 5 MiB. GitHub's correct",
+    "values": [5242880],
+    "reason": "pending amendment (L10): approved spec states the value"
+  },
+  {
+    "file": "docs/specs/SPEC-advisory-lookup.md",
+    "line": "`budget`, a visible gap. The 944-request envelope is fully allocated, so",
+    "values": [944],
+    "reason": "pending amendment (L10): approved spec states the value"
+  },
+  {
+    "file": "docs/specs/SPEC-advisory-lookup.md",
+    "line": "| Discovery page size   | 50                 | A 100-record `pillow` page was 1,009,662 bytes against the 1 MiB cap; 50 leaves about half.         |",
+    "values": [100, 1048576],
+    "reason": "pending amendment (L10): approved spec states the value"
+  },
+  {
+    "file": "docs/specs/SPEC-advisory-lookup.md",
+    "line": "| Discovery URL cap     | 4,096 bytes        | GitHub accepted discovery URLs of 996, 3,399, and 4,371 bytes and returned 414 at 8,259 and 11,499. |",
+    "values": [4096],
+    "reason": "pending amendment (L10): approved spec states the value"
+  },
+  {
+    "file": "docs/specs/SPEC-advisory-lookup.md",
+    "line": "| Spelling ceiling      | 243 (5 separators) | Five-separator names need about 3 discovery requests under the cap; six would need about 9.         |",
+    "values": [243],
+    "reason": "pending amendment (L10): approved spec states the value"
+  },
+  {
+    "file": "docs/specs/SPEC-advisory-lookup.md",
+    "line": "| OSV per-response size | existing 1 MiB cap | OSV has no page size; the `pillow` response was 791,379 bytes.                                      |",
+    "values": [1048576],
+    "reason": "pending amendment (L10): approved spec states the value"
+  },
+  {
+    "file": "docs/specs/SPEC-advisory-lookup.md",
+    "line": "is at least 256 bytes under the cap, then one versioned query. An empty",
+    "values": [256],
+    "reason": "pending amendment (L10): approved spec states the value"
+  },
+  {
+    "file": "docs/specs/SPEC-advisory-lookup.md",
+    "line": "1,024 bytes are `unsupported` with no versioned request. Malware discovery",
+    "values": [1024],
+    "reason": "pending amendment (L10): approved spec states the value"
+  },
+  {
+    "file": "docs/specs/SPEC-limit-register.md",
+    "line": "reviewer's 15 minutes is the shared workflow's own `timeout-minutes`.",
+    "values": [900000],
+    "reason": "limit register spec: names a registered value as an example or test; pending amendment (L10)"
+  },
+  {
+    "file": "docs/specs/SPEC-limit-register.md",
+    "line": "- **REST rate limit.** `GITHUB_TOKEN` gets 1,000 REST requests per hour per",
+    "values": [1000],
+    "reason": "external: quotes GitHub's documented or observed limit, not a register value"
+  },
+  {
+    "file": "docs/specs/SPEC-limit-register.md",
+    "line": "repository, or 15,000 for Enterprise Cloud resources",
+    "values": [15000],
+    "reason": "external: quotes GitHub's documented or observed limit, not a register value"
+  },
+  {
+    "file": "docs/specs/SPEC-limit-register.md",
+    "line": "errors report 65,536 characters, and third-party sources disagree on whether",
+    "values": [65536],
+    "reason": "external: quotes GitHub's documented or observed limit, not a register value"
+  },
+  {
+    "file": "docs/specs/SPEC-limit-register.md",
+    "line": "that counts characters or bytes. The reviewer's 50,000 code units is a chosen",
+    "values": [50000],
+    "reason": "limit register spec: names a registered value as an example or test; pending amendment (L10)"
+  },
+  {
+    "file": "docs/specs/SPEC-limit-register.md",
+    "line": "untrusted data, multiplied by the 128-change packet limit. A structural",
+    "values": [128],
+    "reason": "limit register spec: names a registered value as an example or test; pending amendment (L10)"
+  },
+  {
+    "file": "docs/specs/SPEC-limit-register.md",
+    "line": "- **Code.** Re-hardcoded identity bounds, the duplicated 50,000 comment cap,",
+    "values": [50000],
+    "reason": "limit register spec: names a registered value as an example or test; pending amendment (L10)"
+  },
+  {
+    "file": "docs/specs/SPEC-limit-register.md",
+    "line": "spelling (`50000`, `50,000`, or `50_000`). An allowlist names each line where",
+    "values": [50000],
+    "reason": "limit register spec: names a registered value as an example or test; pending amendment (L10)"
+  },
+  {
+    "file": "docs/specs/SPEC-limit-register.md",
+    "line": "token. Hard maximum: the documented `GITHUB_TOKEN` rate limit (1,000",
+    "values": [1000],
+    "reason": "external: quotes GitHub's documented or observed limit, not a register value"
+  },
+  {
+    "file": "docs/specs/SPEC-limit-register.md",
+    "line": "(600,000 ms). Hard maximum: the provider's documented limits and the job",
+    "values": [600000],
+    "reason": "limit register spec: names a registered value as an example or test; pending amendment (L10)"
+  },
+  {
+    "file": "docs/specs/SPEC-limit-register.md",
+    "line": "- **Completion tokens:** 16,384. Hard maximum: the provider's maximum output",
+    "values": [16384],
+    "reason": "limit register spec: names a registered value as an example or test; pending amendment (L10)"
+  },
+  {
+    "file": "docs/specs/SPEC-limit-register.md",
+    "line": "- **Job budget and evidence deadline:** 15 minutes and 240,000 ms. Hard",
+    "values": [240000, 900000],
+    "reason": "limit register spec: names a registered value as an example or test; pending amendment (L10)"
+  },
+  {
+    "file": "docs/specs/SPEC-limit-register.md",
+    "line": "`if (body.length <= 50_000)` to a module, and add",
+    "values": [50000],
+    "reason": "limit register spec: names a registered value as an example or test; pending amendment (L10)"
+  },
+  {
+    "file": "docs/specs/SPEC-limit-register.md",
+    "line": "`const MAX_BODY = 50_000;` to a module.",
+    "values": [50000],
+    "reason": "limit register spec: names a registered value as an example or test; pending amendment (L10)"
+  },
+  {
+    "file": "docs/specs/SPEC-limit-register.md",
+    "line": "(mutation: add \"at most 50,000 code units\" to an approved spec);",
+    "values": [50000],
+    "reason": "limit register spec: names a registered value as an example or test; pending amendment (L10)"
+  },
+  {
+    "file": "docs/specs/SPEC-limit-register.md",
+    "line": "the existing boundary tests (exact 50,000 body, 128/129 changes, 16,384-byte",
+    "values": [50000, 128, 16384],
+    "reason": "limit register spec: names a registered value as an example or test; pending amendment (L10)"
+  },
+  {
+    "file": "docs/specs/SPEC-limit-register.md",
+    "line": "config, 3,000-file listing).",
+    "values": [3000],
+    "reason": "limit register spec: names a registered value as an example or test; pending amendment (L10)"
+  },
+  {
+    "file": "docs/specs/SPEC-limit-register.md",
+    "line": "its at-most-50,000 acceptance depends on the comment limit, which is chosen.",
+    "values": [50000],
+    "reason": "limit register spec: names a registered value as an example or test; pending amendment (L10)"
+  },
+  {
+    "file": "docs/specs/SPEC-limit-register.md",
+    "line": "instead of keeping 50,000.",
+    "values": [50000],
+    "reason": "limit register spec: names a registered value as an example or test; pending amendment (L10)"
+  },
+  {
+    "file": "docs/specs/SPEC-limit-register.md",
+    "line": "- Until the probe runs, the limit stays at 50,000, marked `unjustified`.",
+    "values": [50000],
+    "reason": "limit register spec: names a registered value as an example or test; pending amendment (L10)"
+  },
+  {
+    "file": "docs/specs/SPEC-limit-register.md",
+    "line": "50,000 code units), so that amendment needs its own approval.",
+    "values": [50000],
+    "reason": "limit register spec: names a registered value as an example or test; pending amendment (L10)"
+  },
+  {
+    "file": "docs/specs/SPEC-limit-register.md",
+    "line": "lines. File loading, the 16,384-byte read, strict UTF-8 decoding,",
+    "values": [16384],
+    "reason": "limit register spec: names a registered value as an example or test; pending amendment (L10)"
   }
 ]
