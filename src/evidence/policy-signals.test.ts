@@ -9,13 +9,14 @@ import { formDecisionUnits, evaluateUnitPolicy } from '../units.js';
 import { parseReviewConfig } from '../config.js';
 import { AdvisoryFailure } from './advisory-read.js';
 import { createNpmRegistryReader } from './npm-registry.js';
+import { viaAdvisoryHttp } from '../../tests/parity/advisory-http.js';
 test.each(['severity', 'range'])(
   '%s disagreement cannot erase a verified active malware hold',
   async (conflict) => {
     const { f, input } = await fixture();
     const r = createMalwareReader(input.limits, {
       now: () => 0,
-      fetch: async (url) => {
+      fetch: viaAdvisoryHttp(async (url) => {
         const q = new URL(url),
           target = q.searchParams.get('affects')!,
           i = target.lastIndexOf('@');
@@ -43,7 +44,7 @@ test.each(['severity', 'range'])(
             })),
           },
         ]);
-      },
+      }),
     });
     if (r.kind !== 'ready') throw new Error('reader');
     const out = await enrichPolicySignals(input, { malwareReader: r });
@@ -105,7 +106,7 @@ test.each(['positive', 'failed', 'empty'])(
     const requests: URL[] = [];
     const r = createMalwareReader(input.limits, {
       now: () => 0,
-      fetch: async (url) => {
+      fetch: viaAdvisoryHttp(async (url) => {
         const query = new URL(url);
         requests.push(query);
         const name = query.searchParams.get('affects')!.split('@')[0];
@@ -131,7 +132,7 @@ test.each(['positive', 'failed', 'empty'])(
                   ]
                 : [],
             );
-      },
+      }),
     });
     if (r.kind !== 'ready') throw new Error('reader');
     const out = await enrichPolicySignals(input, { malwareReader: r });

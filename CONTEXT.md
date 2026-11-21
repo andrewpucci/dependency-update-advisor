@@ -37,5 +37,8 @@ by a local R1 measurement or replay before any re-pin. Publication,
 production claim storage, adoption, parity, and cutover remain separate gates.
 
 - The [capability map](docs/specs/README.md) indexes module and contract status.
+- The S1/S3 [package name form amendment](docs/specs/SPEC-advisory-lookup.md#package-name-form-amendment)
+  is implemented, pending review and merge
+  ([#398](https://github.com/andrewpucci/dependency-update-advisor/issues/398)).
 - The [ADR guide](docs/adr/README.md) indexes durable architecture decisions.
 - Issues/PRs hold task results; `tasks/plan.md` is gitignored.

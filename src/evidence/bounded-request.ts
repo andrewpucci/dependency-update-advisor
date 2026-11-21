@@ -76,19 +76,28 @@ function deadlineTimer(duration: number, expire: () => void) {
   return () => clearTimeout(handle);
 }
 /**
- * One credential-free GET raced against its timeout, the caller's signal, and `onCancel`
- * (registered for the reader's close). Every exit aborts the request and releases its body.
+ * One credential-free GET, or a POST of a fixed `json` body, raced against its timeout, the
+ * caller's signal, and `onCancel` (registered for the reader's close). Every exit aborts the
+ * request and releases its body.
  */
 export async function boundedGet<T>(
   deps: BoundedDependencies,
   request:
-    | { url: string; accept: string; timeoutMs: number; headers?: never; signal?: AbortSignal }
     | {
         url: string;
-        headers: HeadersInit;
+        accept: string;
+        timeoutMs: number;
+        headers?: never;
+        signal?: AbortSignal;
+        json?: unknown;
+      }
+    | {
+        url: string;
+        headers: Record<string, string>;
         timeoutMs: number;
         accept?: never;
         signal?: AbortSignal;
+        json?: unknown;
       },
   onCancel: (cancel: (() => void) | null) => void,
   consume: (response: Response, aborted: Promise<never>) => Promise<T>,
@@ -110,11 +119,18 @@ export async function boundedGet<T>(
   let response: Response | undefined;
   try {
     if (signals.some((signal) => signal.aborted)) return await aborted;
+    const headers: Record<string, string> =
+      'headers' in request && request.headers
+        ? { ...request.headers }
+        : { accept: request.accept! };
+    const post = request.json !== undefined;
+    if (post) headers['content-type'] = 'application/json';
     const pending = deps.fetch(request.url, {
-      method: 'GET',
+      method: post ? 'POST' : 'GET',
       redirect: 'manual',
       credentials: 'omit',
-      headers: 'headers' in request ? request.headers : { accept: request.accept },
+      headers,
+      ...(post ? { body: JSON.stringify(request.json) } : {}),
       signal: controller.signal,
     });
     void pending.then(

@@ -122,7 +122,8 @@ second semver/PEP 440 applicability evaluator. Batching that relies on local
 range evaluation needs an amended contract and appropriate fixtures.
 
 Build query parameters locally with URL encoding. Do not accept a caller URL,
-use a package-only query as version proof, strip version qualifiers, approximate
+use a package-only query as version proof (stored-name discovery uses one only
+to learn stored forms), strip version qualifiers, approximate
 prereleases, or infer applicability from `first_patched_version` alone.
 Validate the returned advisory identity, reviewed type, withdrawal state,
 matching ecosystem/package entry, severity, affected range, title, and canonical
@@ -228,10 +229,13 @@ coverage. Other research categories retain their existing state.
 
 Use an injected fetch/clock and explicit cancellation, following existing
 D1/N2 conventions. Restrict requests to locally constructed HTTPS
-`api.github.com/advisories` routes; reject redirects and arbitrary pagination
-URLs. Public global reads require no additional permission. Credential routing
-remains trusted workflow responsibility; never receive the comment/status App
-token, provider secret, cookies, source excerpts, or consumer workflow text.
+`api.github.com/advisories` routes and, for PyPI reviewed lookups, the
+`api.osv.dev/v1/query` route (see the
+[Package Name Form Amendment](#package-name-form-amendment)); reject redirects
+and arbitrary pagination URLs. Public global reads require no additional
+permission. Credential routing remains trusted workflow responsibility; never
+receive the comment/status App token, provider secret, cookies, source
+excerpts, or consumer workflow text.
 Send only eligible package/version identifiers and fixed query parameters.
 
 Require explicit positive safe-integer limits for requests, pages, response
@@ -292,9 +296,13 @@ throw new TypeError('Invalid advisory severity');
 collection-local reader with `read(target)` and `close()`. Dependencies supply
 fetch, monotonic time and optional cancellation. Explicit `AdvisoryLimits`
 cover requests, pages, response/total bytes, JSON entries/depth, retained bytes,
-findings, and request/total time. The transport pins API version `2026-03-10`,
-queries reviewed singleton `package@version` targets serially, follows validated
-cursors, omits credentials, rejects redirects and makes no retries. Close the
+findings, and request/total time. The transport pins GitHub API version
+`2026-03-10` and runs serially. Since the
+[Package Name Form Amendment](#package-name-form-amendment), it sends PyPI
+reviewed targets to one OSV query, Actions reviewed and `pip`/`actions` malware
+targets to stored-name discovery followed by one versioned GitHub query, and npm
+targets to one exact `package@version` query. It follows validated cursors and
+page tokens, omits credentials, rejects redirects and makes no retries. Close the
 reader in the caller's `finally` block.
 
 `enrichAdvisories(input, { reader })` consumes an `AdvisoryInput`: binding,
@@ -415,3 +423,369 @@ None for the implemented scope. Live proof acquisition and caller-wide budget
 allocation remain explicit integration gates. New discovery strategies,
 providers, permissions, range evaluators or coverage meanings need separately
 approved scope.
+
+## Package Name Form Amendment
+
+**Status: approved for planning, 2026-11-20; implemented on branch
+`claude/funny-hermann-5d3a1c` for #399–#406, pending review and merge.** The
+user explicitly approved
+the reviewed draft after approving each design decision below. Plan and
+execution approval remain separate gates. Tracked in
+[#398](https://github.com/andrewpucci/dependency-update-advisor/issues/398),
+with tasks #399–#406.
+Effort tier: L. It amends "Exact GitHub advisory queries" and the reader
+behind it, and adds [OSV](https://google.github.io/osv.dev/api/) as the
+provider for PyPI reviewed-vulnerability lookups. The
+[policy signals spec](SPEC-policy-signals.md#package-name-form-amendment)
+applies the GitHub two-step lookup to malware queries. Eligible identities,
+packet version 1, and the meaning of complete vulnerability coverage are
+unchanged. Design decisions so far:
+
+- 2026-11-19: the user approved a two-step GitHub lookup: discover the stored
+  name forms, then query every form at the exact version.
+- 2026-11-19: the user approved splitting discovery across requests and
+  always citing the versioned query.
+- 2026-11-19: the user approved adding OSV for PyPI reviewed vulnerabilities
+  and keeping the GitHub two-step lookup for Actions and malware.
+- 2026-11-19: the user approved citing `https://api.osv.dev/v1/query` for a
+  complete empty OSV lookup.
+- 2026-11-20: the user accepted the separator-run gap below as a stated
+  limit of `pip` malware lookups.
+- 2026-11-20: the user approved the register values under "Cost and register
+  values".
+- 2026-11-20: after a fresh-context review, the user approved defining the
+  OSV response shape, keying OSV reuse by request body, a case-and-separator
+  discovery fixture, joining several same-package ranges, and stating the
+  reduced group capacity under "Cost and register values".
+- 2026-11-20: the user approved fixing the review's non-blocking findings in
+  this amendment and stating heavy OSV responses and JSON entry use as known
+  limits with follow-ups.
+- 2026-11-20: the user approved the revised eight-task implementation plan,
+  tracking issues #398–#406, one signed commit, and execution on this branch.
+- 2026-11-20: after a fresh-context code review, the user approved stating
+  the byte cost of `pip` reviewed lookups and the scope of the severity check.
+
+### Why
+
+GitHub's `affects` filter matches the package name in the form an advisory
+stores it, and one PyPI project can be stored in several forms. S1 sends only
+the normalized lowercase PyPI name, so a complete lookup can miss applicable
+advisories, and the reviewer then reports "checked, none found". Read-only
+GitHub probes on 2026-11-19 (`type=reviewed`, `per_page=100`):
+
+| Ecosystem | `affects`                         | Advisories | Stored names                                       |
+| --------- | --------------------------------- | ---------: | -------------------------------------------------- |
+| `pip`     | `pillow@8.0.0`                    |         26 | `pillow`                                           |
+| `pip`     | `Pillow@8.0.0`                    |         46 | `Pillow`; none shared with the 26                  |
+| `pip`     | `pillow@8.0.0,Pillow@8.0.0`       |         72 | both                                               |
+| `pip`     | `pyyaml@3.13`                     |          0 | —                                                  |
+| `pip`     | `PyYAML@3.13`                     |          2 | `PyYAML`: GHSA-8q59-q68h-6hv4, GHSA-rprw-h62v-c2w7 |
+| `pip`     | `pyyaml` or `PyYAML`              |          4 | the same 4 for both: `PyYAML` ×2, `pyyaml` ×2      |
+| `pip`     | `jupyter-server`                  |         15 | `jupyter-server`                                   |
+| `pip`     | `jupyter_server`                  |          2 | `jupyter_server`, including one for `<= 2.20.0`    |
+| `pip`     | `jupyter-server,jupyter_server`   |         17 | both                                               |
+| `actions` | `TJ-Actions/Changed-Files@45.0.7` |          0 | —                                                  |
+| `actions` | `tj-actions/changed-files@45.0.7` |          1 | `tj-actions/changed-files`                         |
+| `actions` | `TJ-Actions/Changed-Files`        |          2 | `tj-actions/changed-files`                         |
+
+A versioned target matches the stored name exactly, including case and
+separators. A package-only target ignores case but not separators. A comma
+list returns the union. GitHub documents only the union ("any of package or
+package@version"); the rest is observed behavior.
+
+OSV mirrors GitHub's reviewed advisories, normalizes PyPI names, and
+evaluates the version itself. OSV `v1/query` probes on the same day:
+
+- `pyyaml` and `PyYAML` at `3.13` both returned GHSA-8q59-q68h-6hv4 and
+  GHSA-rprw-h62v-c2w7.
+- `jupyter-server` and `jupyter_server` at `2.17.0` returned the same set,
+  including GHSA-c3mw-737p-c7g2.
+- `pillow` at `8.0.0` returned 70 GHSA records, exactly GitHub's 70 active
+  records across both stored names. GitHub's other 2 are withdrawn. The same
+  791,379-byte response held 57 PyPA (`PYSEC`) records; one of them applies
+  to `8.0.0` where its GHSA alias applies only to `>= 9.2.0, < 9.3.0`.
+- OSV returned nothing for `tj-actions/changed-files` at `45.0.7`, though
+  it holds that advisory: it does not order GitHub Actions versions.
+- OSV has none of GitHub's malware advisories (3 of 3 checked). It has
+  OpenSSF `MAL-` records for the same packages under other IDs.
+
+### Decision for review
+
+1. **Provider by target.**
+
+   | Query                           | Provider and query                                         |
+   | ------------------------------- | ---------------------------------------------------------- |
+   | `pip` reviewed vulnerabilities  | OSV, one exact query (items 2–5)                           |
+   | `actions` reviewed, all malware | GitHub, stored-form discovery then a versioned query (6–8) |
+   | `npm`                           | GitHub, one exact query; only item 8 changes it            |
+
+2. **OSV query.** The reader sends `POST https://api.osv.dev/v1/query` with a
+   locally built JSON body: `package.ecosystem` `PyPI`, `package.name` the
+   normalized name, and `version` the exact version. Its only headers are
+   `accept: application/json` and `content-type: application/json`; GitHub's
+   `accept` and API-version headers are not sent. It sends no credentials and
+   follows no redirects. A response body must be a JSON object whose only keys
+   are an optional `vulns` array and an optional `next_page_token` string; any
+   other key or type is `malformed`. A body with neither key is a complete
+   page with no records: OSV answered `{}` for `pyyaml` at `6.0.2` on
+   2026-11-20. When a response carries `next_page_token`, the reader resends
+   the same body with that value in the request field `page_token`, even if
+   the page had no records. The lookup is complete only after a page with no
+   token. A repeated or malformed token leaves it incomplete with `conflict`
+   or `malformed`, as GitHub's cursor rules do.
+3. **OSV records.** The reader keeps only records whose `id` matches S1's
+   GHSA identity format and whose `database_specific.github_reviewed` is
+   exactly `true`; it ignores the rest (for example `PYSEC` records), so the
+   checked scope stays GitHub's reviewed advisories. A kept record must have a
+   bounded `summary`; an absent or null `withdrawn` is active, a valid time is
+   a withdrawn record, and anything else is `malformed`. It must have at
+   least one `affected` entry with ecosystem `PyPI` and the target's
+   normalized name; none is `conflict`. Each such entry must have exactly one
+   `ECOSYSTEM` range with one `introduced` event and at most one `fixed` or
+   `last_affected` event; anything else is `conflict`. Entries for other
+   packages are ignored. Several same-package entries are normal: on
+   2026-11-20, all 51 GHSA records OSV returned for `django` at `4.2.0` had 2
+   to 6 of them.
+4. **OSV record mapping.** The URL is the canonical
+   `https://github.com/advisories/<id>`, which S1 already validates. The range
+   is built from each entry's events, in record order, joined by a spaced
+   `||`: `< F`, `>= I, < F`, `<= L`, `>= I, <= L`, or `>= I`, with
+   `introduced` `0` omitted. It describes OSV's record and can differ in form
+   from GitHub's: for 16 of the 70 Pillow records, OSV gives `< 13.0.0` where
+   GitHub gives `<= 12.3.0`, or omits GitHub's `>= 0`. OSV evaluates
+   applicability; the range is not re-evaluated locally, and both sides of an
+   OSV lookup use the same form. Severity maps `database_specific.severity`
+   `CRITICAL`, `HIGH`, `MODERATE`, and `LOW` to S1's values; absent or null is
+   unscored; any other value is `malformed`.
+5. **OSV citation.** Positive findings cite the canonical advisory URL, as
+   today. A complete empty lookup cites `https://api.osv.dev/v1/query`, which
+   was fetched; its excerpt names OSV's mirror of GitHub-reviewed advisories,
+   and its subject names the exact member and version. OSV can lag GitHub, so
+   the source claims only what OSV returned. A D1 comparison positive that a
+   lagging OSV omits stays cited with a visible `conflict` gap, under S1's
+   existing comparison rule.
+6. **GitHub discovery.** For an `actions` reviewed target and for every
+   `pip` or `actions` malware target, the reader first sends package-only
+   queries with the same fixed ecosystem and type filters and `per_page=50`.
+   For `pip`, they list every spelling of the normalized name with each
+   separator replaced by `-`, `_`, or `.`, in a fixed order, split across as
+   many requests as the discovery URL cap requires. Each request's first URL
+   is filled to at most 256 bytes under the cap, which leaves room for the
+   `after` cursor; a continuation URL over the cap is `budget`. For `actions`,
+   one request lists the mapped `owner/repo` name. The reader follows every
+   page of every request under the existing cursor rules. Every returned
+   record must name at least one package in the query ecosystem whose name,
+   canonicalized, equals the target's canonical name: PEP 503 normalization
+   for `pip`, case folding for `actions`. Otherwise the lookup is incomplete
+   with `malformed`. The stored forms are the distinct such names, as
+   returned.
+7. **GitHub versioned query.** After a complete discovery, the reader always
+   sends one query whose `affects` lists `form@version` for every stored
+   form, sorted. When discovery found no form, it lists the normalized name
+   for `pip` or the mapped name for `actions`. That URL was fetched and stays
+   short; it is the lookup's URL and the citation for a complete empty
+   result. Discovery URLs are not cited, and a package-only query never
+   establishes applicability. Listing several targets is sound because they
+   are one package at one version, so the batching concern in "Exact GitHub
+   advisory queries" (a batch response does not establish which queried
+   versions match) does not arise. A record's matching entries are its
+   entries in the query ecosystem whose canonicalized name equals the
+   target's. None is `conflict`. Several are joined in record order, as in
+   item 4, into the record's range, because GitHub does not say which one
+   matched.
+8. **Several entries, every GitHub query.** The joined-range rule in items 3
+   and 7 also replaces today's single-entry rule for npm singleton queries.
+   Each matching entry needs a valid `vulnerable_version_range`; otherwise
+   the record is `conflict`. A joined range over the packet's text bound
+   (`PACKET_LIMITS.identityBytes`) is `budget`, never truncated; the longest
+   joined range in the recorded Django and TensorFlow responses was 120
+   bytes.
+9. **Failure.** An incomplete discovery leaves the lookup incomplete with its
+   reason and sends no versioned query. No incomplete OSV or GitHub read
+   becomes an empty result. A rate limit stops further requests to that
+   provider for the rest of the session, as S1 requires; an OSV rate limit
+   does not stop GitHub requests, and a GitHub rate limit does not stop OSV
+   requests.
+10. **Reuse and bounds.** Base and head of one package share discovery reads
+    in the reader, keyed by full URL. A failed discovery is reused too, so the
+    second side ends incomplete with the same reason instead of retrying.
+    Every OSV query is a POST to one URL, so any reuse of an OSV read is keyed
+    by method, URL, and the exact request body. A cache keyed only by method,
+    URL, and headers, as the [evidence coverage](SPEC-evidence-coverage.md)
+    draft §2.2 states, would return one package's OSV answer for another; it
+    must add the body before it covers OSV reads. OSV and GitHub reads count
+    against the stage's existing request, byte, and time budgets. A target
+    over the spelling ceiling is `unsupported` before any request. A versioned
+    URL is checked after discovery: one that would exceed the packet's
+    provenance URL bound (`PACKET_LIMITS.identityBytes`, 1,024 bytes) is
+    `unsupported`, and no versioned request is sent. Measured on 2026-11-19
+    and 2026-11-20, one discovery URL is 87–158 bytes for names with up to one
+    separator, 944–998 bytes for three-separator names such as
+    `apache-airflow-providers-amazon` (27 spellings), and 3,077–3,563 bytes
+    for four-separator names such as `opentelemetry-exporter-otlp-proto-http`
+    (81 spellings).
+
+### S1 text this supersedes
+
+Where they conflict, this amendment replaces these statements; the
+implementation updates them in place:
+
+- "Implemented Interface and Handoff": the transport "queries reviewed
+  singleton `package@version` targets serially". It now routes by item 1.
+- "Transport, Bounds, and Failure Behavior": "Restrict requests to locally
+  constructed HTTPS `api.github.com/advisories` routes". The OSV route in
+  item 2 is also allowed.
+- "Exact GitHub advisory queries": "do not … use a package-only query as
+  version proof". Discovery uses a package-only query only to learn stored
+  forms, never as version proof.
+
+### Known limits
+
+- **Separator runs.** GitHub discovery does not list a stored form that uses
+  a run of separators (`a__b`), so it is not found. PEP 503 treats such a
+  name as the same project. After item 1, this affects only `pip` malware
+  lookups; OSV normalizes names for reviewed vulnerabilities. This amendment
+  states the limit instead of claiming discovery is exhaustive.
+- **Heavy OSV responses.** OSV returns one response per query with no page
+  size. TensorFlow 2.4.0 was 3,983,856 bytes on 2026-11-20, over the 1 MiB
+  per-response cap, so such a package ends `budget`. A remedy (a larger
+  OSV-only cap with streaming filters, or a GitHub fallback) is a follow-up.
+- **JSON entry use.** The reader's JSON entry budget is shared across its
+  responses. OSV's Pillow and Django responses used 19,268 and 17,316
+  entries, against 6,060 for GitHub's two Pillow pages, so about 11 heavy
+  sides can exhaust a reader. Task verification measures this; counting per
+  response would change the bound's meaning and is a follow-up.
+
+### Cost and register values
+
+OSV replaces discovery for the heaviest case: Pillow 8.0.0 is one
+791,379-byte OSV response, against a 1,009,662-byte first GitHub discovery
+page plus a second page and a 746,178-byte versioned response. OSV offers no
+field selection, so `PYSEC` records count toward bytes. Actions and malware
+targets cost at least one more GitHub request each; malware responses are
+small. A heavily advised package can now end `budget` where S1 used to report
+a false complete result. The discovery page size, discovery URL cap, spelling
+ceiling, and OSV per-response size are register values for the plan; pages
+must fit the per-response cap, as evidence coverage §1.6 requires. Approving
+this amendment does not approve the values.
+
+**Group capacity (stated limit, 2026-11-20).** Stage shares are unchanged.
+The malware share (40 requests) was sized at one request per package, so a
+group of only `pip` or `actions` packages, at two or more requests each, now
+completes malware for about 20 packages instead of about 40. Actions reviewed
+lookups take three requests per update instead of two, so the advisory share
+(80 requests) covers about 26 Actions updates instead of about 40. `npm`
+groups and `pip` reviewed request counts are unaffected, but bytes are not:
+Pillow 8.0.0's OSV response is 791,379 bytes per side, so about three heavily
+advised `pip` updates exhaust the advisory share's 5 MiB. GitHub's correct
+two-spelling query costs about the same (746,178 bytes), so the cost comes
+with the fix, not with OSV. Members past a share end
+`budget`, a visible gap. The 944-request envelope is fully allocated, so
+resizing is left to the [evidence coverage](SPEC-evidence-coverage.md)
+budget scaling (#350). The `src/budget.ts` comment is corrected to match.
+
+Approved values, from probes on 2026-11-20:
+
+| Value                 | Proposed           | Evidence                                                                                            |
+| --------------------- | ------------------ | --------------------------------------------------------------------------------------------------- |
+| Discovery page size   | 50                 | A 100-record `pillow` page was 1,009,662 bytes against the 1 MiB cap; 50 leaves about half.         |
+| Discovery URL cap     | 4,096 bytes        | GitHub accepted discovery URLs of 996, 3,399, and 4,371 bytes and returned 414 at 8,259 and 11,499. |
+| Spelling ceiling      | 243 (5 separators) | Five-separator names need about 3 discovery requests under the cap; six would need about 9.         |
+| OSV per-response size | existing 1 MiB cap | OSV has no page size; the `pillow` response was 791,379 bytes.                                      |
+
+### Transport
+
+The bounded request helper gains a POST with a fixed JSON body and
+`content-type: application/json`, used only for the OSV query, with the
+headers in item 2. Allowed destinations become locally built
+`https://api.github.com/advisories` and `https://api.osv.dev/v1/query`
+routes. Credential, redirect, streaming, and timeout rules are unchanged.
+OSV's 429 is a rate limit, scoped to OSV as item 9 says.
+
+### Verification
+
+Fixtures are real responses recorded on 2026-11-19 and 2026-11-20, trimmed
+to the fields the reader validates. A synthetic fixture says so in its name
+and in the test that uses it; the recorded Pillow data has no
+`last_affected` event and no unreviewed GHSA, so those cases are synthetic.
+
+- **PyYAML 3.13 (failing first).** The OSV response for `pyyaml` at `3.13`
+  yields GHSA-8q59-q68h-6hv4 and GHSA-rprw-h62v-c2w7, complete. The current
+  reader sends GitHub `pyyaml@3.13`, receives the recorded empty list, and
+  reports a complete empty lookup, so this check fails on it.
+- **OSV request.** The exact request body and headers are asserted, with no
+  GitHub headers.
+- **Several entries.** The recorded OSV `django` `4.2.0` response completes,
+  and a record with 3 `django` entries keeps all three ranges, joined in
+  record order. A GitHub record with two same-package entries, such as
+  GHSA-q874-g24w-4q9g for `jupyter-server`, keeps both, as does an npm
+  singleton record. A malformed second entry is `conflict`. A joined range
+  over the bound is `budget`.
+- **OSV scope.** A recorded response with `PYSEC` records and a GHSA record
+  with entries in other ecosystems keeps only GHSA records for the target
+  package. A synthetic unreviewed GHSA, one whose `github_reviewed` is the
+  string `"true"`, and one with a malformed id are excluded or `malformed`
+  as item 3 says. A synthetic `withdrawn` time gives a withdrawn record; an
+  invalid one is `malformed`. Tests assert the severity of every kept record
+  in the recorded Pillow, PyYAML, and Django fixtures, matching GitHub's
+  recorded values where they exist; a one-time offline comparison on
+  2026-11-19 found all 70 Pillow 8.0.0 records matched. Range text follows
+  OSV's events.
+- **OSV boundaries.** The recorded `{}` is a complete empty lookup; an
+  object with an unknown key or a non-array `vulns` is `malformed`. Two `pip`
+  targets in one reader send two OSV requests with their own bodies. A
+  followed `next_page_token` is sent as `page_token`, including after an
+  empty page; a repeated token; no matching `affected` entry (`conflict`); an
+  unexpected event shape (`conflict`); an unexpected severity (`malformed`);
+  a redirect. A 429 stops further OSV requests while a GitHub Actions lookup
+  in the same reader still runs.
+- **Actions case.** A mapped `TJ-Actions/Changed-Files` at `45.0.7` discovers
+  `tj-actions/changed-files` and finds the recorded advisory.
+- **Discovery reuse.** Base and head of one Actions update make one discovery
+  request; a failed discovery is reused and both sides end incomplete with
+  its reason.
+- **Malware discovery.** A `pip` malware target sends `type=malware`
+  discovery listing every separator spelling, split so that every first URL
+  is at least 256 bytes under the cap, then one versioned query. An empty
+  discovery is followed by a versioned query for the normalized name, which
+  a complete empty result cites. A failed discovery page, including one in a
+  later split request, sends no versioned query. A continuation URL over the
+  cap is `budget`. A discovery record with no canonical match is
+  `malformed`. A synthetic fixture built from the recorded `jupyter-server`
+  and `jupyter_server` discovery records, with one stored name changed to
+  `Jupyter_Server`, has a stored name that differs from the canonical
+  `jupyter-server` in both case and separator; that record counts, and the
+  versioned query lists all three stored forms. A target over the spelling
+  ceiling sends no request. Discovered forms whose versioned URL exceeds
+  1,024 bytes are `unsupported` with no versioned request. Malware discovery
+  is never reused for reviewed lookups.
+- **npm** sends one exact GitHub query, as today.
+- **Named mutations fail those checks:** querying GitHub for `pip` reviewed
+  targets; keeping `PYSEC` or unreviewed records; accepting a truthy
+  non-boolean `github_reviewed`; omitting `next_page_token`, or sending it
+  under its response name; sending only the normalized spelling to GitHub
+  discovery; omitting one separator spelling or split request; comparing a
+  stored name to the canonical name without canonicalizing the stored name's
+  case or separators (for example `stored === canonical(target)`); treating
+  `{}` as malformed or an unknown-key object as empty; keying OSV reuse
+  without the request body; stopping GitHub requests on an OSV rate limit;
+  retrying a failed discovery for the second side; treating a failed
+  discovery as empty; citing a discovery URL; matching a versioned entry by
+  exact string instead of canonical name; keeping only the first of several
+  same-package entries; and failing a record because it has several.
+- Full repository checks, `npm run complexity`, and the action bundle drift
+  check pass on the implementation revision.
+
+### Amendment boundaries
+
+- **Always:** keep inventory identities unchanged; clear a target only from
+  a complete OSV query or a complete versioned query after a complete
+  discovery; query every discovered stored form; and name the provider that
+  was checked.
+- **Ask first:** the register values, a different citation URL bound, a
+  separator-run search, OSV for malware or Actions, `PYSEC` records, a local
+  range evaluator, or a change to npm names.
+- **Never:** treat a failed or partial read as empty, retain a non-GHSA OSV
+  record as a GitHub advisory, send a versioned spelling other than the
+  discovered forms or, when none, the normalized or mapped name, or cite a
+  URL that was not fetched.

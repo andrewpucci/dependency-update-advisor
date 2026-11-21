@@ -10,6 +10,7 @@ import type { AdvisoryEnrichment } from '../../src/evidence/advisories.js';
 import type { PacketSource } from '../../src/schema.js';
 import { uvMetadataScenario } from './uv-metadata.js';
 import { uvManifest, uvLock, uvPackage } from './uv-graph.js';
+import { viaAdvisoryHttp } from './advisory-http.js';
 import { advisoryTestLimits, syntheticAdvisory } from './advisories.js';
 
 export const upstreamTestLimits = {
@@ -122,7 +123,7 @@ function githubResponse(url: URL) {
   return Response.json({}, { status: 404 });
 }
 function researchFetch(options: Options, requests: string[]) {
-  return async (value: string, init: RequestInit) => {
+  return viaAdvisoryHttp(async (value: string, init: RequestInit) => {
     requests.push(value);
     if (init.redirect !== 'manual' || init.credentials !== 'omit')
       throw new Error('Unexpected research transport policy');
@@ -178,7 +179,7 @@ function researchFetch(options: Options, requests: string[]) {
     }
     if (url.origin === 'https://api.github.com') return githubResponse(url);
     throw new Error('Unexpected research host');
-  };
+  });
 }
 /** Invented HTTP/file snapshots through authentic collectors; no public-identity proof is pre-filled. */
 export async function upstreamScenario(options: Options = {}) {
