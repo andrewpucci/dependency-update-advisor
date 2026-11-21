@@ -2277,6 +2277,84 @@ test('renders a one-member gap group exactly as evidenceGap does', async () => {
   expect(gapLinesOf(body)).toContain(`- ${evidenceGap(unit, link.id)}`);
 });
 
+function gapKey(link: { category: string; status: string; reasons: readonly string[] }) {
+  return JSON.stringify([link.category, link.status, link.reasons]);
+}
+
+/** Assessed gaps that differ only in status, or only in category, plus a same-named pair. */
+function statusAndCategoryGaps(
+  memberIndex: number,
+  category: string,
+  current: ChangeEvidence | undefined,
+): ChangeEvidence | null {
+  if (category === 'vulnerability' && memberIndex < 3)
+    return { status: 'unavailable', reasons: ['timeout'], sourceIds: [] };
+  if (category === 'vulnerability' && memberIndex < 6)
+    return { status: 'partial', reasons: ['timeout'], sourceIds: current?.sourceIds ?? [] };
+  if (category === 'malware' && memberIndex >= 6 && memberIndex < 9)
+    return { status: 'unavailable', reasons: ['timeout'], sourceIds: [] };
+  return null;
+}
+
+test('keeps assessed gaps that differ in status or category on separate lines', async () => {
+  // 93 children plus 2 same-named copies, all assessed with a follow-up.
+  const { body, render } = await renderLargeInventory({
+    followups: 95,
+    evidence: statusAndCategoryGaps,
+  });
+  const gaps = assessedGapsOf(render);
+  const keys = new Set(gaps.map(({ link }) => gapKey(link)));
+  const differOnlyIn = (field: 'status' | 'category') =>
+    gaps.some(({ link: a }) =>
+      gaps.some(
+        ({ link: b }) =>
+          a[field] !== b[field] &&
+          (field === 'status' ? a.category === b.category : a.status === b.status) &&
+          a.reasons.join() === b.reasons.join(),
+      ),
+    );
+  expect(differOnlyIn('status'), 'fixture has gaps differing only in status').toBe(true);
+  expect(differOnlyIn('category'), 'fixture has gaps differing only in category').toBe(true);
+
+  const lines = gapLinesOf(body);
+  expect(lines).toHaveLength(keys.size);
+  for (const { link, member } of gaps) {
+    const phrase = `${link.category} evidence is ${link.status} (${link.reasons.join(', ')})`;
+    const matching = lines.filter((line) => line.includes(phrase));
+    expect(matching, phrase).toHaveLength(1);
+    expect(
+      entryPattern(render, member).test(matching[0].slice(2, matching[0].indexOf(': '))),
+      `${member.name} on ${phrase}`,
+    ).toBe(true);
+  }
+});
+
+test('names both copies of a same-named pair that share one assessed gap line', async () => {
+  const { body, render } = await renderLargeInventory({
+    followups: 95,
+    evidence: statusAndCategoryGaps,
+  });
+  const gaps = assessedGapsOf(render);
+  const paired = gaps.filter((a) =>
+    gaps.some(
+      (b) =>
+        b.member.id !== a.member.id &&
+        b.member.name === a.member.name &&
+        gapKey(b.link) === gapKey(a.link),
+    ),
+  );
+  expect(paired.length, 'fixture has a same-named pair on one gap line').toBeGreaterThan(1);
+  for (const { link, member } of paired) {
+    const phrase = `${link.category} evidence is ${link.status} (${link.reasons.join(', ')})`;
+    const line = gapLinesOf(body).find((entry) => entry.includes(phrase));
+    expect(line, phrase).toBeDefined();
+    expect(
+      entryPattern(render, member).test(line!.slice(2, line!.indexOf(': '))),
+      member.name,
+    ).toBe(true);
+  }
+});
+
 test('keeps each model follow-up as its own line in record order', async () => {
   const sentence = 'Confirm the recorded evidence gap with a fresh lookup before merging.';
   const { body, render } = await renderLargeInventory({
@@ -2710,6 +2788,13 @@ test('the R1-shaped fixture fits the body limit and names every required record'
   const gapText = [...gapItems, ...gapLinesOf(body)];
   expect(gapText.length).toBeGreaterThan(0);
   for (const line of gapText) expect(line).not.toMatch(/rerun ci/iu);
+  // Each queue item states its unit's recovery once; the gap text after it never says to rerun.
+  const recoverySentence = 'Rerun CI to retry dependency analysis.';
+  for (const item of queueItemsOf(body)) {
+    expect(item.split(recoverySentence).length - 1, item).toBe(1);
+    const gapPart = item.slice(item.indexOf(recoverySentence) + recoverySentence.length);
+    if (gapPart.includes(' evidence is ')) expect(gapPart, item).not.toMatch(/rerun ci/iu);
+  }
 
   const section = followupSectionOf(body);
   const descriptions = render.records.flatMap((record) =>
