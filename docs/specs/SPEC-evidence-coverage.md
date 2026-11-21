@@ -1,6 +1,9 @@
 # Spec: Evidence Coverage and Scaled Read Budgets
 
-**Status: draft for review.** Cross-cutting supporting contract for
+**Status: approved for planning, 2026-11-16.** The user explicitly approved
+the reviewed draft (merged in PR #351) after a fresh-context review whose
+blocking findings were resolved. Plan and execution approval remain separate
+gates. Cross-cutting supporting contract for
 `shared-review` in [the capability map](README.md). Scoped to
 [#350](https://github.com/andrewpucci/dependency-update-advisor/issues/350)
 under [#342](https://github.com/andrewpucci/dependency-update-advisor/issues/342).

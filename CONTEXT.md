@@ -22,21 +22,19 @@ publication/production-claim gates are in the W2 spec.
 split-depth diagnostics, are merged. The [capability map](docs/specs/README.md)
 is authoritative for all contract status and remaining integration gates.
 
-[W2 Amendment 5](docs/specs/SPEC-review-orchestration.md#diagnostic-amendment-5-assessment-failure-reason-and-analysis-timing)
-([#334](https://github.com/andrewpucci/dependency-update-advisor/issues/334),
-[#337](https://github.com/andrewpucci/dependency-update-advisor/issues/337))
-is implemented and merged in [PR #345](https://github.com/andrewpucci/dependency-update-advisor/pull/345).
-No-write rehearsals now name assessment failures and print M2 timing on stderr
-and in the trace.
+The R1 no-write rehearsal ended fail closed at `render-size`; see
+[#348](https://github.com/andrewpucci/dependency-update-advisor/issues/348).
 
 ## Next action
 
-Decide [#348](https://github.com/andrewpucci/dependency-update-advisor/issues/348):
-the R1 caller re-pin and diagnostics rehearsal are complete, but the no-write
-run ended fail closed at `render-size`. Its sanitized reason and timing are
-recorded on [#309](https://github.com/andrewpucci/dependency-update-advisor/issues/309).
-Publication, production claim storage, adoption, parity, and cutover remain
-separate gates.
+Plan [evidence coverage](docs/specs/SPEC-evidence-coverage.md)
+([#350](https://github.com/andrewpucci/dependency-update-advisor/issues/350)),
+then the
+[comment capacity amendment](docs/specs/SPEC-comment-experience.md#comment-capacity-amendment)
+(#348), which renders its evidence states. Both are approved for planning,
+2026-11-16; plan and execution approval are separate gates. Each is accepted
+by a local R1 measurement or replay before any re-pin. Publication,
+production claim storage, adoption, parity, and cutover remain separate gates.
 
 - The [capability map](docs/specs/README.md) indexes module and contract status.
 - The S1/S3 [package name form amendment](docs/specs/SPEC-advisory-lookup.md#package-name-form-amendment)

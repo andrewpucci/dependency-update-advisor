@@ -161,7 +161,10 @@ cutover spec to compare content with the current reviewer.
 
 ## Comment Capacity Amendment
 
-**Status: draft for review.** Scoped to
+**Status: approved for planning, 2026-11-16.** The user explicitly approved
+the reviewed draft (merged in PR #351) after a fresh-context review whose
+blocking findings were resolved. Plan and execution approval remain separate
+gates. Scoped to
 [#348](https://github.com/andrewpucci/dependency-update-advisor/issues/348).
 Effort tier: L. It amends this contract and
 [O1 decision brief rendering](SPEC-decision-brief.md) requirements 3, 4, and
@@ -334,7 +337,7 @@ must satisfy the verification below.
 
 - M1 validation is unchanged. The 21 `reference` rejections, each failing a
   whole batch, need their own issue.
-- Evidence availability and reason-to-action mapping are owned by the draft
+- Evidence availability and reason-to-action mapping are owned by the
   [evidence coverage spec](SPEC-evidence-coverage.md). Upstream, malware, and
   vulnerability evidence was unavailable for 92 of 93 units because research
   stages stopped on their limits and discarded completed work, not because

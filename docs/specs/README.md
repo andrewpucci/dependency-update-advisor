@@ -252,13 +252,21 @@ gaps and an introduced vulnerability before parity is claimed.
 - [Comment experience](SPEC-comment-experience.md) — approved supporting contract.
   A [comment capacity amendment](SPEC-comment-experience.md#comment-capacity-amendment)
   ([#348](https://github.com/andrewpucci/dependency-update-advisor/issues/348)),
-  which also amends O1 requirements 3, 4, and 7, is a draft for review.
+  which also amends O1 requirements 3, 4, and 7, is approved for planning,
+  2026-11-16.
 - [Evidence coverage and scaled read budgets](SPEC-evidence-coverage.md)
   ([#350](https://github.com/andrewpucci/dependency-update-advisor/issues/350))
-  — draft for review. Per-item instead of stage-wide research failures, one
-  read per request per run, budgets scaled to the change, and reader-facing
-  evidence states; amends the W2 envelope, S1's cache scope, and S3 and
-  research-orchestration stage failures.
+  — approved for planning, 2026-11-16. Per-item instead of stage-wide
+  research failures, one read per request per run, budgets scaled to the
+  change, and reader-facing evidence states; amends the W2 envelope, S1's
+  cache scope, and S3 and research-orchestration stage failures.
+- [Limit register](SPEC-limit-register.md) — approved for planning,
+  2026-11-17; its plan was approved for execution the same day. One
+  register for every limit (maxima, minima, defaults, timeouts, thresholds),
+  with what it protects, its basis, effect, and boundary test; specs cite
+  register ids instead of values; an enforcement check over code, workflows,
+  and specs; adopter configuration whose settings override defaults, with an
+  adopter guide.
 - [Decision brief rendering](SPEC-decision-brief.md) — approved for execution
   for O1 #23; renderer implementation is pending overall review and merge.
   No desktop or narrow preview yet includes the policy guide link.
