@@ -1,8 +1,9 @@
 # Spec: Limit Register
 
-Status: approved for planning by the user on 2026-11-17. Not approved for
-execution. Revised the same day to match the intent the user confirmed in an
-interview (see Resolved). A cross-cutting supporting contract for
+Status: approved for planning by the user on 2026-11-17; the user approved its
+[plan](../../tasks/plan-limit-register.md) for execution the same day.
+Revised the same day to match the intent the user confirmed in an interview
+(see Resolved). A cross-cutting supporting contract for
 `shared-review` in [the capability map](README.md).
 
 The user asked for this on 2026-11-17, and on the same day approved its

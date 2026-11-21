@@ -255,7 +255,7 @@ gaps and an introduced vulnerability before parity is claimed.
   change, and reader-facing evidence states; amends the W2 envelope, S1's
   cache scope, and S3 and research-orchestration stage failures.
 - [Limit register](SPEC-limit-register.md) — approved for planning,
-  2026-11-17; not approved for execution. One
+  2026-11-17; its plan was approved for execution the same day. One
   register for every limit (maxima, minima, defaults, timeouts, thresholds),
   with what it protects, its basis, effect, and boundary test; specs cite
   register ids instead of values; an enforcement check over code, workflows,
