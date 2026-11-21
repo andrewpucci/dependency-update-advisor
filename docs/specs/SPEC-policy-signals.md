@@ -583,6 +583,9 @@ edited; where they conflict, this section decides.
   versioned malware URL. A discovery hit gets its versioned malware query; if
   that query fails, the malware check is incomplete with the query's reason,
   and no finding is emitted.
+- **Citation.** The Package Name Form statement that "S1's failure, bounds,
+  citation, and known-limit rules apply unchanged" now includes S1's
+  discovery clearing exception.
 - **Types stay separate.** A malware discovery batch never carries a reviewed
   target, and a reviewed result never clears a malware check.
 

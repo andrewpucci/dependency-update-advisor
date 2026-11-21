@@ -969,38 +969,61 @@ own discovery, so the batch rules cannot apply to it unchanged.
    - The batch page size is fitted to an npm example measured by C2, not to
      the `Pillow@8.0.0` singleton page in batch item 2. The value is still an
      Ask-first decision at C3.
-3. **Discovery is batched across targets (D3).** Discovery for Actions
-   reviewed lookups and for `pip` and Actions malware lookups lists the
-   spellings of several targets of one ecosystem and advisory type in one
-   package-only query. The batch keeps Package Name Form item 6's URL cap
-   (`limit:advisory.discovery.urlBytes`), page size
-   (`limit:advisory.discovery.pageSize`), cursor rules, and separator-run
-   limit.
-   - **Settling.** A target is settled only when every request carrying any
-     of its spellings has completed.
+3. **Discovery is batched across targets (D3).** A discovery batch is the
+   set of package-only queries that together list every spelling of several
+   targets of one ecosystem and advisory type. It keeps Package Name Form
+   item 6's request rules unchanged: the URL cap
+   (`limit:advisory.discovery.urlBytes`), the first-URL cursor headroom
+   (`limit:advisory.discovery.cursorHeadroomBytes`), the page size
+   (`limit:advisory.discovery.pageSize`), the cursor rules, a continuation URL
+   over the cap being `budget`, and the separator-run limit. Item 10's
+   spelling ceiling and versioned-URL bound also apply per target.
+   - **Complete.** A discovery batch is complete only when every page of
+     every one of its requests succeeded and validated, and every spelling of
+     every batched target appears in a fetched discovery URL.
+   - **Matching.** A record names a target when it has an entry in the query
+     ecosystem whose name, canonicalized, equals the target's canonical name,
+     as Package Name Form item 6 defines it. The same comparison decides
+     validation, hits, and stored forms. A target's stored forms are the
+     distinct matching names across every record in the batch.
    - **Validation.** Every returned record must name at least one batched
-     target in canonical form. Otherwise the batch is `malformed`.
-   - **Clearing.** A target with no record in a complete discovery batch is
+     target. Otherwise the batch is `malformed`.
+   - **Clearing.** A target that no record names in a complete batch is
      cleared without its versioned query. It cites the unfetched versioned
-     URL that would reproduce the empty result, and its source text says it
-     was checked in a batched query, as batch item 7 does for npm. This
-     reverses Package Name Form item 7's "always sends" for cleared targets
-     only.
-   - **Hits.** A target with a discovery hit gets its versioned query, as
-     today. Discovery never attributes a record: a malware hit followed by a
-     failed versioned query is incomplete, with no finding.
-   - **Fallback.** An incomplete batch clears nothing, and its targets fall
-     back to per-target discovery.
-4. **Superseded text (D4).**
-   - Batched Lookup Amendment items 1–7 apply to npm only; versioned batches
-     are npm only.
-   - Batched Lookup Amendment item 9 is replaced by the Package Name Form
+     URL that would reproduce the empty result: the normalized name for
+     `pip` or the mapped name for Actions, at the target's version. Its
+     source text says it was checked in a batched query, as batch item 7
+     does for npm. This reverses Package Name Form item 7's "always sends"
+     for cleared targets only.
+   - **Hits.** A target that a record names gets its versioned query for its
+     stored forms, as today. Discovery never attributes a record: a malware
+     hit followed by a failed versioned query is incomplete, with no
+     finding.
+   - **Fallback.** An incomplete batch clears nothing, and every one of its
+     targets falls back to per-target discovery. Per-target discovery follows
+     Package Name Form items 6 and 7 unchanged, including the versioned query
+     after an empty discovery.
+4. **Superseded text (D4).** Where they conflict, this section replaces:
+   - Batched Lookup Amendment items 1–7, its fixtures, and its boundaries,
+     which now apply to npm only; versioned batches are npm only.
+   - Batched Lookup Amendment item 9, replaced by the Package Name Form
      Amendment.
-   - The equivalence check drops `Pillow@8.0.0` as a seed.
-   - Package Name Form item 7 gains the clearing exception in decision 3.
-   - The Package Name Form boundary "Never … cite a URL that was not
-     fetched" gains the same exception: a cleared discovery target cites its
-     unfetched versioned URL with batched source text.
+   - The `Pillow@8.0.0` seed of the equivalence check, which is dropped.
+   - Package Name Form item 7's "always sends one query", which gains the
+     clearing exception in decision 3.
+   - The Package Name Form boundaries "clear a target only from a complete
+     OSV query or a complete versioned query after a complete discovery" and
+     "Never … cite a URL that was not fetched", which gain the same
+     exception for a target cleared by a complete discovery batch.
+   - The Package Name Form verification "An empty discovery is followed by a
+     versioned query for the normalized name", which now holds for
+     per-target discovery only.
+   - "Evidence Representation" ("Use the query URL for a successful empty
+     lookup"), which gains the discovery clearing exception alongside batch
+     item 7's npm exception.
+   - The Package Name Form cost statement "Actions and malware targets cost
+     at least one more GitHub request each" and its group capacity figures,
+     which now bound the per-target path only.
 
 ### Reconciliation verification
 
@@ -1020,10 +1043,15 @@ own discovery, so the batch rules cannot apply to it unchanged.
   incomplete, and no finding is emitted.
 - An empty complete discovery batch clears each target, citing its
   unfetched versioned URL.
-- A record in a discovery batch that names no batched target in canonical
-  form: the batch is `malformed`.
-- A discovery batch whose second request fails: the targets whose spellings
-  it carried fall back to per-target discovery.
+- Every spelling of each cleared target appears in a fetched discovery URL.
+- A record in a discovery batch that names no batched target: the batch is
+  `malformed`.
+- A stored name that differs from the target in case and separators (for
+  example `Jupyter_Server` for `jupyter-server`) is a hit, not a clear; the
+  mutation `stored === canonical(target)` fails this fixture.
+- A discovery batch whose second request fails: every target in the batch,
+  including those the failed request did not carry, falls back to
+  per-target discovery.
 
 ### Reconciliation boundaries
 
@@ -1033,5 +1061,5 @@ own discovery, so the batch rules cannot apply to it unchanged.
 - **Ask first:** `querybatch`, and every value the batch amendments mark Ask
   first.
 - **Never:** batch `pip` reviewed lookups through OSV without a new decision,
-  attribute a record from discovery, or clear a target whose spellings are in
-  an incomplete request.
+  attribute a record from discovery, or clear a target from an incomplete
+  discovery batch.
