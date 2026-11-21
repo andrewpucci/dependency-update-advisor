@@ -27,6 +27,8 @@ export type LargeInventoryOptions = {
   /** Follow-ups per merge_with_followups unit; the first uses followupText, the rest add ` (n)`. */
   followupsPerUnit?: number;
   followupText?: (index: number, name: string) => string;
+  /** Each follow-up cites its unit's first member's lockfile source, alternating proposed and base. */
+  followupCitations?: boolean;
 };
 
 type Packet = UnitInventory['packet'];
@@ -71,6 +73,26 @@ function withEvidence(
   return { ...packet, changes };
 }
 
+/** A reference to one side's lockfile source of the unit's first member, in model aliases. */
+function lockfileReference(
+  snapshot: NonNullable<ReturnType<typeof preparedSnapshot>>,
+  unit: { members: readonly { id: string }[] },
+  side: 'base' | 'head',
+) {
+  const member = snapshot.members.find((entry) => entry.id === unit.members[0].id)!;
+  const value = side === 'head' ? member.value.to : member.value.from;
+  if (!value || !('sourceId' in value))
+    throw new Error(`large inventory: member has no ${side} side`);
+  const source = snapshot.sources.find((entry) => entry.id === value.sourceId)!;
+  return {
+    kind: 'source',
+    sourceId: source.alias,
+    memberId: member.alias,
+    side,
+    category: source.value.kind,
+  };
+}
+
 function followupText(index: number, name: string) {
   return `Confirm the recorded evidence gap for ${name} (unit ${index}) with a fresh lookup, then rerun the dependency review before merging the pull request.`;
 }
@@ -106,6 +128,7 @@ function stubReply(
     names: Map<string, string>;
     followupText: (index: number, name: string) => string;
     followupsPerUnit: number;
+    followupCitations: boolean;
   },
 ) {
   if (batch.unitIds.every((id) => state.unresolved.has(id)))
@@ -117,13 +140,17 @@ function stubReply(
     if (entry.verdict !== 'merge_with_followups') return entry;
     const unit = snapshot.units.find((item) => item.alias === entry.unitId)!;
     const base = state.followupText(state.order.get(unit.id)!, state.names.get(unit.id)!);
+    const side = state.order.get(unit.id)! % 2 ? 'base' : 'head';
+    const references = state.followupCitations
+      ? [lockfileReference(snapshot, unit.value, side)]
+      : [];
     const followups = Array.from({ length: state.followupsPerUnit }, (_, index) => ({
       description: truncateUtf8(
         index === 0 ? base : `${base} (${index + 1})`,
         ANALYSIS_LIMITS.followupBytes,
       ),
       blocking: false,
-      references: [],
+      references,
     }));
     return { ...entry, followups };
   });
@@ -170,6 +197,7 @@ export async function largeInventoryScenario(options: LargeInventoryOptions = {}
     names: new Map(inventory.units.map((unit) => [unit.id, unit.members[0].name])),
     followupText: options.followupText ?? followupText,
     followupsPerUnit: options.followupsPerUnit ?? 1,
+    followupCitations: options.followupCitations ?? false,
   };
   const analysis = await analyzeDecisionUnits(
     input,

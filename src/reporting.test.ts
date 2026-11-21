@@ -1137,39 +1137,40 @@ test('neutralizes external Markdown, HTML and GitHub autolinks in assessment tex
   }
 });
 
+/** Each M2 failure category with the start of the recovery action it renders. */
+const RECOVERY_BY_CATEGORY: [string, string][] = [
+  ...[
+    'transport',
+    'http-auth',
+    'http-rate-limit',
+    'http-server',
+    'http-other',
+    'media-type',
+    'response-size',
+    'encoding',
+    'envelope',
+    'json',
+    'deadline',
+    'cancelled',
+    'call_budget',
+  ].map((category): [string, string] => [category, 'Rerun CI to retry dependency analysis.']),
+  ['configuration', 'Correct the provider configuration or credential'],
+  ...['budget', 'length'].map((category): [string, string] => [
+    category,
+    'Inspect the oversized input or response',
+  ]),
+  ...['input', 'projection', 'reference', 'schema', 'policy', 'unexpected'].map(
+    (category): [string, string] => [category, 'Investigate the failed review data or validation'],
+  ),
+];
+
 test('maps every M2 failure category to its applicable recovery action', async () => {
   const { analysisScenario } = await import('../tests/parity/analysis.js');
   const { analyzeDecisionUnits } = await import('./analysis/batches.js');
   const { input, scenario } = await analysisScenario();
   const analysis = await analyzeDecisionUnits(input, { deadlineMs: 700_000 }, { now: () => 0 });
   if (!analysis.ok) throw new Error('analysis fixture failed');
-  const cases = [
-    ...[
-      'transport',
-      'http-auth',
-      'http-rate-limit',
-      'http-server',
-      'http-other',
-      'media-type',
-      'response-size',
-      'encoding',
-      'envelope',
-      'json',
-      'deadline',
-      'cancelled',
-      'call_budget',
-    ].map((category) => [category, 'Rerun CI to retry dependency analysis.']),
-    ['configuration', 'Correct the provider configuration or credential'],
-    ...['budget', 'length'].map((category) => [
-      category,
-      'Inspect the oversized input or response',
-    ]),
-    ...['input', 'projection', 'reference', 'schema', 'policy', 'unexpected'].map((category) => [
-      category,
-      'Investigate the failed review data or validation',
-    ]),
-  ];
-  for (const [category, expected] of cases) {
+  for (const [category, expected] of RECOVERY_BY_CATEGORY) {
     const records = analysis.records.map((record) => ({ ...record, category }));
     const result = renderDecisionBrief({
       binding: input.inventory.packet.binding,
@@ -2138,7 +2139,7 @@ test('merges findings that share every rendered field into one line each', async
 });
 
 test('names every member of a merged finding line', async () => {
-  const { packet, lines } = await renderLargeInventory();
+  const { packet, lines, render } = await renderLargeInventory();
   const duplicated = new Set<string>();
   const seen = new Set<string>();
   for (const change of packet.changes) {
@@ -2151,14 +2152,16 @@ test('names every member of a merged finding line', async () => {
     const change = packet.changes.find((item) => item.id === finding.memberId);
     const name = change && changeName(change);
     if (!change || name === undefined) throw new Error('finding member has no name');
-    // A same-named member must match its own copy's qualifier, which ends with its version.
-    const version = ((change.to ?? change.from) as { version?: string }).version ?? 'unknown';
-    const entry = duplicated.has(name)
-      ? new RegExp(
-          `(?:^|, )${escapeRegExp(name)} \\([^)]*, ${escapeRegExp(version)}\\)(?:,|$)`,
-          'u',
-        )
-      : new RegExp(`(?:^|, )${escapeRegExp(name)}(?:,|$)`, 'u');
+    // A same-named member must match its own copy's exact qualifier.
+    const member = render.coverage.inventory.units
+      .flatMap((unit) => unit.members)
+      .find((item) => item.id === finding.memberId)!;
+    expect(duplicated.has(name)).toBe(
+      render.coverage.inventory.units
+        .flatMap((unit) => unit.members)
+        .some((item) => item.id !== member.id && item.name === member.name),
+    );
+    const entry = entryPattern(render, member);
     expect(
       lines.some((line) => line.includes(`: ${finding.rationale}`) && entry.test(namesPart(line))),
     ).toBe(true);
@@ -2177,6 +2180,75 @@ test('qualifies same-named members with distinct qualifiers on a merged line', a
     const bare = new RegExp(`(?:^|, )${escapeRegExp(name)}(?:,|$)`, 'u');
     expect(lines.some((line) => bare.test(namesPart(line)))).toBe(false);
     expect(packet.changes.filter((change) => changeName(change) === name).length).toBe(2);
+  }
+});
+
+test('keeps findings that differ only in kind, applicability, or severity on separate lines', async () => {
+  const { largeInventoryScenario } = await import('../tests/parity/large-inventory.js');
+  const { analyzeDecisionUnits } = await import('./analysis/batches.js');
+  const scenario = await largeInventoryScenario({ members: 93, duplicateNames: 2 });
+  const packet = scenario.render.coverage.inventory.packet;
+  // Two findings on different members that share a rationale and render on one line.
+  const byRationale = new Map<string, (typeof packet.findings)[number][]>();
+  for (const finding of packet.findings)
+    byRationale.set(finding.rationale, [...(byRationale.get(finding.rationale) ?? []), finding]);
+  const pair = [...byRationale.values()].find(
+    (findings) => new Set(findings.map((finding) => finding.memberId)).size > 1,
+  )!;
+  expect(pair, 'fixture has findings sharing a rationale').toBeDefined();
+  const [a, b] = [pair[0], pair.find((finding) => finding.memberId !== pair[0].memberId)!];
+
+  const base = { kind: 'vulnerability', applicability: 'unaffected', severity: 'low' };
+  /** Renders with `a` and `b` as vulnerability findings; returns the line index naming each. */
+  const lineIndexes = async (
+    change: Partial<Record<'severity' | 'applicability' | 'kind', string>>,
+  ) => {
+    const edits = new Map([
+      [a.id, base],
+      [b.id, { ...base, ...change }],
+    ]);
+    const findings = packet.findings.map((finding) => ({
+      ...finding,
+      ...edits.get(finding.id),
+    })) as unknown as typeof packet.findings;
+    const inventory = formDecisionUnits({ ...packet, findings });
+    const input = { ...scenario.input, inventory, unitIds: inventory.units.map((unit) => unit.id) };
+    // Without a model every unit is unresolved; findings still render deterministically.
+    const analysis = await analyzeDecisionUnits(input, { deadlineMs: 700_000 }, { now: () => 0 });
+    if (!analysis.ok) throw new Error('analysis failed');
+    const result = renderDecisionBrief({
+      ...scenario.render,
+      coverage: analysis.coverage,
+      records: analysis.records,
+      analysisUnavailable: analysis.analysisUnavailable,
+    });
+    if (!result.ok) throw new Error(`edited render rejected: ${result.category}`);
+    const findingLines = result.body
+      .split('\n')
+      .filter((line) => line.startsWith('- ') && line.includes(' — '));
+    const units = inventory.units;
+    return [a, b].map((finding) => {
+      const member = units.flatMap((unit) => unit.members).find((m) => m.id === finding.memberId)!;
+      const entry = memberPattern(inventory, member);
+      return findingLines.findIndex(
+        (line) => line.includes(`: ${finding.rationale}`) && entry.test(namesPart(line)),
+      );
+    });
+  };
+
+  const [first, second] = await lineIndexes({});
+  expect(first, 'identical vulnerability findings share a line').toBeGreaterThanOrEqual(0);
+  expect(first).toBe(second);
+  for (const change of [
+    { severity: 'moderate' },
+    { applicability: 'resolved_by_proposed' },
+    { kind: 'malware' },
+  ]) {
+    const [x, y] = await lineIndexes(change);
+    const label = JSON.stringify(change);
+    expect(x, label).toBeGreaterThanOrEqual(0);
+    expect(y, label).toBeGreaterThanOrEqual(0);
+    expect(x, label).not.toBe(y);
   }
 });
 
@@ -2231,13 +2303,7 @@ test('names every assessed gap member on its merged line, qualifying shared name
     const name = member.name;
     const shared = memberCount(name) > 1;
     sharedNamed += shared ? 1 : 0;
-    const version = member.proposedVersion ?? member.currentVersion ?? 'unknown';
-    const entry = shared
-      ? new RegExp(
-          `(?:^|, )${escapeRegExp(name)} \\([^)]*, ${escapeRegExp(version)}\\)(?:,|$)`,
-          'u',
-        )
-      : new RegExp(`(?:^|, )${escapeRegExp(name)}(?:,|$)`, 'u');
+    const entry = entryPattern(render, member);
     const phrase = `${link.category} evidence is ${link.status} (${link.reasons.join(', ')})`;
     expect(
       lines.some((line) => line.includes(phrase) && entry.test(line.slice(2, line.indexOf(': ')))),
@@ -2277,6 +2343,64 @@ test('renders a one-member gap group exactly as evidenceGap does', async () => {
   expect(gapLinesOf(body)).toContain(`- ${evidenceGap(unit, link.id)}`);
 });
 
+function gapKey(link: { category: string; status: string; reasons: readonly string[] }) {
+  return JSON.stringify([link.category, link.status, link.reasons]);
+}
+
+/** Assessed gaps that differ only in status, or only in category, plus a same-named pair. */
+function statusAndCategoryGaps(
+  memberIndex: number,
+  category: string,
+  current: ChangeEvidence | undefined,
+): ChangeEvidence | null {
+  if (category === 'vulnerability' && memberIndex < 3)
+    return { status: 'unavailable', reasons: ['timeout'], sourceIds: [] };
+  if (category === 'vulnerability' && memberIndex < 6)
+    return { status: 'partial', reasons: ['timeout'], sourceIds: current?.sourceIds ?? [] };
+  if (category === 'malware' && memberIndex >= 6 && memberIndex < 9)
+    return { status: 'unavailable', reasons: ['timeout'], sourceIds: [] };
+  return null;
+}
+
+test('keeps assessed gaps that differ in status or category on separate lines', async () => {
+  // 93 children plus 2 same-named copies, all assessed with a follow-up.
+  const { body, render } = await renderLargeInventory({
+    followups: 95,
+    evidence: statusAndCategoryGaps,
+  });
+  const gaps = assessedGapsOf(render);
+  const keys = new Set(gaps.map(({ link }) => gapKey(link)));
+  const differOnlyIn = (field: 'status' | 'category') =>
+    gaps.some(({ link: a }) =>
+      gaps.some(
+        ({ link: b }) =>
+          a[field] !== b[field] &&
+          (field === 'status' ? a.category === b.category : a.status === b.status) &&
+          a.reasons.join() === b.reasons.join(),
+      ),
+    );
+  expect(differOnlyIn('status'), 'fixture has gaps differing only in status').toBe(true);
+  expect(differOnlyIn('category'), 'fixture has gaps differing only in category').toBe(true);
+  const pairedOnOneLine = gaps.some(({ link: x, member: m }) =>
+    gaps.some(
+      ({ link: y, member: n }) => n.id !== m.id && n.name === m.name && gapKey(x) === gapKey(y),
+    ),
+  );
+  expect(pairedOnOneLine, 'fixture has a same-named pair on one gap line').toBe(true);
+
+  const lines = gapLinesOf(body);
+  expect(lines).toHaveLength(keys.size);
+  for (const { link, member } of gaps) {
+    const phrase = `${link.category} evidence is ${link.status} (${link.reasons.join(', ')})`;
+    const matching = lines.filter((line) => line.includes(phrase));
+    expect(matching, phrase).toHaveLength(1);
+    expect(
+      entryPattern(render, member).test(matching[0].slice(2, matching[0].indexOf(': '))),
+      `${member.name} on ${phrase}`,
+    ).toBe(true);
+  }
+});
+
 test('keeps each model follow-up as its own line in record order', async () => {
   const sentence = 'Confirm the recorded evidence gap with a fresh lookup before merging.';
   const { body, render } = await renderLargeInventory({
@@ -2287,12 +2411,19 @@ test('keeps each model follow-up as its own line in record order', async () => {
     .split('\n')
     .filter((line) => line.includes(sentence));
   expect(found).toHaveLength(71);
-  const expectedNames = render.records.flatMap((record, index) =>
-    (record.assessment?.followups ?? []).map(() =>
-      render.coverage.inventory.units[index].members.map((member) => member.name).join(', '),
-    ),
+  const expectedUnits = render.records.flatMap((record, index) =>
+    (record.assessment?.followups ?? []).map(() => render.coverage.inventory.units[index]),
   );
-  expect(found.map((line) => line.slice(2, line.indexOf(': ')))).toEqual(expectedNames);
+  expect(found).toHaveLength(expectedUnits.length);
+  for (const [index, line] of found.entries()) {
+    const names = line.slice(2, line.indexOf(': '));
+    // Same-named members carry their qualifier; every member appears, in record order.
+    for (const member of expectedUnits[index].members)
+      expect(entryPattern(render, member).test(names), member.name).toBe(true);
+    expect(names.replace(/ \([^)]*\)/gu, '')).toBe(
+      expectedUnits[index].members.map((member) => member.name).join(', '),
+    );
+  }
 });
 
 function queueSectionOf(body: string) {
@@ -2345,7 +2476,18 @@ test('merges identical unresolved units into one queue item that names each unit
   unresolved.forEach(({ unit }, index) => {
     expect(unit.members).toHaveLength(1);
     expect(entryMatches(entries[index], unit.members[0].name), entries[index]).toBe(true);
+    // A same-named unit carries its qualifier, so the two copies stay distinguishable.
+    const names = entries[index].replace(/ \(\d+ changed updates?\)$/u, '');
+    expect(entryPattern(render, unit.members[0]).test(names), entries[index]).toBe(true);
   });
+  expect(
+    unresolved.some(({ unit }) =>
+      render.coverage.inventory.units.some(
+        (other) => other !== unit && other.members[0].name === unit.members[0].name,
+      ),
+    ),
+    'fixture queues a same-named unit',
+  ).toBe(true);
   expect(queueSectionOf(body).split(unresolved[0].reason).length - 1).toBe(1);
 });
 
@@ -2461,6 +2603,202 @@ test('renders a single unresolved unit as one unchanged queue line', async () =>
   ]);
 });
 
+test('qualifies same-named members on single-unit queue items and follow-up lines', async () => {
+  const { body, render } = await renderLargeInventory({ unresolved: 21, followups: 71 });
+  const units = render.coverage.inventory.units;
+  const members = units.flatMap((unit) => unit.members);
+  const shared = (member: DecisionUnit['members'][number]) =>
+    members.some((item) => item.id !== member.id && item.name === member.name);
+  const sharedUnresolved = render.records.flatMap((record, index) =>
+    record.state.state !== 'assessed' && units[index].members.some(shared) ? [index] : [],
+  );
+  const bothCopies = sharedUnresolved.some((a) =>
+    sharedUnresolved.some((b) => b !== a && units[b].members[0].name === units[a].members[0].name),
+  );
+  expect(bothCopies, 'fixture has both copies of a same-named unit unresolved').toBe(true);
+  // A distinct recovery action puts each same-named unresolved unit in its own queue item.
+  for (const k of sharedUnresolved) {
+    const records = render.records.map((record, index) =>
+      index === k ? { ...record, category: 'configuration' as const } : record,
+    );
+    const result = renderDecisionBrief({ ...render, records });
+    if (!result.ok) throw new Error(`edited render rejected: ${result.category}`);
+    const item = queueItemsOf(result.body).find((entry) =>
+      entry.includes('Correct the provider configuration or credential, then rerun CI.'),
+    );
+    expect(item).toBeDefined();
+    const entries = queueEntriesOf(item!);
+    expect(entries).toHaveLength(1);
+    const names = entries[0].replace(/ \(\d+ changed updates?\)$/u, '');
+    for (const member of units[k].members)
+      expect(entryPattern(render, member).test(names), `${member.name} in unit ${k}`).toBe(true);
+  }
+
+  const followed = render.records.flatMap((record, index) =>
+    record.assessment?.followups.length && units[index].members.some(shared) ? [units[index]] : [],
+  );
+  expect(followed.length, 'fixture has a same-named unit with a follow-up').toBeGreaterThan(0);
+  const lines = followupSectionOf(body)
+    .split('\n')
+    .filter((line) => line.startsWith('- ') && !line.includes(' evidence is '));
+  for (const unit of followed)
+    expect(
+      lines.some((line) =>
+        unit.members.every((member) =>
+          entryPattern(render, member).test(line.slice(2, line.indexOf(': '))),
+        ),
+      ),
+      unit.members[0].name,
+    ).toBe(true);
+});
+
+test("keeps each same-named unresolved copy's own gaps on its queue item", async () => {
+  const probe = await renderLargeInventory({ unresolved: 21, followups: 71 });
+  const children = probe.packet.changes.filter((change) =>
+    changeName(change)?.startsWith('child-'),
+  );
+  const copies = children.flatMap((change, index) =>
+    changeName(change) === 'child-1' ? [index] : [],
+  );
+  expect(copies, 'fixture has two child-1 copies').toHaveLength(2);
+  const { body, render } = await renderLargeInventory({
+    unresolved: 21,
+    followups: 71,
+    evidence: (memberIndex, category) => {
+      if (memberIndex === copies[0] && category === 'vulnerability')
+        return { status: 'unavailable', reasons: ['budget'], sourceIds: [] };
+      if (memberIndex === copies[1] && category === 'malware')
+        return { status: 'unavailable', reasons: ['missing'], sourceIds: [] };
+      return null;
+    },
+  });
+  const units = render.coverage.inventory.units;
+  const copyUnits = units.flatMap((unit, index) =>
+    render.records[index].state.state !== 'assessed' && unit.members[0].name === 'child-1'
+      ? [index]
+      : [],
+  );
+  expect(copyUnits, 'both child-1 copies are unresolved').toHaveLength(2);
+  const phrases = copyUnits.map((index) =>
+    render.coverage.policyProvenance.assessments.units[index].gaps.map((gap) => {
+      const link = units[index].evidenceLinks.find((entry) => entry.id === gap.sourceId)!;
+      return `${link.category} evidence is ${link.status} (${link.reasons.join(', ')})`;
+    }),
+  );
+  expect(phrases[0], 'the copies carry different gaps').not.toEqual(phrases[1]);
+  for (const [n, index] of copyUnits.entries()) {
+    const member = units[index].members[0];
+    const item = queueItemsOf(body).find((entry) =>
+      queueEntriesOf(entry).some((name) =>
+        entryPattern(render, member).test(name.replace(/ \(\d+ changed updates?\)$/u, '')),
+      ),
+    );
+    expect(item, member.name).toBeDefined();
+    for (const phrase of phrases[n]) expect(item, phrase).toContain(phrase);
+    for (const phrase of phrases[1 - n]) expect(item, phrase).not.toContain(phrase);
+    expectQueueItemActions(render, item!);
+  }
+});
+
+test('renders every model follow-up citation on its line', async () => {
+  const { body, render } = await renderLargeInventory({ followups: 71, followupCitations: true });
+  const followups = render.records.flatMap((record) => record.assessment?.followups ?? []);
+  expect(followups).toHaveLength(71);
+  for (const followup of followups) expect(followup.references).toHaveLength(1);
+  const sides = followups.map((followup) => {
+    const [ref] = followup.references;
+    if (ref.kind !== 'source') throw new Error('follow-up cites a non-source reference');
+    return ref.side;
+  });
+  expect(new Set(sides), 'fixture cites both lockfile sides').toEqual(new Set(['base', 'head']));
+  const lines = followupSectionOf(body)
+    .split('\n')
+    .filter((line) => line.startsWith('- ') && !line.includes(' evidence is '));
+  expect(lines).toHaveLength(71);
+  // Follow-up lines are in record order, so each line shows its own follow-up's citation.
+  for (const [index, line] of lines.entries()) {
+    const own = sides[index] === 'base' ? 'Base' : 'Proposed';
+    const other = sides[index] === 'base' ? 'Proposed' : 'Base';
+    expect(line.endsWith(` ${own} repository file evidence`), line).toBe(true);
+    expect(line, line).not.toContain(`${other} repository file evidence`);
+  }
+});
+
+function recoveryOf(category: string | null) {
+  const found = RECOVERY_BY_CATEGORY.find(([entry]) => entry === category);
+  if (!found) throw new Error(`no recovery action for ${category}`);
+  return found[1];
+}
+
+/** A grouped item's gap sentence: the singular evidenceGap wording for "each listed package". */
+function groupedGap(unit: DecisionUnit, sourceId: string) {
+  const link = unit.evidenceLinks.find((entry) => entry.id === sourceId)!;
+  const subject = 'each listed package';
+  const placeholder = {
+    members: [{ id: link.memberId, name: subject }],
+    evidenceLinks: [link],
+  } as unknown as DecisionUnit;
+  return evidenceGap(placeholder, link.id)
+    .slice(`${subject}: `.length)
+    .replace('could not check this package', 'could not check these packages');
+}
+
+/** The queue item names the unit, states its recovery once, and ends with its exact gap text. */
+function expectQueueItemActions(render: LargeRender, item: string) {
+  const entries = queueEntriesOf(item);
+  const units = render.coverage.inventory.units;
+  // The qualified name tells same-named copies apart, so the right unit's gaps are used.
+  const index = units.findIndex(
+    (unit, i) =>
+      render.records[i].state.state !== 'assessed' &&
+      entryMatches(entries[0], unit.members[0].name, unit.memberCount) &&
+      entryPattern(render, unit.members[0]).test(
+        entries[0].replace(/ \(\d+ changed updates?\)$/u, ''),
+      ),
+  );
+  expect(index, item).toBeGreaterThanOrEqual(0);
+  const recoveryText = recoveryOf(render.records[index].category);
+  expect(item.split(recoveryText).length - 1, item).toBe(1);
+  const unit = units[index];
+  const gaps = render.coverage.policyProvenance.assessments.units[index].gaps;
+  const sentences = gaps.map((gap) =>
+    entries.length > 1 ? groupedGap(unit, gap.sourceId) : evidenceGap(unit, gap.sourceId),
+  );
+  // After the recovery action come exactly the unit's gap sentences, each once. The spec asks
+  // only for a deterministic order, so the order itself is not pinned here.
+  let rest = item.slice(item.indexOf(recoveryText) + recoveryText.length);
+  for (const sentence of sentences) {
+    expect(rest.split(sentence).length - 1, `${sentence} in ${item}`).toBe(1);
+    rest = rest.replace(sentence, '');
+  }
+  expect(rest.trim(), item).toBe('');
+}
+
+test('renders a single unresolved unit with two gaps, each exact action once, deterministically', async () => {
+  const { body, render } = await renderLargeInventory({
+    unresolved: 1,
+    followups: 71,
+    evidence: (memberIndex, category) => {
+      if (memberIndex !== 0) return null;
+      if (category === 'vulnerability')
+        return { status: 'unavailable', reasons: ['budget'], sourceIds: [] };
+      if (category === 'malware')
+        return { status: 'unavailable', reasons: ['missing'], sourceIds: [] };
+      return null;
+    },
+  });
+  const [{ unit }] = unresolvedOf(render);
+  const index = render.coverage.inventory.units.indexOf(unit);
+  const gaps = render.coverage.policyProvenance.assessments.units[index].gaps;
+  expect(gaps.length, 'the unresolved unit has two gaps').toBeGreaterThan(1);
+  const items = queueItemsOf(body);
+  expect(items).toHaveLength(1);
+  expect(queueEntriesOf(items[0])).toHaveLength(1);
+  expectQueueItemActions(render, items[0]);
+  const again = renderDecisionBrief(render);
+  expect(again.ok && again.body).toBe(body);
+});
+
 /** Whether a queue entry names the unit's first member with its changed-update count. */
 function unitQueued(entries: string[], unit: DecisionUnit) {
   return entries.some(
@@ -2487,14 +2825,31 @@ function checkedLineOf(body: string, category: string) {
 
 /** Member entries on a checked line, anchored as whole entries, qualified by version when shared. */
 function entryPattern(render: LargeRender, member: DecisionUnit['members'][number]) {
-  const shared = render.coverage.inventory.units
+  return memberPattern(render.coverage.inventory, member);
+}
+
+/**
+ * A names-list entry for `member`. A member sharing its name and ecosystem with another carries
+ * the exact qualifier the spec names: ecosystem, location, and version.
+ */
+function memberPattern(
+  inventory: LargeRender['coverage']['inventory'],
+  member: DecisionUnit['members'][number],
+) {
+  const shared = inventory.units
     .flatMap((unit) => unit.members)
-    .some((item) => item.id !== member.id && item.name === member.name);
+    .some(
+      (item) =>
+        item.id !== member.id && item.name === member.name && item.ecosystem === member.ecosystem,
+    );
+  if (!shared) return new RegExp(`(?:^|, )${escapeRegExp(member.name)}(?:,|$)`, 'u');
+  const change = inventory.packet.changes.find((item) => item.id === member.id);
+  const side = change?.to ?? change?.from;
+  if (!side || !('root' in side)) throw new Error(`no root side for ${member.name}`);
   const version = member.proposedVersion ?? member.currentVersion ?? 'unknown';
+  const qualifier = `${member.ecosystem}, root ${side.root}, ${version}`;
   return new RegExp(
-    shared
-      ? `(?:^|, )${escapeRegExp(member.name)} \\([^)]*, ${escapeRegExp(version)}\\)(?:,|$)`
-      : `(?:^|, )${escapeRegExp(member.name)}(?:,|$)`,
+    `(?:^|, )${escapeRegExp(member.name)} \\(${escapeRegExp(qualifier)}\\)(?:,|$)`,
     'u',
   );
 }
@@ -2710,6 +3065,8 @@ test('the R1-shaped fixture fits the body limit and names every required record'
   const gapText = [...gapItems, ...gapLinesOf(body)];
   expect(gapText.length).toBeGreaterThan(0);
   for (const line of gapText) expect(line).not.toMatch(/rerun ci/iu);
+  // Each queue item states its units' recovery once and ends with their exact gap actions.
+  for (const item of queueItemsOf(body)) expectQueueItemActions(render, item);
 
   const section = followupSectionOf(body);
   const descriptions = render.records.flatMap((record) =>
@@ -2751,6 +3108,21 @@ test('the R1-shaped fixture fits the body limit and names every required record'
   expect(assessedGapsOf(render).filter((entry) => entry.unit === unit)).toHaveLength(0);
   const assessed = render.records.filter((entry) => entry.state.state === 'assessed').length;
   expect(coverageSectionOf(body)).toContain(`${assessed} assessed decision unit`);
+});
+
+test('renders the checked lines after the coverage counts and before the finding lines', async () => {
+  const { body } = await renderLargeInventory();
+  const lines = coverageSectionOf(body)
+    .split('\n')
+    .filter((line) => line.trim() !== '');
+  const counts = lines.findIndex((line) => /^\d+ changed updates?; /u.test(line));
+  expect(counts, 'the coverage counts open the section').toBe(0);
+  const checked = checkedLinesOf(body).map((line) => lines.indexOf(line));
+  expect(checked.length, 'fixture has checked lines').toBeGreaterThan(0);
+  for (const index of checked) expect(index).toBeGreaterThan(counts);
+  const findings = lines.flatMap((line, index) => (line.includes(' — ') ? [index] : []));
+  expect(findings.length, 'fixture has finding lines').toBeGreaterThan(0);
+  expect(Math.max(...checked)).toBeLessThan(Math.min(...findings));
 });
 
 test('the checked-state fixture lists each required category once and names the partial finding', async () => {

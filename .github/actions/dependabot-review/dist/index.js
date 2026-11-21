@@ -24231,7 +24231,7 @@ function queueLines(r) {
 		const tail = `${text(reason)} ${recovery(category)}`;
 		if (indexes.length === 1) {
 			const unit = units[first];
-			const names = text(unit.members.map((member) => member.name).join(", "));
+			const names = unit.members.map((member) => displayName(r, member)).join(", ");
 			const gapText = gaps.map((gap) => evidenceGap(unit, gap.sourceId)).join(" ");
 			lines.push(`- ${names} (${plural(unit.memberCount, "changed update")}): ${tail} ${gapText}`);
 			continue;
@@ -24380,7 +24380,7 @@ function followupLines(r) {
 		"## Non-blocking follow-ups",
 		"",
 		...gapLines(r, assessedGaps),
-		...followups.map(({ unit, followup }) => `- ${text(unit.members.map((member) => member.name).join(", "))}: ${text(followup.description)} ${followup.references.map((ref) => reference(ref, unit, input)).join(" ")}`)
+		...followups.map(({ unit, followup }) => `- ${unit.members.map((member) => displayName(r, member)).join(", ")}: ${text(followup.description)} ${followup.references.map((ref) => reference(ref, unit, input)).join(" ")}`)
 	];
 }
 function capabilityLine({ input }, capability, unit) {
