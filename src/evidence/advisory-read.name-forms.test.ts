@@ -288,6 +288,20 @@ test('follows next_page_token as page_token, even after an empty page', async ()
     { ...osvQuery('pyyaml', '3.13'), page_token: 'p2' },
   ]);
 });
+test('a run cache reads each OSV page by its own page token', async () => {
+  // Synthetic: OSV rarely pages; only page_token tells the second page's request from the first.
+  const answer = osvAnswer({ next_page_token: 'p2' }, { vulns: [synthetic({})] });
+  const cache = createResearchCache({ maxEntryBytes: 1_048_576, maxTotalBytes: 8_388_608 });
+  const reader = createAdvisoryReader(limits, { fetch: answer.fetch, now: () => 0, cache });
+  if (reader.kind !== 'ready') throw new Error('reader');
+  const result = await reader.read(pyyaml);
+  reader.close();
+  expect(result).toMatchObject({ complete: true, records: [{}] });
+  expect(answer.requests.map((r) => r.body)).toEqual([
+    osvQuery('pyyaml', '3.13'),
+    { ...osvQuery('pyyaml', '3.13'), page_token: 'p2' },
+  ]);
+});
 test('a repeated page token leaves the lookup incomplete', async () => {
   const reader = osvReader(osvAnswer({ next_page_token: 'same' }).fetch);
   expect(await reader.read(pyyaml)).toMatchObject({ complete: false, reasons: ['conflict'] });
