@@ -2617,36 +2617,41 @@ test('renders a single unresolved unit as one unchanged queue line', async () =>
 });
 
 test('qualifies same-named members on single-unit queue items and follow-up lines', async () => {
-  const { render } = await renderLargeInventory({ unresolved: 21, followups: 71 });
+  const { body, render } = await renderLargeInventory({ unresolved: 21, followups: 71 });
   const units = render.coverage.inventory.units;
   const members = units.flatMap((unit) => unit.members);
   const shared = (member: DecisionUnit['members'][number]) =>
     members.some((item) => item.id !== member.id && item.name === member.name);
-  // A distinct recovery action puts one same-named unresolved unit in its own queue item.
-  const k = render.records.findIndex(
-    (record, index) => record.state.state !== 'assessed' && units[index].members.some(shared),
+  const sharedUnresolved = render.records.flatMap((record, index) =>
+    record.state.state !== 'assessed' && units[index].members.some(shared) ? [index] : [],
   );
-  expect(k, 'fixture has a same-named unresolved unit').toBeGreaterThanOrEqual(0);
-  const records = render.records.map((record, index) =>
-    index === k ? { ...record, category: 'configuration' as const } : record,
+  const bothCopies = sharedUnresolved.some((a) =>
+    sharedUnresolved.some((b) => b !== a && units[b].members[0].name === units[a].members[0].name),
   );
-  const result = renderDecisionBrief({ ...render, records });
-  if (!result.ok) throw new Error(`edited render rejected: ${result.category}`);
-  const item = queueItemsOf(result.body).find((entry) =>
-    entry.includes('Correct the provider configuration or credential, then rerun CI.'),
-  );
-  expect(item).toBeDefined();
-  const entries = queueEntriesOf(item!);
-  expect(entries).toHaveLength(1);
-  const names = entries[0].replace(/ \(\d+ changed updates?\)$/u, '');
-  for (const member of units[k].members)
-    expect(entryPattern(render, member).test(names), member.name).toBe(true);
+  expect(bothCopies, 'fixture has both copies of a same-named unit unresolved').toBe(true);
+  // A distinct recovery action puts each same-named unresolved unit in its own queue item.
+  for (const k of sharedUnresolved) {
+    const records = render.records.map((record, index) =>
+      index === k ? { ...record, category: 'configuration' as const } : record,
+    );
+    const result = renderDecisionBrief({ ...render, records });
+    if (!result.ok) throw new Error(`edited render rejected: ${result.category}`);
+    const item = queueItemsOf(result.body).find((entry) =>
+      entry.includes('Correct the provider configuration or credential, then rerun CI.'),
+    );
+    expect(item).toBeDefined();
+    const entries = queueEntriesOf(item!);
+    expect(entries).toHaveLength(1);
+    const names = entries[0].replace(/ \(\d+ changed updates?\)$/u, '');
+    for (const member of units[k].members)
+      expect(entryPattern(render, member).test(names), `${member.name} in unit ${k}`).toBe(true);
+  }
 
   const followed = render.records.flatMap((record, index) =>
     record.assessment?.followups.length && units[index].members.some(shared) ? [units[index]] : [],
   );
   expect(followed.length, 'fixture has a same-named unit with a follow-up').toBeGreaterThan(0);
-  const lines = followupSectionOf(result.body)
+  const lines = followupSectionOf(body)
     .split('\n')
     .filter((line) => line.startsWith('- ') && !line.includes(' evidence is '));
   for (const unit of followed)
@@ -2658,6 +2663,19 @@ test('qualifies same-named members on single-unit queue items and follow-up line
       ),
       unit.members[0].name,
     ).toBe(true);
+});
+
+test('renders every model follow-up citation on its line', async () => {
+  const { body, render } = await renderLargeInventory({ followups: 71, followupCitations: true });
+  const followups = render.records.flatMap((record) => record.assessment?.followups ?? []);
+  expect(followups).toHaveLength(71);
+  for (const followup of followups) expect(followup.references).toHaveLength(1);
+  const lines = followupSectionOf(body)
+    .split('\n')
+    .filter((line) => line.startsWith('- ') && !line.includes(' evidence is '));
+  expect(lines).toHaveLength(71);
+  for (const line of lines)
+    expect(line.split('Proposed repository file evidence').length - 1, line).toBe(1);
 });
 
 function recoveryOf(category: string | null) {
@@ -2683,10 +2701,14 @@ function groupedGap(unit: DecisionUnit, sourceId: string) {
 function expectQueueItemActions(render: LargeRender, item: string) {
   const entries = queueEntriesOf(item);
   const units = render.coverage.inventory.units;
+  // The qualified name tells same-named copies apart, so the right unit's gaps are used.
   const index = units.findIndex(
     (unit, i) =>
       render.records[i].state.state !== 'assessed' &&
-      entryMatches(entries[0], unit.members[0].name, unit.memberCount),
+      entryMatches(entries[0], unit.members[0].name, unit.memberCount) &&
+      entryPattern(render, unit.members[0]).test(
+        entries[0].replace(/ \(\d+ changed updates?\)$/u, ''),
+      ),
   );
   expect(index, item).toBeGreaterThanOrEqual(0);
   const recoveryText = recoveryOf(render.records[index].category);
@@ -2701,19 +2723,23 @@ function expectQueueItemActions(render: LargeRender, item: string) {
   expect(item.endsWith(` ${gapText}`), item).toBe(true);
 }
 
-test('renders a single unresolved unit with a budget gap and its exact action', async () => {
+test('renders a single unresolved unit with two gaps and their exact actions in order', async () => {
   const { body, render } = await renderLargeInventory({
     unresolved: 1,
     followups: 71,
-    evidence: (memberIndex, category) =>
-      category === 'vulnerability' && memberIndex === 0
-        ? { status: 'unavailable', reasons: ['budget'], sourceIds: [] }
-        : null,
+    evidence: (memberIndex, category) => {
+      if (memberIndex !== 0) return null;
+      if (category === 'vulnerability')
+        return { status: 'unavailable', reasons: ['budget'], sourceIds: [] };
+      if (category === 'malware')
+        return { status: 'unavailable', reasons: ['missing'], sourceIds: [] };
+      return null;
+    },
   });
   const [{ unit }] = unresolvedOf(render);
   const index = render.coverage.inventory.units.indexOf(unit);
   const gaps = render.coverage.policyProvenance.assessments.units[index].gaps;
-  expect(gaps.length, 'the unresolved unit has a gap').toBeGreaterThan(0);
+  expect(gaps.length, 'the unresolved unit has two gaps').toBeGreaterThan(1);
   const items = queueItemsOf(body);
   expect(items).toHaveLength(1);
   expect(queueEntriesOf(items[0])).toHaveLength(1);
