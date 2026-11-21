@@ -567,7 +567,7 @@ The S1 equivalence check includes a known npm malware package, queried with
 
 ## Batching Reconciliation Amendment
 
-**Status: draft for review, 2026-11-20,** with the
+**Status: approved for planning, 2026-11-20,** with the
 [S1 reconciliation](SPEC-advisory-lookup.md#batching-reconciliation-amendment)
 it follows. Decisions D1–D4 were approved by the user on 2026-11-20 in
 [#408](https://github.com/andrewpucci/dependency-update-advisor/issues/408).

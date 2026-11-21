@@ -929,11 +929,11 @@ target a batch cannot settle.
 
 ## Batching Reconciliation Amendment
 
-**Status: draft for review, 2026-11-20.** The user approved decisions D1–D4
-below on 2026-11-20 in
-[#408](https://github.com/andrewpucci/dependency-update-advisor/issues/408).
-This section records them; it is not approved until a fresh-context review
-passes and the user approves it. Plan and execution approval remain separate
+**Status: approved for planning, 2026-11-20.** The user approved decisions
+D1–D4 below on 2026-11-20 in
+[#408](https://github.com/andrewpucci/dependency-update-advisor/issues/408),
+then explicitly approved this section after a fresh-context review whose
+blocking findings were resolved. Plan and execution approval remain separate
 gates, and no limit value changes. Effort tier: L. It reconciles the
 [Batched Lookup Amendment](#batched-lookup-amendment), approved 2026-11-19
 before the name form change, with the
