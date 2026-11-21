@@ -1,3 +1,4 @@
+import { REVIEW_IDENTITY } from '../format.js';
 import { createHash } from 'node:crypto';
 import { isDeepStrictEqual, types } from 'node:util';
 import { parseReviewBinding, type ReviewBinding, type RepositoryIdentity } from '../event.js';
@@ -26,6 +27,7 @@ import {
   type YamlBudget,
   type YamlLimits,
 } from './actions-yaml.js';
+import { limit } from '../limits.js';
 
 export type ActionsLimits = YamlLimits & { maxWorkflows: number; maxRetainedBytes: number };
 export type ActionsGap = {
@@ -105,7 +107,11 @@ function input(value: unknown) {
       !types.isProxy(b.identity) &&
       Object.getPrototypeOf(b.identity) === Array.prototype,
   );
-  need(b.identity.length === 6 && Reflect.ownKeys(b.identity).length === 7);
+  // A plain array's own keys are its indexes plus `length`.
+  need(
+    b.identity.length === REVIEW_IDENTITY.length &&
+      Reflect.ownKeys(b.identity).length === REVIEW_IDENTITY.length + 1,
+  );
   need(Object.values(Object.getOwnPropertyDescriptors(b.identity)).every((d) => 'value' in d));
   const binding = parseReviewBinding(b);
   need(binding);
@@ -486,7 +492,12 @@ function uninventoried(state: State, path: string, side: 'base' | 'head'): Evide
 }
 function comparisonRow(state: State, value: unknown) {
   const row = own(value);
-  need(isEvidencePath(row.manifest) && safeIdentity(row.name) && safeIdentity(row.version, 1024));
+  need(
+    isEvidencePath(row.manifest) &&
+      safeIdentity(row.name) &&
+      // The identity byte bound binds first, so it is also the code-unit bound here.
+      safeIdentity(row.version, limit('packet.identityBytes')),
+  );
   need(row.change_type === 'added' || row.change_type === 'removed');
   const path = row.manifest,
     action = row.name,

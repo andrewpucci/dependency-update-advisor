@@ -5,6 +5,7 @@ import { join } from 'node:path';
 import { Ajv } from 'ajv';
 import { afterEach, describe, expect, test, vi } from 'vite-plus/test';
 import { DEFAULT_VERDICTS, loadTrustedReviewConfig, parseReviewConfig } from './config.js';
+import { limit } from './limits.js';
 
 const schema = JSON.parse(
   readFileSync(new URL('../schemas/review-config-v1.json', import.meta.url), 'utf8'),
@@ -662,5 +663,43 @@ describe('C3 configuration amendment', () => {
       },
     });
     expect(validateSchema(document)).toBe(false);
+  });
+});
+
+describe('registered configuration length bounds', () => {
+  const document = (context: object = {}, model?: string) =>
+    JSON.stringify({
+      version: 1,
+      ...(model === undefined ? {} : { analysis: { provider: 'mistral', model } }),
+      context,
+    });
+
+  test('the model cap admits exactly the registered code units and rejects one more', () => {
+    const cap = limit('config.maxModelCodeUnits');
+    expect(parseReviewConfig(document({}, 'a'.repeat(cap)))).toMatchObject({ ok: true });
+    expect(parseReviewConfig(document({}, 'a'.repeat(cap + 1)))).toMatchObject({
+      ok: false,
+      error: { field: 'analysis.model' },
+    });
+  });
+
+  test('the source root cap admits exactly the registered count and rejects one more', () => {
+    const cap = limit('context.maxSourceRoots');
+    const roots = (count: number) => Array.from({ length: count }, (_, i) => `src/root-${i}`);
+    expect(parseReviewConfig(document({ sourceRoots: roots(cap) }))).toMatchObject({ ok: true });
+    expect(parseReviewConfig(document({ sourceRoots: roots(cap + 1) }))).toMatchObject({
+      ok: false,
+      error: { field: 'context.sourceRoots' },
+    });
+  });
+
+  test('the excerpt file cap admits exactly the registered count and rejects one more', () => {
+    const cap = limit('context.maxSourceCandidates');
+    const files = (count: number) => Array.from({ length: count }, (_, i) => `src/file-${i}.ts`);
+    expect(parseReviewConfig(document({ excerptFiles: files(cap) }))).toMatchObject({ ok: true });
+    expect(parseReviewConfig(document({ excerptFiles: files(cap + 1) }))).toMatchObject({
+      ok: false,
+      error: { field: 'context.excerptFiles' },
+    });
   });
 });

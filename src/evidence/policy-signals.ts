@@ -24,8 +24,13 @@ import type { ReviewBinding } from '../event.js';
 import type { Finding } from '../policy.js';
 import { freeze } from './common.js';
 import { prepareAdvisoryInput, resolveAdvisoryTarget, type AdvisoryInput } from './advisories.js';
-import { advisoryCheck, AdvisoryFailure, type AdvisoryReader } from './advisory-read.js';
-import { collectMemberMalware } from './policy-signals-malware.js';
+import {
+  advisoryCheck,
+  AdvisoryFailure,
+  type AdvisoryLookup,
+  type AdvisoryReader,
+} from './advisory-read.js';
+import { collectMemberMalware, recordMemberMalware } from './policy-signals-malware.js';
 import type { NpmPublishTimeReader, NpmTimesResult } from './npm-publish-times.js';
 import type { UpstreamInput } from './upstream.js';
 import { metadataTarget } from './upstream.js';
@@ -225,6 +230,44 @@ async function collectOptionalMember(
     collectLicenseSignals(input, output, change, {});
   }
 }
+/**
+ * One member's malware check. A failure, including additions that cross a packet limit, rolls back
+ * only this member and records its malware as unavailable with the real reason.
+ */
+export async function runMemberMalware(
+  input: PolicySignalInput,
+  output: SignalEnrichment,
+  change: PacketChange,
+  reader: AdvisoryReader,
+  cache: Map<string, AdvisoryLookup>,
+) {
+  const lengths = [output.sources.length, output.findings.length, output.attempts.length];
+  const malware = structuredClone(change.evidence.malware);
+  try {
+    await collectMemberMalware(input, output, change, reader, cache);
+    signalBounds(input, output);
+  } catch (error) {
+    output.sources.length = lengths[0];
+    output.findings.length = lengths[1];
+    output.attempts.length = lengths[2];
+    change.evidence.malware = malware;
+    const reason = error instanceof AdvisoryFailure ? error.reason : 'unknown';
+    const side = change.to ? 'head' : 'base';
+    const target = resolveAdvisoryTarget(input, change, side);
+    const failed = target
+      ? {
+          target,
+          url: '',
+          status: 'unavailable' as const,
+          complete: false,
+          records: [],
+          reasons: [reason],
+        }
+      : null;
+    recordMemberMalware(input, output, change, side, target, failed);
+    signalBounds(input, output);
+  }
+}
 /** Required malware runs before optional adapters; input/outputs never share mutable records. */
 export async function enrichPolicySignals(
   value: unknown,
@@ -248,8 +291,7 @@ export async function enrichPolicySignals(
     const cache = new Map();
     for (const change of output.changes) {
       if ('basis' in change) continue;
-      await collectMemberMalware(input, output, change, dependencies.malwareReader, cache);
-      signalBounds(input, output);
+      await runMemberMalware(input, output, change, dependencies.malwareReader, cache);
     }
     reserveOptionalSignals(input, output);
     const lockfiles =

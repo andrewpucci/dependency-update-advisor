@@ -1,4 +1,5 @@
 import { expect, test, vi } from 'vite-plus/test';
+import { limit } from './limits.js';
 import { Composer } from 'yaml';
 import {
   collectorRoots,
@@ -343,5 +344,18 @@ test('reports an unsupported tag as unsupported, not malformed', () => {
   expect(parseDependabotRoots(encode(`${file(update('npm', '/'))}x: !custom 1\n`))).toEqual({
     kind: 'unavailable',
     reason: 'unsupported',
+  });
+});
+
+test('the YAML node cap admits exactly the registered node count and refuses one node more', () => {
+  const cap = limit('dependabot.maxYamlNodes');
+  // The skeleton has 7 structural nodes: the root map, the version and updates pairs, and the x key with its sequence. Each item is one scalar node.
+  const skeletonNodes = 7;
+  const document = (nodes: number) =>
+    encode(`version: 2\nupdates: []\nx: [${'1,'.repeat(nodes - skeletonNodes)}]\n`);
+  expect(parseDependabotRoots(document(cap))).toMatchObject({ kind: 'roots' });
+  expect(parseDependabotRoots(document(cap + 1))).toEqual({
+    kind: 'unavailable',
+    reason: 'budget',
   });
 });

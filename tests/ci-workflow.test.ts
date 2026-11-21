@@ -11,6 +11,7 @@ test('runs every check in order, then builds and rejects bundle drift', () => {
     '|',
     'npm ci',
     'npm run lint',
+    'npm run check:limits',
     'npm run format:check',
     'npm run check',
     'npm test -- --run',
@@ -59,6 +60,6 @@ test('uses pinned setup with read-only access and default event checkout', () =>
     '- uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0\n' +
       "        with:\n          node-version: '24'\n          package-manager-cache: false",
   );
-  expect(steps).toHaveLength(11);
+  expect(steps).toHaveLength(12);
   expect(quality).not.toMatch(/\$\{\{\s*secrets(?:\.|\[)/);
 });

@@ -1,19 +1,21 @@
+import { CHAR_CODE } from './format.js';
 import fs from 'node:fs/promises';
 import { isAbsolute, join, relative, sep } from 'node:path';
 import type { ConfigResult, ReviewConfig } from './config.js';
+import { limit } from './limits.js';
 
-const MAX_CONTEXT_DEPENDENCIES = 128;
-const MAX_CONTEXT_ID_CODE_UNITS = 256;
-const MAX_CONTEXT_PATH_BYTES = 1_024;
-const MAX_SOURCE_ROOTS = 16;
-const MAX_SOURCE_CONTEXT_BYTES = 65_536;
-const MAX_TRACKED_PATH_ENTRIES = 10_000;
-const MAX_SOURCE_CANDIDATES = 128;
-export const MAX_SOURCE_FILE_BYTES = 65_536;
-export const MAX_TOTAL_SOURCE_READ_BYTES = 1_048_576;
-const MAX_SOURCE_EXCERPT_CODE_UNITS = 500;
-const MAX_SOURCE_FACTS_PER_DEPENDENCY = 20;
-const GENERATED_MARKER_SCAN_LINES = 20;
+const MAX_CONTEXT_DEPENDENCIES = limit('context.maxDependencies');
+const MAX_CONTEXT_ID_CODE_UNITS = limit('context.maxIdCodeUnits');
+const MAX_CONTEXT_PATH_BYTES = limit('context.maxPathBytes');
+const MAX_SOURCE_ROOTS = limit('context.maxSourceRoots');
+const MAX_SOURCE_CONTEXT_BYTES = limit('context.maxSourceContextBytes');
+const MAX_TRACKED_PATH_ENTRIES = limit('context.maxTrackedPathEntries');
+const MAX_SOURCE_CANDIDATES = limit('context.maxSourceCandidates');
+export const MAX_SOURCE_FILE_BYTES = limit('context.maxSourceFileBytes');
+export const MAX_TOTAL_SOURCE_READ_BYTES = limit('context.maxTotalSourceReadBytes');
+const MAX_SOURCE_EXCERPT_CODE_UNITS = limit('context.maxSourceExcerptCodeUnits');
+const MAX_SOURCE_FACTS_PER_DEPENDENCY = limit('context.maxSourceFactsPerDependency');
+const GENERATED_MARKER_SCAN_LINES = limit('context.generatedMarkerScanLines');
 const REASONS = [
   'no-match',
   'missing-source',
@@ -95,7 +97,9 @@ function failure(
 
 function control(character: string): boolean {
   const code = character.charCodeAt(0);
-  return code < 32 || (code >= 127 && code <= 159);
+  return (
+    code < CHAR_CODE.firstPrintable || (code >= CHAR_CODE.delete && code <= CHAR_CODE.lastC1Control)
+  );
 }
 
 function canonicalPath(path: string, allowHidden = false, allowGlob = false): boolean {
@@ -610,7 +614,8 @@ export async function sourceContextCandidates(
 function sourceExcerpt(trimmed: string): string {
   let excerpt = trimmed.slice(0, MAX_SOURCE_EXCERPT_CODE_UNITS);
   const last = excerpt.charCodeAt(excerpt.length - 1);
-  if (last >= 0xd800 && last <= 0xdbff) excerpt = excerpt.slice(0, -1);
+  if (last >= CHAR_CODE.surrogateFirst && last <= CHAR_CODE.highSurrogateLast)
+    excerpt = excerpt.slice(0, -1);
   return excerpt;
 }
 

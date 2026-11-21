@@ -3,6 +3,19 @@ import { copyAdvisoryData, AdvisoryFailure, type AdvisoryLimits } from './adviso
 import { freeze, isPlainObject, isEvidencePath } from './common.js';
 import type { EvidenceReason, PackageSource } from '../schema.js';
 import { BoundedClock, boundedGet } from './bounded-request.js';
+import type { ResearchCache } from './research-cache.js';
+import { limit } from '../limits.js';
+import { HTTP_STATUS } from '../format.js';
+
+/** Each halving of the register's release page size down to 1, for the page-size retry ladder. */
+function halvingFrom(start: number): number[] {
+  const sizes: number[] = [];
+  for (let size = start; size >= 1; size = Math.floor(size / 2)) sizes.push(size);
+  return sizes;
+}
+export const RELEASE_PAGE_SIZES: readonly number[] = Object.freeze(
+  halvingFrom(limit('upstream.releasePageSize')),
+);
 
 export type UpstreamLimits = Readonly<{
   maxRequests: number;
@@ -44,6 +57,7 @@ export type GithubUpstreamTarget = Readonly<{
   base?: string;
   head?: string;
   page?: number;
+  perPage?: number;
 }>;
 export type UpstreamTarget = MetadataTarget | GithubUpstreamTarget;
 export type UpstreamLookup = Readonly<{
@@ -59,11 +73,14 @@ export type UpstreamReader = Readonly<{
   read: (target: unknown) => Promise<UpstreamLookup>;
   close: () => void;
   spend: (amount: number) => void;
+  /** The reason this reader refuses all further reads, or null while it can still read. */
+  stopped?: () => EvidenceReason | null;
 }>;
 export type UpstreamDependencies = {
   fetch: (url: string, init: RequestInit) => Promise<Response>;
   now: () => number;
   signal?: AbortSignal;
+  cache?: ResearchCache;
 };
 export class UpstreamFailure extends Error {
   constructor(readonly reason: EvidenceReason) {
@@ -85,7 +102,7 @@ export function upstreamText(value: unknown): value is string {
   return (
     typeof value === 'string' &&
     value.length > 0 &&
-    Buffer.byteLength(value) <= 1024 &&
+    Buffer.byteLength(value) <= limit('packet.identityBytes') &&
     !/[\p{Cc}\p{Cs}]/u.test(value)
   );
 }
@@ -122,21 +139,22 @@ function httpReason(response: Response, bytes: Buffer): EvidenceReason {
     /* Status still supplies a bounded failure. */
   }
   if (
-    response.status === 429 ||
-    (response.status === 403 &&
+    response.status === HTTP_STATUS.tooManyRequests ||
+    (response.status === HTTP_STATUS.forbidden &&
       (response.headers.get('x-ratelimit-remaining') === '0' ||
         response.headers.has('retry-after') ||
         /secondary rate limit/iu.test(message)))
   )
     return 'rate_limit';
   if (
-    response.status === 401 ||
-    (response.status === 403 &&
+    response.status === HTTP_STATUS.unauthorized ||
+    (response.status === HTTP_STATUS.forbidden &&
       /Resource not accessible by (?:integration|personal access token)/u.test(message))
   )
     return 'permission';
-  if (response.status >= 300 && response.status < 400) return 'unsupported';
-  return response.status === 404 ? 'missing' : 'unknown';
+  if (response.status >= HTTP_STATUS.redirectMin && response.status < HTTP_STATUS.clientErrorMin)
+    return 'unsupported';
+  return response.status === HTTP_STATUS.notFound ? 'missing' : 'unknown';
 }
 function metadataTarget(value: unknown): MetadataTarget {
   requireUpstream(
@@ -197,6 +215,11 @@ function githubTarget(value: unknown): GithubUpstreamTarget {
     );
   if (['compare', 'releases'].includes(String(value.resource)))
     requireUpstream(Number.isSafeInteger(value.page) && Number(value.page) > 0, 'unsupported');
+  if (value.resource === 'releases')
+    requireUpstream(
+      (RELEASE_PAGE_SIZES as readonly unknown[]).includes(value.perPage),
+      'unsupported',
+    );
   return value as unknown as GithubUpstreamTarget;
 }
 function githubNext(link: string | null, original: string) {
@@ -231,7 +254,7 @@ export function upstreamGithubUrl(t: GithubUpstreamTarget) {
     case 'compare':
       return base + '/compare/' + t.base + '...' + t.head + '?per_page=100&page=' + t.page;
     case 'releases':
-      return base + '/releases?per_page=100&page=' + t.page;
+      return base + '/releases?per_page=' + t.perPage + '&page=' + t.page;
   }
 }
 function targetUrl(t: UpstreamTarget) {
@@ -262,17 +285,43 @@ class Reader {
   private readonly nextPages = new Map<string, boolean>();
   private pages = 0;
   private readonly npm: ReturnType<typeof createNpmRegistryReader>;
+  /** Responses served from the run cache; a hit is a read for attempt outcomes, not a charge. */
+  private hits = 0;
+  private readonly deps: UpstreamDependencies;
   constructor(
     readonly limits: UpstreamLimits,
-    private readonly deps: UpstreamDependencies,
+    deps: UpstreamDependencies,
   ) {
+    const cache = deps.cache && this.countingHits(deps.cache);
+    this.deps = { ...deps, cache };
     this.clock = new BoundedClock(limits.totalTimeoutMs, deps);
+    // The nested registry reader shares the cache so an npm hit reaches neither reader's charge.
     this.npm = createNpmRegistryReader(limits, {
       now: deps.now,
       signal: this.controller.signal,
       fetch: (url, init) => this.fetchBounded(url, init),
+      cache,
     });
     requireUpstream(this.npm.kind === 'ready');
+  }
+  private countingHits(cache: ResearchCache): ResearchCache {
+    return {
+      key: (method, url, headers) => cache.key(method, url, headers),
+      lookup: (key) => {
+        const hit = cache.lookup(key);
+        if (hit) this.hits++;
+        return hit;
+      },
+      store: (key, response) => cache.store(key, response),
+    };
+  }
+  /** Live requests plus cache hits: whether a lookup read anything. */
+  private get reads() {
+    return this.requests + this.hits;
+  }
+  /** Upstream's own stop, or its nested registry reader's, which shares upstream's limits. */
+  stopReason() {
+    return this.stopped ?? (this.npm.kind === 'ready' ? this.npm.stopped() : null);
   }
   close() {
     this.closed = true;
@@ -328,11 +377,14 @@ class Reader {
   private dispatch(url: string) {
     this.remaining();
     requireUpstream(!this.blocked.has(new URL(url).origin), 'rate_limit');
+    requireUpstream(!this.stopped, this.stopped ?? 'budget');
+  }
+  private charge() {
     if (this.requests >= this.limits.maxRequests) this.stopped = 'budget';
     requireUpstream(!this.stopped, this.stopped ?? 'budget');
     this.requests++;
   }
-  private async body(response: Response, aborted: Promise<never>) {
+  private async body(response: Response, aborted: Promise<never>, cached: boolean) {
     requireUpstream(response.body);
     const reader = response.body.getReader(),
       chunks: Uint8Array[] = [];
@@ -342,7 +394,8 @@ class Reader {
         const chunk = await Promise.race([reader.read(), aborted]);
         if (chunk.done) return Buffer.concat(chunks, size);
         size += chunk.value.byteLength;
-        this.bytes += chunk.value.byteLength;
+        // A cached response was charged to the reader that fetched it.
+        if (!cached) this.bytes += chunk.value.byteLength;
         if (this.bytes > this.limits.maxTotalBytes) this.stopped = 'budget';
         requireUpstream(!this.stopped && size <= this.limits.maxResponseBytes, 'budget');
         this.remaining();
@@ -366,22 +419,25 @@ class Reader {
           accept: 'application/json',
           timeoutMs: Math.min(this.remaining(), this.limits.requestTimeoutMs),
           signal: _init.signal ?? undefined,
+          charge: () => this.charge(),
         },
         (cancel) => {
           this.active = cancel;
         },
-        async (response, aborted) => {
+        async (response, aborted, cached) => {
           requireUpstream(
             !response.redirected && (!response.url || response.url === url),
             'unsupported',
           );
           const immediate = httpReason(response, Buffer.alloc(0));
-          if (response.status !== 200 && immediate !== 'unknown') {
+          if (response.status !== HTTP_STATUS.ok && immediate !== 'unknown') {
             if (immediate === 'rate_limit') this.blocked.add(new URL(url).origin);
             throw new UpstreamFailure(immediate);
           }
-          const bytes = response.body ? await this.body(response, aborted) : Buffer.alloc(0);
-          if (response.status !== 200) {
+          const bytes = response.body
+            ? await this.body(response, aborted, cached)
+            : Buffer.alloc(0);
+          if (response.status !== HTTP_STATUS.ok) {
             const reason = httpReason(response, bytes);
             if (reason === 'rate_limit') this.blocked.add(new URL(url).origin);
             throw new UpstreamFailure(reason);
@@ -393,7 +449,7 @@ class Reader {
             'unsupported',
           );
           this.remaining();
-          return new Response(bytes, { status: 200, headers: response.headers });
+          return new Response(bytes, { status: HTTP_STATUS.ok, headers: response.headers });
         },
       );
     } catch (error) {
@@ -457,7 +513,7 @@ class Reader {
     key: string | null,
   ): UpstreamLookup {
     let reason = upstreamFailureReason(error);
-    if (key && !this.failures.has(key) && this.requests > before) {
+    if (key && !this.failures.has(key) && this.reads > before) {
       try {
         this.reserve(Buffer.byteLength(key) + Buffer.byteLength(reason));
         this.failures.set(key, reason);
@@ -467,14 +523,14 @@ class Reader {
     }
     return freeze({
       status: 'unavailable',
-      fetched: this.requests > before,
+      fetched: this.reads > before,
       url,
       data: null,
       reasons: [reason],
     });
   }
   async read(value: unknown): Promise<UpstreamLookup> {
-    const before = this.requests;
+    const before = this.reads;
     let url: string | null = null;
     let key: string | null = null;
     if (this.busy)
@@ -496,7 +552,7 @@ class Reader {
       const data = await this.targetData(t, url);
       return freeze({
         status: 'available',
-        fetched: this.requests > before,
+        fetched: this.reads > before,
         url,
         data,
         reasons: [],
@@ -524,6 +580,7 @@ export function createUpstreamReader(
         read: (t: unknown) => reader.read(t),
         close: () => reader.close(),
         spend: (amount: number) => reader.spend(amount),
+        stopped: () => reader.stopReason(),
       }),
     };
   } catch {

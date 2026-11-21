@@ -789,3 +789,277 @@ and in the test that uses it; the recorded Pillow data has no
   record as a GitHub advisory, send a versioned spelling other than the
   discovered forms or, when none, the normalized or mapped name, or cite a
   URL that was not fetched.
+
+<!-- markdownlint-disable MD024 -- repeats the approved subheadings. -->
+
+## Batched Lookup Amendment
+
+**Status: approved for planning, 2026-11-19.** The user explicitly approved
+the reviewed draft after a fresh-context review whose blocking findings were
+resolved. Plan and execution approval remain separate gates, and approval
+does not set any limit value. Scoped to
+[#380](https://github.com/andrewpucci/dependency-update-advisor/issues/380)
+(limit register L8). Effort tier: L. It amends "Exact GitHub advisory
+queries", which deferred batching until it had an amended contract and
+fixtures. The [policy signals spec](SPEC-policy-signals.md#batched-malware-lookup-amendment)
+applies the same rule to malware queries.
+
+### Why
+
+The workflow token gets 1,000 REST requests per hour per repository
+([GitHub Docs](https://docs.github.com/en/rest/using-the-rest-api/rate-limits-for-the-rest-api),
+checked 2026-11-19), and Dependabot can open several PRs in the same hour.
+Measured on 2026-11-19, one exact query per target per side made 196 of PR
+#276's 556 GitHub requests, and malware queries made another 102. Every one
+of those 298 responses was an empty list.
+
+### Decision for review
+
+Check eligible targets in batches, and keep today's singleton query for any
+target a batch cannot settle.
+
+1. **Batch query.** Before per-member collection, a pre-pass groups each
+   stage's eligible exact targets by API ecosystem, side, and advisory type.
+   It sends one query per group with the same fixed filters as the singleton
+   query and an `affects` list of exact `package@version` targets, built
+   locally in a deterministic order. GitHub returns advisories that "affect
+   any of package or package@version", up to 1,000 packages, as long as the
+   URL fits
+   ([global advisories](https://docs.github.com/en/rest/security-advisories/global-advisories),
+   checked 2026-11-19).
+2. **Register entries.** Targets per batch, URL length, and the batch page
+   size each get a register entry. The page size must fit the per-response
+   cap, as [evidence coverage](SPEC-evidence-coverage.md) §1.6 requires: one
+   `Pillow@8.0.0` singleton page was 539,431 bytes on 2026-11-19. The plan
+   proposes all three values after the equivalence check, as an Ask-first
+   decision; approving this amendment does not approve values.
+3. **Complete batches only.** Follow every page within bounds, under the
+   existing cursor rules. A batch is complete only when every page succeeded
+   and validated. An incomplete batch clears nothing. Its targets fall back to
+   singleton queries while the reader can still read; after a rate limit,
+   which stops all requests in the session as today, each unsettled target
+   gets the stop reason.
+4. **Clearing rule.** In a complete batch, a target is cleared when no
+   returned advisory names its package, in the batch's ecosystem, in any
+   `vulnerabilities` entry. A cleared target has the same outcome as a
+   singleton query for it that returned no active matches: an advisory GitHub
+   matches to that target is returned by the batch and names its package.
+   This claims equivalence with the singleton query, nothing stronger; see
+   item 9.
+5. **Attribution from a batch record (decided 2026-11-19).** A returned record
+   whose entries in the batch's ecosystem name exactly one batched package
+   applies to that target: GitHub returned it because it affects some batched
+   target, and it names no other. The record is attributed to that target
+   without a singleton query, and S1's record validation applies unchanged.
+   A target named by any record that names two or more batched packages gets
+   today's singleton query, whose result decides. Singleton queries for named
+   targets run before the stage sends further batches. Without this item, a
+   failed singleton query would discard a known positive: S3 emits malware
+   "even if another page fails", and the C3 `incompleteEvidence` gap can be
+   relaxed to `merge`.
+6. **Name comparison.** Entries in other ecosystems are ignored for clearing
+   and attribution but still validated; GitHub returns them routinely (the
+   npm `lodash@4.17.20` results include a RubyGems `lodash-rails` entry).
+   Names in the batch's ecosystem are compared exactly as the query sent
+   them. A malformed entry, or a returned advisory that names no batched
+   package, means the comparison cannot be trusted, and the whole batch falls
+   back.
+7. **Provenance (decided 2026-11-19).** A cleared target cites the singleton
+   query URL that reproduces its empty result, and its source text says it was
+   checked in a batched query. This amends "Evidence Representation" ("Use
+   the query URL for a successful empty lookup"): that URL was not itself
+   fetched. Citing the batch query was rejected because its URL can exceed
+   the packet's source text limit.
+8. **Bounds and cache.** The pre-pass's requests and bytes count against the
+   stage's share, not any member's allowance. Batches are cached by full URL
+   like other research reads; a singleton query is never answered from a
+   batch entry.
+9. **Eligibility and name form are unchanged.** GitHub silently ignores a
+   target it cannot parse, in a batch and a singleton query alike, and it
+   matches names in the case it stores them (2026-11-19: `pillow@8.0.0`
+   returned 26 advisories, `Pillow@8.0.0` 46). S1 sends lowercase PyPI names
+   today, so singleton queries already miss some PyPI advisories. Batching
+   inherits that gap without widening it; fixing the query name form is a
+   separate S1 change.
+
+### Verification
+
+- **Recorded equivalence check.** Before the batch path is enabled, query
+  real targets both ways and record that every singleton match is returned
+  and named by its batch. PR #276's targets alone are not enough: all 298 of
+  its advisory and malware responses were empty. Seed the check with known
+  positives, among them `lodash@4.17.20`, `@babel/traverse@7.22.0`,
+  `Pillow@8.0.0`, `tj-actions/changed-files@45.0.7`, and a known npm malware
+  package, with one positive placed last in a batch at the proposed maximum
+  size. Record what GitHub does above 1,000 targets. A probe on 2026-11-19
+  with four npm targets matched: the batch returned the same 7 advisories as
+  the four singleton queries (4, 3, 0, 0).
+- **Remeasure.** Rerun `npm run measure:demand` over the L8 corpus; L8's
+  fitted advisory and malware rates come from that run.
+
+### Fixtures
+
+- An empty complete batch clears every target, and every cleared target
+  appears in a fetched batch URL.
+- A record naming one batched package is attributed to it with no singleton
+  query.
+- A record naming two batched packages, one at a version it does not affect:
+  both get singleton queries, and those decide.
+- A record with an entry in another ecosystem: that entry is ignored.
+- A returned record that names no batched package: the batch falls back.
+- A failed second page: every target in the batch falls back; after a rate
+  limit, unsettled targets get `rate_limit`.
+- An oversized page: the batch falls back within the stage's share.
+- A malformed `vulnerabilities` entry: the batch falls back.
+- A scoped npm name.
+
+### Amendment boundaries
+
+- **Always:** clear a target only from a complete batch, attribute a batch
+  record only when it names exactly one batched package, keep singleton
+  queries for every other named target, and leave the meaning of complete
+  vulnerability coverage unchanged.
+- **Ask first:** batch size, URL length, and page size values, a local range
+  evaluator, or caching across runs.
+- **Never:** clear a target from a partial or failed batch, attribute a
+  record that names two or more batched packages, or drop a target from
+  accounting.
+
+<!-- markdownlint-enable MD024 -->
+
+## Batching Reconciliation Amendment
+
+**Status: approved for planning, 2026-11-20.** The user approved decisions
+D1–D4 below on 2026-11-20 in
+[#408](https://github.com/andrewpucci/dependency-update-advisor/issues/408),
+then explicitly approved this section after a fresh-context review whose
+blocking findings were resolved. Plan and execution approval remain separate
+gates, and no limit value changes. Effort tier: L. It reconciles the
+[Batched Lookup Amendment](#batched-lookup-amendment), approved 2026-11-19
+before the name form change, with the
+[Package Name Form Amendment](#package-name-form-amendment), approved
+2026-11-20. Neither section's text is edited; where they conflict, this
+section decides. The
+[policy signals spec](SPEC-policy-signals.md#batching-reconciliation-amendment)
+applies it to malware queries.
+
+### Why the amendments conflict
+
+The Batched Lookup Amendment batches the one exact GitHub query each target
+had on 2026-11-19. The Package Name Form Amendment then replaced that query
+for every target except npm: `pip` reviewed lookups go to OSV, and Actions
+reviewed lookups and `pip` and Actions malware lookups discover stored name
+forms before one versioned query. A versioned query depends on its target's
+own discovery, so the batch rules cannot apply to it unchanged.
+
+### Reconciliation decisions
+
+1. **`pip` reviewed lookups are not batched (D1).** OSV requests do not use
+   the GitHub request budget that batching protects. OSV's
+   `POST /v1/querybatch` returns only each record's `id` and `modified`, so it
+   cannot check `github_reviewed`, and OSV's documentation does not claim it
+   returns the same set as `/v1/query`. Batching would also widen W2
+   Amendment 6's no-write exemption. `querybatch` stays an Ask-first option.
+2. **npm keeps the batch rules (D2), with three changes.**
+   - An attributed record's several same-package entries are joined into one
+     range, as Package Name Form item 8 requires, instead of failing.
+   - A GitHub rate limit stops GitHub requests only, as Package Name Form
+     item 9 requires. Batch item 3's "which stops all requests in the session"
+     no longer holds.
+   - The batch page size is fitted to an npm example measured by C2, not to
+     the `Pillow@8.0.0` singleton page in batch item 2. The value is still an
+     Ask-first decision at C3.
+3. **Discovery is batched across targets (D3).** A discovery batch is the
+   set of package-only queries that together list every spelling of several
+   targets of one ecosystem and advisory type. It keeps Package Name Form
+   item 6's request rules unchanged: the URL cap
+   (`limit:advisory.discovery.urlBytes`), the first-URL cursor headroom
+   (`limit:advisory.discovery.cursorHeadroomBytes`), the page size
+   (`limit:advisory.discovery.pageSize`), the cursor rules, a continuation URL
+   over the cap being `budget`, and the separator-run limit. Item 10's
+   spelling ceiling and versioned-URL bound also apply per target.
+   - **Complete.** A discovery batch is complete only when every page of
+     every one of its requests succeeded and validated, and every spelling of
+     every batched target appears in a fetched discovery URL.
+   - **Matching.** A record names a target when it has an entry in the query
+     ecosystem whose name, canonicalized, equals the target's canonical name,
+     as Package Name Form item 6 defines it. The same comparison decides
+     validation, hits, and stored forms. A target's stored forms are the
+     distinct matching names across every record in the batch.
+   - **Validation.** Every returned record must name at least one batched
+     target. Otherwise the batch is `malformed`.
+   - **Clearing.** A target that no record names in a complete batch is
+     cleared without its versioned query. It cites the unfetched versioned
+     URL that would reproduce the empty result: the normalized name for
+     `pip` or the mapped name for Actions, at the target's version. Its
+     source text says it was checked in a batched query, as batch item 7
+     does for npm. This reverses Package Name Form item 7's "always sends"
+     for cleared targets only.
+   - **Hits.** A target that a record names gets its versioned query for its
+     stored forms, as today. Discovery never attributes a record: a malware
+     hit followed by a failed versioned query is incomplete, with no
+     finding.
+   - **Fallback.** An incomplete batch clears nothing, and every one of its
+     targets falls back to per-target discovery. Per-target discovery follows
+     Package Name Form items 6 and 7 unchanged, including the versioned query
+     after an empty discovery.
+4. **Superseded text (D4).** Where they conflict, this section replaces:
+   - Batched Lookup Amendment items 1–7, its fixtures, and its boundaries,
+     which now apply to npm only; versioned batches are npm only.
+   - Batched Lookup Amendment item 9, replaced by the Package Name Form
+     Amendment.
+   - The `Pillow@8.0.0` seed of the equivalence check, which is dropped.
+   - Package Name Form item 7's "always sends one query", which gains the
+     clearing exception in decision 3.
+   - The Package Name Form boundaries "clear a target only from a complete
+     OSV query or a complete versioned query after a complete discovery" and
+     "Never … cite a URL that was not fetched", which gain the same
+     exception for a target cleared by a complete discovery batch.
+   - The Package Name Form verification "An empty discovery is followed by a
+     versioned query for the normalized name", which now holds for
+     per-target discovery only.
+   - "Evidence Representation" ("Use the query URL for a successful empty
+     lookup"), which gains the discovery clearing exception alongside batch
+     item 7's npm exception.
+   - The Package Name Form cost statement "Actions and malware targets cost
+     at least one more GitHub request each" and its group capacity figures,
+     which now bound the per-target path only.
+
+### Reconciliation verification
+
+- **C1** records the targets the reader settles, not discovery spellings or
+  OSV lookups.
+- **C2's equivalence check** is seeded with `lodash@4.17.20`,
+  `@babel/traverse@7.22.0`, a known npm malware package,
+  `tj-actions/changed-files@45.0.7`, and `flo-pro-adk`, plus a name with three
+  or more separators. It adds a discovery comparison: every stored form that
+  per-target discovery finds is returned and named by its discovery batch.
+- **C5** settles both batch kinds.
+
+### Reconciliation fixtures
+
+- The attributed-record survival fixture is npm only.
+- A discovery hit followed by a failed versioned query: the lookup is
+  incomplete, and no finding is emitted.
+- An empty complete discovery batch clears each target, citing its
+  unfetched versioned URL.
+- Every spelling of each cleared target appears in a fetched discovery URL.
+- A record in a discovery batch that names no batched target: the batch is
+  `malformed`.
+- A stored name that differs from the target in case and separators (for
+  example `Jupyter_Server` for `jupyter-server`) is a hit, not a clear; the
+  mutation `stored === canonical(target)` fails this fixture.
+- A discovery batch whose second request fails: every target in the batch,
+  including those the failed request did not carry, falls back to
+  per-target discovery.
+
+### Reconciliation boundaries
+
+- **Always:** clear a discovery target only from a complete batch, send the
+  versioned query for every discovery hit, and keep npm's batch rules as
+  approved except where decision 2 changes them.
+- **Ask first:** `querybatch`, and every value the batch amendments mark Ask
+  first.
+- **Never:** batch `pip` reviewed lookups through OSV without a new decision,
+  attribute a record from discovery, or clear a target from an incomplete
+  discovery batch.

@@ -1,10 +1,13 @@
+import { AUTOLINK_SAFE_HEX_PREFIX, CHAR_CODE, ISO_DATE_TIME } from './format.js';
 import { isDeepStrictEqual } from 'node:util';
 import { parseReviewBinding, type ReviewBinding } from './event.js';
 import { formDecisionUnits, type DecisionCoverage, type DecisionUnit } from './units.js';
 import type { UnitRecord } from './analysis/batches.js';
 import type { SignalAttempt } from './evidence/policy-signals.js';
 import type { ResolvedReference } from './analysis/validation.js';
+import { limit } from './limits.js';
 import { evidenceGaps } from './policy.js';
+import type { EvidenceReason } from './schema.js';
 
 export type DecisionBriefInput = Readonly<{
   binding: ReviewBinding;
@@ -39,7 +42,11 @@ function text(value: string): string {
     .replace(/([@#:])/gu, '$1\u200b')
     .replace(/\bwww\./giu, 'www.\u200b')
     .replace(/\b(gh)-(?=\d)/giu, '$1-\u200b')
-    .replace(/\b[\da-f]{7,40}\b/giu, (value) => value.slice(0, 6) + '\u200b' + value.slice(6))
+    .replace(
+      /\b[\da-f]{7,40}\b/giu,
+      (value) =>
+        value.slice(0, AUTOLINK_SAFE_HEX_PREFIX) + '\u200b' + value.slice(AUTOLINK_SAFE_HEX_PREFIX),
+    )
     .replace(/[\r\n]+/gu, ' ');
 }
 
@@ -96,17 +103,77 @@ function recovery(category: string | null): string {
   return 'Investigate the failed review data or validation, correct the cause, then rerun CI.';
 }
 
-function evidenceGap(unit: DecisionUnit, sourceId: string): string {
+type ActionGroup = 'permission' | 'retry' | 'budget' | 'noSource' | 'untrusted';
+
+const REASON_GROUPS: Record<EvidenceReason, ActionGroup> = {
+  rate_limit: 'retry',
+  timeout: 'retry',
+  permission: 'permission',
+  budget: 'budget',
+  missing: 'noSource',
+  unsupported: 'noSource',
+  malformed: 'untrusted',
+  truncated: 'untrusted',
+  conflict: 'untrusted',
+  unknown: 'untrusted',
+};
+
+const RERUN_REASONS: ReadonlySet<EvidenceReason> = new Set(['rate_limit', 'timeout', 'permission']);
+
+const ACTION_ORDER: readonly ActionGroup[] = [
+  'permission',
+  'retry',
+  'budget',
+  'noSource',
+  'untrusted',
+];
+
+function manualStep(category: string, name: string): string {
+  if (category === 'vulnerability' || category === 'malware')
+    return `search the GitHub Advisory Database for ${name}`;
+  if (category === 'installScript') return `review ${name}'s install scripts`;
+  if (category === 'upstream') return `read ${name}'s release notes`;
+  return `review ${name}'s ${readableLabel(category)} evidence`;
+}
+
+function evidenceActions(
+  reasons: readonly EvidenceReason[],
+  category: string,
+  name: string,
+  plural = false,
+): string {
+  const effective: readonly EvidenceReason[] = reasons.length ? reasons : ['unknown'];
+  const groups = new Set(effective.map((reason) => REASON_GROUPS[reason]));
+  const rerunOnly = effective.every((reason) => RERUN_REASONS.has(reason));
+  const manual = `check it manually: ${manualStep(category, name)}.`;
+  const actions: Partial<Record<ActionGroup, string>> = {};
+  if (groups.has('permission'))
+    actions.permission = rerunOnly
+      ? "Correct the reviewer's token permissions, then rerun CI."
+      : "Correct the reviewer's token permissions.";
+  if (groups.has('retry') && rerunOnly) actions.retry = 'Rerun CI later.';
+  if (groups.has('budget'))
+    actions.budget = `The review could not check ${plural ? 'these packages' : 'this package'} within its limits; ${manual}`;
+  if (groups.has('noSource')) actions.noSource = `No supported source was found; ${manual}`;
+  if (groups.has('untrusted')) actions.untrusted = `The source could not be trusted; ${manual}`;
+  return ACTION_ORDER.flatMap((group) => actions[group] ?? []).join(' ');
+}
+
+export function evidenceGap(unit: DecisionUnit, sourceId: string): string {
   const link = unit.evidenceLinks.find((entry) => entry.id === sourceId);
   const member = unit.members.find((entry) => entry.id === link?.memberId);
   if (!link || !member) throw new RenderFailure('reference');
-  return `${text(member.name)}: ${readableLabel(link.category)} evidence is ${readableLabel(link.status)} (${link.reasons.map(readableLabel).join(', ')}). Review the ${readableLabel(link.category)} evidence for ${text(member.name)} and rerun CI.`;
+  const name = text(member.name);
+  return `${name}: ${readableLabel(link.category)} evidence is ${readableLabel(link.status)} (${link.reasons.map(readableLabel).join(', ')}). ${evidenceActions(link.reasons, link.category, name)}`;
 }
 
 function unsafeUrl(value: string): boolean {
   return (
     /\s/u.test(value) ||
-    Array.from(value).some((char) => char.charCodeAt(0) < 32 || char.charCodeAt(0) === 127)
+    Array.from(value).some(
+      (char) =>
+        char.charCodeAt(0) < CHAR_CODE.firstPrintable || char.charCodeAt(0) === CHAR_CODE.delete,
+    )
   );
 }
 
@@ -120,7 +187,7 @@ function vettedLink(title: string, value: string): string {
 function utcTimestamp(value: string): boolean {
   const match = /^(\d{4}-\d\d-\d\dT\d\d:\d\d:\d\d)(?:\.(\d{1,3}))?(?:Z|\+00:00)$/u.exec(value);
   if (!match) return false;
-  const canonical = `${match[1]}.${(match[2] ?? '').padEnd(3, '0')}Z`;
+  const canonical = `${match[1]}.${(match[2] ?? '').padEnd(ISO_DATE_TIME.millisecondDigits, '0')}Z`;
   return new Date(value).toISOString() === canonical;
 }
 
@@ -362,7 +429,7 @@ function fitComment(
       ...sections.slice(1).flat(),
       ...(omitted ? ['', 'Some lower-priority detail was omitted to fit the comment.'] : []),
     ].join('\n');
-    if (body.length <= 50_000) return { ok: true, body };
+    if (body.length <= limit('comment.maxBodyCodeUnits')) return { ok: true, body };
     const last = sections.findLastIndex((section) => section.length > 0);
     if (last < 0) return { ok: false, category: 'size' };
     sections[last] = [];
@@ -548,22 +615,29 @@ function distinctText(values: readonly string[]): string {
   return [...new Set(values)].map(text).join(' ');
 }
 
+/** One Reasons-not-to-merge line for a finding-backed hold and the model blockers on it. */
+function findingHoldLine(r: Review, { unit, finding, blockers }: Review['holds'][number]): string {
+  if (!finding || !finding.remediation.length || !finding.validation.length)
+    throw new RenderFailure('content');
+  const member = unit.members.find((entry) => entry.id === finding.memberId);
+  if (!member) throw new RenderFailure('reference');
+  const links = verifiedLinks(r, finding);
+  const evidence = blockers.map((hold) => blockerEvidence(r, hold)).filter(Boolean);
+  const impact = blockers.length
+    ? distinctText(blockers.map(({ blocker }) => blocker.impact))
+    : 'this finding requires a hold.';
+  return `- ${displayName(r, member)}: ${text(finding.rationale)} Impact: ${impact}${evidence.length ? ` Evidence: ${evidence.join(' ')}` : ''} Remediation: ${distinctText([...finding.remediation, ...blockers.flatMap(({ blocker }) => blocker.remediation)])} Validation: ${distinctText([...finding.validation, ...blockers.flatMap(({ blocker }) => blocker.validation)])} ${links.join(' ')}`;
+}
+
 function blockerLines(r: Review): string[] {
   const { holds, modelHolds } = r;
   if (!holds.length && !modelHolds.length) return [];
-  const lines = ['', '## Reasons not to merge', ''];
-  for (const { unit, finding, blockers } of holds) {
-    if (!finding || !finding.remediation.length || !finding.validation.length)
-      throw new RenderFailure('content');
-    const links = verifiedLinks(r, finding);
-    const evidence = blockers.map((hold) => blockerEvidence(r, hold)).filter(Boolean);
-    const impact = blockers.length
-      ? distinctText(blockers.map(({ blocker }) => blocker.impact))
-      : 'this finding requires a hold.';
-    lines.push(
-      `- ${text(unit.members.find((member) => member.id === finding.memberId)?.name ?? '')}: ${text(finding.rationale)} Impact: ${impact}${evidence.length ? ` Evidence: ${evidence.join(' ')}` : ''} Remediation: ${distinctText([...finding.remediation, ...blockers.flatMap(({ blocker }) => blocker.remediation)])} Validation: ${distinctText([...finding.validation, ...blockers.flatMap(({ blocker }) => blocker.validation)])} ${links.join(' ')}`,
-    );
-  }
+  const lines = [
+    '',
+    '## Reasons not to merge',
+    '',
+    ...holds.map((hold) => findingHoldLine(r, hold)),
+  ];
   for (const hold of modelHolds) {
     if (hold.rule?.findingId) continue;
     const { unit, blocker, rule } = hold;
@@ -572,29 +646,105 @@ function blockerLines(r: Review): string[] {
     const member = unit.members.find((entry) => entry.id === memberId);
     if (!member) throw new RenderFailure('reference');
     lines.push(
-      `- ${text(member.name)}: ${text(blocker.reason)} Impact: ${text(blocker.impact)} Evidence: ${evidence || 'The policy requires action on the identified evidence gap.'} Remediation: ${blocker.remediation.map(text).join(' ')} Validation: ${blocker.validation.map(text).join(' ')}`,
+      `- ${displayName(r, member)}: ${text(blocker.reason)} Impact: ${text(blocker.impact)} Evidence: ${evidence || 'The policy requires action on the identified evidence gap.'} Remediation: ${blocker.remediation.map(text).join(' ')} Validation: ${blocker.validation.map(text).join(' ')}`,
     );
   }
   return lines;
 }
 
-function queueLines({ input, units, summary }: Review): string[] {
+/** Unresolved units with the same reason, recovery, update count, and gaps share one queue item. */
+function queueLines(r: Review): string[] {
+  const { input, units, summary } = r;
   const lines: string[] = [];
   if (input.coverage.counts.unresolvedUnits) lines.push('', '## Decision queue', '');
+  const linkOf = (unit: DecisionUnit, sourceId: string) => {
+    const link = unit.evidenceLinks.find((entry) => entry.id === sourceId);
+    if (!link || !unit.members.some((member) => member.id === link.memberId))
+      throw new RenderFailure('reference');
+    return link;
+  };
+  const groups = new Map<string, { reason: string; category: string | null; indexes: number[] }>();
   for (const [index, unit] of units.entries()) {
     const record = input.records[index];
     if (record.state.state === 'assessed') continue;
-    const unresolved = summary.unresolvedUnits.find((entry) => entry.unitId === unit.id);
-    if (!unresolved) throw new RenderFailure('content');
-    lines.push(
-      `- ${text(unit.members.map((member) => member.name).join(', '))} (${plural(unit.memberCount, 'changed update')}): ${text(record.state.reason)} ${recovery(record.category)} ${summary.units[index].gaps.map((gap) => evidenceGap(unit, gap.sourceId)).join(' ')}`,
-    );
+    if (!summary.unresolvedUnits.some((entry) => entry.unitId === unit.id))
+      throw new RenderFailure('content');
+    const gapKeys = summary.units[index].gaps
+      .map((gap) => {
+        const link = linkOf(unit, gap.sourceId);
+        return JSON.stringify([link.category, link.status, link.reasons]);
+      })
+      .sort();
+    const key = JSON.stringify([
+      record.state.reason,
+      recovery(record.category),
+      unit.memberCount,
+      gapKeys,
+    ]);
+    const group = groups.get(key) ?? {
+      reason: record.state.reason,
+      category: record.category,
+      indexes: [],
+    };
+    group.indexes.push(index);
+    groups.set(key, group);
+  }
+  for (const { reason, category, indexes } of groups.values()) {
+    const [first] = indexes;
+    const gaps = summary.units[first].gaps;
+    const tail = `${text(reason)} ${recovery(category)}`;
+    if (indexes.length === 1) {
+      const unit = units[first];
+      const names = text(unit.members.map((member) => member.name).join(', '));
+      const gapText = gaps.map((gap) => evidenceGap(unit, gap.sourceId)).join(' ');
+      lines.push(`- ${names} (${plural(unit.memberCount, 'changed update')}): ${tail} ${gapText}`);
+      continue;
+    }
+    const names = indexes.map((index) => {
+      const unit = units[index];
+      const members = unit.members.map((member) => displayName(r, member)).join(', ');
+      return `${members} (${plural(unit.memberCount, 'changed update')})`;
+    });
+    const gapText = gaps
+      .map((gap) => {
+        const link = linkOf(units[first], gap.sourceId);
+        return `${readableLabel(link.category)} evidence is ${readableLabel(link.status)} (${link.reasons.map(readableLabel).join(', ')}). ${evidenceActions(link.reasons, link.category, 'each listed package', true)}`;
+      })
+      .join(' ');
+    lines.push(`- ${names.join('; ')}: ${tail} ${gapText}`);
   }
   return lines;
 }
 
-function coverageLines({ input }: Review): string[] {
-  const { counts, inventoryGaps } = input.coverage;
+/** One action-free line per required category whose available members have no finding. */
+function checkedNoneFoundLines(r: Review): string[] {
+  const attributed = new Set(
+    r.units.flatMap((unit) =>
+      unit.findings.flatMap((finding) =>
+        finding.references.map((id) => JSON.stringify([finding.memberId, id])),
+      ),
+    ),
+  );
+  return ['upstream', 'vulnerability', 'malware', 'installScript'].flatMap((category) => {
+    const members = r.units.flatMap((unit) =>
+      unit.members.filter((member) => {
+        const link = unit.evidenceLinks.find(
+          (entry) => entry.memberId === member.id && entry.category === category,
+        );
+        return (
+          link?.status === 'available' &&
+          !link.sourceIds.some((id) => attributed.has(JSON.stringify([member.id, id])))
+        );
+      }),
+    );
+    if (!members.length) return [];
+    const names = members.map((member) => displayName(r, member)).join(', ');
+    return [`- ${readableLabel(category)}: checked, none found for ${names}.`];
+  });
+}
+
+function coverageLines(r: Review): string[] {
+  const { counts, inventoryGaps } = r.input.coverage;
   return [
     '',
     '## Decision coverage',
@@ -603,6 +753,7 @@ function coverageLines({ input }: Review): string[] {
     ...(counts.groupedUnits
       ? ['A direct-update group is assessed as one unit, not as separately researched members.']
       : []),
+    ...checkedNoneFoundLines(r),
     ...inventoryGaps.map(
       (gap) =>
         `- ${text(gap.ecosystem)}: ${gap.reasons.map(text).join(', ')}. ${gap.nextActions.map(text).join(' ')}`,
@@ -610,8 +761,21 @@ function coverageLines({ input }: Review): string[] {
   ];
 }
 
-function findingLines({ input, units }: Review): string[] {
-  const lines: string[] = [];
+function displayName(r: Review, member: DecisionUnit['members'][number]): string {
+  const shared = r.units
+    .flatMap((unit) => unit.members)
+    .some((item) => item.id !== member.id && item.name === member.name);
+  return shared ? `${text(member.name)} (${uncheckedQualifier(r, member)})` : text(member.name);
+}
+
+/** Everything after the names; findings with the same tail share one line. */
+function findingTail(finding: DecisionUnit['findings'][number], citations: string[]): string {
+  return ` — ${readableLabel(finding.kind)}: ${text(finding.rationale)} ${'applicability' in finding ? readableLabel(finding.applicability) : ''} ${'severity' in finding && finding.severity ? text(finding.severity) : ''} ${citations.join(' ')}`;
+}
+
+function findingLines(r: Review): string[] {
+  const { input, units } = r;
+  const groups = new Map<string, Map<string, string>>();
   for (const unit of units) {
     for (const finding of unit.findings) {
       const member = unit.members.find((item) => item.id === finding.memberId);
@@ -641,12 +805,13 @@ function findingLines({ input, units }: Review): string[] {
           input,
         );
       });
-      lines.push(
-        `- ${text(member.name)} — ${readableLabel(finding.kind)}: ${text(finding.rationale)} ${'applicability' in finding ? readableLabel(finding.applicability) : ''} ${'severity' in finding && finding.severity ? text(finding.severity) : ''} ${citations.join(' ')}`,
-      );
+      const tail = findingTail(finding, citations);
+      const members = groups.get(tail) ?? new Map<string, string>();
+      if (!members.has(member.id)) members.set(member.id, displayName(r, member));
+      groups.set(tail, members);
     }
   }
-  return lines;
+  return [...groups].map(([tail, members]) => `- ${[...members.values()].join(', ')}${tail}`);
 }
 
 function assessmentLines({ input, units, summary }: Review): string[] {
@@ -684,7 +849,38 @@ function assessmentLines({ input, units, summary }: Review): string[] {
   return lines;
 }
 
-function followupLines({ input, units, summary }: Review): string[] {
+/** Gaps with the same category, status, and reasons share one line that names each member. */
+function gapLines(
+  r: Review,
+  assessedGaps: { unit: DecisionUnit; gap: { sourceId: string } }[],
+): string[] {
+  const groups = new Map<
+    string,
+    {
+      link: DecisionUnit['evidenceLinks'][number];
+      members: Map<string, DecisionUnit['members'][number]>;
+    }
+  >();
+  for (const { unit, gap } of assessedGaps) {
+    const link = unit.evidenceLinks.find((entry) => entry.id === gap.sourceId);
+    const member = unit.members.find((entry) => entry.id === link?.memberId);
+    if (!link || !member) throw new RenderFailure('reference');
+    const key = JSON.stringify([link.category, link.status, link.reasons]);
+    const group = groups.get(key) ?? { link, members: new Map() };
+    group.members.set(member.id, member);
+    groups.set(key, group);
+  }
+  return [...groups.values()].map(({ link, members }) => {
+    const list = [...members.values()];
+    const single = list.length === 1;
+    const subject = single ? text(list[0].name) : 'each listed package';
+    const names = list.map((member) => displayName(r, member)).join(', ');
+    return `- ${names}: ${readableLabel(link.category)} evidence is ${readableLabel(link.status)} (${link.reasons.map(readableLabel).join(', ')}). ${evidenceActions(link.reasons, link.category, subject, !single)}`;
+  });
+}
+
+function followupLines(r: Review): string[] {
+  const { input, units, summary } = r;
   const assessedGaps = summary.units.flatMap((unit, index) =>
     input.records[index].assessment ? unit.gaps.map((gap) => ({ unit: units[index], gap })) : [],
   );
@@ -697,7 +893,7 @@ function followupLines({ input, units, summary }: Review): string[] {
     '',
     '## Non-blocking follow-ups',
     '',
-    ...assessedGaps.map(({ unit, gap }) => `- ${evidenceGap(unit, gap.sourceId)}`),
+    ...gapLines(r, assessedGaps),
     ...followups.map(
       ({ unit, followup }) =>
         `- ${text(unit.members.map((member) => member.name).join(', '))}: ${text(followup.description)} ${followup.references.map((ref) => reference(ref, unit, input)).join(' ')}`,
@@ -900,7 +1096,9 @@ export function renderDecisionBrief(input: DecisionBriefInput): DecisionBriefRes
       '',
       ...attributionLines(input, binding),
     ].join('\n');
-    return body.length <= 50_000 ? { ok: true, body } : { ok: false, category: 'size' };
+    return body.length <= limit('comment.maxBodyCodeUnits')
+      ? { ok: true, body }
+      : { ok: false, category: 'size' };
   } catch (error) {
     return { ok: false, category: error instanceof RenderFailure ? error.category : 'input' };
   }

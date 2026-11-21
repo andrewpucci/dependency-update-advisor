@@ -1,6 +1,8 @@
 import type { EvidenceReason } from '../schema.js';
 import { advisoryCheck, AdvisoryFailure } from './advisory-read.js';
 import { isPlainObject } from './common.js';
+import type { ResearchCache } from './research-cache.js';
+import { MAX_TIMER_MS } from '../format.js';
 
 export type BoundedLimits = {
   maxRequests: number;
@@ -17,6 +19,19 @@ export type BoundedDependencies = {
   fetch: (url: string, init: RequestInit) => Promise<Response>;
   now: () => number;
   signal?: AbortSignal;
+  /** Run-scoped research cache. Event, snapshot, and freshness reads never receive one. */
+  cache?: ResearchCache;
+};
+type BoundedRequest = (
+  | { url: string; accept: string; headers?: never }
+  | { url: string; headers: Record<string, string>; accept?: never }
+) & {
+  timeoutMs: number;
+  signal?: AbortSignal;
+  /** A fixed body sent as a JSON `POST`; absent for a `GET`. */
+  json?: unknown;
+  /** Charges the reader's share for a live request; never called for a cache hit. */
+  charge?: () => void;
 };
 export function boundedLimits(value: unknown): BoundedLimits {
   advisoryCheck(isPlainObject(value));
@@ -35,7 +50,7 @@ export function boundedLimits(value: unknown): BoundedLimits {
   advisoryCheck(
     Number(value.maxResponseBytes) <= Number(value.maxTotalBytes) &&
       Number(value.requestTimeoutMs) <= Number(value.totalTimeoutMs) &&
-      Number(value.requestTimeoutMs) <= 2 ** 31 - 1,
+      Number(value.requestTimeoutMs) <= MAX_TIMER_MS,
   );
   return Object.fromEntries(keys.map((k) => [k, value[k]])) as BoundedLimits;
 }
@@ -65,7 +80,7 @@ function deadlineTimer(duration: number, expire: () => void) {
   let remaining = duration,
     handle: ReturnType<typeof setTimeout>;
   const schedule = () => {
-    const interval = Math.min(remaining, 2 ** 31 - 1);
+    const interval = Math.min(remaining, MAX_TIMER_MS);
     handle = setTimeout(() => {
       remaining -= interval;
       if (remaining > 0) schedule();
@@ -76,31 +91,31 @@ function deadlineTimer(duration: number, expire: () => void) {
   return () => clearTimeout(handle);
 }
 /**
+ * Stores a response read from `url` itself and returns the copy to consume. A redirected or
+ * relocated response is returned unstored, so the reader's own identity check still rejects it;
+ * a cached copy carries no URL to check.
+ */
+async function remember(
+  cache: ResearchCache | undefined,
+  key: string | undefined,
+  url: string,
+  response: Response,
+  aborted: Promise<never>,
+): Promise<Response> {
+  if (!cache || key === undefined) return response;
+  if (response.redirected || (response.url && response.url !== url)) return response;
+  return Promise.race([cache.store(key, response), aborted]);
+}
+/**
  * One credential-free GET, or a POST of a fixed `json` body, raced against its timeout, the
  * caller's signal, and `onCancel` (registered for the reader's close). Every exit aborts the
  * request and releases its body.
  */
 export async function boundedGet<T>(
   deps: BoundedDependencies,
-  request:
-    | {
-        url: string;
-        accept: string;
-        timeoutMs: number;
-        headers?: never;
-        signal?: AbortSignal;
-        json?: unknown;
-      }
-    | {
-        url: string;
-        headers: Record<string, string>;
-        timeoutMs: number;
-        accept?: never;
-        signal?: AbortSignal;
-        json?: unknown;
-      },
+  request: BoundedRequest,
   onCancel: (cancel: (() => void) | null) => void,
-  consume: (response: Response, aborted: Promise<never>) => Promise<T>,
+  consume: (response: Response, aborted: Promise<never>, cached: boolean) => Promise<T>,
 ): Promise<T> {
   const controller = new AbortController();
   let reject: (error: AdvisoryFailure) => void = () => {};
@@ -125,12 +140,17 @@ export async function boundedGet<T>(
         : { accept: request.accept! };
     const post = request.json !== undefined;
     if (post) headers['content-type'] = 'application/json';
+    const body = post ? JSON.stringify(request.json) : undefined;
+    const key = deps.cache?.key(post ? 'POST' : 'GET', request.url, headers, body);
+    const hit = key === undefined ? undefined : deps.cache?.lookup(key);
+    if (hit) return await consume(hit, aborted, true);
+    request.charge?.();
     const pending = deps.fetch(request.url, {
       method: post ? 'POST' : 'GET',
       redirect: 'manual',
       credentials: 'omit',
       headers,
-      ...(post ? { body: JSON.stringify(request.json) } : {}),
+      ...(body === undefined ? {} : { body }),
       signal: controller.signal,
     });
     void pending.then(
@@ -141,7 +161,8 @@ export async function boundedGet<T>(
       () => {},
     );
     response = await Promise.race([pending, aborted]);
-    return await consume(response, aborted);
+    response = await remember(deps.cache, key, request.url, response, aborted);
+    return await consume(response, aborted, false);
   } finally {
     clear();
     for (const signal of signals) signal.removeEventListener('abort', cancel);

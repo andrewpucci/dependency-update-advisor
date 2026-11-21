@@ -36,6 +36,8 @@ jobs:
         run: npm ci
       - name: Lint
         run: npm run lint
+      - name: Check limits
+        run: npm run check:limits
       - name: Check formatting
         run: npm run format:check
       - name: Type check

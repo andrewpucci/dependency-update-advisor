@@ -6,6 +6,7 @@ import { isEvidencePath, isPlainObject, byCodeUnit } from './common.js';
 import type { UvMetadata, UvMetadataResult, UvFileSnapshot } from './uv.js';
 import type { UvLock, UvPackage, UvSelector, UvSource } from './uv-lock.js';
 import type { UvManifest } from './uv-manifest.js';
+import { FORMAT_VERSION } from '../format.js';
 
 export const uvReasons: readonly EvidenceReason[] = [
   'permission',
@@ -235,7 +236,7 @@ function manifestData(m: UvManifest) {
 }
 function lockData(l: UvLock) {
   keys(l, ['version', 'revision', 'requiresPython', 'resolutionMarkers', 'packages']);
-  need(l.version === 1 && [3, 5].includes(l.revision));
+  need(l.version === 1 && FORMAT_VERSION.uvLockRevisions.includes(l.revision));
   need(l.requiresPython === null || safe(l.requiresPython));
   if (l.resolutionMarkers !== null) strings(l.resolutionMarkers);
   need(Array.isArray(l.packages));

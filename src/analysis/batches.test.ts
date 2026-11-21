@@ -2,6 +2,7 @@ import { expect, test, vi } from 'vite-plus/test';
 import { analysisDocument, analysisScenario } from '../../tests/parity/analysis.js';
 import { analyzeMistralBatch } from './mistral.js';
 import { analyzeDecisionUnits } from './batches.js';
+import { limit } from '../limits.js';
 
 test('retains assessments from an owned M1 batch in inventory order', async () => {
   const { input } = await analysisScenario();
@@ -1071,4 +1072,57 @@ test('the timing and split-depth fields add only integers to the diagnostics all
   expect(Number.isInteger(result.diagnostics.maxSplitDepth)).toBe(true);
   expect(result.diagnostics.callDurationsMs.length).toBeGreaterThan(0);
   expect(result.diagnostics.callDurationsMs.every(Number.isInteger)).toBe(true);
+});
+
+test('a batch packs exactly the registered unit count and the next unit starts a new batch', async () => {
+  const cap = limit('analysis.maxUnits');
+  const batchSizes = async (units: number) => {
+    const input = await inventoryOf(units);
+    const batches: number[] = [];
+    const result = await analyzeDecisionUnits(
+      input,
+      { apiKey: 'test-key', deadlineMs: 700_000 },
+      {
+        now: () => 0,
+        analyze: (batch, options) => {
+          batches.push(batch.unitIds.length);
+          return analyzeMistralBatch(batch, options, {
+            now: () => 0,
+            fetch: async () => validatedReply(batch),
+          });
+        },
+      },
+    );
+    expect(result.ok).toBe(true);
+    return batches;
+  };
+  expect(await batchSizes(cap)).toEqual([cap]);
+  expect(await batchSizes(cap + 1)).toEqual([cap, 1]);
+});
+
+test('no call dispatches at or after the registered analysis time cap from the start', async () => {
+  const cap = limit('analysis.maxAnalysisMs');
+  // Six batches, two calls in flight. The third call is prepared at cap - 1 and sets the clock to the cap;
+  // the next batch must then stay undispatched.
+  const input = await inventoryOf(41);
+  let time = 0;
+  let dispatched = 0;
+  const result = await analyzeDecisionUnits(
+    input,
+    { apiKey: 'test-key', deadlineMs: 700_000 },
+    {
+      now: () => time,
+      analyze: (batch, options) => {
+        dispatched++;
+        if (dispatched === 2) time = cap - 1;
+        if (dispatched === 3) time = cap;
+        return analyzeMistralBatch(batch, options, {
+          now: () => time,
+          fetch: async () => validatedReply(batch),
+        });
+      },
+    },
+  );
+  expect(result.ok).toBe(true);
+  expect(dispatched).toBe(3);
 });

@@ -8,6 +8,7 @@ import {
   BoundedClock,
   type BoundedDependencies,
 } from './bounded-request.js';
+import { HTTP_STATUS } from '../format.js';
 
 export type MetadataQuery = {
   kind: 'pypi' | 'pypi-provenance';
@@ -79,15 +80,18 @@ export function metadataUrl(value: unknown): { query: MetadataQuery; url: string
 }
 function httpReason(response: Response): EvidenceReason {
   if (
-    response.status === 429 ||
-    (response.status === 403 &&
+    response.status === HTTP_STATUS.tooManyRequests ||
+    (response.status === HTTP_STATUS.forbidden &&
       (response.headers.has('retry-after') ||
         response.headers.get('x-ratelimit-remaining') === '0'))
   )
     return 'rate_limit';
-  if ([401, 403].includes(response.status)) return 'permission';
-  if (response.status === 404) return 'missing';
-  return response.status >= 300 && response.status < 400 ? 'unsupported' : 'unknown';
+  if (response.status === HTTP_STATUS.unauthorized || response.status === HTTP_STATUS.forbidden)
+    return 'permission';
+  if (response.status === HTTP_STATUS.notFound) return 'missing';
+  return response.status >= HTTP_STATUS.redirectMin && response.status < HTTP_STATUS.clientErrorMin
+    ? 'unsupported'
+    : 'unknown';
 }
 function boundedDescription(value: unknown) {
   if (typeof value !== 'string') return value;
@@ -191,7 +195,7 @@ class MetadataReader {
     advisoryCheck(this.operations <= this.limits.maxWork, 'budget');
     this.remaining();
   }
-  private async body(response: Response, aborted: Promise<never>) {
+  private async body(response: Response, aborted: Promise<never>, cached: boolean) {
     advisoryCheck(response.body);
     const stream = response.body.getReader(),
       chunks: Uint8Array[] = [];
@@ -201,9 +205,10 @@ class MetadataReader {
         const part = await Promise.race([stream.read(), aborted]);
         if (part.done) break;
         size += part.value.byteLength;
-        this.bytes += part.value.byteLength;
+        if (!cached) this.bytes += part.value.byteLength;
         advisoryCheck(
-          size <= this.limits.maxResponseBytes && this.bytes <= this.limits.maxTotalBytes,
+          size <= this.limits.maxResponseBytes &&
+            (cached || this.bytes <= this.limits.maxTotalBytes),
           'budget',
         );
         this.spend(1);
@@ -216,11 +221,11 @@ class MetadataReader {
     }
   }
   private async fetch(query: MetadataQuery, url: string): Promise<MetadataRead> {
-    advisoryCheck(++this.requests <= this.limits.maxRequests, 'budget');
     const request = {
       url,
       accept: query.kind === 'pypi' ? 'application/json' : 'application/vnd.pypi.integrity.v1+json',
       timeoutMs: Math.min(this.remaining(), this.limits.requestTimeoutMs),
+      charge: () => advisoryCheck(++this.requests <= this.limits.maxRequests, 'budget'),
     };
     return boundedGet(
       this.deps,
@@ -228,14 +233,14 @@ class MetadataReader {
       (cancel) => {
         this.active = cancel;
       },
-      async (response, aborted) => {
+      async (response, aborted, cached) => {
         advisoryCheck(
           !response.redirected && (!response.url || response.url === url),
           'unsupported',
         );
-        if (response.status === 404 && query.kind === 'pypi-provenance')
+        if (response.status === HTTP_STATUS.notFound && query.kind === 'pypi-provenance')
           return { kind: 'absent', url };
-        if (response.status !== 200) {
+        if (response.status !== HTTP_STATUS.ok) {
           const reason = httpReason(response);
           if (reason === 'rate_limit') this.stopped = reason;
           throw new AdvisoryFailure(reason);
@@ -246,7 +251,7 @@ class MetadataReader {
           ),
           'unsupported',
         );
-        const bytes = await this.body(response, aborted);
+        const bytes = await this.body(response, aborted, cached);
         let parsed: unknown;
         try {
           parsed = JSON.parse(new TextDecoder('utf-8', { fatal: true }).decode(bytes));

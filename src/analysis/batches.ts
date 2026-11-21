@@ -1,5 +1,6 @@
 import { isDeepStrictEqual } from 'node:util';
 import { parseReviewConfig, type ConfigResult } from '../config.js';
+import { limit } from '../limits.js';
 import type { AssessmentState } from '../policy.js';
 import { formDecisionUnits, summarizeDecisionCoverage, type UnitInventory } from '../units.js';
 import {
@@ -25,10 +26,10 @@ export type UnitRecord = Readonly<{
   batchId: string | null;
   assessment: ValidatedAssessment | null;
 }>;
-const MAX_CALLS = 32;
-const MAX_CONCURRENT_CALLS = 2;
-const MAX_ANALYSIS_MS = 600_000;
-const PUBLICATION_RESERVE_MS = 60_000;
+const MAX_CALLS = limit('analysis.maxCalls');
+const MAX_CONCURRENT_CALLS = limit('analysis.maxConcurrentCalls');
+const MAX_ANALYSIS_MS = limit('analysis.maxAnalysisMs');
+const PUBLICATION_RESERVE_MS = limit('analysis.publicationReserveMs');
 type Dependencies = Readonly<{
   now: () => number;
   analyze: typeof analyzeMistralBatch;

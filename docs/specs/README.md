@@ -87,7 +87,9 @@ gaps and an introduced vulnerability before parity is claimed.
   the specification, plan, dependency pins, and automatic execution on
   2026-11-07, with one closing PR. [Verification #192](https://github.com/andrewpucci/dependency-update-advisor/issues/192)
   retains live transport, workflow diagnostics/budgets, downstream analysis,
-  publication, packaging, adoption, parity, and cutover gates.
+  publication, packaging, adoption, parity, and cutover gates. A
+  [batched tag existence amendment](SPEC-upstream-evidence.md#batched-tag-existence-amendment)
+  is approved for planning (#380, 2026-11-19).
 - [Applicable vulnerability advisories](SPEC-advisory-lookup.md) — S1 #19 and
   #173–#181 implemented; #19 tracks review and merge. Exact public-identity
   proofs, Actions mappings and separate lookup outcomes preserve T4/T5/C3
@@ -99,6 +101,11 @@ gaps and an introduced vulnerability before parity is claimed.
   PyPI reviewed lookups and
   stored-name discovery for GitHub Actions and malware queries, tracked in
   [#398](https://github.com/andrewpucci/dependency-update-advisor/issues/398).
+  A [batched lookup amendment](SPEC-advisory-lookup.md#batched-lookup-amendment)
+  is approved for planning (#380, 2026-11-19).
+  A [batching reconciliation amendment](SPEC-advisory-lookup.md#batching-reconciliation-amendment)
+  that reconciles the two is approved for planning, 2026-11-20
+  ([#408](https://github.com/andrewpucci/dependency-update-advisor/issues/408)).
 - [Advisory policy signals](SPEC-policy-signals.md) — implemented, pending
   review and merge, supporting S3 #53
   contract in `shared-review`; explicit malware queries and exact-version
@@ -110,6 +117,8 @@ gaps and an introduced vulnerability before parity is claimed.
   [#53](https://github.com/andrewpucci/dependency-update-advisor/issues/53)
   on the implementation project. Live transport, workflow, downstream
   assessment/publication, adoption, and cutover remain separate gates.
+  A [batched malware lookup amendment](SPEC-policy-signals.md#batched-malware-lookup-amendment)
+  is approved for planning (#380, 2026-11-19).
 - [Common review packet validation](SPEC-review-packet.md) — implemented for
   T4 #11 and #77–#84 in `shared-review`, merged in
   [PR #89](https://github.com/andrewpucci/dependency-update-advisor/pull/89).

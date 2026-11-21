@@ -9,11 +9,13 @@ import { analysisDocument } from '../tests/parity/analysis.js';
 import { snapshotReads, treeEntry } from '../tests/parity/snapshot-reads.js';
 import { upstreamScenario } from '../tests/parity/upstream.js';
 import { uvMetadataScenario } from '../tests/parity/uv-metadata.js';
+import { ANALYSIS_LIMITS } from './analysis/contract.js';
 import { analyzeMistralBatch } from './analysis/mistral.js';
 import type { EventReads, RepositoryIdentity, ReviewIdentity } from './event.js';
 import { createEventReads } from './adapters.js';
 import { createRehearsalSink } from './handoff.js';
 import { runReview, type PipelineInput } from './pipeline.js';
+import { limit } from './limits.js';
 import {
   ASSESSMENT_FAILURE_REASONS,
   MODEL_FAILURE_CATEGORIES,
@@ -157,7 +159,30 @@ type Overrides = Partial<PipelineInput> & {
   visibility?: 'public' | 'private';
   /** Contents of src/app.ts in the default branch. */
   source?: string;
+  /** Distinct maximum-length model follow-ups on each `merge_with_followups` unit. */
+  followupsPerUnit?: number;
 };
+
+/** Model text the renderer may never merge or shorten, so it can force a required body over the limit. */
+function withFollowups(document: ReturnType<typeof analysisDocument>, perUnit: number) {
+  const assessments = document.assessments.map((entry) =>
+    entry.verdict === 'merge_with_followups'
+      ? {
+          ...entry,
+          followups: Array.from({ length: perUnit }, (_, index) => ({
+            description:
+              `Follow-up ${index} for ${entry.unitId}: ${'Confirm the recorded evidence with a fresh lookup. '.repeat(5)}`.slice(
+                0,
+                ANALYSIS_LIMITS.followupBytes,
+              ),
+            blocking: false,
+            references: [] as unknown[],
+          })),
+        }
+      : entry,
+  );
+  return { ...document, assessments };
+}
 
 const unchanged = { 'pyproject.toml': null, 'uv.lock': null };
 
@@ -186,6 +211,7 @@ async function setup(overrides: Overrides = {}) {
     source: _source,
     evidence: _evidence,
     children: _children,
+    followupsPerUnit: _followupsPerUnit,
     ...rest
   } = overrides;
   const { event, run, pullRequest } = t1();
@@ -244,7 +270,11 @@ async function setup(overrides: Overrides = {}) {
                 finish_reason: 'stop',
                 message: {
                   role: 'assistant',
-                  content: JSON.stringify(analysisDocument(batch as never)),
+                  content: JSON.stringify(
+                    overrides.followupsPerUnit
+                      ? withFollowups(analysisDocument(batch as never), overrides.followupsPerUnit)
+                      : analysisDocument(batch as never),
+                  ),
                 },
               },
             ],
@@ -732,6 +762,14 @@ test('reads public registries through the public fetch only', async () => {
   expect(githubCalls.every((url) => url.startsWith('https://api.github.com/'))).toBe(true);
 });
 
+test('reads each public registry URL once per run, across collection and research', async () => {
+  const { input, publicCalls } = await setup({ evidence: 'changes' });
+  await runReview(input);
+  const registry = publicCalls.filter((url) => url.startsWith('https://registry.npmjs.org/'));
+  expect(registry.length).toBeGreaterThan(0);
+  expect(registry.filter((url, i) => registry.indexOf(url) !== i)).toEqual([]);
+});
+
 test('starts no snapshot or collector read when the head moves right after claiming', async () => {
   const { input, githubCalls, reads } = await setup({ pullRequestHeads: [HEAD, NEXT] });
   const result = await runReview(input);
@@ -1184,6 +1222,45 @@ test('measures every deadline from the shared job start, not from its own clock'
   );
 });
 
+test('ends analysis job.freshnessAllowance before the job window closes', async () => {
+  vi.mocked(assessmentModule.reviewPacket).mockClear();
+  const { input } = await setup({ evidence: 'changes' });
+  await runReview(input);
+  const [call] = vi.mocked(assessmentModule.reviewPacket).mock.calls;
+  const deadline = limit('job.window') - limit('job.freshnessAllowance');
+  expect(call?.[0].deadlineMs).toBe(deadline);
+});
+
+test('checks ownership every pipeline.ownershipWatchMs while a request is pending', async () => {
+  const interval = limit('pipeline.ownershipWatchMs');
+  const claims = createTestClaimStore();
+  const { input } = await setup({ claims });
+  vi.useFakeTimers();
+  try {
+    let signal: AbortSignal | undefined;
+    let started: () => void = () => undefined;
+    const pendingFetch = new Promise<void>((resolve) => (started = resolve));
+    const running = runReview({
+      ...input,
+      githubFetch: (_url, init) =>
+        new Promise<Response>((_resolve, reject) => {
+          signal = init.signal ?? undefined;
+          init.signal?.addEventListener('abort', () => reject(new Error('aborted')));
+          started();
+        }),
+    });
+    running.catch(() => undefined);
+    await pendingFetch;
+    await vi.advanceTimersByTimeAsync(interval - 1);
+    expect(signal?.aborted).toBe(false);
+    await claims.claim([101, 301, 402, 1, 42, NEXT]);
+    await vi.advanceTimersByTimeAsync(1);
+    expect(signal?.aborted).toBe(true);
+  } finally {
+    vi.useRealTimers();
+  }
+});
+
 test('wires the clock, model key, signal attempts, and npm inventory into research and review', async () => {
   vi.mocked(researchModule.runResearch).mockClear();
   vi.mocked(assessmentModule.reviewPacket).mockClear();
@@ -1566,7 +1643,8 @@ test.each([
 });
 
 test('hands a group too large to render off as a failure that says so, never as a defect', async () => {
-  const { input, sink } = await setup({ evidence: 'changes', children: 100 });
+  // Model follow-ups are required and never merged, so these push the body over the limit.
+  const { input, sink } = await setup({ evidence: 'changes', children: 100, followupsPerUnit: 4 });
   const result = await runReview(input);
   // The brief must not truncate a required unit, so it fails; the prior comment is preserved.
   expect(result).toMatchObject({

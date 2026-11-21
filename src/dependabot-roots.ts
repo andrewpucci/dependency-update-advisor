@@ -1,19 +1,20 @@
 import { Composer, Parser, visit, isMap, isSeq } from 'yaml';
 import type { RepositoryIdentity } from './event.js';
 import { preflight, YamlFailure } from './evidence/actions-yaml.js';
+import { limit } from './limits.js';
 import type { EvidenceReason } from './schema.js';
 
 /** Bounds on the Dependabot configuration file and the roots read from it. */
 export const DEPENDABOT_ROOT_LIMITS = Object.freeze({
-  maxFileBytes: 65_536,
-  maxYamlNodes: 20_000,
-  maxYamlDepth: 16,
-  maxAliasExpansions: 0,
-  maxUpdates: 256,
-  maxRoots: 256,
+  maxFileBytes: limit('dependabot.maxFileBytes'),
+  maxYamlNodes: limit('dependabot.maxYamlNodes'),
+  maxYamlDepth: limit('dependabot.maxYamlDepth'),
+  maxAliasExpansions: limit('dependabot.maxAliasExpansions'),
+  maxUpdates: limit('dependabot.maxUpdates'),
+  maxRoots: limit('dependabot.maxRoots'),
 });
 
-const MAX_PATH_BYTES = 1_024;
+const MAX_PATH_BYTES = limit('dependabot.maxPathBytes');
 
 type Revision = Readonly<{ repository: RepositoryIdentity; sha: string }>;
 

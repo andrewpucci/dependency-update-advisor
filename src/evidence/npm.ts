@@ -18,6 +18,8 @@ import {
   isPlainObject,
   longestFittingPrefix,
 } from './common.js';
+import { limit } from '../limits.js';
+import { CHAR_CODE, FORMAT_VERSION } from '../format.js';
 
 type Limits = Readonly<{
   maxFileBytes: number;
@@ -116,7 +118,11 @@ function object(value: unknown): Record<string, unknown> {
 function characters(value: string) {
   return [...value].every((c) => {
     const n = c.codePointAt(0)!;
-    return n >= 32 && (n < 127 || n > 159) && !(n >= 0xd800 && n <= 0xdfff);
+    return (
+      n >= CHAR_CODE.firstPrintable &&
+      (n < CHAR_CODE.delete || n > CHAR_CODE.lastC1Control) &&
+      !(n >= CHAR_CODE.surrogateFirst && n <= CHAR_CODE.surrogateLast)
+    );
   });
 }
 function path(value: unknown, root = false): value is string {
@@ -126,7 +132,7 @@ function safeText(value: unknown, empty = false): value is string {
   return (
     typeof value === 'string' &&
     (empty || value.length > 0) &&
-    Buffer.byteLength(value) <= 1024 &&
+    Buffer.byteLength(value) <= limit('packet.identityBytes') &&
     characters(value) &&
     !/\/\/(?!git@[^/\s@]*(?:[/\s]|$))[^/\s]*@|[?&](?:token|key|password|secret|auth)=/iu.test(value)
   );
@@ -241,7 +247,7 @@ function stringMap(value: unknown): Record<string, string> {
   const r = object(value),
     result: Record<string, string> = {};
   for (const [k, v] of Object.entries(r).sort(([a], [b]) => (a < b ? -1 : a > b ? 1 : 0))) {
-    need(safeText(k) && k.length <= 256 && safeText(v, true));
+    need(safeText(k) && k.length <= limit('packet.idCodeUnits') && safeText(v, true));
     result[k] = v;
   }
   return result;
@@ -329,7 +335,7 @@ function packageSource(value: unknown): PackageSource {
     return { kind, identity };
   }
   const git = value.startsWith('git+https:');
-  const url = new URL(git ? value.slice(4) : value);
+  const url = new URL(git ? value.slice('git+'.length) : value);
   need(url.protocol === 'https:' && !url.username && !url.password, 'unsupported');
   return {
     kind: git ? 'git' : url.hostname === 'registry.npmjs.org' ? 'registry' : 'url',
@@ -365,7 +371,7 @@ function packageNode(root: string, lockPath: string, value: unknown, sourceId: s
   const name = r.name ?? slot;
   need(
     safeText(name) &&
-      name.length <= 256 &&
+      name.length <= limit('packet.idCodeUnits') &&
       safeText(r.version) &&
       /^(?:0|[1-9]\d*)\.(?:0|[1-9]\d*)\.(?:0|[1-9]\d*)(?:-[\da-z-]+(?:\.[\da-z-]+)*)?(?:\+[\da-z-]+(?:\.[\da-z-]+)*)?$/iu.test(
         r.version,
@@ -408,7 +414,7 @@ function lockPackages(
     declarations: NpmRootSide['declarations'];
   },
 ) {
-  need(data.lockfileVersion === 3, 'unsupported');
+  need(data.lockfileVersion === FORMAT_VERSION.npmLockfile, 'unsupported');
   const packages = object(data.packages),
     file = (root === '.' ? '' : root + '/') + 'package-lock.json';
   try {
@@ -745,10 +751,10 @@ function fileScopes(state: State, source: PacketSource): PacketSource[] {
     .sort();
   if (!members.length) return [source];
   const sources: PacketSource[] = [];
-  for (let i = 0; i < members.length; i += 32) {
-    const group = members.slice(i, i + 32),
+  for (let i = 0; i < members.length; i += limit('packet.listEntries')) {
+    const group = members.slice(i, i + limit('packet.listEntries')),
       ids = new Set(group),
-      id = i === 0 ? source.id : source.id + ':' + i / 32;
+      id = i === 0 ? source.id : source.id + ':' + i / limit('packet.listEntries');
     sources.push({ ...source, id, memberIds: group });
     for (const c of state.changes.filter((c) => ids.has(c.id)))
       for (const side of [c.from, c.to]) if (side?.sourceId === source.id) side.sourceId = id;

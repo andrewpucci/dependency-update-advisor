@@ -1,3 +1,4 @@
+import { BASE64, CHAR_CODE, HTTP_STATUS, MAX_TIMER_MS } from './format.js';
 import {
   createPullRequestClassifier,
   record,
@@ -6,6 +7,7 @@ import {
   type RepositoryIdentity,
 } from './event.js';
 import { PACKET_LIMITS, type EvidenceReason } from './schema.js';
+import { limit } from './limits.js';
 
 export type GithubReadLimits = Readonly<{
   maxRequests: number;
@@ -142,16 +144,16 @@ export function httpReason(response: Response, body: unknown): EvidenceReason {
   const remaining = response.headers.get('x-ratelimit-remaining');
   const retry = response.headers.get('retry-after');
   if (
-    response.status === 429 ||
-    (response.status === 403 &&
+    response.status === HTTP_STATUS.tooManyRequests ||
+    (response.status === HTTP_STATUS.forbidden &&
       (remaining === '0' ||
         (retry !== null && /^\d+$/u.test(retry) && Number.isSafeInteger(Number(retry)))))
   )
     return 'rate_limit';
-  if (response.status === 404) return 'missing';
+  if (response.status === HTTP_STATUS.notFound) return 'missing';
   if (
-    response.status === 401 ||
-    (response.status === 403 &&
+    response.status === HTTP_STATUS.unauthorized ||
+    (response.status === HTTP_STATUS.forbidden &&
       record(body) &&
       typeof body.message === 'string' &&
       [
@@ -165,14 +167,14 @@ export function httpReason(response: Response, body: unknown): EvidenceReason {
 
 /** Undecodable or absent bodies keep the reason their HTTP status supports. */
 function statusFailure(response: Response): EvidenceReason {
-  return response.status === 200 ? 'malformed' : httpReason(response, null);
+  return response.status === HTTP_STATUS.ok ? 'malformed' : httpReason(response, null);
 }
 /** Node clamps oversized delays to 1 ms; chain platform-sized intervals instead. */
 function startTimer(duration: number, expire: () => void): () => void {
   let remaining = duration;
   let timer: ReturnType<typeof setTimeout>;
   const schedule = () => {
-    const interval = Math.min(remaining, 2 ** 31 - 1);
+    const interval = Math.min(remaining, MAX_TIMER_MS);
     timer = setTimeout(() => {
       remaining -= interval;
       if (remaining > 0) schedule();
@@ -188,7 +190,9 @@ function canonicalPath(value: unknown): value is string {
     value.length > 0 &&
     Buffer.byteLength(value, 'utf8') <= PACKET_LIMITS.identityBytes &&
     !value.includes('\\') &&
-    !Array.from(value).some((c) => c.charCodeAt(0) < 32 || c.charCodeAt(0) === 127) &&
+    !Array.from(value).some(
+      (c) => c.charCodeAt(0) < CHAR_CODE.firstPrintable || c.charCodeAt(0) === CHAR_CODE.delete,
+    ) &&
     !/^[a-z][a-z\d+.-]*:/iu.test(value) &&
     value.split('/').every((part) => part !== '' && part !== '.' && part !== '..')
   );
@@ -227,7 +231,10 @@ function fileRequest(value: unknown): GithubFileRequest | null {
 }
 function base64Size(content: string): number {
   requireRead(/^(?:[A-Za-z\d+/]{4})*(?:[A-Za-z\d+/]{2}==|[A-Za-z\d+/]{3}=)?$/u.test(content));
-  return (content.length / 4) * 3 - (content.endsWith('==') ? 2 : content.endsWith('=') ? 1 : 0);
+  return (
+    (content.length / BASE64.chars) * BASE64.bytes -
+    (content.endsWith('==') ? 2 : content.endsWith('=') ? 1 : 0)
+  );
 }
 /** Collectors receive deep-frozen records; unserializable structures stay unsupported. */
 function frozenRecord(item: Record<string, unknown>): Readonly<Record<string, JsonValue>> {
@@ -269,7 +276,8 @@ function nextPage(headers: Headers, paths: readonly string[], page: number): boo
       'conflict',
     );
     requireRead(
-      url.searchParams.size === 2 && url.searchParams.get('per_page') === '100',
+      url.searchParams.size === 2 &&
+        url.searchParams.get('per_page') === String(limit('github.pageSize')),
       'conflict',
     );
     const number = url.searchParams.get('page');
@@ -421,7 +429,7 @@ class ReadSession implements GithubReadSession {
     } catch {
       throw new GithubReadFailure(statusFailure(response));
     }
-    if (response.status !== 200) {
+    if (response.status !== HTTP_STATUS.ok) {
       this.consumeEntries(value);
       throw new GithubReadFailure(httpReason(response, value));
     }
@@ -568,15 +576,17 @@ class ReadSession implements GithubReadSession {
     for (let page = 1; ; page++) {
       requireRead(this.pages < this.limits.maxPages, 'budget');
       this.pages++;
-      const response = await this.get(`${path}?per_page=100&page=${page}`);
-      requireRead(Array.isArray(response.value) && response.value.length <= 100);
+      const response = await this.get(`${path}?per_page=${limit('github.pageSize')}&page=${page}`);
+      requireRead(
+        Array.isArray(response.value) && response.value.length <= limit('github.pageSize'),
+      );
       for (const value of response.value) this.addFile(value, files, reasons, seen);
       const hasNext = nextPage(response.headers, linkPaths, page);
-      if (files.length >= 3000) {
+      if (files.length >= limit('github.treeMaxFiles')) {
         reasons.add('truncated');
         return;
       }
-      if (response.value.length < 100) {
+      if (response.value.length < limit('github.pageSize')) {
         requireRead(!hasNext, 'conflict');
         requireRead(files.length === count, 'conflict');
         return;

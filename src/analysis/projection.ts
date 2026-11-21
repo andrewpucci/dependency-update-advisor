@@ -1,3 +1,4 @@
+import { ALIAS_RADIX, JSON_ESCAPE_BYTES } from '../format.js';
 import { createHash } from 'node:crypto';
 import { isDeepStrictEqual, types } from 'node:util';
 import { parseReviewConfig, type ConfigResult } from '../config.js';
@@ -9,6 +10,7 @@ import {
   type DecisionUnit,
 } from '../units.js';
 import { PACKET_LIMITS } from '../schema.js';
+import { limit } from '../limits.js';
 import type { Finding, PolicyEvaluation, RuleTrace } from '../policy.js';
 import type {
   AnalysisLimits,
@@ -59,11 +61,11 @@ export function snapshotData(
   value: unknown,
   budget: { entries: number; bytes: number } = {
     entries: PACKET_LIMITS.bytes,
-    bytes: 8 * PACKET_LIMITS.bytes,
+    bytes: limit('analysis.projectionBytes'),
   },
   depth = 0,
 ): unknown {
-  requireValue(--budget.entries >= 0 && depth <= 64, 'budget');
+  requireValue(--budget.entries >= 0 && depth <= limit('analysis.maxProjectionDepth'), 'budget');
   if (typeof value === 'string') {
     budget.bytes -= Buffer.byteLength(value);
     requireValue(budget.bytes >= 0, 'budget');
@@ -100,7 +102,7 @@ export function snapshotData(
 
 function aliases<T>(values: readonly T[], prefix: string, id: (value: T) => string): Alias<T>[] {
   return values.map((value, index) => ({
-    alias: prefix + index.toString(36),
+    alias: prefix + index.toString(ALIAS_RADIX),
     id: id(value),
     value,
   }));
@@ -127,7 +129,12 @@ function limits(value: unknown, ceilings: AnalysisLimits): AnalysisLimits {
       'budget',
     );
   const result = value as AnalysisLimits;
-  requireValue(result.responseBytes >= result.completionTokens * 128 * 6 + 65_536, 'budget');
+  requireValue(
+    result.responseBytes >=
+      result.completionTokens * limit('analysis.maxTokenCodeUnits') * JSON_ESCAPE_BYTES +
+        limit('analysis.responseEnvelopeBytes'),
+    'budget',
+  );
   return result;
 }
 

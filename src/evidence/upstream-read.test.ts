@@ -1,5 +1,8 @@
-import { expect, test, vi } from 'vite-plus/test';
+import { describe, expect, test, vi } from 'vite-plus/test';
+import { createNpmRegistryReader } from './npm-registry.js';
+import { createResearchCache, type ResearchCache } from './research-cache.js';
 import { createUpstreamReader } from './upstream-read.js';
+import { EVIDENCE_READ_ALLOCATION } from '../budget.js';
 
 const integrity = 'sha512-' + Buffer.alloc(64, 7).toString('base64');
 const limits = {
@@ -248,4 +251,209 @@ test.each([
   const f = setup(async () => Response.json(data, { status: 403, headers }));
   expect((await f.reader.read(target)).reasons).toEqual([reason]);
   f.reader.close();
+});
+
+describe('run-scoped research cache', () => {
+  const shared = () => createResearchCache({ maxEntryBytes: 1 << 20, maxTotalBytes: 1 << 22 });
+  const other = { ...target, name: '@fixture/other', version: '2.0.0' };
+  const otherDocument = {
+    ...document,
+    _id: '@fixture/other@2.0.0',
+    name: other.name,
+    version: other.version,
+  };
+  const live = (status = 200) =>
+    vi.fn(async (url: string) =>
+      url.includes('other')
+        ? Response.json(otherDocument)
+        : status === 200
+          ? Response.json(document)
+          : new Response('{}', { status, headers: { 'content-type': 'application/json' } }),
+    );
+  const registryRead = async (cache: ResearchCache, fetch: ReturnType<typeof live>) => {
+    const registry = createNpmRegistryReader(
+      { ...limits, maxRequests: 10 },
+      { fetch, now: () => 0, cache },
+    );
+    if (registry.kind !== 'ready') throw new Error('registry');
+    const { name, version, integrity: sri, source } = target;
+    return registry.read({ name, version, integrity: sri, source });
+  };
+  const upstream = (cache: ResearchCache, fetch: ReturnType<typeof live>, overrides = {}) => {
+    const opened = createUpstreamReader(
+      { ...limits, ...overrides },
+      { fetch, now: () => 0, cache },
+    );
+    if (opened.kind !== 'ready') throw new Error('reader');
+    return opened.reader;
+  };
+
+  test('an npm document another reader cached costs upstream no request', async () => {
+    const cache = shared();
+    const fetch = live();
+    expect((await registryRead(cache, fetch)).kind).toBe('metadata');
+    const reader = upstream(cache, fetch, { maxRequests: 1 });
+    expect(await reader.read(other)).toMatchObject({ status: 'available', fetched: true });
+    expect(await reader.read(target)).toMatchObject({
+      status: 'available',
+      fetched: true,
+      data: document,
+    });
+    expect(fetch).toHaveBeenCalledTimes(2);
+  });
+
+  test('a cached npm failure is still reported as fetched', async () => {
+    const cache = shared();
+    const fetch = live(404);
+    expect(await registryRead(cache, fetch)).toEqual({ kind: 'unavailable', reason: 'missing' });
+    expect(await upstream(cache, fetch).read(target)).toMatchObject({
+      status: 'unavailable',
+      fetched: true,
+      reasons: ['missing'],
+    });
+    expect(fetch).toHaveBeenCalledTimes(1);
+  });
+
+  test('a cached response debits no total bytes', async () => {
+    const cache = shared();
+    const fetch = live();
+    await registryRead(cache, fetch);
+    const sizes = [document, otherDocument].map((d) => Buffer.byteLength(JSON.stringify(d)));
+    const reader = upstream(cache, fetch, {
+      maxResponseBytes: Math.max(...sizes),
+      maxTotalBytes: sizes[0] + sizes[1] - 1,
+    });
+    expect(await reader.read(other)).toMatchObject({ status: 'available' });
+    expect(await reader.read(target)).toMatchObject({ status: 'available', data: document });
+  });
+
+  test('a direct upstream hit costs no request or total bytes', async () => {
+    const cache = shared();
+    const info = (version: string) => ({ info: { name: 'fixture-widget', version } });
+    const fetch = vi.fn(async (url: string) => Response.json(info(url.split('/')[5])));
+    const py = (version: string) => ({
+      kind: 'pypi',
+      name: 'fixture-widget',
+      version,
+      source: { kind: 'registry', identity: 'https://pypi.org/simple' },
+    });
+    expect(await upstream(cache, fetch).read(py('1.0'))).toMatchObject({ status: 'available' });
+    const size = Buffer.byteLength(JSON.stringify(info('1.0')));
+    const reader = upstream(cache, fetch, {
+      maxRequests: 1,
+      maxResponseBytes: size,
+      maxTotalBytes: 2 * size - 1,
+    });
+    expect(await reader.read(py('2.0'))).toMatchObject({ status: 'available' });
+    expect(await reader.read(py('1.0'))).toMatchObject({ status: 'available', fetched: true });
+    expect(fetch).toHaveBeenCalledTimes(2);
+  });
+
+  test('a cached response still respects the per-response cap', async () => {
+    const cache = shared();
+    const fetch = live();
+    await registryRead(cache, fetch);
+    const size = Buffer.byteLength(JSON.stringify(document));
+    const reader = upstream(cache, fetch, { maxResponseBytes: size - 1 });
+    expect(await reader.read(target)).toMatchObject({ status: 'unavailable', reasons: ['budget'] });
+    expect(fetch).toHaveBeenCalledTimes(1);
+  });
+});
+
+test('an npm lookup past the request share reports budget', async () => {
+  const other = { ...target, name: '@fixture/other', version: '2.0.0' };
+  const f = setup(
+    async (url) =>
+      Response.json(
+        url.includes('other')
+          ? { ...document, _id: '@fixture/other@2.0.0', name: other.name, version: other.version }
+          : document,
+      ),
+    { maxRequests: 1 },
+  );
+  expect(await f.reader.read(target)).toMatchObject({ status: 'available' });
+  expect(await f.reader.read(other)).toMatchObject({ status: 'unavailable', reasons: ['budget'] });
+  expect(f.fetch).toHaveBeenCalledTimes(1);
+});
+/** An npm document for the version named in the request path, padded to `size` bytes when given. */
+function versionBody(url: string, size?: number) {
+  const version = decodeURIComponent(url.split('/').pop() ?? '');
+  const json = JSON.stringify({ ...document, _id: `@fixture/widget@${version}`, version });
+  if (size === undefined) return json;
+  // Whitespace after the opening brace keeps the document valid JSON at the exact size.
+  return `{${' '.repeat(size - json.length)}${json.slice(1)}`;
+}
+const versionTarget = (version: string) => ({ ...target, version });
+function requestShareBudget(share: number) {
+  const f = setup(async (url) => Response.json(JSON.parse(versionBody(url))), {
+    maxRequests: share,
+  });
+  return f;
+}
+test('upstream reader spends exactly its request share and refuses the request past it', async () => {
+  const share = EVIDENCE_READ_ALLOCATION.upstream.maxRequests;
+  const f = requestShareBudget(share);
+  for (let i = 0; i < share; i++)
+    expect(await f.reader.read(versionTarget(`1.0.${i}`))).toMatchObject({ status: 'available' });
+  expect(await f.reader.read(versionTarget(`1.0.${share}`))).toMatchObject({
+    status: 'unavailable',
+    reasons: ['budget'],
+  });
+  expect(f.fetch).toHaveBeenCalledTimes(share);
+  f.reader.close();
+});
+test('signals upstream reader spends exactly its request share and refuses the request past it', async () => {
+  const share = EVIDENCE_READ_ALLOCATION.signals.readers.upstream.maxRequests;
+  const f = requestShareBudget(share);
+  for (let i = 0; i < share; i++)
+    expect(await f.reader.read(versionTarget(`1.0.${i}`))).toMatchObject({ status: 'available' });
+  expect(await f.reader.read(versionTarget(`1.0.${share}`))).toMatchObject({
+    status: 'unavailable',
+    reasons: ['budget'],
+  });
+  expect(f.fetch).toHaveBeenCalledTimes(share);
+  f.reader.close();
+});
+/** Two npm reads whose bodies total `total + overflow` bytes; each body alone fits the share. */
+function byteShareReader(total: number, overflow: number) {
+  const first = Math.floor(total / 2);
+  const sizes = [first, total - first + overflow];
+  let calls = 0;
+  return setup(
+    async (url) =>
+      new Response(versionBody(url, sizes[calls++]), {
+        headers: { 'content-type': 'application/json' },
+      }),
+    { maxResponseBytes: total, maxTotalBytes: total },
+  );
+}
+test('upstream reader accepts a byte share exactly and refuses the byte past it', async () => {
+  const total = EVIDENCE_READ_ALLOCATION.upstream.maxTotalBytes;
+  const exact = byteShareReader(total, 0);
+  await exact.reader.read(versionTarget('1.0.0'));
+  expect(await exact.reader.read(versionTarget('1.0.1'))).toMatchObject({ status: 'available' });
+  exact.reader.close();
+
+  const over = byteShareReader(total, 1);
+  await over.reader.read(versionTarget('1.0.0'));
+  expect(await over.reader.read(versionTarget('1.0.1'))).toMatchObject({
+    status: 'unavailable',
+    reasons: ['budget'],
+  });
+  over.reader.close();
+});
+test('signals upstream reader accepts a byte share exactly and refuses the byte past it', async () => {
+  const total = EVIDENCE_READ_ALLOCATION.signals.readers.upstream.maxTotalBytes;
+  const exact = byteShareReader(total, 0);
+  await exact.reader.read(versionTarget('1.0.0'));
+  expect(await exact.reader.read(versionTarget('1.0.1'))).toMatchObject({ status: 'available' });
+  exact.reader.close();
+
+  const over = byteShareReader(total, 1);
+  await over.reader.read(versionTarget('1.0.0'));
+  expect(await over.reader.read(versionTarget('1.0.1'))).toMatchObject({
+    status: 'unavailable',
+    reasons: ['budget'],
+  });
+  over.reader.close();
 });

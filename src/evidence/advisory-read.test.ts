@@ -1,5 +1,8 @@
 import { expect, test, vi } from 'vite-plus/test';
 import { createAdvisoryReader, createMalwareReader } from './advisory-read.js';
+import { createResearchCache } from './research-cache.js';
+import { EVIDENCE_READ_ALLOCATION } from '../budget.js';
+import { limit } from '../limits.js';
 
 const limits = {
   maxRequests: 10,
@@ -364,4 +367,246 @@ test('a joined range over the packet text bound is a budget gap, never truncated
   const result = await r.read(target);
   r.close();
   expect(result).toMatchObject({ complete: false, records: [], reasons: ['budget'] });
+});
+
+const cachedAdvisoryBody = `[${' '.repeat(100)}]`;
+const cachedAdvisoryBytes = Buffer.byteLength(cachedAdvisoryBody);
+const advisoryTarget = (version: string) => ({
+  ecosystem: 'npm' as const,
+  name: 'fixture-cache',
+  version,
+});
+function cachedAdvisoryFetch(calls: string[]) {
+  return async (url: string) => {
+    calls.push(url);
+    return new Response(cachedAdvisoryBody, { headers: { 'content-type': 'application/json' } });
+  };
+}
+test('a cache hit costs no request', async () => {
+  const cache = createResearchCache({ maxEntryBytes: 1 << 20, maxTotalBytes: 1 << 22 });
+  const calls: string[] = [];
+  const deps = { now: () => 0, fetch: cachedAdvisoryFetch(calls), cache };
+  const a = createAdvisoryReader(limits, deps);
+  if (a.kind !== 'ready') throw new Error('reader');
+  const expected = await a.read(advisoryTarget('1.0.0'));
+  a.close();
+  const b = createAdvisoryReader({ ...limits, maxRequests: 1 }, deps);
+  if (b.kind !== 'ready') throw new Error('reader');
+  await b.read(advisoryTarget('2.0.0'));
+  const hit = await b.read(advisoryTarget('1.0.0'));
+  b.close();
+  expect(expected).toMatchObject({ status: 'available', complete: true });
+  expect(hit).toEqual(expected);
+  expect(calls).toHaveLength(2);
+});
+test('a cache hit debits no total bytes', async () => {
+  const cache = createResearchCache({ maxEntryBytes: 1 << 20, maxTotalBytes: 1 << 22 });
+  const calls: string[] = [];
+  const deps = { now: () => 0, fetch: cachedAdvisoryFetch(calls), cache };
+  const a = createAdvisoryReader(limits, deps);
+  if (a.kind !== 'ready') throw new Error('reader');
+  const expected = await a.read(advisoryTarget('1.0.0'));
+  a.close();
+  const fits = cachedAdvisoryBytes + 1;
+  const b = createAdvisoryReader({ ...limits, maxResponseBytes: fits, maxTotalBytes: fits }, deps);
+  if (b.kind !== 'ready') throw new Error('reader');
+  const live = await b.read(advisoryTarget('2.0.0'));
+  const hit = await b.read(advisoryTarget('1.0.0'));
+  b.close();
+  expect(live).toMatchObject({ status: 'available', complete: true });
+  expect(hit).toEqual(expected);
+  expect(calls).toHaveLength(2);
+});
+test('a cached response still respects the per-response cap', async () => {
+  const cache = createResearchCache({ maxEntryBytes: 1 << 20, maxTotalBytes: 1 << 22 });
+  const calls: string[] = [];
+  const deps = { now: () => 0, fetch: cachedAdvisoryFetch(calls), cache };
+  const a = createAdvisoryReader(limits, deps);
+  if (a.kind !== 'ready') throw new Error('reader');
+  await a.read(advisoryTarget('1.0.0'));
+  a.close();
+  const small = cachedAdvisoryBytes - 1;
+  const c = createAdvisoryReader(
+    { ...limits, maxResponseBytes: small, maxTotalBytes: small },
+    deps,
+  );
+  if (c.kind !== 'ready') throw new Error('reader');
+  const result = await c.read(advisoryTarget('1.0.0'));
+  c.close();
+  expect(result).toMatchObject({ status: 'unavailable', complete: false, reasons: ['budget'] });
+  expect(calls).toHaveLength(1);
+});
+test('a cache hit leaves the total-byte share for later live reads', async () => {
+  const cache = createResearchCache({ maxEntryBytes: 1 << 20, maxTotalBytes: 1 << 22 });
+  const calls: string[] = [];
+  const deps = { now: () => 0, fetch: cachedAdvisoryFetch(calls), cache };
+  const a = createAdvisoryReader(limits, deps);
+  if (a.kind !== 'ready') throw new Error('reader');
+  await a.read(advisoryTarget('1.0.0'));
+  a.close();
+  const fits = cachedAdvisoryBytes + 1;
+  const b = createAdvisoryReader({ ...limits, maxResponseBytes: fits, maxTotalBytes: fits }, deps);
+  if (b.kind !== 'ready') throw new Error('reader');
+  const hit = await b.read(advisoryTarget('1.0.0'));
+  const live = await b.read(advisoryTarget('2.0.0'));
+  b.close();
+  expect(hit).toMatchObject({ status: 'available', complete: true });
+  expect(live).toMatchObject({ status: 'available', complete: true });
+  expect(calls).toHaveLength(2);
+});
+
+/** Serves empty advisory pages; every page links to the next unless it is `lastPage`. */
+function cursorPages(lastPage: number | null) {
+  let calls = 0;
+  const fetch = async (url: string) => {
+    calls++;
+    const next = new URL(url);
+    next.searchParams.set('after', `page-${calls}`);
+    const more = lastPage === null || calls < lastPage;
+    return Response.json([], more ? { headers: { link: `<${next}>; rel="next"` } } : {});
+  };
+  return { fetch, calls: () => calls };
+}
+function requestShareReader(
+  factory: typeof createAdvisoryReader,
+  maxRequests: number,
+  fetch: (url: string, init: RequestInit) => Promise<Response>,
+) {
+  const made = factory(
+    { ...limits, maxRequests, maxPages: Number.MAX_SAFE_INTEGER },
+    { now: () => 0, fetch },
+  );
+  if (made.kind !== 'ready') throw new Error('reader');
+  return made;
+}
+function jsonBody(size: number) {
+  return `[${' '.repeat(size - 2)}]`;
+}
+/**
+ * Two pages whose bodies total `total + overflow` bytes. The first page is half the share and
+ * links to the second, which carries the rest; each response stays under the share on its own.
+ */
+function byteSharePages(total: number, overflow: number) {
+  const first = Math.floor(total / 2);
+  const headers = { 'content-type': 'application/json' };
+  let calls = 0;
+  return {
+    fetch: async (url: string) => {
+      calls++;
+      if (calls === 1) {
+        const next = new URL(url);
+        next.searchParams.set('after', 'bytes');
+        return new Response(jsonBody(first), {
+          headers: { ...headers, link: `<${next}>; rel="next"` },
+        });
+      }
+      return new Response(jsonBody(total - first + overflow), { headers });
+    },
+  };
+}
+function byteShareReader(
+  factory: typeof createAdvisoryReader,
+  total: number,
+  fetch: (url: string, init: RequestInit) => Promise<Response>,
+) {
+  const made = factory(
+    { ...limits, maxResponseBytes: total, maxTotalBytes: total },
+    { now: () => 0, fetch },
+  );
+  if (made.kind !== 'ready') throw new Error('reader');
+  return made;
+}
+test('advisory reader spends exactly its request share and refuses the lookup past it', async () => {
+  const share = EVIDENCE_READ_ALLOCATION.advisory.maxRequests;
+  const exact = cursorPages(share);
+  const atLimit = requestShareReader(createAdvisoryReader, share, exact.fetch);
+  expect(await atLimit.read(target)).toMatchObject({ complete: true, reasons: [] });
+  atLimit.close();
+  expect(exact.calls()).toBe(share);
+
+  const over = cursorPages(null);
+  const pastLimit = requestShareReader(createAdvisoryReader, share, over.fetch);
+  expect(await pastLimit.read(target)).toMatchObject({ complete: false, reasons: ['budget'] });
+  pastLimit.close();
+  expect(over.calls()).toBe(share);
+});
+test('malware reader spends exactly its request share and refuses the lookup past it', async () => {
+  const share = EVIDENCE_READ_ALLOCATION.signals.readers.malware.maxRequests;
+  const exact = cursorPages(share);
+  const atLimit = requestShareReader(createMalwareReader, share, exact.fetch);
+  expect(await atLimit.read(target)).toMatchObject({ complete: true, reasons: [] });
+  atLimit.close();
+  expect(exact.calls()).toBe(share);
+
+  const over = cursorPages(null);
+  const pastLimit = requestShareReader(createMalwareReader, share, over.fetch);
+  expect(await pastLimit.read(target)).toMatchObject({ complete: false, reasons: ['budget'] });
+  pastLimit.close();
+  expect(over.calls()).toBe(share);
+});
+test('advisory reader accepts a byte share exactly and refuses the byte past it', async () => {
+  const total = EVIDENCE_READ_ALLOCATION.advisory.maxTotalBytes;
+  const exact = byteSharePages(total, 0);
+  const atLimit = byteShareReader(createAdvisoryReader, total, exact.fetch);
+  expect(await atLimit.read(target)).toMatchObject({ complete: true, reasons: [] });
+  atLimit.close();
+
+  const over = byteSharePages(total, 1);
+  const pastLimit = byteShareReader(createAdvisoryReader, total, over.fetch);
+  expect(await pastLimit.read(target)).toMatchObject({ complete: false, reasons: ['budget'] });
+  pastLimit.close();
+});
+test('malware reader accepts a byte share exactly and refuses the byte past it', async () => {
+  const total = EVIDENCE_READ_ALLOCATION.signals.readers.malware.maxTotalBytes;
+  const exact = byteSharePages(total, 0);
+  const atLimit = byteShareReader(createMalwareReader, total, exact.fetch);
+  expect(await atLimit.read(target)).toMatchObject({ complete: true, reasons: [] });
+  atLimit.close();
+
+  const over = byteSharePages(total, 1);
+  const pastLimit = byteShareReader(createMalwareReader, total, over.fetch);
+  expect(await pastLimit.read(target)).toMatchObject({ complete: false, reasons: ['budget'] });
+  pastLimit.close();
+});
+test('advisory JSON depth accepts the register depth exactly and refuses one level deeper', async () => {
+  const maxJsonDepth = limit('research.maxJsonDepth');
+  // The record is at depth 1; each wrapper array adds a level, and the innermost string sits one
+  // level below the last wrapper.
+  const nestedTo = (depth: number) => {
+    let value: unknown = 'x';
+    for (let level = 2; level < depth; level++) value = [value];
+    return value;
+  };
+  const withNesting = (depth: number) => Response.json([{ ...record, nested: nestedTo(depth) }]);
+  const exact = reader(async () => withNesting(maxJsonDepth), { maxJsonDepth });
+  expect(await exact.read(target)).toMatchObject({
+    complete: true,
+    records: [{ id: record.ghsa_id }],
+  });
+  exact.close();
+
+  const deeper = reader(async () => withNesting(maxJsonDepth + 1), { maxJsonDepth });
+  expect(await deeper.read(target)).toMatchObject({ complete: false, reasons: ['budget'] });
+  deeper.close();
+});
+test('advisory findings accept the register cap exactly and refuse the finding past it', async () => {
+  const maxFindings = limit('research.maxFindings');
+  const generous = {
+    maxFindings,
+    maxJsonEntries: 100_000,
+    maxRetainedBytes: 10_000_000,
+    maxResponseBytes: 10_000_000,
+    maxTotalBytes: 10_000_000,
+  };
+  const exact = reader(async () => Response.json(Array(maxFindings).fill(record)), generous);
+  const atLimit = await exact.read(target);
+  exact.close();
+  expect(atLimit).toMatchObject({ complete: true, reasons: [] });
+  expect(atLimit.records).toHaveLength(maxFindings);
+
+  const over = reader(async () => Response.json(Array(maxFindings + 1).fill(record)), generous);
+  const pastLimit = await over.read(target);
+  over.close();
+  expect(pastLimit).toMatchObject({ complete: false, reasons: ['budget'] });
+  expect(pastLimit.records).toHaveLength(maxFindings);
 });

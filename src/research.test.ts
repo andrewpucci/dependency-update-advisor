@@ -1,19 +1,31 @@
-import { expect, test, vi } from 'vite-plus/test';
+import { afterEach, expect, test, vi } from 'vite-plus/test';
 import { upstreamScenario } from '../tests/parity/upstream.js';
 import * as advisoryModule from './evidence/advisories.js';
 import * as npmRegistryModule from './evidence/npm-registry.js';
 import * as publishTimesModule from './evidence/npm-publish-times.js';
 import * as signalReadModule from './evidence/policy-signals-read.js';
 import * as advisoryReadModule from './evidence/advisory-read.js';
+import * as upstreamModule from './evidence/upstream.js';
 import * as upstreamReadModule from './evidence/upstream-read.js';
+import * as policySignalsModule from './evidence/policy-signals.js';
 import { EVIDENCE_READ_ALLOCATION, EVIDENCE_READ_ENVELOPE } from './budget.js';
-import { runResearch } from './research.js';
+import { researchOrder, runResearch, type ResearchObservation } from './research.js';
+import { limit } from './limits.js';
+import type { PacketChange } from './schema.js';
 import * as schemaModule from './schema.js';
 import { validateReviewPacket } from './schema.js';
 
 vi.mock('./evidence/advisories.js', async (original) => {
   const actual = await original<typeof import('./evidence/advisories.js')>();
   return { ...actual, enrichAdvisories: vi.fn(actual.enrichAdvisories) };
+});
+vi.mock('./evidence/upstream.js', async (original) => {
+  const actual = await original<typeof import('./evidence/upstream.js')>();
+  return { ...actual, enrichUpstream: vi.fn(actual.enrichUpstream) };
+});
+vi.mock('./evidence/policy-signals.js', async (original) => {
+  const actual = await original<typeof import('./evidence/policy-signals.js')>();
+  return { ...actual, enrichPolicySignals: vi.fn(actual.enrichPolicySignals) };
 });
 vi.mock('./evidence/npm-registry.js', async (original) => {
   const actual = await original<typeof import('./evidence/npm-registry.js')>();
@@ -28,6 +40,7 @@ vi.mock('./evidence/policy-signals-read.js', async (original) => {
   return { ...actual, createPolicySignalReader: vi.fn(actual.createPolicySignalReader) };
 });
 const closed: string[] = [];
+const actualSchema = await vi.importActual<typeof import('./schema.js')>('./schema.js');
 vi.mock('./evidence/advisory-read.js', async (original) => {
   const actual = await original<typeof import('./evidence/advisory-read.js')>();
   const track = (name: string, create: typeof actual.createAdvisoryReader) =>
@@ -65,6 +78,40 @@ vi.mock('./schema.js', async (original) => {
 });
 
 const evaluationTime = Date.parse('2026-11-07T00:00:00Z');
+type Packet = Awaited<ReturnType<typeof scenario>>['packet'];
+const RESEARCH_CATEGORIES = ['upstream', 'installScript', 'vulnerability', 'malware'] as const;
+const MALFORMED = { status: 'unavailable', reasons: ['malformed'], sourceIds: [] };
+
+/**
+ * Counts members that carry enrichment: a non-basis change that differs from its collected version and
+ * has a research category beyond unavailable. Reverted members are unavailable, so they do not count.
+ */
+function enrichedMembers(candidate: unknown, collected: Packet): number {
+  const { changes } = candidate as {
+    changes: { id: string; basis?: unknown; evidence: Record<string, { status: string }> }[];
+  };
+  const before = new Map(collected.changes.map((change) => [change.id, change]));
+  // A member is enriched when research gave one of its categories evidence it did not have.
+  return changes.filter((change) => {
+    const collectedEvidence = before.get(change.id)?.evidence as
+      | Record<string, unknown>
+      | undefined;
+    return (
+      !('basis' in change) &&
+      RESEARCH_CATEGORIES.some(
+        (key) =>
+          ['available', 'partial'].includes(change.evidence[key]?.status ?? '') &&
+          JSON.stringify(change.evidence[key]) !== JSON.stringify(collectedEvidence?.[key]),
+      )
+    );
+  }).length;
+}
+
+afterEach(() => {
+  vi.mocked(schemaModule.validateReviewPacket).mockImplementation(
+    actualSchema.validateReviewPacket,
+  );
+});
 
 async function scenario(options: Parameters<typeof upstreamScenario>[0] = {}) {
   const fixture = await upstreamScenario(options);
@@ -175,20 +222,128 @@ test('records an unavailable stage with its reason and continues with the eviden
   expect(result.upstreamAttempts.length).toBeGreaterThan(0);
 });
 
-test('falls back to the collected packet when the enriched one fails validation', async () => {
+test('records a stage whose reader stopped early as unavailable with the stop reason', async () => {
   const { fixture, packet } = await scenario();
-  vi.mocked(schemaModule.validateReviewPacket).mockReturnValueOnce({
-    ok: false,
-    error: { category: 'budget', field: 'sources' },
+  const actualUpstream = await vi.importActual<typeof import('./evidence/upstream-read.js')>(
+    './evidence/upstream-read.js',
+  );
+  vi.mocked(upstreamReadModule.createUpstreamReader).mockImplementationOnce((...args) => {
+    const opened = actualUpstream.createUpstreamReader(...args);
+    if (opened.kind !== 'ready') return opened;
+    return { ...opened, reader: { ...opened.reader, stopped: () => 'timeout' as const } };
+  });
+  const actualAdvisories = await vi.importActual<typeof import('./evidence/advisories.js')>(
+    './evidence/advisories.js',
+  );
+  vi.mocked(advisoryModule.enrichAdvisories).mockImplementationOnce(async (...args) => {
+    const result = await actualAdvisories.enrichAdvisories(...args);
+    return result.kind === 'enriched' ? { ...result, stopped: 'rate_limit' } : result;
   });
   const result = await runResearch(base(fixture, packet));
+  if (result.kind !== 'ready') throw new Error('research');
+  expect(result.unavailable).toEqual([
+    { stage: 'upstream', reason: 'timeout' },
+    { stage: 'advisories', reason: 'rate_limit' },
+  ]);
+});
+
+test('reports each stage start and end to an observer, with the stop reason', async () => {
+  const { fixture, packet } = await scenario();
+  vi.mocked(advisoryModule.enrichAdvisories).mockResolvedValueOnce({
+    kind: 'unavailable',
+    reason: 'budget',
+  });
+  const events: ResearchObservation[] = [];
+  await runResearch({
+    ...base(fixture, packet),
+    observe: (observation) => events.push(observation),
+  });
+  expect(events).toEqual([
+    { kind: 'stage-start', stage: 'upstream' },
+    { kind: 'stage-end', stage: 'upstream', outcome: 'enriched', reason: null },
+    { kind: 'stage-start', stage: 'advisories' },
+    { kind: 'stage-end', stage: 'advisories', outcome: 'unavailable', reason: 'budget' },
+    { kind: 'stage-start', stage: 'signals' },
+    { kind: 'stage-end', stage: 'signals', outcome: 'enriched', reason: null },
+    { kind: 'stage-start', stage: 'revalidation' },
+    { kind: 'stage-end', stage: 'revalidation', outcome: 'enriched', reason: null },
+  ]);
+});
+
+test('ignores observer errors', async () => {
+  const { fixture, packet } = await scenario();
+  const result = await runResearch({
+    ...base(fixture, packet),
+    observe: () => {
+      throw new Error('observer');
+    },
+  });
+  expect(result.kind).toBe('ready');
+  if (result.kind !== 'ready') return;
+  expect(result.unavailable).toEqual([]);
+});
+
+/** Makes candidates that carry enrichment for two or more members fail validation, as an unattributable failure would. */
+function failWhenTwoMembersEnriched(collected: Packet) {
+  vi.mocked(schemaModule.validateReviewPacket).mockImplementation((candidate, trusted) =>
+    enrichedMembers(candidate, collected) >= 2
+      ? { ok: false, error: { category: 'reference', field: 'sources' } }
+      : actualSchema.validateReviewPacket(candidate, trusted),
+  );
+}
+
+/** Asserts the collected packet is the fallback: every non-basis change marked malformed. */
+function expectMalformedFallback(packet: Packet, changes: Packet['changes']) {
+  for (const change of changes) {
+    if ('basis' in change) continue;
+    const before = packet.changes.find((item) => item.id === change.id);
+    for (const category of RESEARCH_CATEGORIES.filter((key) => key in change.evidence)) {
+      const collected = before?.evidence[category];
+      // Collected facts survive the fallback; only research placeholders become malformed.
+      const placeholder =
+        JSON.stringify(collected) ===
+        JSON.stringify({ status: 'unavailable', reasons: ['missing'], sourceIds: [] });
+      expect(change.evidence[category], `${change.id} ${category}`).toEqual(
+        placeholder ? MALFORMED : collected,
+      );
+    }
+  }
+  expect(changes.map((change) => change.id)).toEqual(packet.changes.map((change) => change.id));
+}
+
+test('reports a failed revalidation to the observer', async () => {
+  const { fixture, packet } = await scenario();
+  failWhenTwoMembersEnriched(packet);
+  const events: ResearchObservation[] = [];
+  const result = await runResearch({
+    ...base(fixture, packet),
+    observe: (observation) => events.push(observation),
+  });
+  expect(events.at(-1)).toEqual({
+    kind: 'stage-end',
+    stage: 'revalidation',
+    outcome: 'unavailable',
+    reason: 'malformed',
+  });
+  if (result.kind !== 'ready') throw new Error('research');
+  expectMalformedFallback(packet, result.packet.changes);
+});
+
+test('falls back to the collected packet when the enriched one fails validation', async () => {
+  const { fixture, packet } = await scenario();
+  failWhenTwoMembersEnriched(packet);
+  const result = await runResearch(base(fixture, packet));
+  if (result.kind !== 'ready') throw new Error('research');
   expect(result).toMatchObject({
     kind: 'ready',
-    packet,
     unavailable: expect.arrayContaining([{ stage: 'revalidation', reason: 'malformed' }]),
     upstreamAttempts: [],
     signalAttempts: [],
   });
+  expect(result.packet.coverage).toEqual(packet.coverage);
+  expect(result.packet.findings).toEqual(packet.findings);
+  expect(result.packet.sources).toEqual(packet.sources);
+  expectMalformedFallback(packet, result.packet.changes);
 });
 
 test('sends no credentials to any public source', async () => {
@@ -330,4 +485,277 @@ test('researches a group of 32 changed packages without exhausting any reader', 
   expect(JSON.stringify(result.signalAttempts)).not.toContain('budget');
   expect(result.signalAttempts.length).toBeGreaterThan(0);
   expect(result.upstreamAttempts.length).toBeGreaterThan(0);
+});
+
+const PLACEHOLDER = { status: 'unavailable', reasons: ['missing'], sourceIds: [] };
+const BUDGET = { status: 'unavailable', reasons: ['budget'], sourceIds: [] };
+
+function evidenceOf(
+  packet: { readonly changes: readonly { readonly id: string; readonly evidence: object }[] },
+  category: string,
+): [string, unknown][] {
+  return packet.changes.map((change) => [
+    change.id,
+    (change.evidence as Readonly<Record<string, unknown>>)[category],
+  ]);
+}
+
+/** Makes the next upstream run stop after completing every member, as a reader stop would. */
+async function stopUpstreamOnce(reason: 'timeout') {
+  const actual =
+    await vi.importActual<typeof import('./evidence/upstream.js')>('./evidence/upstream.js');
+  vi.mocked(upstreamModule.enrichUpstream).mockImplementationOnce(async (...args) => {
+    const result = await actual.enrichUpstream(...args);
+    return result.kind === 'enriched' ? { ...result, stopped: reason } : result;
+  });
+}
+
+test("applies a stopped stage's retained members and records the stop", async () => {
+  const { fixture, packet } = await scenario();
+  const complete = await runResearch(base(fixture, packet));
+  await stopUpstreamOnce('timeout');
+  const result = await runResearch(base(fixture, packet));
+  if (result.kind !== 'ready' || complete.kind !== 'ready') throw new Error('research');
+  expect(result.unavailable).toEqual([{ stage: 'upstream', reason: 'timeout' }]);
+  expect(evidenceOf(result.packet, 'upstream')).toEqual(evidenceOf(complete.packet, 'upstream'));
+});
+
+test('runs advisory lookups for members with retained identities after an upstream stop', async () => {
+  const { fixture, packet } = await scenario({ vulnerableNpm: true });
+  await stopUpstreamOnce('timeout');
+  const result = await runResearch(base(fixture, packet));
+  expect(result.kind).toBe('ready');
+  const reviewed = fixture.requests
+    .filter((url) => url.includes('/advisories') && url.includes('type=reviewed'))
+    .map((url) => decodeURIComponent(new URL(url).search));
+  expect(reviewed.some((query) => query.includes('ecosystem=npm&affects=orbit@2.0.0'))).toBe(true);
+});
+
+const ownedByStage = {
+  upstream: ['upstream', 'installScript'],
+  advisories: ['vulnerability'],
+  signals: ['malware'],
+} as const;
+
+const failOnce: Record<keyof typeof ownedByStage, () => void> = {
+  upstream: () =>
+    vi.mocked(upstreamModule.enrichUpstream).mockResolvedValueOnce({
+      kind: 'unavailable',
+      reason: 'budget',
+    }),
+  advisories: () =>
+    vi.mocked(advisoryModule.enrichAdvisories).mockResolvedValueOnce({
+      kind: 'unavailable',
+      reason: 'budget',
+    }),
+  signals: () =>
+    vi.mocked(policySignalsModule.enrichPolicySignals).mockResolvedValueOnce({
+      kind: 'unavailable',
+      reason: 'budget',
+    }),
+};
+
+test.each(['upstream', 'advisories', 'signals'] as const)(
+  'a failed %s stage marks its placeholders with its reason, not missing',
+  async (stage) => {
+    const { fixture, packet } = await scenario({ vulnerableNpm: true });
+    failOnce[stage]();
+    const result = await runResearch(base(fixture, packet));
+    if (result.kind !== 'ready') throw new Error('research');
+    expect(result.unavailable).toEqual([{ stage, reason: 'budget' }]);
+    const owned: readonly string[] = ownedByStage[stage];
+    let marked = 0;
+    for (const change of packet.changes) {
+      if ('basis' in change) continue;
+      const after = result.packet.changes.find((candidate) => candidate.id === change.id);
+      if (!after) throw new Error(`missing change ${change.id}`);
+      for (const category of owned) {
+        if (JSON.stringify(change.evidence[category]) !== JSON.stringify(PLACEHOLDER)) continue;
+        marked += 1;
+        expect(after.evidence[category], `${change.id} ${category}`).toEqual(BUDGET);
+      }
+      // Categories the failed stage does not own are never marked with its reason.
+      for (const [category, evidence] of Object.entries(after.evidence))
+        if (!owned.includes(category))
+          expect(evidence, `${change.id} ${category}`).not.toEqual(BUDGET);
+    }
+    expect(marked).toBeGreaterThan(0);
+  },
+);
+
+test('orders research by priority, handing advisory lookup that order and returning the original order', async () => {
+  const change = (id: string, overrides: Record<string, unknown>) =>
+    ({
+      id,
+      ecosystem: 'npm',
+      kind: 'update',
+      role: 'transitive',
+      evidence: {},
+      from: null,
+      to: null,
+      ...overrides,
+    }) as unknown as PacketChange;
+  const side = (lockPath: string) => ({ root: '.', lockPath, name: lockPath, version: '1.0.0' });
+  const inventory = {
+    roots: [
+      {
+        root: '.',
+        base: { packages: {} },
+        head: { packages: { 'node_modules/scripts': { hasInstallScript: true } } },
+      },
+    ],
+  } as never;
+  const synthetic = [
+    change('plain-a', { from: side('node_modules/plain-a'), to: side('node_modules/plain-a') }),
+    change('direct', {
+      role: 'direct',
+      from: side('node_modules/direct'),
+      to: side('node_modules/direct'),
+    }),
+    change('added', { kind: 'addition', to: side('node_modules/added') }),
+    change('scripts', { from: side('node_modules/scripts'), to: side('node_modules/scripts') }),
+    change('plain-b', { from: side('node_modules/plain-b'), to: side('node_modules/plain-b') }),
+  ];
+  expect(researchOrder(synthetic, inventory).map((entry) => entry.id)).toEqual([
+    'direct',
+    'added',
+    'scripts',
+    'plain-a',
+    'plain-b',
+  ]);
+
+  const { fixture, packet } = await scenario({ children: 29 } as never);
+  vi.mocked(advisoryModule.enrichAdvisories).mockClear();
+  const result = await runResearch(base(fixture, packet));
+  if (result.kind !== 'ready') throw new Error('research');
+  const handed = vi.mocked(advisoryModule.enrichAdvisories).mock.calls[0]?.[0] as unknown as {
+    changes: readonly PacketChange[];
+  };
+  const expected = researchOrder(packet.changes, fixture.npm).map((entry) => entry.id);
+  expect(handed.changes.map((entry) => entry.id)).toEqual(expected);
+  expect(result.packet.changes.map((entry) => entry.id)).toEqual(
+    packet.changes.map((entry) => entry.id),
+  );
+});
+
+const REGISTRY_NAME = 'example-package';
+const REGISTRY_VERSION = '1.0.0';
+const REGISTRY_INTEGRITY = 'sha512-' + Buffer.alloc(64).toString('base64');
+const REGISTRY_URL = `https://registry.npmjs.org/${REGISTRY_NAME}/${REGISTRY_VERSION}`;
+
+/** A registry reader whose only limits are the research register values under test. */
+function registryReader(
+  limits: { maxJsonEntries: number; maxRetainedBytes: number },
+  body: unknown,
+) {
+  const MiB8 = 8 * 1024 * 1024;
+  const opened = npmRegistryModule.createNpmRegistryReader(
+    {
+      maxRequests: 4,
+      maxResponseBytes: MiB8,
+      maxTotalBytes: MiB8,
+      maxJsonDepth: 32,
+      requestTimeoutMs: 1000,
+      totalTimeoutMs: 10000,
+      ...limits,
+    },
+    {
+      fetch: async () =>
+        new Response(JSON.stringify(body), { headers: { 'content-type': 'application/json' } }),
+      now: () => 0,
+    },
+  );
+  if (opened.kind !== 'ready') throw new Error('expected a ready registry reader');
+  return opened;
+}
+const registryRequest = {
+  name: REGISTRY_NAME,
+  version: REGISTRY_VERSION,
+  integrity: REGISTRY_INTEGRITY,
+  source: { kind: 'registry', identity: 'https://registry.npmjs.org/' },
+};
+function registryDocument(extra: unknown) {
+  return {
+    name: REGISTRY_NAME,
+    version: REGISTRY_VERSION,
+    _id: `${REGISTRY_NAME}@${REGISTRY_VERSION}`,
+    dist: { integrity: REGISTRY_INTEGRITY },
+    ...(extra as Record<string, unknown>),
+  };
+}
+
+test('the npm registry reader counts exactly research.maxJsonEntries entries and refuses one more', async () => {
+  const maxJsonEntries = limit('research.maxJsonEntries');
+  // Counted entries: the root's five values, dist's integrity, and each element of extra.
+  const fixedEntries = 6;
+  const entriesFor = (elements: number) =>
+    registryDocument({ extra: Array.from({ length: elements }, () => 0) });
+  const atLimit = registryReader(
+    { maxJsonEntries, maxRetainedBytes: limit('research.maxRetainedBytes') },
+    entriesFor(maxJsonEntries - fixedEntries),
+  );
+  expect(await atLimit.read(registryRequest)).toMatchObject({ kind: 'metadata' });
+
+  const pastLimit = registryReader(
+    { maxJsonEntries, maxRetainedBytes: limit('research.maxRetainedBytes') },
+    entriesFor(maxJsonEntries - fixedEntries + 1),
+  );
+  expect(await pastLimit.read(registryRequest)).toEqual({ kind: 'unavailable', reason: 'budget' });
+  expect(pastLimit.stopped()).toBe('budget');
+});
+
+test('the npm registry reader retains exactly research.maxRetainedBytes and refuses one byte more', async () => {
+  const maxRetainedBytes = limit('research.maxRetainedBytes');
+  // The retained record is { name, version, url, data }, so its size is set by the padding in data.
+  const retainedWith = (padding: number) =>
+    Buffer.byteLength(
+      JSON.stringify({
+        name: REGISTRY_NAME,
+        version: REGISTRY_VERSION,
+        url: REGISTRY_URL,
+        data: registryDocument({ pad: 'x'.repeat(padding) }),
+      }),
+    );
+  const padding = maxRetainedBytes - retainedWith(0);
+  expect(retainedWith(padding)).toBe(maxRetainedBytes);
+  const atLimit = registryReader(
+    { maxJsonEntries: limit('research.maxJsonEntries'), maxRetainedBytes },
+    registryDocument({ pad: 'x'.repeat(padding) }),
+  );
+  expect(await atLimit.read(registryRequest)).toMatchObject({ kind: 'metadata' });
+
+  const pastLimit = registryReader(
+    { maxJsonEntries: limit('research.maxJsonEntries'), maxRetainedBytes },
+    registryDocument({ pad: 'x'.repeat(padding + 1) }),
+  );
+  expect(await pastLimit.read(registryRequest)).toEqual({ kind: 'unavailable', reason: 'budget' });
+});
+
+test('the upstream reader spends exactly research.maxWork units and refuses the next one', () => {
+  const maxWork = limit('research.maxWork');
+  const share = EVIDENCE_READ_ALLOCATION.upstream;
+  const opened = upstreamReadModule.createUpstreamReader(
+    {
+      maxRequests: share.maxRequests,
+      maxPages: share.maxRequests,
+      maxTagCandidates: limit('research.maxTagCandidates'),
+      maxTagDepth: limit('research.maxTagDepth'),
+      maxResponseBytes: Math.min(EVIDENCE_READ_ENVELOPE.maxResponseBytes, share.maxTotalBytes),
+      maxTotalBytes: share.maxTotalBytes,
+      maxJsonEntries: limit('research.maxJsonEntries'),
+      maxJsonDepth: limit('research.maxJsonDepth'),
+      maxWork,
+      maxRetainedBytes: limit('research.maxRetainedBytes'),
+      maxAttempts: limit('research.maxAttempts'),
+      requestTimeoutMs: EVIDENCE_READ_ENVELOPE.requestTimeoutMs,
+      totalTimeoutMs: EVIDENCE_READ_ENVELOPE.totalTimeoutMs,
+    },
+    { fetch: async () => new Response('{}'), now: () => 0 },
+  );
+  if (opened.kind !== 'ready') throw new Error('expected a ready upstream reader');
+  const { reader } = opened;
+  reader.spend(maxWork);
+  expect(reader.stopped?.()).toBeNull();
+  expect(() => reader.spend(1)).toThrow();
+  expect(reader.stopped?.()).toBe('budget');
 });

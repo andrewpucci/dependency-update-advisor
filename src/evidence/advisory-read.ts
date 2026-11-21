@@ -2,6 +2,9 @@ import { types } from 'node:util';
 import { PACKET_LIMITS, type EvidenceReason, type EvidenceStatus } from '../schema.js';
 import { freeze, isPlainObject } from './common.js';
 import { BoundedClock, boundedGet } from './bounded-request.js';
+import type { ResearchCache } from './research-cache.js';
+import { HTTP_STATUS } from '../format.js';
+import { limit } from '../limits.js';
 
 export type AdvisoryLimits = Readonly<{
   maxRequests: number;
@@ -39,11 +42,14 @@ export type AdvisoryLookup = Readonly<{
 export type AdvisoryReader = Readonly<{
   read: (target: unknown) => Promise<AdvisoryLookup>;
   close: () => void;
+  /** The reason this reader refuses all further reads, or null while it can still read. */
+  stopped?: () => EvidenceReason | null;
 }>;
 type Dependencies = {
   fetch: (url: string, init: RequestInit) => Promise<Response>;
   now: () => number;
   signal?: AbortSignal;
+  cache?: ResearchCache;
 };
 export class AdvisoryFailure extends Error {
   constructor(readonly reason: EvidenceReason) {
@@ -139,10 +145,12 @@ const GHSA_ID = /^GHSA-[a-z\d]{4}-[a-z\d]{4}-[a-z\d]{4}$/u;
 /** The OSV endpoint; a complete empty PyPI reviewed lookup cites it. */
 export const OSV_QUERY_URL = 'https://api.osv.dev/v1/query';
 /** Approved register values for stored-name discovery (S1 Package Name Form Amendment). */
-const DISCOVERY_PAGE_SIZE = '50';
-const DISCOVERY_URL_CAP = 4096;
-const DISCOVERY_CURSOR_HEADROOM = 256;
-const SPELLING_CEILING = 243;
+const DISCOVERY_PAGE_SIZE = String(limit('advisory.discovery.pageSize'));
+const DISCOVERY_URL_CAP = limit('advisory.discovery.urlBytes');
+const DISCOVERY_CURSOR_HEADROOM = limit('advisory.discovery.cursorHeadroomBytes');
+const SPELLING_CEILING = limit('advisory.discovery.spellingCeiling');
+/** PEP 503 treats each of these as the same separator. */
+const PIP_SEPARATORS = ['-', '_', '.'] as const;
 function githubUrl(
   ecosystem: AdvisoryTarget['ecosystem'],
   affects: readonly string[],
@@ -166,10 +174,10 @@ function canonical(ecosystem: AdvisoryTarget['ecosystem'], name: string): string
 /** Every spelling of a normalized PyPI name with each separator replaced by `-`, `_`, or `.`. */
 function pipSpellings(name: string): string[] {
   const parts = name.split('-');
-  advisoryCheck(3 ** (parts.length - 1) <= SPELLING_CEILING, 'unsupported');
+  advisoryCheck(PIP_SEPARATORS.length ** (parts.length - 1) <= SPELLING_CEILING, 'unsupported');
   let spellings = [parts[0]];
   for (const part of parts.slice(1))
-    spellings = spellings.flatMap((s) => ['-', '_', '.'].map((sep) => s + sep + part));
+    spellings = spellings.flatMap((s) => PIP_SEPARATORS.map((sep) => s + sep + part));
   return spellings;
 }
 /** Package-only discovery URLs, each with room left under the cap for a pagination cursor. */
@@ -353,23 +361,23 @@ function httpReason(response: Response, data: unknown): EvidenceReason {
   const message = isPlainObject(data) && typeof data.message === 'string' ? data.message : '';
   const retry = response.headers.get('retry-after');
   if (
-    response.status === 429 ||
-    (response.status === 403 &&
+    response.status === HTTP_STATUS.tooManyRequests ||
+    (response.status === HTTP_STATUS.forbidden &&
       (response.headers.get('x-ratelimit-remaining') === '0' ||
         (retry !== null && /^\d+$/u.test(retry)) ||
         /secondary rate limit/iu.test(message)))
   )
     return 'rate_limit';
   if (
-    response.status === 401 ||
-    (response.status === 403 &&
+    response.status === HTTP_STATUS.unauthorized ||
+    (response.status === HTTP_STATUS.forbidden &&
       [
         'Resource not accessible by integration',
         'Resource not accessible by personal access token',
       ].includes(message))
   )
     return 'permission';
-  return response.status === 404 ? 'missing' : 'unknown';
+  return response.status === HTTP_STATUS.notFound ? 'missing' : 'unknown';
 }
 function continuation(link: string | null, original: string, seen: Set<string>): string | null {
   if (!link) return null;
@@ -420,7 +428,10 @@ class Reader implements AdvisoryReader {
   private busy = false;
   private closed = false;
   /** A rate limit stops only the provider that returned it, for the rest of the session. */
-  private readonly stopped: Record<Provider, EvidenceReason | null> = { github: null, osv: null };
+  private readonly providerStop: Record<Provider, EvidenceReason | null> = {
+    github: null,
+    osv: null,
+  };
   private active: (() => void) | null = null;
   /** Base and head of one package reuse its discovery reads, including a failed one. */
   private readonly discoveries = new Map<string, Discovery>();
@@ -435,12 +446,25 @@ class Reader implements AdvisoryReader {
     this.closed = true;
     this.active?.();
   }
+  /**
+   * The reason this reader refuses every further read: closed, or both providers rate-limited.
+   * A rate limit from one provider stops only that provider's targets, which then fail alone.
+   */
+  stopReason(): EvidenceReason | null {
+    if (this.closed) return 'unknown';
+    return this.providerStop.github && this.providerStop.osv ? 'rate_limit' : null;
+  }
   private remaining(provider: Provider) {
-    const stopped = this.closed ? 'unknown' : this.stopped[provider];
+    const stopped = this.closed ? 'unknown' : this.providerStop[provider];
     advisoryCheck(!this.deps.signal?.aborted && !stopped, stopped ?? 'unknown');
     return this.clock.remaining(stopped);
   }
-  private async body(response: Response, aborted: Promise<never>, provider: Provider) {
+  private async body(
+    response: Response,
+    aborted: Promise<never>,
+    provider: Provider,
+    cached: boolean,
+  ) {
     advisoryCheck(response.body);
     const stream = response.body.getReader(),
       chunks: Uint8Array[] = [];
@@ -450,9 +474,10 @@ class Reader implements AdvisoryReader {
         const chunk = await Promise.race([stream.read(), aborted]);
         if (chunk.done) return Buffer.concat(chunks, size);
         size += chunk.value.byteLength;
-        this.bytes += chunk.value.byteLength;
+        if (!cached) this.bytes += chunk.value.byteLength;
         advisoryCheck(
-          size <= this.limits.maxResponseBytes && this.bytes <= this.limits.maxTotalBytes,
+          size <= this.limits.maxResponseBytes &&
+            (cached || this.bytes <= this.limits.maxTotalBytes),
           'budget',
         );
         this.remaining(provider);
@@ -464,7 +489,7 @@ class Reader implements AdvisoryReader {
     }
   }
   private stop(provider: Provider, reason: EvidenceReason): never {
-    if (reason === 'rate_limit') this.stopped[provider] = reason;
+    if (reason === 'rate_limit') this.providerStop[provider] = reason;
     throw new AdvisoryFailure(reason);
   }
   private async page(
@@ -473,10 +498,6 @@ class Reader implements AdvisoryReader {
     json?: unknown,
   ): Promise<{ data: unknown; link: string | null }> {
     this.remaining(provider);
-    advisoryCheck(
-      ++this.requests <= Math.min(this.limits.maxRequests, this.limits.maxPages),
-      'budget',
-    );
     return boundedGet(
       this.deps,
       {
@@ -487,28 +508,37 @@ class Reader implements AdvisoryReader {
             : { accept: 'application/vnd.github+json', 'X-GitHub-Api-Version': '2026-03-10' },
         timeoutMs: Math.min(this.remaining(provider), this.limits.requestTimeoutMs),
         json,
+        charge: () =>
+          advisoryCheck(
+            ++this.requests <= Math.min(this.limits.maxRequests, this.limits.maxPages),
+            'budget',
+          ),
       },
       (cancel) => {
         this.active = cancel;
       },
-      async (response, aborted) => {
+      async (response, aborted, cached) => {
         this.remaining(provider);
         advisoryCheck(
           !response.redirected && (!response.url || response.url === url),
           'unsupported',
         );
-        advisoryCheck(response.status < 300 || response.status >= 400, 'unsupported');
+        advisoryCheck(
+          response.status < HTTP_STATUS.redirectMin ||
+            response.status >= HTTP_STATUS.clientErrorMin,
+          'unsupported',
+        );
         if (httpReason(response, null) === 'rate_limit') this.stop(provider, 'rate_limit');
-        const bytes = await this.body(response, aborted, provider);
+        const bytes = await this.body(response, aborted, provider, cached);
         let data: unknown;
         try {
           data = JSON.parse(new TextDecoder('utf-8', { fatal: true }).decode(bytes));
         } catch {
           throw new AdvisoryFailure(
-            response.status === 200 ? 'malformed' : httpReason(response, null),
+            response.status === HTTP_STATUS.ok ? 'malformed' : httpReason(response, null),
           );
         }
-        if (response.status !== 200) this.stop(provider, httpReason(response, data));
+        if (response.status !== HTTP_STATUS.ok) this.stop(provider, httpReason(response, data));
         advisoryCheck(
           /^application\/(?:json|vnd.github\+json)(?:\s*;|$)/iu.test(
             response.headers.get('content-type') ?? '',
@@ -654,6 +684,7 @@ function createReader(
       kind: 'ready',
       read: (value: unknown) => reader.read(value),
       close: () => reader.close(),
+      stopped: () => reader.stopReason(),
     });
   } catch {
     return { kind: 'invalid' };
