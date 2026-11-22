@@ -78,6 +78,23 @@ function redact(text: string, names: readonly string[]): string {
   );
 }
 
+/**
+ * Redacts only the text that can come from GitHub or the network: the stop reason and each 422
+ * detail message. Keys and the probe's own values are left alone, so a name that is also an
+ * output word cannot corrupt the result.
+ */
+function redactOutcome(outcome: Core.ProbeOutcome, names: readonly string[]): Core.ProbeOutcome {
+  return {
+    ...outcome,
+    ...(outcome.reason === undefined ? {} : { reason: redact(outcome.reason, names) }),
+    writes: outcome.writes.map((record) =>
+      record.detail === undefined
+        ? record
+        : { ...record, detail: record.detail.map((text) => redact(text, names)) },
+    ),
+  };
+}
+
 /** Sends mutative requests one at a time, paced, under the write cap; tracks what it made. */
 function writeSession(args: Args, deps: ProbeDeps) {
   const comments = `/repos/${args.repo}/issues/${args.issue}/comments`;
@@ -207,15 +224,15 @@ export async function probe(
   } finally {
     cleaned = await session.cleanup(login, started.toISOString());
   }
+  const names = [args.repo, ...args.repo.split('/'), login];
   const result = {
     date: started.toISOString().slice(0, 'YYYY-MM-DD'.length),
     repositoryType: repositoryType(data),
-    ...outcome,
+    ...(outcome === undefined ? {} : redactOutcome(outcome, names)),
     ...cleaned,
   };
   const exitCode = cleaned.undeleted === 0 && cleaned.sweep === 'done' ? 0 : 1;
-  const names = [args.repo, ...args.repo.split('/'), login];
-  return { exitCode, output: redact(JSON.stringify(result, null, 2), names) };
+  return { exitCode, output: JSON.stringify(result, null, 2) };
 }
 
 /** The real GitHub REST client: one request at a time, with the token in a header only. */

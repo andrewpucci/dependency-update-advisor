@@ -467,10 +467,20 @@ test('GitHub live shape: an error whose text says the body is too long is a reje
     ).toEqual({ outcome: 'rejected', status: 422, message });
 });
 
+test('the Rails shape, field body with a message that does not repeat the word body, is a rejection', () => {
+  const message = 'is too long (maximum is 65536 characters)';
+  const errors = [{ resource: 'IssueComment', code: 'custom', field: 'body', message }];
+  expect(
+    classifyWrite('create', 'x', { status: 422, data: { message: 'Validation Failed', errors } }),
+  ).toEqual({ outcome: 'rejected', status: 422, message });
+});
+
 test('without field body, the text must say the body is too long; other text stays inconclusive', () => {
   for (const errors of [
     ['Title is too long (maximum is 256 characters)'],
     ['was submitted too quickly'],
+    ['nobody is too long to read'],
+    [{ code: 'custom', message: 'Somebody is too long' }],
     [{ code: 'custom', message: 'is too long' }],
     [{ field: 'data', message: 'is too long' }],
     [{ field: 'body', message: 'was submitted too quickly' }],

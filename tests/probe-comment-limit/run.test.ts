@@ -28,6 +28,12 @@ type FakeOptions = {
   userStatus?: number;
   /** The status the sweep's comment listing answers. */
   listStatus?: number;
+  /** The sweep's comment listing throws instead of answering. */
+  listThrows?: boolean;
+  /** The sweep's comment listing answers 200 with this instead of an array. */
+  listData?: unknown;
+  /** GET /user answers 200 with this instead of a login. */
+  userData?: unknown;
   isPrivate?: boolean;
   ownerType?: string;
   /** The message of the error thrown on the failCreate POST. */
@@ -65,12 +71,15 @@ function fakeGitHub(options: FakeOptions = {}) {
       };
     if (method === 'GET' && path === '/user')
       return options.userStatus === undefined
-        ? { status: 200, data: { login: options.login ?? 'tester' } }
+        ? { status: 200, data: options.userData ?? { login: options.login ?? 'tester' } }
         : { status: options.userStatus, data: { message: 'Resource not accessible' } };
-    if (method === 'GET' && path.startsWith('/repos/tester/scratch/issues/7/comments'))
+    if (method === 'GET' && path.startsWith('/repos/tester/scratch/issues/7/comments')) {
+      if (options.listThrows) throw new Error('socket hang up');
+      if (options.listData !== undefined) return { status: 200, data: options.listData };
       return options.listStatus === undefined
         ? { status: 200, data: [...comments.values()] }
         : { status: options.listStatus, data: { message: 'Server Error' } };
+    }
     if (method === 'POST' && path === '/repos/tester/scratch/issues/7/comments') {
       posts++;
       if (posts === options.failCreate) throw new Error(options.failMessage ?? 'socket hang up');
@@ -393,4 +402,41 @@ test('the live shape: a bare too-long error stating a wrong maximum still yields
     undeleted: 0,
     sweep: 'done',
   });
+});
+
+test('a sweep listing that throws is reported as failed, and the result is still printed', async () => {
+  const github = fakeGitHub({ listThrows: true });
+  const result = await probe(ARGV, ENV, deps(github.http));
+  expect(JSON.parse(result.output)).toMatchObject({ unit: 'code units', sweep: 'failed' });
+  expect(result.exitCode).not.toBe(0);
+});
+
+test('a sweep listing that is not an array is reported as failed', async () => {
+  const github = fakeGitHub({ listData: { message: 'not a list' } });
+  const result = await probe(ARGV, ENV, deps(github.http));
+  expect(JSON.parse(result.output)).toMatchObject({ sweep: 'failed' });
+  expect(result.exitCode).not.toBe(0);
+});
+
+test('a token user answer without a login is refused before any write', async () => {
+  for (const userData of [{}, { login: '' }, { login: 7 }]) {
+    const github = fakeGitHub({ userData });
+    const result = await probe(ARGV, ENV, deps(github.http));
+    expect(result.exitCode, JSON.stringify(userData)).not.toBe(0);
+    expect(mutative(github.calls), JSON.stringify(userData)).toBe(0);
+  }
+});
+
+test('redaction touches only GitHub text, so a name that is also an output word cannot corrupt the result', async () => {
+  const github = fakeGitHub({ login: 'unit' });
+  const http: Http = async (method, path, body) =>
+    method === 'POST'
+      ? { status: 422, data: { message: 'Validation Failed', errors: ['refused for unit'] } }
+      : github.http(method, path, body);
+  const result = await probe(ARGV, ENV, deps(http));
+  const printed = JSON.parse(result.output) as Record<string, unknown> & {
+    writes: { detail?: string[] }[];
+  };
+  expect(printed.unit).toBe('inconclusive');
+  expect(printed.writes[0]?.detail).toEqual(['Validation Failed', 'refused for <redacted>']);
 });

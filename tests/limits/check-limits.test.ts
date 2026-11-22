@@ -100,6 +100,8 @@ test('an allowlisted spec line with a register value passes', () => {
 test('a register value at the spec floor, or a non-whole number, is not a problem', () => {
   expect(specProblems(REGISTER, FLOOR, SPECS('The cap is at most 64 items.'), [])).toEqual([]);
   expect(specProblems(REGISTER, FLOOR, SPECS('Read 13,0001 bytes.'), [])).toEqual([]);
+  // A malformed grouping whose prefix is a register value is not that value.
+  expect(specProblems(REGISTER, FLOOR, SPECS('Read 3,0001 bytes.'), [])).toEqual([]);
   expect(specProblems(REGISTER, FLOOR, SPECS('Use v3000x here.'), [])).toEqual([]);
 });
 

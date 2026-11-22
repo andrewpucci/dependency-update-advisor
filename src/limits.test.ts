@@ -303,6 +303,12 @@ test("the comment cap is derived from GitHub's byte limit so any body within it 
   expect(limitEntry('github.comment.maxBodyBytes').basis).toMatchObject({
     kind: 'external',
     platformValue: bytes,
-    probe: { command: 'npm run probe:comment-limit' },
+    url: expect.stringMatching(
+      /^https:\/\/github\.com\/andrewpucci\/dependency-update-advisor\/issues\/381#issuecomment-\d+$/,
+    ),
+    probe: {
+      command: 'npm run probe:comment-limit',
+      repositoryType: 'private, user-owned, github.com',
+    },
   });
 });
