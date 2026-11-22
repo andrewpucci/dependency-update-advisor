@@ -1,7 +1,7 @@
 import { describe, expect, test, vi } from 'vite-plus/test';
 import { AdvisoryFailure } from './advisory-read.js';
 import { boundedGet } from './bounded-request.js';
-import { createGithubQuotaGuard } from './github-quota.js';
+import { createGithubQuotaGuard, QUOTA_REFUSAL_RETRY_AT } from './github-quota.js';
 import { createNpmPublishTimeReader } from './npm-publish-times.js';
 import { createPolicySignalReader } from './policy-signals-read.js';
 import { createResearchCache } from './research-cache.js';
@@ -473,4 +473,28 @@ test('the guard reads the quota from an error response too', async () => {
   // A 404 reporting the quota at the reserve still lowers the estimate: the next request is refused.
   expect(statuses).toEqual([404, 429]);
   expect(fetches).toBe(1);
+});
+
+test("a refusal carries the guard's retry time, not a rate-limit header", async () => {
+  const wall = Date.UTC(2026, 10, 21);
+  const quota = createGithubQuotaGuard({ reserve: 5, wallNow: () => wall, windowMs: 3_600_000 });
+  quota.observe(
+    'https://api.github.com/x',
+    new Response('{}', {
+      headers: {
+        'x-ratelimit-remaining': '5',
+        'x-ratelimit-reset': String(Math.floor(wall / 1000) + 90),
+      },
+    }),
+  );
+  let refusal: Response | undefined;
+  await boundedGet(
+    { now: () => 0, fetch: async () => new Response('{}'), quota },
+    { url: 'https://api.github.com/repos/o/r/tags', accept: 'application/json', timeoutMs: 1000 },
+    () => {},
+    async (response) => void (refusal = response),
+  );
+  expect(refusal?.status).toBe(429);
+  expect(refusal?.headers.get(QUOTA_REFUSAL_RETRY_AT)).toBe(String(wall + 90_000));
+  expect(refusal && quota.retryAt(refusal)).toBe(wall + 90_000);
 });

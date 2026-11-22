@@ -1,6 +1,11 @@
 import { DURATION_MS } from '../format.js';
 
 const GITHUB_API = 'https://api.github.com';
+/**
+ * Set only on the guard's own synthetic refusal: the Unix-millisecond time it can be retried. It is
+ * not a rate-limit header, so the guard never reads its own refusal as quota.
+ */
+export const QUOTA_REFUSAL_RETRY_AT = 'x-dependabot-review-retry-at';
 const DIGITS = /^\d+$/;
 
 export type QuotaAdmission =
@@ -19,9 +24,9 @@ export type GithubQuotaGuard = Readonly<{
   /** How many requests the guard has refused this run. */
   refusals(): number;
   /**
-   * When a rate-limited GitHub response can be retried: its `retry-after`, else its reset when the
-   * quota is spent, else, for the guard's own header-less refusal, its window's reset. Null when
-   * the time is unknown or outside the window.
+   * When a rate-limited GitHub response can be retried: the guard's own refusal time, else its
+   * `retry-after`, else its reset when the quota is spent. Null when the time is unknown or outside
+   * the window.
    */
   retryAt(response: Response): number | null;
   /** Wall milliseconds from now until `retryAt`. */
@@ -98,6 +103,8 @@ export function createGithubQuotaGuard(options: GithubQuotaOptions): GithubQuota
     },
     refusals: () => refused,
     retryAt(response) {
+      const refused = count(response.headers.get(QUOTA_REFUSAL_RETRY_AT));
+      if (refused !== null) return inWindow(refused) ? refused : null;
       const after = count(response.headers.get('retry-after'));
       if (after !== null) {
         const time = options.wallNow() + after * DURATION_MS.second;
@@ -109,7 +116,6 @@ export function createGithubQuotaGuard(options: GithubQuotaOptions): GithubQuota
         const time = reset * DURATION_MS.second;
         return inWindow(time) ? time : null;
       }
-      if (remaining === null && reset === null) return current()?.reset ?? null;
       return null;
     },
     msUntil: (retryAt) => retryAt - options.wallNow(),

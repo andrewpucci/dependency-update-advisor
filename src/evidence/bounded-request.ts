@@ -1,7 +1,7 @@
 import type { EvidenceReason } from '../schema.js';
 import { advisoryCheck, AdvisoryFailure } from './advisory-read.js';
 import { isPlainObject } from './common.js';
-import type { GithubQuotaGuard } from './github-quota.js';
+import { QUOTA_REFUSAL_RETRY_AT, type GithubQuotaGuard } from './github-quota.js';
 import type { ResearchCache } from './research-cache.js';
 import { HTTP_STATUS, MAX_TIMER_MS } from '../format.js';
 
@@ -120,8 +120,17 @@ function answeredLocally(
 ): { response: Response; cached: boolean } | null {
   const hit = key === undefined ? undefined : deps.cache?.lookup(key);
   if (hit) return { response: hit, cached: true };
-  if (deps.quota && !deps.quota.admit(url).allowed)
-    return { response: new Response(null, { status: HTTP_STATUS.tooManyRequests }), cached: false };
+  const admission = deps.quota?.admit(url);
+  if (admission && !admission.allowed) {
+    const headers =
+      admission.retryAt === null
+        ? undefined
+        : { [QUOTA_REFUSAL_RETRY_AT]: String(admission.retryAt) };
+    return {
+      response: new Response(null, { status: HTTP_STATUS.tooManyRequests, headers }),
+      cached: false,
+    };
+  }
   return null;
 }
 /**

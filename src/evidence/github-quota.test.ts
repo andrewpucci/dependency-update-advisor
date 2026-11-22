@@ -1,5 +1,5 @@
 import { expect, test, vi } from 'vite-plus/test';
-import { createGithubQuotaGuard, waitForRetry } from './github-quota.js';
+import { createGithubQuotaGuard, QUOTA_REFUSAL_RETRY_AT, waitForRetry } from './github-quota.js';
 import { limit } from '../limits.js';
 
 const API = 'https://api.github.com/repos/o/r/releases';
@@ -159,10 +159,13 @@ test('takes a retry time from retry-after, a spent reset, or its own window', ()
   // Outside the window, or not digits, there is no usable time.
   expect(guard.retryAt(limited({ 'retry-after': String(2 * 3600) }))).toBeNull();
   expect(guard.retryAt(limited({ 'retry-after': 'soon' }))).toBeNull();
-  // The guard's own refusal carries no headers; its window's reset applies.
+  // A real GitHub 429 with no headers has no known time, even while the guard has an estimate.
   expect(guard.retryAt(limited({}))).toBeNull();
   guard.observe(API, rateLimited('5', WALL + 3 * MINUTE));
-  expect(guard.retryAt(new Response(null, { status: 429 }))).toBe(WALL + 3 * MINUTE);
+  expect(guard.retryAt(new Response(null, { status: 429 }))).toBeNull();
+  // The guard's own refusal carries its time explicitly.
+  const refusal = limited({ [QUOTA_REFUSAL_RETRY_AT]: String(WALL + 3 * MINUTE) });
+  expect(guard.retryAt(refusal)).toBe(WALL + 3 * MINUTE);
 });
 
 test('a spent quota whose reset has already passed gives no retry time', () => {
