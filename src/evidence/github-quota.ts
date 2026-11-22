@@ -1,4 +1,5 @@
 import { DURATION_MS, HTTP_STATUS } from '../format.js';
+import { limit } from '../limits.js';
 
 /** The GitHub REST API origin: the only host whose rate-limit headers the guard reads. */
 export const GITHUB_API_ORIGIN = 'https://api.github.com';
@@ -140,8 +141,8 @@ export function createGithubQuotaGuard(options: GithubQuotaOptions): GithubQuota
 }
 
 /**
- * Waits for `retryAt` when that time plus one request timeout fits in the time the reader has left,
- * and reports whether it waited. The wait ends early, with an error, when `signal` aborts.
+ * Waits until `retryAt` plus a safety margin when that, plus one request timeout, fits in the time
+ * the reader has left, and reports whether it waited. The wait ends early, with an error, when `signal` aborts.
  */
 export async function waitForRetry(
   guard: GithubQuotaGuard,
@@ -149,7 +150,9 @@ export async function waitForRetry(
   time: Readonly<{ remainingMs: number; requestTimeoutMs: number; signal?: AbortSignal }>,
 ): Promise<boolean> {
   if (retryAt === null) return false;
-  const wait = Math.max(0, guard.msUntil(retryAt));
+  // Past the reported reset by a margin, so a runner clock slightly ahead of GitHub's does not
+  // resend just before the quota actually resets.
+  const wait = Math.max(0, guard.msUntil(retryAt)) + limit('research.githubQuota.retryMarginMs');
   if (wait + time.requestTimeoutMs > time.remainingMs) return false;
   await new Promise<void>((resolve, reject) => {
     if (time.signal?.aborted) return reject(new Error('wait aborted'));

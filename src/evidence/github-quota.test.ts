@@ -188,16 +188,38 @@ test('a spent quota whose reset has already passed gives no retry time', () => {
   ).toBeNull();
 });
 
-test('waits only when the retry time plus one request timeout fits the time left', async () => {
+test('waits only when the retry time, its margin, and one request timeout fit the time left', async () => {
   const guard = guardAt({ now: WALL });
+  const margin = limit('research.githubQuota.retryMarginMs');
   const time = { remainingMs: 10_000, requestTimeoutMs: 2000 };
-  expect(await waitForRetry(guard, WALL + 9000, time)).toBe(false);
+  // 8 s fits 10 s with a 2 s request alone, but not once the margin is added.
+  expect(await waitForRetry(guard, WALL + 8000 - margin + 1, time)).toBe(false);
   expect(await waitForRetry(guard, null, time)).toBe(false);
   vi.useFakeTimers();
   try {
-    const waited = waitForRetry(guard, WALL + 8000, time);
+    const waited = waitForRetry(guard, WALL + 8000 - margin, time);
     await vi.advanceTimersByTimeAsync(8000);
     expect(await waited).toBe(true);
+  } finally {
+    vi.useRealTimers();
+  }
+});
+
+test('waits past the retry time by the margin, so a skewed clock does not resend too early', async () => {
+  const guard = guardAt({ now: WALL });
+  const margin = limit('research.githubQuota.retryMarginMs');
+  vi.useFakeTimers();
+  try {
+    let done = false;
+    const waited = waitForRetry(guard, WALL + 5000, {
+      remainingMs: 60_000,
+      requestTimeoutMs: 1000,
+    }).then(() => (done = true));
+    await vi.advanceTimersByTimeAsync(5000);
+    expect(done).toBe(false);
+    await vi.advanceTimersByTimeAsync(margin);
+    await waited;
+    expect(done).toBe(true);
   } finally {
     vi.useRealTimers();
   }

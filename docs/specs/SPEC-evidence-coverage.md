@@ -488,9 +488,12 @@ share = min(ceiling, base + Σ rate(unit) × count(unit))
    when `x-ratelimit-remaining` is 0. Each comes from a live `api.github.com`
    response and is valid only as A2.3 defines. A retry time outside the
    quota window is ignored.
-2. **Wait.** If the retry time plus one research request timeout falls
-   before the research deadline, the reader waits until the retry time and
-   sends the request again. Each reader waits at most
+2. **Wait.** If the retry time, a margin, and one research request timeout
+   together fall before the research deadline, the reader waits until the
+   retry time plus the margin and sends the request again. The margin,
+   `` `limit:research.githubQuota.retryMarginMs` ``, keeps a runner clock
+   slightly ahead of GitHub's from resending just before the quota resets,
+   which would spend the reader's only wait. Each reader waits at most
    `` `limit:research.githubQuota.waitsPerReader` `` times per run; a later
    rate-limit stop in a reader that has waited ends `rate_limit` without
    waiting. The wait honors the run's abort signal and counts toward the
@@ -514,7 +517,11 @@ share = min(ceiling, base + Σ rate(unit) × count(unit))
    `` `limit:research.githubQuota.windowMs` ``, is an `external` entry citing
    GitHub's hourly limit. The waits per reader,
    `` `limit:research.githubQuota.waitsPerReader` ``, is a `safety` entry that
-   bounds how much of research's time a single reader can spend idle.
+   bounds how much of research's time a single reader can spend idle. The
+   retry margin, `` `limit:research.githubQuota.retryMarginMs` ``, is a
+   `safety` entry covering GitHub's whole-second reset times and ordinary
+   clock skew. The user approved adding it after the PR #423 code review,
+   2026-11-21.
 
 ### A4. Retry time in the review
 
@@ -599,8 +606,9 @@ orders them before B12.
 - **Clock.** With `now` starting at 0 and a wall clock at a realistic Unix
   time, a reset 2 minutes ahead is accepted, a wait that fits is taken, and
   a reset 2 hours ahead is ignored.
-- **Wait.** A retry time before the research deadline less one request
-  timeout waits once and sends the request again. A later retry time ends
+- **Wait.** A retry time before the research deadline less the margin and
+  one request timeout waits once, past the retry time by the margin, and
+  sends the request again. A later retry time ends
   `rate_limit` with no wait. A second rate-limit stop in the same reader ends
   `rate_limit` without a second wait. A retry that returns 404 ends `missing`,
   not `rate_limit`. An aborted run ends the wait.

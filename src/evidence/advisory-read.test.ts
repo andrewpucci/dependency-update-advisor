@@ -5,6 +5,18 @@ import { createResearchCache } from './research-cache.js';
 import { EVIDENCE_READ_ALLOCATION } from '../budget.js';
 import { limit } from '../limits.js';
 
+/** Runs a read under fake timers, firing every timer it sets, so a retry wait costs no real time. */
+async function settled<T>(read: () => Promise<T>): Promise<T> {
+  vi.useFakeTimers();
+  try {
+    const pending = read();
+    await vi.runAllTimersAsync();
+    return await pending;
+  } finally {
+    vi.useRealTimers();
+  }
+}
+
 const limits = {
   maxRequests: 10,
   maxPages: 10,
@@ -639,7 +651,7 @@ describe.each([
     try {
       const f = waiting([() => limited('2'), () => Response.json([])]);
       const read = f.reader.read(target);
-      await vi.advanceTimersByTimeAsync(2000);
+      await vi.advanceTimersByTimeAsync(2000 + limit('research.githubQuota.retryMarginMs'));
       expect(await read).toMatchObject({ complete: true });
       expect(f.fetch).toHaveBeenCalledTimes(2);
       expect(f.quota.latestRetryAt()).toBeNull();
@@ -658,14 +670,14 @@ describe.each([
 
   test('a second stop after a wait ends rate_limit without waiting again', async () => {
     const f = waiting([() => limited('0'), () => limited('0')]);
-    expect(await f.reader.read(target)).toMatchObject({ reasons: ['rate_limit'] });
+    expect(await settled(() => f.reader.read(target))).toMatchObject({ reasons: ['rate_limit'] });
     expect(f.fetch).toHaveBeenCalledTimes(2);
     expect(f.quota.latestRetryAt()).toBe(WALL);
   });
 
   test('the retried request keeps its own result', async () => {
     const f = waiting([() => limited('0'), () => Response.json({}, { status: 404 })]);
-    expect(await f.reader.read(target)).toMatchObject({ reasons: ['missing'] });
+    expect(await settled(() => f.reader.read(target))).toMatchObject({ reasons: ['missing'] });
     expect(f.quota.latestRetryAt()).toBeNull();
   });
 });
@@ -744,8 +756,8 @@ describe.each([
 
     test('a later lookup in the same reader does not wait a second time', async () => {
       const f = reader([() => limited('0'), () => Response.json([]), () => limited('0')]);
-      expect(await f.reader.read(target)).toMatchObject({ complete: true });
-      expect(await f.reader.read({ ...target, version: '9.0.0' })).toMatchObject({
+      expect(await settled(() => f.reader.read(target))).toMatchObject({ complete: true });
+      expect(await settled(() => f.reader.read({ ...target, version: '9.0.0' }))).toMatchObject({
         reasons: ['rate_limit'],
       });
       expect(f.fetch).toHaveBeenCalledTimes(3);

@@ -6,6 +6,18 @@ import { EVIDENCE_READ_ALLOCATION } from '../budget.js';
 import { createGithubQuotaGuard } from './github-quota.js';
 import { limit } from '../limits.js';
 
+/** Runs a read under fake timers, firing every timer it sets, so a retry wait costs no real time. */
+async function settled<T>(read: () => Promise<T>): Promise<T> {
+  vi.useFakeTimers();
+  try {
+    const pending = read();
+    await vi.runAllTimersAsync();
+    return await pending;
+  } finally {
+    vi.useRealTimers();
+  }
+}
+
 const integrity = 'sha512-' + Buffer.alloc(64, 7).toString('base64');
 const limits = {
   maxRequests: 30,
@@ -497,7 +509,7 @@ describe('waiting for a GitHub rate-limit reset', () => {
     try {
       const f = waiting([() => limited('2'), () => Response.json([])]);
       const read = f.reader.read(releases(1));
-      await vi.advanceTimersByTimeAsync(2000);
+      await vi.advanceTimersByTimeAsync(2000 + limit('research.githubQuota.retryMarginMs'));
       expect(await read).toMatchObject({ status: 'available' });
       expect(f.fetch).toHaveBeenCalledTimes(2);
       // The resent request is checked by the guard like any other.
@@ -524,19 +536,25 @@ describe('waiting for a GitHub rate-limit reset', () => {
 
   test('a second stop after a wait ends rate_limit without waiting again', async () => {
     const f = waiting([() => limited('0'), () => limited('0')]);
-    expect(await f.reader.read(releases(1))).toMatchObject({ reasons: ['rate_limit'] });
+    expect(await settled(() => f.reader.read(releases(1)))).toMatchObject({
+      reasons: ['rate_limit'],
+    });
     expect(f.fetch).toHaveBeenCalledTimes(2);
     expect(f.quota.latestRetryAt()).toBe(WALL);
   });
 
   test('the retried request keeps its own result', async () => {
     const missing = waiting([() => limited('0'), () => new Response('{}', { status: 404 })]);
-    expect(await missing.reader.read(releases(1))).toMatchObject({ reasons: ['missing'] });
+    expect(await settled(() => missing.reader.read(releases(1)))).toMatchObject({
+      reasons: ['missing'],
+    });
     expect(missing.quota.latestRetryAt()).toBeNull();
     const hung = waiting([() => limited('0'), () => new Promise<Response>(() => {})], {
       requestTimeoutMs: 20,
     });
-    expect(await hung.reader.read(releases(1))).toMatchObject({ reasons: ['timeout'] });
+    expect(await settled(() => hung.reader.read(releases(1)))).toMatchObject({
+      reasons: ['timeout'],
+    });
   });
 
   test('closing the reader ends the wait without resending', async () => {
@@ -626,9 +644,11 @@ describe('waiting is bounded per reader, by time, by abort, and to GitHub', () =
 
   test('a later read in the same reader does not wait a second time', async () => {
     const f = reader([() => limited('0'), () => Response.json([]), () => limited('0')]);
-    expect(await f.reader.read(releases(1))).toMatchObject({ status: 'available' });
+    expect(await settled(() => f.reader.read(releases(1)))).toMatchObject({ status: 'available' });
     expect(f.quota.latestRetryAt()).toBeNull();
-    expect(await f.reader.read(releases(2))).toMatchObject({ reasons: ['rate_limit'] });
+    expect(await settled(() => f.reader.read(releases(2)))).toMatchObject({
+      reasons: ['rate_limit'],
+    });
     expect(f.fetch).toHaveBeenCalledTimes(3);
     expect(f.quota.latestRetryAt()).toBe(WALL);
   });
@@ -667,7 +687,7 @@ describe('waiting is bounded per reader, by time, by abort, and to GitHub', () =
     try {
       const fits = reader([() => limited('7'), () => Response.json([])], { overrides });
       const read = fits.reader.read(releases(1));
-      await vi.advanceTimersByTimeAsync(7000);
+      await vi.advanceTimersByTimeAsync(7000 + limit('research.githubQuota.retryMarginMs'));
       expect(await read).toMatchObject({ status: 'available' });
       expect(fits.fetch).toHaveBeenCalledTimes(2);
     } finally {
