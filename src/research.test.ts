@@ -433,6 +433,8 @@ test('opens each reader with the share scaled from the packet members', async ()
     advisoryReadModule.createMalwareReader,
     publishTimesModule.createNpmPublishTimeReader,
     signalReadModule.createPolicySignalReader,
+    npmRegistryModule.createNpmRegistryReader,
+    policySignalsModule.enrichPolicySignals,
   ])
     vi.mocked(mock).mockClear();
   // Distinct bases and a direct-member rate, so each reader's share differs from its ceiling.
@@ -477,6 +479,18 @@ test('opens each reader with the share scaled from the packet members', async ()
   expect(pick(first(upstreamReadModule.createUpstreamReader, 1))).toEqual(
     expected.signals.readers.upstream,
   );
+  // Registry calls are [S2 inner, S3 registry, S3 upstream inner]; only the middle one is research's.
+  expect(pick(first(npmRegistryModule.createNpmRegistryReader, 1))).toEqual(
+    expected.signals.readers.registry,
+  );
+  // The signals stage limit is the sum of its readers' scaled shares.
+  const stage = vi.mocked(policySignalsModule.enrichPolicySignals).mock.calls[0]?.[0] as {
+    limits: Limits;
+  };
+  expect(pick(stage.limits)).toEqual({
+    maxRequests: expected.signals.maxRequests,
+    maxTotalBytes: expected.signals.maxTotalBytes,
+  });
 });
 
 test('stops research GitHub requests at the quota reserve, keeping other hosts and completed members', async () => {
@@ -516,6 +530,11 @@ test('stops research GitHub requests at the quota reserve, keeping other hosts a
   // Upstream needs 18 GitHub requests unguarded; the reserve stops it partway.
   expect(count('upstream', 'api.github.com')).toBeGreaterThan(0);
   expect(count('upstream', 'api.github.com')).toBeLessThan(18);
+  // GitHub reports 20, 19, ...; research stops once the next request would leave less than the
+  // reserve, so it sends exactly 20 - reserve + 1 and the last reported quota is the reserve.
+  const reserve = limit('research.githubQuota.reserve');
+  expect(count('upstream', 'api.github.com')).toBe(20 - reserve + 1);
+  expect(20 - (reported - 1)).toBe(reserve);
   // Later stages send no GitHub request while the estimate is at the reserve...
   expect(count('advisories', 'api.github.com')).toBe(0);
   expect(count('signals', 'api.github.com')).toBe(0);
