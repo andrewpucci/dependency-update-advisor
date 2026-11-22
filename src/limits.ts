@@ -2070,6 +2070,24 @@ const DEFINITIONS = [
     test: 'tests/limits/check-limits.test.ts > a register value at the spec floor, or a non-whole number, is not a problem',
   }),
   {
+    id: 'research.githubQuota.reserve',
+    unit: 'count',
+    protects:
+      'Keeps GitHub quota for the freshness rechecks that run after research, so a heavy research run cannot leave the final head check without requests.',
+    effect:
+      'Research GitHub requests are refused once the estimated remaining quota would fall below this; refused members are unavailable with rate_limit and the rechecks still run.',
+    basis: {
+      kind: 'derived',
+      inputs: [],
+      formula: () => 6,
+      description:
+        'Two freshness rechecks run after research (before the model and the final check), each reading the run, the pull request, and the comparison when the base moved.',
+      structuralTest:
+        'src/pipeline.test.ts > the research quota reserve covers every GitHub read after research',
+    },
+    test: 'src/pipeline.test.ts > the research quota reserve covers every GitHub read after research',
+  },
+  {
     id: 'research.githubQuota.windowMs',
     value: 3_600_000,
     unit: 'milliseconds',

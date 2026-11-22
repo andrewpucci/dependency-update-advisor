@@ -18,6 +18,7 @@ import type { PolicyMetadataReader } from './evidence/policy-signals-read.js';
 import { enrichUpstream, type UpstreamAttempt } from './evidence/upstream.js';
 import { createUpstreamReader } from './evidence/upstream-read.js';
 import { createResearchCache, type ResearchCache } from './evidence/research-cache.js';
+import { createGithubQuotaGuard } from './evidence/github-quota.js';
 import type { NpmInventoryResult } from './evidence/npm.js';
 import type { PacketChange, PacketExpected, PacketResult } from './schema.js';
 import type { ChangeEvidence, EvidenceReason, NpmSide } from './schema.js';
@@ -60,6 +61,8 @@ export type ResearchInput = Readonly<{
   cache?: ResearchCache;
   /** Scaled-share parameters; the register's when absent. */
   shareParameters?: ResearchShareParameters;
+  /** Wall time in Unix milliseconds, for GitHub's reset headers; `Date.now` when absent. */
+  wallNow?: () => number;
   now: () => number;
   /** Absolute time, in `now` units, by which research must be finished. */
   deadline: number;
@@ -307,6 +310,12 @@ export async function runResearch(input: ResearchInput): Promise<ResearchResult>
     fetch: input.fetch,
     signal: input.signal,
     cache: input.cache ?? createResearchCache(RESEARCH_CACHE_LIMITS),
+    // One guard for every research reader; snapshot, session, and freshness reads never get it.
+    quota: createGithubQuotaGuard({
+      reserve: limit('research.githubQuota.reserve'),
+      wallNow: input.wallNow ?? Date.now,
+      windowMs: limit('research.githubQuota.windowMs'),
+    }),
   };
   const unavailable: { stage: ResearchStage; reason: EvidenceReason }[] = [];
   const readers: Reader[] = [];

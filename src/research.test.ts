@@ -478,6 +478,70 @@ test('opens each reader with the share scaled from the packet members', async ()
   );
 });
 
+test('stops research GitHub requests at the quota reserve, keeping other hosts and completed members', async () => {
+  const { fixture, packet } = await scenario();
+  const wall = Date.parse('2026-11-21T00:00:00Z');
+  const reset = String(Math.floor(wall / 1000) + 60);
+  let stage = 'none';
+  let reported = 0;
+  const calls: { stage: string; host: string }[] = [];
+  const fetch = async (url: string, init: RequestInit) => {
+    const host = new URL(url).host;
+    calls.push({ stage, host });
+    const response = await (fixture.fetch as (u: string, i: RequestInit) => Promise<Response>)(
+      url,
+      init,
+    );
+    if (host !== 'api.github.com') return response;
+    // GitHub reports a falling quota, as it would for a busy repository.
+    const headers = new Headers(response.headers);
+    headers.set('x-ratelimit-remaining', String(20 - reported++));
+    headers.set('x-ratelimit-reset', reset);
+    return new Response(response.body, { status: response.status, headers });
+  };
+  const result = await runResearch({
+    ...base(fixture, packet),
+    fetch,
+    wallNow: () => wall,
+    observe: (observation) => {
+      if (observation.kind === 'stage-start') stage = observation.stage;
+    },
+  });
+  if (result.kind !== 'ready') throw new Error(result.kind);
+  const count = (where: string, host: string) =>
+    calls.filter((call) => call.stage === where && call.host === host).length;
+  // Upstream needs 18 GitHub requests unguarded; the reserve stops it partway.
+  expect(count('upstream', 'api.github.com')).toBeGreaterThan(0);
+  expect(count('upstream', 'api.github.com')).toBeLessThan(18);
+  // Later stages send no GitHub request while the estimate is at the reserve...
+  expect(count('advisories', 'api.github.com')).toBe(0);
+  expect(count('signals', 'api.github.com')).toBe(0);
+  // ...but still reach other hosts.
+  expect(count('advisories', 'api.osv.dev')).toBe(2);
+  expect(count('signals', 'registry.npmjs.org')).toBe(2);
+  // The upstream reader blocks only GitHub, so the stage itself keeps running; a refusal is never
+  // reported as our own budget or a fault.
+  for (const { reason } of result.unavailable)
+    expect(['budget', 'unknown', 'malformed']).not.toContain(reason);
+  // Members researched before the stop keep their evidence; GitHub-backed checks after it carry
+  // the stop's reason, and the uv member's OSV lookup still completes.
+  type Evidence = Record<string, { status: string; reasons?: readonly string[] }>;
+  const members = result.packet.changes.filter((change) => !('basis' in change));
+  const evidence = (category: string) =>
+    members.map((change) => ({
+      ecosystem: change.ecosystem,
+      ...(change.evidence as Evidence)[category],
+    }));
+  expect(evidence('upstream').some((item) => item.status === 'available')).toBe(true);
+  expect(evidence('upstream').some((item) => item.reasons?.includes('rate_limit'))).toBe(true);
+  for (const item of evidence('vulnerability'))
+    expect(item).toMatchObject(
+      item.ecosystem === 'uv'
+        ? { status: 'available' }
+        : { status: 'unavailable', reasons: ['rate_limit'] },
+    );
+});
+
 test('reports an internal failure rather than a research result when a reader throws', async () => {
   const { fixture, packet } = await scenario();
   const result = await runResearch({

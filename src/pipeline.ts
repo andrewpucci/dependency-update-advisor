@@ -65,6 +65,8 @@ export type PipelineInput = Readonly<{
   jobStartedAt?: number;
   /** Epoch milliseconds used for policy evaluation and the review timestamp. */
   evaluationTime: number;
+  /** Wall time in Unix milliseconds, read live for GitHub's quota reset headers; `Date.now` when absent. */
+  wallNow?: () => number;
   temporaryRoot?: () => Promise<string>;
   /** How often a pending request is checked against ownership; defaults to two seconds. */
   ownershipWatchMs?: number;
@@ -481,6 +483,7 @@ async function evaluateEvidence(
             now: input.now,
             deadline: evidenceDeadline,
             evaluationTime: input.evaluationTime,
+            ...(input.wallNow ? { wallNow: input.wallNow } : {}),
             signal,
           }),
         );

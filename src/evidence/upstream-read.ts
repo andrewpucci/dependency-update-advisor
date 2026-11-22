@@ -1,3 +1,4 @@
+import type { GithubQuotaGuard } from './github-quota.js';
 import { createNpmRegistryReader } from './npm-registry.js';
 import { copyAdvisoryData, AdvisoryFailure, type AdvisoryLimits } from './advisory-read.js';
 import { freeze, isPlainObject, isEvidencePath } from './common.js';
@@ -80,7 +81,8 @@ export type UpstreamDependencies = {
   fetch: (url: string, init: RequestInit) => Promise<Response>;
   now: () => number;
   signal?: AbortSignal;
-  cache?: ResearchCache;
+  cache?: ResearchCache /** The run's research GitHub quota guard; absent outside research. */;
+  quota?: GithubQuotaGuard;
 };
 export class UpstreamFailure extends Error {
   constructor(readonly reason: EvidenceReason) {

@@ -1,3 +1,4 @@
+import type { GithubQuotaGuard } from './github-quota.js';
 import { types } from 'node:util';
 import { PACKET_LIMITS, type EvidenceReason, type EvidenceStatus } from '../schema.js';
 import { freeze, isPlainObject } from './common.js';
@@ -49,7 +50,8 @@ type Dependencies = {
   fetch: (url: string, init: RequestInit) => Promise<Response>;
   now: () => number;
   signal?: AbortSignal;
-  cache?: ResearchCache;
+  cache?: ResearchCache /** The run's research GitHub quota guard; absent outside research. */;
+  quota?: GithubQuotaGuard;
 };
 export class AdvisoryFailure extends Error {
   constructor(readonly reason: EvidenceReason) {
