@@ -3216,3 +3216,87 @@ test('the irreducible boundary fixture returns size, not a rendered brief', asyn
   // failure that says so, never as a defect" pins for a real oversized brief.
   expect(renderDecisionBrief(scenario.render)).toMatchObject({ ok: false, category: 'size' });
 });
+
+test.each([
+  ['2026-11-21T00:10:01Z', '00:11'],
+  ['2026-11-21T00:10:00Z', '00:10'],
+  ['2026-11-21T09:04:30Z', '09:05'],
+  ['2026-11-21T23:59:30Z', '00:00'],
+] as const)('a rerun gap with retry time %s says to rerun after %s UTC', (retryAfter, shown) => {
+  for (const reasons of [
+    ['rate_limit'],
+    ['timeout'],
+    ['rate_limit', 'timeout'],
+  ] as EvidenceReason[][]) {
+    const sentence = evidenceGap(gapUnit(reasons), 's1', retryAfter);
+    expect(sentence, reasons.join(',')).toContain(`Rerun CI after ${shown} UTC.`);
+    expect(sentence, reasons.join(',')).not.toContain('Rerun CI later.');
+  }
+});
+
+test('a gap that cannot be fixed by a rerun never shows a retry time', () => {
+  for (const reasons of [['budget'], ['budget', 'rate_limit'], ['missing']] as EvidenceReason[][])
+    expect(evidenceGap(gapUnit(reasons), 's1', '2026-11-21T00:10:00Z')).not.toMatch(/rerun ci/iu);
+  expect(evidenceGap(gapUnit(['rate_limit']), 's1', null)).toContain('Rerun CI later.');
+});
+
+test('the brief renders the packet retry time and rejects an input that disagrees', async () => {
+  const { largeInventoryScenario } = await import('../tests/parity/large-inventory.js');
+  const scenario = await largeInventoryScenario({
+    members: 93,
+    duplicateNames: 2,
+    followups: 71,
+    evidence: (memberIndex, category) =>
+      category === 'vulnerability' && memberIndex === 3
+        ? { status: 'unavailable', reasons: ['rate_limit'], sourceIds: [] }
+        : null,
+  });
+  const retryAfter = '2026-11-21T00:10:01Z';
+  const packet = { ...scenario.render.coverage.inventory.packet, retryAfter };
+  const timed = {
+    ...scenario.render,
+    retryAfter,
+    coverage: {
+      ...scenario.render.coverage,
+      inventory: { ...scenario.render.coverage.inventory, packet },
+    },
+  } as typeof scenario.render;
+  const result = renderDecisionBrief(timed);
+  if (!result.ok) throw new Error(result.category);
+  expect(result.body).toContain('Rerun CI after 00:11 UTC.');
+  expect(result.body).not.toContain('Rerun CI later.');
+  expect(renderDecisionBrief({ ...timed, retryAfter: null })).toEqual({
+    ok: false,
+    category: 'input',
+  });
+});
+
+test.each([1, 21])(
+  '%i unresolved units in the decision queue also show the retry time',
+  async (unresolved) => {
+    const { largeInventoryScenario } = await import('../tests/parity/large-inventory.js');
+    const scenario = await largeInventoryScenario({
+      members: 93,
+      duplicateNames: 2,
+      unresolved,
+      evidence: (_memberIndex, category) =>
+        category === 'vulnerability'
+          ? { status: 'unavailable', reasons: ['rate_limit'], sourceIds: [] }
+          : null,
+    });
+    const retryAfter = '2026-11-21T00:10:01Z';
+    const packet = { ...scenario.render.coverage.inventory.packet, retryAfter };
+    const result = renderDecisionBrief({
+      ...scenario.render,
+      retryAfter,
+      coverage: {
+        ...scenario.render.coverage,
+        inventory: { ...scenario.render.coverage.inventory, packet },
+      },
+    } as typeof scenario.render);
+    if (!result.ok) throw new Error(result.category);
+    const queue = queueSectionOf(result.body);
+    expect(queue).toContain('Rerun CI after 00:11 UTC.');
+    expect(queue).not.toContain('Rerun CI later.');
+  },
+);

@@ -114,6 +114,17 @@ test('renders a comment body for a complete assessment without leaking the model
   expect(JSON.stringify(result)).not.toContain(sentinel);
 });
 
+test('hands the renderer the packet retry time', async () => {
+  const { review, complete } = await fixture();
+  const render = vi.spyOn(reportingModule, 'renderDecisionBrief');
+  const packet = { ...review.packet, retryAfter: '2026-11-21T00:10:01Z' };
+  await reviewPacket({ ...review, packet, model: complete } as never);
+  expect(render).toHaveBeenCalledWith(
+    expect.objectContaining({ retryAfter: '2026-11-21T00:10:01Z' }),
+  );
+  render.mockRestore();
+});
+
 test('gives no body when the model result is unusable', async () => {
   const { review, garbage } = await fixture();
   const render = vi.spyOn(reportingModule, 'renderDecisionBrief');
