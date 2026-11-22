@@ -543,9 +543,12 @@ Each write has one of three outcomes:
   applies to its own writes (`src/comments.ts`). A success whose returned
   body differs, for example because GitHub truncated or normalized it, is
   not acceptance.
-- **Rejected:** GitHub answers 422, and its `errors` list has an item whose
-  `field` is `body` and whose message says the body is too long. The result
-  keeps that message's text.
+- **Rejected:** GitHub answers 422, and its `errors` list has an item that
+  says the body is too long: an object whose `field` is `body` and whose
+  message says "too long", or a string, or an object with no `field`, whose
+  text says "body is too long". The result keeps that text. The live run on
+  2026-11-22 found GitHub sending the string form, "Body is too long (maximum
+  is N characters)", with no `field`.
 - **Anything else** makes the whole result `inconclusive`. That includes
   any other 422, such as GitHub's "submitted too quickly" content limit; a
   403 or 429 secondary rate limit; a 5xx; a network error; and a success

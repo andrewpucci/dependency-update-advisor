@@ -34,6 +34,8 @@ type FakeOptions = {
   failMessage?: string;
   /** The maximum the too-long message states, when it differs from the real limit. */
   statedLimit?: number;
+  /** Answer too-long as GitHub did live: a bare string error with no body field. */
+  bareErrors?: boolean;
 };
 
 /** A fake GitHub that counts comment bodies in UTF-16 code units. */
@@ -43,14 +45,10 @@ function fakeGitHub(options: FakeOptions = {}) {
   const calls: { method: string; path: string }[] = [];
   let nextId = 1_000;
   let posts = 0;
+  const tooLongText = `Body is too long (maximum is ${options.statedLimit ?? limit} characters)`;
   const tooLong = {
     message: 'Validation Failed',
-    errors: [
-      {
-        field: 'body',
-        message: `body is too long (maximum is ${options.statedLimit ?? limit} characters)`,
-      },
-    ],
+    errors: options.bareErrors ? [tooLongText] : [{ field: 'body', message: tooLongText }],
   };
   const http: Http = async (method, path, body) => {
     calls.push({ method, path });
@@ -364,4 +362,28 @@ test('a 422 detail that names the repository or the user is redacted in the resu
   ]);
   for (const secret of ['tester', 'scratch', TOKEN])
     expect(result.output.toLowerCase(), secret).not.toContain(secret.toLowerCase());
+});
+
+test('the live shape: a bare too-long error stating a wrong maximum still yields the real limit', async () => {
+  // As on 2026-11-22: GitHub said "maximum is 65536 characters" but accepted longer bodies.
+  const github = fakeGitHub({ limit: 200_003, statedLimit: 65_536, bareErrors: true });
+  const result = await probe(
+    ARGV,
+    ENV,
+    deps(github.http, {
+      limits: {
+        maxWrites: limit('probe.commentLimit.maxWrites'),
+        intervalMs: limit('probe.commentLimit.writeIntervalMs'),
+        firstLength: limit('probe.commentLimit.firstBodyCodeUnits'),
+      },
+    }),
+  );
+  expect(JSON.parse(result.output)).toMatchObject({
+    unit: 'code units',
+    limit: 200_003,
+    update: 'agrees',
+    lineBreaks: 'accepted',
+    undeleted: 0,
+    sweep: 'done',
+  });
 });

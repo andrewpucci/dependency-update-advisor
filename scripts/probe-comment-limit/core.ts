@@ -95,12 +95,22 @@ export function unitBodies(limit: number): { name: BodyName; text: string }[] {
 const isRecord = (value: unknown): value is Record<string, unknown> =>
   typeof value === 'object' && value !== null;
 
-/** The too-long message of a 422 whose errors list names the body, if it has one. */
+/** One error's too-long text: a `body` field's "too long", or a bare "body is too long". */
+function tooLongText(error: unknown): string | undefined {
+  if (typeof error === 'string') return /\bbody is too long\b/i.test(error) ? error : undefined;
+  if (!isRecord(error) || typeof error.message !== 'string') return undefined;
+  if (error.field === 'body') return /too long/i.test(error.message) ? error.message : undefined;
+  // GitHub's live answer (2026-11-22) names no field, so the text must name the body.
+  if (error.field !== undefined) return undefined;
+  return /\bbody is too long\b/i.test(error.message) ? error.message : undefined;
+}
+
+/** The too-long message of a 422 whose errors list says the body is too long, if it has one. */
 function tooLongMessage(data: unknown): string | undefined {
   const errors = isRecord(data) && Array.isArray(data.errors) ? data.errors : [];
   for (const error of errors) {
-    if (!isRecord(error) || error.field !== 'body' || typeof error.message !== 'string') continue;
-    if (/too long/i.test(error.message)) return error.message;
+    const text = tooLongText(error);
+    if (text !== undefined) return text;
   }
   return undefined;
 }

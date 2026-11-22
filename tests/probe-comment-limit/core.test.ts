@@ -400,7 +400,7 @@ test('an unclassified 422 keeps GitHub validation messages, capped, without link
   const data = {
     message: 'Validation Failed',
     errors: [
-      'Body is too long (maximum is 262144 characters)',
+      'Body is required for this resource',
       { resource: 'IssueComment', code: 'custom', field: 'body', message: 'x'.repeat(40) },
       { resource: 'IssueComment', code: 'invalid' },
       7,
@@ -411,7 +411,7 @@ test('an unclassified 422 keeps GitHub validation messages, capped, without link
   expect(result).toMatchObject({ outcome: 'inconclusive', status: 422 });
   expect('detail' in result && result.detail).toEqual([
     'Validation Faile',
-    'Body is too long',
+    'Body is required',
     'x'.repeat(16),
     'invalid',
   ]);
@@ -447,4 +447,28 @@ test('the probe record keeps the detail of an unclassified 422', async () => {
       detail: ['Validation Failed'],
     },
   ]);
+});
+
+test('GitHub live shape: a bare too-long message, as a string or without a field, is a rejection', () => {
+  // Captured from the probe's third live run on 2026-11-22: a one-MiB body got a 422 whose
+  // errors carried "Body is too long (maximum is 65536 characters)" with no body field.
+  const message = 'Body is too long (maximum is 65536 characters)';
+  for (const errors of [[message], [{ resource: 'IssueComment', code: 'custom', message }]])
+    expect(
+      classifyWrite('create', 'x', { status: 422, data: { message: 'Validation Failed', errors } }),
+      JSON.stringify(errors),
+    ).toEqual({ outcome: 'rejected', status: 422, message });
+});
+
+test('a bare message must say the body is too long; other fields and other text stay inconclusive', () => {
+  for (const errors of [
+    ['Title is too long (maximum is 256 characters)'],
+    ['was submitted too quickly'],
+    [{ code: 'custom', message: 'is too long' }],
+    [{ field: 'title', message: 'Body is too long' }],
+  ])
+    expect(
+      classifyWrite('create', 'x', { status: 422, data: { message: 'Validation Failed', errors } }),
+      JSON.stringify(errors),
+    ).toMatchObject({ outcome: 'inconclusive' });
 });
