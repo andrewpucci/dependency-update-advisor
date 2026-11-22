@@ -8,7 +8,12 @@ import * as advisoryReadModule from './evidence/advisory-read.js';
 import * as upstreamModule from './evidence/upstream.js';
 import * as upstreamReadModule from './evidence/upstream-read.js';
 import * as policySignalsModule from './evidence/policy-signals.js';
-import { EVIDENCE_READ_ALLOCATION, EVIDENCE_READ_ENVELOPE } from './budget.js';
+import {
+  EVIDENCE_READ_ALLOCATION,
+  EVIDENCE_READ_ENVELOPE,
+  researchShareUnits,
+  researchShares,
+} from './budget.js';
 import { researchOrder, runResearch, type ResearchObservation } from './research.js';
 import { limit } from './limits.js';
 import type { PacketChange } from './schema.js';
@@ -416,6 +421,60 @@ test('caps every reader at its share, so the readers together stay inside the en
   );
   expect(bytes + others.reduce((sum, share) => sum + share.maxTotalBytes, 0)).toBe(
     EVIDENCE_READ_ENVELOPE.maxTotalBytes,
+  );
+});
+
+test('opens each reader with the share scaled from the packet members', async () => {
+  const { fixture, packet } = await scenario();
+  for (const mock of [
+    upstreamReadModule.createUpstreamReader,
+    advisoryReadModule.createAdvisoryReader,
+    advisoryReadModule.createMalwareReader,
+    publishTimesModule.createNpmPublishTimeReader,
+    signalReadModule.createPolicySignalReader,
+  ])
+    vi.mocked(mock).mockClear();
+  // Distinct bases and a direct-member rate, so each reader's share differs from its ceiling.
+  const dimension = (base: number, ceiling: number) => ({
+    base,
+    ceiling,
+    rates: { direct: 3, transitive: 0, added: 0, removed: 0, eligible: 1 },
+  });
+  const shareFor = (base: number) => ({
+    requests: dimension(base, 1_000),
+    bytes: dimension(base * 1024 * 1024, 64 * 1024 * 1024),
+  });
+  const shareParameters = {
+    upstream: shareFor(11),
+    advisory: shareFor(12),
+    signals: {
+      malware: shareFor(13),
+      publishTimes: shareFor(14),
+      registry: shareFor(15),
+      metadata: shareFor(16),
+      upstream: shareFor(17),
+    },
+  };
+  await runResearch({ ...base(fixture, packet), shareParameters });
+  const expected = researchShares(researchShareUnits(packet.changes), shareParameters);
+  expect(expected.upstream.maxRequests).not.toBe(EVIDENCE_READ_ALLOCATION.upstream.maxRequests);
+  type Limits = { maxRequests: number; maxTotalBytes: number };
+  const first = (mock: unknown, index = 0) =>
+    vi.mocked(mock as (value: unknown) => unknown).mock.calls[index]?.[0] as Limits;
+  const pick = ({ maxRequests, maxTotalBytes }: Limits) => ({ maxRequests, maxTotalBytes });
+  expect(pick(first(upstreamReadModule.createUpstreamReader))).toEqual(expected.upstream);
+  expect(pick(first(advisoryReadModule.createAdvisoryReader))).toEqual(expected.advisory);
+  expect(pick(first(advisoryReadModule.createMalwareReader))).toEqual(
+    expected.signals.readers.malware,
+  );
+  expect(pick(first(publishTimesModule.createNpmPublishTimeReader))).toEqual(
+    expected.signals.readers.publishTimes,
+  );
+  expect(pick(first(signalReadModule.createPolicySignalReader))).toEqual(
+    expected.signals.readers.metadata,
+  );
+  expect(pick(first(upstreamReadModule.createUpstreamReader, 1))).toEqual(
+    expected.signals.readers.upstream,
   );
 });
 

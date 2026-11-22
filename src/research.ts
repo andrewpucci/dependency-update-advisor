@@ -1,7 +1,10 @@
 import {
-  EVIDENCE_READ_ALLOCATION,
   EVIDENCE_READ_ENVELOPE,
   RESEARCH_CACHE_LIMITS,
+  researchShareUnits,
+  researchShares,
+  type ResearchShareParameters,
+  type ResearchShares,
 } from './budget.js';
 import type { GithubComparison } from './github-read.js';
 import { enrichAdvisories } from './evidence/advisories.js';
@@ -55,6 +58,8 @@ export type ResearchInput = Readonly<{
   fetch: (url: string, init: RequestInit) => Promise<Response>;
   /** The run's research cache, shared with collection's registry reads; created here when absent. */
   cache?: ResearchCache;
+  /** Scaled-share parameters; the register's when absent. */
+  shareParameters?: ResearchShareParameters;
   now: () => number;
   /** Absolute time, in `now` units, by which research must be finished. */
   deadline: number;
@@ -184,9 +189,10 @@ async function enrichUpstreamStage(
   readers: Reader[],
   progress: ResearchProgress,
   fail: Fail,
+  shares: ResearchShares,
   pypiReader?: PolicyMetadataReader,
 ): Promise<void> {
-  const limitsForStage = limits(EVIDENCE_READ_ALLOCATION.upstream, input);
+  const limitsForStage = limits(shares.upstream, input);
   const opened = createUpstreamReader(limitsForStage, dependencies);
   if (opened.kind !== 'ready') return fail('upstream', 'malformed');
   readers.push(opened.reader);
@@ -215,8 +221,9 @@ async function enrichAdvisoryStage(
   readers: Reader[],
   progress: ResearchProgress,
   fail: Fail,
+  shares: ResearchShares,
 ): Promise<void> {
-  const limitsForStage = limits(EVIDENCE_READ_ALLOCATION.advisory, input);
+  const limitsForStage = limits(shares.advisory, input);
   const opened = createAdvisoryReader(limitsForStage, dependencies);
   if (opened.kind !== 'ready') return fail('advisories', 'malformed');
   readers.push(opened);
@@ -245,9 +252,10 @@ async function enrichSignalsStage(
   progress: ResearchProgress,
   fail: Fail,
   metadata: PolicyMetadataReader | null,
+  stageShares: ResearchShares,
 ): Promise<void> {
-  const limitsForStage = limits(EVIDENCE_READ_ALLOCATION.signals, input);
-  const { readers: shares } = EVIDENCE_READ_ALLOCATION.signals;
+  const limitsForStage = limits(stageShares.signals, input);
+  const { readers: shares } = stageShares.signals;
   const malware = createMalwareReader(limits(shares.malware, input), dependencies);
   const registry = createNpmRegistryReader(limits(shares.registry, input), dependencies);
   const times = createNpmPublishTimeReader(limits(shares.publishTimes, input), dependencies);
@@ -335,8 +343,10 @@ export async function runResearch(input: ResearchInput): Promise<ResearchResult>
       unavailable.push({ stage, reason });
       markStage(progress, stage, reason);
     };
+    // Every unit is known before research starts, so each reader's share is final when it opens.
+    const shares = researchShares(researchShareUnits(packet.changes), input.shareParameters);
     const metadata = createPolicySignalReader(
-      limits(EVIDENCE_READ_ALLOCATION.signals.readers.metadata, input),
+      limits(shares.signals.readers.metadata, input),
       dependencies,
     );
     const sharedMetadata = metadata.kind === 'ready' ? metadata : null;
@@ -348,14 +358,15 @@ export async function runResearch(input: ResearchInput): Promise<ResearchResult>
         readers,
         progress,
         fail,
+        shares,
         sharedMetadata ?? undefined,
       ),
     );
     await runStage('advisories', () =>
-      enrichAdvisoryStage(input, dependencies, readers, progress, fail),
+      enrichAdvisoryStage(input, dependencies, readers, progress, fail, shares),
     );
     await runStage('signals', () =>
-      enrichSignalsStage(input, dependencies, readers, progress, fail, sharedMetadata),
+      enrichSignalsStage(input, dependencies, readers, progress, fail, sharedMetadata, shares),
     );
 
     restorePacketOrder(progress, packet);

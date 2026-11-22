@@ -255,6 +255,78 @@ function derived<const Id extends string>(
   } as const;
 }
 
+/** Research shares that scale with the change; each maps to the allocation entry that caps it. */
+const SCALED_SHARES = {
+  upstream: 'evidence.allocation.upstream',
+  advisory: 'evidence.allocation.advisory',
+  'signals.malware': 'evidence.allocation.signals.readers.malware',
+  'signals.publishTimes': 'evidence.allocation.signals.readers.publishTimes',
+  'signals.registry': 'evidence.allocation.signals.readers.registry',
+  'signals.metadata': 'evidence.allocation.signals.readers.metadata',
+  'signals.upstream': 'evidence.allocation.signals.readers.upstream',
+} as const;
+type ScaledShare = keyof typeof SCALED_SHARES;
+const SHARE_DIMENSIONS = { requests: 'maxRequests', bytes: 'maxTotalBytes' } as const;
+type ShareDimension = keyof typeof SHARE_DIMENSIONS;
+/** Member-role units every scaled share takes a rate for; signals readers also rate `eligible`. */
+const ROLE_UNITS = ['direct', 'transitive', 'added', 'removed'] as const;
+type ShareUnit = (typeof ROLE_UNITS)[number] | 'eligible';
+
+const SHARE_FORMULA_TEST =
+  'src/budget.test.ts > a share is its base plus each rate times its count, rounded up, under its ceiling';
+const SHARE_START_TEST =
+  'src/budget.test.ts > starting parameters reproduce the current research shares for any change';
+
+/** One scaled share's base and rate entries for one dimension; its ceiling is the allocation entry. */
+function scaledShareEntries<const S extends ScaledShare, const D extends ShareDimension>(
+  share: S,
+  dimension: D,
+) {
+  const ceiling = `${SCALED_SHARES[share]}.${SHARE_DIMENSIONS[dimension]}`;
+  const unit: LimitUnit = dimension === 'bytes' ? 'bytes' : 'count';
+  const units: readonly ShareUnit[] = share.startsWith('signals.')
+    ? [...ROLE_UNITS, 'eligible']
+    : ROLE_UNITS;
+  const base = derived(
+    `research.share.${share}.${dimension}.base` as `research.share.${S}.${D}.base`,
+    unit,
+    [ceiling],
+    copy,
+    `The ${share} ${dimension} share starts at its ceiling until B12 fits a smaller base.`,
+    {
+      protects:
+        'Sets the share a change of no counted members gets, before any per-member rate is added.',
+      effect:
+        'The computed share starts here; with every rate at zero it equals the ceiling, as before scaling.',
+      test: SHARE_START_TEST,
+    },
+  );
+  const rates = units.map((rateUnit) =>
+    unjustified(
+      `research.share.${share}.${dimension}.rate.${rateUnit}` as `research.share.${S}.${D}.rate.${ShareUnit}`,
+      0,
+      unit,
+      {
+        protects: `Grows the ${share} ${dimension} share with each ${rateUnit} member, so a larger change gets more and a small one fails faster.`,
+        effect:
+          'Adds rate times the count to the share, rounded up and capped at the ceiling; zero leaves the share at its base.',
+        note: 'awaiting B12/L8 measurement',
+        test: SHARE_FORMULA_TEST,
+      },
+    ),
+  );
+  return [base, ...rates];
+}
+
+/** Base and rate entries for every scaled research share and dimension. */
+function allScaledShareEntries() {
+  return (Object.keys(SCALED_SHARES) as ScaledShare[]).flatMap((share) =>
+    (Object.keys(SHARE_DIMENSIONS) as ShareDimension[]).flatMap((dimension) =>
+      scaledShareEntries(share, dimension),
+    ),
+  );
+}
+
 const DEFINITIONS = [
   {
     id: 'packet.bytes',
@@ -1997,6 +2069,7 @@ const DEFINITIONS = [
     note: 'no recorded reason',
     test: 'tests/limits/check-limits.test.ts > a register value at the spec floor, or a non-whole number, is not a problem',
   }),
+  ...allScaledShareEntries(),
 ] as const satisfies readonly LimitDefinition[];
 
 export type LimitId = (typeof DEFINITIONS)[number]['id'];
