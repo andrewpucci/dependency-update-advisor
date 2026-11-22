@@ -128,7 +128,8 @@ export function reconcilePacket(input: {
         findings: collectedFindings,
         relationships: collected.relationships,
         reachability: collected.reachability,
-        retryAfter: collected.retryAfter,
+        // A GitHub rate limit research met still tells the reader when a rerun can work.
+        retryAfter: input.enriched.retryAfter ?? collected.retryAfter,
       },
       input.trusted,
     );

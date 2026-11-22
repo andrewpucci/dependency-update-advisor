@@ -232,6 +232,22 @@ test('keeps members in priority order within packet limits', async () => {
       expect(byId(id)?.evidence[key], `${id} ${key}`).toEqual(reverted(packet, id, key, BUDGET));
 });
 
+test('the whole-packet fallback keeps the retry time research set', async () => {
+  const { fixture, packet, enriched, members } = await enrichedResult();
+  rejects = (candidate) =>
+    enrichedMembers(candidate, packet) >= 2
+      ? { ok: false, error: { category: 'reference', field: 'sources' } }
+      : null;
+  const result = reconcilePacket({
+    collected: packet,
+    enriched: { ...enrichedInput(enriched), retryAfter: '2026-11-21T00:30:00Z' },
+    trusted: fixture.expected,
+    priority: members,
+  });
+  expect(result.whole).toBe(true);
+  expect(result.packet.retryAfter).toBe('2026-11-21T00:30:00Z');
+});
+
 test('an unattributable failure reports every member malformed', async () => {
   const { fixture, packet, enriched, members } = await enrichedResult();
   rejects = (candidate) =>
