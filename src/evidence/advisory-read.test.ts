@@ -1,5 +1,6 @@
-import { expect, test, vi } from 'vite-plus/test';
+import { describe, expect, test, vi } from 'vite-plus/test';
 import { createAdvisoryReader, createMalwareReader } from './advisory-read.js';
+import { createGithubQuotaGuard } from './github-quota.js';
 import { createResearchCache } from './research-cache.js';
 import { EVIDENCE_READ_ALLOCATION } from '../budget.js';
 import { limit } from '../limits.js';
@@ -609,4 +610,79 @@ test('advisory findings accept the register cap exactly and refuse the finding p
   over.close();
   expect(pastLimit).toMatchObject({ complete: false, reasons: ['budget'] });
   expect(pastLimit.records).toHaveLength(maxFindings);
+});
+
+describe.each([
+  ['reviewed', createAdvisoryReader],
+  ['malware', createMalwareReader],
+] as const)('the %s reader waiting for a GitHub rate-limit reset', (_name, create) => {
+  const WALL = Date.parse('2026-11-21T00:00:00Z');
+  const limited = (retryAfter: string) =>
+    Response.json({}, { status: 429, headers: { 'retry-after': retryAfter } });
+  function waiting(responses: (() => Promise<Response> | Response)[]) {
+    const quota = createGithubQuotaGuard({
+      reserve: 0,
+      wallNow: () => WALL,
+      windowMs: limit('research.githubQuota.windowMs'),
+    });
+    let call = 0;
+    const fetch = vi.fn(async () =>
+      (responses[Math.min(call++, responses.length - 1)] as () => Response)(),
+    );
+    const ready = create(limits, { fetch, now: () => 0, quota });
+    if (ready.kind !== 'ready') throw new Error('reader');
+    return { reader: ready, fetch, quota };
+  }
+
+  test('waits once for a retry time that fits and resends', async () => {
+    vi.useFakeTimers();
+    try {
+      const f = waiting([() => limited('2'), () => Response.json([])]);
+      const read = f.reader.read(target);
+      await vi.advanceTimersByTimeAsync(2000);
+      expect(await read).toMatchObject({ complete: true });
+      expect(f.fetch).toHaveBeenCalledTimes(2);
+      expect(f.quota.latestRetryAt()).toBeNull();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  test('a retry time that does not fit ends rate_limit at once and records it', async () => {
+    const f = waiting([() => limited('20')]);
+    expect(await f.reader.read(target)).toMatchObject({ complete: false, reasons: ['rate_limit'] });
+    expect(f.quota.latestRetryAt()).toBe(WALL + 20_000);
+    await f.reader.read({ ...target, version: '9.0.0' });
+    expect(f.fetch).toHaveBeenCalledTimes(1);
+  });
+
+  test('a second stop after a wait ends rate_limit without waiting again', async () => {
+    const f = waiting([() => limited('0'), () => limited('0')]);
+    expect(await f.reader.read(target)).toMatchObject({ reasons: ['rate_limit'] });
+    expect(f.fetch).toHaveBeenCalledTimes(2);
+    expect(f.quota.latestRetryAt()).toBe(WALL);
+  });
+
+  test('the retried request keeps its own result', async () => {
+    const f = waiting([() => limited('0'), () => Response.json({}, { status: 404 })]);
+    expect(await f.reader.read(target)).toMatchObject({ reasons: ['missing'] });
+    expect(f.quota.latestRetryAt()).toBeNull();
+  });
+});
+
+test('an OSV rate limit never waits on a GitHub retry time', async () => {
+  const quota = createGithubQuotaGuard({
+    reserve: 0,
+    wallNow: () => Date.parse('2026-11-21T00:00:00Z'),
+    windowMs: limit('research.githubQuota.windowMs'),
+  });
+  const fetch = vi.fn(async () =>
+    Response.json({}, { status: 429, headers: { 'retry-after': '0' } }),
+  );
+  const ready = createAdvisoryReader(limits, { fetch, now: () => 0, quota });
+  if (ready.kind !== 'ready') throw new Error('reader');
+  const pip = { ecosystem: 'pip', name: 'pyyaml', version: '3.13' };
+  expect(await ready.read(pip)).toMatchObject({ reasons: ['rate_limit'] });
+  expect(fetch).toHaveBeenCalledTimes(1);
+  expect(quota.latestRetryAt()).toBeNull();
 });
