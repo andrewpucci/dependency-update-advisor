@@ -5,9 +5,11 @@ import {
   JOB_BUDGET_MS,
   JOB_WINDOW_MS,
   PRE_STARTUP_ALLOWANCE_MS,
+  RESEARCH_SHARE_PARAMETERS,
   researchShareUnits,
   researchShares,
 } from './budget.js';
+import { REGISTER } from './limits.js';
 
 const MiB = 1024 * 1024;
 
@@ -335,4 +337,27 @@ test('decimal rates are computed exactly before rounding up', () => {
   expect(researchShares({ ...NO_UNITS, direct: 100 }, rated(1.1)).upstream.maxRequests).toBe(110);
   expect(researchShares({ ...NO_UNITS, direct: 3 }, rated(0.1)).upstream.maxRequests).toBe(1);
   expect(researchShares({ ...NO_UNITS, direct: 7 }, rated(0.15)).upstream.maxRequests).toBe(2);
+});
+
+test('reads every scaled-share base and rate from its own register entry', () => {
+  const shares = [
+    ['upstream', RESEARCH_SHARE_PARAMETERS.upstream],
+    ['advisory', RESEARCH_SHARE_PARAMETERS.advisory],
+    ...(['malware', 'publishTimes', 'registry', 'metadata', 'upstream'] as const).map(
+      (reader) => [`signals.${reader}`, RESEARCH_SHARE_PARAMETERS.signals[reader]] as const,
+    ),
+  ] as const;
+  for (const [share, parameters] of shares)
+    for (const dimension of ['requests', 'bytes'] as const) {
+      const entry = (name: string) => REGISTER.get(`research.share.${share}.${dimension}.${name}`);
+      const dim = parameters[dimension];
+      expect(dim.base, `${share} ${dimension} base`).toBe(entry('base')?.value);
+      for (const [unit, rate] of Object.entries(dim.rates))
+        expect(rate, `${share} ${dimension} ${unit}`).toBe(entry(`rate.${unit}`)?.value);
+      expect(Object.keys(dim.rates).sort()).toEqual(
+        share.startsWith('signals.')
+          ? ['added', 'direct', 'eligible', 'removed', 'transitive']
+          : ['added', 'direct', 'removed', 'transitive'],
+      );
+    }
 });

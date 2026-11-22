@@ -442,3 +442,35 @@ describe('research GitHub quota seam', () => {
     expect(fetches).toBe(3);
   });
 });
+
+test('the guard reads the quota from an error response too', async () => {
+  const wall = Date.UTC(2026, 10, 21);
+  const quota = createGithubQuotaGuard({ reserve: 5, wallNow: () => wall, windowMs: 3_600_000 });
+  const statuses: number[] = [];
+  let fetches = 0;
+  const reset = String(Math.floor(wall / 1000) + 60);
+  for (let i = 0; i < 2; i++)
+    await boundedGet(
+      {
+        now: () => 0,
+        fetch: async () => (
+          fetches++,
+          Response.json(
+            { message: 'Not Found' },
+            { status: 404, headers: { 'x-ratelimit-remaining': '5', 'x-ratelimit-reset': reset } },
+          )
+        ),
+        quota,
+      },
+      {
+        url: `https://api.github.com/repos/o/r/tags?page=${i}`,
+        accept: 'application/json',
+        timeoutMs: 1000,
+      },
+      () => {},
+      async (response) => void statuses.push(response.status),
+    );
+  // A 404 reporting the quota at the reserve still lowers the estimate: the next request is refused.
+  expect(statuses).toEqual([404, 429]);
+  expect(fetches).toBe(1);
+});

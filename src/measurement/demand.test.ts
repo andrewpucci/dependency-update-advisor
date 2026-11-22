@@ -256,3 +256,26 @@ test('the R1 ceiling is the sum of the research request ceilings and scales with
   const scaled = buildRegister(scaledDefinitions(REGISTER, 10));
   expect(scaled.get('research.githubQuota.researchCeiling')?.value).toBe(10 * sum(REGISTER));
 });
+
+test('counts only research-stage GitHub requests and keeps the latest reported quota', async () => {
+  const recorder = createDemandRecorder(() => 0);
+  const remaining = ['40', '30', '35', '50'];
+  let call = 0;
+  const fetch = recorder.wrap(
+    async () =>
+      new Response('{}', { headers: { 'x-ratelimit-remaining': remaining[call++] ?? '0' } }),
+  );
+  recorder.observe({ kind: 'stage-start', stage: 'upstream' });
+  await fetch('https://api.github.com/repos/o/r/releases', {});
+  recorder.observe({ kind: 'stage-end', stage: 'upstream', outcome: 'enriched', reason: null });
+  // Between stages and after research, a GitHub read is not research's.
+  await fetch('https://api.github.com/repos/o/r/pulls/1', {});
+  recorder.observe({ kind: 'stage-start', stage: 'signals' });
+  await fetch('https://api.github.com/advisories?type=malware', {});
+  recorder.observe({ kind: 'stage-end', stage: 'signals', outcome: 'enriched', reason: null });
+  await fetch('https://api.github.com/repos/o/r/pulls/1', {});
+  const report = recorder.report({});
+  expect(report.github.researchRequests).toBe(2);
+  // The quota can rise when a window resets; the report keeps the latest, not the lowest.
+  expect(report.github.lastRemaining).toBe(50);
+});
