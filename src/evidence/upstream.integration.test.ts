@@ -47,6 +47,7 @@ async function review(options: Parameters<typeof upstreamScenario>[0] = {}) {
       coverage: fixture.coverage,
       relationships: fixture.relationships,
       reachability: [],
+      retryAfter: null,
     },
     fixture.expected,
   );

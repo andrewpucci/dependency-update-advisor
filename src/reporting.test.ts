@@ -45,6 +45,7 @@ function emptyBrief() {
     changes: [],
     relationships: [],
     reachability: [],
+    retryAfter: null,
     findings: [],
     coverage: { npm: coverage, actions: coverage, uv: coverage },
     sources: [

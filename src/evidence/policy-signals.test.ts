@@ -75,6 +75,7 @@ test.each(['severity', 'range'])(
         coverage: f.coverage,
         relationships: f.relationships,
         reachability: [],
+        retryAfter: null,
       },
       f.expected,
     );
@@ -178,6 +179,7 @@ test.each(['positive', 'failed', 'empty'])(
         coverage: f.coverage,
         relationships: f.relationships,
         reachability: [],
+        retryAfter: null,
       },
       f.expected,
     );
@@ -262,6 +264,7 @@ test('optional attempt exhaustion keeps a bounded explained result and known dep
       coverage: f.coverage,
       relationships: f.relationships,
       reachability: [],
+      retryAfter: null,
     },
     f.expected,
   );

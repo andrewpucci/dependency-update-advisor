@@ -46,6 +46,7 @@ function fixture() {
     findings: [],
     relationships: [],
     reachability: [],
+    retryAfter: null as string | null,
     sources: [
       {
         id: 'inventory',
@@ -1885,4 +1886,34 @@ test('rejects a trusted base that disagrees with its own binding', () => {
     ok: false,
     error: { category: 'identity' },
   });
+});
+
+test('accepts a null or whole-second UTC retry time and rejects anything else', () => {
+  expect(accepted().retryAfter).toBeNull();
+  const timed = fixture();
+  timed.packet.retryAfter = '2026-11-21T00:01:00Z';
+  expect(accepted(timed).retryAfter).toBe('2026-11-21T00:01:00Z');
+  for (const value of [
+    '2026-11-21T00:01:00.500Z',
+    '2026-11-21T00:01:00+00:00',
+    '2026-11-21 00:01:00Z',
+    '2026-13-01T00:00:00Z',
+    '2026-02-30T00:00:00Z',
+    '',
+    1_763_683_260,
+    {},
+  ]) {
+    const bad = fixture();
+    (bad.packet as Record<string, unknown>).retryAfter = value;
+    expect(validateReviewPacket(bad.packet, bad.expected), String(value)).toEqual({
+      ok: false,
+      error: { category: 'input', field: 'retryAfter' },
+    });
+  }
+});
+
+test('rejects a packet without a retry time field', () => {
+  const missing = fixture();
+  delete (missing.packet as Record<string, unknown>).retryAfter;
+  expect(validateReviewPacket(missing.packet, missing.expected).ok).toBe(false);
 });

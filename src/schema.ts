@@ -209,6 +209,8 @@ export type ReviewPacket = {
   findings: Finding[];
   relationships: RelationshipProof[];
   reachability: ReachabilityVerdict[];
+  /** When a GitHub rate-limit stop can be retried (RFC 3339 UTC, whole seconds), or null. */
+  retryAfter: string | null;
   context: PacketContext;
 };
 export type PacketExpected = {
@@ -229,6 +231,7 @@ type Field =
   | 'findings'
   | 'relationships'
   | 'reachability'
+  | 'retryAfter'
   | 'context';
 type Category = 'input' | 'identity' | 'duplicate' | 'reference' | 'coverage' | 'budget';
 export type PacketResult =
@@ -1775,6 +1778,20 @@ function freeze<T>(value: T): DeepReadonly<T> {
   return value as DeepReadonly<T>;
 }
 
+const WHOLE_SECOND_UTC = /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}Z$/u;
+
+/** Null, or a real UTC instant written to the whole second; T4 does not check how far ahead it is. */
+function retryTime(value: unknown): string | null {
+  if (value === null) return null;
+  requireValue(typeof value === 'string' && WHOLE_SECOND_UTC.test(value), 'retryAfter');
+  const parsed = new Date(value);
+  requireValue(
+    !Number.isNaN(parsed.getTime()) && parsed.toISOString() === value.replace('Z', '.000Z'),
+    'retryAfter',
+  );
+  return value;
+}
+
 /** Pure validation; expected snapshots come from trusted T1/C2 orchestration, never the packet. */
 export function validateReviewPacket(candidate: unknown, trusted: unknown): PacketResult {
   try {
@@ -1792,6 +1809,7 @@ export function validateReviewPacket(candidate: unknown, trusted: unknown): Pack
         'findings',
         'relationships',
         'reachability',
+        'retryAfter',
         'context',
       ],
       [],
@@ -1837,6 +1855,7 @@ export function validateReviewPacket(candidate: unknown, trusted: unknown): Pack
       findings,
       relationships,
       reachability,
+      retryAfter: retryTime(r.retryAfter),
       context: ctx,
     };
     requireValue(

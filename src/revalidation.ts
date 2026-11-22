@@ -102,6 +102,7 @@ export function reconcilePacket(input: {
         ],
         relationships: collected.relationships,
         reachability: collected.reachability,
+        retryAfter: collected.retryAfter,
       },
       input.trusted,
     );
@@ -126,6 +127,7 @@ export function reconcilePacket(input: {
         findings: collectedFindings,
         relationships: collected.relationships,
         reachability: collected.reachability,
+        retryAfter: collected.retryAfter,
       },
       input.trusted,
     );

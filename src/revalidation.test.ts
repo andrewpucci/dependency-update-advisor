@@ -54,6 +54,7 @@ async function scenario(options: Parameters<typeof upstreamScenario>[0] = {}) {
     coverage: fixture.coverage,
     relationships: fixture.relationships,
     reachability: [],
+    retryAfter: null,
   };
   const { validateReviewPacket } =
     await vi.importActual<typeof import('./schema.js')>('./schema.js');

@@ -129,6 +129,7 @@ async function scenario(options: Parameters<typeof upstreamScenario>[0] = {}) {
     coverage: fixture.coverage,
     relationships: fixture.relationships,
     reachability: [],
+    retryAfter: null,
   };
   const validated = validateReviewPacket(candidate, fixture.expected);
   if (!validated.ok) throw new Error(`fixture packet: ${JSON.stringify(validated)}`);
