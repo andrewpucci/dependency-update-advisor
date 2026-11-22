@@ -88,8 +88,9 @@ is a planning choice.
    reviewed-head line, and the optional matching review-digest line, in that
    order. Title the document as a Dependabot review that includes the
    repository and PR. Show a visible head link near the opening and the
-   supplied UTC date. The body ceiling is 50,000 JavaScript string units
-   including metadata, as specified by T3.
+   supplied UTC date. The body ceiling is
+   `limit:comment.maxBodyCodeUnits` JavaScript string units, including
+   metadata, as specified by T3.
 2. Lead with recommendation, concrete next action, and evidence completeness,
    in that order, following [Opening by outcome](#opening-by-outcome). Show
    effective blockers before unresolved work. Do not imply approval for
@@ -173,11 +174,12 @@ The renderer checks the supplied identity, inventory, unit and assessment
 accounting, required and optional evidence gaps, and reference attribution.
 It preserves the T5 outcome rather than deciding policy. It escapes external
 text and neutralizes GitHub autolinks, accepts only vetted HTTPS source URLs,
-and applies the 50,000-string-unit ceiling to the final body. It omits
-lower-priority sections with a notice when necessary and fails if required
-decision content cannot fit. The renderer relies on trusted orchestration for
-the provenance of the supplied T5/M2/S3 results; shape consistency alone does
-not prove that an arbitrary caller supplied authentic results.
+and applies the `limit:comment.maxBodyCodeUnits` string-unit ceiling to the
+final body. It omits lower-priority sections with a notice when necessary
+and fails if required decision content cannot fit. The renderer relies on
+trusted orchestration for the provenance of the supplied T5/M2/S3 results;
+shape consistency alone does not prove that an arbitrary caller supplied
+authentic results.
 
 The synthetic grouped fixture runs the actual collectors and analysis
 handoffs, then supplies the rendered body to T3 with mocked GitHub transport.
@@ -205,11 +207,11 @@ repositories, bare URLs, commit SHAs, and emoji shortcodes. Also render those
 hostile fixtures through GitHub's Markdown API (`POST /markdown` in `gfm` mode
 with a repository context), which stores nothing, and record that the output
 contains no user mention, issue link, or unvetted `href`. Test the exact
-50,000-unit boundary using escaped output, metadata, omission notice, and
-non-ASCII text; prove required items, including required evidence gaps of
-assessed units, survive omission and overfull required content fails. Include
-a plausible wrong implementation check for each new behavior check. Use
-focused assertions rather than snapshots alone.
+`limit:comment.maxBodyCodeUnits` boundary using escaped output, metadata,
+omission notice, and non-ASCII text; prove required items, including
+required evidence gaps of assessed units, survive omission and overfull
+required content fails. Include a plausible wrong implementation check for
+each new behavior check. Use focused assertions rather than snapshots alone.
 
 The [B1 parity scenarios](../../tests/parity/scenarios.md) have no assessed
 grouped fixture: T4 rejects the full #307 inventory, and its variants stop at

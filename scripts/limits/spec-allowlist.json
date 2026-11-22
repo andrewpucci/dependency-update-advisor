@@ -114,42 +114,6 @@
     "reason": "pending amendment (L10): approved spec states the value"
   },
   {
-    "file": "docs/specs/SPEC-comment-experience.md",
-    "line": "5. **Fallback and `render-size`.** If the merged body exceeds 50,000 code",
-    "values": [50000],
-    "reason": "pending amendment (L10): approved spec states the value"
-  },
-  {
-    "file": "docs/specs/SPEC-comment-experience.md",
-    "line": "about 150 characters. It renders at or below 50,000 code units. Every",
-    "values": [50000],
-    "reason": "pending amendment (L10): approved spec states the value"
-  },
-  {
-    "file": "docs/specs/SPEC-comment-experience.md",
-    "line": "renders at or below 50,000 code units. It shows one \"checked, none found\"",
-    "values": [50000],
-    "reason": "pending amendment (L10): approved spec states the value"
-  },
-  {
-    "file": "docs/specs/SPEC-comment-experience.md",
-    "line": "exact-50,000 boundary, and optional-omission checks continue to pass. Full",
-    "values": [50000],
-    "reason": "pending amendment (L10): approved spec states the value"
-  },
-  {
-    "file": "docs/specs/SPEC-comment-experience.md",
-    "line": "against the implementation renders a body at or below 50,000 code units",
-    "values": [50000],
-    "reason": "pending amendment (L10): approved spec states the value"
-  },
-  {
-    "file": "docs/specs/SPEC-comment-experience.md",
-    "line": "50,000-code-unit bound, and leave the no-write and publication boundary",
-    "values": [50000],
-    "reason": "pending amendment (L10): approved spec states the value"
-  },
-  {
     "file": "docs/specs/SPEC-complexity-review.md",
     "line": "Show at most 100 regression rows, ordered by descending score, and state when",
     "values": [100],
@@ -195,24 +159,6 @@
     "file": "docs/specs/SPEC-config-parser.md",
     "line": "16 and 17 entries; excerpt files at 128 and 129 entries and duplicates.",
     "values": [128],
-    "reason": "pending amendment (L10): approved spec states the value"
-  },
-  {
-    "file": "docs/specs/SPEC-decision-brief.md",
-    "line": "supplied UTC date. The body ceiling is 50,000 JavaScript string units",
-    "values": [50000],
-    "reason": "pending amendment (L10): approved spec states the value"
-  },
-  {
-    "file": "docs/specs/SPEC-decision-brief.md",
-    "line": "and applies the 50,000-string-unit ceiling to the final body. It omits",
-    "values": [50000],
-    "reason": "pending amendment (L10): approved spec states the value"
-  },
-  {
-    "file": "docs/specs/SPEC-decision-brief.md",
-    "line": "50,000-unit boundary using escaped output, metadata, omission notice, and",
-    "values": [50000],
     "reason": "pending amendment (L10): approved spec states the value"
   },
   {
@@ -319,12 +265,6 @@
   },
   {
     "file": "docs/specs/SPEC-managed-comments.md",
-    "line": "Retain the baseline renderer's 50,000 JavaScript string-unit body ceiling,",
-    "values": [50000],
-    "reason": "pending amendment (L10): approved spec states the value"
-  },
-  {
-    "file": "docs/specs/SPEC-managed-comments.md",
     "line": "Confirm the documented `201` create or `200` update response and validate its",
     "values": [200],
     "reason": "pending amendment (L10): approved spec states the value"
@@ -345,12 +285,6 @@
     "file": "docs/specs/SPEC-managed-comments.md",
     "line": "| `updateComment` | Frozen `{ repository, commentId, body }`; unknown `{ status: 200, data: comment }`.                                                         |",
     "values": [200],
-    "reason": "pending amendment (L10): approved spec states the value"
-  },
-  {
-    "file": "docs/specs/SPEC-managed-comments.md",
-    "line": "| Invalid input/pending receipt, mismatched result identity/head/digest, duplicate metadata, empty/oversized body                                | Input error; no mutation. Include exact 50,000 boundary and one-unit overflow.                                              |",
-    "values": [50000],
     "reason": "pending amendment (L10): approved spec states the value"
   },
   {
