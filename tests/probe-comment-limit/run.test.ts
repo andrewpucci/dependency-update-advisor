@@ -1,5 +1,6 @@
 import { expect, test } from 'vite-plus/test';
 import { counts } from '../../scripts/probe-comment-limit/core.js';
+import { limit } from '../../src/limits.js';
 import {
   parseArgs,
   probe,
@@ -31,6 +32,8 @@ type FakeOptions = {
   ownerType?: string;
   /** The message of the error thrown on the failCreate POST. */
   failMessage?: string;
+  /** The maximum the too-long message states, when it differs from the real limit. */
+  statedLimit?: number;
 };
 
 /** A fake GitHub that counts comment bodies in UTF-16 code units. */
@@ -42,7 +45,12 @@ function fakeGitHub(options: FakeOptions = {}) {
   let posts = 0;
   const tooLong = {
     message: 'Validation Failed',
-    errors: [{ field: 'body', message: `body is too long (maximum is ${limit} characters)` }],
+    errors: [
+      {
+        field: 'body',
+        message: `body is too long (maximum is ${options.statedLimit ?? limit} characters)`,
+      },
+    ],
   };
   const http: Http = async (method, path, body) => {
     calls.push({ method, path });
@@ -310,4 +318,31 @@ test('an empty GITHUB_TOKEN is refused like a missing one', async () => {
   const result = await probe(ARGV, { GITHUB_TOKEN: '' }, deps(github.http));
   expect(result.exitCode).not.toBe(0);
   expect(github.calls).toEqual([]);
+});
+
+test('the register write cap covers the longest run from the register first body', async () => {
+  // The longest run: GitHub states a maximum far below the real one, so M and M + 1 are both
+  // accepted and the search halves all the way from M + 1 to the first body.
+  const realLimit = 1_000_003;
+  const github = fakeGitHub({ limit: realLimit, statedLimit: 1_000 });
+  const result = await probe(
+    ARGV,
+    ENV,
+    deps(github.http, {
+      limits: {
+        maxWrites: limit('probe.commentLimit.maxWrites'),
+        intervalMs: limit('probe.commentLimit.writeIntervalMs'),
+        firstLength: limit('probe.commentLimit.firstBodyCodeUnits'),
+      },
+    }),
+  );
+  const writes = github.calls.filter(({ method }) => method === 'POST' || method === 'PATCH');
+  expect(writes).toHaveLength(31);
+  expect(JSON.parse(result.output)).toMatchObject({
+    unit: 'code units',
+    limit: realLimit,
+    update: 'agrees',
+    lineBreaks: 'accepted',
+    undeleted: 0,
+  });
 });

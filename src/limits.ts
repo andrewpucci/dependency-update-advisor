@@ -2268,7 +2268,7 @@ const DEFINITIONS = [
     basis: {
       kind: 'safety',
       reason:
-        'The longest run, a wrongly stated maximum followed by a halving search from the first body, needs 1 + 2 + 17 + 4 unit bodies + 1 seed + 2 updates + 1 line-break body = 28 writes; 32 covers it with spare, and with as many deletes a run stays under GitHub content-creation limits.',
+        'The longest run, a wrongly stated maximum followed by a halving search from the first body, needs 1 + 2 + 20 + 4 unit bodies + 1 seed + 2 updates + 1 line-break body = 31 writes from a one-MiB first body; 32 covers it, and with as many deletes a run stays under GitHub content-creation limits.',
     },
     effect:
       'At the cap the next write is not sent; the result is inconclusive, and cleanup still deletes every comment made.',
@@ -2276,18 +2276,18 @@ const DEFINITIONS = [
   },
   {
     id: 'probe.commentLimit.firstBodyCodeUnits',
-    value: 131_072,
+    value: 1_048_576,
     unit: 'code units',
     protects:
-      "Starts the probe's search above the limit GitHub's errors report, so the first body is rejected and the search has an upper bound.",
+      "Starts the probe's search above GitHub's comment limit, so the first body is rejected and the search has an upper bound.",
     basis: {
       kind: 'safety',
       reason:
-        'Twice the 65,536 figure GitHub errors report (this spec, Evidence), so a limit up to double that is still found; a larger real limit makes the first body accepted and the result inconclusive, never wrong. The body is 128 KiB, one ordinary request.',
+        "The first live run (2026-11-22, #381) had a 131,072-unit body accepted unchanged, so the limit is above that and above the 65,536 figure in this spec's Evidence. One MiB of ASCII is eight times that, still one ordinary request, and keeps the longest run within probe.commentLimit.maxWrites. A larger real limit makes the first body accepted and the result inconclusive, never wrong.",
     },
     effect:
       'The first create sends this many ASCII code units; if GitHub accepts it, the probe stops inconclusive.',
-    test: 'tests/probe-comment-limit/core.test.ts > the search is inconclusive when the first body is accepted or a write is inconclusive',
+    test: 'tests/probe-comment-limit/run.test.ts > the register write cap covers the longest run from the register first body',
   },
   ...allScaledShareEntries(),
 ] as const satisfies readonly LimitDefinition[];
