@@ -66,6 +66,18 @@ function repositoryType(data: Record<string, unknown>): string {
   return `${data.private === true ? 'private' : 'public'}, ${owner}-owned, github.com`;
 }
 
+/** Replaces each name, longest first and in any case, so GitHub's text cannot leak one. */
+function redact(text: string, names: readonly string[]): string {
+  const sorted = [...new Set(names.filter((name) => name !== ''))].sort(
+    (a, b) => b.length - a.length,
+  );
+  return sorted.reduce(
+    (out, name) =>
+      out.replace(new RegExp(name.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'), 'gi'), '<redacted>'),
+    text,
+  );
+}
+
 /** Sends mutative requests one at a time, paced, under the write cap; tracks what it made. */
 function writeSession(args: Args, deps: ProbeDeps) {
   const comments = `/repos/${args.repo}/issues/${args.issue}/comments`;
@@ -111,7 +123,9 @@ function writeSession(args: Args, deps: ProbeDeps) {
     if (writes + needed > deps.limits.maxWrites)
       return { outcome: 'inconclusive', reason: 'write cap reached' };
     writes++;
-    return classifyWrite(kind, text, await answerOf(kind, text));
+    return classifyWrite(kind, text, await answerOf(kind, text), {
+      detailCodeUnits: limit('probe.commentLimit.detailCodeUnits'),
+    });
   };
 
   /**
@@ -200,7 +214,8 @@ export async function probe(
     ...cleaned,
   };
   const exitCode = cleaned.undeleted === 0 && cleaned.sweep === 'done' ? 0 : 1;
-  return { exitCode, output: JSON.stringify(result, null, 2) };
+  const names = [args.repo, ...args.repo.split('/'), login];
+  return { exitCode, output: redact(JSON.stringify(result, null, 2), names) };
 }
 
 /** The real GitHub REST client: one request at a time, with the token in a header only. */

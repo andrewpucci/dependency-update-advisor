@@ -594,7 +594,12 @@ result records whether it was accepted.
 
 It prints one JSON result: the date, `repositoryType`, the unit, L for
 create and update, each body's HTTP status, and the count of comments it
-could not delete. It has no links and no repository name.
+could not delete. It has no links and no repository name. For a 422 it
+cannot classify, the write's record keeps GitHub's validation messages, each
+cut to `limit:probe.commentLimit.detailCodeUnits`, with no documentation
+link. The runner replaces the repository, owner, and user names wherever they
+appear in the result, so GitHub's text cannot leak them (user, 2026-11-22,
+after the second live run met an unrecognized 422).
 
 Running it is Ask-first: the user names the test repository and approves the
 run. Posting the result on #381 is a separate Ask-first step.

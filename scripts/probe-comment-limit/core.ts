@@ -25,7 +25,13 @@ export type WriteAnswer = { status: number; data: unknown } | { error: string };
 export type WriteResult =
   | { outcome: 'accepted'; status: number }
   | { outcome: 'rejected'; status: number; message: string }
-  | { outcome: 'inconclusive'; status?: number; reason: string };
+  | {
+      outcome: 'inconclusive';
+      status?: number;
+      reason: string;
+      /** GitHub's validation messages for a 422 the probe cannot classify. */
+      detail?: string[];
+    };
 
 export type BodyName =
   | 'ascii'
@@ -41,6 +47,7 @@ export type WriteRecord = {
   codeUnits: number;
   status: number | null;
   outcome: WriteResult['outcome'];
+  detail?: string[];
 };
 
 export type ProbeOutcome = {
@@ -103,7 +110,27 @@ function tooLongMessage(data: unknown): string | undefined {
  * src/comments.ts checks its own writes; rejected only on a 422 with a too-long body error.
  * Anything else is inconclusive and never counts as a rejection.
  */
-export function classifyWrite(kind: WriteKind, sent: string, answer: WriteAnswer): WriteResult {
+/**
+ * The top-level message and each error's text of a 422, each cut to `detailCodeUnits`. An
+ * error may be a string or an object with a message or code; links are never kept.
+ */
+export function validationMessages(data: unknown, detailCodeUnits: number): string[] {
+  if (!isRecord(data)) return [];
+  const errors = Array.isArray(data.errors) ? data.errors : [];
+  const texts = [data.message, ...errors].flatMap((item): unknown[] =>
+    isRecord(item) ? [item.message ?? item.code] : [item],
+  );
+  return texts
+    .filter((text): text is string => typeof text === 'string' && text !== '')
+    .map((text) => text.slice(0, detailCodeUnits));
+}
+
+export function classifyWrite(
+  kind: WriteKind,
+  sent: string,
+  answer: WriteAnswer,
+  options: { detailCodeUnits?: number } = {},
+): WriteResult {
   if ('error' in answer) return { outcome: 'inconclusive', reason: `no answer: ${answer.error}` };
   const { status, data } = answer;
   const expected = kind === 'create' ? HTTP_STATUS.created : HTTP_STATUS.ok;
@@ -115,7 +142,15 @@ export function classifyWrite(kind: WriteKind, sent: string, answer: WriteAnswer
   if (status === HTTP_STATUS.unprocessableContent) {
     const message = tooLongMessage(data);
     if (message !== undefined) return { outcome: 'rejected', status, message };
-    return { outcome: 'inconclusive', status, reason: 'a 422 that is not a too-long body error' };
+    const reason = 'a 422 that is not a too-long body error';
+    return options.detailCodeUnits === undefined
+      ? { outcome: 'inconclusive', status, reason }
+      : {
+          outcome: 'inconclusive',
+          status,
+          reason,
+          detail: validationMessages(data, options.detailCodeUnits),
+        };
   }
   return { outcome: 'inconclusive', status, reason: `unexpected status ${status}` };
 }
@@ -189,6 +224,7 @@ export async function runProbe(io: { firstLength: number; write: Writer }): Prom
         codeUnits: text.length,
         status: result.status ?? null,
         outcome: result.outcome,
+        ...('detail' in result && result.detail ? { detail: result.detail } : {}),
       });
       return result;
     };

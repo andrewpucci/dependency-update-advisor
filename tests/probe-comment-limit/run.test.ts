@@ -346,3 +346,22 @@ test('the register write cap covers the longest run from the register first body
     undeleted: 0,
   });
 });
+
+test('a 422 detail that names the repository or the user is redacted in the result', async () => {
+  const github = fakeGitHub();
+  const http: Http = async (method, path, body) =>
+    method === 'POST'
+      ? {
+          status: 422,
+          data: { message: 'Validation Failed', errors: ['tester/scratch rejected it for Tester'] },
+        }
+      : github.http(method, path, body);
+  const result = await probe(ARGV, ENV, deps(http));
+  const printed = JSON.parse(result.output) as { writes: { detail?: string[] }[] };
+  expect(printed.writes[0]?.detail).toEqual([
+    'Validation Failed',
+    '<redacted> rejected it for <redacted>',
+  ]);
+  for (const secret of ['tester', 'scratch', TOKEN])
+    expect(result.output.toLowerCase(), secret).not.toContain(secret.toLowerCase());
+});

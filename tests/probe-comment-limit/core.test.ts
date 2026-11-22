@@ -395,3 +395,56 @@ test('a raise is not allowed when the update or line-break step is inconclusive 
   for (const lineBreaks of ['inconclusive', 'not run'] as const)
     expect(raiseAllowed(outcome({ lineBreaks })), lineBreaks).toBe(false);
 });
+
+test('an unclassified 422 keeps GitHub validation messages, capped, without links', () => {
+  const data = {
+    message: 'Validation Failed',
+    errors: [
+      'Body is too long (maximum is 262144 characters)',
+      { resource: 'IssueComment', code: 'custom', field: 'body', message: 'x'.repeat(40) },
+      { resource: 'IssueComment', code: 'invalid' },
+      7,
+    ],
+    documentation_url: 'https://docs.github.com/rest/issues/comments#create-an-issue-comment',
+  };
+  const result = classifyWrite('create', 'x', { status: 422, data }, { detailCodeUnits: 16 });
+  expect(result).toMatchObject({ outcome: 'inconclusive', status: 422 });
+  expect('detail' in result && result.detail).toEqual([
+    'Validation Faile',
+    'Body is too long',
+    'x'.repeat(16),
+    'invalid',
+  ]);
+  expect(JSON.stringify(result)).not.toContain('docs.github.com');
+});
+
+test('only an unclassified 422 carries detail', () => {
+  const options = { detailCodeUnits: 64 };
+  expect(
+    classifyWrite('create', 'x', { status: 429, data: { message: 'slow down' } }, options),
+  ).not.toHaveProperty('detail');
+  const tooLong = { errors: [{ field: 'body', message: 'body is too long' }] };
+  expect(classifyWrite('create', 'x', { status: 422, data: tooLong }, options)).not.toHaveProperty(
+    'detail',
+  );
+});
+
+test('the probe record keeps the detail of an unclassified 422', async () => {
+  const write = async (): Promise<WriteResult> => ({
+    outcome: 'inconclusive',
+    status: 422,
+    reason: 'a 422 that is not a too-long body error',
+    detail: ['Validation Failed'],
+  });
+  const outcome = await runProbe({ firstLength: 1_000, write });
+  expect(outcome.writes).toEqual([
+    {
+      kind: 'create',
+      body: 'ascii',
+      codeUnits: 1_000,
+      status: 422,
+      outcome: 'inconclusive',
+      detail: ['Validation Failed'],
+    },
+  ]);
+});

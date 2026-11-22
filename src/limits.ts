@@ -2289,6 +2289,21 @@ const DEFINITIONS = [
       'The first create sends this many ASCII code units; if GitHub accepts it, the probe stops inconclusive.',
     test: 'tests/probe-comment-limit/run.test.ts > the register write cap covers the longest run from the register first body',
   },
+  {
+    id: 'probe.commentLimit.detailCodeUnits',
+    value: 256,
+    unit: 'code units',
+    protects:
+      "Bounds each GitHub validation message the probe prints for a 422 it cannot classify, so untrusted response text cannot flood the user's terminal or the public probe record.",
+    basis: {
+      kind: 'safety',
+      reason:
+        "GitHub's validation messages are one short sentence; its too-long message is about 50 units. 256 keeps any such message whole while bounding untrusted text (user-approved 2026-11-22).",
+    },
+    effect:
+      'Each message is cut to this many code units; the run is still inconclusive and nothing else changes.',
+    test: 'tests/probe-comment-limit/core.test.ts > an unclassified 422 keeps GitHub validation messages, capped, without links',
+  },
   ...allScaledShareEntries(),
 ] as const satisfies readonly LimitDefinition[];
 
