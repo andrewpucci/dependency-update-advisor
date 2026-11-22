@@ -100,8 +100,7 @@ function tooLongText(error: unknown): string | undefined {
   if (typeof error === 'string') return /\bbody is too long\b/i.test(error) ? error : undefined;
   if (!isRecord(error) || typeof error.message !== 'string') return undefined;
   if (error.field === 'body') return /too long/i.test(error.message) ? error.message : undefined;
-  // GitHub's live answer (2026-11-22) names no field, so the text must name the body.
-  if (error.field !== undefined) return undefined;
+  // GitHub's live answer (2026-11-22) does not name the body as its field, so the text must.
   return /\bbody is too long\b/i.test(error.message) ? error.message : undefined;
 }
 
@@ -120,6 +119,17 @@ function tooLongMessage(data: unknown): string | undefined {
  * src/comments.ts checks its own writes; rejected only on a 422 with a too-long body error.
  * Anything else is inconclusive and never counts as a rejection.
  */
+/** An error object as `field=…, code=…: message`, so the record shows its shape; else as is. */
+function describe(item: unknown): unknown {
+  if (!isRecord(item)) return item;
+  const shape = (['field', 'code'] as const)
+    .filter((key) => key in item && item[key] !== undefined)
+    .map((key) => `${key}=${String(item[key])}`)
+    .join(', ');
+  const message = typeof item.message === 'string' ? item.message : '';
+  return [shape, message].filter((part) => part !== '').join(': ');
+}
+
 /**
  * The top-level message and each error's text of a 422, each cut to `detailCodeUnits`. An
  * error may be a string or an object with a message or code; links are never kept.
@@ -127,9 +137,7 @@ function tooLongMessage(data: unknown): string | undefined {
 export function validationMessages(data: unknown, detailCodeUnits: number): string[] {
   if (!isRecord(data)) return [];
   const errors = Array.isArray(data.errors) ? data.errors : [];
-  const texts = [data.message, ...errors].flatMap((item): unknown[] =>
-    isRecord(item) ? [item.message ?? item.code] : [item],
-  );
+  const texts = [data.message, ...errors].map(describe);
   return texts
     .filter((text): text is string => typeof text === 'string' && text !== '')
     .map((text) => text.slice(0, detailCodeUnits));

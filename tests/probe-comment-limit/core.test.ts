@@ -407,13 +407,14 @@ test('an unclassified 422 keeps GitHub validation messages, capped, without link
     ],
     documentation_url: 'https://docs.github.com/rest/issues/comments#create-an-issue-comment',
   };
-  const result = classifyWrite('create', 'x', { status: 422, data }, { detailCodeUnits: 16 });
+  const result = classifyWrite('create', 'x', { status: 422, data }, { detailCodeUnits: 64 });
   expect(result).toMatchObject({ outcome: 'inconclusive', status: 422 });
+  // An object's field and code are kept, so the record shows the error's whole shape.
   expect('detail' in result && result.detail).toEqual([
-    'Validation Faile',
-    'Body is required',
-    'x'.repeat(16),
-    'invalid',
+    'Validation Failed',
+    'Body is required for this resource',
+    `field=body, code=custom: ${'x'.repeat(39)}`,
+    'code=invalid',
   ]);
   expect(JSON.stringify(result)).not.toContain('docs.github.com');
 });
@@ -449,23 +450,30 @@ test('the probe record keeps the detail of an unclassified 422', async () => {
   ]);
 });
 
-test('GitHub live shape: a bare too-long message, as a string or without a field, is a rejection', () => {
-  // Captured from the probe's third live run on 2026-11-22: a one-MiB body got a 422 whose
-  // errors carried "Body is too long (maximum is 65536 characters)" with no body field.
+test('GitHub live shape: an error whose text says the body is too long is a rejection, whatever its field', () => {
+  // Captured from the probe's live runs on 2026-11-22: a one-MiB body got a 422 whose errors
+  // carried "Body is too long (maximum is 65536 characters)" without field "body".
   const message = 'Body is too long (maximum is 65536 characters)';
-  for (const errors of [[message], [{ resource: 'IssueComment', code: 'custom', message }]])
+  for (const errors of [
+    [message],
+    [{ resource: 'IssueComment', code: 'custom', message }],
+    [{ resource: 'IssueComment', code: 'custom', field: null, message }],
+    [{ resource: 'IssueComment', code: 'custom', field: 'data', message }],
+    [{ resource: 'IssueComment', code: 'custom', field: 'base', message }],
+  ])
     expect(
       classifyWrite('create', 'x', { status: 422, data: { message: 'Validation Failed', errors } }),
       JSON.stringify(errors),
     ).toEqual({ outcome: 'rejected', status: 422, message });
 });
 
-test('a bare message must say the body is too long; other fields and other text stay inconclusive', () => {
+test('without field body, the text must say the body is too long; other text stays inconclusive', () => {
   for (const errors of [
     ['Title is too long (maximum is 256 characters)'],
     ['was submitted too quickly'],
     [{ code: 'custom', message: 'is too long' }],
-    [{ field: 'title', message: 'Body is too long' }],
+    [{ field: 'data', message: 'is too long' }],
+    [{ field: 'body', message: 'was submitted too quickly' }],
   ])
     expect(
       classifyWrite('create', 'x', { status: 422, data: { message: 'Validation Failed', errors } }),
