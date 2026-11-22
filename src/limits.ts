@@ -2069,6 +2069,23 @@ const DEFINITIONS = [
     note: 'no recorded reason',
     test: 'tests/limits/check-limits.test.ts > a register value at the spec floor, or a non-whole number, is not a problem',
   }),
+  {
+    id: 'research.githubQuota.windowMs',
+    value: 3_600_000,
+    unit: 'milliseconds',
+    protects:
+      'Rejects a reported GitHub quota reset that is not plausible for the hourly limit, so a bad header cannot make research wait or stop for longer than the quota really lasts.',
+    basis: {
+      kind: 'external',
+      url: 'https://docs.github.com/en/rest/using-the-rest-api/rate-limits-for-the-rest-api',
+      checked: '2026-11-21',
+      platformValue: 3_600_000,
+      margin: "none: the window is the platform's hourly quota period",
+    },
+    effect:
+      'A reset time more than this far ahead is ignored: the estimate is unchanged and no wait or retry time uses it.',
+    test: 'src/evidence/github-quota.test.ts > judges a reset on the wall clock: past or beyond the window is ignored',
+  },
   ...allScaledShareEntries(),
 ] as const satisfies readonly LimitDefinition[];
 

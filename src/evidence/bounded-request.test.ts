@@ -1,6 +1,7 @@
 import { describe, expect, test, vi } from 'vite-plus/test';
 import { AdvisoryFailure } from './advisory-read.js';
 import { boundedGet } from './bounded-request.js';
+import { createGithubQuotaGuard } from './github-quota.js';
 import { createNpmPublishTimeReader } from './npm-publish-times.js';
 import { createPolicySignalReader } from './policy-signals-read.js';
 import { createResearchCache } from './research-cache.js';
@@ -343,5 +344,96 @@ describe('research cache seam', () => {
     await read(url, { accept: 'application/json' });
     await read(url);
     expect(source.fetches).toBe(4);
+  });
+});
+
+describe('research GitHub quota seam', () => {
+  const url = 'https://api.github.com/repos/o/r/releases';
+  const request = { url, accept: 'application/json', timeoutMs: 1000 };
+  const wall = Date.UTC(2026, 10, 21);
+  const reset = String(Math.floor(wall / 1000) + 60);
+  const quotaHeaders = (remaining: string) => ({
+    'x-ratelimit-remaining': remaining,
+    'x-ratelimit-reset': reset,
+  });
+  const recording = (allowed: boolean) => {
+    const observed: Response[] = [];
+    const admitted: string[] = [];
+    return {
+      observed,
+      admitted,
+      quota: {
+        admit: (target: string) => (
+          admitted.push(target),
+          allowed ? { allowed: true as const } : { allowed: false as const, retryAt: null }
+        ),
+        observe: (_target: string, response: Response) => void observed.push(response),
+      },
+    };
+  };
+
+  test('a refused request is neither charged nor sent and reaches the reader as a bare 429', async () => {
+    const guard = recording(false);
+    let fetches = 0;
+    let charges = 0;
+    const seen: Response[] = [];
+    await boundedGet(
+      { now: () => 0, fetch: async () => (fetches++, new Response('{}')), quota: guard.quota },
+      { ...request, charge: () => charges++ },
+      () => {},
+      async (response) => void seen.push(response),
+    );
+    expect(fetches).toBe(0);
+    expect(charges).toBe(0);
+    expect(seen[0]?.status).toBe(429);
+    expect(
+      [...(seen[0]?.headers.keys() ?? [])].filter((name) => name.startsWith('x-ratelimit')),
+    ).toEqual([]);
+    // The guard never reads its own refusal.
+    expect(guard.observed).toEqual([]);
+  });
+
+  test('the guard sees each live response and never a cached one', async () => {
+    const guard = recording(true);
+    const shared = createResearchCache({ maxEntryBytes: 1024, maxTotalBytes: 4096 });
+    let fetches = 0;
+    const read = () =>
+      boundedGet(
+        {
+          now: () => 0,
+          fetch: async () => (fetches++, new Response('{}', { headers: quotaHeaders('9') })),
+          cache: shared,
+          quota: guard.quota,
+        },
+        request,
+        () => {},
+        (response) => response.text(),
+      );
+    await read();
+    await read();
+    expect(fetches).toBe(1);
+    expect(guard.admitted).toEqual([url]);
+    expect(guard.observed).toHaveLength(1);
+    expect(guard.observed[0]?.headers.get('x-ratelimit-remaining')).toBe('9');
+  });
+
+  test('with a real guard, research stops sending at the reserve', async () => {
+    const quota = createGithubQuotaGuard({ reserve: 7, wallNow: () => wall, windowMs: 3_600_000 });
+    let fetches = 0;
+    const statuses: number[] = [];
+    for (let i = 0; i < 4; i++)
+      await boundedGet(
+        {
+          now: () => 0,
+          fetch: async () => (fetches++, new Response('{}', { headers: quotaHeaders('9') })),
+          quota,
+        },
+        { ...request, url: `${url}?page=${i}` },
+        () => {},
+        async (response) => void statuses.push(response.status),
+      );
+    // The first response reports 9 left; two more keep 7, the next is refused.
+    expect(statuses).toEqual([200, 200, 200, 429]);
+    expect(fetches).toBe(3);
   });
 });

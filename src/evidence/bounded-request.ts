@@ -1,8 +1,9 @@
 import type { EvidenceReason } from '../schema.js';
 import { advisoryCheck, AdvisoryFailure } from './advisory-read.js';
 import { isPlainObject } from './common.js';
+import type { GithubQuotaGuard } from './github-quota.js';
 import type { ResearchCache } from './research-cache.js';
-import { MAX_TIMER_MS } from '../format.js';
+import { HTTP_STATUS, MAX_TIMER_MS } from '../format.js';
 
 export type BoundedLimits = {
   maxRequests: number;
@@ -21,6 +22,8 @@ export type BoundedDependencies = {
   signal?: AbortSignal;
   /** Run-scoped research cache. Event, snapshot, and freshness reads never receive one. */
   cache?: ResearchCache;
+  /** The run's research GitHub quota guard. Event, snapshot, and freshness reads never receive one. */
+  quota?: GithubQuotaGuard;
 };
 type BoundedRequest = (
   | { url: string; accept: string; headers?: never }
@@ -144,6 +147,13 @@ export async function boundedGet<T>(
     const key = deps.cache?.key(post ? 'POST' : 'GET', request.url, headers, body);
     const hit = key === undefined ? undefined : deps.cache?.lookup(key);
     if (hit) return await consume(hit, aborted, true);
+    // A refusal is never sent or charged; it carries no rate-limit headers for the guard to read.
+    if (deps.quota && !deps.quota.admit(request.url).allowed)
+      return await consume(
+        new Response(null, { status: HTTP_STATUS.tooManyRequests }),
+        aborted,
+        false,
+      );
     request.charge?.();
     const pending = deps.fetch(request.url, {
       method: post ? 'POST' : 'GET',
@@ -161,6 +171,7 @@ export async function boundedGet<T>(
       () => {},
     );
     response = await Promise.race([pending, aborted]);
+    deps.quota?.observe(request.url, response);
     response = await remember(deps.cache, key, request.url, response, aborted);
     return await consume(response, aborted, false);
   } finally {
