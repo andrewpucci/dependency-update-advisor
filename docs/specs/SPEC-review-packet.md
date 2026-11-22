@@ -500,9 +500,9 @@ review and merge.
 ## Retry Time Amendment
 
 **Status: approved for planning and execution, 2026-11-21, with the
-amendment it comes from; implemented on branch
-`claude/dependency-update-advisor-spec-965015` for #419, pending review and
-merge.** The
+amendment it comes from; implemented for #419 and merged into `main` in
+[PR #423](https://github.com/andrewpucci/dependency-update-advisor/pull/423),
+2026-11-22.** The
 normative contract is A4 of
 the [scaled-share function amendment](SPEC-evidence-coverage.md#a4-retry-time-in-the-review);
 [ADR 0006](../adr/0006-amend-packet-v1-in-place-for-reachability.md) is the

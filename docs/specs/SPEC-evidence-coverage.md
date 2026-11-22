@@ -285,9 +285,10 @@ owns how these states and actions are rendered.
 
 ## Scaled-Share Function Amendment
 
-**Status: approved for planning, 2026-11-21; implemented on branch
-`claude/dependency-update-advisor-spec-965015` for #369 and #414–#422,
-pending review and merge.** The user invoked `as-plan` on the reviewed draft
+**Status: approved for planning, 2026-11-21; implemented for #369 and
+#414–#422 and merged into `main` in
+[PR #423](https://github.com/andrewpucci/dependency-update-advisor/pull/423),
+2026-11-22.** The user invoked `as-plan` on the reviewed draft
 after a fresh-context review whose blocking findings were resolved, then
 approved the plan and execution (`as-build auto`) the same day. It refines
 section 3 for

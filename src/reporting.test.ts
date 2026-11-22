@@ -1,4 +1,4 @@
-import { expect, test } from 'vite-plus/test';
+import { expect, test, vi } from 'vite-plus/test';
 import type { LargeInventoryOptions } from '../tests/parity/large-inventory.js';
 import { parseReviewConfig } from './config.js';
 import {
@@ -11,6 +11,10 @@ import {
 import { formDecisionUnits, summarizeDecisionCoverage, type DecisionUnit } from './units.js';
 import { evidenceGap, renderDecisionBrief } from './reporting.js';
 import { limit } from './limits.js';
+
+// Many tests here build and render a 93-member inventory, a second or two each locally and several
+// times that on a busy CI runner; a fixed allowance keeps them from timing out by chance.
+vi.setConfig({ testTimeout: limit('tests.largeInventoryRenderTimeoutMs') });
 
 function emptyBrief() {
   const repository = { id: 101, owner: 'example', name: 'consumer' };

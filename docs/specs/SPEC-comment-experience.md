@@ -346,9 +346,9 @@ must satisfy the verification below.
 ## Retry Time Amendment
 
 **Status: approved for planning and execution, 2026-11-21, with the
-amendment it comes from; implemented on branch
-`claude/dependency-update-advisor-spec-965015` for #421, pending review and
-merge.** From A4 of the
+amendment it comes from; implemented for #421 and merged into `main` in
+[PR #423](https://github.com/andrewpucci/dependency-update-advisor/pull/423),
+2026-11-22.** From A4 of the
 [scaled-share function amendment](SPEC-evidence-coverage.md#a4-retry-time-in-the-review)
 to the evidence coverage spec. When a gap's action is "Rerun CI later" and
 the packet's `retryAfter`, passed to the renderer as
