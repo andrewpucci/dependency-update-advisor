@@ -1357,6 +1357,30 @@
   },
   {
     "file": "docs/specs/SPEC-limit-register.md",
+    "line": "spelling (`3000`, `3,000`, or `3_000`). An allowlist names each line where",
+    "values": [3000],
+    "reason": "limit register spec: names a registered value as an example or test"
+  },
+  {
+    "file": "docs/specs/SPEC-limit-register.md",
+    "line": "`if (files.length <= 3_000)` to a module, and add",
+    "values": [3000],
+    "reason": "limit register spec: names a registered value as an example or test"
+  },
+  {
+    "file": "docs/specs/SPEC-limit-register.md",
+    "line": "`const MAX_FILES = 3_000;` to a module.",
+    "values": [3000],
+    "reason": "limit register spec: names a registered value as an example or test"
+  },
+  {
+    "file": "docs/specs/SPEC-limit-register.md",
+    "line": "(mutation: add \"at most 3,000 code units\" to an approved spec);",
+    "values": [3000],
+    "reason": "limit register spec: names a registered value as an example or test"
+  },
+  {
+    "file": "docs/specs/SPEC-limit-register.md",
     "line": "reviewer's 15 minutes is the shared workflow's own `timeout-minutes`.",
     "values": [900000],
     "reason": "limit register spec: names a registered value as an example or test; pending amendment (L10)"
@@ -1411,7 +1435,7 @@
   },
   {
     "file": "docs/specs/SPEC-limit-register.md",
-    "line": "the existing boundary tests (exact 50,000 body, 128/129 changes, 16,384-byte",
+    "line": "the existing boundary tests (exact comment-limit body, 128/129 changes, 16,384-byte",
     "values": [128, 16384],
     "reason": "limit register spec: names a registered value as an example or test; pending amendment (L10)"
   },

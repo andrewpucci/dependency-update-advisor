@@ -77,8 +77,9 @@ Platform figures checked on 2026-11-17:
   ([REST rate limits](https://docs.github.com/en/rest/using-the-rest-api/rate-limits-for-the-rest-api)).
 - **Comment size.** GitHub's REST docs don't state a comment-body limit. API
   errors report 65,536 characters, and third-party sources disagree on whether
-  that counts characters or bytes. The reviewer's 50,000 code units is a chosen
-  margin under an observed, undocumented limit.
+  that counts characters or bytes. The reviewer's cap was then a chosen
+  margin under that figure. The L9 probe later measured the enforced limit;
+  see the [External Citations Amendment](#external-citations-amendment).
 
 ## Contract
 
@@ -130,7 +131,7 @@ and limit parameters become register entries too.
 No limit value appears anywhere outside the register: not in code, and not
 in specs.
 
-- **Code.** Re-hardcoded identity bounds, the duplicated 50,000 comment cap,
+- **Code.** Re-hardcoded identity bounds, the duplicated comment cap,
   and any cap that silently equals another (such as attempts and findings
   matching packet findings) become references or `derived` entries.
 - **Specs.** Specs stop stating limit values. They cite the register entry
@@ -185,7 +186,7 @@ covers everything else. They fail when:
 - **Workflows:** a workflow's `timeout-minutes` differs from its register
   entry. Workflow YAML can't import the register, so the check compares them.
 - **Specs:** a spec in `docs/specs/` states a register entry's value, in any
-  spelling (`50000`, `50,000`, or `50_000`). An allowlist names each line where
+  spelling (`3000`, `3,000`, or `3_000`). An allowlist names each line where
   that number means something else, with a reason. During migration, the
   allowlist also holds each approved spec's values as pending amendments.
   That part must be empty after phase 2.
@@ -296,18 +297,18 @@ cite the id, so no spec changes with the value.
 
 - `vp lint` fails on a limit literal planted in code outside the register,
   and passes on the migrated tree. Mutations: add
-  `if (body.length <= 50_000)` to a module, and add
-  `const MAX_BODY = 50_000;` to a module.
+  `if (files.length <= 3_000)` to a module, and add
+  `const MAX_FILES = 3_000;` to a module.
 - `npm run check:limits` fails on each of these and passes on the migrated
   tree:
   - a workflow `timeout-minutes` that differs from its entry;
   - a register value written into a spec line that is not allowlisted
-    (mutation: add "at most 50,000 code units" to an approved spec);
+    (mutation: add "at most 3,000 code units" to an approved spec);
   - a `limit:<id>` citation to an id that doesn't exist;
   - an entry that names a missing test;
   - after phase 2, an `unjustified` entry.
 - Phase 1 changes no outcome. The full check set passes unchanged, including
-  the existing boundary tests (exact 50,000 body, 128/129 changes, 16,384-byte
+  the existing boundary tests (exact comment-limit body, 128/129 changes, 16,384-byte
   config, 3,000-file listing).
 - Every register entry names an existing test, or says `none` with a reason.
 - For each configurable limit:
@@ -335,7 +336,9 @@ cite the id, so no spec changes with the value.
   Checkpoint B's 92-member criterion depends on packet bytes, attempts, and
   shares.
 - [Comment capacity](SPEC-comment-experience.md#comment-capacity-amendment):
-  its at-most-50,000 acceptance depends on the comment limit, which is chosen.
+  its acceptance cites `limit:comment.maxBodyCodeUnits`, which the
+  [External Citations Amendment](#external-citations-amendment) derives from
+  GitHub's measured limit.
 - The signals packet check serializes its attempts, which are not packet
   content, against the packet byte limit. That inflates the measured size
   near the limit. Phase 2 should decide what that check measures.
@@ -359,15 +362,17 @@ cite the id, so no spec changes with the value.
   from a new reusable-workflow input.
 
 - Comment limit (user, 2026-11-17): raise it toward GitHub's real limit
-  instead of keeping 50,000.
+  instead of keeping the chosen value. Done on 2026-11-22; see the
+  [External Citations Amendment](#external-citations-amendment).
   - A live probe settles the unit first: does GitHub count characters,
     UTF-16 code units, or bytes? The probe posts comments, so it is
     Ask-first and runs in a test repository the user chooses.
   - The new value is an `external` entry, set just under the measured limit
     with a stated margin for the comment metadata.
-  - Until the probe runs, the limit stays at 50,000, marked `unjustified`.
+  - Until the probe runs, the limit keeps its chosen value, marked
+    `unjustified`.
   - Raising it changes the comment capacity amendment's acceptance (at most
-    50,000 code units), so that amendment needs its own approval.
+    the chosen cap), so that amendment needs its own approval.
 
 - Zod 4 for config validation (user, 2026-11-17): investigated and not
   adopted. Configurable limits stay in the hand-written parser in
