@@ -542,6 +542,29 @@ test('stops research GitHub requests at the quota reserve, keeping other hosts a
     );
 });
 
+test('uses an injected quota guard for every research GitHub request', async () => {
+  const { fixture, packet } = await scenario();
+  const hosts: string[] = [];
+  const fetch = async (url: string, init: RequestInit) => {
+    hosts.push(new URL(url).host);
+    return (fixture.fetch as (u: string, i: RequestInit) => Promise<Response>)(url, init);
+  };
+  const admitted: string[] = [];
+  const quota = {
+    admit: (url: string) =>
+      new URL(url).host === 'api.github.com'
+        ? (admitted.push(url), { allowed: false as const, retryAt: null })
+        : { allowed: true as const },
+    observe: () => {},
+    refusals: () => admitted.length,
+  };
+  const result = await runResearch({ ...base(fixture, packet), fetch, quota });
+  expect(result.kind).toBe('ready');
+  expect(admitted.length).toBeGreaterThan(0);
+  expect(hosts).not.toContain('api.github.com');
+  expect(hosts).toContain('registry.npmjs.org');
+});
+
 test('reports an internal failure rather than a research result when a reader throws', async () => {
   const { fixture, packet } = await scenario();
   const result = await runResearch({

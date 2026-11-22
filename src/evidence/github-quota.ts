@@ -16,6 +16,8 @@ export type GithubQuotaGuard = Readonly<{
   admit(url: string): QuotaAdmission;
   /** Called only with a response returned by the network, never a cached or synthetic one. */
   observe(url: string, response: Response): void;
+  /** How many requests the guard has refused this run. */
+  refusals(): number;
 }>;
 
 export type GithubQuotaOptions = Readonly<{
@@ -43,6 +45,7 @@ function count(value: string | null): number | null {
 
 export function createGithubQuotaGuard(options: GithubQuotaOptions): GithubQuotaGuard {
   let window: { reset: number; remaining: number; started: number } | null = null;
+  let refused = 0;
   const current = () => {
     if (window && options.wallNow() >= window.reset) window = null;
     return window;
@@ -52,8 +55,10 @@ export function createGithubQuotaGuard(options: GithubQuotaOptions): GithubQuota
       if (!isGithub(url)) return { allowed: true };
       const estimate = current();
       if (!estimate) return { allowed: true };
-      if (estimate.remaining - estimate.started - 1 < options.reserve)
+      if (estimate.remaining - estimate.started - 1 < options.reserve) {
+        refused += 1;
         return { allowed: false, retryAt: estimate.reset };
+      }
       estimate.started += 1;
       return { allowed: true };
     },
@@ -74,5 +79,6 @@ export function createGithubQuotaGuard(options: GithubQuotaOptions): GithubQuota
       }
       window = { reset, remaining, started: 0 };
     },
+    refusals: () => refused,
   };
 }

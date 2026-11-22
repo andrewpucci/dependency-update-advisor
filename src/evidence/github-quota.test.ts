@@ -123,3 +123,13 @@ test('requests started since the last valid header lower the estimate', () => {
   guard.observe(API, new Response('{}'));
   expect(admitUntilRefused(guard)).toBe(2);
 });
+
+test('counts each refusal it makes', () => {
+  const guard = guardAt({ now: WALL });
+  expect(guard.refusals()).toBe(0);
+  guard.observe(API, rateLimited('5', WALL + MINUTE));
+  guard.admit(API);
+  guard.admit(API);
+  guard.admit(NPM);
+  expect(guard.refusals()).toBe(2);
+});

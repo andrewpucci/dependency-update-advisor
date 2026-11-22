@@ -2069,6 +2069,24 @@ const DEFINITIONS = [
     note: 'no recorded reason',
     test: 'tests/limits/check-limits.test.ts > a register value at the spec floor, or a non-whole number, is not a problem',
   }),
+  derived(
+    'research.githubQuota.researchCeiling',
+    'count',
+    [
+      'evidence.allocation.upstream.maxRequests',
+      'evidence.allocation.advisory.maxRequests',
+      'evidence.allocation.signals.maxRequests',
+    ],
+    sum,
+    "Research's GitHub requests can be no more than the three research stages' request ceilings together.",
+    {
+      protects:
+        "States the approved ceiling for research's GitHub requests that the R1 demand measurement is judged against, so a measured run that exceeds its shares is visible.",
+      effect:
+        'No runtime check: the demand measurement reports research GitHub requests beside it; each stage is still capped by its own share and the quota guard.',
+      test: 'src/measurement/demand.test.ts > the R1 ceiling is the sum of the research request ceilings and scales with them',
+    },
+  ),
   {
     id: 'research.githubQuota.reserve',
     unit: 'count',
