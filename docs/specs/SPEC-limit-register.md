@@ -620,16 +620,35 @@ The entry then becomes `external`, with the probe as its source.
 In every other case, L9 changes nothing about the comment limit. It stops
 and returns the result to the user. The cases are:
 
-- **Unit is bytes.** The reviewer undercounts non-ASCII bodies today, so
-  raising the value is not enough. Changing what `src/comments.ts` and
-  `src/reporting.ts` measure is its own change.
+- **Unit is bytes.** A code-unit cap set to L would undercount non-ASCII
+  bodies, so it cannot simply take L. The derived path below applies instead.
+  Changing what `src/comments.ts` and `src/reporting.ts` measure is its own
+  change.
 - **Create and update disagree,** or **the line-break body was rejected.**
   No margin can be stated from what the probe measured.
 - **`inconclusive`.**
 
-In those cases the entry keeps today's value and stays `unjustified`, and its
-note links the probe record. The parent spec allows no `unjustified` entry
-after phase 2, so L11 cannot close until the user decides this entry's basis.
+In the last two cases the entry keeps today's value and stays `unjustified`,
+and its note links the probe record. The parent spec allows no `unjustified`
+entry after phase 2, so L11 cannot close until the user decides this entry's
+basis.
+
+**Derived path for a byte limit** (user, 2026-11-22, after the live probe
+measured bytes). When the unit is bytes, create and update agree, and the
+line-break body was accepted:
+
+- GitHub's limit becomes its own `external` entry,
+  `github.comment.maxBodyBytes`, with the probe as its source and the #381
+  record as its `url`.
+- `comment.maxBodyCodeUnits` becomes `derived`: ⌊bytes / 3⌋. One UTF-16 code
+  unit is at most three UTF-8 bytes (an astral pair is four bytes for two
+  units, and a lone surrogate, if sent at all, becomes at most three), so
+  a body within the derived cap never exceeds GitHub's byte limit, whatever
+  its text.
+- The reviewer keeps measuring code units, so no renderer changes. The
+  formula is exact, so no further margin is stated.
+- Using the full byte limit for ASCII-heavy bodies, by measuring bytes, is
+  its own change.
 
 The raise also changes every approved spec that states today's value. Today
 the comment cap is written out in the comment capacity amendment, the
@@ -641,10 +660,11 @@ cites `limit:comment.maxBodyCodeUnits` instead of the number, its
 allowlist entries are removed, and each spec's change has its own approval.
 This takes those lines out of L10.
 
-Raising the cap alone does not make the R1 replay render
+Raising the cap to the derived value does not make the R1 replay render
 ([#348](https://github.com/andrewpucci/dependency-update-advisor/issues/348)).
-Its required body was far longer than any limit near GitHub's. That still
-needs the comment capacity amendment's own changes. No other gate moves:
+Its required body was longer than the derived cap. Measuring bytes might fit
+it, because it was mostly ASCII; that belongs to the byte-measuring change
+or the comment capacity amendment's own changes. No other gate moves:
 publication, parity, and cutover stay separate.
 
 ### Amendment verification
