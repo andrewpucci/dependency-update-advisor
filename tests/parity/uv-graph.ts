@@ -117,6 +117,7 @@ export function uvPacket(result: {
         ...(result.optionalRelationships ?? []),
       ],
       reachability: result.reachability ?? [],
+      retryAfter: null,
       coverage: {
         npm: { status: 'not_applicable', reasons: [], sourceIds: [absent.id] },
         actions: { status: 'not_applicable', reasons: [], sourceIds: [absent.id] },

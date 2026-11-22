@@ -1552,5 +1552,11 @@
     "line": "lines. File loading, the 16,384-byte read, strict UTF-8 decoding,",
     "values": [16384],
     "reason": "limit register spec: names a registered value as an example or test; pending amendment (L10)"
+  },
+  {
+    "file": "docs/specs/SPEC-evidence-coverage.md",
+    "line": "documents its limit as 1,000 requests per hour per repository, or 15,000 for",
+    "values": [1000, 15000],
+    "reason": "external: quotes GitHub's documented limit (GitHub Docs, checked 2026-11-21), not a register value"
   }
 ]

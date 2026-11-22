@@ -1,4 +1,6 @@
 import { AsyncLocalStorage } from 'node:async_hooks';
+import { isGithubApi } from '../evidence/github-quota.js';
+import { limit } from '../limits.js';
 import type { ResearchObservation, ResearchStage } from '../research.js';
 
 export type DemandPhase = ResearchStage | 'pre-research' | 'post-research';
@@ -27,6 +29,14 @@ export type DemandReport = {
   }[];
   censored: Censored[];
   units: DemandUnits;
+  /** Research's GitHub use against its approved ceiling, and what the quota guard saw. */
+  github: {
+    researchRequests: number;
+    ceiling: number;
+    refusals: number;
+    /** The last `x-ratelimit-remaining` GitHub reported this run, or null before any. */
+    lastRemaining: number | null;
+  };
 };
 
 type Sample = {
@@ -42,6 +52,8 @@ type Sample = {
 const shareStore = new AsyncLocalStorage<string>();
 const UNATTRIBUTED = 'unattributed';
 const CENSORING_REASONS: readonly (string | null)[] = ['budget', 'timeout', 'rate_limit'];
+const RESEARCH_PHASES: readonly DemandPhase[] = ['upstream', 'advisories', 'signals'];
+const DIGITS = /^\d+$/;
 
 /**
  * Counts every request made through `fetch` against `share`. When labels nest, the outermost one
@@ -118,11 +130,12 @@ export function createDemandRecorder(now: () => number): {
   wrap(
     fetch: (url: string, init: RequestInit) => Promise<Response>,
   ): (url: string, init: RequestInit) => Promise<Response>;
-  report(units: DemandUnits): DemandReport;
+  report(units: DemandUnits, quota?: Readonly<{ refusals(): number }>): DemandReport;
 } {
   let phase: DemandPhase = 'pre-research';
   let stageStartedAt = 0;
   const samples: Sample[] = [];
+  let lastRemaining: number | null = null;
   const stages: DemandReport['stages'] = [];
 
   const observe = (observation: ResearchObservation) => {
@@ -153,13 +166,16 @@ export function createDemandRecorder(now: () => number): {
         throw error;
       }
       const ms = now() - startedAt;
+      const remaining = response.headers.get('x-ratelimit-remaining');
+      if (isGithubApi(url) && remaining !== null && DIGITS.test(remaining))
+        lastRemaining = Number(remaining);
       const bytes = (await response.clone().arrayBuffer()).byteLength;
       samples.push({ ...sampleBase, status: String(response.status), bytes, ms });
       return response;
     };
   };
 
-  const report = (units: DemandUnits): DemandReport => {
+  const report = (units: DemandUnits, quota?: Readonly<{ refusals(): number }>): DemandReport => {
     const byPhaseHost: Record<string, DemandRow> = {};
     const byShare: Record<string, DemandRow> = {};
     const seenUrls = new Set<string>();
@@ -185,6 +201,14 @@ export function createDemandRecorder(now: () => number): {
         .filter((stage) => CENSORING_REASONS.includes(stage.reason))
         .map(({ stage, reason }) => ({ stage, reason: reason ?? '' })),
       units,
+      github: {
+        researchRequests: samples.filter(
+          (sample) => isGithubApi(sample.url) && RESEARCH_PHASES.includes(sample.phase),
+        ).length,
+        ceiling: limit('research.githubQuota.researchCeiling'),
+        refusals: quota?.refusals() ?? 0,
+        lastRemaining,
+      },
     };
   };
 

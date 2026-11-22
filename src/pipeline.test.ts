@@ -1183,6 +1183,61 @@ test.each([
   expect(JSON.stringify({ result, traces: sink.traces() })).not.toContain(sentinel);
 });
 
+test('the research quota reserve covers every GitHub read after research', async () => {
+  const MOVED = 'c'.repeat(40);
+  const { input, githubCalls } = await setup({ evidence: 'changes' });
+  const gate = { researched: false, githubCalls: 0 };
+  vi.mocked(researchModule.runResearch).mockImplementationOnce(async (researchInput) => {
+    const researched = await vi
+      .importActual<typeof import('./research.js')>('./research.js')
+      .then((actual) => actual.runResearch(researchInput));
+    gate.researched = true;
+    gate.githubCalls = githubCalls.length;
+    return researched;
+  });
+  const reads = input.eventReads;
+  const after: string[] = [];
+  const counted =
+    <A extends unknown[], R>(name: string, read: (...args: A) => Promise<R>) =>
+    async (...args: A) => {
+      if (gate.researched) after.push(name);
+      return read(...args);
+    };
+  // After research the base moves, so each recheck also reads the comparison: its largest cost.
+  const result = await runReview({
+    ...input,
+    eventReads: {
+      ...reads,
+      readRun: counted('run', reads.readRun),
+      readPullRequest: counted('pullRequest', async (repo: RepositoryIdentity, n: number) => {
+        const pr = (await reads.readPullRequest(repo, n)) as { base: Record<string, unknown> };
+        return gate.researched ? { ...pr, base: { ...pr.base, sha: MOVED } } : pr;
+      }),
+      readComparison: counted(
+        'comparison',
+        async (repo: RepositoryIdentity, from: string, to: string) =>
+          gate.researched
+            ? { base_commit: { sha: MOVED }, merge_base_commit: { sha: BASE } }
+            : reads.readComparison(repo, from, to),
+      ),
+    },
+  });
+  expect(result).toMatchObject({ kind: 'handed-off' });
+  expect(result).not.toMatchObject({ outcome: 'internal-failure' });
+  // Two rechecks follow research, before the model and at the end; nothing else reads GitHub.
+  expect(after).toEqual(['run', 'pullRequest', 'comparison', 'run', 'pullRequest', 'comparison']);
+  expect(githubCalls.length).toBe(gate.githubCalls);
+  expect(after).toHaveLength(limit('research.githubQuota.reserve'));
+});
+
+test('hands research the injected wall clock', async () => {
+  vi.mocked(researchModule.runResearch).mockClear();
+  const wallNow = () => Date.parse('2026-11-21T00:00:00Z');
+  const { input } = await setup({ evidence: 'changes', wallNow });
+  await runReview(input);
+  expect(researchModule.runResearch).toHaveBeenCalledWith(expect.objectContaining({ wallNow }));
+});
+
 test('builds the collectors and context from the default-branch revision, never a PR SHA', async () => {
   vi.mocked(npmModule.collectNpmInventory).mockClear();
   vi.mocked(researchModule.runResearch).mockClear();

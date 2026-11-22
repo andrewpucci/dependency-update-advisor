@@ -159,6 +159,14 @@ test('a fragment without reachability yields an explicit empty array, never a mi
   expect(result).toMatchObject({ kind: 'ready', packet: { reachability: [] } });
 });
 
+test('an assembled packet carries no retry time, even when a collector offers one', async () => {
+  const result = await assembleWithUv(async () => ({
+    ...(await collector('uv')()),
+    retryAfter: '2026-11-21T00:01:00Z',
+  }));
+  expect(result).toMatchObject({ kind: 'ready', packet: { retryAfter: null } });
+});
+
 test('forwards fragment reachability to T4 instead of dropping it', async () => {
   const fragment = await collector('uv')();
   const result = await assembleWithUv(async () => ({ ...fragment, reachability: [{}] }));

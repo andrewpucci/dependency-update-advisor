@@ -41,6 +41,7 @@ test.each(['permission', 'empty', 'omission'])(
         findings: result.findings,
         relationships: [],
         reachability: [],
+        retryAfter: null,
         coverage: {
           npm: inventory.coverage,
           actions: { status: 'not_applicable', reasons: [], sourceIds: ['other'] },
@@ -91,6 +92,7 @@ test('real bounded D1 comparison supplies a positive when global lookup fails', 
       findings: out.findings,
       relationships: [],
       reachability: [],
+      retryAfter: null,
       coverage: {
         npm: inventory.coverage,
         actions: { status: 'not_applicable', reasons: [], sourceIds: ['other'] },
@@ -289,6 +291,7 @@ test.each([false, true])(
         findings: out.findings,
         relationships: [],
         reachability: [],
+        retryAfter: null,
         coverage: {
           actions: f.inventory.coverage,
           npm: { status: 'not_applicable', reasons: [], sourceIds: [f.absent.id] },
@@ -342,6 +345,7 @@ test.each(['high', 'critical'])(
         coverage: f.coverage,
         relationships: f.relationships,
         reachability: [],
+        retryAfter: null,
       },
       f.expected,
     );
@@ -398,6 +402,7 @@ test.each([125, 126])(
         coverage: f.coverage,
         relationships: f.relationships,
         reachability: [],
+        retryAfter: null,
       },
       f.expected,
     );

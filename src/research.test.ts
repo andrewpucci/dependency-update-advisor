@@ -8,7 +8,12 @@ import * as advisoryReadModule from './evidence/advisory-read.js';
 import * as upstreamModule from './evidence/upstream.js';
 import * as upstreamReadModule from './evidence/upstream-read.js';
 import * as policySignalsModule from './evidence/policy-signals.js';
-import { EVIDENCE_READ_ALLOCATION, EVIDENCE_READ_ENVELOPE } from './budget.js';
+import {
+  EVIDENCE_READ_ALLOCATION,
+  EVIDENCE_READ_ENVELOPE,
+  researchShareUnits,
+  researchShares,
+} from './budget.js';
 import { researchOrder, runResearch, type ResearchObservation } from './research.js';
 import { limit } from './limits.js';
 import type { PacketChange } from './schema.js';
@@ -124,6 +129,7 @@ async function scenario(options: Parameters<typeof upstreamScenario>[0] = {}) {
     coverage: fixture.coverage,
     relationships: fixture.relationships,
     reachability: [],
+    retryAfter: null,
   };
   const validated = validateReviewPacket(candidate, fixture.expected);
   if (!validated.ok) throw new Error(`fixture packet: ${JSON.stringify(validated)}`);
@@ -417,6 +423,209 @@ test('caps every reader at its share, so the readers together stay inside the en
   expect(bytes + others.reduce((sum, share) => sum + share.maxTotalBytes, 0)).toBe(
     EVIDENCE_READ_ENVELOPE.maxTotalBytes,
   );
+});
+
+test('opens each reader with the share scaled from the packet members', async () => {
+  const { fixture, packet } = await scenario();
+  for (const mock of [
+    upstreamReadModule.createUpstreamReader,
+    advisoryReadModule.createAdvisoryReader,
+    advisoryReadModule.createMalwareReader,
+    publishTimesModule.createNpmPublishTimeReader,
+    signalReadModule.createPolicySignalReader,
+    npmRegistryModule.createNpmRegistryReader,
+    policySignalsModule.enrichPolicySignals,
+  ])
+    vi.mocked(mock).mockClear();
+  // Distinct bases and a direct-member rate, so each reader's share differs from its ceiling.
+  const dimension = (base: number, ceiling: number) => ({
+    base,
+    ceiling,
+    rates: { direct: 3, transitive: 0, added: 0, removed: 0, eligible: 1 },
+  });
+  const shareFor = (base: number) => ({
+    requests: dimension(base, 1_000),
+    bytes: dimension(base * 1024 * 1024, 64 * 1024 * 1024),
+  });
+  const shareParameters = {
+    upstream: shareFor(11),
+    advisory: shareFor(12),
+    signals: {
+      malware: shareFor(13),
+      publishTimes: shareFor(14),
+      registry: shareFor(15),
+      metadata: shareFor(16),
+      upstream: shareFor(17),
+    },
+  };
+  await runResearch({ ...base(fixture, packet), shareParameters });
+  const expected = researchShares(researchShareUnits(packet.changes), shareParameters);
+  expect(expected.upstream.maxRequests).not.toBe(EVIDENCE_READ_ALLOCATION.upstream.maxRequests);
+  type Limits = { maxRequests: number; maxTotalBytes: number };
+  const first = (mock: unknown, index = 0) =>
+    vi.mocked(mock as (value: unknown) => unknown).mock.calls[index]?.[0] as Limits;
+  const pick = ({ maxRequests, maxTotalBytes }: Limits) => ({ maxRequests, maxTotalBytes });
+  expect(pick(first(upstreamReadModule.createUpstreamReader))).toEqual(expected.upstream);
+  expect(pick(first(advisoryReadModule.createAdvisoryReader))).toEqual(expected.advisory);
+  expect(pick(first(advisoryReadModule.createMalwareReader))).toEqual(
+    expected.signals.readers.malware,
+  );
+  expect(pick(first(publishTimesModule.createNpmPublishTimeReader))).toEqual(
+    expected.signals.readers.publishTimes,
+  );
+  expect(pick(first(signalReadModule.createPolicySignalReader))).toEqual(
+    expected.signals.readers.metadata,
+  );
+  expect(pick(first(upstreamReadModule.createUpstreamReader, 1))).toEqual(
+    expected.signals.readers.upstream,
+  );
+  // Registry calls are [S2 inner, S3 registry, S3 upstream inner]; only the middle one is research's.
+  expect(pick(first(npmRegistryModule.createNpmRegistryReader, 1))).toEqual(
+    expected.signals.readers.registry,
+  );
+  // The signals stage limit is the sum of its readers' scaled shares.
+  const stage = vi.mocked(policySignalsModule.enrichPolicySignals).mock.calls[0]?.[0] as {
+    limits: Limits;
+  };
+  expect(pick(stage.limits)).toEqual({
+    maxRequests: expected.signals.maxRequests,
+    maxTotalBytes: expected.signals.maxTotalBytes,
+  });
+});
+
+test('stops research GitHub requests at the quota reserve, keeping other hosts and completed members', async () => {
+  const { fixture, packet } = await scenario();
+  const wall = Date.parse('2026-11-21T00:00:00Z');
+  // The reset is 30 minutes away: inside the quota window, beyond research's 240-second deadline,
+  // so no reader waits for it.
+  const reset = String(Math.floor(wall / 1000) + 30 * 60);
+  let stage = 'none';
+  let reported = 0;
+  const calls: { stage: string; host: string }[] = [];
+  const fetch = async (url: string, init: RequestInit) => {
+    const host = new URL(url).host;
+    calls.push({ stage, host });
+    const response = await (fixture.fetch as (u: string, i: RequestInit) => Promise<Response>)(
+      url,
+      init,
+    );
+    if (host !== 'api.github.com') return response;
+    // GitHub reports a falling quota, as it would for a busy repository.
+    const headers = new Headers(response.headers);
+    headers.set('x-ratelimit-remaining', String(20 - reported++));
+    headers.set('x-ratelimit-reset', reset);
+    return new Response(response.body, { status: response.status, headers });
+  };
+  const result = await runResearch({
+    ...base(fixture, packet),
+    fetch,
+    wallNow: () => wall,
+    observe: (observation) => {
+      if (observation.kind === 'stage-start') stage = observation.stage;
+    },
+  });
+  if (result.kind !== 'ready') throw new Error(result.kind);
+  const count = (where: string, host: string) =>
+    calls.filter((call) => call.stage === where && call.host === host).length;
+  // Upstream needs 18 GitHub requests unguarded; the reserve stops it partway.
+  expect(count('upstream', 'api.github.com')).toBeGreaterThan(0);
+  expect(count('upstream', 'api.github.com')).toBeLessThan(18);
+  // GitHub reports 20, 19, ...; research stops once the next request would leave less than the
+  // reserve, so it sends exactly 20 - reserve + 1 and the last reported quota is the reserve.
+  const reserve = limit('research.githubQuota.reserve');
+  expect(count('upstream', 'api.github.com')).toBe(20 - reserve + 1);
+  expect(20 - (reported - 1)).toBe(reserve);
+  // Later stages send no GitHub request while the estimate is at the reserve...
+  expect(count('advisories', 'api.github.com')).toBe(0);
+  expect(count('signals', 'api.github.com')).toBe(0);
+  // ...but still reach other hosts.
+  expect(count('advisories', 'api.osv.dev')).toBe(2);
+  expect(count('signals', 'registry.npmjs.org')).toBe(2);
+  // The upstream reader blocks only GitHub, so the stage itself keeps running; a refusal is never
+  // reported as our own budget or a fault.
+  for (const { reason } of result.unavailable)
+    expect(['budget', 'unknown', 'malformed']).not.toContain(reason);
+  // Members researched before the stop keep their evidence; GitHub-backed checks after it carry
+  // the stop's reason, and the uv member's OSV lookup still completes.
+  type Evidence = Record<string, { status: string; reasons?: readonly string[] }>;
+  const members = result.packet.changes.filter((change) => !('basis' in change));
+  const evidence = (category: string) =>
+    members.map((change) => ({
+      ecosystem: change.ecosystem,
+      ...(change.evidence as Evidence)[category],
+    }));
+  expect(evidence('upstream').some((item) => item.status === 'available')).toBe(true);
+  expect(evidence('upstream').some((item) => item.reasons?.includes('rate_limit'))).toBe(true);
+  // The guard's stops could not wait for the reset, so it becomes the packet's retry time.
+  expect(result.packet.retryAfter).toBe('2026-11-21T00:30:00Z');
+  for (const item of evidence('vulnerability'))
+    expect(item).toMatchObject(
+      item.ecosystem === 'uv'
+        ? { status: 'available' }
+        : { status: 'unavailable', reasons: ['rate_limit'] },
+    );
+});
+
+test('uses an injected quota guard for every research GitHub request', async () => {
+  const { fixture, packet } = await scenario();
+  const hosts: string[] = [];
+  const fetch = async (url: string, init: RequestInit) => {
+    hosts.push(new URL(url).host);
+    return (fixture.fetch as (u: string, i: RequestInit) => Promise<Response>)(url, init);
+  };
+  const admitted: string[] = [];
+  const quota = {
+    admit: (url: string) =>
+      new URL(url).host === 'api.github.com'
+        ? (admitted.push(url),
+          { allowed: false as const, retryAt: null, response: new Response(null, { status: 429 }) })
+        : { allowed: true as const },
+    observe: () => {},
+    refusals: () => admitted.length,
+    started: () => {},
+    retryAt: () => null,
+    msUntil: () => 0,
+    recordStop: () => {},
+    latestRetryAt: () => null,
+  };
+  const result = await runResearch({ ...base(fixture, packet), fetch, quota });
+  expect(result.kind).toBe('ready');
+  expect(admitted.length).toBeGreaterThan(0);
+  expect(hosts).not.toContain('api.github.com');
+  expect(hosts).toContain('registry.npmjs.org');
+});
+
+test('a run with no GitHub rate-limit stop has no retry time, even when OSV is rate-limited', async () => {
+  const { fixture, packet } = await scenario();
+  const plain = await runResearch(base(fixture, packet));
+  if (plain.kind !== 'ready') throw new Error(plain.kind);
+  expect(plain.packet.retryAfter).toBeNull();
+  const osvLimited = await runResearch({
+    ...base(fixture, packet),
+    fetch: async (url: string, init: RequestInit) =>
+      new URL(url).host === 'api.osv.dev'
+        ? new Response(null, { status: 429, headers: { 'retry-after': '1' } })
+        : (fixture.fetch as (u: string, i: RequestInit) => Promise<Response>)(url, init),
+  });
+  if (osvLimited.kind !== 'ready') throw new Error(osvLimited.kind);
+  expect(JSON.stringify(osvLimited.packet)).toContain('rate_limit');
+  expect(osvLimited.packet.retryAfter).toBeNull();
+});
+
+test('rounds the retry time up to the whole second', async () => {
+  const { fixture, packet } = await scenario();
+  const wall = Date.parse('2026-11-21T00:00:00Z') + 500;
+  const result = await runResearch({
+    ...base(fixture, packet),
+    wallNow: () => wall,
+    // GitHub asks for 10 minutes, which research's deadline cannot wait out.
+    fetch: async (url: string, init: RequestInit) =>
+      new URL(url).host === 'api.github.com'
+        ? new Response(null, { status: 429, headers: { 'retry-after': '600' } })
+        : (fixture.fetch as (u: string, i: RequestInit) => Promise<Response>)(url, init),
+  });
+  if (result.kind !== 'ready') throw new Error(result.kind);
+  expect(result.packet.retryAfter).toBe('2026-11-21T00:10:01Z');
 });
 
 test('reports an internal failure rather than a research result when a reader throws', async () => {

@@ -40,5 +40,8 @@ production claim storage, adoption, parity, and cutover remain separate gates.
 - The S1/S3 [package name form amendment](docs/specs/SPEC-advisory-lookup.md#package-name-form-amendment)
   is implemented, pending review and merge
   ([#398](https://github.com/andrewpucci/dependency-update-advisor/issues/398)).
+- The [scaled-share function amendment](docs/specs/SPEC-evidence-coverage.md#scaled-share-function-amendment)
+  (B11 #369, #414–#422) is implemented, pending review and merge; B12 (#370)
+  measures and fits its values.
 - The [ADR guide](docs/adr/README.md) indexes durable architecture decisions.
 - Issues/PRs hold task results; `tasks/plan.md` is gitignored.

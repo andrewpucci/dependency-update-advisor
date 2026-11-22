@@ -44,7 +44,8 @@ function withResearch(change: PacketChange, evidence: ChangeEvidence): PacketCha
  */
 export function reconcilePacket(input: {
   collected: Packet; // the validated collected packet
-  enriched: { changes: unknown; sources: unknown; findings: unknown }; // in packet order
+  /** In packet order; `retryAfter` is the latest GitHub rate-limit retry time research recorded. */
+  enriched: { changes: unknown; sources: unknown; findings: unknown; retryAfter?: string | null };
   trusted: PacketExpected;
   priority: readonly string[]; // member ids, highest priority first
 }): { packet: Packet; reasons: Reason[]; whole: boolean } {
@@ -102,6 +103,7 @@ export function reconcilePacket(input: {
         ],
         relationships: collected.relationships,
         reachability: collected.reachability,
+        retryAfter: input.enriched.retryAfter ?? collected.retryAfter,
       },
       input.trusted,
     );
@@ -126,6 +128,8 @@ export function reconcilePacket(input: {
         findings: collectedFindings,
         relationships: collected.relationships,
         reachability: collected.reachability,
+        // A GitHub rate limit research met still tells the reader when a rerun can work.
+        retryAfter: input.enriched.retryAfter ?? collected.retryAfter,
       },
       input.trusted,
     );

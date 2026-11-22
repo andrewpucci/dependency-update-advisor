@@ -282,6 +282,7 @@ export async function policySignalScenario(options: SignalScenarioOptions = {}) 
       coverage: fixture.coverage,
       relationships: fixture.relationships,
       reachability: [],
+      retryAfter: null,
     },
     fixture.expected,
   );

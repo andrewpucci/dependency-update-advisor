@@ -7,7 +7,9 @@
  * (default .github/workflows/ci.yml), MEASURE_OUT (write the JSON report to this path),
  * MEASURE_SCALE (a positive integer; multiplies the read budget, see `isReadBudget`, so the run
  * shows demand the current shares would cut off; a report with `censored` stages is still capped).
- * The report holds counts only: no URL, header, token, or response body.
+ * The report holds counts only: no URL, header, token, or response body. Its `github` field gives
+ * research's GitHub requests beside their approved ceiling, the quota guard's refusals, and the last
+ * remaining quota GitHub reported; a run the guard cut short is re-measured after the reset.
  */
 import { writeFileSync } from 'node:fs';
 import { test, vi } from 'vite-plus/test';
@@ -19,6 +21,7 @@ import {
 } from '../../src/budget.js';
 import { createEvidenceCollectors, openEvidenceSession } from '../../src/collection.js';
 import { parseReviewBinding } from '../../src/event.js';
+import { createGithubQuotaGuard } from '../../src/evidence/github-quota.js';
 import { createResearchCache } from '../../src/evidence/research-cache.js';
 import { limit } from '../../src/limits.js';
 import {
@@ -198,6 +201,12 @@ test('measure research read demand', async () => {
   let npmInventory: unknown = null;
   // As in the pipeline: one cache shared by collection's registry reads and research.
   const researchCache = createResearchCache(RESEARCH_CACHE_LIMITS);
+  // Research's real quota guard, kept here so the report can say how often it refused.
+  const quota = createGithubQuotaGuard({
+    reserve: limit('research.githubQuota.reserve'),
+    wallNow: Date.now,
+    windowMs: limit('research.githubQuota.windowMs'),
+  });
   let measured: Record<string, number> = {};
   // Packet assembly turns a thrown session failure into internal-failure; keep why it failed.
   let sessionOutcome = 'not opened';
@@ -248,6 +257,7 @@ test('measure research read demand', async () => {
         comparison: null,
         fetch: publicFetch,
         cache: researchCache,
+        quota,
         now,
         deadline,
         evaluationTime: Date.now(),
@@ -270,7 +280,7 @@ test('measure research read demand', async () => {
       allocation: EVIDENCE_READ_ALLOCATION,
       researchMaxAttempts: limit('research.maxAttempts'),
     },
-    ...recorder.report(measured),
+    ...recorder.report(measured, quota),
   };
   const text = JSON.stringify(report, null, 2);
   if (env.MEASURE_OUT) writeFileSync(env.MEASURE_OUT, text + '\n');

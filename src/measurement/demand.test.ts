@@ -1,5 +1,7 @@
 import { expect, test } from 'vite-plus/test';
 import { createDemandRecorder, labelReader, labelShare, readerShare } from './demand.js';
+import { buildRegister, limit, REGISTER } from '../limits.js';
+import { scaledDefinitions } from './scale.js';
 
 const fakeFetch =
   (body = 'abc', status = 200) =>
@@ -203,4 +205,77 @@ test('a labeled reader factory reads against the share for the phase it was buil
     'unattributed',
     'upstream',
   ]);
+});
+
+test('reports research GitHub requests against the R1 ceiling, with refusals and the last quota', async () => {
+  const recorder = createDemandRecorder(() => 0);
+  let remaining = 100;
+  const fetch = recorder.wrap(async (url) =>
+    new URL(url).host === 'api.github.com'
+      ? new Response('{}', { headers: { 'x-ratelimit-remaining': String(remaining--) } })
+      : new Response('{}', { headers: { 'x-ratelimit-remaining': '0' } }),
+  );
+  // A read before research spends quota but is not research's.
+  await fetch('https://api.github.com/repos/o/r/pulls/1', {});
+  recorder.observe({ kind: 'stage-start', stage: 'upstream' });
+  await fetch('https://api.github.com/repos/o/r/releases', {});
+  await fetch('https://api.github.com/repos/o/r/tags', {});
+  // Another host's rate-limit header is never read as GitHub's quota.
+  await fetch('https://registry.npmjs.org/pkg', {});
+  recorder.observe({ kind: 'stage-end', stage: 'upstream', outcome: 'enriched', reason: null });
+
+  const report = recorder.report({}, { refusals: () => 3 });
+  expect(report.github).toEqual({
+    researchRequests: 2,
+    ceiling: limit('research.githubQuota.researchCeiling'),
+    refusals: 3,
+    lastRemaining: 98,
+  });
+  // No body, token, or URL reaches the report.
+  expect(JSON.stringify(report)).not.toContain('repos/o/r');
+});
+
+test('without a guard, the report shows no refusals and no quota until GitHub reports one', () => {
+  const report = createDemandRecorder(() => 0).report({});
+  expect(report.github).toEqual({
+    researchRequests: 0,
+    ceiling: limit('research.githubQuota.researchCeiling'),
+    refusals: 0,
+    lastRemaining: null,
+  });
+});
+
+test('the R1 ceiling is the sum of the research request ceilings and scales with them', () => {
+  const sum = (register: ReadonlyMap<string, { value: number }>) =>
+    [
+      'evidence.allocation.upstream.maxRequests',
+      'evidence.allocation.advisory.maxRequests',
+      'evidence.allocation.signals.maxRequests',
+    ].reduce((total, id) => total + (register.get(id)?.value ?? Number.NaN), 0);
+  expect(limit('research.githubQuota.researchCeiling')).toBe(sum(REGISTER));
+  const scaled = buildRegister(scaledDefinitions(REGISTER, 10));
+  expect(scaled.get('research.githubQuota.researchCeiling')?.value).toBe(10 * sum(REGISTER));
+});
+
+test('counts only research-stage GitHub requests and keeps the latest reported quota', async () => {
+  const recorder = createDemandRecorder(() => 0);
+  const remaining = ['40', '30', '35', '50'];
+  let call = 0;
+  const fetch = recorder.wrap(
+    async () =>
+      new Response('{}', { headers: { 'x-ratelimit-remaining': remaining[call++] ?? '0' } }),
+  );
+  recorder.observe({ kind: 'stage-start', stage: 'upstream' });
+  await fetch('https://api.github.com/repos/o/r/releases', {});
+  recorder.observe({ kind: 'stage-end', stage: 'upstream', outcome: 'enriched', reason: null });
+  // Between stages and after research, a GitHub read is not research's.
+  await fetch('https://api.github.com/repos/o/r/pulls/1', {});
+  recorder.observe({ kind: 'stage-start', stage: 'signals' });
+  await fetch('https://api.github.com/advisories?type=malware', {});
+  recorder.observe({ kind: 'stage-end', stage: 'signals', outcome: 'enriched', reason: null });
+  await fetch('https://api.github.com/repos/o/r/pulls/1', {});
+  const report = recorder.report({});
+  expect(report.github.researchRequests).toBe(2);
+  // The quota can rise when a window resets; the report keeps the latest, not the lowest.
+  expect(report.github.lastRemaining).toBe(50);
 });

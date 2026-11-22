@@ -2,6 +2,7 @@ import { types } from 'node:util';
 import { PACKET_LIMITS, type EvidenceReason, type EvidenceStatus } from '../schema.js';
 import { freeze, isPlainObject } from './common.js';
 import { BoundedClock, boundedGet } from './bounded-request.js';
+import { waitForRetry, type GithubQuotaGuard } from './github-quota.js';
 import type { ResearchCache } from './research-cache.js';
 import { HTTP_STATUS } from '../format.js';
 import { limit } from '../limits.js';
@@ -50,6 +51,8 @@ type Dependencies = {
   now: () => number;
   signal?: AbortSignal;
   cache?: ResearchCache;
+  /** The run's research GitHub quota guard; absent outside research. */
+  quota?: GithubQuotaGuard;
 };
 export class AdvisoryFailure extends Error {
   constructor(readonly reason: EvidenceReason) {
@@ -433,6 +436,10 @@ class Reader implements AdvisoryReader {
     osv: null,
   };
   private active: (() => void) | null = null;
+  private readonly closing = new AbortController();
+  /** The last rate-limited GitHub response this reader received, for its retry time. */
+  private rateLimited: Response | null = null;
+  private waits = 0;
   /** Base and head of one package reuse its discovery reads, including a failed one. */
   private readonly discoveries = new Map<string, Discovery>();
   constructor(
@@ -444,6 +451,7 @@ class Reader implements AdvisoryReader {
   }
   close() {
     this.closed = true;
+    this.closing.abort();
     this.active?.();
   }
   /**
@@ -488,8 +496,11 @@ class Reader implements AdvisoryReader {
       stream.releaseLock();
     }
   }
-  private stop(provider: Provider, reason: EvidenceReason): never {
-    if (reason === 'rate_limit') this.providerStop[provider] = reason;
+  private stop(provider: Provider, reason: EvidenceReason, response?: Response): never {
+    if (reason === 'rate_limit') {
+      this.providerStop[provider] = reason;
+      if (response) this.rateLimited = response;
+    }
     throw new AdvisoryFailure(reason);
   }
   private async page(
@@ -497,6 +508,61 @@ class Reader implements AdvisoryReader {
     url: string,
     json?: unknown,
   ): Promise<{ data: unknown; link: string | null }> {
+    for (;;) {
+      try {
+        return await this.pageOnce(provider, url, json);
+      } catch (error) {
+        if (!(await this.waitedForRetry(provider, error))) throw error;
+      }
+    }
+  }
+  /**
+   * After a GitHub rate limit this reader received, waits once for its retry time when that fits
+   * and lifts the GitHub stop for the resend. Otherwise records the stop's retry time. An OSV rate
+   * limit never waits.
+   */
+  private async waitedForRetry(provider: Provider, error: unknown): Promise<boolean> {
+    const quota = this.deps.quota;
+    const response = this.rateLimited;
+    if (provider !== 'github' || !quota || !response) return false;
+    if (!(error instanceof AdvisoryFailure) || error.reason !== 'rate_limit') return false;
+    const retryAt = quota.retryAt(response);
+    // No time left means the wait cannot fit: the stop stays a rate limit with its retry time.
+    let left = 0;
+    try {
+      left = this.clock.remaining(this.closed ? 'unknown' : null);
+    } catch {
+      left = 0;
+    }
+    let fits = false;
+    try {
+      fits =
+        this.waits < limit('research.githubQuota.waitsPerReader') &&
+        (await waitForRetry(quota, retryAt, {
+          remainingMs: left,
+          requestTimeoutMs: this.limits.requestTimeoutMs,
+          signal: AbortSignal.any(
+            [this.closing.signal, this.deps.signal].filter((s): s is AbortSignal => !!s),
+          ),
+        }));
+    } catch {
+      this.providerStop.github = 'rate_limit';
+      throw new AdvisoryFailure('unknown');
+    }
+    if (!fits) {
+      quota.recordStop(retryAt);
+      return false;
+    }
+    this.waits += 1;
+    this.providerStop.github = null;
+    return true;
+  }
+  private async pageOnce(
+    provider: Provider,
+    url: string,
+    json?: unknown,
+  ): Promise<{ data: unknown; link: string | null }> {
+    if (provider === 'github') this.rateLimited = null;
     this.remaining(provider);
     return boundedGet(
       this.deps,
@@ -528,7 +594,8 @@ class Reader implements AdvisoryReader {
             response.status >= HTTP_STATUS.clientErrorMin,
           'unsupported',
         );
-        if (httpReason(response, null) === 'rate_limit') this.stop(provider, 'rate_limit');
+        if (httpReason(response, null) === 'rate_limit')
+          this.stop(provider, 'rate_limit', response);
         const bytes = await this.body(response, aborted, provider, cached);
         let data: unknown;
         try {
@@ -538,7 +605,8 @@ class Reader implements AdvisoryReader {
             response.status === HTTP_STATUS.ok ? 'malformed' : httpReason(response, null),
           );
         }
-        if (response.status !== HTTP_STATUS.ok) this.stop(provider, httpReason(response, data));
+        if (response.status !== HTTP_STATUS.ok)
+          this.stop(provider, httpReason(response, data), response);
         advisoryCheck(
           /^application\/(?:json|vnd.github\+json)(?:\s*;|$)/iu.test(
             response.headers.get('content-type') ?? '',

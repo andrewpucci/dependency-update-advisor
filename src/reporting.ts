@@ -1,4 +1,4 @@
-import { AUTOLINK_SAFE_HEX_PREFIX, CHAR_CODE, ISO_DATE_TIME } from './format.js';
+import { AUTOLINK_SAFE_HEX_PREFIX, CHAR_CODE, DURATION_MS, ISO_DATE_TIME } from './format.js';
 import { isDeepStrictEqual } from 'node:util';
 import { parseReviewBinding, type ReviewBinding } from './event.js';
 import { formDecisionUnits, type DecisionCoverage, type DecisionUnit } from './units.js';
@@ -18,6 +18,8 @@ export type DecisionBriefInput = Readonly<{
   analysisUnavailable: boolean;
   signalAttempts: readonly SignalAttempt[];
   signalBinding: ReviewBinding;
+  /** The packet's `retryAfter`, passed by assessment; it must equal the packet's own value. */
+  retryAfter?: string | null;
 }>;
 export type DecisionBriefResult =
   | Readonly<{ ok: true; body: string }>
@@ -136,11 +138,19 @@ function manualStep(category: string, name: string): string {
   return `review ${name}'s ${readableLabel(category)} evidence`;
 }
 
+/** A whole-second UTC retry time as 24-hour `HH:MM`, rounded up so it is never before the reset. */
+function rerunClock(retryAfter: string): string {
+  const minute = DURATION_MS.minute;
+  const rounded = new Date(Math.ceil(Date.parse(retryAfter) / minute) * minute).toISOString();
+  return rounded.slice(ISO_DATE_TIME.hour[0], ISO_DATE_TIME.minute[1]);
+}
+
 function evidenceActions(
   reasons: readonly EvidenceReason[],
   category: string,
   name: string,
   plural = false,
+  retryAfter: string | null = null,
 ): string {
   const effective: readonly EvidenceReason[] = reasons.length ? reasons : ['unknown'];
   const groups = new Set(effective.map((reason) => REASON_GROUPS[reason]));
@@ -151,7 +161,11 @@ function evidenceActions(
     actions.permission = rerunOnly
       ? "Correct the reviewer's token permissions, then rerun CI."
       : "Correct the reviewer's token permissions.";
-  if (groups.has('retry') && rerunOnly) actions.retry = 'Rerun CI later.';
+  if (groups.has('retry') && rerunOnly)
+    // Built from the validated timestamp, never escaped text, so the colon stays as written.
+    actions.retry = retryAfter
+      ? `Rerun CI after ${rerunClock(retryAfter)} UTC.`
+      : 'Rerun CI later.';
   if (groups.has('budget'))
     actions.budget = `The review could not check ${plural ? 'these packages' : 'this package'} within its limits; ${manual}`;
   if (groups.has('noSource')) actions.noSource = `No supported source was found; ${manual}`;
@@ -159,12 +173,16 @@ function evidenceActions(
   return ACTION_ORDER.flatMap((group) => actions[group] ?? []).join(' ');
 }
 
-export function evidenceGap(unit: DecisionUnit, sourceId: string): string {
+export function evidenceGap(
+  unit: DecisionUnit,
+  sourceId: string,
+  retryAfter: string | null = null,
+): string {
   const link = unit.evidenceLinks.find((entry) => entry.id === sourceId);
   const member = unit.members.find((entry) => entry.id === link?.memberId);
   if (!link || !member) throw new RenderFailure('reference');
   const name = text(member.name);
-  return `${name}: ${readableLabel(link.category)} evidence is ${readableLabel(link.status)} (${link.reasons.map(readableLabel).join(', ')}). ${evidenceActions(link.reasons, link.category, name)}`;
+  return `${name}: ${readableLabel(link.category)} evidence is ${readableLabel(link.status)} (${link.reasons.map(readableLabel).join(', ')}). ${evidenceActions(link.reasons, link.category, name, false, retryAfter)}`;
 }
 
 function unsafeUrl(value: string): boolean {
@@ -539,7 +557,11 @@ function nextAction(
   if (inventoryGaps.length) return text(inventoryGaps[0].nextActions[0] ?? '');
   const firstGapIndex = summary.units.findIndex((unit) => unit.gaps.length > 0);
   if (firstGapIndex >= 0)
-    return evidenceGap(units[firstGapIndex], summary.units[firstGapIndex].gaps[0].sourceId);
+    return evidenceGap(
+      units[firstGapIndex],
+      summary.units[firstGapIndex].gaps[0].sourceId,
+      input.retryAfter ?? null,
+    );
   const firstFollowup = input.records.flatMap((record) => record.assessment?.followups ?? [])[0];
   if (firstFollowup) return text(firstFollowup.description);
   return 'Review the evidence, then merge.';
@@ -696,7 +718,9 @@ function queueLines(r: Review): string[] {
     if (indexes.length === 1) {
       const unit = units[first];
       const names = unit.members.map((member) => displayName(r, member)).join(', ');
-      const gapText = gaps.map((gap) => evidenceGap(unit, gap.sourceId)).join(' ');
+      const gapText = gaps
+        .map((gap) => evidenceGap(unit, gap.sourceId, r.input.retryAfter ?? null))
+        .join(' ');
       lines.push(`- ${names} (${plural(unit.memberCount, 'changed update')}): ${tail} ${gapText}`);
       continue;
     }
@@ -708,7 +732,7 @@ function queueLines(r: Review): string[] {
     const gapText = gaps
       .map((gap) => {
         const link = linkOf(units[first], gap.sourceId);
-        return `${readableLabel(link.category)} evidence is ${readableLabel(link.status)} (${link.reasons.map(readableLabel).join(', ')}). ${evidenceActions(link.reasons, link.category, 'each listed package', true)}`;
+        return `${readableLabel(link.category)} evidence is ${readableLabel(link.status)} (${link.reasons.map(readableLabel).join(', ')}). ${evidenceActions(link.reasons, link.category, 'each listed package', true, r.input.retryAfter ?? null)}`;
       })
       .join(' ');
     lines.push(`- ${names.join('; ')}: ${tail} ${gapText}`);
@@ -875,7 +899,7 @@ function gapLines(
     const single = list.length === 1;
     const subject = single ? text(list[0].name) : 'each listed package';
     const names = list.map((member) => displayName(r, member)).join(', ');
-    return `- ${names}: ${readableLabel(link.category)} evidence is ${readableLabel(link.status)} (${link.reasons.map(readableLabel).join(', ')}). ${evidenceActions(link.reasons, link.category, subject, !single)}`;
+    return `- ${names}: ${readableLabel(link.category)} evidence is ${readableLabel(link.status)} (${link.reasons.map(readableLabel).join(', ')}). ${evidenceActions(link.reasons, link.category, subject, !single, r.input.retryAfter ?? null)}`;
   });
 }
 
@@ -1063,6 +1087,7 @@ export function renderDecisionBrief(input: DecisionBriefInput): DecisionBriefRes
         input.coverage.inventory,
       ) ||
       !utcTimestamp(input.generatedAt) ||
+      (input.retryAfter ?? null) !== input.coverage.inventory.packet.retryAfter ||
       (input.reviewDigest !== undefined && !/^[a-f\d]{64}$/u.test(input.reviewDigest))
     )
       return { ok: false, category: 'input' };

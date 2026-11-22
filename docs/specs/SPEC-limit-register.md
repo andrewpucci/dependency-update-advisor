@@ -1,7 +1,9 @@
 # Spec: Limit Register
 
 Status: approved for planning by the user on 2026-11-17; the user approved its
-[plan](../../tasks/plan-limit-register.md) for execution the same day.
+plan, tracked in
+[#372](https://github.com/andrewpucci/dependency-update-advisor/issues/372),
+for execution the same day.
 Revised the same day to match the intent the user confirmed in an interview
 (see Resolved). A cross-cutting supporting contract for
 `shared-review` in [the capability map](README.md).

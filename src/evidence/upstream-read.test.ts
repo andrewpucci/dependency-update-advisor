@@ -3,6 +3,20 @@ import { createNpmRegistryReader } from './npm-registry.js';
 import { createResearchCache, type ResearchCache } from './research-cache.js';
 import { createUpstreamReader } from './upstream-read.js';
 import { EVIDENCE_READ_ALLOCATION } from '../budget.js';
+import { createGithubQuotaGuard } from './github-quota.js';
+import { limit } from '../limits.js';
+
+/** Runs a read under fake timers, firing every timer it sets, so a retry wait costs no real time. */
+async function settled<T>(read: () => Promise<T>): Promise<T> {
+  vi.useFakeTimers();
+  try {
+    const pending = read();
+    await vi.runAllTimersAsync();
+    return await pending;
+  } finally {
+    vi.useRealTimers();
+  }
+}
 
 const integrity = 'sha512-' + Buffer.alloc(64, 7).toString('base64');
 const limits = {
@@ -456,4 +470,235 @@ test('signals upstream reader accepts a byte share exactly and refuses the byte 
     reasons: ['budget'],
   });
   over.reader.close();
+});
+
+describe('waiting for a GitHub rate-limit reset', () => {
+  const WALL = Date.parse('2026-11-21T00:00:00Z');
+  const releases = (page: number) => ({
+    kind: 'github',
+    repository: 'fixture/action',
+    resource: 'releases',
+    perPage: 16,
+    page,
+  });
+  const limited = (retryAfter: string) =>
+    new Response('{}', { status: 429, headers: { 'retry-after': retryAfter } });
+  function waiting(responses: (() => Promise<Response> | Response)[], overrides = {}) {
+    const wall = { now: WALL };
+    const quota = createGithubQuotaGuard({
+      reserve: 0,
+      wallNow: () => wall.now,
+      windowMs: limit('research.githubQuota.windowMs'),
+    });
+    const admitted: string[] = [];
+    const spied = { ...quota, admit: (url: string) => (admitted.push(url), quota.admit(url)) };
+    let call = 0;
+    const fetch = vi.fn(async () =>
+      (responses[Math.min(call++, responses.length - 1)] ?? (() => Response.json([])))(),
+    );
+    const opened = createUpstreamReader(
+      { ...limits, ...overrides },
+      { fetch, now: () => 0, quota: spied },
+    );
+    if (opened.kind !== 'ready') throw new Error('reader');
+    return { reader: opened.reader, fetch, quota, admitted, wall };
+  }
+
+  test('waits once for a retry time that fits and resends the request', async () => {
+    vi.useFakeTimers();
+    try {
+      const f = waiting([() => limited('2'), () => Response.json([])]);
+      const read = f.reader.read(releases(1));
+      await vi.advanceTimersByTimeAsync(2000 + limit('research.githubQuota.retryMarginMs'));
+      expect(await read).toMatchObject({ status: 'available' });
+      expect(f.fetch).toHaveBeenCalledTimes(2);
+      // The resent request is checked by the guard like any other.
+      expect(f.admitted).toHaveLength(2);
+      // A stop resolved by a wait records no retry time.
+      expect(f.quota.latestRetryAt()).toBeNull();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  test('a retry time that does not fit ends rate_limit at once and records the time', async () => {
+    const f = waiting([() => limited('20')]);
+    expect(await f.reader.read(releases(1))).toMatchObject({ reasons: ['rate_limit'] });
+    expect(f.fetch).toHaveBeenCalledTimes(1);
+    expect(f.quota.latestRetryAt()).toBe(WALL + 20_000);
+    // A reader that stopped without waiting sends no more GitHub requests.
+    expect(await f.reader.read(releases(2))).toMatchObject({
+      fetched: false,
+      reasons: ['rate_limit'],
+    });
+    expect(f.fetch).toHaveBeenCalledTimes(1);
+  });
+
+  test('a second stop after a wait ends rate_limit without waiting again', async () => {
+    const f = waiting([() => limited('0'), () => limited('0')]);
+    expect(await settled(() => f.reader.read(releases(1)))).toMatchObject({
+      reasons: ['rate_limit'],
+    });
+    expect(f.fetch).toHaveBeenCalledTimes(2);
+    expect(f.quota.latestRetryAt()).toBe(WALL);
+  });
+
+  test('the retried request keeps its own result', async () => {
+    const missing = waiting([() => limited('0'), () => new Response('{}', { status: 404 })]);
+    expect(await settled(() => missing.reader.read(releases(1)))).toMatchObject({
+      reasons: ['missing'],
+    });
+    expect(missing.quota.latestRetryAt()).toBeNull();
+    const hung = waiting([() => limited('0'), () => new Promise<Response>(() => {})], {
+      requestTimeoutMs: 20,
+    });
+    expect(await settled(() => hung.reader.read(releases(1)))).toMatchObject({
+      reasons: ['timeout'],
+    });
+  });
+
+  test('closing the reader ends the wait without resending', async () => {
+    vi.useFakeTimers();
+    try {
+      const f = waiting([() => limited('5'), () => Response.json([])]);
+      const read = f.reader.read(releases(1));
+      await vi.advanceTimersByTimeAsync(100);
+      f.reader.close();
+      await vi.advanceTimersByTimeAsync(5000);
+      expect((await read).status).not.toBe('available');
+      expect(f.fetch).toHaveBeenCalledTimes(1);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+});
+
+test('a GitHub rate limit when no time is left ends rate_limit with its retry time', async () => {
+  const wall = Date.parse('2026-11-21T00:00:00Z');
+  const quota = createGithubQuotaGuard({
+    reserve: 0,
+    wallNow: () => wall,
+    windowMs: limit('research.githubQuota.windowMs'),
+  });
+  let now = 0;
+  const headers = {
+    get: (name: string) => {
+      if (name !== 'retry-after') return null;
+      now = limits.totalTimeoutMs + 1;
+      return '0';
+    },
+    has: (name: string) => name === 'retry-after',
+  };
+  const fetch = vi.fn(
+    async () =>
+      ({ status: 429, headers, redirected: false, url: '', body: null }) as unknown as Response,
+  );
+  const opened = createUpstreamReader(limits, { fetch, now: () => now, quota });
+  if (opened.kind !== 'ready') throw new Error('reader');
+  const releases = {
+    kind: 'github',
+    repository: 'fixture/action',
+    resource: 'releases',
+    perPage: 16,
+    page: 1,
+  };
+  const result = await opened.reader.read(releases);
+  // Out of time at the rate limit is still a reason to rerun, whatever the reader reads first;
+  // a rate limit keeps its retry time. It is never "untrusted" or "over budget".
+  expect([['rate_limit'], ['timeout']]).toContainEqual(result.reasons);
+  if (result.reasons[0] === 'rate_limit') expect(quota.latestRetryAt()).toBe(wall);
+  expect(fetch.mock.calls.length).toBeLessThanOrEqual(2);
+});
+
+describe('waiting is bounded per reader, by time, by abort, and to GitHub', () => {
+  const WALL = Date.parse('2026-11-21T00:00:00Z');
+  const releases = (page: number) => ({
+    kind: 'github',
+    repository: 'fixture/action',
+    resource: 'releases',
+    perPage: 16,
+    page,
+  });
+  const limited = (retryAfter: string) =>
+    new Response('{}', { status: 429, headers: { 'retry-after': retryAfter } });
+  function reader(
+    responses: (() => Response)[],
+    options: { overrides?: object; signal?: AbortSignal } = {},
+  ) {
+    const quota = createGithubQuotaGuard({
+      reserve: 0,
+      wallNow: () => WALL,
+      windowMs: limit('research.githubQuota.windowMs'),
+    });
+    let call = 0;
+    const fetch = vi.fn(async () =>
+      (responses[Math.min(call++, responses.length - 1)] as () => Response)(),
+    );
+    const opened = createUpstreamReader(
+      { ...limits, ...options.overrides },
+      { fetch, now: () => 0, quota, ...(options.signal ? { signal: options.signal } : {}) },
+    );
+    if (opened.kind !== 'ready') throw new Error('reader');
+    return { reader: opened.reader, fetch, quota };
+  }
+
+  test('a later read in the same reader does not wait a second time', async () => {
+    const f = reader([() => limited('0'), () => Response.json([]), () => limited('0')]);
+    expect(await settled(() => f.reader.read(releases(1)))).toMatchObject({ status: 'available' });
+    expect(f.quota.latestRetryAt()).toBeNull();
+    expect(await settled(() => f.reader.read(releases(2)))).toMatchObject({
+      reasons: ['rate_limit'],
+    });
+    expect(f.fetch).toHaveBeenCalledTimes(3);
+    expect(f.quota.latestRetryAt()).toBe(WALL);
+  });
+
+  test.each(['abort', 'close'] as const)(
+    '%s ends a wait at once, without resending',
+    async (how) => {
+      vi.useFakeTimers();
+      try {
+        const run = new AbortController();
+        const f = reader([() => limited('5'), () => Response.json([])], { signal: run.signal });
+        let settled = false;
+        const read = f.reader.read(releases(1)).finally(() => (settled = true));
+        await vi.advanceTimersByTimeAsync(100);
+        if (how === 'abort') run.abort();
+        else f.reader.close();
+        await vi.advanceTimersByTimeAsync(10);
+        expect(settled).toBe(true);
+        expect((await read).status).not.toBe('available');
+        expect(f.fetch).toHaveBeenCalledTimes(1);
+      } finally {
+        vi.useRealTimers();
+      }
+    },
+  );
+
+  test('a wait must leave one request timeout before the deadline', async () => {
+    const overrides = { requestTimeoutMs: 2000, totalTimeoutMs: 10_000 };
+    // 9 s plus a 2 s request is past the 10 s left: no wait.
+    const late = reader([() => limited('9')], { overrides });
+    expect(await late.reader.read(releases(1))).toMatchObject({ reasons: ['rate_limit'] });
+    expect(late.fetch).toHaveBeenCalledTimes(1);
+    expect(late.quota.latestRetryAt()).toBe(WALL + 9000);
+    // 7 s plus 2 s fits.
+    vi.useFakeTimers();
+    try {
+      const fits = reader([() => limited('7'), () => Response.json([])], { overrides });
+      const read = fits.reader.read(releases(1));
+      await vi.advanceTimersByTimeAsync(7000 + limit('research.githubQuota.retryMarginMs'));
+      expect(await read).toMatchObject({ status: 'available' });
+      expect(fits.fetch).toHaveBeenCalledTimes(2);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  test('a registry rate limit never waits or records a retry time', async () => {
+    const f = reader([() => limited('0')]);
+    expect(await f.reader.read(target)).toMatchObject({ reasons: ['rate_limit'] });
+    expect(f.fetch).toHaveBeenCalledTimes(1);
+    expect(f.quota.latestRetryAt()).toBeNull();
+  });
 });

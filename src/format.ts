@@ -88,6 +88,9 @@ export const FILE_MODE = Object.freeze({
 /** Radix of the short aliases analysis gives each unit. */
 export const ALIAS_RADIX = 36;
 
+/** Decimal notation's base, for exact arithmetic on decimal parameters written in base ten. */
+export const DECIMAL_RADIX = 10;
+
 /** A JSON `\uXXXX` escape is six bytes, the most one UTF-16 code unit can expand to. */
 export const JSON_ESCAPE_BYTES = 6;
 

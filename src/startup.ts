@@ -214,6 +214,7 @@ export async function runStartup(
       now: dependencies.now,
       jobStartedAt,
       evaluationTime: dependencies.evaluationTime(),
+      wallNow: dependencies.evaluationTime,
     });
     writeError(rehearsalLine(result));
   } catch {

@@ -255,6 +255,78 @@ function derived<const Id extends string>(
   } as const;
 }
 
+/** Research shares that scale with the change; each maps to the allocation entry that caps it. */
+const SCALED_SHARES = {
+  upstream: 'evidence.allocation.upstream',
+  advisory: 'evidence.allocation.advisory',
+  'signals.malware': 'evidence.allocation.signals.readers.malware',
+  'signals.publishTimes': 'evidence.allocation.signals.readers.publishTimes',
+  'signals.registry': 'evidence.allocation.signals.readers.registry',
+  'signals.metadata': 'evidence.allocation.signals.readers.metadata',
+  'signals.upstream': 'evidence.allocation.signals.readers.upstream',
+} as const;
+type ScaledShare = keyof typeof SCALED_SHARES;
+const SHARE_DIMENSIONS = { requests: 'maxRequests', bytes: 'maxTotalBytes' } as const;
+type ShareDimension = keyof typeof SHARE_DIMENSIONS;
+/** Member-role units every scaled share takes a rate for; signals readers also rate `eligible`. */
+const ROLE_UNITS = ['direct', 'transitive', 'added', 'removed'] as const;
+type ShareUnit = (typeof ROLE_UNITS)[number] | 'eligible';
+
+const SHARE_FORMULA_TEST =
+  'src/budget.test.ts > a share is its base plus each rate times its count, rounded up, under its ceiling';
+const SHARE_START_TEST =
+  'src/budget.test.ts > starting parameters reproduce the current research shares for any change';
+
+/** One scaled share's base and rate entries for one dimension; its ceiling is the allocation entry. */
+function scaledShareEntries<const S extends ScaledShare, const D extends ShareDimension>(
+  share: S,
+  dimension: D,
+) {
+  const ceiling = `${SCALED_SHARES[share]}.${SHARE_DIMENSIONS[dimension]}`;
+  const unit: LimitUnit = dimension === 'bytes' ? 'bytes' : 'count';
+  const units: readonly ShareUnit[] = share.startsWith('signals.')
+    ? [...ROLE_UNITS, 'eligible']
+    : ROLE_UNITS;
+  const base = derived(
+    `research.share.${share}.${dimension}.base` as `research.share.${S}.${D}.base`,
+    unit,
+    [ceiling],
+    copy,
+    `The ${share} ${dimension} share starts at its ceiling until B12 fits a smaller base.`,
+    {
+      protects:
+        'Sets the share a change of no counted members gets, before any per-member rate is added.',
+      effect:
+        'The computed share starts here; with every rate at zero it equals the ceiling, as before scaling.',
+      test: SHARE_START_TEST,
+    },
+  );
+  const rates = units.map((rateUnit) =>
+    unjustified(
+      `research.share.${share}.${dimension}.rate.${rateUnit}` as `research.share.${S}.${D}.rate.${ShareUnit}`,
+      0,
+      unit,
+      {
+        protects: `Grows the ${share} ${dimension} share with each ${rateUnit} member, so a larger change gets more and a small one fails faster.`,
+        effect:
+          'Adds rate times the count to the share, rounded up and capped at the ceiling; zero leaves the share at its base.',
+        note: 'awaiting B12/L8 measurement',
+        test: SHARE_FORMULA_TEST,
+      },
+    ),
+  );
+  return [base, ...rates];
+}
+
+/** Base and rate entries for every scaled research share and dimension. */
+function allScaledShareEntries() {
+  return (Object.keys(SCALED_SHARES) as ScaledShare[]).flatMap((share) =>
+    (Object.keys(SHARE_DIMENSIONS) as ShareDimension[]).flatMap((dimension) =>
+      scaledShareEntries(share, dimension),
+    ),
+  );
+}
+
 const DEFINITIONS = [
   {
     id: 'packet.bytes',
@@ -1997,6 +2069,90 @@ const DEFINITIONS = [
     note: 'no recorded reason',
     test: 'tests/limits/check-limits.test.ts > a register value at the spec floor, or a non-whole number, is not a problem',
   }),
+  derived(
+    'research.githubQuota.researchCeiling',
+    'count',
+    [
+      'evidence.allocation.upstream.maxRequests',
+      'evidence.allocation.advisory.maxRequests',
+      'evidence.allocation.signals.maxRequests',
+    ],
+    sum,
+    "Research's GitHub requests can be no more than the three research stages' request ceilings together.",
+    {
+      protects:
+        "States the approved ceiling for research's GitHub requests that the R1 demand measurement is judged against, so a measured run that exceeds its shares is visible.",
+      effect:
+        'No runtime check: the demand measurement reports research GitHub requests beside it; each stage is still capped by its own share and the quota guard.',
+      test: 'src/measurement/demand.test.ts > the R1 ceiling is the sum of the research request ceilings and scales with them',
+    },
+  ),
+  {
+    id: 'research.githubQuota.reserve',
+    unit: 'count',
+    protects:
+      'Keeps GitHub quota for the freshness rechecks that run after research, so a heavy research run cannot leave the final head check without requests.',
+    effect:
+      'Research GitHub requests are refused once the estimated remaining quota would fall below this; refused members are unavailable with rate_limit and the rechecks still run.',
+    basis: {
+      kind: 'derived',
+      inputs: [],
+      formula: () => 6,
+      description:
+        'Two freshness rechecks run after research (before the model and the final check), each reading the run, the pull request, and the comparison when the base moved.',
+      structuralTest:
+        'src/pipeline.test.ts > the research quota reserve covers every GitHub read after research',
+    },
+    test: 'src/pipeline.test.ts > the research quota reserve covers every GitHub read after research',
+  },
+  {
+    id: 'research.githubQuota.retryMarginMs',
+    value: 1000,
+    unit: 'milliseconds',
+    protects:
+      "Keeps a resend from reaching GitHub just before its quota resets when the runner's clock runs slightly ahead of GitHub's, which would waste the reader's only wait.",
+    basis: {
+      kind: 'safety',
+      reason:
+        'GitHub reports reset times in whole seconds, so the true reset can fall up to a second after the reported one; a second also covers ordinary clock skew between a synced runner and GitHub, while costing research little of its time.',
+    },
+    effect:
+      'A reader waits this long past the retry time before resending, and a wait fits only if the retry time, this margin, and one request timeout fit the time left.',
+    test: 'src/evidence/github-quota.test.ts > waits past the retry time by the margin, so a skewed clock does not resend too early',
+  },
+  {
+    id: 'research.githubQuota.waitsPerReader',
+    value: 1,
+    unit: 'count',
+    protects:
+      "Bounds how much of research's time one reader can spend idle waiting for a GitHub rate-limit reset, so one stalled reader cannot hold the rest of research back.",
+    basis: {
+      kind: 'safety',
+      reason:
+        'One wait covers the common secondary-limit retry-after; a reader rate-limited again after waiting is under sustained pressure, where another wait would mostly spend time the deadline cannot spare.',
+    },
+    effect:
+      "After this many waits, a reader's next rate-limit stop ends its members rate_limit at once and records the retry time.",
+    test: 'src/evidence/upstream-read.test.ts > a second stop after a wait ends rate_limit without waiting again',
+  },
+  {
+    id: 'research.githubQuota.windowMs',
+    value: 3_600_000,
+    unit: 'milliseconds',
+    protects:
+      'Rejects a reported GitHub quota reset that is not plausible for the hourly limit, so a bad header cannot make research wait or stop for longer than the quota really lasts.',
+    basis: {
+      kind: 'external',
+      url: 'https://docs.github.com/en/rest/using-the-rest-api/rate-limits-for-the-rest-api',
+      checked: '2026-11-21',
+      platformValue: 3_600_000,
+      margin: "none: the window is the platform's hourly quota period",
+    },
+    effect:
+      'A reset time more than this far ahead is ignored: the estimate is unchanged and no wait or retry time uses it.',
+    test: 'src/evidence/github-quota.test.ts > judges a reset on the wall clock: past or beyond the window is ignored',
+  },
+  ...allScaledShareEntries(),
 ] as const satisfies readonly LimitDefinition[];
 
 export type LimitId = (typeof DEFINITIONS)[number]['id'];

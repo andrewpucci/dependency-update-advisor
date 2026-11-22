@@ -122,6 +122,7 @@ function fixture(changes: PacketChange[] = []) {
     changes,
     relationships: [],
     reachability: [],
+    retryAfter: null,
     findings: [],
     coverage: { npm: coverageFor('npm'), actions: coverageFor('actions'), uv: coverageFor('uv') },
     sources: [

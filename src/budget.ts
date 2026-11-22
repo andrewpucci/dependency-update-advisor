@@ -1,3 +1,4 @@
+import { DECIMAL_RADIX } from './format.js';
 import { limit } from './limits.js';
 
 /** The runner's wall-clock limit for the job, mirroring the workflow's `timeout-minutes`. */
@@ -105,3 +106,180 @@ export const RESEARCH_CACHE_LIMITS = Object.freeze({
   maxEntryBytes: limit('research.cache.maxEntryBytes'),
   maxTotalBytes: limit('research.cache.maxTotalBytes'),
 });
+
+const SIGNAL_READERS = ['malware', 'publishTimes', 'registry', 'metadata', 'upstream'] as const;
+type SignalReader = (typeof SIGNAL_READERS)[number];
+const ROLE_UNITS = ['direct', 'transitive', 'added', 'removed'] as const;
+type RoleUnit = (typeof ROLE_UNITS)[number];
+
+/** Member counts a share scales with, taken only from the packet's resolved changes. */
+export type ResearchShareUnits = Readonly<
+  Record<RoleUnit, number> & { eligible: Readonly<Record<SignalReader, number>> }
+>;
+type ShareDimensionParameters = Readonly<{
+  base: number;
+  ceiling: number;
+  rates: Readonly<Partial<Record<RoleUnit | 'eligible', number>>>;
+}>;
+type ShareParameters = Readonly<{
+  requests: ShareDimensionParameters;
+  bytes: ShareDimensionParameters;
+}>;
+export type ResearchShareParameters = Readonly<{
+  upstream: ShareParameters;
+  advisory: ShareParameters;
+  signals: Readonly<Record<SignalReader, ShareParameters>>;
+}>;
+export type ResearchShare = Readonly<{ maxRequests: number; maxTotalBytes: number }>;
+export type ResearchShares = Readonly<{
+  upstream: ResearchShare;
+  advisory: ResearchShare;
+  signals: ResearchShare & { readers: Readonly<Record<SignalReader, ResearchShare>> };
+}>;
+
+type ScaledShare = 'upstream' | 'advisory' | `signals.${SignalReader}`;
+
+function dimensionParameters(
+  share: ScaledShare,
+  dimension: 'requests' | 'bytes',
+  ceiling: number,
+): ShareDimensionParameters {
+  const units = share.startsWith('signals.') ? [...ROLE_UNITS, 'eligible' as const] : ROLE_UNITS;
+  return {
+    base: limit(`research.share.${share}.${dimension}.base`),
+    ceiling,
+    rates: Object.fromEntries(
+      units.map((unit) => [unit, limit(`research.share.${share}.${dimension}.rate.${unit}`)]),
+    ),
+  };
+}
+
+function shareParameters(share: ScaledShare, ceiling: ResearchShare): ShareParameters {
+  return {
+    requests: dimensionParameters(share, 'requests', ceiling.maxRequests),
+    bytes: dimensionParameters(share, 'bytes', ceiling.maxTotalBytes),
+  };
+}
+
+/** The register's scaled-share parameters; the allocation entries are the ceilings. */
+export const RESEARCH_SHARE_PARAMETERS: ResearchShareParameters = Object.freeze({
+  upstream: shareParameters('upstream', EVIDENCE_READ_ALLOCATION.upstream),
+  advisory: shareParameters('advisory', EVIDENCE_READ_ALLOCATION.advisory),
+  signals: Object.freeze(
+    Object.fromEntries(
+      SIGNAL_READERS.map((reader) => [
+        reader,
+        shareParameters(`signals.${reader}`, EVIDENCE_READ_ALLOCATION.signals.readers[reader]),
+      ]),
+    ) as Record<SignalReader, ShareParameters>,
+  ),
+});
+
+type ChangeFacts = Readonly<{
+  ecosystem: string;
+  role: string;
+  kind: string;
+  basis?: unknown;
+}>;
+
+/**
+ * Counts the members research scales with. Declaration (`basis`) records are not members; an
+ * `unknown` role counts as transitive; additions and removals come from `kind`.
+ */
+export function researchShareUnits(changes: readonly ChangeFacts[]): ResearchShareUnits {
+  const members = changes.filter((change) => !('basis' in change));
+  const count = (keep: (change: ChangeFacts) => boolean) => members.filter(keep).length;
+  const npm = count((change) => change.ecosystem === 'npm');
+  return {
+    direct: count((change) => change.role === 'direct'),
+    transitive: count((change) => change.role !== 'direct'),
+    added: count((change) => change.kind === 'addition'),
+    removed: count((change) => change.kind === 'removal'),
+    eligible: {
+      malware: members.length,
+      publishTimes: npm,
+      registry: npm,
+      metadata: count((change) => change.ecosystem === 'uv'),
+      upstream: count((change) => change.ecosystem === 'actions'),
+    },
+  };
+}
+
+const PLAIN_DECIMAL = /^\d+(?:\.\d+)?$/u;
+const DECIMAL_BASE = BigInt(DECIMAL_RADIX);
+
+/** A non-negative parameter as an exact decimal: its digits and how many are after the point. */
+function exactDecimal(name: string, value: number): { digits: bigint; places: number } {
+  const written = String(value);
+  if (!Number.isFinite(value) || !PLAIN_DECIMAL.test(written))
+    throw new Error(`invalid share parameter: ${name}`);
+  const [whole, fraction = ''] = written.split('.');
+  return { digits: BigInt(whole + fraction), places: fraction.length };
+}
+
+/**
+ * `base + Σ rate × count`, rounded up, computed on exact decimals so a rate such as 1.1 never
+ * picks up a binary rounding error that would push the share over a whole number.
+ */
+function scaled(
+  parameters: ShareDimensionParameters,
+  units: ResearchShareUnits,
+  eligible: number,
+  floor: number,
+): number {
+  const terms = [
+    { ...exactDecimal('base', parameters.base), count: 1n },
+    ...Object.entries(parameters.rates).map(([unit, rate]) => ({
+      ...exactDecimal(unit, rate ?? 0),
+      count: BigInt(unit === 'eligible' ? eligible : units[unit as RoleUnit]),
+    })),
+  ];
+  const places = Math.max(...terms.map((term) => term.places));
+  const scale = DECIMAL_BASE ** BigInt(places);
+  const numerator = terms.reduce(
+    (sum, term) => sum + term.digits * term.count * DECIMAL_BASE ** BigInt(places - term.places),
+    0n,
+  );
+  const total = Number((numerator + scale - 1n) / scale);
+  return Math.min(parameters.ceiling, Math.max(floor, total));
+}
+
+function share(
+  parameters: ShareParameters,
+  units: ResearchShareUnits,
+  eligible = 0,
+): ResearchShare {
+  const responseFloor = Math.min(EVIDENCE_READ_ENVELOPE.maxResponseBytes, parameters.bytes.ceiling);
+  return {
+    maxRequests: scaled(parameters.requests, units, eligible, 1),
+    maxTotalBytes: scaled(parameters.bytes, units, eligible, responseFloor),
+  };
+}
+
+/**
+ * Each research share for a change of this size: `min(ceiling, base + Σ rate × count)`, rounded
+ * up, with a request floor of one and a byte floor of one full response. The signals stage share is
+ * the sum of its readers' shares.
+ */
+export function researchShares(
+  units: ResearchShareUnits,
+  parameters: ResearchShareParameters = RESEARCH_SHARE_PARAMETERS,
+): ResearchShares {
+  const readers = Object.fromEntries(
+    SIGNAL_READERS.map((reader) => [
+      reader,
+      share(parameters.signals[reader], units, units.eligible[reader]),
+    ]),
+  ) as Record<SignalReader, ResearchShare>;
+  const total = (field: keyof ResearchShare) =>
+    Object.values(readers).reduce((sum, reader) => sum + reader[field], 0);
+  return {
+    upstream: share(parameters.upstream, units),
+    advisory: share(parameters.advisory, units),
+    signals: {
+      maxRequests: total('maxRequests'),
+      maxTotalBytes: total('maxTotalBytes'),
+      readers,
+    },
+  };
+}

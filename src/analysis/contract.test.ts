@@ -286,37 +286,54 @@ test('permits exact immutable inventory-file references without requiring an ups
   ).toBe('validated');
 });
 
+test('the retry time never reaches the model request', async () => {
+  const { input } = await analysisScenario();
+  const retried = {
+    ...input,
+    inventory: {
+      ...input.inventory,
+      packet: { ...input.inventory.packet, retryAfter: '2026-11-21T00:01:00Z' },
+    },
+  };
+  const plain = prepareAnalysisBatch({ ...input, limits: ANALYSIS_LIMITS });
+  const timed = prepareAnalysisBatch({ ...retried, limits: ANALYSIS_LIMITS });
+  if (plain.kind !== 'prepared' || timed.kind !== 'prepared') throw new Error('fixture failed');
+  expect(JSON.stringify(timed.batch.request)).not.toContain('retryAfter');
+  expect(JSON.stringify(timed.batch.request)).not.toContain('2026-11-21T00:01:00Z');
+  expect(timed.batch.request).toEqual(plain.batch.request);
+});
+
 test('batch identity and request bytes stay pinned for fixed selections', async () => {
   const { input } = await analysisScenario();
   const [a, b, c] = input.unitIds;
   const pinned = [
     [
       [a, b, c],
-      '8e87ac24c3f79da12699204f30db9fbf2ca8c6dedaca068425c007d10321bb87',
+      'dc3d1bf2a167cc8885c8f0ca8e20c408b198356d3785b85aaf10ad47d5da6b90',
       54_750,
       '99370ff42197a29bc6876111b35a9f01c910c53e0fb681e2442f37fe1370c390',
     ],
     [
       [a],
-      '9fa8f7df00bf22ede05ff54d4f9edcfe0646526543919c0dae2559fee67c7cfb',
+      'a650eab98823ef46485064023bb72ed104ecc24fb8d2760640dca0d5a00e14c0',
       15_799,
       '570a5bca169fcfe3d732962a20b2c6ccdeb695007720c0ae037174e29cb5b00c',
     ],
     [
       [b],
-      'd01844bfe5bff0474ad4e9121f1738c7f87f93f404b1284ad9108e29a6e40819',
+      '550f367e6f4d6c0a2a1e2b9a680d4ed9951e7ed6225ebd6f1803aa9a0044b9f2',
       34_699,
       '262db507ae6eeed32e53c65cf2bad64d9ef084b014c31c7c836460a7d0637664',
     ],
     [
       [c],
-      'f29b2de8b08cddb3211d5a87ded3d3b23d00e39bbb7e9b2e770e7fba0b265099',
+      '6fe775335c39b8fd72302446509236d601e082f22e517ead308da114e714f72d',
       15_516,
       '703578ac60cb36b4722ff05927cd5df080cacfdf24fef44ae39328f75c63f9fb',
     ],
     [
       [a, c],
-      'c4094d4db7005521f6221dbbc73e739ee2fd6989d55bcb0f77ca5af7fcb1a399',
+      '24737098c1a8ca6da74b7ed0661fea6b5728e41ae22c9210045ee478b7d3ebf4',
       25_636,
       '0c271e16f7909e7e1ba430c2a20cd2a0b7f102519a997b2aea6f9fd3b333927d',
     ],

@@ -556,6 +556,7 @@ function validatedGraphUnits(
       findings: graph.findings,
       relationships: graph.relationships,
       reachability: [],
+      retryAfter: null,
       coverage: {
         npm: graph.coverage,
         actions: { status: 'not_applicable', reasons: [], sourceIds: ['other'] },
@@ -620,6 +621,7 @@ function multiUnits(graph: Graph) {
       findings: graph.findings,
       relationships: [...graph.relationships, ...graph.optionalRelationships],
       reachability: graph.reachability,
+      retryAfter: null,
       coverage: {
         npm: graph.coverage,
         actions: { status: 'not_applicable', reasons: [], sourceIds: ['other'] },

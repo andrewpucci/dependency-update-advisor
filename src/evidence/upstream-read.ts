@@ -3,6 +3,12 @@ import { copyAdvisoryData, AdvisoryFailure, type AdvisoryLimits } from './adviso
 import { freeze, isPlainObject, isEvidencePath } from './common.js';
 import type { EvidenceReason, PackageSource } from '../schema.js';
 import { BoundedClock, boundedGet } from './bounded-request.js';
+import {
+  GITHUB_API_ORIGIN,
+  isGithubApi,
+  waitForRetry,
+  type GithubQuotaGuard,
+} from './github-quota.js';
 import type { ResearchCache } from './research-cache.js';
 import { limit } from '../limits.js';
 import { HTTP_STATUS } from '../format.js';
@@ -81,6 +87,8 @@ export type UpstreamDependencies = {
   now: () => number;
   signal?: AbortSignal;
   cache?: ResearchCache;
+  /** The run's research GitHub quota guard; absent outside research. */
+  quota?: GithubQuotaGuard;
 };
 export class UpstreamFailure extends Error {
   constructor(readonly reason: EvidenceReason) {
@@ -235,7 +243,7 @@ function githubNext(link: string | null, original: string) {
   return true;
 }
 export function upstreamGithubUrl(t: GithubUpstreamTarget) {
-  const base = 'https://api.github.com/repos/' + t.repository;
+  const base = GITHUB_API_ORIGIN + '/repos/' + t.repository;
   switch (t.resource) {
     case 'repository':
       return base;
@@ -276,6 +284,9 @@ class Reader {
   private readonly controller = new AbortController();
   private active: (() => void) | null = null;
   private readonly blocked = new Set<string>();
+  /** The last rate-limited response this attempt received, for its retry time; never a block. */
+  private rateLimited: Response | null = null;
+  private waits = 0;
   private readonly cache = new Map<string, Readonly<Record<string, unknown>>>();
   private readonly cacheSizes = new Map<string, number>();
   private readonly failures = new Map<string, EvidenceReason>();
@@ -409,53 +420,101 @@ class Reader {
       reader.releaseLock();
     }
   }
-  private async fetchBounded(url: string, _init: RequestInit): Promise<Response> {
-    this.dispatch(url);
-    try {
-      return await boundedGet(
-        this.deps,
-        {
-          url,
-          accept: 'application/json',
-          timeoutMs: Math.min(this.remaining(), this.limits.requestTimeoutMs),
-          signal: _init.signal ?? undefined,
-          charge: () => this.charge(),
-        },
-        (cancel) => {
-          this.active = cancel;
-        },
-        async (response, aborted, cached) => {
-          requireUpstream(
-            !response.redirected && (!response.url || response.url === url),
-            'unsupported',
-          );
-          const immediate = httpReason(response, Buffer.alloc(0));
-          if (response.status !== HTTP_STATUS.ok && immediate !== 'unknown') {
-            if (immediate === 'rate_limit') this.blocked.add(new URL(url).origin);
-            throw new UpstreamFailure(immediate);
-          }
-          const bytes = response.body
-            ? await this.body(response, aborted, cached)
-            : Buffer.alloc(0);
-          if (response.status !== HTTP_STATUS.ok) {
-            const reason = httpReason(response, bytes);
-            if (reason === 'rate_limit') this.blocked.add(new URL(url).origin);
-            throw new UpstreamFailure(reason);
-          }
-          requireUpstream(
-            /^application\/(?:[\w.+-]*\+)?json(?:\s*;|$)/iu.test(
-              response.headers.get('content-type') ?? '',
-            ),
-            'unsupported',
-          );
-          this.remaining();
-          return new Response(bytes, { status: HTTP_STATUS.ok, headers: response.headers });
-        },
-      );
-    } catch (error) {
-      this.networkReason = upstreamFailureReason(error);
-      throw error;
+  private async fetchBounded(url: string, init: RequestInit): Promise<Response> {
+    for (;;) {
+      try {
+        return await this.fetchOnce(url, init);
+      } catch (error) {
+        if (!(await this.waitedForRetry(url, error))) {
+          this.networkReason = upstreamFailureReason(error);
+          throw error;
+        }
+      }
     }
+  }
+  /**
+   * After a rate-limited GitHub response, waits once for its retry time when that fits and unblocks
+   * GitHub for the resend. Otherwise records the retry time of the stop and reports no wait.
+   */
+  private async waitedForRetry(url: string, error: unknown): Promise<boolean> {
+    const quota = this.deps.quota;
+    const response = this.rateLimited;
+    const origin = new URL(url).origin;
+    if (!quota || !response || upstreamFailureReason(error) !== 'rate_limit') return false;
+    if (!isGithubApi(url)) return false;
+    const retryAt = quota.retryAt(response);
+    const fits =
+      this.waits < limit('research.githubQuota.waitsPerReader') &&
+      (await waitForRetry(quota, retryAt, {
+        remainingMs: this.timeLeft(),
+        requestTimeoutMs: this.limits.requestTimeoutMs,
+        signal: AbortSignal.any(
+          [this.controller.signal, this.deps.signal].filter((s): s is AbortSignal => !!s),
+        ),
+      }).catch(() => {
+        throw new UpstreamFailure('unknown');
+      }));
+    if (!fits) {
+      quota.recordStop(retryAt);
+      return false;
+    }
+    this.waits += 1;
+    this.blocked.delete(origin);
+    return true;
+  }
+  /** The reader's time left, or 0 once it has run out; never stops the reader by itself. */
+  private timeLeft(): number {
+    try {
+      return this.clock.remaining(null);
+    } catch {
+      return 0;
+    }
+  }
+  private limitedBy(url: string, response: Response) {
+    this.blocked.add(new URL(url).origin);
+    this.rateLimited = response;
+  }
+  private async fetchOnce(url: string, init: RequestInit): Promise<Response> {
+    this.rateLimited = null;
+    this.dispatch(url);
+    return await boundedGet(
+      this.deps,
+      {
+        url,
+        accept: 'application/json',
+        timeoutMs: Math.min(this.remaining(), this.limits.requestTimeoutMs),
+        signal: init.signal ?? undefined,
+        charge: () => this.charge(),
+      },
+      (cancel) => {
+        this.active = cancel;
+      },
+      async (response, aborted, cached) => {
+        requireUpstream(
+          !response.redirected && (!response.url || response.url === url),
+          'unsupported',
+        );
+        const immediate = httpReason(response, Buffer.alloc(0));
+        if (response.status !== HTTP_STATUS.ok && immediate !== 'unknown') {
+          if (immediate === 'rate_limit') this.limitedBy(url, response);
+          throw new UpstreamFailure(immediate);
+        }
+        const bytes = response.body ? await this.body(response, aborted, cached) : Buffer.alloc(0);
+        if (response.status !== HTTP_STATUS.ok) {
+          const reason = httpReason(response, bytes);
+          if (reason === 'rate_limit') this.limitedBy(url, response);
+          throw new UpstreamFailure(reason);
+        }
+        requireUpstream(
+          /^application\/(?:[\w.+-]*\+)?json(?:\s*;|$)/iu.test(
+            response.headers.get('content-type') ?? '',
+          ),
+          'unsupported',
+        );
+        this.remaining();
+        return new Response(bytes, { status: HTTP_STATUS.ok, headers: response.headers });
+      },
+    );
   }
   private async pypi(t: MetadataTarget, url: string) {
     const cached = this.cached(url);

@@ -1,6 +1,7 @@
 import type { EvidenceReason } from '../schema.js';
 import { advisoryCheck, AdvisoryFailure } from './advisory-read.js';
 import { isPlainObject } from './common.js';
+import type { GithubQuotaGuard } from './github-quota.js';
 import type { ResearchCache } from './research-cache.js';
 import { MAX_TIMER_MS } from '../format.js';
 
@@ -21,6 +22,8 @@ export type BoundedDependencies = {
   signal?: AbortSignal;
   /** Run-scoped research cache. Event, snapshot, and freshness reads never receive one. */
   cache?: ResearchCache;
+  /** The run's research GitHub quota guard. Event, snapshot, and freshness reads never receive one. */
+  quota?: GithubQuotaGuard;
 };
 type BoundedRequest = (
   | { url: string; accept: string; headers?: never }
@@ -107,6 +110,21 @@ async function remember(
   return Promise.race([cache.store(key, response), aborted]);
 }
 /**
+ * A response that needs no request: a cache hit, or the quota guard's refusal. A refusal is never
+ * sent or charged, and carries no rate-limit headers for the guard to read.
+ */
+function answeredLocally(
+  deps: BoundedDependencies,
+  key: string | undefined,
+  url: string,
+): { response: Response; cached: boolean } | null {
+  const hit = key === undefined ? undefined : deps.cache?.lookup(key);
+  if (hit) return { response: hit, cached: true };
+  const admission = deps.quota?.admit(url);
+  if (admission && !admission.allowed) return { response: admission.response, cached: false };
+  return null;
+}
+/**
  * One credential-free GET, or a POST of a fixed `json` body, raced against its timeout, the
  * caller's signal, and `onCancel` (registered for the reader's close). Every exit aborts the
  * request and releases its body.
@@ -142,9 +160,11 @@ export async function boundedGet<T>(
     if (post) headers['content-type'] = 'application/json';
     const body = post ? JSON.stringify(request.json) : undefined;
     const key = deps.cache?.key(post ? 'POST' : 'GET', request.url, headers, body);
-    const hit = key === undefined ? undefined : deps.cache?.lookup(key);
-    if (hit) return await consume(hit, aborted, true);
+    const local = answeredLocally(deps, key, request.url);
+    if (local) return await consume(local.response, aborted, local.cached);
     request.charge?.();
+    // Only a request its share allowed counts against the quota estimate.
+    deps.quota?.started(request.url);
     const pending = deps.fetch(request.url, {
       method: post ? 'POST' : 'GET',
       redirect: 'manual',
@@ -161,6 +181,7 @@ export async function boundedGet<T>(
       () => {},
     );
     response = await Promise.race([pending, aborted]);
+    deps.quota?.observe(request.url, response);
     response = await remember(deps.cache, key, request.url, response, aborted);
     return await consume(response, aborted, false);
   } finally {

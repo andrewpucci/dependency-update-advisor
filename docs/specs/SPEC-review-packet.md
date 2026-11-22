@@ -497,6 +497,27 @@ review and merge.
 - T4 does not read lockfiles and does not certify that a traversal was
   exhaustive. That remains the authenticated collector's assertion.
 
+## Retry Time Amendment
+
+**Status: approved for planning and execution, 2026-11-21, with the
+amendment it comes from; implemented on branch
+`claude/dependency-update-advisor-spec-965015` for #419, pending review and
+merge.** The
+normative contract is A4 of
+the [scaled-share function amendment](SPEC-evidence-coverage.md#a4-retry-time-in-the-review);
+[ADR 0006](../adr/0006-amend-packet-v1-in-place-for-reachability.md) is the
+versioning precedent.
+
+- The envelope gains one required field, `retryAfter`: an RFC 3339 UTC
+  timestamp with whole seconds, or `null`. Collectors set `null`; research
+  sets the time when a GitHub rate-limit stop reports one.
+- Validation is structural: a packet missing the field, or holding any other
+  type or format, is rejected. T4 does not check how far ahead the time is.
+- The field is run-level and is not projected to the model.
+- Revalidation keeps the enriched packet's value. This is the second in-place
+  change to version 1; ADR 0006's consequence still holds, so a new version
+  is required before any external consumer adopts a packet.
+
 ## Commands
 
 For this documentation-only change:

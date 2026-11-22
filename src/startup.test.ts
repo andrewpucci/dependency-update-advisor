@@ -491,6 +491,24 @@ test('takes one job start before the first GitHub read and hands it to the pipel
   );
 });
 
+test('hands the pipeline the live wall clock for quota resets', async () => {
+  vi.mocked(pipelineModule.runReview).mockClear();
+  const github = mockGithub();
+  const wall = { now: Date.parse('2026-11-21T00:00:00Z') };
+  const base = dependenciesFor(github);
+  await runStartup((line) => void line, environmentFor(), {
+    ...base,
+    evaluationTime: () => wall.now,
+  });
+  const input = vi.mocked(pipelineModule.runReview).mock.calls[0]?.[0] as
+    | { wallNow?: () => number }
+    | undefined;
+  const wallNow = input?.wallNow;
+  wall.now += 60_000;
+  // The clock is read live, not captured once as the evaluation time is.
+  expect(wallNow?.()).toBe(Date.parse('2026-11-21T00:01:00Z'));
+});
+
 test('gives the transport and the pipeline the same job start, even if the event read is slow', async () => {
   vi.mocked(pipelineModule.runReview).mockClear();
   vi.mocked(runtimeModule.createGithubTransport).mockClear();
