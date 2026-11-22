@@ -350,10 +350,10 @@ Approving this amendment amends the approved base spec as follows:
   already reflects reruns and other runs in the same hour.
 - The base R1 acceptance, "Total GitHub requests stay within the approved
   ceiling", now means: research's GitHub requests in the R1 demand
-  measurement stay within the sum of the upstream, advisory, and signals
-  request ceilings. That sum is a `derived` register entry over those
-  ceilings, not a new value, and the measurement reports it beside the
-  observed count.
+  measurement stay within `` `limit:research.githubQuota.researchCeiling` ``,
+  a `derived` register entry summing the upstream, advisory, and signals
+  request ceilings rather than a new value; the measurement reports it beside
+  the observed count.
 - Base section 3.1's release-subject unit is left out of this version (A1.2).
 
 ### A1. Scaled shares
@@ -403,9 +403,12 @@ share = min(ceiling, base + Σ rate(unit) × count(unit))
    can still read one full response. A share is never above its ceiling.
 6. **Register entries.** The existing `evidence.allocation.*` share entries
    become the ceilings; no value is copied. Each share's `base` is a
-   `derived` entry equal to its ceiling. Each `rate` is an `unjustified`
-   entry of 0, with the note "awaiting B12/L8 measurement". Specs cite these
-   as `` `limit:<id>` ``, never by value. `unjustified` entries pass
+   `derived` entry equal to its ceiling, for example
+   `` `limit:research.share.upstream.requests.base` ``. Each `rate`, for
+   example `` `limit:research.share.upstream.requests.rate.direct` ``, starts
+   as an `unjustified` entry that adds nothing to its share, with the note
+   "awaiting B12/L8 measurement". Specs cite these as `` `limit:<id>` ``,
+   never by value. `unjustified` entries pass
    `check:limits` only while its migration flag is open, so B12 and B13 must
    replace these rates before L11 (#383) closes migration.
 7. **Starting behavior.** With those entries every computed share equals
@@ -434,14 +437,15 @@ share = min(ceiling, base + Σ rate(unit) × count(unit))
 3. **Valid headers.** A header value is valid only when it is a string of
    ASCII digits that parses to a safe integer. `x-ratelimit-reset` must also
    name a time after the current wall time (A2.4) and within the quota
-   window, a register entry citing GitHub's hourly limit. A response whose
+   window, `` `limit:research.githubQuota.windowMs` ``, an `external` entry
+   citing GitHub's hourly limit. A response whose
    `x-ratelimit-resource` is present and is not `core` is ignored, because
    research reads only REST core endpoints. Headers on responses from any
    host other than `api.github.com` are never read.
 4. **Clock.** Research's `now` is monotonic, not wall time, and
    `x-ratelimit-reset` is Unix seconds. Research therefore gains an injected
    wall clock in Unix milliseconds (`Date.now()` in production). Reset times,
-   "the next hour", and window expiry are judged on that clock. A wait is
+   the quota window, and window expiry are judged on that clock. A wait is
    converted to `now` units as the retry time less the current wall time, and
    is compared with the research deadline on `now`. Nothing compares a wall
    time with `now` directly.
@@ -451,8 +455,9 @@ share = min(ceiling, base + Σ rate(unit) × count(unit))
    that risk rather than removing it: with no estimate yet, the first
    research request of a run, and the first after each reset, is sent
    unguarded, and other runs in the repository spend the same quota between
-   responses. The reserve is a structural `derived` entry: the GitHub
-   reads of every freshness recheck after research. Today those are the
+   responses. The reserve, `` `limit:research.githubQuota.reserve` ``, is a
+   structural `derived` entry: the GitHub reads of every freshness recheck
+   after research. Today those are the
    recheck before the model and the final recheck, each reading the run, the
    pull request, and, when it applies, the comparison. A test pins the
    reserve to both call sites, so adding a recheck after research fails it.
@@ -485,8 +490,8 @@ share = min(ceiling, base + Σ rate(unit) × count(unit))
    quota window is ignored.
 2. **Wait.** If the retry time plus one research request timeout falls
    before the research deadline, the reader waits until the retry time and
-   sends the request again. Each reader waits at most the register's wait
-   count per run (one); a later
+   sends the request again. Each reader waits at most
+   `` `limit:research.githubQuota.waitsPerReader` `` times per run; a later
    rate-limit stop in a reader that has waited ends `rate_limit` without
    waiting. The wait honors the run's abort signal and counts toward the
    reader's time. If the wait does not fit, the request ends `rate_limit` as
@@ -505,10 +510,11 @@ share = min(ceiling, base + Σ rate(unit) × count(unit))
    research often has well under its full time left. The hourly reset will
    rarely fall inside it; a short secondary-limit `retry-after` sometimes
    will. No check depends on how often a wait fits.
-6. **Register entries.** The quota window is an `external` entry citing
-   GitHub's hourly limit. The number of waits per reader is a `safety` entry:
-   one wait bounds how much of research's time a single reader can spend
-   idle.
+6. **Register entries.** The quota window,
+   `` `limit:research.githubQuota.windowMs` ``, is an `external` entry citing
+   GitHub's hourly limit. The waits per reader,
+   `` `limit:research.githubQuota.waitsPerReader` ``, is a `safety` entry that
+   bounds how much of research's time a single reader can spend idle.
 
 ### A4. Retry time in the review
 
