@@ -164,6 +164,37 @@ test('reverts only the member whose enrichment is invalid', async () => {
     expect(byId(id), id).toEqual(enriched.changes.find((change) => change.id === id));
 });
 
+test('keeps the retry time research set, including when one member reverts', async () => {
+  const { fixture, packet, enriched, members } = await enrichedResult();
+  const retryAfter = '2026-11-21T00:30:00Z';
+  const kept = reconcilePacket({
+    collected: packet,
+    enriched: { ...enrichedInput(enriched), retryAfter },
+    trusted: fixture.expected,
+    priority: members,
+  });
+  expect(kept.packet.retryAfter).toBe(retryAfter);
+  const changes = enriched.changes.map((change) =>
+    change.id === members[0]
+      ? {
+          ...change,
+          evidence: {
+            ...change.evidence,
+            vulnerability: { status: 'available', reasons: [], sourceIds: ['no-such-source'] },
+          },
+        }
+      : change,
+  );
+  const reverted = reconcilePacket({
+    collected: packet,
+    enriched: { ...enrichedInput(enriched), changes, retryAfter },
+    trusted: fixture.expected,
+    priority: members,
+  });
+  expect(reverted.whole).toBe(false);
+  expect(reverted.packet.retryAfter).toBe(retryAfter);
+});
+
 test('keeps members in priority order within packet limits', async () => {
   const { fixture, packet, enriched, members } = await enrichedResult();
   const keep = 1;

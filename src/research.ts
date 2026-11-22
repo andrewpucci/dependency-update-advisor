@@ -22,6 +22,7 @@ import { createGithubQuotaGuard, type GithubQuotaGuard } from './evidence/github
 import type { NpmInventoryResult } from './evidence/npm.js';
 import type { PacketChange, PacketExpected, PacketResult } from './schema.js';
 import type { ChangeEvidence, EvidenceReason, NpmSide } from './schema.js';
+import { DURATION_MS } from './format.js';
 import { limit } from './limits.js';
 import { isResearchPlaceholder, reconcilePacket } from './revalidation.js';
 
@@ -117,6 +118,12 @@ function limits(
     requestTimeoutMs: Math.min(EVIDENCE_READ_ENVELOPE.requestTimeoutMs, remaining(input)),
     totalTimeoutMs: remaining(input),
   };
+}
+
+/** A Unix-millisecond time as whole-second UTC, rounded up so it is never before the reset. */
+function wholeSecondUtc(ms: number): string {
+  const second = DURATION_MS.second;
+  return new Date(Math.ceil(ms / second) * second).toISOString().replace('.000Z', 'Z');
 }
 
 function failure(result: { kind: string; reason?: EvidenceReason }): EvidenceReason {
@@ -383,10 +390,11 @@ export async function runResearch(input: ResearchInput): Promise<ResearchResult>
     );
 
     restorePacketOrder(progress, packet);
+    const retryAt = dependencies.quota.latestRetryAt();
     observe({ kind: 'stage-start', stage: 'revalidation' });
     const reconciled = reconcilePacket({
       collected: packet,
-      enriched: progress,
+      enriched: { ...progress, retryAfter: retryAt === null ? null : wholeSecondUtc(retryAt) },
       trusted: input.trusted,
       priority: researchOrder(packet.changes, input.npmInventory).map((change) => change.id),
     });

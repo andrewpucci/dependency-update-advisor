@@ -537,6 +537,8 @@ test('stops research GitHub requests at the quota reserve, keeping other hosts a
     }));
   expect(evidence('upstream').some((item) => item.status === 'available')).toBe(true);
   expect(evidence('upstream').some((item) => item.reasons?.includes('rate_limit'))).toBe(true);
+  // The guard's stops could not wait for the reset, so it becomes the packet's retry time.
+  expect(result.packet.retryAfter).toBe('2026-11-21T00:30:00Z');
   for (const item of evidence('vulnerability'))
     expect(item).toMatchObject(
       item.ecosystem === 'uv'
@@ -570,6 +572,39 @@ test('uses an injected quota guard for every research GitHub request', async () 
   expect(admitted.length).toBeGreaterThan(0);
   expect(hosts).not.toContain('api.github.com');
   expect(hosts).toContain('registry.npmjs.org');
+});
+
+test('a run with no GitHub rate-limit stop has no retry time, even when OSV is rate-limited', async () => {
+  const { fixture, packet } = await scenario();
+  const plain = await runResearch(base(fixture, packet));
+  if (plain.kind !== 'ready') throw new Error(plain.kind);
+  expect(plain.packet.retryAfter).toBeNull();
+  const osvLimited = await runResearch({
+    ...base(fixture, packet),
+    fetch: async (url: string, init: RequestInit) =>
+      new URL(url).host === 'api.osv.dev'
+        ? new Response(null, { status: 429, headers: { 'retry-after': '1' } })
+        : (fixture.fetch as (u: string, i: RequestInit) => Promise<Response>)(url, init),
+  });
+  if (osvLimited.kind !== 'ready') throw new Error(osvLimited.kind);
+  expect(JSON.stringify(osvLimited.packet)).toContain('rate_limit');
+  expect(osvLimited.packet.retryAfter).toBeNull();
+});
+
+test('rounds the retry time up to the whole second', async () => {
+  const { fixture, packet } = await scenario();
+  const wall = Date.parse('2026-11-21T00:00:00Z') + 500;
+  const result = await runResearch({
+    ...base(fixture, packet),
+    wallNow: () => wall,
+    // GitHub asks for 10 minutes, which research's deadline cannot wait out.
+    fetch: async (url: string, init: RequestInit) =>
+      new URL(url).host === 'api.github.com'
+        ? new Response(null, { status: 429, headers: { 'retry-after': '600' } })
+        : (fixture.fetch as (u: string, i: RequestInit) => Promise<Response>)(url, init),
+  });
+  if (result.kind !== 'ready') throw new Error(result.kind);
+  expect(result.packet.retryAfter).toBe('2026-11-21T00:10:01Z');
 });
 
 test('reports an internal failure rather than a research result when a reader throws', async () => {
