@@ -196,6 +196,55 @@ export function classifyUnit(
 
 export type Writer = (kind: WriteKind, text: string) => Promise<WriteResult>;
 
+/** The search range: the longest body accepted so far, and the shortest rejected. */
+type Bracket = { accepted: number; rejected: number };
+type Searched = { bracket: Bracket } | { reason: string };
+
+/** Sends one ASCII body and moves the matching end of the bracket to its length. */
+async function narrow(
+  bracket: Bracket,
+  length: number,
+  write: Writer,
+): Promise<{ bracket: Bracket; outcome: Outcome } | { reason: string }> {
+  const result = await write('create', asciiBody(length));
+  if (result.outcome === 'inconclusive') return { reason: result.reason };
+  return result.outcome === 'accepted'
+    ? { bracket: { ...bracket, accepted: Math.max(bracket.accepted, length) }, outcome: 'accepted' }
+    : {
+        bracket: { ...bracket, rejected: Math.min(bracket.rejected, length) },
+        outcome: 'rejected',
+      };
+}
+
+/** When the rejection states a maximum M inside the bracket, tests M, then M + 1 unless M failed. */
+async function tryStated(
+  stated: number | undefined,
+  bracket: Bracket,
+  write: Writer,
+): Promise<Searched> {
+  if (stated === undefined || stated <= 0 || stated >= bracket.rejected) return { bracket };
+  let current = bracket;
+  for (const length of [stated, stated + 1]) {
+    const step = await narrow(current, length, write);
+    if ('reason' in step) return step;
+    current = step.bracket;
+    if (step.outcome === 'rejected') break;
+  }
+  return { bracket: current };
+}
+
+/** Halves the bracket until the accepted and rejected lengths are one apart. */
+async function halve(bracket: Bracket, write: Writer): Promise<Searched> {
+  let current = bracket;
+  while (current.rejected - current.accepted > 1) {
+    const middle = current.accepted + Math.floor((current.rejected - current.accepted) / 2);
+    const step = await narrow(current, middle, write);
+    if ('reason' in step) return step;
+    current = step.bracket;
+  }
+  return { bracket: current };
+}
+
 /**
  * L by the bounded search: one body expected to be rejected, then M and M + 1 when the
  * rejection states M, else halving between an empty body (never sent) and the first body.
@@ -207,25 +256,15 @@ export async function findLimit(
   const first = await write('create', asciiBody(firstLength));
   if (first.outcome === 'inconclusive') return { reason: first.reason };
   if (first.outcome === 'accepted') return { reason: 'the first body was accepted' };
-  let accepted = 0;
-  let rejected = firstLength;
-  const stated = statedMaximum(first.message);
-  if (stated !== undefined && stated > 0 && stated < firstLength) {
-    for (const length of [stated, stated + 1]) {
-      const result = await write('create', asciiBody(length));
-      if (result.outcome === 'inconclusive') return { reason: result.reason };
-      if (result.outcome === 'accepted') accepted = Math.max(accepted, length);
-      else rejected = Math.min(rejected, length);
-      if (result.outcome === 'rejected') break;
-    }
-  }
-  while (rejected - accepted > 1) {
-    const middle = accepted + Math.floor((rejected - accepted) / 2);
-    const result = await write('create', asciiBody(middle));
-    if (result.outcome === 'inconclusive') return { reason: result.reason };
-    if (result.outcome === 'accepted') accepted = middle;
-    else rejected = middle;
-  }
+  const stated = await tryStated(
+    statedMaximum(first.message),
+    { accepted: 0, rejected: firstLength },
+    write,
+  );
+  if ('reason' in stated) return stated;
+  const found = await halve(stated.bracket, write);
+  if ('reason' in found) return found;
+  const { accepted } = found.bracket;
   return accepted > 0 ? { limit: accepted } : { reason: 'no body was accepted' };
 }
 
