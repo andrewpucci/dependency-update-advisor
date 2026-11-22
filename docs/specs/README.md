@@ -272,7 +272,9 @@ gaps and an introduced vulnerability before parity is claimed.
   [scaled-share function amendment](SPEC-evidence-coverage.md#scaled-share-function-amendment)
   for B11 ([#369](https://github.com/andrewpucci/dependency-update-advisor/issues/369))
   is approved for planning, 2026-11-21, and implemented for #369 and
-  #414–#422, pending review and merge: scaled shares, a research GitHub
+  #414–#422, merged into `main` in
+  [PR #423](https://github.com/andrewpucci/dependency-update-advisor/pull/423):
+  scaled shares, a research GitHub
   quota guard that follows GitHub's reported quota, a bounded wait and
   retry, and the retry time in the comment, with the retry time as a
   required packet field. B12 (#370) fits its values.
