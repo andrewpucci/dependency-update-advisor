@@ -23,6 +23,10 @@ type FakeOptions = {
   /** Comment ids whose DELETE fails. */
   undeletable?: (id: number) => boolean;
   existing?: Comment[];
+  /** The status GET /user answers; an Actions installation token gets 403. */
+  userStatus?: number;
+  /** The status the sweep's comment listing answers. */
+  listStatus?: number;
 };
 
 /** A fake GitHub that counts comment bodies in UTF-16 code units. */
@@ -47,9 +51,14 @@ function fakeGitHub(options: FakeOptions = {}) {
           owner: { type: 'User' },
         },
       };
-    if (method === 'GET' && path === '/user') return { status: 200, data: { login: 'tester' } };
+    if (method === 'GET' && path === '/user')
+      return options.userStatus === undefined
+        ? { status: 200, data: { login: 'tester' } }
+        : { status: options.userStatus, data: { message: 'Resource not accessible' } };
     if (method === 'GET' && path.startsWith('/repos/tester/scratch/issues/7/comments'))
-      return { status: 200, data: [...comments.values()] };
+      return options.listStatus === undefined
+        ? { status: 200, data: [...comments.values()] }
+        : { status: options.listStatus, data: { message: 'Server Error' } };
     if (method === 'POST' && path === '/repos/tester/scratch/issues/7/comments') {
       posts++;
       if (posts === options.failCreate) throw new Error('socket hang up');
@@ -189,7 +198,7 @@ test('reaching the write cap gives inconclusive and sends no further write', asy
   expect(writes).toHaveLength(3);
 });
 
-test('mutative requests are paced by the interval and never sent concurrently', async () => {
+test('mutative requests are paced by the interval', async () => {
   const github = fakeGitHub();
   const pauses: number[] = [];
   await probe(ARGV, ENV, deps(github.http, { sleep: async (ms) => void pauses.push(ms) }));
@@ -209,4 +218,47 @@ test('an interrupt stops further writes and still cleans up', async () => {
   expect(JSON.parse(result.output)).toMatchObject({ unit: 'inconclusive', undeleted: 0 });
   expect(posts).toBe(2);
   expect(github.comments.size).toBe(0);
+});
+
+test('mutative requests wait for the full pause and never overlap', async () => {
+  const github = fakeGitHub();
+  let inFlight = 0;
+  let mostInFlight = 0;
+  let pausing = false;
+  let sentDuringPause = 0;
+  const http: Http = async (method, path, body) => {
+    if (pausing) sentDuringPause++;
+    inFlight++;
+    mostInFlight = Math.max(mostInFlight, inFlight);
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    inFlight--;
+    return github.http(method, path, body);
+  };
+  const sleep = async () => {
+    pausing = true;
+    await new Promise((resolve) => setTimeout(resolve, 1));
+    pausing = false;
+  };
+  const result = await probe(ARGV, ENV, deps(http, { sleep }));
+  expect(JSON.parse(result.output)).toMatchObject({ unit: 'code units', undeleted: 0 });
+  expect(mostInFlight).toBe(1);
+  expect(sentDuringPause).toBe(0);
+});
+
+test('the probe refuses to start when it cannot read the token user, because the sweep needs it', async () => {
+  const github = fakeGitHub({ userStatus: 403 });
+  const result = await probe(ARGV, ENV, deps(github.http));
+  expect(result.exitCode).not.toBe(0);
+  expect(result.output).toMatch(/token's user/);
+  expect(mutative(github.calls)).toBe(0);
+});
+
+test('a sweep that cannot list the comments is reported and fails the run', async () => {
+  const github = fakeGitHub({ listStatus: 500 });
+  const result = await probe(ARGV, ENV, deps(github.http));
+  expect(JSON.parse(result.output)).toMatchObject({ sweep: 'failed', undeleted: 0 });
+  expect(result.exitCode).not.toBe(0);
+  const clean = await probe(ARGV, ENV, deps(fakeGitHub().http));
+  expect(JSON.parse(clean.output)).toMatchObject({ sweep: 'done' });
+  expect(clean.exitCode).toBe(0);
 });

@@ -531,6 +531,10 @@ leaves no id. So the probe ends with a sweep: it lists the issue's comments
 since the run started and deletes each one that the token's user wrote with
 a body the probe sent. The result reports how many probe comments it could
 not delete. A count above zero means the user must delete them by hand.
+The sweep needs the token's user, so the probe refuses to start when it
+cannot read it, as with an Actions installation token. A sweep that cannot
+list the comments is reported as `failed`, and the run fails, because a lost
+create may then be left behind unseen.
 
 Each write has one of three outcomes:
 

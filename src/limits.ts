@@ -2257,7 +2257,7 @@ const DEFINITIONS = [
     },
     effect:
       'The probe waits this long before every create, update, or delete after its first, and sends them one at a time.',
-    test: 'tests/probe-comment-limit/run.test.ts > mutative requests are paced by the interval and never sent concurrently',
+    test: 'tests/probe-comment-limit/run.test.ts > mutative requests wait for the full pause and never overlap',
   },
   {
     id: 'probe.commentLimit.maxWrites',

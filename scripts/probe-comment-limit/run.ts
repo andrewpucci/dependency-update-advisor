@@ -114,8 +114,14 @@ function writeSession(args: Args, deps: ProbeDeps) {
     return classifyWrite(kind, text, await answerOf(kind, text));
   };
 
-  /** Deletes every comment made, then sweeps for any whose create answer was lost. */
-  const cleanup = async (login: string, since: string): Promise<number> => {
+  /**
+   * Deletes every comment made, then sweeps for any whose create answer was lost. A sweep that
+   * cannot list the comments is `failed`: a lost create may then be left behind unseen.
+   */
+  const cleanup = async (
+    login: string,
+    since: string,
+  ): Promise<{ undeleted: number; sweep: 'done' | 'failed' }> => {
     let undeleted = 0;
     const remove = async (id: number) => {
       const answer = await send('DELETE', `/repos/${args.repo}/issues/comments/${id}`).catch(
@@ -124,15 +130,16 @@ function writeSession(args: Args, deps: ProbeDeps) {
       if (answer === undefined || answer.status >= HTTP_STATUS.redirectMin) undeleted++;
     };
     for (const id of created) await remove(id);
-    for (const comment of await sweep(login, since)) await remove(comment);
-    return undeleted;
+    const found = await sweep(login, since);
+    for (const comment of found ?? []) await remove(comment);
+    return { undeleted, sweep: found === undefined ? 'failed' : 'done' };
   };
-  const sweep = async (login: string, since: string): Promise<number[]> => {
+  const sweep = async (login: string, since: string): Promise<number[] | undefined> => {
     const listing = await deps
       .http('GET', `${comments}?since=${since}&per_page=${limit('github.pageSize')}`)
       .catch(() => undefined);
-    const found = Array.isArray(listing?.data) ? listing.data : [];
-    return found.flatMap((comment) =>
+    if (listing?.status !== HTTP_STATUS.ok || !Array.isArray(listing.data)) return undefined;
+    return listing.data.flatMap((comment: unknown) =>
       isRecord(comment) &&
       typeof comment.id === 'number' &&
       !created.has(comment.id) &&
@@ -165,25 +172,35 @@ export async function probe(
     };
   if (data.full_name.toLowerCase() === THIS_REPOSITORY)
     return { exitCode: 1, output: 'probe:comment-limit refuses to write to this repository' };
+  // The sweep finds lost creates by their author, so without the token's user it cannot run.
   const user = await deps.http('GET', '/user');
-  const login = isRecord(user.data) && typeof user.data.login === 'string' ? user.data.login : '';
+  const login =
+    user.status === HTTP_STATUS.ok && isRecord(user.data) && typeof user.data.login === 'string'
+      ? user.data.login
+      : '';
+  if (login === '')
+    return {
+      exitCode: 1,
+      output: `probe:comment-limit could not read the token's user (${user.status}); use a personal token`,
+    };
 
   const started = deps.now();
   const session = writeSession(args, deps);
   let outcome: Core.ProbeOutcome | undefined;
-  let undeleted = 0;
+  let cleaned = { undeleted: 0, sweep: 'failed' as 'done' | 'failed' };
   try {
     outcome = await runProbe({ firstLength: deps.limits.firstLength, write: session.write });
   } finally {
-    undeleted = await session.cleanup(login, started.toISOString());
+    cleaned = await session.cleanup(login, started.toISOString());
   }
   const result = {
     date: started.toISOString().slice(0, 'YYYY-MM-DD'.length),
     repositoryType: repositoryType(data),
     ...outcome,
-    undeleted,
+    ...cleaned,
   };
-  return { exitCode: undeleted === 0 ? 0 : 1, output: JSON.stringify(result, null, 2) };
+  const exitCode = cleaned.undeleted === 0 && cleaned.sweep === 'done' ? 0 : 1;
+  return { exitCode, output: JSON.stringify(result, null, 2) };
 }
 
 /** The real GitHub REST client: one request at a time, with the token in a header only. */
