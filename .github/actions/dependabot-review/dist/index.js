@@ -8859,6 +8859,49 @@ function derived(id, unit, inputs, formula, description, audit = {}) {
 		test: audit.test ?? "pending: L7 audit"
 	};
 }
+/** Research shares that scale with the change; each maps to the allocation entry that caps it. */
+const SCALED_SHARES = {
+	upstream: "evidence.allocation.upstream",
+	advisory: "evidence.allocation.advisory",
+	"signals.malware": "evidence.allocation.signals.readers.malware",
+	"signals.publishTimes": "evidence.allocation.signals.readers.publishTimes",
+	"signals.registry": "evidence.allocation.signals.readers.registry",
+	"signals.metadata": "evidence.allocation.signals.readers.metadata",
+	"signals.upstream": "evidence.allocation.signals.readers.upstream"
+};
+const SHARE_DIMENSIONS = {
+	requests: "maxRequests",
+	bytes: "maxTotalBytes"
+};
+/** Member-role units every scaled share takes a rate for; signals readers also rate `eligible`. */
+const ROLE_UNITS$1 = [
+	"direct",
+	"transitive",
+	"added",
+	"removed"
+];
+const SHARE_FORMULA_TEST = "src/budget.test.ts > a share is its base plus each rate times its count, rounded up, under its ceiling";
+const SHARE_START_TEST = "src/budget.test.ts > starting parameters reproduce the current research shares for any change";
+/** One scaled share's base and rate entries for one dimension; its ceiling is the allocation entry. */
+function scaledShareEntries(share, dimension) {
+	const ceiling = `${SCALED_SHARES[share]}.${SHARE_DIMENSIONS[dimension]}`;
+	const unit = dimension === "bytes" ? "bytes" : "count";
+	const units = share.startsWith("signals.") ? [...ROLE_UNITS$1, "eligible"] : ROLE_UNITS$1;
+	return [derived(`research.share.${share}.${dimension}.base`, unit, [ceiling], copy, `The ${share} ${dimension} share starts at its ceiling until B12 fits a smaller base.`, {
+		protects: "Sets the share a change of no counted members gets, before any per-member rate is added.",
+		effect: "The computed share starts here; with every rate at zero it equals the ceiling, as before scaling.",
+		test: SHARE_START_TEST
+	}), ...units.map((rateUnit) => unjustified(`research.share.${share}.${dimension}.rate.${rateUnit}`, 0, unit, {
+		protects: `Grows the ${share} ${dimension} share with each ${rateUnit} member, so a larger change gets more and a small one fails faster.`,
+		effect: "Adds rate times the count to the share, rounded up and capped at the ceiling; zero leaves the share at its base.",
+		note: "awaiting B12/L8 measurement",
+		test: SHARE_FORMULA_TEST
+	}))];
+}
+/** Base and rate entries for every scaled research share and dimension. */
+function allScaledShareEntries() {
+	return Object.keys(SCALED_SHARES).flatMap((share) => Object.keys(SHARE_DIMENSIONS).flatMap((dimension) => scaledShareEntries(share, dimension)));
+}
 const DEFINITIONS = [
 	{
 		id: "packet.bytes",
@@ -10040,7 +10083,58 @@ const DEFINITIONS = [
 		effect: "Spec lines with register values at or below 64 are not checked; larger values must be allowlisted by trimmed text.",
 		note: "no recorded reason",
 		test: "tests/limits/check-limits.test.ts > a register value at the spec floor, or a non-whole number, is not a problem"
-	})
+	}),
+	derived("research.githubQuota.researchCeiling", "count", [
+		"evidence.allocation.upstream.maxRequests",
+		"evidence.allocation.advisory.maxRequests",
+		"evidence.allocation.signals.maxRequests"
+	], sum, "Research's GitHub requests can be no more than the three research stages' request ceilings together.", {
+		protects: "States the approved ceiling for research's GitHub requests that the R1 demand measurement is judged against, so a measured run that exceeds its shares is visible.",
+		effect: "No runtime check: the demand measurement reports research GitHub requests beside it; each stage is still capped by its own share and the quota guard.",
+		test: "src/measurement/demand.test.ts > the R1 ceiling is the sum of the research request ceilings and scales with them"
+	}),
+	{
+		id: "research.githubQuota.reserve",
+		unit: "count",
+		protects: "Keeps GitHub quota for the freshness rechecks that run after research, so a heavy research run cannot leave the final head check without requests.",
+		effect: "Research GitHub requests are refused once the estimated remaining quota would fall below this; refused members are unavailable with rate_limit and the rechecks still run.",
+		basis: {
+			kind: "derived",
+			inputs: [],
+			formula: () => 6,
+			description: "Two freshness rechecks run after research (before the model and the final check), each reading the run, the pull request, and the comparison when the base moved.",
+			structuralTest: "src/pipeline.test.ts > the research quota reserve covers every GitHub read after research"
+		},
+		test: "src/pipeline.test.ts > the research quota reserve covers every GitHub read after research"
+	},
+	{
+		id: "research.githubQuota.waitsPerReader",
+		value: 1,
+		unit: "count",
+		protects: "Bounds how much of research's time one reader can spend idle waiting for a GitHub rate-limit reset, so one stalled reader cannot hold the rest of research back.",
+		basis: {
+			kind: "safety",
+			reason: "One wait covers the common secondary-limit retry-after; a reader rate-limited again after waiting is under sustained pressure, where another wait would mostly spend time the deadline cannot spare."
+		},
+		effect: "After this many waits, a reader's next rate-limit stop ends its members rate_limit at once and records the retry time.",
+		test: "src/evidence/upstream-read.test.ts > a second stop after a wait ends rate_limit without waiting again"
+	},
+	{
+		id: "research.githubQuota.windowMs",
+		value: 36e5,
+		unit: "milliseconds",
+		protects: "Rejects a reported GitHub quota reset that is not plausible for the hourly limit, so a bad header cannot make research wait or stop for longer than the quota really lasts.",
+		basis: {
+			kind: "external",
+			url: "https://docs.github.com/en/rest/using-the-rest-api/rate-limits-for-the-rest-api",
+			checked: "2026-11-21",
+			platformValue: 36e5,
+			margin: "none: the window is the platform's hourly quota period"
+		},
+		effect: "A reset time more than this far ahead is ignored: the estimate is unchanged and no wait or retry time uses it.",
+		test: "src/evidence/github-quota.test.ts > judges a reset on the wall clock: past or beyond the window is ignored"
+	},
+	...allScaledShareEntries()
 ];
 const REGISTER = buildRegister(DEFINITIONS);
 function limitEntry(id) {
@@ -12159,6 +12253,15 @@ function freeze$4(value) {
 	}
 	return value;
 }
+const WHOLE_SECOND_UTC = /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}Z$/u;
+/** Null, or a real UTC instant written to the whole second; T4 does not check how far ahead it is. */
+function retryTime(value) {
+	if (value === null) return null;
+	requireValue$2(typeof value === "string" && WHOLE_SECOND_UTC.test(value), "retryAfter");
+	const parsed = new Date(value);
+	requireValue$2(!Number.isNaN(parsed.getTime()) && parsed.toISOString() === value.replace("Z", ".000Z"), "retryAfter");
+	return value;
+}
 /** Pure validation; expected snapshots come from trusted T1/C2 orchestration, never the packet. */
 function validateReviewPacket(candidate, trusted) {
 	try {
@@ -12174,6 +12277,7 @@ function validateReviewPacket(candidate, trusted) {
 			"findings",
 			"relationships",
 			"reachability",
+			"retryAfter",
 			"context"
 		], [], "packet");
 		requireValue$2(r.version === 1, "packet");
@@ -12207,6 +12311,7 @@ function validateReviewPacket(candidate, trusted) {
 			findings,
 			relationships,
 			reachability,
+			retryAfter: retryTime(r.retryAfter),
 			context: ctx
 		};
 		requireValue$2(Buffer.byteLength(JSON.stringify(packet)) <= PACKET_LIMITS.bytes, "packet", "budget");
@@ -12226,6 +12331,115 @@ function validateReviewPacket(candidate, trusted) {
 			}
 		};
 	}
+}
+
+// src/evidence/github-quota.ts
+const GITHUB_API = "https://api.github.com";
+const DIGITS = /^\d+$/;
+function isGithub(url) {
+	try {
+		return new URL(url).origin === GITHUB_API;
+	} catch {
+		return false;
+	}
+}
+function count(value) {
+	if (value === null || !DIGITS.test(value)) return null;
+	const parsed = Number(value);
+	return Number.isSafeInteger(parsed) ? parsed : null;
+}
+function createGithubQuotaGuard(options) {
+	let window = null;
+	let refused = 0;
+	let latest = null;
+	const inWindow = (time) => {
+		const now = options.wallNow();
+		return time >= now && time <= now + options.windowMs;
+	};
+	const current = () => {
+		if (window && options.wallNow() >= window.reset) window = null;
+		return window;
+	};
+	return {
+		admit(url) {
+			if (!isGithub(url)) return { allowed: true };
+			const estimate = current();
+			if (!estimate) return { allowed: true };
+			if (estimate.remaining - estimate.started - 1 < options.reserve) {
+				refused += 1;
+				return {
+					allowed: false,
+					retryAt: estimate.reset
+				};
+			}
+			estimate.started += 1;
+			return { allowed: true };
+		},
+		observe(url, response) {
+			if (!isGithub(url)) return;
+			const resource = response.headers.get("x-ratelimit-resource");
+			if (resource !== null && resource !== "core") return;
+			const remaining = count(response.headers.get("x-ratelimit-remaining"));
+			const resetSeconds = count(response.headers.get("x-ratelimit-reset"));
+			if (remaining === null || resetSeconds === null) return;
+			const reset = resetSeconds * DURATION_MS.second;
+			const now = options.wallNow();
+			if (reset <= now || reset > now + options.windowMs) return;
+			const estimate = current();
+			if (estimate && reset < estimate.reset) return;
+			if (estimate && reset === estimate.reset) {
+				if (remaining > estimate.remaining - estimate.started) return;
+			}
+			window = {
+				reset,
+				remaining,
+				started: 0
+			};
+		},
+		refusals: () => refused,
+		retryAt(response) {
+			const after = count(response.headers.get("retry-after"));
+			if (after !== null) {
+				const time = options.wallNow() + after * DURATION_MS.second;
+				return inWindow(time) ? time : null;
+			}
+			const remaining = response.headers.get("x-ratelimit-remaining");
+			const reset = count(response.headers.get("x-ratelimit-reset"));
+			if (remaining === "0" && reset !== null) {
+				const time = reset * DURATION_MS.second;
+				return inWindow(time) ? time : null;
+			}
+			if (remaining === null && reset === null) return current()?.reset ?? null;
+			return null;
+		},
+		msUntil: (retryAt) => retryAt - options.wallNow(),
+		recordStop(retryAt) {
+			if (retryAt !== null && (latest === null || retryAt > latest)) latest = retryAt;
+		},
+		latestRetryAt: () => latest
+	};
+}
+/**
+* Waits for `retryAt` when that time plus one request timeout fits in the time the reader has left,
+* and reports whether it waited. The wait ends early, with an error, when `signal` aborts.
+*/
+async function waitForRetry(guard, retryAt, time) {
+	if (retryAt === null) return false;
+	const wait = Math.max(0, guard.msUntil(retryAt));
+	if (wait + time.requestTimeoutMs > time.remainingMs) return false;
+	await new Promise((resolve, reject) => {
+		if (time.signal?.aborted) return reject(/* @__PURE__ */ new Error("wait aborted"));
+		const timer = setTimeout(() => {
+			time.signal?.removeEventListener("abort", abort);
+			resolve();
+		}, wait);
+		const abort = () => {
+			clearTimeout(timer);
+			reject(/* @__PURE__ */ new Error("wait aborted"));
+		};
+		time.signal?.addEventListener("abort", abort, { once: true });
+	});
+	return true;
 }
 
 // src/evidence/common.ts
@@ -12330,6 +12544,22 @@ async function remember(cache, key, url, response, aborted) {
 	return Promise.race([cache.store(key, response), aborted]);
 }
 /**
+* A response that needs no request: a cache hit, or the quota guard's refusal. A refusal is never
+* sent or charged, and carries no rate-limit headers for the guard to read.
+*/
+function answeredLocally(deps, key, url) {
+	const hit = key === void 0 ? void 0 : deps.cache?.lookup(key);
+	if (hit) return {
+		response: hit,
+		cached: true
+	};
+	if (deps.quota && !deps.quota.admit(url).allowed) return {
+		response: new Response(null, { status: HTTP_STATUS.tooManyRequests }),
+		cached: false
+	};
+	return null;
+}
+/**
 * One credential-free GET, or a POST of a fixed `json` body, raced against its timeout, the
 * caller's signal, and `onCancel` (registered for the reader's close). Every exit aborts the
 * request and releases its body.
@@ -12357,8 +12587,8 @@ async function boundedGet(deps, request, onCancel, consume) {
 		if (post) headers["content-type"] = "application/json";
 		const body = post ? JSON.stringify(request.json) : void 0;
 		const key = deps.cache?.key(post ? "POST" : "GET", request.url, headers, body);
-		const hit = key === void 0 ? void 0 : deps.cache?.lookup(key);
-		if (hit) return await consume(hit, aborted, true);
+		const local = answeredLocally(deps, key, request.url);
+		if (local) return await consume(local.response, aborted, local.cached);
 		request.charge?.();
 		const pending = deps.fetch(request.url, {
 			method: post ? "POST" : "GET",
@@ -12372,6 +12602,7 @@ async function boundedGet(deps, request, onCancel, consume) {
 			if (controller.signal.aborted && late.body && !late.body.locked) late.body.cancel().catch(() => {});
 		}, () => {});
 		response = await Promise.race([pending, aborted]);
+		deps.quota?.observe(request.url, response);
 		response = await remember(deps.cache, key, request.url, response, aborted);
 		return await consume(response, aborted, false);
 	} finally {
@@ -12716,6 +12947,10 @@ var Reader$1 = class {
 		osv: null
 	};
 	active = null;
+	closing = new AbortController();
+	/** The last rate-limited GitHub response this reader received, for its retry time. */
+	rateLimited = null;
+	waits = 0;
 	/** Base and head of one package reuse its discovery reads, including a failed one. */
 	discoveries = /* @__PURE__ */ new Map();
 	constructor(limits, deps, kind) {
@@ -12726,6 +12961,7 @@ var Reader$1 = class {
 	}
 	close() {
 		this.closed = true;
+		this.closing.abort();
 		this.active?.();
 	}
 	/**
@@ -12760,11 +12996,53 @@ var Reader$1 = class {
 			stream.releaseLock();
 		}
 	}
-	stop(provider, reason) {
-		if (reason === "rate_limit") this.providerStop[provider] = reason;
+	stop(provider, reason, response) {
+		if (reason === "rate_limit") {
+			this.providerStop[provider] = reason;
+			if (response) this.rateLimited = response;
+		}
 		throw new AdvisoryFailure(reason);
 	}
 	async page(provider, url, json) {
+		for (;;) try {
+			return await this.pageOnce(provider, url, json);
+		} catch (error) {
+			if (!await this.waitedForRetry(provider, error)) throw error;
+		}
+	}
+	/**
+	* After a GitHub rate limit this reader received, waits once for its retry time when that fits
+	* and lifts the GitHub stop for the resend. Otherwise records the stop's retry time. An OSV rate
+	* limit never waits.
+	*/
+	async waitedForRetry(provider, error) {
+		const quota = this.deps.quota;
+		const response = this.rateLimited;
+		if (provider !== "github" || !quota || !response) return false;
+		if (!(error instanceof AdvisoryFailure) || error.reason !== "rate_limit") return false;
+		const retryAt = quota.retryAt(response);
+		this.providerStop.github = null;
+		let fits = false;
+		try {
+			fits = this.waits < limit("research.githubQuota.waitsPerReader") && await waitForRetry(quota, retryAt, {
+				remainingMs: this.remaining("github"),
+				requestTimeoutMs: this.limits.requestTimeoutMs,
+				signal: AbortSignal.any([this.closing.signal, this.deps.signal].filter((s) => !!s))
+			});
+		} catch {
+			this.providerStop.github = "rate_limit";
+			throw new AdvisoryFailure("unknown");
+		}
+		if (!fits) {
+			this.providerStop.github = "rate_limit";
+			quota.recordStop(retryAt);
+			return false;
+		}
+		this.waits += 1;
+		return true;
+	}
+	async pageOnce(provider, url, json) {
+		if (provider === "github") this.rateLimited = null;
 		this.remaining(provider);
 		return boundedGet(this.deps, {
 			url,
@@ -12781,7 +13059,7 @@ var Reader$1 = class {
 			this.remaining(provider);
 			advisoryCheck(!response.redirected && (!response.url || response.url === url), "unsupported");
 			advisoryCheck(response.status < HTTP_STATUS.redirectMin || response.status >= HTTP_STATUS.clientErrorMin, "unsupported");
-			if (httpReason$3(response, null) === "rate_limit") this.stop(provider, "rate_limit");
+			if (httpReason$3(response, null) === "rate_limit") this.stop(provider, "rate_limit", response);
 			const bytes = await this.body(response, aborted, provider, cached);
 			let data;
 			try {
@@ -12789,7 +13067,7 @@ var Reader$1 = class {
 			} catch {
 				throw new AdvisoryFailure(response.status === HTTP_STATUS.ok ? "malformed" : httpReason$3(response, null));
 			}
-			if (response.status !== HTTP_STATUS.ok) this.stop(provider, httpReason$3(response, data));
+			if (response.status !== HTTP_STATUS.ok) this.stop(provider, httpReason$3(response, data), response);
 			advisoryCheck(/^application\/(?:json|vnd.github\+json)(?:\s*;|$)/iu.test(response.headers.get("content-type") ?? ""), "unsupported");
 			data = copyAdvisoryData(data, this.limits, this.work);
 			this.remaining(provider);
@@ -14658,6 +14936,7 @@ function interpretNpmLifecycle(change, input) {
 }
 
 // src/evidence/upstream-read.ts
+const GITHUB_API_ORIGIN = "https://api.github.com";
 /** Each halving of the register's release page size down to 1, for the page-size retry ladder. */
 function halvingFrom(start) {
 	const sizes = [];
@@ -14772,7 +15051,7 @@ function githubNext(link, original) {
 	return true;
 }
 function upstreamGithubUrl(t) {
-	const base = "https://api.github.com/repos/" + t.repository;
+	const base = GITHUB_API_ORIGIN + "/repos/" + t.repository;
 	switch (t.resource) {
 		case "repository": return base;
 		case "ref": return base + "/git/ref/" + t.ref.split("/").map(encodeURIComponent).join("/");
@@ -14802,6 +15081,9 @@ var Reader = class {
 	controller = new AbortController();
 	active = null;
 	blocked = /* @__PURE__ */ new Set();
+	/** The last rate-limited response this attempt received, for its retry time; never a block. */
+	rateLimited = null;
+	waits = 0;
 	cache = /* @__PURE__ */ new Map();
 	cacheSizes = /* @__PURE__ */ new Map();
 	failures = /* @__PURE__ */ new Map();
@@ -14933,41 +15215,76 @@ var Reader = class {
 			reader.releaseLock();
 		}
 	}
-	async fetchBounded(url, _init) {
-		this.dispatch(url);
-		try {
-			return await boundedGet(this.deps, {
-				url,
-				accept: "application/json",
-				timeoutMs: Math.min(this.remaining(), this.limits.requestTimeoutMs),
-				signal: _init.signal ?? void 0,
-				charge: () => this.charge()
-			}, (cancel) => {
-				this.active = cancel;
-			}, async (response, aborted, cached) => {
-				requireUpstream(!response.redirected && (!response.url || response.url === url), "unsupported");
-				const immediate = httpReason$2(response, Buffer.alloc(0));
-				if (response.status !== HTTP_STATUS.ok && immediate !== "unknown") {
-					if (immediate === "rate_limit") this.blocked.add(new URL(url).origin);
-					throw new UpstreamFailure(immediate);
-				}
-				const bytes = response.body ? await this.body(response, aborted, cached) : Buffer.alloc(0);
-				if (response.status !== HTTP_STATUS.ok) {
-					const reason = httpReason$2(response, bytes);
-					if (reason === "rate_limit") this.blocked.add(new URL(url).origin);
-					throw new UpstreamFailure(reason);
-				}
-				requireUpstream(/^application\/(?:[\w.+-]*\+)?json(?:\s*;|$)/iu.test(response.headers.get("content-type") ?? ""), "unsupported");
-				this.remaining();
-				return new Response(bytes, {
-					status: HTTP_STATUS.ok,
-					headers: response.headers
-				});
-			});
+	async fetchBounded(url, init) {
+		for (;;) try {
+			return await this.fetchOnce(url, init);
 		} catch (error) {
-			this.networkReason = upstreamFailureReason(error);
-			throw error;
+			if (!await this.waitedForRetry(url, error)) {
+				this.networkReason = upstreamFailureReason(error);
+				throw error;
+			}
 		}
+	}
+	/**
+	* After a rate-limited GitHub response, waits once for its retry time when that fits and unblocks
+	* GitHub for the resend. Otherwise records the retry time of the stop and reports no wait.
+	*/
+	async waitedForRetry(url, error) {
+		const quota = this.deps.quota;
+		const response = this.rateLimited;
+		const origin = new URL(url).origin;
+		if (!quota || !response || upstreamFailureReason(error) !== "rate_limit") return false;
+		if (origin !== GITHUB_API_ORIGIN) return false;
+		const retryAt = quota.retryAt(response);
+		if (!(this.waits < limit("research.githubQuota.waitsPerReader") && await waitForRetry(quota, retryAt, {
+			remainingMs: this.remaining(),
+			requestTimeoutMs: this.limits.requestTimeoutMs,
+			signal: AbortSignal.any([this.controller.signal, this.deps.signal].filter((s) => !!s))
+		}).catch(() => {
+			throw new UpstreamFailure("unknown");
+		}))) {
+			quota.recordStop(retryAt);
+			return false;
+		}
+		this.waits += 1;
+		this.blocked.delete(origin);
+		return true;
+	}
+	limitedBy(url, response) {
+		this.blocked.add(new URL(url).origin);
+		this.rateLimited = response;
+	}
+	async fetchOnce(url, _init) {
+		this.rateLimited = null;
+		this.dispatch(url);
+		return await boundedGet(this.deps, {
+			url,
+			accept: "application/json",
+			timeoutMs: Math.min(this.remaining(), this.limits.requestTimeoutMs),
+			signal: _init.signal ?? void 0,
+			charge: () => this.charge()
+		}, (cancel) => {
+			this.active = cancel;
+		}, async (response, aborted, cached) => {
+			requireUpstream(!response.redirected && (!response.url || response.url === url), "unsupported");
+			const immediate = httpReason$2(response, Buffer.alloc(0));
+			if (response.status !== HTTP_STATUS.ok && immediate !== "unknown") {
+				if (immediate === "rate_limit") this.limitedBy(url, response);
+				throw new UpstreamFailure(immediate);
+			}
+			const bytes = response.body ? await this.body(response, aborted, cached) : Buffer.alloc(0);
+			if (response.status !== HTTP_STATUS.ok) {
+				const reason = httpReason$2(response, bytes);
+				if (reason === "rate_limit") this.limitedBy(url, response);
+				throw new UpstreamFailure(reason);
+			}
+			requireUpstream(/^application\/(?:[\w.+-]*\+)?json(?:\s*;|$)/iu.test(response.headers.get("content-type") ?? ""), "unsupported");
+			this.remaining();
+			return new Response(bytes, {
+				status: HTTP_STATUS.ok,
+				headers: response.headers
+			});
+		});
 	}
 	async pypi(t, url) {
 		const cached = this.cached(url);
@@ -23895,25 +24212,30 @@ function manualStep(category, name) {
 	if (category === "upstream") return `read ${name}'s release notes`;
 	return `review ${name}'s ${readableLabel(category)} evidence`;
 }
-function evidenceActions(reasons, category, name, plural = false) {
+/** A whole-second UTC retry time as 24-hour `HH:MM`, rounded up so it is never before the reset. */
+function rerunClock(retryAfter) {
+	const minute = DURATION_MS.minute;
+	return new Date(Math.ceil(Date.parse(retryAfter) / minute) * minute).toISOString().slice(ISO_DATE_TIME.hour[0], ISO_DATE_TIME.minute[1]);
+}
+function evidenceActions(reasons, category, name, plural = false, retryAfter = null) {
 	const effective = reasons.length ? reasons : ["unknown"];
 	const groups = new Set(effective.map((reason) => REASON_GROUPS[reason]));
 	const rerunOnly = effective.every((reason) => RERUN_REASONS.has(reason));
 	const manual = `check it manually: ${manualStep(category, name)}.`;
 	const actions = {};
 	if (groups.has("permission")) actions.permission = rerunOnly ? "Correct the reviewer's token permissions, then rerun CI." : "Correct the reviewer's token permissions.";
-	if (groups.has("retry") && rerunOnly) actions.retry = "Rerun CI later.";
+	if (groups.has("retry") && rerunOnly) actions.retry = retryAfter ? `Rerun CI after ${rerunClock(retryAfter)} UTC.` : "Rerun CI later.";
 	if (groups.has("budget")) actions.budget = `The review could not check ${plural ? "these packages" : "this package"} within its limits; ${manual}`;
 	if (groups.has("noSource")) actions.noSource = `No supported source was found; ${manual}`;
 	if (groups.has("untrusted")) actions.untrusted = `The source could not be trusted; ${manual}`;
 	return ACTION_ORDER.flatMap((group) => actions[group] ?? []).join(" ");
 }
-function evidenceGap(unit, sourceId) {
+function evidenceGap(unit, sourceId, retryAfter = null) {
 	const link = unit.evidenceLinks.find((entry) => entry.id === sourceId);
 	const member = unit.members.find((entry) => entry.id === link?.memberId);
 	if (!link || !member) throw new RenderFailure("reference");
 	const name = text(member.name);
-	return `${name}: ${readableLabel(link.category)} evidence is ${readableLabel(link.status)} (${link.reasons.map(readableLabel).join(", ")}). ${evidenceActions(link.reasons, link.category, name)}`;
+	return `${name}: ${readableLabel(link.category)} evidence is ${readableLabel(link.status)} (${link.reasons.map(readableLabel).join(", ")}). ${evidenceActions(link.reasons, link.category, name, false, retryAfter)}`;
 }
 function unsafeUrl(value) {
 	return /\s/u.test(value) || Array.from(value).some((char) => char.charCodeAt(0) < CHAR_CODE.firstPrintable || char.charCodeAt(0) === CHAR_CODE.delete);
@@ -24110,7 +24432,7 @@ function nextAction({ input, summary, units, holds, modelHolds }, firstUnresolve
 	}
 	if (inventoryGaps.length) return text(inventoryGaps[0].nextActions[0] ?? "");
 	const firstGapIndex = summary.units.findIndex((unit) => unit.gaps.length > 0);
-	if (firstGapIndex >= 0) return evidenceGap(units[firstGapIndex], summary.units[firstGapIndex].gaps[0].sourceId);
+	if (firstGapIndex >= 0) return evidenceGap(units[firstGapIndex], summary.units[firstGapIndex].gaps[0].sourceId, input.retryAfter ?? null);
 	const firstFollowup = input.records.flatMap((record) => record.assessment?.followups ?? [])[0];
 	if (firstFollowup) return text(firstFollowup.description);
 	return "Review the evidence, then merge.";
@@ -24232,7 +24554,7 @@ function queueLines(r) {
 		if (indexes.length === 1) {
 			const unit = units[first];
 			const names = unit.members.map((member) => displayName(r, member)).join(", ");
-			const gapText = gaps.map((gap) => evidenceGap(unit, gap.sourceId)).join(" ");
+			const gapText = gaps.map((gap) => evidenceGap(unit, gap.sourceId, r.input.retryAfter ?? null)).join(" ");
 			lines.push(`- ${names} (${plural(unit.memberCount, "changed update")}): ${tail} ${gapText}`);
 			continue;
 		}
@@ -24242,7 +24564,7 @@ function queueLines(r) {
 		});
 		const gapText = gaps.map((gap) => {
 			const link = linkOf(units[first], gap.sourceId);
-			return `${readableLabel(link.category)} evidence is ${readableLabel(link.status)} (${link.reasons.map(readableLabel).join(", ")}). ${evidenceActions(link.reasons, link.category, "each listed package", true)}`;
+			return `${readableLabel(link.category)} evidence is ${readableLabel(link.status)} (${link.reasons.map(readableLabel).join(", ")}). ${evidenceActions(link.reasons, link.category, "each listed package", true, r.input.retryAfter ?? null)}`;
 		}).join(" ");
 		lines.push(`- ${names.join("; ")}: ${tail} ${gapText}`);
 	}
@@ -24361,7 +24683,7 @@ function gapLines(r, assessedGaps) {
 		const list = [...members.values()];
 		const single = list.length === 1;
 		const subject = single ? text(list[0].name) : "each listed package";
-		return `- ${list.map((member) => displayName(r, member)).join(", ")}: ${readableLabel(link.category)} evidence is ${readableLabel(link.status)} (${link.reasons.map(readableLabel).join(", ")}). ${evidenceActions(link.reasons, link.category, subject, !single)}`;
+		return `- ${list.map((member) => displayName(r, member)).join(", ")}: ${readableLabel(link.category)} evidence is ${readableLabel(link.status)} (${link.reasons.map(readableLabel).join(", ")}). ${evidenceActions(link.reasons, link.category, subject, !single, r.input.retryAfter ?? null)}`;
 	});
 }
 function followupLines(r) {
@@ -24513,7 +24835,7 @@ function renderNonempty(input, binding) {
 function renderDecisionBrief(input) {
 	try {
 		const binding = parseReviewBinding(input.binding);
-		if (!binding || !isDeepStrictEqual(binding, parseReviewBinding(input.signalBinding)) || !/^[a-z0-9-]+$/u.test(binding.repository.owner) || !/^[a-z0-9._-]+$/u.test(binding.repository.name) || !isDeepStrictEqual(binding, input.coverage.inventory.packet.binding) || !isDeepStrictEqual(formDecisionUnits(input.coverage.inventory.packet), input.coverage.inventory) || !utcTimestamp(input.generatedAt) || input.reviewDigest !== void 0 && !/^[a-f\d]{64}$/u.test(input.reviewDigest)) return {
+		if (!binding || !isDeepStrictEqual(binding, parseReviewBinding(input.signalBinding)) || !/^[a-z0-9-]+$/u.test(binding.repository.owner) || !/^[a-z0-9._-]+$/u.test(binding.repository.name) || !isDeepStrictEqual(binding, input.coverage.inventory.packet.binding) || !isDeepStrictEqual(formDecisionUnits(input.coverage.inventory.packet), input.coverage.inventory) || !utcTimestamp(input.generatedAt) || (input.retryAfter ?? null) !== input.coverage.inventory.packet.retryAfter || input.reviewDigest !== void 0 && !/^[a-f\d]{64}$/u.test(input.reviewDigest)) return {
 			ok: false,
 			category: "input"
 		};
@@ -24632,7 +24954,8 @@ async function reviewPacket(input) {
 			coverage: assessed.coverage,
 			records: assessed.records,
 			analysisUnavailable: false,
-			signalAttempts: input.signalAttempts
+			signalAttempts: input.signalAttempts,
+			retryAfter: input.packet.retryAfter
 		});
 		if (!rendered.ok) return rendered.category === "size" ? {
 			kind: "internal-failure",
@@ -24759,6 +25082,94 @@ const RESEARCH_CACHE_LIMITS = Object.freeze({
 	maxEntryBytes: limit("research.cache.maxEntryBytes"),
 	maxTotalBytes: limit("research.cache.maxTotalBytes")
 });
+const SIGNAL_READERS = [
+	"malware",
+	"publishTimes",
+	"registry",
+	"metadata",
+	"upstream"
+];
+const ROLE_UNITS = [
+	"direct",
+	"transitive",
+	"added",
+	"removed"
+];
+function dimensionParameters(share, dimension, ceiling) {
+	const units = share.startsWith("signals.") ? [...ROLE_UNITS, "eligible"] : ROLE_UNITS;
+	return {
+		base: limit(`research.share.${share}.${dimension}.base`),
+		ceiling,
+		rates: Object.fromEntries(units.map((unit) => [unit, limit(`research.share.${share}.${dimension}.rate.${unit}`)]))
+	};
+}
+function shareParameters(share, ceiling) {
+	return {
+		requests: dimensionParameters(share, "requests", ceiling.maxRequests),
+		bytes: dimensionParameters(share, "bytes", ceiling.maxTotalBytes)
+	};
+}
+/** The register's scaled-share parameters; the allocation entries are the ceilings. */
+const RESEARCH_SHARE_PARAMETERS = Object.freeze({
+	upstream: shareParameters("upstream", EVIDENCE_READ_ALLOCATION.upstream),
+	advisory: shareParameters("advisory", EVIDENCE_READ_ALLOCATION.advisory),
+	signals: Object.freeze(Object.fromEntries(SIGNAL_READERS.map((reader) => [reader, shareParameters(`signals.${reader}`, EVIDENCE_READ_ALLOCATION.signals.readers[reader])])))
+});
+/**
+* Counts the members research scales with. Declaration (`basis`) records are not members; an
+* `unknown` role counts as transitive; additions and removals come from `kind`.
+*/
+function researchShareUnits(changes) {
+	const members = changes.filter((change) => !("basis" in change));
+	const count = (keep) => members.filter(keep).length;
+	const npm = count((change) => change.ecosystem === "npm");
+	return {
+		direct: count((change) => change.role === "direct"),
+		transitive: count((change) => change.role !== "direct"),
+		added: count((change) => change.kind === "addition"),
+		removed: count((change) => change.kind === "removal"),
+		eligible: {
+			malware: members.length,
+			publishTimes: npm,
+			registry: npm,
+			metadata: count((change) => change.ecosystem === "uv"),
+			upstream: count((change) => change.ecosystem === "actions")
+		}
+	};
+}
+function scaled(parameters, units, eligible, floor) {
+	let total = parameters.base;
+	for (const [unit, rate] of Object.entries(parameters.rates)) {
+		if (!Number.isFinite(rate) || rate < 0) throw new Error(`invalid share parameter: ${unit}`);
+		total += rate * (unit === "eligible" ? eligible : units[unit]);
+	}
+	return Math.min(parameters.ceiling, Math.max(floor, Math.ceil(total)));
+}
+function share(parameters, units, eligible = 0) {
+	const responseFloor = Math.min(EVIDENCE_READ_ENVELOPE.maxResponseBytes, parameters.bytes.ceiling);
+	return {
+		maxRequests: scaled(parameters.requests, units, eligible, 1),
+		maxTotalBytes: scaled(parameters.bytes, units, eligible, responseFloor)
+	};
+}
+/**
+* Each research share for a change of this size: `min(ceiling, base + Σ rate × count)`, rounded
+* up, with a request floor of one and a byte floor of one full response. The signals stage share is
+* the sum of its readers' shares.
+*/
+function researchShares(units, parameters = RESEARCH_SHARE_PARAMETERS) {
+	const readers = Object.fromEntries(SIGNAL_READERS.map((reader) => [reader, share(parameters.signals[reader], units, units.eligible[reader])]));
+	const total = (field) => Object.values(readers).reduce((sum, reader) => sum + reader[field], 0);
+	return {
+		upstream: share(parameters.upstream, units),
+		advisory: share(parameters.advisory, units),
+		signals: {
+			maxRequests: total("maxRequests"),
+			maxTotalBytes: total("maxTotalBytes"),
+			readers
+		}
+	};
+}
 
 // src/evidence/research-cache.ts
 const CACHEABLE_STATUSES = /* @__PURE__ */ new Set([HTTP_STATUS.ok, HTTP_STATUS.notFound]);
@@ -31131,7 +31542,8 @@ async function assembleReviewPacket(input) {
 			sources: [...input.inventorySource === null || input.inventorySource === void 0 ? [] : [input.inventorySource], ...fragments.flatMap((item) => item.sources)],
 			findings: fragments.flatMap((item) => item.findings),
 			relationships,
-			reachability
+			reachability,
+			retryAfter: null
 		});
 		const required = list((item) => item.relationships), optionalProofs = list((item) => item.optionalRelationships), verdicts = list((item) => item.reachability);
 		let current = fitOptionalEvidence({
@@ -31475,7 +31887,8 @@ function reconcilePacket(input) {
 			sources: [...collectedSources, ...researchSources.filter((source) => source.memberIds.some((id) => kept.has(id)))],
 			findings: [...collectedFindings, ...researchFindings.filter((finding) => finding.memberId === null ? keptEveryone : kept.has(finding.memberId))],
 			relationships: collected.relationships,
-			reachability: collected.reachability
+			reachability: collected.reachability,
+			retryAfter: input.enriched.retryAfter ?? collected.retryAfter
 		}, input.trusted);
 	};
 	const whole = (reasons) => {
@@ -31495,7 +31908,8 @@ function reconcilePacket(input) {
 			sources: collectedSources,
 			findings: collectedFindings,
 			relationships: collected.relationships,
-			reachability: collected.reachability
+			reachability: collected.reachability,
+			retryAfter: collected.retryAfter
 		}, input.trusted);
 		return {
 			packet: result.ok ? result.packet : collected,
@@ -31576,6 +31990,11 @@ function limits(share, input) {
 		totalTimeoutMs: remaining(input)
 	};
 }
+/** A Unix-millisecond time as whole-second UTC, rounded up so it is never before the reset. */
+function wholeSecondUtc(ms) {
+	const second = DURATION_MS.second;
+	return new Date(Math.ceil(ms / second) * second).toISOString().replace(".000Z", "Z");
+}
 function failure$1(result) {
 	return result.kind === "unavailable" && result.reason ? result.reason : "malformed";
 }
@@ -31625,8 +32044,8 @@ function replaceEvidence(progress, evidence) {
 	progress.sources = evidence.sources;
 	progress.findings = evidence.findings;
 }
-async function enrichUpstreamStage(input, dependencies, readers, progress, fail, pypiReader) {
-	const limitsForStage = limits(EVIDENCE_READ_ALLOCATION.upstream, input);
+async function enrichUpstreamStage(input, dependencies, readers, progress, fail, shares, pypiReader) {
+	const limitsForStage = limits(shares.upstream, input);
 	const opened = createUpstreamReader(limitsForStage, dependencies);
 	if (opened.kind !== "ready") return fail("upstream", "malformed");
 	readers.push(opened.reader);
@@ -31648,8 +32067,8 @@ async function enrichUpstreamStage(input, dependencies, readers, progress, fail,
 	progress.upstreamAttempts = upstream.attempts;
 	if (upstream.stopped) fail("upstream", upstream.stopped);
 }
-async function enrichAdvisoryStage(input, dependencies, readers, progress, fail) {
-	const limitsForStage = limits(EVIDENCE_READ_ALLOCATION.advisory, input);
+async function enrichAdvisoryStage(input, dependencies, readers, progress, fail, shares) {
+	const limitsForStage = limits(shares.advisory, input);
 	const opened = createAdvisoryReader(limitsForStage, dependencies);
 	if (opened.kind !== "ready") return fail("advisories", "malformed");
 	readers.push(opened);
@@ -31667,9 +32086,9 @@ async function enrichAdvisoryStage(input, dependencies, readers, progress, fail)
 	replaceEvidence(progress, advisories);
 	if (advisories.stopped) fail("advisories", advisories.stopped);
 }
-async function enrichSignalsStage(input, dependencies, readers, progress, fail, metadata) {
-	const limitsForStage = limits(EVIDENCE_READ_ALLOCATION.signals, input);
-	const { readers: shares } = EVIDENCE_READ_ALLOCATION.signals;
+async function enrichSignalsStage(input, dependencies, readers, progress, fail, metadata, stageShares) {
+	const limitsForStage = limits(stageShares.signals, input);
+	const { readers: shares } = stageShares.signals;
 	const malware = createMalwareReader(limits(shares.malware, input), dependencies);
 	const registry = createNpmRegistryReader(limits(shares.registry, input), dependencies);
 	const times = createNpmPublishTimeReader(limits(shares.publishTimes, input), dependencies);
@@ -31708,7 +32127,12 @@ async function runResearch(input) {
 		now: input.now,
 		fetch: input.fetch,
 		signal: input.signal,
-		cache: input.cache ?? createResearchCache(RESEARCH_CACHE_LIMITS)
+		cache: input.cache ?? createResearchCache(RESEARCH_CACHE_LIMITS),
+		quota: input.quota ?? createGithubQuotaGuard({
+			reserve: limit("research.githubQuota.reserve"),
+			wallNow: input.wallNow ?? Date.now,
+			windowMs: limit("research.githubQuota.windowMs")
+		})
 	};
 	const unavailable = [];
 	const readers = [];
@@ -31755,20 +32179,25 @@ async function runResearch(input) {
 			});
 			markStage(progress, stage, reason);
 		};
-		const metadata = createPolicySignalReader(limits(EVIDENCE_READ_ALLOCATION.signals.readers.metadata, input), dependencies);
+		const shares = researchShares(researchShareUnits(packet.changes), input.shareParameters);
+		const metadata = createPolicySignalReader(limits(shares.signals.readers.metadata, input), dependencies);
 		const sharedMetadata = metadata.kind === "ready" ? metadata : null;
 		if (sharedMetadata) readers.push(sharedMetadata);
-		await runStage("upstream", () => enrichUpstreamStage(input, dependencies, readers, progress, fail, sharedMetadata ?? void 0));
-		await runStage("advisories", () => enrichAdvisoryStage(input, dependencies, readers, progress, fail));
-		await runStage("signals", () => enrichSignalsStage(input, dependencies, readers, progress, fail, sharedMetadata));
+		await runStage("upstream", () => enrichUpstreamStage(input, dependencies, readers, progress, fail, shares, sharedMetadata ?? void 0));
+		await runStage("advisories", () => enrichAdvisoryStage(input, dependencies, readers, progress, fail, shares));
+		await runStage("signals", () => enrichSignalsStage(input, dependencies, readers, progress, fail, sharedMetadata, shares));
 		restorePacketOrder(progress, packet);
+		const retryAt = dependencies.quota.latestRetryAt();
 		observe({
 			kind: "stage-start",
 			stage: "revalidation"
 		});
 		const reconciled = reconcilePacket({
 			collected: packet,
-			enriched: progress,
+			enriched: {
+				...progress,
+				retryAfter: retryAt === null ? null : wholeSecondUtc(retryAt)
+			},
 			trusted: input.trusted,
 			priority: researchOrder(packet.changes, input.npmInventory).map((change) => change.id)
 		});
@@ -33080,6 +33509,7 @@ async function evaluateEvidence(input, binding, started, signal, state, recheck,
 				now: input.now,
 				deadline: evidenceDeadline,
 				evaluationTime: input.evaluationTime,
+				...input.wallNow ? { wallNow: input.wallNow } : {},
 				signal
 			}));
 			if (researched.kind !== "ready") return {
@@ -33477,7 +33907,8 @@ async function runStartup(writeError, environment = process.env, dependencies = 
 			model: dependencies.model,
 			now: dependencies.now,
 			jobStartedAt,
-			evaluationTime: dependencies.evaluationTime()
+			evaluationTime: dependencies.evaluationTime(),
+			wallNow: dependencies.evaluationTime
 		})));
 	} catch {
 		writeError("dependabot-review: no-write rehearsal recorded internal-failure at unclassified; nothing was published.");
