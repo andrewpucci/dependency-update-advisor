@@ -274,3 +274,65 @@ test('counts members from resolved changes only, by role, kind, and ecosystem', 
     eligible: { malware: 4, publishTimes: 2, registry: 2, metadata: 1, upstream: 1 },
   });
 });
+
+/** Test-only parameters with a distinct rate per unit, so a swapped count changes the result. */
+function distinctParameters(base: number): Parameters_ {
+  const dimension = (eligible: boolean) => ({
+    base,
+    ceiling: 1_000_000,
+    rates: {
+      direct: 1,
+      transitive: 10,
+      added: 100,
+      removed: 1000,
+      ...(eligible ? { eligible: 10_000 } : {}),
+    },
+  });
+  const share = (eligible: boolean) => ({
+    requests: dimension(eligible),
+    bytes: dimension(eligible),
+  });
+  return {
+    upstream: share(false),
+    advisory: share(false),
+    signals: {
+      malware: share(true),
+      publishTimes: share(true),
+      registry: share(true),
+      metadata: share(true),
+      upstream: share(true),
+    },
+  };
+}
+
+test('each unit scales only its own share terms', () => {
+  const units: Units = {
+    direct: 1,
+    transitive: 2,
+    added: 3,
+    removed: 4,
+    eligible: { malware: 1, publishTimes: 2, registry: 3, metadata: 4, upstream: 5 },
+  };
+  const shares = researchShares(units, distinctParameters(7));
+  // 7 + 1×1 + 10×2 + 100×3 + 1000×4 = 4328.
+  expect(shares.upstream.maxRequests).toBe(4328);
+  expect(shares.advisory.maxRequests).toBe(4328);
+  const readers = ['malware', 'publishTimes', 'registry', 'metadata', 'upstream'] as const;
+  readers.forEach((reader, index) => {
+    expect(shares.signals.readers[reader].maxRequests, reader).toBe(4328 + 10_000 * (index + 1));
+  });
+});
+
+test('decimal rates are computed exactly before rounding up', () => {
+  const rated = (rate: number) => ({
+    upstream: {
+      requests: { base: 0, ceiling: 10_000, rates: { direct: rate } },
+      bytes: { base: 0, ceiling: 10 * MiB, rates: {} },
+    },
+    advisory: testParameters(1, 10, { role: 0, eligible: 0 }).advisory,
+    signals: testParameters(1, 10, { role: 0, eligible: 0 }).signals,
+  });
+  expect(researchShares({ ...NO_UNITS, direct: 100 }, rated(1.1)).upstream.maxRequests).toBe(110);
+  expect(researchShares({ ...NO_UNITS, direct: 3 }, rated(0.1)).upstream.maxRequests).toBe(1);
+  expect(researchShares({ ...NO_UNITS, direct: 7 }, rated(0.15)).upstream.maxRequests).toBe(2);
+});
