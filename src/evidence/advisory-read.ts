@@ -526,14 +526,19 @@ class Reader implements AdvisoryReader {
     if (provider !== 'github' || !quota || !response) return false;
     if (!(error instanceof AdvisoryFailure) || error.reason !== 'rate_limit') return false;
     const retryAt = quota.retryAt(response);
-    // The GitHub stop is lifted only to read the time left; it is restored unless the wait happens.
-    this.providerStop.github = null;
+    // No time left means the wait cannot fit: the stop stays a rate limit with its retry time.
+    let left = 0;
+    try {
+      left = this.clock.remaining(this.closed ? 'unknown' : null);
+    } catch {
+      left = 0;
+    }
     let fits = false;
     try {
       fits =
         this.waits < limit('research.githubQuota.waitsPerReader') &&
         (await waitForRetry(quota, retryAt, {
-          remainingMs: this.remaining('github'),
+          remainingMs: left,
           requestTimeoutMs: this.limits.requestTimeoutMs,
           signal: AbortSignal.any(
             [this.closing.signal, this.deps.signal].filter((s): s is AbortSignal => !!s),
@@ -544,11 +549,11 @@ class Reader implements AdvisoryReader {
       throw new AdvisoryFailure('unknown');
     }
     if (!fits) {
-      this.providerStop.github = 'rate_limit';
       quota.recordStop(retryAt);
       return false;
     }
     this.waits += 1;
+    this.providerStop.github = null;
     return true;
   }
   private async pageOnce(

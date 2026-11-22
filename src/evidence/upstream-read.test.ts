@@ -554,3 +554,37 @@ describe('waiting for a GitHub rate-limit reset', () => {
     }
   });
 });
+
+test('a GitHub rate limit when no time is left ends rate_limit with its retry time', async () => {
+  const wall = Date.parse('2026-11-21T00:00:00Z');
+  const quota = createGithubQuotaGuard({
+    reserve: 0,
+    wallNow: () => wall,
+    windowMs: limit('research.githubQuota.windowMs'),
+  });
+  let now = 0;
+  const headers = {
+    get: (name: string) => {
+      if (name !== 'retry-after') return null;
+      now = limits.totalTimeoutMs + 1;
+      return '0';
+    },
+    has: (name: string) => name === 'retry-after',
+  };
+  const fetch = vi.fn(
+    async () =>
+      ({ status: 429, headers, redirected: false, url: '', body: null }) as unknown as Response,
+  );
+  const opened = createUpstreamReader(limits, { fetch, now: () => now, quota });
+  if (opened.kind !== 'ready') throw new Error('reader');
+  const releases = {
+    kind: 'github',
+    repository: 'fixture/action',
+    resource: 'releases',
+    perPage: 16,
+    page: 1,
+  };
+  expect(await opened.reader.read(releases)).toMatchObject({ reasons: ['rate_limit'] });
+  expect(quota.latestRetryAt()).toBe(wall);
+  expect(fetch).toHaveBeenCalledTimes(1);
+});

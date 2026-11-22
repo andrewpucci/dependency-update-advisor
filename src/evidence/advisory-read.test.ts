@@ -686,3 +686,31 @@ test('an OSV rate limit never waits on a GitHub retry time', async () => {
   expect(fetch).toHaveBeenCalledTimes(1);
   expect(quota.latestRetryAt()).toBeNull();
 });
+
+test('a GitHub rate limit when no time is left ends rate_limit with its retry time, not unknown', async () => {
+  const wall = Date.parse('2026-11-21T00:00:00Z');
+  const quota = createGithubQuotaGuard({
+    reserve: 0,
+    wallNow: () => wall,
+    windowMs: limit('research.githubQuota.windowMs'),
+  });
+  let now = 0;
+  // The reader's time runs out as the rate limit is read, before any wait could start.
+  const headers = {
+    get: (name: string) => {
+      if (name !== 'retry-after') return null;
+      now = limits.totalTimeoutMs + 1;
+      return '0';
+    },
+    has: (name: string) => name === 'retry-after',
+  };
+  const fetch = vi.fn(
+    async () =>
+      ({ status: 429, headers, redirected: false, url: '', body: null }) as unknown as Response,
+  );
+  const ready = createAdvisoryReader(limits, { fetch, now: () => now, quota });
+  if (ready.kind !== 'ready') throw new Error('reader');
+  expect(await ready.read(target)).toMatchObject({ reasons: ['rate_limit'] });
+  expect(quota.latestRetryAt()).toBe(wall);
+  expect(fetch).toHaveBeenCalledTimes(1);
+});

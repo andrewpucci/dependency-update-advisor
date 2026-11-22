@@ -442,7 +442,7 @@ class Reader {
     const fits =
       this.waits < limit('research.githubQuota.waitsPerReader') &&
       (await waitForRetry(quota, retryAt, {
-        remainingMs: this.remaining(),
+        remainingMs: this.timeLeft(),
         requestTimeoutMs: this.limits.requestTimeoutMs,
         signal: AbortSignal.any(
           [this.controller.signal, this.deps.signal].filter((s): s is AbortSignal => !!s),
@@ -457,6 +457,14 @@ class Reader {
     this.waits += 1;
     this.blocked.delete(origin);
     return true;
+  }
+  /** The reader's time left, or 0 once it has run out; never stops the reader by itself. */
+  private timeLeft(): number {
+    try {
+      return this.clock.remaining(null);
+    } catch {
+      return 0;
+    }
   }
   private limitedBy(url: string, response: Response) {
     this.blocked.add(new URL(url).origin);

@@ -13021,11 +13021,16 @@ var Reader$1 = class {
 		if (provider !== "github" || !quota || !response) return false;
 		if (!(error instanceof AdvisoryFailure) || error.reason !== "rate_limit") return false;
 		const retryAt = quota.retryAt(response);
-		this.providerStop.github = null;
+		let left = 0;
+		try {
+			left = this.clock.remaining(this.closed ? "unknown" : null);
+		} catch {
+			left = 0;
+		}
 		let fits = false;
 		try {
 			fits = this.waits < limit("research.githubQuota.waitsPerReader") && await waitForRetry(quota, retryAt, {
-				remainingMs: this.remaining("github"),
+				remainingMs: left,
 				requestTimeoutMs: this.limits.requestTimeoutMs,
 				signal: AbortSignal.any([this.closing.signal, this.deps.signal].filter((s) => !!s))
 			});
@@ -13034,11 +13039,11 @@ var Reader$1 = class {
 			throw new AdvisoryFailure("unknown");
 		}
 		if (!fits) {
-			this.providerStop.github = "rate_limit";
 			quota.recordStop(retryAt);
 			return false;
 		}
 		this.waits += 1;
+		this.providerStop.github = null;
 		return true;
 	}
 	async pageOnce(provider, url, json) {
@@ -15237,7 +15242,7 @@ var Reader = class {
 		if (origin !== GITHUB_API_ORIGIN) return false;
 		const retryAt = quota.retryAt(response);
 		if (!(this.waits < limit("research.githubQuota.waitsPerReader") && await waitForRetry(quota, retryAt, {
-			remainingMs: this.remaining(),
+			remainingMs: this.timeLeft(),
 			requestTimeoutMs: this.limits.requestTimeoutMs,
 			signal: AbortSignal.any([this.controller.signal, this.deps.signal].filter((s) => !!s))
 		}).catch(() => {
@@ -15249,6 +15254,14 @@ var Reader = class {
 		this.waits += 1;
 		this.blocked.delete(origin);
 		return true;
+	}
+	/** The reader's time left, or 0 once it has run out; never stops the reader by itself. */
+	timeLeft() {
+		try {
+			return this.clock.remaining(null);
+		} catch {
+			return 0;
+		}
 	}
 	limitedBy(url, response) {
 		this.blocked.add(new URL(url).origin);
