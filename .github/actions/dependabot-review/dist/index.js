@@ -9943,6 +9943,18 @@ const DEFINITIONS = [
 		note: "no recorded reason",
 		test: "none: a display cap in the advisory complexity report, which says how many findings it omitted and never gates a merge"
 	}),
+	{
+		id: "tests.largeInventoryRenderTimeoutMs",
+		value: 3e4,
+		unit: "milliseconds",
+		protects: "Keeps the large-inventory reporting tests from failing by chance on a slow CI runner, while still ending a render that hangs.",
+		basis: {
+			kind: "safety",
+			reason: "The heaviest of these tests takes about 1.8 s locally and timed out at vitest's 5 s default on a CI runner about three times slower (PR #424); 30 s leaves several times that headroom and still stops a hung test well inside the CI job's timeout."
+		},
+		effect: "A reporting test past the allowance fails under vitest's timeout behavior, as any timed-out test does.",
+		test: "none: a test-runner allowance for src/reporting.test.ts, which no application code reads"
+	},
 	unjustified("measureDemand.testTimeoutMs", 9e5, "milliseconds", {
 		protects: "A hung review run inside the demand measurement would otherwise run indefinitely; the timeout ends that test. It equals the 15-minute review job limit.",
 		effect: "A test past the timeout fails under vitest's timeout behavior, which is not read in this repo.",
