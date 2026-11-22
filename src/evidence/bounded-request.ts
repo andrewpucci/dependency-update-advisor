@@ -172,6 +172,8 @@ export async function boundedGet<T>(
     const local = answeredLocally(deps, key, request.url);
     if (local) return await consume(local.response, aborted, local.cached);
     request.charge?.();
+    // Only a request its share allowed counts against the quota estimate.
+    deps.quota?.started(request.url);
     const pending = deps.fetch(request.url, {
       method: post ? 'POST' : 'GET',
       redirect: 'manual',

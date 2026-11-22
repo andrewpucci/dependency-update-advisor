@@ -775,3 +775,36 @@ describe.each([
     );
   },
 );
+
+test('an exhausted advisory share stays budget and leaves GitHub quota for the next reader', async () => {
+  const wall = Date.parse('2026-11-21T00:00:00Z');
+  const quota = createGithubQuotaGuard({
+    reserve: 6,
+    wallNow: () => wall,
+    windowMs: limit('research.githubQuota.windowMs'),
+  });
+  const reset = String(Math.floor(wall / 1000) + 30 * 60);
+  let remaining = 40;
+  const fetch = vi.fn(async () =>
+    Response.json([], {
+      headers: { 'x-ratelimit-remaining': String(remaining--), 'x-ratelimit-reset': reset },
+    }),
+  );
+  const advisory = createAdvisoryReader(
+    { ...limits, maxRequests: 2 },
+    { fetch, now: () => 0, quota },
+  );
+  if (advisory.kind !== 'ready') throw new Error('reader');
+  const versions = Array.from({ length: 40 }, (_, i) => `1.0.${i}`);
+  const results = [];
+  for (const version of versions) results.push(await advisory.read({ ...target, version }));
+  expect(fetch).toHaveBeenCalledTimes(2);
+  // Past its share, every member is budget: our own limit, not GitHub's.
+  for (const result of results.slice(2)) expect(result.reasons).toEqual(['budget']);
+  // GitHub still reports 38 left, so the malware reader is not refused.
+  const malware = createMalwareReader(limits, { fetch, now: () => 0, quota });
+  if (malware.kind !== 'ready') throw new Error('reader');
+  expect(await malware.read(target)).toMatchObject({ complete: true });
+  expect(fetch).toHaveBeenCalledTimes(3);
+  expect(quota.latestRetryAt()).toBeNull();
+});

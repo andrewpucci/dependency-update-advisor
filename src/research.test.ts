@@ -581,6 +581,7 @@ test('uses an injected quota guard for every research GitHub request', async () 
         : { allowed: true as const },
     observe: () => {},
     refusals: () => admitted.length,
+    started: () => {},
     retryAt: () => null,
     msUntil: () => 0,
     recordStop: () => {},

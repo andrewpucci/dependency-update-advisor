@@ -17,8 +17,13 @@ export type QuotaAdmission =
  * never takes the requests the post-research rechecks need, as far as the estimate can tell.
  */
 export type GithubQuotaGuard = Readonly<{
-  /** Called after a cache miss and before the share is charged; a refusal is never sent. */
+  /**
+   * Called after a cache miss and before the share is charged; a refusal is never sent. Deciding
+   * does not count the request: `started` does, once the share has been charged.
+   */
   admit(url: string): QuotaAdmission;
+  /** Counts a GitHub request that has passed its share's charge and is about to be sent. */
+  started(url: string): void;
   /** Called only with a response returned by the network, never a cached or synthetic one. */
   observe(url: string, response: Response): void;
   /** How many requests the guard has refused this run. */
@@ -81,8 +86,12 @@ export function createGithubQuotaGuard(options: GithubQuotaOptions): GithubQuota
         refused += 1;
         return { allowed: false, retryAt: estimate.reset };
       }
-      estimate.started += 1;
       return { allowed: true };
+    },
+    started(url) {
+      if (!isGithub(url)) return;
+      const estimate = current();
+      if (estimate) estimate.started += 1;
     },
     observe(url, response) {
       if (!isGithub(url)) return;

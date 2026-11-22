@@ -27,10 +27,11 @@ function guardAt(wall: { now: number }, reserve = 5) {
   });
 }
 
-/** Admits GitHub requests until the guard refuses one; returns how many it admitted. */
+/** Admits and starts GitHub requests until the guard refuses one; returns how many it admitted. */
 function admitUntilRefused(guard: ReturnType<typeof createGithubQuotaGuard>, max = 100): number {
   for (let admitted = 0; admitted < max; admitted++) {
     if (!guard.admit(API).allowed) return admitted;
+    guard.started(API);
   }
   return max;
 }
@@ -117,9 +118,11 @@ test('clears the estimate once the window reset passes', () => {
 test('requests started since the last valid header lower the estimate', () => {
   const guard = guardAt({ now: WALL });
   guard.observe(API, rateLimited('9', WALL + MINUTE));
-  expect(guard.admit(API).allowed).toBe(true);
-  expect(guard.admit(API).allowed).toBe(true);
-  // A response without headers changes nothing; the two admitted requests still count.
+  for (let i = 0; i < 2; i++) {
+    expect(guard.admit(API).allowed).toBe(true);
+    guard.started(API);
+  }
+  // A response without headers changes nothing; the two started requests still count.
   guard.observe(API, new Response('{}'));
   expect(admitUntilRefused(guard)).toBe(2);
 });
@@ -194,4 +197,13 @@ test('waits only when the retry time plus one request timeout fits the time left
   } finally {
     vi.useRealTimers();
   }
+});
+
+test('deciding alone never lowers the estimate; only a started request does', () => {
+  const guard = guardAt({ now: WALL });
+  guard.observe(API, rateLimited('7', WALL + MINUTE));
+  // Requests that are admitted but then refused by their own share are never started.
+  for (let i = 0; i < 20; i++) expect(guard.admit(API).allowed).toBe(true);
+  guard.started(NPM);
+  expect(admitUntilRefused(guard)).toBe(2);
 });
