@@ -343,6 +343,19 @@ must satisfy the verification below.
   stages stopped on their limits and discarded completed work, not because
   checks found nothing.
 
+## Retry Time Amendment
+
+**Status: approved for planning, 2026-11-21**, with the amendment it
+comes from. Plan and execution approval remain separate gates. From A4 of the
+[scaled-share function amendment](SPEC-evidence-coverage.md#a4-retry-time-in-the-review)
+to the evidence coverage spec. When a gap's action is "Rerun CI later" and
+the packet's `retryAfter`, passed to the renderer as
+`DecisionBriefInput.retryAfter`, is set, the action reads "Rerun CI after
+HH:MM UTC.": 24-hour, zero-padded UTC time, rounded up to the next whole
+minute. The text is built from the validated timestamp, not escaped
+untrusted text. Every other action, and the rule that a gap with a
+non-transient reason never says to rerun CI, is unchanged.
+
 ## Boundaries
 
 - **Always:** Put decision and next action first; name incomplete evidence;

@@ -268,7 +268,13 @@ gaps and an introduced vulnerability before parity is claimed.
   — approved for planning, 2026-11-16. Per-item instead of stage-wide
   research failures, one read per request per run, budgets scaled to the
   change, and reader-facing evidence states; amends the W2 envelope, S1's
-  cache scope, and S3 and research-orchestration stage failures.
+  cache scope, and S3 and research-orchestration stage failures. A
+  [scaled-share function amendment](SPEC-evidence-coverage.md#scaled-share-function-amendment)
+  for B11 ([#369](https://github.com/andrewpucci/dependency-update-advisor/issues/369))
+  is approved for planning, 2026-11-21: scaled shares, a research GitHub
+  quota guard that follows GitHub's reported quota, a bounded wait and
+  retry, and the retry time in the comment, with the retry time as a
+  required packet field.
 - [Limit register](SPEC-limit-register.md) — approved for planning,
   2026-11-17; its plan was approved for execution the same day. One
   register for every limit (maxima, minima, defaults, timeouts, thresholds),
