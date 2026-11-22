@@ -421,3 +421,288 @@ cite the id, so no spec changes with the value.
 ## Open questions
 
 None.
+
+## External Citations Amendment
+
+**Status: approved for planning, 2026-11-22.** The user invoked `as-plan` on
+the reviewed draft after a fresh-context review whose 15 findings were all
+fixed. The user approved its plan for execution (`as-build auto`) the same
+day. It refines phase
+2's "cite external limits, including the comment-limit probe" for
+[#381](https://github.com/andrewpucci/dependency-update-advisor/issues/381)
+(task L9 under #372). The user chose its scope in an interview on
+2026-11-22. Effort tier: L. It changes the `external` basis type in
+`src/limits.ts`, adds a probe script, needs a result captured from live
+GitHub responses, and may change the comment limit, which amends the
+[comment capacity amendment](SPEC-comment-experience.md#comment-capacity-amendment).
+
+Decisions confirmed on 2026-11-22:
+
+- L9 cites the three entries the L7 audit left awaiting citation, runs the
+  comment-limit probe, and adds `external` entries for the platform figures
+  that section 5's configurable limits need as hard maxima. Phase 3 then
+  starts with every hard maximum either cited or recorded on #381 as having
+  no fixed public figure.
+- L9 raises `limit:comment.maxBodyCodeUnits` to just under the probed limit,
+  but only after the user approves the new value and the change to the
+  comment capacity amendment's acceptance. Both land in L9's pull request.
+  A3 adds the other approved specs that state the cap, so the raise leaves
+  no spec stating the old value.
+- The probe is a committed, re-runnable script, not a one-off run. The S1
+  discovery probes were one-off, and their entries say no repository command
+  reproduces them.
+- A probe-based value stays an `external` entry. The `external` basis gains
+  an optional `probe` field. There is no sixth basis kind.
+
+### Scope
+
+| Entry                                      | Unit       | Today                                           | Source to cite                                                    |
+| ------------------------------------------ | ---------- | ----------------------------------------------- | ----------------------------------------------------------------- |
+| `comment.maxBodyCodeUnits`                 | code units | `unjustified`, awaiting L9                      | the probe (GitHub's docs state no comment limit)                  |
+| `github.pageSize`                          | count      | `unjustified`, awaiting L9                      | the REST docs for the pull-request files endpoint's `per_page`    |
+| `github.treeMaxFiles`                      | count      | `unjustified`, awaiting L9                      | the REST docs for the pull-request files endpoint's file maximum  |
+| new: `github.token.restRequestsPerHour`    | count      | absent; section 5's GitHub request cap          | the REST rate-limit docs for `GITHUB_TOKEN`                       |
+| new: `github.hostedJobMaxMinutes`          | minutes    | absent; section 5's job budget                  | the Actions limits docs for GitHub-hosted runners                 |
+| new: `analysis.provider.maxOutputTokens`   | tokens     | absent; section 5's completion tokens           | the provider's model docs, for this repository's configured model |
+| new: `analysis.provider.requestsPerSecond` | count      | absent; section 5's model calls and concurrency | the provider's rate-limit docs                                    |
+
+The config has no default model; each adopter names one. So the output-token
+entry cites the model in this repository's `.github/dependabot-review.json`
+and says that adopters' models may differ. L12 decides how a per-model
+maximum applies (user, 2026-11-22).
+
+`github.treeMaxFiles` bounds the pull-request files listing
+(`src/github-read.ts`), not a tree. Its id keeps its name, because ids are
+stable. Renaming it is out of scope.
+
+A new entry's `test` is `none: <reason>`, the register's existing format,
+until L12 makes it the hard maximum of a setting. For example:
+`none: platform figure; L12 makes it the hard maximum of the GitHub request
+cap`. Each new entry still names what it `protects`.
+
+### A1. The `external` basis records its check
+
+Every `external` entry keeps `url`, `checked`, `platformValue`, and `margin`.
+
+- `url` is the page that states the figure. For a probed figure, it is the
+  public probe record on #381.
+- `checked` is the date, `YYYY-MM-DD`, on which someone read the page or
+  ran the probe. It is never in the future.
+- `margin` says how far the entry's value sits below `platformValue` and why,
+  or `none:` with a reason.
+
+The optional `probe` field holds:
+
+- `command`: the script name alone, such as `npm run probe:comment-limit`.
+  It never includes the arguments, because they name the test repository;
+- `repositoryType`: the test repository's visibility and owner type, such
+  as "private, user-owned, github.com". It never names the repository.
+
+When a page states no fixed figure, as for limits that vary by account tier,
+L9 adds no entry for it. Instead, the agent drafts a comment for #381 that
+names the page, the date checked, and what the page says in place of a
+figure. Posting it is Ask-first. Section 5's hard maximum for that setting
+goes back to the user in L12. L9 never invents a figure.
+
+### A2. The comment-limit probe
+
+`npm run probe:comment-limit -- --repo <owner/name> --issue <number>` posts
+and edits comments on one issue or pull request that the user names. It
+refuses to run without both arguments. It reads the token from
+`GITHUB_TOKEN`, as `npm run measure:demand` does, refuses to run without it,
+and never prints it. It reads the repository first, and refuses when the
+repository GitHub returns is this one, `andrewpucci/dependency-update-advisor`.
+It compares the returned name, so a renamed or redirected name is caught too.
+
+`src/` has no GitHub write adapter for the probe to reuse, so the probe makes
+its own REST calls with the request shapes the reviewer's comment writes use:
+
+- create: `POST /repos/{owner}/{repo}/issues/{number}/comments` with `body`;
+- update: `PATCH /repos/{owner}/{repo}/issues/comments/{id}` with `body`;
+- delete: `DELETE /repos/{owner}/{repo}/issues/comments/{id}`.
+
+It measures the body in full, as the reviewer does, so any marker or
+metadata in a body counts.
+
+**Cleanup.** The probe keeps the id of every comment it creates and deletes
+each one before it exits. That includes when a later step fails and when the
+run is interrupted. A create whose answer is lost, for example to a timeout,
+leaves no id. So the probe ends with a sweep: it lists the issue's comments
+since the run started and deletes each one that the token's user wrote with
+a body the probe sent. The result reports how many probe comments it could
+not delete. A count above zero means the user must delete them by hand.
+
+Each write has one of three outcomes:
+
+- **Accepted:** create answers Created or update answers OK, and the comment
+  GitHub returns has exactly the body sent. This is the test the reviewer
+  applies to its own writes (`src/comments.ts`). A success whose returned
+  body differs, for example because GitHub truncated or normalized it, is
+  not acceptance.
+- **Rejected:** GitHub answers 422, and its `errors` list has an item whose
+  `field` is `body` and whose message says the body is too long. The result
+  keeps that message's text.
+- **Anything else** makes the whole result `inconclusive`. That includes
+  any other 422, such as GitHub's "submitted too quickly" content limit; a
+  403 or 429 secondary rate limit; a 5xx; a network error; and a success
+  whose returned body differs.
+
+It finds the limit L as the longest ASCII body that create accepts: L is
+accepted and L + 1 is rejected. The search is bounded:
+
+1. It sends one ASCII body well above the figure the Evidence section
+   reports, which GitHub should reject.
+2. If the rejection's message states a maximum M, it tests M and M + 1
+   only.
+3. Otherwise, or if M and M + 1 don't give accept-then-reject, it searches
+   by halving between an empty body and the first body's length.
+
+A register entry caps the probe's writes per run, and another sets the pause
+between writes, so it stays well under GitHub's content-creation limits.
+Reaching the cap makes the result `inconclusive`. Both entries get their
+values and bases when the script is written.
+
+With k = ⌊L/2⌋, it then tells the three candidate units apart with bodies
+built from one repeated character:
+
+| Body                                | Code points | UTF-16 units | UTF-8 bytes |
+| ----------------------------------- | ----------- | ------------ | ----------- |
+| L ASCII characters                  | L           | L            | L           |
+| k copies of U+1F600 (astral)        | k           | 2k ≤ L       | 4k          |
+| k + 1 copies of U+1F600             | k + 1       | 2k + 2 > L   | 4k + 4      |
+| L copies of U+00E9 (two-byte BMP)   | L           | L            | 2L          |
+| L copies of U+3042 (three-byte BMP) | L           | L            | 3L          |
+
+The two astral rows tell the units apart. The U+00E9 row is a cross-check:
+it tells no unit apart from the astral rows, but a rejection there with the
+astral rows accepted fits no single unit. The U+3042 row catches a second
+cap: if GitHub counted code points but also capped bytes, the astral rows
+would look like UTF-16, but this row would be rejected. The result names a
+unit only when every outcome fits that unit alone, with no second cap.
+Otherwise it is `inconclusive`. It repeats the boundary pair on update. A
+limit that differs between create and update is reported, not resolved.
+
+The reviewer's bodies are full of line breaks, and the probe's are not, so
+one more body checks line endings: L units of ASCII in which every other
+character is `\n`. Every unit accepts it unless GitHub counts a line break
+as more than one unit, for example by normalizing LF to CRLF first. The
+result records whether it was accepted.
+
+It prints one JSON result: the date, `repositoryType`, the unit, L for
+create and update, each body's HTTP status, and the count of comments it
+could not delete. It has no links and no repository name.
+
+Running it is Ask-first: the user names the test repository and approves the
+run. Posting the result on #381 is a separate Ask-first step.
+
+### A3. Raising the comment limit
+
+The raise goes ahead only when all of these hold: the unit is UTF-16 code
+units or code points, create and update agree on L, and the line-break body
+was accepted. The reviewer keeps measuring code units. A string never has
+more code points than code units, so this never undercounts. The agent
+proposes a value and a margin, and the user approves both before any change.
+The entry then becomes `external`, with the probe as its source.
+
+In every other case, L9 changes nothing about the comment limit. It stops
+and returns the result to the user. The cases are:
+
+- **Unit is bytes.** The reviewer undercounts non-ASCII bodies today, so
+  raising the value is not enough. Changing what `src/comments.ts` and
+  `src/reporting.ts` measure is its own change.
+- **Create and update disagree,** or **the line-break body was rejected.**
+  No margin can be stated from what the probe measured.
+- **`inconclusive`.**
+
+In those cases the entry keeps today's value and stays `unjustified`, and its
+note links the probe record. The parent spec allows no `unjustified` entry
+after phase 2, so L11 cannot close until the user decides this entry's basis.
+
+The raise also changes every approved spec that states today's value. Today
+the comment cap is written out in the comment capacity amendment, the
+[decision brief](SPEC-decision-brief.md), the
+[managed comments](SPEC-managed-comments.md) spec, and this spec. Once the
+value changes, `npm run check:limits` reports each of those lines'
+allowlist entries as stale. So, in L9's pull request, each of those specs
+cites `limit:comment.maxBodyCodeUnits` instead of the number, its
+allowlist entries are removed, and each spec's change has its own approval.
+This takes those lines out of L10.
+
+Raising the cap alone does not make the R1 replay render
+([#348](https://github.com/andrewpucci/dependency-update-advisor/issues/348)).
+Its required body was far longer than any limit near GitHub's. That still
+needs the comment capacity amendment's own changes. No other gate moves:
+publication, parity, and cutover stay separate.
+
+### Amendment verification
+
+- Unit tests over the probe's pure parts:
+  - each body builder returns exactly the code points, UTF-16 units, and
+    UTF-8 bytes in the A2 table;
+  - the classifier maps each unit's expected outcomes to that unit, and maps
+    a mixed set to `inconclusive`. Mutation: swap the code-point and
+    code-unit hypotheses;
+  - a 403, 429, or 5xx anywhere in the outcomes gives `inconclusive`.
+    Mutation: treat any non-2xx status as a rejection;
+  - a 422 without a too-long `body` error, such as "submitted too quickly",
+    gives `inconclusive`. Mutation: treat any 422 as a rejection;
+  - a Created or OK answer whose returned body differs from the one sent gives
+    `inconclusive`. Mutation: accept on status alone;
+  - code-point outcomes with a rejected U+3042 row give `inconclusive`,
+    not UTF-16. Mutation: drop the U+3042 row from the classifier;
+  - the k-copy bodies keep the A2 inequalities for both an even and an odd
+    L.
+- Probe tests with a fake GitHub client, which post nothing:
+  - the script refuses to start without `--repo`, `--issue`, or
+    `GITHUB_TOKEN`, and refuses when GitHub returns this repository's name,
+    including under a different spelling passed in `--repo`. Mutation:
+    compare the argument instead of the returned name;
+  - every created comment is deleted when a later write throws. Mutation:
+    drop the cleanup;
+  - a create whose answer is lost is found and deleted by the end sweep,
+    and a comment the sweep cannot delete is counted in the result.
+    Mutation: drop the sweep;
+  - the sweep never deletes a comment by another user or with a body the
+    probe did not send;
+  - reaching the write cap gives `inconclusive` and sends no further write;
+  - a rejection message that states M leads to exactly the M and M + 1
+    tests; one that states no maximum leads to the halving search;
+  - the printed result has no repository name, URL, or token.
+- A register test fails when an `external` entry lacks an `https` `url`, or
+  has a `checked` that is not a real `YYYY-MM-DD` date or is after today's
+  UTC date, or has a `probe` whose `command` is not `npm run <script>` for a
+  `package.json` script, with no arguments.
+  Both dates are UTC, so the result does not depend on the runner's time
+  zone. The date check runs only in this test, never when the register
+  loads.
+- After L9, no entry in the scope table is `unjustified`, except the comment
+  entry in one of A3's stop cases.
+- After a raise, the existing exact-limit comment tests pass with the new
+  value. Phase 1's boundary tests still pass. No spec states the old value,
+  and `npm run check:limits` passes with those allowlist entries removed.
+- `npm run check:limits`, `vp lint`, and the full check set pass.
+
+### Amendment boundaries
+
+- **Always:** record the date each source was checked; keep the probe
+  repository's name and links out of this public repository; delete the
+  probe's comments.
+- **Ask first:** each probe run and its repository; posting the probe result
+  on #381; the new comment value and margin; amending each spec that states
+  the comment cap; the comment entry's basis after an A3 stop case.
+- **Never:** run the probe against this repository or a consumer's;
+  record a figure no source or probe states; shrink a margin without saying
+  why; treat a probe result as covering a unit it did not test.
+
+### Amendment out of scope
+
+- Renaming `github.treeMaxFiles`, because ids are stable.
+- Measuring comment bodies in bytes. If the probe finds bytes, that is its
+  own change.
+- Reproducing the S1 discovery probes as scripts. Their entries keep their
+  approved notes.
+- Making any limit configurable. That is phase 3.
+
+### Amendment open questions
+
+None.
