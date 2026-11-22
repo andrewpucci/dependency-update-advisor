@@ -1693,14 +1693,42 @@ const DEFINITIONS = [
     note: 'no recorded reason',
   }),
   // Comment bodies, from comments.ts.
-  unjustified('comment.maxBodyCodeUnits', 50_000, 'code units', {
+  {
+    id: 'github.comment.maxBodyBytes',
+    value: 262_144,
+    unit: 'bytes',
     protects:
-      "The comment body must fit the platform's comment size limit before the write; the renderer rejects oversize bodies instead of truncating them. The repo does not cite the platform figure.",
+      "Records GitHub's real limit on an issue or pull-request comment body, which the reviewer's comment cap must stay under.",
+    basis: {
+      kind: 'external',
+      url: 'https://github.com/andrewpucci/dependency-update-advisor/issues/381#issuecomment-7083984132',
+      checked: '2026-11-22',
+      platformValue: 262_144,
+      margin:
+        "none: comment.maxBodyCodeUnits derives from it with a worst-case bound. GitHub's 422 says 'maximum is 65536 characters', but the probe found 262,144 UTF-8 bytes enforced on create and update.",
+      probe: {
+        command: 'npm run probe:comment-limit',
+        repositoryType: 'private, user-owned, github.com',
+      },
+    },
     effect:
-      'Oversize publication input fails with category input and no write. The renderer omits optional sections, then fails with size.',
-    test: 'src/comments.test.ts > enforces the exact body ceiling and optional digest agreement',
-    note: 'awaiting L9 citation',
-  }),
+      'A longer body is refused by GitHub with a 422; the reviewer never sends one, because its cap derives from this.',
+    test: "src/limits.test.ts > the comment cap is derived from GitHub's byte limit so any body within it fits",
+  },
+  derived(
+    'comment.maxBodyCodeUnits',
+    'code units',
+    ['github.comment.maxBodyBytes'],
+    (bytes) => Math.floor(bytes / 3),
+    "GitHub's byte limit divided by three, rounded down: one UTF-16 code unit is at most three UTF-8 bytes, so a body within this many code units never exceeds GitHub's limit, whatever its text.",
+    {
+      protects:
+        "The comment body must fit GitHub's comment limit before the write; the renderer rejects oversize bodies instead of truncating them.",
+      effect:
+        'Oversize publication input fails with category input and no write. The renderer omits optional sections, then fails with size.',
+      test: 'src/comments.test.ts > enforces the exact body ceiling and optional digest agreement',
+    },
+  ),
   // Analysis contract, from analysis/contract.ts, batches.ts, and mistral.ts.
   unjustified('analysis.maxUnits', 8, 'count', {
     protects:

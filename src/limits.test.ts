@@ -284,3 +284,25 @@ test('checkRegister reports a self-loop and a cycle through three entries', () =
     ]),
   ).toEqual([expect.stringMatching(/cycle/)]);
 });
+
+test("the comment cap is derived from GitHub's byte limit so any body within it fits", () => {
+  const bytes = limit('github.comment.maxBodyBytes');
+  const cap = limit('comment.maxBodyCodeUnits');
+  expect(limitEntry('comment.maxBodyCodeUnits').basis).toMatchObject({
+    kind: 'derived',
+    inputs: ['github.comment.maxBodyBytes'],
+  });
+  expect(dependents(REGISTER, 'github.comment.maxBodyBytes')).toContain('comment.maxBodyCodeUnits');
+  expect(cap).toBe(Math.floor(bytes / 3));
+  // One UTF-16 code unit is at most three UTF-8 bytes; a cap one unit larger could overflow.
+  for (const unit of ['a', 'é', 'あ', '\u{1F600}']) {
+    const body = unit.repeat(Math.floor(cap / unit.length));
+    expect(Buffer.byteLength(body, 'utf8'), unit).toBeLessThanOrEqual(bytes);
+  }
+  expect(Buffer.byteLength('あ'.repeat(cap + 1), 'utf8')).toBeGreaterThan(bytes);
+  expect(limitEntry('github.comment.maxBodyBytes').basis).toMatchObject({
+    kind: 'external',
+    platformValue: bytes,
+    probe: { command: 'npm run probe:comment-limit' },
+  });
+});

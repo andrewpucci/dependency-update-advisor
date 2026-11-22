@@ -1381,26 +1381,8 @@
   },
   {
     "file": "docs/specs/SPEC-limit-register.md",
-    "line": "that counts characters or bytes. The reviewer's 50,000 code units is a chosen",
-    "values": [50000],
-    "reason": "limit register spec: names a registered value as an example or test; pending amendment (L10)"
-  },
-  {
-    "file": "docs/specs/SPEC-limit-register.md",
     "line": "untrusted data, multiplied by the 128-change packet limit. A structural",
     "values": [128],
-    "reason": "limit register spec: names a registered value as an example or test; pending amendment (L10)"
-  },
-  {
-    "file": "docs/specs/SPEC-limit-register.md",
-    "line": "- **Code.** Re-hardcoded identity bounds, the duplicated 50,000 comment cap,",
-    "values": [50000],
-    "reason": "limit register spec: names a registered value as an example or test; pending amendment (L10)"
-  },
-  {
-    "file": "docs/specs/SPEC-limit-register.md",
-    "line": "spelling (`50000`, `50,000`, or `50_000`). An allowlist names each line where",
-    "values": [50000],
     "reason": "limit register spec: names a registered value as an example or test; pending amendment (L10)"
   },
   {
@@ -1429,56 +1411,14 @@
   },
   {
     "file": "docs/specs/SPEC-limit-register.md",
-    "line": "`if (body.length <= 50_000)` to a module, and add",
-    "values": [50000],
-    "reason": "limit register spec: names a registered value as an example or test; pending amendment (L10)"
-  },
-  {
-    "file": "docs/specs/SPEC-limit-register.md",
-    "line": "`const MAX_BODY = 50_000;` to a module.",
-    "values": [50000],
-    "reason": "limit register spec: names a registered value as an example or test; pending amendment (L10)"
-  },
-  {
-    "file": "docs/specs/SPEC-limit-register.md",
-    "line": "(mutation: add \"at most 50,000 code units\" to an approved spec);",
-    "values": [50000],
-    "reason": "limit register spec: names a registered value as an example or test; pending amendment (L10)"
-  },
-  {
-    "file": "docs/specs/SPEC-limit-register.md",
     "line": "the existing boundary tests (exact 50,000 body, 128/129 changes, 16,384-byte",
-    "values": [50000, 128, 16384],
+    "values": [128, 16384],
     "reason": "limit register spec: names a registered value as an example or test; pending amendment (L10)"
   },
   {
     "file": "docs/specs/SPEC-limit-register.md",
     "line": "config, 3,000-file listing).",
     "values": [3000],
-    "reason": "limit register spec: names a registered value as an example or test; pending amendment (L10)"
-  },
-  {
-    "file": "docs/specs/SPEC-limit-register.md",
-    "line": "its at-most-50,000 acceptance depends on the comment limit, which is chosen.",
-    "values": [50000],
-    "reason": "limit register spec: names a registered value as an example or test; pending amendment (L10)"
-  },
-  {
-    "file": "docs/specs/SPEC-limit-register.md",
-    "line": "instead of keeping 50,000.",
-    "values": [50000],
-    "reason": "limit register spec: names a registered value as an example or test; pending amendment (L10)"
-  },
-  {
-    "file": "docs/specs/SPEC-limit-register.md",
-    "line": "- Until the probe runs, the limit stays at 50,000, marked `unjustified`.",
-    "values": [50000],
-    "reason": "limit register spec: names a registered value as an example or test; pending amendment (L10)"
-  },
-  {
-    "file": "docs/specs/SPEC-limit-register.md",
-    "line": "50,000 code units), so that amendment needs its own approval.",
-    "values": [50000],
     "reason": "limit register spec: names a registered value as an example or test; pending amendment (L10)"
   },
   {

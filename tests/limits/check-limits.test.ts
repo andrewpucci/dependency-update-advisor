@@ -83,29 +83,29 @@ const SPECS = (text: string) => [{ file: SPEC, text }];
 
 test('a spec line stating a register value above the floor must be allowlisted', () => {
   for (const line of [
-    'The cap is at most 50,000 code units.',
-    'The cap is at most 50000 code units.',
-    'The cap is at most 50_000 code units.',
+    'The cap is at most 3,000 code units.',
+    'The cap is at most 3000 code units.',
+    'The cap is at most 3_000 code units.',
   ]) {
     expect(specProblems(REGISTER, FLOOR, SPECS(line), [])).toHaveLength(1);
   }
 });
 
 test('an allowlisted spec line with a register value passes', () => {
-  const line = 'The cap is at most 50,000 code units.';
-  const allowlist = [{ file: SPEC, line, values: [50_000], reason: 'test' }];
+  const line = 'The cap is at most 3,000 code units.';
+  const allowlist = [{ file: SPEC, line, values: [3_000], reason: 'test' }];
   expect(specProblems(REGISTER, FLOOR, SPECS(line), allowlist)).toEqual([]);
 });
 
 test('a register value at the spec floor, or a non-whole number, is not a problem', () => {
   expect(specProblems(REGISTER, FLOOR, SPECS('The cap is at most 64 items.'), [])).toEqual([]);
-  expect(specProblems(REGISTER, FLOOR, SPECS('Read 150,0001 bytes.'), [])).toEqual([]);
-  expect(specProblems(REGISTER, FLOOR, SPECS('Use v50000x here.'), [])).toEqual([]);
+  expect(specProblems(REGISTER, FLOOR, SPECS('Read 13,0001 bytes.'), [])).toEqual([]);
+  expect(specProblems(REGISTER, FLOOR, SPECS('Use v3000x here.'), [])).toEqual([]);
 });
 
 test('an allowlist entry that matches no spec line is a problem', () => {
   const allowlist = [
-    { file: SPEC, line: 'The cap is at most 50,000 code units.', values: [50_000], reason: 'test' },
+    { file: SPEC, line: 'The cap is at most 3,000 code units.', values: [3_000], reason: 'test' },
   ];
   const problems = specProblems(REGISTER, FLOOR, SPECS('No numbers on this line.'), allowlist);
   expect(problems).toEqual([expect.stringContaining('matches no spec line')]);
@@ -176,9 +176,9 @@ test('a timeout written through an alias or expression is a problem', () => {
 });
 
 test('only the unlisted line in a file with an allowlisted one is a problem', () => {
-  const text = 'Bodies hold at most 50,000 code units.\nPackets hold at most 128 changes.\n';
+  const text = 'Bodies hold at most 3,000 code units.\nPackets hold at most 128 changes.\n';
   const allowlist = [
-    { file: SPEC, line: 'Bodies hold at most 50,000 code units.', values: [50_000], reason: 'x' },
+    { file: SPEC, line: 'Bodies hold at most 3,000 code units.', values: [3_000], reason: 'x' },
   ];
   const problems = specProblems(REGISTER, FLOOR, [{ file: SPEC, text }], allowlist);
   expect(problems).toEqual([expect.stringContaining(`${SPEC}:2:`)]);
@@ -207,7 +207,7 @@ test('a unit only matches entries measured in that unit', () => {
 });
 
 test('issue references and URLs are not stated values', () => {
-  const text = 'Tracked in #50000 and https://example.com/pull/50000 and [x](https://e.com/128).\n';
+  const text = 'Tracked in #3000 and https://example.com/pull/3000 and [x](https://e.com/128).\n';
   expect(specProblems(REGISTER, FLOOR, [{ file: SPEC, text }], [])).toEqual([]);
 });
 

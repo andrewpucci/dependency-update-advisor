@@ -998,7 +998,10 @@ test('omits oversized optional assessment details with a visible notice', async 
   if (!records[0].assessment) throw new Error('assessment fixture');
   records[0] = {
     ...records[0],
-    assessment: { ...records[0].assessment, reason: { text: 'x'.repeat(50_000), references: [] } },
+    assessment: {
+      ...records[0].assessment,
+      reason: { text: 'x'.repeat(limit('comment.maxBodyCodeUnits')), references: [] },
+    },
   };
   const result = renderDecisionBrief({
     binding: input.inventory.packet.binding,
@@ -1011,12 +1014,12 @@ test('omits oversized optional assessment details with a visible notice', async 
   });
   expect(result.ok).toBe(true);
   if (!result.ok) throw new Error('render failed');
-  expect(result.body.length).toBeLessThanOrEqual(50_000);
+  expect(result.body.length).toBeLessThanOrEqual(limit('comment.maxBodyCodeUnits'));
   expect(result.body).toContain('omitted');
   expect(result.body).toContain('Decision coverage');
 });
 
-test('retains every unresolved action at exactly 50,000 string units and rejects overflow', async () => {
+test('retains every unresolved action at exactly the comment limit and rejects overflow', async () => {
   const { analysisScenario } = await import('../tests/parity/analysis.js');
   const { analyzeDecisionUnits } = await import('./analysis/batches.js');
   const { input } = await analysisScenario();
@@ -1056,11 +1059,11 @@ test('retains every unresolved action at exactly 50,000 string units and rejects
   };
   const baseline = renderDecisionBrief(make('é<'));
   if (!baseline.ok) throw new Error('render fixture');
-  const length = 50_000 - baseline.body.length + 1;
+  const length = limit('comment.maxBodyCodeUnits') - baseline.body.length + 1;
   const exact = renderDecisionBrief(make('é'.repeat(length) + '<'));
   expect(exact.ok).toBe(true);
   if (!exact.ok) throw new Error('exact boundary failed');
-  expect(exact.body.length).toBe(50_000);
+  expect(exact.body.length).toBe(limit('comment.maxBodyCodeUnits'));
   expect(exact.body).toContain('Decision queue');
   expect(exact.body).toContain('&lt;');
   expect(exact.body).toContain(`<!-- review-digest: ${'c'.repeat(64)} -->`);
@@ -1292,7 +1295,7 @@ test('retains the exact next action for assessed evidence gaps and relaxed advic
           ...record,
           assessment: {
             ...record.assessment,
-            reason: { text: 'x'.repeat(50_000), references: [] },
+            reason: { text: 'x'.repeat(limit('comment.maxBodyCodeUnits')), references: [] },
           },
         },
   );
@@ -2964,8 +2967,14 @@ test('keeps checked-none-found lines when optional detail is omitted', async () 
       0,
       270,
     );
-  const plain = await renderLargeInventory({ followups: 71 });
-  const pressured = await renderLargeInventory({ followups: 71, followupText });
+  // Two follow-ups per unit put the long-text body just over the comment limit.
+  const plain = await renderLargeInventory({ followups: 71, followupsPerUnit: 2 });
+  const pressured = await renderLargeInventory({
+    followups: 71,
+    followupsPerUnit: 2,
+    followupText,
+  });
+  expect(plain.body).not.toContain('Some lower-priority detail was omitted to fit the comment.');
   expect(pressured.body).toContain('Some lower-priority detail was omitted to fit the comment.');
   expect(checkedLinesOf(plain.body).length).toBeGreaterThan(0);
   expect(checkedLinesOf(pressured.body)).toEqual(checkedLinesOf(plain.body));
@@ -3215,7 +3224,7 @@ test('the irreducible boundary fixture returns size, not a rendered brief', asyn
     followupsPerUnit: 8,
     followupText,
   });
-  // Under the 50,000-code-unit limit, an oversized brief is reported as size; W2 maps this
+  // Under the comment limit, an oversized brief is reported as size; W2 maps this
   // to `render-size`, which src/pipeline.test.ts "hands a group too large to render off as a
   // failure that says so, never as a defect" pins for a real oversized brief.
   expect(renderDecisionBrief(scenario.render)).toMatchObject({ ok: false, category: 'size' });
