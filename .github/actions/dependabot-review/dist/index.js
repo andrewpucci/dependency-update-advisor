@@ -10108,6 +10108,18 @@ const DEFINITIONS = [
 		test: "src/pipeline.test.ts > the research quota reserve covers every GitHub read after research"
 	},
 	{
+		id: "research.githubQuota.retryMarginMs",
+		value: 1e3,
+		unit: "milliseconds",
+		protects: "Keeps a resend from reaching GitHub just before its quota resets when the runner's clock runs slightly ahead of GitHub's, which would waste the reader's only wait.",
+		basis: {
+			kind: "safety",
+			reason: "GitHub reports reset times in whole seconds, so the true reset can fall up to a second after the reported one; a second also covers ordinary clock skew between a synced runner and GitHub, while costing research little of its time."
+		},
+		effect: "A reader waits this long past the retry time before resending, and a wait fits only if the retry time, this margin, and one request timeout fit the time left.",
+		test: "src/evidence/github-quota.test.ts > waits past the retry time by the margin, so a skewed clock does not resend too early"
+	},
+	{
 		id: "research.githubQuota.waitsPerReader",
 		value: 1,
 		unit: "count",
@@ -12608,12 +12620,12 @@ function createGithubQuotaGuard(options) {
 	};
 }
 /**
-* Waits for `retryAt` when that time plus one request timeout fits in the time the reader has left,
-* and reports whether it waited. The wait ends early, with an error, when `signal` aborts.
+* Waits until `retryAt` plus a safety margin when that, plus one request timeout, fits in the time
+* the reader has left, and reports whether it waited. The wait ends early, with an error, when `signal` aborts.
 */
 async function waitForRetry(guard, retryAt, time) {
 	if (retryAt === null) return false;
-	const wait = Math.max(0, guard.msUntil(retryAt));
+	const wait = Math.max(0, guard.msUntil(retryAt)) + limit("research.githubQuota.retryMarginMs");
 	if (wait + time.requestTimeoutMs > time.remainingMs) return false;
 	await new Promise((resolve, reject) => {
 		if (time.signal?.aborted) return reject(/* @__PURE__ */ new Error("wait aborted"));
