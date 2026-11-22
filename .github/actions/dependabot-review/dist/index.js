@@ -12333,125 +12333,6 @@ function validateReviewPacket(candidate, trusted) {
 	}
 }
 
-// src/evidence/github-quota.ts
-const GITHUB_API = "https://api.github.com";
-/**
-* Set only on the guard's own synthetic refusal: the Unix-millisecond time it can be retried. It is
-* not a rate-limit header, so the guard never reads its own refusal as quota.
-*/
-const QUOTA_REFUSAL_RETRY_AT = "x-dependabot-review-retry-at";
-const DIGITS = /^\d+$/;
-function isGithub(url) {
-	try {
-		return new URL(url).origin === GITHUB_API;
-	} catch {
-		return false;
-	}
-}
-function count(value) {
-	if (value === null || !DIGITS.test(value)) return null;
-	const parsed = Number(value);
-	return Number.isSafeInteger(parsed) ? parsed : null;
-}
-function createGithubQuotaGuard(options) {
-	let window = null;
-	let refused = 0;
-	let latest = null;
-	const inWindow = (time) => {
-		const now = options.wallNow();
-		return time >= now && time <= now + options.windowMs;
-	};
-	const current = () => {
-		if (window && options.wallNow() >= window.reset) window = null;
-		return window;
-	};
-	return {
-		admit(url) {
-			if (!isGithub(url)) return { allowed: true };
-			const estimate = current();
-			if (!estimate) return { allowed: true };
-			if (estimate.remaining - estimate.started - 1 < options.reserve) {
-				refused += 1;
-				return {
-					allowed: false,
-					retryAt: estimate.reset
-				};
-			}
-			return { allowed: true };
-		},
-		started(url) {
-			if (!isGithub(url)) return;
-			const estimate = current();
-			if (estimate) estimate.started += 1;
-		},
-		observe(url, response) {
-			if (!isGithub(url)) return;
-			const resource = response.headers.get("x-ratelimit-resource");
-			if (resource !== null && resource !== "core") return;
-			const remaining = count(response.headers.get("x-ratelimit-remaining"));
-			const resetSeconds = count(response.headers.get("x-ratelimit-reset"));
-			if (remaining === null || resetSeconds === null) return;
-			const reset = resetSeconds * DURATION_MS.second;
-			const now = options.wallNow();
-			if (reset <= now || reset > now + options.windowMs) return;
-			const estimate = current();
-			if (estimate && reset < estimate.reset) return;
-			if (estimate && reset === estimate.reset) {
-				if (remaining > estimate.remaining - estimate.started) return;
-			}
-			window = {
-				reset,
-				remaining,
-				started: 0
-			};
-		},
-		refusals: () => refused,
-		retryAt(response) {
-			const refused = count(response.headers.get(QUOTA_REFUSAL_RETRY_AT));
-			if (refused !== null) return inWindow(refused) ? refused : null;
-			const after = count(response.headers.get("retry-after"));
-			if (after !== null) {
-				const time = options.wallNow() + after * DURATION_MS.second;
-				return inWindow(time) ? time : null;
-			}
-			const remaining = response.headers.get("x-ratelimit-remaining");
-			const reset = count(response.headers.get("x-ratelimit-reset"));
-			if (remaining === "0" && reset !== null) {
-				const time = reset * DURATION_MS.second;
-				return inWindow(time) ? time : null;
-			}
-			return null;
-		},
-		msUntil: (retryAt) => retryAt - options.wallNow(),
-		recordStop(retryAt) {
-			if (retryAt !== null && (latest === null || retryAt > latest)) latest = retryAt;
-		},
-		latestRetryAt: () => latest
-	};
-}
-/**
-* Waits for `retryAt` when that time plus one request timeout fits in the time the reader has left,
-* and reports whether it waited. The wait ends early, with an error, when `signal` aborts.
-*/
-async function waitForRetry(guard, retryAt, time) {
-	if (retryAt === null) return false;
-	const wait = Math.max(0, guard.msUntil(retryAt));
-	if (wait + time.requestTimeoutMs > time.remainingMs) return false;
-	await new Promise((resolve, reject) => {
-		if (time.signal?.aborted) return reject(/* @__PURE__ */ new Error("wait aborted"));
-		const timer = setTimeout(() => {
-			time.signal?.removeEventListener("abort", abort);
-			resolve();
-		}, wait);
-		const abort = () => {
-			clearTimeout(timer);
-			reject(/* @__PURE__ */ new Error("wait aborted"));
-		};
-		time.signal?.addEventListener("abort", abort, { once: true });
-	});
-	return true;
-}
-
 // src/evidence/common.ts
 /** Plain data only: no proxy, foreign prototype, accessor, symbol, or prototype-shaped key. */
 function isPlainObject(value) {
@@ -12564,16 +12445,10 @@ function answeredLocally(deps, key, url) {
 		cached: true
 	};
 	const admission = deps.quota?.admit(url);
-	if (admission && !admission.allowed) {
-		const headers = admission.retryAt === null ? void 0 : { [QUOTA_REFUSAL_RETRY_AT]: String(admission.retryAt) };
-		return {
-			response: new Response(null, {
-				status: HTTP_STATUS.tooManyRequests,
-				headers
-			}),
-			cached: false
-		};
-	}
+	if (admission && !admission.allowed) return {
+		response: admission.response,
+		cached: false
+	};
 	return null;
 }
 /**
@@ -12630,6 +12505,129 @@ async function boundedGet(deps, request, onCancel, consume) {
 		controller.abort();
 		if (response?.body && !response.body.locked) response.body.cancel().catch(() => {});
 	}
+}
+
+// src/evidence/github-quota.ts
+/** The GitHub REST API origin: the only host whose rate-limit headers the guard reads. */
+const GITHUB_API_ORIGIN = "https://api.github.com";
+const DIGITS = /^\d+$/;
+/** Whether `url` is on the GitHub REST API, the one host whose quota research guards and waits on. */
+function isGithubApi(url) {
+	try {
+		return new URL(url).origin === GITHUB_API_ORIGIN;
+	} catch {
+		return false;
+	}
+}
+function count(value) {
+	if (value === null || !DIGITS.test(value)) return null;
+	const parsed = Number(value);
+	return Number.isSafeInteger(parsed) ? parsed : null;
+}
+function createGithubQuotaGuard(options) {
+	let window = null;
+	let refused = 0;
+	/** The guard's own refusals and their retry times; no other response can stand in for one. */
+	const ownRefusals = /* @__PURE__ */ new WeakMap();
+	let latest = null;
+	const inWindow = (time) => {
+		const now = options.wallNow();
+		return time >= now && time <= now + options.windowMs;
+	};
+	const current = () => {
+		if (window && options.wallNow() >= window.reset) window = null;
+		return window;
+	};
+	return {
+		admit(url) {
+			if (!isGithubApi(url)) return { allowed: true };
+			const estimate = current();
+			if (!estimate) return { allowed: true };
+			if (estimate.remaining - estimate.started - 1 < options.reserve) {
+				refused += 1;
+				const response = new Response(null, { status: HTTP_STATUS.tooManyRequests });
+				ownRefusals.set(response, estimate.reset);
+				return {
+					allowed: false,
+					retryAt: estimate.reset,
+					response
+				};
+			}
+			return { allowed: true };
+		},
+		started(url) {
+			if (!isGithubApi(url)) return;
+			const estimate = current();
+			if (estimate) estimate.started += 1;
+		},
+		observe(url, response) {
+			if (!isGithubApi(url)) return;
+			const resource = response.headers.get("x-ratelimit-resource");
+			if (resource !== null && resource !== "core") return;
+			const remaining = count(response.headers.get("x-ratelimit-remaining"));
+			const resetSeconds = count(response.headers.get("x-ratelimit-reset"));
+			if (remaining === null || resetSeconds === null) return;
+			const reset = resetSeconds * DURATION_MS.second;
+			const now = options.wallNow();
+			if (reset <= now || reset > now + options.windowMs) return;
+			const estimate = current();
+			if (estimate && reset < estimate.reset) return;
+			if (estimate && reset === estimate.reset) {
+				if (remaining > estimate.remaining - estimate.started) return;
+			}
+			window = {
+				reset,
+				remaining,
+				started: 0
+			};
+		},
+		refusals: () => refused,
+		retryAt(response) {
+			if (ownRefusals.has(response)) {
+				const own = ownRefusals.get(response) ?? null;
+				return own !== null && inWindow(own) ? own : null;
+			}
+			const after = count(response.headers.get("retry-after"));
+			if (after !== null) {
+				const time = options.wallNow() + after * DURATION_MS.second;
+				return inWindow(time) ? time : null;
+			}
+			const remaining = response.headers.get("x-ratelimit-remaining");
+			const reset = count(response.headers.get("x-ratelimit-reset"));
+			if (remaining === "0" && reset !== null) {
+				const time = reset * DURATION_MS.second;
+				return inWindow(time) ? time : null;
+			}
+			return null;
+		},
+		msUntil: (retryAt) => retryAt - options.wallNow(),
+		recordStop(retryAt) {
+			if (retryAt !== null && (latest === null || retryAt > latest)) latest = retryAt;
+		},
+		latestRetryAt: () => latest
+	};
+}
+/**
+* Waits for `retryAt` when that time plus one request timeout fits in the time the reader has left,
+* and reports whether it waited. The wait ends early, with an error, when `signal` aborts.
+*/
+async function waitForRetry(guard, retryAt, time) {
+	if (retryAt === null) return false;
+	const wait = Math.max(0, guard.msUntil(retryAt));
+	if (wait + time.requestTimeoutMs > time.remainingMs) return false;
+	await new Promise((resolve, reject) => {
+		if (time.signal?.aborted) return reject(/* @__PURE__ */ new Error("wait aborted"));
+		const timer = setTimeout(() => {
+			time.signal?.removeEventListener("abort", abort);
+			resolve();
+		}, wait);
+		const abort = () => {
+			clearTimeout(timer);
+			reject(/* @__PURE__ */ new Error("wait aborted"));
+		};
+		time.signal?.addEventListener("abort", abort, { once: true });
+	});
+	return true;
 }
 
 // src/evidence/advisory-read.ts
@@ -14959,7 +14957,6 @@ function interpretNpmLifecycle(change, input) {
 }
 
 // src/evidence/upstream-read.ts
-const GITHUB_API_ORIGIN = "https://api.github.com";
 /** Each halving of the register's release page size down to 1, for the page-size retry ladder. */
 function halvingFrom(start) {
 	const sizes = [];
@@ -15257,7 +15254,7 @@ var Reader = class {
 		const response = this.rateLimited;
 		const origin = new URL(url).origin;
 		if (!quota || !response || upstreamFailureReason(error) !== "rate_limit") return false;
-		if (origin !== GITHUB_API_ORIGIN) return false;
+		if (!isGithubApi(url)) return false;
 		const retryAt = quota.retryAt(response);
 		if (!(this.waits < limit("research.githubQuota.waitsPerReader") && await waitForRetry(quota, retryAt, {
 			remainingMs: this.timeLeft(),
@@ -15285,14 +15282,14 @@ var Reader = class {
 		this.blocked.add(new URL(url).origin);
 		this.rateLimited = response;
 	}
-	async fetchOnce(url, _init) {
+	async fetchOnce(url, init) {
 		this.rateLimited = null;
 		this.dispatch(url);
 		return await boundedGet(this.deps, {
 			url,
 			accept: "application/json",
 			timeoutMs: Math.min(this.remaining(), this.limits.requestTimeoutMs),
-			signal: _init.signal ?? void 0,
+			signal: init.signal ?? void 0,
 			charge: () => this.charge()
 		}, (cancel) => {
 			this.active = cancel;
