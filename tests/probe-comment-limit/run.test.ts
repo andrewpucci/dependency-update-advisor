@@ -34,6 +34,8 @@ type FakeOptions = {
   failMessage?: string;
   /** The maximum the too-long message states, when it differs from the real limit. */
   statedLimit?: number;
+  /** The token's user; it differs from the owner so redaction of each is tested apart. */
+  login?: string;
   /** Answer too-long as GitHub did live: a bare string error with no body field. */
   bareErrors?: boolean;
 };
@@ -63,7 +65,7 @@ function fakeGitHub(options: FakeOptions = {}) {
       };
     if (method === 'GET' && path === '/user')
       return options.userStatus === undefined
-        ? { status: 200, data: { login: 'tester' } }
+        ? { status: 200, data: { login: options.login ?? 'tester' } }
         : { status: options.userStatus, data: { message: 'Resource not accessible' } };
     if (method === 'GET' && path.startsWith('/repos/tester/scratch/issues/7/comments'))
       return options.listStatus === undefined
@@ -74,7 +76,7 @@ function fakeGitHub(options: FakeOptions = {}) {
       if (posts === options.failCreate) throw new Error(options.failMessage ?? 'socket hang up');
       const text = String(body?.body);
       if (counts(text)['code units'] > limit) return { status: 422, data: tooLong };
-      const comment = { id: nextId++, body: text, user: { login: 'tester' } };
+      const comment = { id: nextId++, body: text, user: { login: options.login ?? 'tester' } };
       comments.set(comment.id, comment);
       if (posts === options.loseCreate) throw new Error('timeout');
       return { status: 201, data: comment };
@@ -346,21 +348,26 @@ test('the register write cap covers the longest run from the register first body
 });
 
 test('a 422 detail that names the repository or the user is redacted in the result', async () => {
-  const github = fakeGitHub();
+  // The login differs from the owner, and each name appears on its own, so each is redacted apart.
+  const github = fakeGitHub({ login: 'prober' });
   const http: Http = async (method, path, body) =>
     method === 'POST'
       ? {
           status: 422,
-          data: { message: 'Validation Failed', errors: ['tester/scratch rejected it for Tester'] },
+          data: {
+            message: 'Validation Failed',
+            errors: ['tester/scratch rejected it', 'owner Tester, repo Scratch, user Prober'],
+          },
         }
       : github.http(method, path, body);
   const result = await probe(ARGV, ENV, deps(http));
   const printed = JSON.parse(result.output) as { writes: { detail?: string[] }[] };
   expect(printed.writes[0]?.detail).toEqual([
     'Validation Failed',
-    '<redacted> rejected it for <redacted>',
+    '<redacted> rejected it',
+    'owner <redacted>, repo <redacted>, user <redacted>',
   ]);
-  for (const secret of ['tester', 'scratch', TOKEN])
+  for (const secret of ['tester', 'scratch', 'prober', TOKEN])
     expect(result.output.toLowerCase(), secret).not.toContain(secret.toLowerCase());
 });
 
