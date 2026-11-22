@@ -1,16 +1,13 @@
-import { DURATION_MS } from '../format.js';
+import { DURATION_MS, HTTP_STATUS } from '../format.js';
 
-const GITHUB_API = 'https://api.github.com';
-/**
- * Set only on the guard's own synthetic refusal: the Unix-millisecond time it can be retried. It is
- * not a rate-limit header, so the guard never reads its own refusal as quota.
- */
-export const QUOTA_REFUSAL_RETRY_AT = 'x-dependabot-review-retry-at';
+/** The GitHub REST API origin: the only host whose rate-limit headers the guard reads. */
+export const GITHUB_API_ORIGIN = 'https://api.github.com';
 const DIGITS = /^\d+$/;
 
 export type QuotaAdmission =
   | Readonly<{ allowed: true }>
-  | Readonly<{ allowed: false; retryAt: number | null }>;
+  /** `response` is the guard's own header-less 429; only the guard knows its retry time. */
+  | Readonly<{ allowed: false; retryAt: number | null; response: Response }>;
 
 /**
  * The run's guard on research's GitHub requests. It follows the quota GitHub reports, so research
@@ -51,9 +48,10 @@ export type GithubQuotaOptions = Readonly<{
   windowMs: number;
 }>;
 
-function isGithub(url: string): boolean {
+/** Whether `url` is on the GitHub REST API, the one host whose quota research guards and waits on. */
+export function isGithubApi(url: string): boolean {
   try {
-    return new URL(url).origin === GITHUB_API;
+    return new URL(url).origin === GITHUB_API_ORIGIN;
   } catch {
     return false;
   }
@@ -68,6 +66,8 @@ function count(value: string | null): number | null {
 export function createGithubQuotaGuard(options: GithubQuotaOptions): GithubQuotaGuard {
   let window: { reset: number; remaining: number; started: number } | null = null;
   let refused = 0;
+  /** The guard's own refusals and their retry times; no other response can stand in for one. */
+  const ownRefusals = new WeakMap<Response, number | null>();
   let latest: number | null = null;
   const inWindow = (time: number) => {
     const now = options.wallNow();
@@ -79,22 +79,24 @@ export function createGithubQuotaGuard(options: GithubQuotaOptions): GithubQuota
   };
   return {
     admit(url) {
-      if (!isGithub(url)) return { allowed: true };
+      if (!isGithubApi(url)) return { allowed: true };
       const estimate = current();
       if (!estimate) return { allowed: true };
       if (estimate.remaining - estimate.started - 1 < options.reserve) {
         refused += 1;
-        return { allowed: false, retryAt: estimate.reset };
+        const response = new Response(null, { status: HTTP_STATUS.tooManyRequests });
+        ownRefusals.set(response, estimate.reset);
+        return { allowed: false, retryAt: estimate.reset, response };
       }
       return { allowed: true };
     },
     started(url) {
-      if (!isGithub(url)) return;
+      if (!isGithubApi(url)) return;
       const estimate = current();
       if (estimate) estimate.started += 1;
     },
     observe(url, response) {
-      if (!isGithub(url)) return;
+      if (!isGithubApi(url)) return;
       const resource = response.headers.get('x-ratelimit-resource');
       if (resource !== null && resource !== 'core') return;
       const remaining = count(response.headers.get('x-ratelimit-remaining'));
@@ -112,8 +114,10 @@ export function createGithubQuotaGuard(options: GithubQuotaOptions): GithubQuota
     },
     refusals: () => refused,
     retryAt(response) {
-      const refused = count(response.headers.get(QUOTA_REFUSAL_RETRY_AT));
-      if (refused !== null) return inWindow(refused) ? refused : null;
+      if (ownRefusals.has(response)) {
+        const own = ownRefusals.get(response) ?? null;
+        return own !== null && inWindow(own) ? own : null;
+      }
       const after = count(response.headers.get('retry-after'));
       if (after !== null) {
         const time = options.wallNow() + after * DURATION_MS.second;

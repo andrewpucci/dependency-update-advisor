@@ -1,7 +1,7 @@
 import { describe, expect, test, vi } from 'vite-plus/test';
 import { AdvisoryFailure } from './advisory-read.js';
 import { boundedGet } from './bounded-request.js';
-import { createGithubQuotaGuard, QUOTA_REFUSAL_RETRY_AT } from './github-quota.js';
+import { createGithubQuotaGuard } from './github-quota.js';
 import { createNpmPublishTimeReader } from './npm-publish-times.js';
 import { createPolicySignalReader } from './policy-signals-read.js';
 import { createResearchCache } from './research-cache.js';
@@ -365,7 +365,13 @@ describe('research GitHub quota seam', () => {
       quota: {
         admit: (target: string) => (
           admitted.push(target),
-          allowed ? { allowed: true as const } : { allowed: false as const, retryAt: null }
+          allowed
+            ? { allowed: true as const }
+            : {
+                allowed: false as const,
+                retryAt: null,
+                response: new Response(null, { status: 429 }),
+              }
         ),
         observe: (_target: string, response: Response) => void observed.push(response),
         refusals: () => 0,
@@ -476,7 +482,7 @@ test('the guard reads the quota from an error response too', async () => {
   expect(fetches).toBe(1);
 });
 
-test("a refusal carries the guard's retry time, not a rate-limit header", async () => {
+test("a refusal is the guard's own response and carries its retry time without any header", async () => {
   const wall = Date.UTC(2026, 10, 21);
   const quota = createGithubQuotaGuard({ reserve: 5, wallNow: () => wall, windowMs: 3_600_000 });
   quota.observe(
@@ -496,7 +502,7 @@ test("a refusal carries the guard's retry time, not a rate-limit header", async 
     async (response) => void (refusal = response),
   );
   expect(refusal?.status).toBe(429);
-  expect(refusal?.headers.get(QUOTA_REFUSAL_RETRY_AT)).toBe(String(wall + 90_000));
+  expect([...(refusal?.headers.keys() ?? [])]).toEqual([]);
   expect(refusal && quota.retryAt(refusal)).toBe(wall + 90_000);
 });
 

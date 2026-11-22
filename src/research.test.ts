@@ -577,7 +577,8 @@ test('uses an injected quota guard for every research GitHub request', async () 
   const quota = {
     admit: (url: string) =>
       new URL(url).host === 'api.github.com'
-        ? (admitted.push(url), { allowed: false as const, retryAt: null })
+        ? (admitted.push(url),
+          { allowed: false as const, retryAt: null, response: new Response(null, { status: 429 }) })
         : { allowed: true as const },
     observe: () => {},
     refusals: () => admitted.length,

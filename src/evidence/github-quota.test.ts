@@ -1,5 +1,5 @@
 import { expect, test, vi } from 'vite-plus/test';
-import { createGithubQuotaGuard, QUOTA_REFUSAL_RETRY_AT, waitForRetry } from './github-quota.js';
+import { createGithubQuotaGuard, waitForRetry } from './github-quota.js';
 import { limit } from '../limits.js';
 
 const API = 'https://api.github.com/repos/o/r/releases';
@@ -42,7 +42,7 @@ test('refuses the GitHub request that would bring the estimate below the reserve
   guard.observe(API, rateLimited('10', WALL + 2 * MINUTE));
   // Estimates 10, 9, 8, 7, 6 each leave at least the reserve of 5 after the request.
   expect(admitUntilRefused(guard)).toBe(5);
-  expect(guard.admit(API)).toEqual({ allowed: false, retryAt: WALL + 2 * MINUTE });
+  expect(guard.admit(API)).toMatchObject({ allowed: false, retryAt: WALL + 2 * MINUTE });
 });
 
 test('with no estimate yet, admits every request', () => {
@@ -88,7 +88,7 @@ test('judges a reset on the wall clock: past or beyond the window is ignored', (
   guard.observe(API, rateLimited('0', WALL + 2 * HOUR));
   expect(guard.admit(API).allowed).toBe(true);
   guard.observe(API, rateLimited('0', WALL + 2 * MINUTE));
-  expect(guard.admit(API)).toEqual({ allowed: false, retryAt: WALL + 2 * MINUTE });
+  expect(guard.admit(API)).toMatchObject({ allowed: false, retryAt: WALL + 2 * MINUTE });
 });
 
 test('keeps the lowest remaining in a window and starts a new window on a later reset', () => {
@@ -166,9 +166,13 @@ test('takes a retry time from retry-after, a spent reset, or its own window', ()
   expect(guard.retryAt(limited({}))).toBeNull();
   guard.observe(API, rateLimited('5', WALL + 3 * MINUTE));
   expect(guard.retryAt(new Response(null, { status: 429 }))).toBeNull();
-  // The guard's own refusal carries its time explicitly.
-  const refusal = limited({ [QUOTA_REFUSAL_RETRY_AT]: String(WALL + 3 * MINUTE) });
-  expect(guard.retryAt(refusal)).toBe(WALL + 3 * MINUTE);
+  // The guard's own refusal carries its time; a look-alike from anywhere else does not.
+  const refused = guard.admit(API);
+  if (refused.allowed) throw new Error('expected a refusal');
+  expect(guard.retryAt(refused.response)).toBe(WALL + 3 * MINUTE);
+  expect(
+    guard.retryAt(limited({ 'x-dependabot-review-retry-at': String(WALL + MINUTE) })),
+  ).toBeNull();
 });
 
 test('a spent quota whose reset has already passed gives no retry time', () => {

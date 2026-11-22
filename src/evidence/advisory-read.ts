@@ -1,8 +1,8 @@
-import { waitForRetry, type GithubQuotaGuard } from './github-quota.js';
 import { types } from 'node:util';
 import { PACKET_LIMITS, type EvidenceReason, type EvidenceStatus } from '../schema.js';
 import { freeze, isPlainObject } from './common.js';
 import { BoundedClock, boundedGet } from './bounded-request.js';
+import { waitForRetry, type GithubQuotaGuard } from './github-quota.js';
 import type { ResearchCache } from './research-cache.js';
 import { HTTP_STATUS } from '../format.js';
 import { limit } from '../limits.js';
@@ -50,7 +50,8 @@ type Dependencies = {
   fetch: (url: string, init: RequestInit) => Promise<Response>;
   now: () => number;
   signal?: AbortSignal;
-  cache?: ResearchCache /** The run's research GitHub quota guard; absent outside research. */;
+  cache?: ResearchCache;
+  /** The run's research GitHub quota guard; absent outside research. */
   quota?: GithubQuotaGuard;
 };
 export class AdvisoryFailure extends Error {

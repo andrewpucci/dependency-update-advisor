@@ -1,4 +1,5 @@
 import { AsyncLocalStorage } from 'node:async_hooks';
+import { isGithubApi } from '../evidence/github-quota.js';
 import { limit } from '../limits.js';
 import type { ResearchObservation, ResearchStage } from '../research.js';
 
@@ -52,7 +53,6 @@ const shareStore = new AsyncLocalStorage<string>();
 const UNATTRIBUTED = 'unattributed';
 const CENSORING_REASONS: readonly (string | null)[] = ['budget', 'timeout', 'rate_limit'];
 const RESEARCH_PHASES: readonly DemandPhase[] = ['upstream', 'advisories', 'signals'];
-const GITHUB_API_HOST = 'api.github.com';
 const DIGITS = /^\d+$/;
 
 /**
@@ -167,7 +167,7 @@ export function createDemandRecorder(now: () => number): {
       }
       const ms = now() - startedAt;
       const remaining = response.headers.get('x-ratelimit-remaining');
-      if (sampleBase.host === GITHUB_API_HOST && remaining !== null && DIGITS.test(remaining))
+      if (isGithubApi(url) && remaining !== null && DIGITS.test(remaining))
         lastRemaining = Number(remaining);
       const bytes = (await response.clone().arrayBuffer()).byteLength;
       samples.push({ ...sampleBase, status: String(response.status), bytes, ms });
@@ -203,7 +203,7 @@ export function createDemandRecorder(now: () => number): {
       units,
       github: {
         researchRequests: samples.filter(
-          (sample) => sample.host === GITHUB_API_HOST && RESEARCH_PHASES.includes(sample.phase),
+          (sample) => isGithubApi(sample.url) && RESEARCH_PHASES.includes(sample.phase),
         ).length,
         ceiling: limit('research.githubQuota.researchCeiling'),
         refusals: quota?.refusals() ?? 0,

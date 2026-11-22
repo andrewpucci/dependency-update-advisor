@@ -1,14 +1,17 @@
-import { waitForRetry, type GithubQuotaGuard } from './github-quota.js';
 import { createNpmRegistryReader } from './npm-registry.js';
 import { copyAdvisoryData, AdvisoryFailure, type AdvisoryLimits } from './advisory-read.js';
 import { freeze, isPlainObject, isEvidencePath } from './common.js';
 import type { EvidenceReason, PackageSource } from '../schema.js';
 import { BoundedClock, boundedGet } from './bounded-request.js';
+import {
+  GITHUB_API_ORIGIN,
+  isGithubApi,
+  waitForRetry,
+  type GithubQuotaGuard,
+} from './github-quota.js';
 import type { ResearchCache } from './research-cache.js';
 import { limit } from '../limits.js';
 import { HTTP_STATUS } from '../format.js';
-
-const GITHUB_API_ORIGIN = 'https://api.github.com';
 
 /** Each halving of the register's release page size down to 1, for the page-size retry ladder. */
 function halvingFrom(start: number): number[] {
@@ -83,7 +86,8 @@ export type UpstreamDependencies = {
   fetch: (url: string, init: RequestInit) => Promise<Response>;
   now: () => number;
   signal?: AbortSignal;
-  cache?: ResearchCache /** The run's research GitHub quota guard; absent outside research. */;
+  cache?: ResearchCache;
+  /** The run's research GitHub quota guard; absent outside research. */
   quota?: GithubQuotaGuard;
 };
 export class UpstreamFailure extends Error {
@@ -437,7 +441,7 @@ class Reader {
     const response = this.rateLimited;
     const origin = new URL(url).origin;
     if (!quota || !response || upstreamFailureReason(error) !== 'rate_limit') return false;
-    if (origin !== GITHUB_API_ORIGIN) return false;
+    if (!isGithubApi(url)) return false;
     const retryAt = quota.retryAt(response);
     const fits =
       this.waits < limit('research.githubQuota.waitsPerReader') &&
@@ -470,7 +474,7 @@ class Reader {
     this.blocked.add(new URL(url).origin);
     this.rateLimited = response;
   }
-  private async fetchOnce(url: string, _init: RequestInit): Promise<Response> {
+  private async fetchOnce(url: string, init: RequestInit): Promise<Response> {
     this.rateLimited = null;
     this.dispatch(url);
     return await boundedGet(
@@ -479,7 +483,7 @@ class Reader {
         url,
         accept: 'application/json',
         timeoutMs: Math.min(this.remaining(), this.limits.requestTimeoutMs),
-        signal: _init.signal ?? undefined,
+        signal: init.signal ?? undefined,
         charge: () => this.charge(),
       },
       (cancel) => {
