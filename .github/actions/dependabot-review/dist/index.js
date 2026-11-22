@@ -25150,13 +25150,35 @@ function researchShareUnits(changes) {
 		}
 	};
 }
+const PLAIN_DECIMAL = /^\d+(?:\.\d+)?$/u;
+const DECIMAL_BASE = BigInt(10);
+/** A non-negative parameter as an exact decimal: its digits and how many are after the point. */
+function exactDecimal(name, value) {
+	const written = String(value);
+	if (!Number.isFinite(value) || !PLAIN_DECIMAL.test(written)) throw new Error(`invalid share parameter: ${name}`);
+	const [whole, fraction = ""] = written.split(".");
+	return {
+		digits: BigInt(whole + fraction),
+		places: fraction.length
+	};
+}
+/**
+* `base + Σ rate × count`, rounded up, computed on exact decimals so a rate such as 1.1 never
+* picks up a binary rounding error that would push the share over a whole number.
+*/
 function scaled(parameters, units, eligible, floor) {
-	let total = parameters.base;
-	for (const [unit, rate] of Object.entries(parameters.rates)) {
-		if (!Number.isFinite(rate) || rate < 0) throw new Error(`invalid share parameter: ${unit}`);
-		total += rate * (unit === "eligible" ? eligible : units[unit]);
-	}
-	return Math.min(parameters.ceiling, Math.max(floor, Math.ceil(total)));
+	const terms = [{
+		...exactDecimal("base", parameters.base),
+		count: 1n
+	}, ...Object.entries(parameters.rates).map(([unit, rate]) => ({
+		...exactDecimal(unit, rate ?? 0),
+		count: BigInt(unit === "eligible" ? eligible : units[unit])
+	}))];
+	const places = Math.max(...terms.map((term) => term.places));
+	const scale = DECIMAL_BASE ** BigInt(places);
+	const numerator = terms.reduce((sum, term) => sum + term.digits * term.count * DECIMAL_BASE ** BigInt(places - term.places), 0n);
+	const total = Number((numerator + scale - 1n) / scale);
+	return Math.min(parameters.ceiling, Math.max(floor, total));
 }
 function share(parameters, units, eligible = 0) {
 	const responseFloor = Math.min(EVIDENCE_READ_ENVELOPE.maxResponseBytes, parameters.bytes.ceiling);
