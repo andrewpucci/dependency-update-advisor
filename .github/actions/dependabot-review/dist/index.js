@@ -12335,6 +12335,11 @@ function validateReviewPacket(candidate, trusted) {
 
 // src/evidence/github-quota.ts
 const GITHUB_API = "https://api.github.com";
+/**
+* Set only on the guard's own synthetic refusal: the Unix-millisecond time it can be retried. It is
+* not a rate-limit header, so the guard never reads its own refusal as quota.
+*/
+const QUOTA_REFUSAL_RETRY_AT = "x-dependabot-review-retry-at";
 const DIGITS = /^\d+$/;
 function isGithub(url) {
 	try {
@@ -12398,6 +12403,8 @@ function createGithubQuotaGuard(options) {
 		},
 		refusals: () => refused,
 		retryAt(response) {
+			const refused = count(response.headers.get(QUOTA_REFUSAL_RETRY_AT));
+			if (refused !== null) return inWindow(refused) ? refused : null;
 			const after = count(response.headers.get("retry-after"));
 			if (after !== null) {
 				const time = options.wallNow() + after * DURATION_MS.second;
@@ -12409,7 +12416,6 @@ function createGithubQuotaGuard(options) {
 				const time = reset * DURATION_MS.second;
 				return inWindow(time) ? time : null;
 			}
-			if (remaining === null && reset === null) return current()?.reset ?? null;
 			return null;
 		},
 		msUntil: (retryAt) => retryAt - options.wallNow(),
@@ -12553,10 +12559,17 @@ function answeredLocally(deps, key, url) {
 		response: hit,
 		cached: true
 	};
-	if (deps.quota && !deps.quota.admit(url).allowed) return {
-		response: new Response(null, { status: HTTP_STATUS.tooManyRequests }),
-		cached: false
-	};
+	const admission = deps.quota?.admit(url);
+	if (admission && !admission.allowed) {
+		const headers = admission.retryAt === null ? void 0 : { [QUOTA_REFUSAL_RETRY_AT]: String(admission.retryAt) };
+		return {
+			response: new Response(null, {
+				status: HTTP_STATUS.tooManyRequests,
+				headers
+			}),
+			cached: false
+		};
+	}
 	return null;
 }
 /**
@@ -31944,7 +31957,7 @@ function reconcilePacket(input) {
 			findings: collectedFindings,
 			relationships: collected.relationships,
 			reachability: collected.reachability,
-			retryAfter: collected.retryAfter
+			retryAfter: input.enriched.retryAfter ?? collected.retryAfter
 		}, input.trusted);
 		return {
 			packet: result.ok ? result.packet : collected,
