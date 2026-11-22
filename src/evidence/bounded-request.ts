@@ -110,6 +110,21 @@ async function remember(
   return Promise.race([cache.store(key, response), aborted]);
 }
 /**
+ * A response that needs no request: a cache hit, or the quota guard's refusal. A refusal is never
+ * sent or charged, and carries no rate-limit headers for the guard to read.
+ */
+function answeredLocally(
+  deps: BoundedDependencies,
+  key: string | undefined,
+  url: string,
+): { response: Response; cached: boolean } | null {
+  const hit = key === undefined ? undefined : deps.cache?.lookup(key);
+  if (hit) return { response: hit, cached: true };
+  if (deps.quota && !deps.quota.admit(url).allowed)
+    return { response: new Response(null, { status: HTTP_STATUS.tooManyRequests }), cached: false };
+  return null;
+}
+/**
  * One credential-free GET, or a POST of a fixed `json` body, raced against its timeout, the
  * caller's signal, and `onCancel` (registered for the reader's close). Every exit aborts the
  * request and releases its body.
@@ -145,15 +160,8 @@ export async function boundedGet<T>(
     if (post) headers['content-type'] = 'application/json';
     const body = post ? JSON.stringify(request.json) : undefined;
     const key = deps.cache?.key(post ? 'POST' : 'GET', request.url, headers, body);
-    const hit = key === undefined ? undefined : deps.cache?.lookup(key);
-    if (hit) return await consume(hit, aborted, true);
-    // A refusal is never sent or charged; it carries no rate-limit headers for the guard to read.
-    if (deps.quota && !deps.quota.admit(request.url).allowed)
-      return await consume(
-        new Response(null, { status: HTTP_STATUS.tooManyRequests }),
-        aborted,
-        false,
-      );
+    const local = answeredLocally(deps, key, request.url);
+    if (local) return await consume(local.response, aborted, local.cached);
     request.charge?.();
     const pending = deps.fetch(request.url, {
       method: post ? 'POST' : 'GET',
