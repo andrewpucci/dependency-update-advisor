@@ -3,8 +3,25 @@ export type LimitUnit = 'bytes' | 'code units' | 'milliseconds' | 'minutes' | 'c
 /** Marks a field the migration has not filled yet; none may remain after phase 2. */
 export const PENDING_AUDIT = 'pending: L7 audit';
 
+/** How a probed platform figure is reproduced; it never names the probed repository. */
+export type ExternalProbe = {
+  /** `npm run <script>` alone: the arguments name the test repository. */
+  command: string;
+  /** Visibility and owner type, such as "private, user-owned, github.com". */
+  repositoryType: string;
+};
+
 export type LimitBasis =
-  | { kind: 'external'; url: string; checked: string; platformValue: number; margin: string }
+  | {
+      kind: 'external';
+      /** The page that states the figure, or the public probe record for a probed one. */
+      url: string;
+      /** `YYYY-MM-DD` (UTC) on which the page was read or the probe was run. */
+      checked: string;
+      platformValue: number;
+      margin: string;
+      probe?: ExternalProbe;
+    }
   | {
       kind: 'derived';
       inputs: readonly string[];

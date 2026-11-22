@@ -165,6 +165,115 @@ test('checkRegister rejects a value that is not a finite number', () => {
     ]);
 });
 
+const PACKAGE_SCRIPTS = Object.keys(
+  (
+    JSON.parse(
+      readFileSync(fileURLToPath(new URL('../package.json', import.meta.url)), 'utf8'),
+    ) as {
+      scripts: Record<string, string>;
+    }
+  ).scripts,
+);
+
+/** Today's date in UTC, so the check does not depend on the runner's time zone. */
+const utcToday = (): string => new Date().toISOString().slice(0, 10);
+
+function isRealDate(text: string): boolean {
+  const match = /^(\d{4})-(\d{2})-(\d{2})$/.exec(text);
+  if (!match) return false;
+  const [, year, month, day] = match.map(Number);
+  const date = new Date(Date.UTC(year, month - 1, day));
+  return date.toISOString().slice(0, 10) === text;
+}
+
+/**
+ * Spec A1: an external entry's citation is checkable. This runs only here, never when the
+ * register loads, because the date check reads the clock.
+ */
+function externalProblems(
+  entries: readonly LimitDefinition[],
+  today: string,
+  scripts: readonly string[],
+): string[] {
+  return entries.flatMap(({ id, basis }) => {
+    if (basis.kind !== 'external') return [];
+    const problems: string[] = [];
+    if (!basis.url.startsWith('https://')) problems.push(`${id}: url is not https`);
+    if (!isRealDate(basis.checked)) problems.push(`${id}: checked is not a YYYY-MM-DD date`);
+    else if (basis.checked > today) problems.push(`${id}: checked is after today (UTC)`);
+    if (basis.probe) {
+      const script = /^npm run ([\w:-]+)$/.exec(basis.probe.command)?.[1];
+      if (script === undefined || !scripts.includes(script))
+        problems.push(
+          `${id}: probe command is not npm run <package.json script> without arguments`,
+        );
+      if (basis.probe.repositoryType.trim() === '')
+        problems.push(`${id}: probe repositoryType is empty`);
+    }
+    return problems;
+  });
+}
+
+const external = (
+  basis: Partial<Extract<LimitDefinition['basis'], { kind: 'external' }>>,
+): LimitDefinition => ({
+  ...unjustified('cited', 1),
+  basis: {
+    kind: 'external',
+    url: 'https://docs.github.com/en/rest',
+    checked: '2026-11-22',
+    platformValue: 1,
+    margin: 'none: test',
+    ...basis,
+  },
+});
+
+test('every external entry in the register cites an https page and a real past UTC date', () => {
+  expect(externalProblems([...REGISTER.values()], utcToday(), PACKAGE_SCRIPTS)).toEqual([]);
+});
+
+test('an external entry needs an https url and a real checked date', () => {
+  const today = '2026-11-22';
+  expect(externalProblems([external({})], today, PACKAGE_SCRIPTS)).toEqual([]);
+  expect(externalProblems([external({ url: 'http://docs.github.com' })], today, [])).toEqual([
+    expect.stringMatching(/cited: url/),
+  ]);
+  for (const checked of ['2026-02-30', '2026-11-2', '22/11/2026', ''])
+    expect(externalProblems([external({ checked })], today, []), checked).toEqual([
+      expect.stringMatching(/cited: checked is not/),
+    ]);
+});
+
+test('an external checked date one day past UTC today is rejected', () => {
+  expect(externalProblems([external({ checked: '2026-11-23' })], '2026-11-22', [])).toEqual([
+    expect.stringMatching(/cited: checked is after today/),
+  ]);
+  expect(externalProblems([external({ checked: '2026-11-22' })], '2026-11-22', [])).toEqual([]);
+});
+
+test('a probe command must be npm run of a package.json script with no arguments', () => {
+  const probe = (command: string) =>
+    external({ probe: { command, repositoryType: 'private, user-owned, github.com' } });
+  expect(externalProblems([probe('npm run check:limits')], '2026-11-22', PACKAGE_SCRIPTS)).toEqual(
+    [],
+  );
+  for (const command of [
+    'npm run check:limits -- --repo x',
+    'npm run no-such-script',
+    'node scripts/limits/check.ts',
+  ])
+    expect(externalProblems([probe(command)], '2026-11-22', PACKAGE_SCRIPTS), command).toEqual([
+      expect.stringMatching(/cited: probe command/),
+    ]);
+  expect(
+    externalProblems(
+      [external({ probe: { command: 'npm run check:limits', repositoryType: ' ' } })],
+      '2026-11-22',
+      PACKAGE_SCRIPTS,
+    ),
+  ).toEqual([expect.stringMatching(/repositoryType/)]);
+});
+
 test('checkRegister reports a self-loop and a cycle through three entries', () => {
   expect(checkRegister([derived('x', ['x'], (x) => x)])).toEqual([expect.stringMatching(/cycle/)]);
   expect(
