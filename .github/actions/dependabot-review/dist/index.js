@@ -10229,7 +10229,7 @@ const DEFINITIONS = [
 		protects: "Bounds the comments one probe run can create or edit in the user's test repository, far below GitHub's content-creation limit of 80 a minute and 500 an hour.",
 		basis: {
 			kind: "safety",
-			reason: "The longest run, a halving search from the first body, needs 1 + 17 + 4 unit bodies + 1 seed + 2 updates + 1 line-break body = 26 writes; 32 covers it with spare, and with as many deletes a run stays under GitHub content-creation limits."
+			reason: "The longest run, a wrongly stated maximum followed by a halving search from the first body, needs 1 + 2 + 17 + 4 unit bodies + 1 seed + 2 updates + 1 line-break body = 28 writes; 32 covers it with spare, and with as many deletes a run stays under GitHub content-creation limits."
 		},
 		effect: "At the cap the next write is not sent; the result is inconclusive, and cleanup still deletes every comment made.",
 		test: "tests/probe-comment-limit/run.test.ts > reaching the write cap gives inconclusive and sends no further write"

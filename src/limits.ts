@@ -2268,7 +2268,7 @@ const DEFINITIONS = [
     basis: {
       kind: 'safety',
       reason:
-        'The longest run, a halving search from the first body, needs 1 + 17 + 4 unit bodies + 1 seed + 2 updates + 1 line-break body = 26 writes; 32 covers it with spare, and with as many deletes a run stays under GitHub content-creation limits.',
+        'The longest run, a wrongly stated maximum followed by a halving search from the first body, needs 1 + 2 + 17 + 4 unit bodies + 1 seed + 2 updates + 1 line-break body = 28 writes; 32 covers it with spare, and with as many deletes a run stays under GitHub content-creation limits.',
     },
     effect:
       'At the cap the next write is not sent; the result is inconclusive, and cleanup still deletes every comment made.',

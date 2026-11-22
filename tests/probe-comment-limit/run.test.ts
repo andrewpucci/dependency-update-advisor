@@ -27,6 +27,10 @@ type FakeOptions = {
   userStatus?: number;
   /** The status the sweep's comment listing answers. */
   listStatus?: number;
+  isPrivate?: boolean;
+  ownerType?: string;
+  /** The message of the error thrown on the failCreate POST. */
+  failMessage?: string;
 };
 
 /** A fake GitHub that counts comment bodies in UTF-16 code units. */
@@ -47,8 +51,8 @@ function fakeGitHub(options: FakeOptions = {}) {
         status: 200,
         data: {
           full_name: options.fullName ?? 'tester/scratch',
-          private: true,
-          owner: { type: 'User' },
+          private: options.isPrivate ?? true,
+          owner: { type: options.ownerType ?? 'User' },
         },
       };
     if (method === 'GET' && path === '/user')
@@ -61,7 +65,7 @@ function fakeGitHub(options: FakeOptions = {}) {
         : { status: options.listStatus, data: { message: 'Server Error' } };
     if (method === 'POST' && path === '/repos/tester/scratch/issues/7/comments') {
       posts++;
-      if (posts === options.failCreate) throw new Error('socket hang up');
+      if (posts === options.failCreate) throw new Error(options.failMessage ?? 'socket hang up');
       const text = String(body?.body);
       if (counts(text)['code units'] > limit) return { status: 422, data: tooLong };
       const comment = { id: nextId++, body: text, user: { login: 'tester' } };
@@ -261,4 +265,49 @@ test('a sweep that cannot list the comments is reported and fails the run', asyn
   const clean = await probe(ARGV, ENV, deps(fakeGitHub().http));
   expect(JSON.parse(clean.output)).toMatchObject({ sweep: 'done' });
   expect(clean.exitCode).toBe(0);
+});
+
+test('the seed comment counts two writes against the cap', async () => {
+  // With a stated maximum, seven creates come before the first update: first body, M, M + 1,
+  // and four unit bodies. The first update then needs the seed comment and its edit.
+  for (const [maxWrites, expected] of [
+    [8, 7],
+    [9, 9],
+  ] as const) {
+    const github = fakeGitHub();
+    const result = await probe(
+      ARGV,
+      ENV,
+      deps(github.http, { limits: { maxWrites, intervalMs: 1_000, firstLength: 1_000 } }),
+    );
+    expect(JSON.parse(result.output), String(maxWrites)).toMatchObject({ unit: 'inconclusive' });
+    const writes = github.calls.filter(({ method }) => method === 'POST' || method === 'PATCH');
+    expect(writes, String(maxWrites)).toHaveLength(expected);
+  }
+});
+
+test('repositoryType names a public, organization-owned repository', async () => {
+  const github = fakeGitHub({ isPrivate: false, ownerType: 'Organization' });
+  const result = await probe(ARGV, ENV, deps(github.http));
+  expect(JSON.parse(result.output)).toMatchObject({
+    repositoryType: 'public, organization-owned, github.com',
+  });
+});
+
+test('a network error that names the repository does not leak it into the result', async () => {
+  const github = fakeGitHub({
+    failCreate: 2,
+    failMessage: 'connect ECONNRESET api.github.com/repos/tester/scratch',
+  });
+  const result = await probe(ARGV, ENV, deps(github.http));
+  expect(JSON.parse(result.output)).toMatchObject({ unit: 'inconclusive' });
+  for (const secret of ['tester', 'scratch', 'api.github.com', TOKEN])
+    expect(result.output, secret).not.toContain(secret);
+});
+
+test('an empty GITHUB_TOKEN is refused like a missing one', async () => {
+  const github = fakeGitHub();
+  const result = await probe(ARGV, { GITHUB_TOKEN: '' }, deps(github.http));
+  expect(result.exitCode).not.toBe(0);
+  expect(github.calls).toEqual([]);
 });

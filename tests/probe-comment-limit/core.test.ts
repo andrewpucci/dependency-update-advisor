@@ -335,3 +335,63 @@ test('a raise is allowed only for code units or code points that agree and accep
   expect(raiseAllowed(outcome({ update: 'differs' }))).toBe(false);
   expect(raiseAllowed(outcome({ lineBreaks: 'rejected' }))).toBe(false);
 });
+
+test('an update limit above the create limit is reported as differs, so no raise follows', async () => {
+  const outcome = await runProbe({
+    firstLength: 1_000,
+    write: fakeGitHub({ unit: 'code units', limit: 64, updateLimit: 65 }).write,
+  });
+  expect(outcome).toMatchObject({ unit: 'code units', update: 'differs' });
+  expect(raiseAllowed(outcome)).toBe(false);
+});
+
+test('the halving search finds every limit exactly when no maximum is stated', async () => {
+  for (let L = 1; L < 300; L++) {
+    const github = fakeGitHub({ unit: 'code units', limit: L });
+    const silent = async (kind: WriteKind, text: string): Promise<WriteResult> => {
+      const result = await github.write(kind, text);
+      return result.outcome === 'rejected' ? { ...result, message: 'body is too long' } : result;
+    };
+    expect(await findLimit(1_000, silent), String(L)).toEqual({ limit: L });
+  }
+});
+
+/** A fake GitHub whose nth write of one kind is inconclusive. */
+function failingNth(kind: WriteKind, nth: number) {
+  const github = fakeGitHub({ unit: 'code units', limit: 64 });
+  let seen = 0;
+  return async (writeKind: WriteKind, text: string): Promise<WriteResult> =>
+    writeKind === kind && ++seen === nth
+      ? { outcome: 'inconclusive', status: 429, reason: 'rate limited' }
+      : github.write(writeKind, text);
+}
+
+test('an inconclusive update makes the whole result inconclusive', async () => {
+  for (const nth of [1, 2]) {
+    const outcome = await runProbe({ firstLength: 1_000, write: failingNth('update', nth) });
+    expect(outcome, String(nth)).toMatchObject({
+      unit: 'inconclusive',
+      update: 'inconclusive',
+      lineBreaks: 'not run',
+    });
+    expect(raiseAllowed(outcome)).toBe(false);
+  }
+});
+
+test('an inconclusive line-break write makes the whole result inconclusive', async () => {
+  // Creates: the first body, M, M + 1, four unit bodies, then the line-break body.
+  const outcome = await runProbe({ firstLength: 1_000, write: failingNth('create', 8) });
+  expect(outcome).toMatchObject({
+    unit: 'inconclusive',
+    update: 'agrees',
+    lineBreaks: 'inconclusive',
+  });
+  expect(raiseAllowed(outcome)).toBe(false);
+});
+
+test('a raise is not allowed when the update or line-break step is inconclusive or not run', () => {
+  for (const update of ['inconclusive', 'not run'] as const)
+    expect(raiseAllowed(outcome({ update })), update).toBe(false);
+  for (const lineBreaks of ['inconclusive', 'not run'] as const)
+    expect(raiseAllowed(outcome({ lineBreaks })), lineBreaks).toBe(false);
+});
