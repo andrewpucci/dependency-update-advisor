@@ -1694,12 +1694,12 @@ test.each([
   expect(result).toMatchObject({ kind: 'handed-off', handoff: { body: 'present', gaps: [] } });
   if (result.kind !== 'handed-off') return;
   expect(result.outcome).not.toBe('internal-failure');
-  expect(result.body?.length).toBeLessThanOrEqual(50_000);
+  expect(result.body?.length).toBeLessThanOrEqual(limit('comment.maxBodyCodeUnits'));
 });
 
 test('hands a group too large to render off as a failure that says so, never as a defect', async () => {
   // Model follow-ups are required and never merged, so these push the body over the limit.
-  const { input, sink } = await setup({ evidence: 'changes', children: 100, followupsPerUnit: 4 });
+  const { input, sink } = await setup({ evidence: 'changes', children: 100, followupsPerUnit: 8 });
   const result = await runReview(input);
   // The brief must not truncate a required unit, so it fails; the prior comment is preserved.
   expect(result).toMatchObject({

@@ -259,9 +259,10 @@ below must confirm the implemented result before any re-pin.
    assessment reasons are not merged, deduplicated across units, shortened,
    or reordered. The renderer adds no model text to merged deterministic
    lines.
-5. **Fallback and `render-size`.** If the merged body exceeds 50,000 code
-   units, the renderer omits optional sections in the existing priority order
-   with the existing notice. If the required body still exceeds the limit, it
+5. **Fallback and `render-size`.** If the merged body exceeds the comment
+   limit, `limit:comment.maxBodyCodeUnits` code units, the renderer omits
+   optional sections in the existing priority order with the existing
+   notice. If the required body still exceeds the limit, it
    returns `size`. W2 reports `render-size`, a fail-closed outcome with the
    existing `brief`/`budget` gap; the trace and stderr stay redacted as W2
    specifies. No required text is shortened or truncated.
@@ -279,7 +280,7 @@ must satisfy the verification below.
   informational findings per unit; three or four shared unavailable gaps per
   unit, with reasons `budget`, `missing`, and `unsupported`; 21 unresolved
   units across at least two distinct gap sets; and 71 model follow-ups of
-  about 150 characters. It renders at or below 50,000 code units. Every
+  about 150 characters. It renders within `limit:comment.maxBodyCodeUnits`. Every
   member, including each same-named member, appears in each merged record
   that applies to it, and every unresolved unit, follow-up, action, and
   required citation is visible. It also includes an assessed `merge` unit
@@ -287,7 +288,7 @@ must satisfy the verification below.
   unit is counted in coverage.
 - **Checked-state fixture:** the same 93 units with every required category
   `available` and no finding, except one `partial` category with a finding,
-  renders at or below 50,000 code units. It shows one "checked, none found"
+  renders within `limit:comment.maxBodyCodeUnits`. It shows one "checked, none found"
   line per category naming each member, and shows both the finding and the
   gap for the partial category. A variant with optional sections large
   enough to force omission still shows every checked line in Decision
@@ -307,11 +308,11 @@ must satisfy the verification below.
   fit after merging still returns `size`, and W2 still reports
   `internal-failure` with reason `render-size` and the `brief`/`budget` gap.
 - **Preserved checks:** existing escaping, autolink, priority-order,
-  exact-50,000 boundary, and optional-omission checks continue to pass. Full
-  repository checks and the reproducible action-bundle check run on the
-  implementation revision.
+  exact-limit (`limit:comment.maxBodyCodeUnits`) boundary, and
+  optional-omission checks continue to pass. Full repository checks and the
+  reproducible action-bundle check run on the implementation revision.
 - **Local R1 replay before re-pin:** replaying the recorded R1 responses
-  against the implementation renders a body at or below 50,000 code units
+  against the implementation renders a body within `limit:comment.maxBodyCodeUnits`
   that names every member with a required record (92 of the 93), all 21
   unresolved units, and all 71 follow-ups. The one assessed `merge` unit has
   no evidence category, gap, finding, or follow-up, so it appears only in the
@@ -323,8 +324,8 @@ must satisfy the verification below.
 
 - **Always:** account for every required decision-bearing record, name every
   affected member, preserve trusted links and escaped output, keep the
-  50,000-code-unit bound, and leave the no-write and publication boundary
-  unchanged.
+  `limit:comment.maxBodyCodeUnits` bound, and leave the no-write and
+  publication boundary unchanged.
 - **Ask first:** change which records are required, merge or shorten
   model-authored text, change the size limit, the managed-comment identity,
   status semantics, workflow permissions, or M1 validation.

@@ -6,6 +6,7 @@ import {
   type CommentDependencies,
 } from './comments.js';
 import { record, type ReviewBinding } from './event.js';
+import { limit } from './limits.js';
 import { publishExecutionStatus, type StatusRequest } from './status.js';
 
 const HEAD = 'a'.repeat(40);
@@ -359,7 +360,7 @@ test('enforces the exact body ceiling and optional digest agreement', async () =
   const digest = 'd'.repeat(64);
   f.input.result.reviewDigest = digest;
   f.input.result.body = `${MARKER}\n<!-- reviewed-head: ${HEAD} -->\n<!-- review-digest: ${digest} -->\n`;
-  f.input.result.body = f.input.result.body.padEnd(50000, 'x');
+  f.input.result.body = f.input.result.body.padEnd(limit('comment.maxBodyCodeUnits'), 'x');
   expect((await publishManagedComment(f.input, f.dependencies)).kind).toBe('recorded');
   f.order.length = 0;
   f.input.result.body += 'x';

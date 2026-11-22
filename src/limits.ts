@@ -3,8 +3,25 @@ export type LimitUnit = 'bytes' | 'code units' | 'milliseconds' | 'minutes' | 'c
 /** Marks a field the migration has not filled yet; none may remain after phase 2. */
 export const PENDING_AUDIT = 'pending: L7 audit';
 
+/** How a probed platform figure is reproduced; it never names the probed repository. */
+export type ExternalProbe = {
+  /** `npm run <script>` alone: the arguments name the test repository. */
+  command: string;
+  /** Visibility and owner type, such as "private, user-owned, github.com". */
+  repositoryType: string;
+};
+
 export type LimitBasis =
-  | { kind: 'external'; url: string; checked: string; platformValue: number; margin: string }
+  | {
+      kind: 'external';
+      /** The page that states the figure, or the public probe record for a probed one. */
+      url: string;
+      /** `YYYY-MM-DD` (UTC) on which the page was read or the probe was run. */
+      checked: string;
+      platformValue: number;
+      margin: string;
+      probe?: ExternalProbe;
+    }
   | {
       kind: 'derived';
       inputs: readonly string[];
@@ -1676,14 +1693,42 @@ const DEFINITIONS = [
     note: 'no recorded reason',
   }),
   // Comment bodies, from comments.ts.
-  unjustified('comment.maxBodyCodeUnits', 50_000, 'code units', {
+  {
+    id: 'github.comment.maxBodyBytes',
+    value: 262_144,
+    unit: 'bytes',
     protects:
-      "The comment body must fit the platform's comment size limit before the write; the renderer rejects oversize bodies instead of truncating them. The repo does not cite the platform figure.",
+      "Records GitHub's real limit on an issue or pull-request comment body, which the reviewer's comment cap must stay under.",
+    basis: {
+      kind: 'external',
+      url: 'https://github.com/andrewpucci/dependency-update-advisor/issues/381#issuecomment-7083984132',
+      checked: '2026-11-22',
+      platformValue: 262_144,
+      margin:
+        "none: comment.maxBodyCodeUnits derives from it with a worst-case bound. GitHub's 422 says 'maximum is 65536 characters', but the probe found 262,144 UTF-8 bytes enforced on create and update.",
+      probe: {
+        command: 'npm run probe:comment-limit',
+        repositoryType: 'private, user-owned, github.com',
+      },
+    },
     effect:
-      'Oversize publication input fails with category input and no write. The renderer omits optional sections, then fails with size.',
-    test: 'src/comments.test.ts > enforces the exact body ceiling and optional digest agreement',
-    note: 'awaiting L9 citation',
-  }),
+      'A longer body is refused by GitHub with a 422; the reviewer never sends one, because its cap derives from this.',
+    test: "src/limits.test.ts > the comment cap is derived from GitHub's byte limit so any body within it fits",
+  },
+  derived(
+    'comment.maxBodyCodeUnits',
+    'code units',
+    ['github.comment.maxBodyBytes'],
+    (bytes) => Math.floor(bytes / 3),
+    "GitHub's byte limit divided by three, rounded down: one UTF-16 code unit is at most three UTF-8 bytes, so a body within this many code units never exceeds GitHub's limit, whatever its text.",
+    {
+      protects:
+        "The comment body must fit GitHub's comment limit before the write; the renderer rejects oversize bodies instead of truncating them.",
+      effect:
+        'Oversize publication input fails with category input and no write. The renderer omits optional sections, then fails with size.',
+      test: 'src/comments.test.ts > enforces the exact body ceiling and optional digest agreement',
+    },
+  ),
   // Analysis contract, from analysis/contract.ts, batches.ts, and mistral.ts.
   unjustified('analysis.maxUnits', 8, 'count', {
     protects:
@@ -1867,15 +1912,15 @@ const DEFINITIONS = [
     value: 30_000,
     unit: 'milliseconds',
     protects:
-      'Keeps the large-inventory reporting tests from failing by chance on a slow CI runner, while still ending a render that hangs.',
+      'Keeps the large-inventory reporting and parity tests from failing by chance on a slow CI runner, while still ending a build or render that hangs.',
     basis: {
       kind: 'safety',
       reason:
-        "The heaviest of these tests takes about 1.8 s locally and timed out at vitest's 5 s default on a CI runner about three times slower (PR #424); 30 s leaves several times that headroom and still stops a hung test well inside the CI job's timeout.",
+        "The heaviest of these tests take about 2 s locally and timed out at vitest's 5 s default on CI runners about three times slower (PR #424 for reporting; main at 99131b3 and PR #425 for the parity test that builds the inventory twice); 30 s leaves several times that headroom and still stops a hung test well inside the CI job's timeout.",
     },
     effect:
-      "A reporting test past the allowance fails under vitest's timeout behavior, as any timed-out test does.",
-    test: 'none: a test-runner allowance for src/reporting.test.ts, which no application code reads',
+      "A reporting or parity test past the allowance fails under vitest's timeout behavior, as any timed-out test does.",
+    test: 'none: a test-runner allowance for src/reporting.test.ts and tests/parity/large-inventory.test.ts, which no application code reads',
   },
   // The demand measurement runs one whole review per test, from scripts/measure-demand.
   unjustified('measureDemand.testTimeoutMs', 900_000, 'milliseconds', {
@@ -2020,22 +2065,78 @@ const DEFINITIONS = [
     note: 'no recorded reason',
     test: 'src/evidence/upstream-github.test.ts > a comparison keeps its file list complete below the register file cap and truncates at it',
   }),
-  unjustified('github.pageSize', 100, 'count', {
+  {
+    id: 'github.pageSize',
+    value: 100,
+    unit: 'count',
     protects:
       'GitHub returns at most 100 entries per page, so the reader requests 100 and treats a longer page as malformed (outside platform limit).',
+    basis: {
+      kind: 'external',
+      url: 'https://docs.github.com/en/rest/pulls/pulls#list-pull-requests-files',
+      checked: '2026-11-22',
+      platformValue: 100,
+      margin:
+        "none: the reader asks for the endpoint's documented per_page maximum, and a longer page is malformed",
+    },
     effect:
       'A page longer than 100 fails the read as malformed (src/github-read.ts:581); a Link URL with a different per_page is a conflict (src/github-read.ts:280); a short page ends pagination (src/github-read.ts:589).',
-    note: 'awaiting L9 citation',
     test: 'src/github-read.test.ts > a page of exactly github.pageSize rows is accepted and a longer page is malformed',
-  }),
-  unjustified('github.treeMaxFiles', 3_000, 'count', {
+  },
+  {
+    id: 'github.treeMaxFiles',
+    value: 3_000,
+    unit: 'count',
     protects:
       "GitHub's pull-request files endpoint stops at 3,000 files, so a list at that size is incomplete and must be marked truncated (outside platform limit).",
+    basis: {
+      kind: 'external',
+      url: 'https://docs.github.com/en/rest/pulls/pulls#list-pull-requests-files',
+      checked: '2026-11-22',
+      platformValue: 3_000,
+      margin:
+        'none: a list that reaches the documented maximum may be incomplete, so the value is the maximum itself',
+    },
     effect:
       'At 3000 files the discovery stops with reason truncated and keeps the files already read.',
     test: 'src/github-read.test.ts > exactly 3000 files remains partial at the endpoint cap',
-    note: 'awaiting L9 citation',
-  }),
+  },
+  {
+    id: 'github.token.restRequestsPerHour',
+    value: 1_000,
+    unit: 'count',
+    protects:
+      "Records GitHub's REST quota for the workflow's GITHUB_TOKEN, so the adopter's GitHub request cap can never be set above what the token can spend in an hour.",
+    basis: {
+      kind: 'external',
+      url: 'https://docs.github.com/en/rest/using-the-rest-api/rate-limits-for-the-rest-api#primary-rate-limit-for-github_token-in-github-actions',
+      checked: '2026-11-22',
+      platformValue: 1_000,
+      margin:
+        'none: this is the platform figure itself. Resources owned by a GitHub Enterprise Cloud account get a higher limit (15,000 per hour per repository); this entry records the lower one, which every adopter has. L12 states the headroom below it.',
+    },
+    effect:
+      'Not enforced yet; L12 makes it the hard maximum of the GitHub request cap. Research already follows the quota GitHub reports at run time.',
+    test: 'none: platform figure; L12 makes it the hard maximum of the GitHub request cap',
+  },
+  {
+    id: 'github.hostedJobMaxMinutes',
+    value: 360,
+    unit: 'minutes',
+    protects:
+      "Records GitHub's job length on a hosted runner, so the adopter's job budget can never be set past the point where GitHub terminates the job.",
+    basis: {
+      kind: 'external',
+      url: 'https://docs.github.com/en/actions/reference/limits#existing-system-limits',
+      checked: '2026-11-22',
+      platformValue: 360,
+      margin:
+        'none: this is the platform figure itself (6 hours); a job that reaches it is terminated and fails. L12 and L13 state the headroom below it.',
+    },
+    effect:
+      'Not enforced yet; L13 makes it the hard maximum of the job budget input. Each workflow sets its own timeout-minutes far below it.',
+    test: 'none: platform figure; L12 and L13 make it the hard maximum of the job budget',
+  },
   unjustified('upstream.releasePageSize', 64, 'count', {
     protects:
       'The start size of the release page-size ladder is bounded, so a release page that does not fit the response cap is halved and retried instead of failing outright (response size and memory).',
@@ -2166,6 +2267,70 @@ const DEFINITIONS = [
     effect:
       'A reset time more than this far ahead is ignored: the estimate is unchanged and no wait or retry time uses it.',
     test: 'src/evidence/github-quota.test.ts > judges a reset on the wall clock: past or beyond the window is ignored',
+  },
+  // The comment-limit probe (scripts/probe-comment-limit), run by hand in a test repository.
+  {
+    id: 'probe.commentLimit.writeIntervalMs',
+    value: 1_000,
+    unit: 'milliseconds',
+    protects:
+      "Keeps the probe's comment writes and deletes under GitHub's secondary rate limits, so a run is not cut short or flagged as abuse.",
+    basis: {
+      kind: 'external',
+      url: 'https://docs.github.com/en/rest/using-the-rest-api/best-practices-for-using-the-rest-api#pause-between-mutative-requests',
+      checked: '2026-11-22',
+      platformValue: 1_000,
+      margin:
+        "none: GitHub's guidance is to wait at least one second between POST, PATCH, PUT, or DELETE requests, and the probe waits exactly that",
+    },
+    effect:
+      'The probe waits this long before every create, update, or delete after its first, and sends them one at a time.',
+    test: 'tests/probe-comment-limit/run.test.ts > mutative requests wait for the full pause and never overlap',
+  },
+  {
+    id: 'probe.commentLimit.maxWrites',
+    value: 32,
+    unit: 'count',
+    protects:
+      "Bounds the comments one probe run can create or edit in the user's test repository, far below GitHub's content-creation limit of 80 a minute and 500 an hour.",
+    basis: {
+      kind: 'safety',
+      reason:
+        'The longest run, a wrongly stated maximum followed by a halving search from the first body, needs 1 + 2 + 20 + 4 unit bodies + 1 seed + 2 updates + 1 line-break body = 31 writes from a one-MiB first body; 32 covers it, and with as many deletes a run stays under GitHub content-creation limits.',
+    },
+    effect:
+      'At the cap the next write is not sent; the result is inconclusive, and cleanup still deletes every comment made.',
+    test: 'tests/probe-comment-limit/run.test.ts > reaching the write cap gives inconclusive and sends no further write',
+  },
+  {
+    id: 'probe.commentLimit.firstBodyCodeUnits',
+    value: 1_048_576,
+    unit: 'code units',
+    protects:
+      "Starts the probe's search above GitHub's comment limit, so the first body is rejected and the search has an upper bound.",
+    basis: {
+      kind: 'safety',
+      reason:
+        "The first live run (2026-11-22, #381) had a 131,072-unit body accepted unchanged, so the limit is above that and above the 65,536 figure in this spec's Evidence. One MiB of ASCII is eight times that, still one ordinary request, and keeps the longest run within probe.commentLimit.maxWrites. A larger real limit makes the first body accepted and the result inconclusive, never wrong.",
+    },
+    effect:
+      'The first create sends this many ASCII code units; if GitHub accepts it, the probe stops inconclusive.',
+    test: 'tests/probe-comment-limit/run.test.ts > the register write cap covers the longest run from the register first body',
+  },
+  {
+    id: 'probe.commentLimit.detailCodeUnits',
+    value: 256,
+    unit: 'code units',
+    protects:
+      "Bounds each GitHub validation message the probe prints for a 422 it cannot classify, so untrusted response text cannot flood the user's terminal or the public probe record.",
+    basis: {
+      kind: 'safety',
+      reason:
+        "GitHub's validation messages are one short sentence; its too-long message is about 50 units. 256 keeps any such message whole while bounding untrusted text (user-approved 2026-11-22).",
+    },
+    effect:
+      'Each message is cut to this many code units; the run is still inconclusive and nothing else changes.',
+    test: 'tests/probe-comment-limit/core.test.ts > an unclassified 422 keeps GitHub validation messages, capped, without links',
   },
   ...allScaledShareEntries(),
 ] as const satisfies readonly LimitDefinition[];
