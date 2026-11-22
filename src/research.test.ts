@@ -481,7 +481,9 @@ test('opens each reader with the share scaled from the packet members', async ()
 test('stops research GitHub requests at the quota reserve, keeping other hosts and completed members', async () => {
   const { fixture, packet } = await scenario();
   const wall = Date.parse('2026-11-21T00:00:00Z');
-  const reset = String(Math.floor(wall / 1000) + 60);
+  // The reset is 30 minutes away: inside the quota window, beyond research's 240-second deadline,
+  // so no reader waits for it.
+  const reset = String(Math.floor(wall / 1000) + 30 * 60);
   let stage = 'none';
   let reported = 0;
   const calls: { stage: string; host: string }[] = [];
@@ -557,6 +559,10 @@ test('uses an injected quota guard for every research GitHub request', async () 
         : { allowed: true as const },
     observe: () => {},
     refusals: () => admitted.length,
+    retryAt: () => null,
+    msUntil: () => 0,
+    recordStop: () => {},
+    latestRetryAt: () => null,
   };
   const result = await runResearch({ ...base(fixture, packet), fetch, quota });
   expect(result.kind).toBe('ready');

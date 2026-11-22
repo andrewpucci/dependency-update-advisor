@@ -369,6 +369,10 @@ describe('research GitHub quota seam', () => {
         ),
         observe: (_target: string, response: Response) => void observed.push(response),
         refusals: () => 0,
+        retryAt: () => null,
+        msUntil: () => 0,
+        recordStop: () => {},
+        latestRetryAt: () => null,
       },
     };
   };

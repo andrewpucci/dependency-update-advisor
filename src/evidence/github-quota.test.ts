@@ -133,3 +133,34 @@ test('counts each refusal it makes', () => {
   guard.admit(NPM);
   expect(guard.refusals()).toBe(2);
 });
+
+test('keeps the latest retry time a stop records', () => {
+  const guard = guardAt({ now: WALL });
+  expect(guard.latestRetryAt()).toBeNull();
+  guard.recordStop(WALL + MINUTE);
+  guard.recordStop(WALL + 3 * MINUTE);
+  guard.recordStop(WALL + 2 * MINUTE);
+  guard.recordStop(null);
+  expect(guard.latestRetryAt()).toBe(WALL + 3 * MINUTE);
+});
+
+test('takes a retry time from retry-after, a spent reset, or its own window', () => {
+  const guard = guardAt({ now: WALL });
+  const limited = (headers: Record<string, string>) => new Response('{}', { status: 429, headers });
+  expect(guard.retryAt(limited({ 'retry-after': '30' }))).toBe(WALL + 30 * SECOND);
+  const reset = String(Math.floor((WALL + 5 * MINUTE) / SECOND));
+  expect(guard.retryAt(limited({ 'x-ratelimit-remaining': '0', 'x-ratelimit-reset': reset }))).toBe(
+    WALL + 5 * MINUTE,
+  );
+  // A reset with quota left is not a quota stop.
+  expect(
+    guard.retryAt(limited({ 'x-ratelimit-remaining': '3', 'x-ratelimit-reset': reset })),
+  ).toBeNull();
+  // Outside the window, or not digits, there is no usable time.
+  expect(guard.retryAt(limited({ 'retry-after': String(2 * 3600) }))).toBeNull();
+  expect(guard.retryAt(limited({ 'retry-after': 'soon' }))).toBeNull();
+  // The guard's own refusal carries no headers; its window's reset applies.
+  expect(guard.retryAt(limited({}))).toBeNull();
+  guard.observe(API, rateLimited('5', WALL + 3 * MINUTE));
+  expect(guard.retryAt(new Response(null, { status: 429 }))).toBe(WALL + 3 * MINUTE);
+});

@@ -2106,6 +2106,21 @@ const DEFINITIONS = [
     test: 'src/pipeline.test.ts > the research quota reserve covers every GitHub read after research',
   },
   {
+    id: 'research.githubQuota.waitsPerReader',
+    value: 1,
+    unit: 'count',
+    protects:
+      "Bounds how much of research's time one reader can spend idle waiting for a GitHub rate-limit reset, so one stalled reader cannot hold the rest of research back.",
+    basis: {
+      kind: 'safety',
+      reason:
+        'One wait covers the common secondary-limit retry-after; a reader rate-limited again after waiting is under sustained pressure, where another wait would mostly spend time the deadline cannot spare.',
+    },
+    effect:
+      "After this many waits, a reader's next rate-limit stop ends its members rate_limit at once and records the retry time.",
+    test: 'src/evidence/upstream-read.test.ts > a second stop after a wait ends rate_limit without waiting again',
+  },
+  {
     id: 'research.githubQuota.windowMs',
     value: 3_600_000,
     unit: 'milliseconds',

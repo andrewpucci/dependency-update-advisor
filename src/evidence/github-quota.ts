@@ -18,6 +18,18 @@ export type GithubQuotaGuard = Readonly<{
   observe(url: string, response: Response): void;
   /** How many requests the guard has refused this run. */
   refusals(): number;
+  /**
+   * When a rate-limited GitHub response can be retried: its `retry-after`, else its reset when the
+   * quota is spent, else, for the guard's own header-less refusal, its window's reset. Null when
+   * the time is unknown or outside the window.
+   */
+  retryAt(response: Response): number | null;
+  /** Wall milliseconds from now until `retryAt`. */
+  msUntil(retryAt: number): number;
+  /** Records the retry time of a stop that ended members `rate_limit`. */
+  recordStop(retryAt: number | null): void;
+  /** The latest retry time recorded by a stop, or null. */
+  latestRetryAt(): number | null;
 }>;
 
 export type GithubQuotaOptions = Readonly<{
@@ -46,6 +58,11 @@ function count(value: string | null): number | null {
 export function createGithubQuotaGuard(options: GithubQuotaOptions): GithubQuotaGuard {
   let window: { reset: number; remaining: number; started: number } | null = null;
   let refused = 0;
+  let latest: number | null = null;
+  const inWindow = (time: number) => {
+    const now = options.wallNow();
+    return time >= now && time <= now + options.windowMs;
+  };
   const current = () => {
     if (window && options.wallNow() >= window.reset) window = null;
     return window;
@@ -80,5 +97,52 @@ export function createGithubQuotaGuard(options: GithubQuotaOptions): GithubQuota
       window = { reset, remaining, started: 0 };
     },
     refusals: () => refused,
+    retryAt(response) {
+      const after = count(response.headers.get('retry-after'));
+      if (after !== null) {
+        const time = options.wallNow() + after * DURATION_MS.second;
+        return inWindow(time) ? time : null;
+      }
+      const remaining = response.headers.get('x-ratelimit-remaining');
+      const reset = count(response.headers.get('x-ratelimit-reset'));
+      if (remaining === '0' && reset !== null) {
+        const time = reset * DURATION_MS.second;
+        return inWindow(time) ? time : null;
+      }
+      if (remaining === null && reset === null) return current()?.reset ?? null;
+      return null;
+    },
+    msUntil: (retryAt) => retryAt - options.wallNow(),
+    recordStop(retryAt) {
+      if (retryAt !== null && (latest === null || retryAt > latest)) latest = retryAt;
+    },
+    latestRetryAt: () => latest,
   };
+}
+
+/**
+ * Waits for `retryAt` when that time plus one request timeout fits in the time the reader has left,
+ * and reports whether it waited. The wait ends early, with an error, when `signal` aborts.
+ */
+export async function waitForRetry(
+  guard: GithubQuotaGuard,
+  retryAt: number | null,
+  time: Readonly<{ remainingMs: number; requestTimeoutMs: number; signal?: AbortSignal }>,
+): Promise<boolean> {
+  if (retryAt === null) return false;
+  const wait = Math.max(0, guard.msUntil(retryAt));
+  if (wait + time.requestTimeoutMs > time.remainingMs) return false;
+  await new Promise<void>((resolve, reject) => {
+    if (time.signal?.aborted) return reject(new Error('wait aborted'));
+    const timer = setTimeout(() => {
+      time.signal?.removeEventListener('abort', abort);
+      resolve();
+    }, wait);
+    const abort = () => {
+      clearTimeout(timer);
+      reject(new Error('wait aborted'));
+    };
+    time.signal?.addEventListener('abort', abort, { once: true });
+  });
+  return true;
 }
