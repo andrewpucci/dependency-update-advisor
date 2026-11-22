@@ -12377,8 +12377,12 @@ function createGithubQuotaGuard(options) {
 					retryAt: estimate.reset
 				};
 			}
-			estimate.started += 1;
 			return { allowed: true };
+		},
+		started(url) {
+			if (!isGithub(url)) return;
+			const estimate = current();
+			if (estimate) estimate.started += 1;
 		},
 		observe(url, response) {
 			if (!isGithub(url)) return;
@@ -12603,6 +12607,7 @@ async function boundedGet(deps, request, onCancel, consume) {
 		const local = answeredLocally(deps, key, request.url);
 		if (local) return await consume(local.response, aborted, local.cached);
 		request.charge?.();
+		deps.quota?.started(request.url);
 		const pending = deps.fetch(request.url, {
 			method: post ? "POST" : "GET",
 			redirect: "manual",
