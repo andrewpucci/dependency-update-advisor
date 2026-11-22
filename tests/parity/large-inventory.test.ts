@@ -1,6 +1,11 @@
-import { expect, test } from 'vite-plus/test';
+import { expect, test, vi } from 'vite-plus/test';
+import { limit } from '../../src/limits.js';
 import { renderDecisionBrief } from '../../src/reporting.js';
 import { largeInventoryScenario } from './large-inventory.js';
+
+// These tests build a 93-member inventory, some of them twice; that is about 2 s locally and
+// several times that on a busy CI runner, so they share the reporting tests' fixed allowance.
+vi.setConfig({ testTimeout: limit('tests.largeInventoryRenderTimeoutMs') });
 
 const unavailableVulnerability = () => ({
   status: 'unavailable' as const,

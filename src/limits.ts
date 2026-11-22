@@ -1912,15 +1912,15 @@ const DEFINITIONS = [
     value: 30_000,
     unit: 'milliseconds',
     protects:
-      'Keeps the large-inventory reporting tests from failing by chance on a slow CI runner, while still ending a render that hangs.',
+      'Keeps the large-inventory reporting and parity tests from failing by chance on a slow CI runner, while still ending a build or render that hangs.',
     basis: {
       kind: 'safety',
       reason:
-        "The heaviest of these tests takes about 1.8 s locally and timed out at vitest's 5 s default on a CI runner about three times slower (PR #424); 30 s leaves several times that headroom and still stops a hung test well inside the CI job's timeout.",
+        "The heaviest of these tests take about 2 s locally and timed out at vitest's 5 s default on CI runners about three times slower (PR #424 for reporting; main at 99131b3 and PR #425 for the parity test that builds the inventory twice); 30 s leaves several times that headroom and still stops a hung test well inside the CI job's timeout.",
     },
     effect:
-      "A reporting test past the allowance fails under vitest's timeout behavior, as any timed-out test does.",
-    test: 'none: a test-runner allowance for src/reporting.test.ts, which no application code reads',
+      "A reporting or parity test past the allowance fails under vitest's timeout behavior, as any timed-out test does.",
+    test: 'none: a test-runner allowance for src/reporting.test.ts and tests/parity/large-inventory.test.ts, which no application code reads',
   },
   // The demand measurement runs one whole review per test, from scripts/measure-demand.
   unjustified('measureDemand.testTimeoutMs', 900_000, 'milliseconds', {
