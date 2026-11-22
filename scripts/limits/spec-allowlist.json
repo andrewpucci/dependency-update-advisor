@@ -1311,7 +1311,7 @@
     "file": "docs/specs/SPEC-advisory-lookup.md",
     "line": "The workflow token gets 1,000 REST requests per hour per repository",
     "values": [1000],
-    "reason": "external: quotes GitHub's documented limit (GitHub Docs, checked 2026-11-19), not a register value"
+    "reason": "pending amendment (L10): quotes GitHub's documented GITHUB_TOKEN limit, now recorded as limit:github.token.restRequestsPerHour"
   },
   {
     "file": "docs/specs/SPEC-advisory-lookup.md",
@@ -1323,7 +1323,7 @@
     "file": "docs/specs/SPEC-upstream-evidence.md",
     "line": "budget is 1,000 requests per hour per repository; GraphQL has its own budget",
     "values": [1000],
-    "reason": "external: quotes GitHub's documented limit (GitHub Docs, checked 2026-11-19), not a register value"
+    "reason": "pending amendment (L10): quotes GitHub's documented GITHUB_TOKEN limit, now recorded as limit:github.token.restRequestsPerHour"
   },
   {
     "file": "docs/specs/SPEC-upstream-evidence.md",
@@ -1431,7 +1431,7 @@
     "file": "docs/specs/SPEC-limit-register.md",
     "line": "- **REST rate limit.** `GITHUB_TOKEN` gets 1,000 REST requests per hour per",
     "values": [1000],
-    "reason": "external: quotes GitHub's documented or observed limit, not a register value"
+    "reason": "pending amendment (L10): quotes GitHub's documented GITHUB_TOKEN limit, now recorded as limit:github.token.restRequestsPerHour"
   },
   {
     "file": "docs/specs/SPEC-limit-register.md",
@@ -1473,7 +1473,7 @@
     "file": "docs/specs/SPEC-limit-register.md",
     "line": "token. Hard maximum: the documented `GITHUB_TOKEN` rate limit (1,000",
     "values": [1000],
-    "reason": "external: quotes GitHub's documented or observed limit, not a register value"
+    "reason": "pending amendment (L10): quotes GitHub's documented GITHUB_TOKEN limit, now recorded as limit:github.token.restRequestsPerHour"
   },
   {
     "file": "docs/specs/SPEC-limit-register.md",
@@ -1557,6 +1557,6 @@
     "file": "docs/specs/SPEC-evidence-coverage.md",
     "line": "documents its limit as 1,000 requests per hour per repository, or 15,000 for",
     "values": [1000, 15000],
-    "reason": "external: quotes GitHub's documented limit (GitHub Docs, checked 2026-11-21), not a register value"
+    "reason": "pending amendment (L10): quotes GitHub's documented GITHUB_TOKEN limit, now recorded as limit:github.token.restRequestsPerHour"
   }
 ]

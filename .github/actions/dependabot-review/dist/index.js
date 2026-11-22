@@ -10048,18 +10048,66 @@ const DEFINITIONS = [
 		note: "no recorded reason",
 		test: "src/evidence/upstream-github.test.ts > a comparison keeps its file list complete below the register file cap and truncates at it"
 	}),
-	unjustified("github.pageSize", 100, "count", {
+	{
+		id: "github.pageSize",
+		value: 100,
+		unit: "count",
 		protects: "GitHub returns at most 100 entries per page, so the reader requests 100 and treats a longer page as malformed (outside platform limit).",
+		basis: {
+			kind: "external",
+			url: "https://docs.github.com/en/rest/pulls/pulls#list-pull-requests-files",
+			checked: "2026-11-22",
+			platformValue: 100,
+			margin: "none: the reader asks for the endpoint's documented per_page maximum, and a longer page is malformed"
+		},
 		effect: "A page longer than 100 fails the read as malformed (src/github-read.ts:581); a Link URL with a different per_page is a conflict (src/github-read.ts:280); a short page ends pagination (src/github-read.ts:589).",
-		note: "awaiting L9 citation",
 		test: "src/github-read.test.ts > a page of exactly github.pageSize rows is accepted and a longer page is malformed"
-	}),
-	unjustified("github.treeMaxFiles", 3e3, "count", {
+	},
+	{
+		id: "github.treeMaxFiles",
+		value: 3e3,
+		unit: "count",
 		protects: "GitHub's pull-request files endpoint stops at 3,000 files, so a list at that size is incomplete and must be marked truncated (outside platform limit).",
+		basis: {
+			kind: "external",
+			url: "https://docs.github.com/en/rest/pulls/pulls#list-pull-requests-files",
+			checked: "2026-11-22",
+			platformValue: 3e3,
+			margin: "none: a list that reaches the documented maximum may be incomplete, so the value is the maximum itself"
+		},
 		effect: "At 3000 files the discovery stops with reason truncated and keeps the files already read.",
-		test: "src/github-read.test.ts > exactly 3000 files remains partial at the endpoint cap",
-		note: "awaiting L9 citation"
-	}),
+		test: "src/github-read.test.ts > exactly 3000 files remains partial at the endpoint cap"
+	},
+	{
+		id: "github.token.restRequestsPerHour",
+		value: 1e3,
+		unit: "count",
+		protects: "Records GitHub's REST quota for the workflow's GITHUB_TOKEN, so the adopter's GitHub request cap can never be set above what the token can spend in an hour.",
+		basis: {
+			kind: "external",
+			url: "https://docs.github.com/en/rest/using-the-rest-api/rate-limits-for-the-rest-api#primary-rate-limit-for-github_token-in-github-actions",
+			checked: "2026-11-22",
+			platformValue: 1e3,
+			margin: "none: this is the platform figure itself. Resources owned by a GitHub Enterprise Cloud account get a higher limit (15,000 per hour per repository); this entry records the lower one, which every adopter has. L12 states the headroom below it."
+		},
+		effect: "Not enforced yet; L12 makes it the hard maximum of the GitHub request cap. Research already follows the quota GitHub reports at run time.",
+		test: "none: platform figure; L12 makes it the hard maximum of the GitHub request cap"
+	},
+	{
+		id: "github.hostedJobMaxMinutes",
+		value: 360,
+		unit: "minutes",
+		protects: "Records GitHub's job length on a hosted runner, so the adopter's job budget can never be set past the point where GitHub terminates the job.",
+		basis: {
+			kind: "external",
+			url: "https://docs.github.com/en/actions/reference/limits#existing-system-limits",
+			checked: "2026-11-22",
+			platformValue: 360,
+			margin: "none: this is the platform figure itself (6 hours); a job that reaches it is terminated and fails. L12 and L13 state the headroom below it."
+		},
+		effect: "Not enforced yet; L13 makes it the hard maximum of the job budget input. Each workflow sets its own timeout-minutes far below it.",
+		test: "none: platform figure; L12 and L13 make it the hard maximum of the job budget"
+	},
 	unjustified("upstream.releasePageSize", 64, "count", {
 		protects: "The start size of the release page-size ladder is bounded, so a release page that does not fit the response cap is halved and retried instead of failing outright (response size and memory).",
 		effect: "A page that does not fit halves and is retried at the same offset; a single release over the cap fails with reason budget.",
