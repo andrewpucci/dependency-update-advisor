@@ -1,5 +1,5 @@
-import { expect, test } from 'vite-plus/test';
-import { createGithubQuotaGuard } from './github-quota.js';
+import { expect, test, vi } from 'vite-plus/test';
+import { createGithubQuotaGuard, waitForRetry } from './github-quota.js';
 import { limit } from '../limits.js';
 
 const API = 'https://api.github.com/repos/o/r/releases';
@@ -163,4 +163,32 @@ test('takes a retry time from retry-after, a spent reset, or its own window', ()
   expect(guard.retryAt(limited({}))).toBeNull();
   guard.observe(API, rateLimited('5', WALL + 3 * MINUTE));
   expect(guard.retryAt(new Response(null, { status: 429 }))).toBe(WALL + 3 * MINUTE);
+});
+
+test('a spent quota whose reset has already passed gives no retry time', () => {
+  const guard = guardAt({ now: WALL });
+  const past = String(Math.floor((WALL - MINUTE) / SECOND));
+  expect(
+    guard.retryAt(
+      new Response('{}', {
+        status: 403,
+        headers: { 'x-ratelimit-remaining': '0', 'x-ratelimit-reset': past },
+      }),
+    ),
+  ).toBeNull();
+});
+
+test('waits only when the retry time plus one request timeout fits the time left', async () => {
+  const guard = guardAt({ now: WALL });
+  const time = { remainingMs: 10_000, requestTimeoutMs: 2000 };
+  expect(await waitForRetry(guard, WALL + 9000, time)).toBe(false);
+  expect(await waitForRetry(guard, null, time)).toBe(false);
+  vi.useFakeTimers();
+  try {
+    const waited = waitForRetry(guard, WALL + 8000, time);
+    await vi.advanceTimersByTimeAsync(8000);
+    expect(await waited).toBe(true);
+  } finally {
+    vi.useRealTimers();
+  }
 });

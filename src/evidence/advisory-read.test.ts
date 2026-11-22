@@ -714,3 +714,61 @@ test('a GitHub rate limit when no time is left ends rate_limit with its retry ti
   expect(quota.latestRetryAt()).toBe(wall);
   expect(fetch).toHaveBeenCalledTimes(1);
 });
+
+describe.each([
+  ['reviewed', createAdvisoryReader],
+  ['malware', createMalwareReader],
+] as const)(
+  'the %s reader waits at most once and can be stopped while waiting',
+  (_name, create) => {
+    const WALL = Date.parse('2026-11-21T00:00:00Z');
+    const limited = (retryAfter: string) =>
+      Response.json({}, { status: 429, headers: { 'retry-after': retryAfter } });
+    function reader(responses: (() => Response)[], signal?: AbortSignal) {
+      const quota = createGithubQuotaGuard({
+        reserve: 0,
+        wallNow: () => WALL,
+        windowMs: limit('research.githubQuota.windowMs'),
+      });
+      let call = 0;
+      const fetch = vi.fn(async () =>
+        (responses[Math.min(call++, responses.length - 1)] as () => Response)(),
+      );
+      const ready = create(limits, { fetch, now: () => 0, quota, ...(signal ? { signal } : {}) });
+      if (ready.kind !== 'ready') throw new Error('reader');
+      return { reader: ready, fetch, quota };
+    }
+
+    test('a later lookup in the same reader does not wait a second time', async () => {
+      const f = reader([() => limited('0'), () => Response.json([]), () => limited('0')]);
+      expect(await f.reader.read(target)).toMatchObject({ complete: true });
+      expect(await f.reader.read({ ...target, version: '9.0.0' })).toMatchObject({
+        reasons: ['rate_limit'],
+      });
+      expect(f.fetch).toHaveBeenCalledTimes(3);
+      expect(f.quota.latestRetryAt()).toBe(WALL);
+    });
+
+    test.each(['abort', 'close'] as const)(
+      '%s ends a wait at once, without resending',
+      async (how) => {
+        vi.useFakeTimers();
+        try {
+          const run = new AbortController();
+          const f = reader([() => limited('5'), () => Response.json([])], run.signal);
+          let settled = false;
+          const read = f.reader.read(target).finally(() => (settled = true));
+          await vi.advanceTimersByTimeAsync(100);
+          if (how === 'abort') run.abort();
+          else f.reader.close();
+          await vi.advanceTimersByTimeAsync(10);
+          expect(settled).toBe(true);
+          expect((await read).complete).toBe(false);
+          expect(f.fetch).toHaveBeenCalledTimes(1);
+        } finally {
+          vi.useRealTimers();
+        }
+      },
+    );
+  },
+);

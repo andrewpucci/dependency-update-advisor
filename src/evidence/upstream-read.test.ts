@@ -588,3 +588,94 @@ test('a GitHub rate limit when no time is left ends rate_limit with its retry ti
   expect(quota.latestRetryAt()).toBe(wall);
   expect(fetch).toHaveBeenCalledTimes(1);
 });
+
+describe('waiting is bounded per reader, by time, by abort, and to GitHub', () => {
+  const WALL = Date.parse('2026-11-21T00:00:00Z');
+  const releases = (page: number) => ({
+    kind: 'github',
+    repository: 'fixture/action',
+    resource: 'releases',
+    perPage: 16,
+    page,
+  });
+  const limited = (retryAfter: string) =>
+    new Response('{}', { status: 429, headers: { 'retry-after': retryAfter } });
+  function reader(
+    responses: (() => Response)[],
+    options: { overrides?: object; signal?: AbortSignal } = {},
+  ) {
+    const quota = createGithubQuotaGuard({
+      reserve: 0,
+      wallNow: () => WALL,
+      windowMs: limit('research.githubQuota.windowMs'),
+    });
+    let call = 0;
+    const fetch = vi.fn(async () =>
+      (responses[Math.min(call++, responses.length - 1)] as () => Response)(),
+    );
+    const opened = createUpstreamReader(
+      { ...limits, ...options.overrides },
+      { fetch, now: () => 0, quota, ...(options.signal ? { signal: options.signal } : {}) },
+    );
+    if (opened.kind !== 'ready') throw new Error('reader');
+    return { reader: opened.reader, fetch, quota };
+  }
+
+  test('a later read in the same reader does not wait a second time', async () => {
+    const f = reader([() => limited('0'), () => Response.json([]), () => limited('0')]);
+    expect(await f.reader.read(releases(1))).toMatchObject({ status: 'available' });
+    expect(f.quota.latestRetryAt()).toBeNull();
+    expect(await f.reader.read(releases(2))).toMatchObject({ reasons: ['rate_limit'] });
+    expect(f.fetch).toHaveBeenCalledTimes(3);
+    expect(f.quota.latestRetryAt()).toBe(WALL);
+  });
+
+  test.each(['abort', 'close'] as const)(
+    '%s ends a wait at once, without resending',
+    async (how) => {
+      vi.useFakeTimers();
+      try {
+        const run = new AbortController();
+        const f = reader([() => limited('5'), () => Response.json([])], { signal: run.signal });
+        let settled = false;
+        const read = f.reader.read(releases(1)).finally(() => (settled = true));
+        await vi.advanceTimersByTimeAsync(100);
+        if (how === 'abort') run.abort();
+        else f.reader.close();
+        await vi.advanceTimersByTimeAsync(10);
+        expect(settled).toBe(true);
+        expect((await read).status).not.toBe('available');
+        expect(f.fetch).toHaveBeenCalledTimes(1);
+      } finally {
+        vi.useRealTimers();
+      }
+    },
+  );
+
+  test('a wait must leave one request timeout before the deadline', async () => {
+    const overrides = { requestTimeoutMs: 2000, totalTimeoutMs: 10_000 };
+    // 9 s plus a 2 s request is past the 10 s left: no wait.
+    const late = reader([() => limited('9')], { overrides });
+    expect(await late.reader.read(releases(1))).toMatchObject({ reasons: ['rate_limit'] });
+    expect(late.fetch).toHaveBeenCalledTimes(1);
+    expect(late.quota.latestRetryAt()).toBe(WALL + 9000);
+    // 7 s plus 2 s fits.
+    vi.useFakeTimers();
+    try {
+      const fits = reader([() => limited('7'), () => Response.json([])], { overrides });
+      const read = fits.reader.read(releases(1));
+      await vi.advanceTimersByTimeAsync(7000);
+      expect(await read).toMatchObject({ status: 'available' });
+      expect(fits.fetch).toHaveBeenCalledTimes(2);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  test('a registry rate limit never waits or records a retry time', async () => {
+    const f = reader([() => limited('0')]);
+    expect(await f.reader.read(target)).toMatchObject({ reasons: ['rate_limit'] });
+    expect(f.fetch).toHaveBeenCalledTimes(1);
+    expect(f.quota.latestRetryAt()).toBeNull();
+  });
+});
