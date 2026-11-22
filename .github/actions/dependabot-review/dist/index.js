@@ -10207,6 +10207,45 @@ const DEFINITIONS = [
 		effect: "A reset time more than this far ahead is ignored: the estimate is unchanged and no wait or retry time uses it.",
 		test: "src/evidence/github-quota.test.ts > judges a reset on the wall clock: past or beyond the window is ignored"
 	},
+	{
+		id: "probe.commentLimit.writeIntervalMs",
+		value: 1e3,
+		unit: "milliseconds",
+		protects: "Keeps the probe's comment writes and deletes under GitHub's secondary rate limits, so a run is not cut short or flagged as abuse.",
+		basis: {
+			kind: "external",
+			url: "https://docs.github.com/en/rest/using-the-rest-api/best-practices-for-using-the-rest-api#pause-between-mutative-requests",
+			checked: "2026-11-22",
+			platformValue: 1e3,
+			margin: "none: GitHub's guidance is to wait at least one second between POST, PATCH, PUT, or DELETE requests, and the probe waits exactly that"
+		},
+		effect: "The probe waits this long before every create, update, or delete after its first, and sends them one at a time.",
+		test: "tests/probe-comment-limit/run.test.ts > mutative requests are paced by the interval and never sent concurrently"
+	},
+	{
+		id: "probe.commentLimit.maxWrites",
+		value: 32,
+		unit: "count",
+		protects: "Bounds the comments one probe run can create or edit in the user's test repository, far below GitHub's content-creation limit of 80 a minute and 500 an hour.",
+		basis: {
+			kind: "safety",
+			reason: "The longest run, a halving search from the first body, needs 1 + 17 + 4 unit bodies + 1 seed + 2 updates + 1 line-break body = 26 writes; 32 covers it with spare, and with as many deletes a run stays under GitHub content-creation limits."
+		},
+		effect: "At the cap the next write is not sent; the result is inconclusive, and cleanup still deletes every comment made.",
+		test: "tests/probe-comment-limit/run.test.ts > reaching the write cap gives inconclusive and sends no further write"
+	},
+	{
+		id: "probe.commentLimit.firstBodyCodeUnits",
+		value: 131072,
+		unit: "code units",
+		protects: "Starts the probe's search above the limit GitHub's errors report, so the first body is rejected and the search has an upper bound.",
+		basis: {
+			kind: "safety",
+			reason: "Twice the 65,536 figure GitHub errors report (this spec, Evidence), so a limit up to double that is still found; a larger real limit makes the first body accepted and the result inconclusive, never wrong. The body is 128 KiB, one ordinary request."
+		},
+		effect: "The first create sends this many ASCII code units; if GitHub accepts it, the probe stops inconclusive.",
+		test: "tests/probe-comment-limit/core.test.ts > the search is inconclusive when the first body is accepted or a write is inconclusive"
+	},
 	...allScaledShareEntries()
 ];
 const REGISTER = buildRegister(DEFINITIONS);
