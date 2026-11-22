@@ -424,10 +424,13 @@ None.
 
 ## External Citations Amendment
 
-**Status: approved for planning, 2026-11-22.** The user invoked `as-plan` on
-the reviewed draft after a fresh-context review whose 15 findings were all
-fixed. The user approved its plan for execution (`as-build auto`) the same
-day. It refines phase
+**Status: approved for planning, 2026-11-22; implemented for #381, pending
+review and merge.** The user invoked `as-plan` on the reviewed draft after a
+fresh-context review whose 15 findings were all fixed. The user approved its
+plan for execution (`as-build auto`) the same day. The live probe measured
+GitHub's comment limit in UTF-8 bytes,
+`limit:github.comment.maxBodyBytes` (recorded on #381), and the
+comment cap is derived from it (A3). It refines phase
 2's "cite external limits, including the comment-limit probe" for
 [#381](https://github.com/andrewpucci/dependency-update-advisor/issues/381)
 (task L9 under #372). The user chose its scope in an interview on

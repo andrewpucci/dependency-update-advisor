@@ -287,8 +287,11 @@ gaps and an introduced vulnerability before parity is claimed.
   adopter guide. An
   [external citations amendment](SPEC-limit-register.md#external-citations-amendment)
   for L9 ([#381](https://github.com/andrewpucci/dependency-update-advisor/issues/381))
-  is approved for planning, 2026-11-22: dated platform citations, a committed
-  comment-limit probe, and a gated raise of the comment limit.
+  is approved for planning, 2026-11-22, and implemented, pending review and
+  merge: dated platform citations, a committed comment-limit probe that
+  measured GitHub's comment limit in bytes
+  (`limit:github.comment.maxBodyBytes`), and a comment cap derived from
+  it.
 - [Decision brief rendering](SPEC-decision-brief.md) — approved for execution
   for O1 #23; renderer implementation is pending overall review and merge.
   No desktop or narrow preview yet includes the policy guide link.
