@@ -429,8 +429,10 @@ None.
 
 ## External Citations Amendment
 
-**Status: approved for planning, 2026-11-22; implemented for #381, pending
-review and merge.** The user invoked `as-plan` on the reviewed draft after a
+**Status: approved for planning, 2026-11-22; implemented for #381 and merged
+into `main` in
+[PR #425](https://github.com/andrewpucci/dependency-update-advisor/pull/425),
+2026-11-22.** The user invoked `as-plan` on the reviewed draft after a
 fresh-context review whose 15 findings were all fixed. The user approved its
 plan for execution (`as-build auto`) the same day. The live probe measured
 GitHub's comment limit in UTF-8 bytes,

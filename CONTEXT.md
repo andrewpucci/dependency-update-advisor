@@ -41,8 +41,8 @@ production claim storage, adoption, parity, and cutover remain separate gates.
   is implemented, pending review and merge
   ([#398](https://github.com/andrewpucci/dependency-update-advisor/issues/398)).
 - The L9 [external citations amendment](docs/specs/SPEC-limit-register.md#external-citations-amendment)
-  is implemented, pending review and merge
-  ([#381](https://github.com/andrewpucci/dependency-update-advisor/issues/381)).
+  ([#381](https://github.com/andrewpucci/dependency-update-advisor/issues/381))
+  is merged into `main` (PR #425).
 - The [scaled-share function amendment](docs/specs/SPEC-evidence-coverage.md#scaled-share-function-amendment)
   (B11 #369, #414–#422) is merged into `main` (PR #423); B12 (#370) measures
   and fits its values.
