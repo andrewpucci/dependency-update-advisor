@@ -196,7 +196,7 @@ test('reports every unavailable unit and configuration recovery', async () => {
 test("keeps each gap's member name on a one-unit queue item with several members", async () => {
   const { analysisScenario } = await import('../tests/parity/analysis.js');
   const { analyzeDecisionUnits } = await import('./analysis/batches.js');
-  const { input, scenario } = await analysisScenario({ mode: 'malware-failed' });
+  const { input, scenario } = await analysisScenario({ mode: 'malware-failed-group' });
   const analysis = await analyzeDecisionUnits(input, { deadlineMs: 700_000 }, { now: () => 0 });
   if (!analysis.ok) throw new Error('analysis fixture failed');
   const result = renderDecisionBrief({
@@ -214,6 +214,20 @@ test("keeps each gap's member name on a one-unit queue item with several members
     unit.members.length > 1 && summary[index].gaps.length ? [{ unit, index }] : [],
   );
   expect(grouped.length, 'fixture queues a multi-member unit with gaps').toBeGreaterThan(0);
+  // Two members of one unit with the same status and reasons must not share one sentence.
+  const sharedAcrossMembers = grouped.some(({ unit, index }) => {
+    const links = summary[index].gaps.map((gap) =>
+      unit.evidenceLinks.find((entry) => entry.id === gap.sourceId)!,
+    );
+    return links.some((a) =>
+      links.some(
+        (b) =>
+          a.memberId !== b.memberId &&
+          gapKey({ ...a, category: '' }) === gapKey({ ...b, category: '' }),
+      ),
+    );
+  });
+  expect(sharedAcrossMembers, 'fixture has same-status gaps on two members').toBe(true);
   for (const { unit, index } of grouped) {
     const item = queueItemsOf(result.body).find((entry) => unitQueued(queueEntriesOf(entry), unit));
     expect(item, unit.members[0].name).toBeDefined();
@@ -229,6 +243,13 @@ test("keeps each gap's member name on a one-unit queue item with several members
       expect(item, `${member.name} ${link.category}`).toMatch(named);
       expect(hasGap(item!, link), gapKey(link)).toBe(true);
     }
+    // Each member's gaps are stated under its own name, once.
+    for (const member of unit.members.filter((entry) =>
+      summary[index].gaps.some(
+        (gap) => unit.evidenceLinks.find((link) => link.id === gap.sourceId)?.memberId === entry.id,
+      ),
+    ))
+      expect(item!.split(`${member.name}: `).length - 1, member.name).toBe(1);
   }
 });
 
