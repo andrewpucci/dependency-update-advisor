@@ -1,6 +1,8 @@
 import { expect, test } from 'vite-plus/test';
 import { createHash } from 'node:crypto';
-import { createUpstreamReader } from './upstream-read.js';
+import { createUpstreamReader, type UpstreamDependencies } from './upstream-read.js';
+import { createResearchCache } from './research-cache.js';
+import { RESEARCH_CACHE_LIMITS } from '../budget.js';
 import { limit } from '../limits.js';
 import {
   collectTargetRelease,
@@ -47,11 +49,13 @@ function file(value: unknown) {
 function setup(
   overrides: Record<string, unknown> = {},
   readerLimits: Record<string, unknown> = {},
+  deps: Partial<UpstreamDependencies> = {},
 ) {
   const calls: string[] = [];
   const opened = createUpstreamReader(
     { ...limits, ...readerLimits },
     {
+      ...deps,
       now: () => 0,
       fetch: async (url) => {
         calls.push(url);
@@ -328,6 +332,27 @@ test('package comparison tags are rechecked after comparison collection', async 
   const result = await collectPackageComparison({ ...target, version: '1.0.0' }, target, f.reader);
   expect(result.status).not.toBe('available');
   expect(result.reasons).toContain('conflict');
+  f.reader.close();
+});
+test('a missing proposed tag ends the package comparison before any base tag is probed', async () => {
+  // Research shares one run cache, so the target-release stage's 404s answer the comparison.
+  const missing = () => Response.json({}, { status: 404 });
+  const f = setup(
+    {
+      '/git/ref/tags/v2.0.0': missing,
+      '/git/ref/tags/v1.0.0': { ref: 'refs/tags/v1.0.0', object: { type: 'commit', sha } },
+    },
+    {},
+    { cache: createResearchCache(RESEARCH_CACHE_LIMITS) },
+  );
+  const release = await collectTargetRelease(target, f.reader);
+  expect(release.status).toBe('unavailable');
+  const probed = f.calls.length;
+  const result = await collectPackageComparison({ ...target, version: '1.0.0' }, target, f.reader);
+  expect(result).toMatchObject({ status: 'unavailable', reasons: ['missing'] });
+  // Every proposed candidate was already answered; no request reaches the network.
+  expect(f.calls.slice(probed)).toEqual([]);
+  expect(f.calls.some((url) => url.includes('/git/ref/tags/v1.0.0'))).toBe(false);
   f.reader.close();
 });
 /** A ref whose annotated-tag chain has `tags` tag objects before the commit `sha`. */
