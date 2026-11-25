@@ -18,6 +18,8 @@ export type SignalScenarioOptions = {
     | 'clean'
     | 'malware'
     | 'malware-failed'
+    /** Like malware-failed, and the same lookup also fails for orbit, child-0's group anchor. */
+    | 'malware-failed-group'
     | 'optional-failed'
     | 'recent'
     | 'boundary'
@@ -73,7 +75,11 @@ export async function policySignalScenario(options: SignalScenarioOptions = {}) 
         version = target.slice(split + 1),
         ecosystem = u.searchParams.get('ecosystem')!,
         malware = u.searchParams.get('type') === 'malware';
-      if (malware && mode === 'malware-failed' && name === 'child-0')
+      if (
+        malware &&
+        (mode === 'malware-failed' || mode === 'malware-failed-group') &&
+        (name === 'child-0' || (mode === 'malware-failed-group' && name === 'orbit'))
+      )
         return Response.json({}, { status: 503 });
       return Response.json(
         malware && mode === 'malware' && name === 'child-0' && version === '2.0.0'
