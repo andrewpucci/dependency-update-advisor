@@ -12,13 +12,14 @@ test('scale 1 leaves every register value unchanged', () => {
   );
 });
 
-test('scales the hand-set evidence shares, envelope values, and attempt cap', () => {
+test('scales the hand-set evidence shares, envelope values, and research caps', () => {
   for (const id of [
     'evidence.allocation.signals.readers.malware.maxRequests',
     'evidence.allocation.upstream.maxTotalBytes',
     'evidence.envelope.totalTimeoutMs',
     'evidence.envelope.maxResponseBytes',
     'research.maxAttempts',
+    'research.maxRetainedBytes',
   ])
     expect(valueAt(10, id), id).toBe(10 * (REGISTER.get(id)?.value ?? 0));
 });
@@ -34,7 +35,13 @@ test('recomputes derived entries from the scaled inputs', () => {
 });
 
 test('leaves limits outside the read budget unchanged', () => {
-  for (const id of ['packet.bytes', 'w2.npm.maxFileBytes', 'research.maxWork', 'job.budget'])
+  for (const id of [
+    'packet.bytes',
+    'w2.npm.maxFileBytes',
+    'research.maxWork',
+    'research.maxJsonEntries',
+    'job.budget',
+  ])
     expect(valueAt(10, id), id).toBe(REGISTER.get(id)?.value);
 });
 
