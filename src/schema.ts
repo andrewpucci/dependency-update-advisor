@@ -45,7 +45,9 @@ export const EVIDENCE_REASONS: readonly EvidenceReason[] = REASONS;
 export type Ecosystem = (typeof ECOSYSTEMS)[number];
 export type EvidenceReason = (typeof REASONS)[number];
 export type EvidenceStatus = 'available' | 'partial' | 'unavailable';
-type DeepReadonly<T> = T extends object ? { readonly [K in keyof T]: DeepReadonly<T[K]> } : T;
+export type DeepReadonly<T> = T extends object
+  ? { readonly [K in keyof T]: DeepReadonly<T[K]> }
+  : T;
 export type PacketRevision = { repository: RepositoryIdentity; sha: string };
 export type InventoryCoverage = {
   status: 'complete' | 'partial' | 'unavailable' | 'not_applicable';
