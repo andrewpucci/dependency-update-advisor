@@ -42,18 +42,12 @@ import { runResearch } from '../../src/research.js';
 import { createGithubTransport } from '../../src/runtime.js';
 import { createGithubSnapshotReads, withTrustedSnapshot } from '../../src/snapshot.js';
 
-// Mock factories run before imports, so they share the recorder's phase through this holder, and
-// the advisory and malware lookups (side and URL) research settled, for MEASURE_TARGETS_OUT.
+// Mock factories run before imports, so they share the recorder's phase through this holder, and,
+// for MEASURE_TARGETS_OUT, every advisory and malware read and the sides each target was read for.
 const hooks = vi.hoisted(() => ({
   phase: (): DemandPhase => 'pre-research',
-  lookups: [] as {
-    side: 'base' | 'head';
-    url: string | null;
-    target: { ecosystem: string; name: string; version: string } | null;
-    complete: boolean;
-  }[],
-  // The target each malware read looked up, by its lookup URL: signal attempts carry only the URL.
-  malwareTargets: new Map<string, { ecosystem: string; name: string; version: string }>(),
+  reads: [] as import('../../src/measurement/targets.js').ReaderRead[],
+  sides: new Map() as import('../../src/measurement/targets.js').TargetSides,
 }));
 
 vi.mock('../../src/limits.js', async (importOriginal) => {
@@ -82,63 +76,52 @@ vi.mock('../../src/evidence/upstream-read.js', async (importOriginal) => {
 vi.mock('../../src/evidence/advisory-read.js', async (importOriginal) => {
   const actual = await importOriginal<typeof import('../../src/evidence/advisory-read.js')>();
   const { labelReader } = await import('../../src/measurement/demand.js');
+  const { recordReads } = await import('../../src/measurement/targets.js');
   const phase = () => hooks.phase();
+  // Reads are kept as the reader answered them: the stage may roll a member back or reconcile it.
+  const recorded =
+    (type: 'reviewed' | 'malware', create: typeof actual.createAdvisoryReader) =>
+    (limits: unknown, deps: Parameters<typeof actual.createAdvisoryReader>[1]) => {
+      const opened = create(limits, deps);
+      return opened.kind === 'ready' ? recordReads(opened, type, hooks.reads) : opened;
+    };
   return {
     ...actual,
-    createAdvisoryReader: labelReader('advisory', actual.createAdvisoryReader, phase),
+    createAdvisoryReader: labelReader(
+      'advisory',
+      recorded('reviewed', actual.createAdvisoryReader),
+      phase,
+    ),
     createMalwareReader: labelReader(
       'malware',
-      (limits: unknown, deps: Parameters<typeof actual.createMalwareReader>[1]) => {
-        const opened = actual.createMalwareReader(limits, deps);
-        if (opened.kind !== 'ready') return opened;
-        return {
-          ...opened,
-          read: async (target: unknown) => {
-            const lookup = await opened.read(target);
-            if (lookup.url) hooks.malwareTargets.set(lookup.url, lookup.target);
-            return lookup;
-          },
-        };
-      },
+      recorded('malware', actual.createMalwareReader),
       phase,
     ),
   };
 });
-// Request URLs carry no side, so the side of each settled lookup comes from the stage outputs.
+// Request URLs carry no side, so each target's sides come from the stage's own target resolver.
 vi.mock('../../src/evidence/advisories.js', async (importOriginal) => {
   const actual = await importOriginal<typeof import('../../src/evidence/advisories.js')>();
+  const { addTargetSides } = await import('../../src/measurement/targets.js');
   return {
     ...actual,
-    enrichAdvisories: async (...args: Parameters<typeof actual.enrichAdvisories>) => {
-      const result = await actual.enrichAdvisories(...args);
-      if (result.kind === 'enriched')
-        for (const { side, lookup } of result.lookups)
-          hooks.lookups.push({
-            side,
-            url: lookup?.url ?? null,
-            target: lookup?.target ?? null,
-            complete: lookup?.complete ?? false,
-          });
-      return result;
+    enrichAdvisories: (...args: Parameters<typeof actual.enrichAdvisories>) => {
+      addTargetSides(hooks.sides, args[0], 'reviewed', actual);
+      return actual.enrichAdvisories(...args);
     },
   };
 });
 vi.mock('../../src/evidence/policy-signals.js', async (importOriginal) => {
   const actual = await importOriginal<typeof import('../../src/evidence/policy-signals.js')>();
+  const advisories = await vi.importActual<typeof import('../../src/evidence/advisories.js')>(
+    '../../src/evidence/advisories.js',
+  );
+  const { addTargetSides } = await import('../../src/measurement/targets.js');
   return {
     ...actual,
-    enrichPolicySignals: async (...args: Parameters<typeof actual.enrichPolicySignals>) => {
-      const result = await actual.enrichPolicySignals(...args);
-      if (result.kind === 'enriched')
-        for (const { side, url, category, outcome } of result.attempts)
-          if (category === 'malware')
-            hooks.lookups.push({
-              side,
-              url,
-              target: (url && hooks.malwareTargets.get(url)) || null,
-              complete: outcome === 'available',
-            });
-      return result;
+    enrichPolicySignals: (...args: Parameters<typeof actual.enrichPolicySignals>) => {
+      addTargetSides(hooks.sides, args[0], 'malware', advisories);
+      return actual.enrichPolicySignals(...args);
     },
   };
 });
@@ -389,7 +372,7 @@ test('measure research read demand', async () => {
     const targets = {
       pr,
       measuredAt: report.measuredAt,
-      targets: settledTargets(hooks.lookups, requested),
+      targets: settledTargets(hooks.reads, hooks.sides, requested),
       tagCandidates: tagCandidates(observed),
     };
     mkdirSync(dirname(targetsOut), { recursive: true });

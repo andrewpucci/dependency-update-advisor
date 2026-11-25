@@ -1,8 +1,16 @@
 import { readFileSync } from 'node:fs';
 import { expect, test } from 'vite-plus/test';
 import { upstreamGithubUrl } from '../evidence/upstream-read.js';
+import { createAdvisoryReader } from '../evidence/advisory-read.js';
+import * as advisories from '../evidence/advisories.js';
+import { collectAdvisoryNpm, syntheticAdvisory } from '../../tests/parity/advisories.js';
 import {
+  addTargetSides,
   parseTagCandidate,
+  recordReads,
+  type ReaderRead,
+  type Side,
+  type TargetSides,
   parseVersionedQuery,
   settledTarget,
   settledTargets,
@@ -159,48 +167,56 @@ test('ignores refs that are not tags and other upstream requests', () => {
     expect(parseTagCandidate(url), url).toBeNull();
 });
 
-test('a versioned query yields its one target once per side, and only when requested', () => {
+const lodashTarget = { ecosystem: 'npm', name: 'lodash', version: '4.17.20' };
+const sidesOf = (entries: [string, Side[]][]): TargetSides =>
+  new Map(entries.map(([key, sides]) => [key, new Set(sides)]));
+const lodashSides = (type: string, sides: Side[]) =>
+  sidesOf([[JSON.stringify([type, 'npm', 'lodash', '4.17.20']), sides]]);
+
+test('a versioned read yields its one target once per side, and only when requested', () => {
   const lodash = advisoryUrl('npm', ['lodash@4.17.20'], 'reviewed');
   const unrequested = advisoryUrl('npm', ['lodash@4.17.20'], 'malware');
-  const discovery = advisoryUrl('pip', ['flo-pro-adk', 'flo_pro_adk'], 'malware', '50');
-  const requested = new Set([lodash, discovery, 'https://api.osv.dev/v1/query']);
-  const lookup = { ecosystem: 'npm', name: 'lodash', version: '4.17.20' };
-  const target = { ...lookup, type: 'reviewed' };
+  const osv = 'https://api.osv.dev/v1/query';
+  const requested = new Set([lodash, osv]);
+  const read = (url: string, type: 'reviewed' | 'malware' = 'reviewed') => ({
+    type,
+    url,
+    target: lodashTarget,
+    complete: true,
+  });
+  const sides = new Map([
+    ...lodashSides('reviewed', ['head', 'base']),
+    ...lodashSides('malware', ['head']),
+  ]);
   expect(
     settledTargets(
-      [
-        { side: 'head', url: lodash, target: lookup, complete: true },
-        { side: 'head', url: lodash, target: lookup, complete: true },
-        { side: 'base', url: lodash, target: lookup, complete: true },
-        { side: 'head', url: unrequested, target: lookup, complete: true },
-        { side: 'head', url: discovery, target: lookup, complete: true },
-        { side: 'base', url: 'https://api.osv.dev/v1/query', target: lookup, complete: true },
-        { side: 'base', url: null, target: lookup, complete: true },
-        { side: 'base', url: lodash, target: null, complete: true },
-      ],
+      [read(lodash), read(lodash), read(unrequested, 'malware'), read(osv)],
+      sides,
       requested,
     ),
   ).toEqual([
-    { ...target, side: 'base', complete: true },
-    { ...target, side: 'head', complete: true },
+    { ...lodashTarget, type: 'reviewed', side: 'base', complete: true },
+    { ...lodashTarget, type: 'reviewed', side: 'head', complete: true },
   ]);
+  // A read for a target no member resolved to, or of the other type, has no side.
+  expect(settledTargets([read(lodash)], lodashSides('malware', ['head']), requested)).toEqual([]);
 });
 
-test('keeps a target whose lookup failed, marked incomplete on that side', () => {
+test('keeps a target whose read failed, marked incomplete on every side it was read for', () => {
   const lodash = advisoryUrl('npm', ['lodash@4.17.20'], 'reviewed');
-  const lookup = { ecosystem: 'npm', name: 'lodash', version: '4.17.20' };
-  const target = { ...lookup, type: 'reviewed' };
-  expect(
-    settledTargets(
-      [
-        { side: 'head', url: lodash, target: lookup, complete: false },
-        { side: 'head', url: lodash, target: lookup, complete: true },
-        { side: 'base', url: lodash, target: lookup, complete: true },
-        { side: 'base', url: lodash, target: lookup, complete: false },
-      ],
-      new Set([lodash]),
-    ),
-  ).toEqual([
+  const read = (complete: boolean) => ({
+    type: 'reviewed' as const,
+    url: lodash,
+    target: lodashTarget,
+    complete,
+  });
+  const target = { ...lodashTarget, type: 'reviewed' };
+  const sides = lodashSides('reviewed', ['head', 'base']);
+  expect(settledTargets([read(false), read(true)], sides, new Set([lodash]))).toEqual([
+    { ...target, side: 'base', complete: false },
+    { ...target, side: 'head', complete: false },
+  ]);
+  expect(settledTargets([read(true), read(false)], sides, new Set([lodash]))).toEqual([
     { ...target, side: 'base', complete: false },
     { ...target, side: 'head', complete: false },
   ]);
@@ -220,4 +236,107 @@ test('records each distinct candidate and status the run requested', () => {
     { repository: 'owner/repo', tag: 'v1', status: '200' },
     { repository: 'owner/repo', tag: 'v2', status: '404' },
   ]);
+});
+
+// The wiring the demand script uses: reads come from the reader, sides from the stage's resolver.
+async function recordedRun(maxFindings?: number, failAnchor = false) {
+  const { input } = await collectAdvisoryNpm('empty', 1);
+  const requested = new Set<string>();
+  const opened = createAdvisoryReader(input.limits, {
+    now: () => 0,
+    fetch: async (url) => {
+      requested.add(url);
+      if (failAnchor && new URL(url).searchParams.get('affects')?.startsWith('fixture-anchor@'))
+        return Response.json({ message: 'unavailable' }, { status: 503 });
+      // Two advisories for the anchor, so a one-finding budget rolls its member back.
+      return Response.json(
+        new URL(url).searchParams.get('affects')?.startsWith('fixture-anchor@')
+          ? [
+              syntheticAdvisory,
+              {
+                ...syntheticAdvisory,
+                ghsa_id: 'GHSA-dddd-eeee-ffff',
+                html_url: 'https://github.com/advisories/GHSA-dddd-eeee-ffff',
+              },
+            ]
+          : [],
+      );
+    },
+  });
+  if (opened.kind !== 'ready') throw new Error('reader');
+  const reads: ReaderRead[] = [];
+  const sides: TargetSides = new Map();
+  const staged = { ...input, limits: { ...input.limits, ...(maxFindings ? { maxFindings } : {}) } };
+  addTargetSides(sides, staged, 'reviewed', advisories);
+  const result = await advisories.enrichAdvisories(staged, {
+    reader: recordReads(opened, 'reviewed', reads),
+  });
+  opened.close();
+  return { result, settled: settledTargets(reads, sides, requested) };
+}
+
+test('records every target the stage read, with the side the stage read it for', async () => {
+  const { result, settled } = await recordedRun();
+  if (result.kind !== 'enriched') throw new Error('enrichment');
+  const looked = result.lookups.flatMap(({ side, lookup }) =>
+    lookup ? [{ ...lookup.target, side }] : [],
+  );
+  expect(looked.length).toBeGreaterThan(0);
+  expect(
+    settled.map(({ ecosystem, name, version, side }) => ({ ecosystem, name, version, side })),
+  ).toEqual(expect.arrayContaining(looked));
+  expect(settled).toHaveLength(looked.length);
+  expect(settled.every((t) => t.type === 'reviewed' && t.complete)).toBe(true);
+});
+
+test('a member the stage rolls back still has its completed read recorded', async () => {
+  const { result, settled } = await recordedRun(1);
+  if (result.kind !== 'enriched') throw new Error('enrichment');
+  // The stage keeps no lookup for the rolled-back anchor, but GitHub answered it in full.
+  expect(result.lookups.some(({ lookup }) => lookup?.target.name === 'fixture-anchor')).toBe(false);
+  expect(settled).toContainEqual(
+    expect.objectContaining({ name: 'fixture-anchor', type: 'reviewed', complete: true }),
+  );
+});
+
+test('a read GitHub answered with an error is kept, marked incomplete', async () => {
+  const { settled } = await recordedRun(undefined, true);
+  expect(settled).toContainEqual(
+    expect.objectContaining({ name: 'fixture-anchor', type: 'reviewed', complete: false }),
+  );
+  expect(settled.filter((t) => t.name !== 'fixture-anchor').every((t) => t.complete)).toBe(true);
+});
+
+test('malware targets take only the proposed side; reviewed targets take every existing side', async () => {
+  const { input } = await collectAdvisoryNpm('empty', 1);
+  const reviewed: TargetSides = new Map();
+  const malware: TargetSides = new Map();
+  addTargetSides(reviewed, input, 'reviewed', advisories);
+  addTargetSides(malware, input, 'malware', advisories);
+  const all = (sides: TargetSides) => [...sides.values()].flatMap((set) => [...set]);
+  expect(all(reviewed)).toEqual(expect.arrayContaining(['base', 'head']));
+  for (const change of input.changes) {
+    if ('basis' in change) continue;
+    const target = advisories.resolveAdvisoryTarget(
+      input,
+      change as never,
+      change.to ? 'head' : 'base',
+    );
+    if (!target) continue;
+    expect([
+      ...(malware.get(JSON.stringify(['malware', target.ecosystem, target.name, target.version])) ??
+        []),
+    ]).toEqual([change.to ? 'head' : 'base']);
+  }
+  expect(malware.size).toBeGreaterThan(0);
+  // One proposed-side entry per member, and nothing for the other side.
+  const proposed = input.changes.filter(
+    (c) =>
+      !('basis' in c) &&
+      advisories.resolveAdvisoryTarget(input, c as never, c.to ? 'head' : 'base') !== null,
+  ).length;
+  expect(all(malware)).toHaveLength(proposed);
+  const before = JSON.stringify([...malware].map(([key, set]) => [key, [...set]]));
+  addTargetSides(malware, { not: 'input' }, 'malware', advisories);
+  expect(JSON.stringify([...malware].map(([key, set]) => [key, [...set]]))).toBe(before);
 });

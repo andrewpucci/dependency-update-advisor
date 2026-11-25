@@ -1,11 +1,24 @@
 /**
  * The targets a demand measurement's advisory and malware readers settle, and the tag candidates
- * it requested, from the lookups research records and the request URLs the run observes (#388,
- * C1 of the batching track). A settled target comes from a versioned GitHub advisory query: an
+ * it requested, from the readers' own reads and the request URLs the run observes (#388, C1 of the
+ * batching track). A settled target comes from a versioned GitHub advisory query: an
  * npm reviewed or malware query, an Actions reviewed query, or a `pip` or Actions malware query.
  * Package-only discovery queries and OSV lookups settle nothing here: `pip` reviewed lookups are
  * not batched (Batching Reconciliation Amendment D1).
  */
+
+import type { AdvisoryLookup, AdvisoryReader } from '../evidence/advisory-read.js';
+import type {
+  AdvisoryInput,
+  prepareAdvisoryInput,
+  resolveAdvisoryTarget,
+} from '../evidence/advisories.js';
+
+/** The stage's own input check and target resolver, passed in so a mocked module can supply them. */
+export type TargetResolver = Readonly<{
+  prepareAdvisoryInput: typeof prepareAdvisoryInput;
+  resolveAdvisoryTarget: typeof resolveAdvisoryTarget;
+}>;
 
 export type TargetEcosystem = 'npm' | 'pip' | 'actions';
 export type TargetType = 'reviewed' | 'malware';
@@ -26,8 +39,11 @@ export type SettledTarget = Readonly<{
   version: string;
   type: TargetType;
   side: Side;
-  /** False when any lookup of this target on this side did not complete (an HTTP error, 429,
-   * network failure, or any other incomplete read): C2 replays it but cannot treat it as known. */
+  /**
+   * False when any read of this target did not complete (an HTTP error, 429, network failure, or
+   * any other incomplete read): C2 replays it but cannot treat its answer as known. This is the
+   * reader's own result, before the stage reconciles, compares, or rolls back its evidence.
+   */
   complete: boolean;
 }>;
 export type TagCandidate = Readonly<{ repository: string; tag: string; status: string }>;
@@ -133,30 +149,90 @@ const byKey = <T>(values: Iterable<T>): T[] => {
   return [...seen.entries()].sort(([a], [b]) => (a < b ? -1 : a > b ? 1 : 0)).map(([, v]) => v);
 };
 
-export type ObservedLookup = Readonly<{
-  side: Side;
-  url: string | null;
-  target: ReaderTarget | null | undefined;
+/** One read an advisory or malware reader answered, as the reader itself reported it. */
+export type ReaderRead = Readonly<{
+  type: TargetType;
+  url: string;
+  target: ReaderTarget;
   complete: boolean;
 }>;
+/** The sides each target was looked up for, keyed by `sideKey`. */
+export type TargetSides = Map<string, Set<Side>>;
+
+const sideKey = (type: TargetType, t: ReaderTarget) =>
+  JSON.stringify([type, t.ecosystem, t.name, t.version]);
 
 /**
- * One settled target per side for each lookup whose versioned URL this run requested, complete
- * only when every such lookup completed. Advisory reads are shared across sides, so one request
- * can settle a target on both.
+ * Wraps a reader so every read it answers is kept with its own target, URL, and completeness:
+ * the stage may later roll a member back or reconcile its lookup, which must not hide the read.
+ */
+export function recordReads<R extends AdvisoryReader>(
+  reader: R,
+  type: TargetType,
+  reads: ReaderRead[],
+): R {
+  return {
+    ...reader,
+    read: async (value: unknown): Promise<AdvisoryLookup> => {
+      const lookup = await reader.read(value);
+      if (lookup.url)
+        reads.push({ type, url: lookup.url, target: lookup.target, complete: lookup.complete });
+      return lookup;
+    },
+  };
+}
+
+/**
+ * Adds the side each member's target is looked up for to `sides`, resolved the way the stage
+ * resolves it: reviewed lookups check every existing side, malware lookups the proposed side (the
+ * base side for a removal). Members the stage would skip, and invalid input, add nothing.
+ */
+export function addTargetSides(
+  sides: TargetSides,
+  value: unknown,
+  type: TargetType,
+  resolver: TargetResolver,
+): void {
+  const prepared = resolver.prepareAdvisoryInput(value as AdvisoryInput);
+  if (!prepared.ok) return;
+  const { input } = prepared;
+  for (const change of input.changes) {
+    if ('basis' in change) continue;
+    const candidates: Side[] =
+      type === 'malware'
+        ? [change.to ? 'head' : 'base']
+        : [...(change.to ? ['head' as const] : []), ...(change.from ? ['base' as const] : [])];
+    for (const side of candidates) {
+      const target = resolver.resolveAdvisoryTarget(input, change as never, side);
+      if (!target) continue;
+      const key = sideKey(type, target);
+      const known = sides.get(key) ?? new Set<Side>();
+      known.add(side);
+      sides.set(key, known);
+    }
+  }
+}
+
+/**
+ * One settled target per side for each read whose versioned URL this run requested, complete only
+ * when every read of it completed. Advisory reads are shared across sides, so one request can
+ * settle a target on both.
  */
 export function settledTargets(
-  lookups: Iterable<ObservedLookup>,
+  reads: Iterable<ReaderRead>,
+  sides: TargetSides,
   requested: ReadonlySet<string>,
 ): SettledTarget[] {
   const targets = new Map<string, SettledTarget>();
-  for (const { side, url, target, complete } of lookups) {
-    if (url === null || !target || !requested.has(url)) continue;
-    const settled = settledTarget(url, target, side, complete);
-    if (!settled) continue;
-    const key = JSON.stringify({ ...settled, complete: null });
-    const prior = targets.get(key);
-    targets.set(key, { ...settled, complete: complete && (prior?.complete ?? true) });
+  for (const { type, url, target, complete } of reads) {
+    if (!requested.has(url)) continue;
+    for (const side of sides.get(sideKey(type, target)) ?? []) {
+      const settled = settledTarget(url, target, side, complete);
+      if (!settled || settled.type !== type) continue;
+      const key = JSON.stringify({ ...settled, complete: null });
+      const prior = targets.get(key);
+      targets.set(key, { ...settled, complete: complete && (prior?.complete ?? true) });
+    }
   }
   return byKey(targets.values());
 }
