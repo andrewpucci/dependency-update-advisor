@@ -1,5 +1,11 @@
 import { expect, test } from 'vite-plus/test';
-import { createDemandRecorder, labelReader, labelShare, readerShare } from './demand.js';
+import {
+  coverageCounts,
+  createDemandRecorder,
+  labelReader,
+  labelShare,
+  readerShare,
+} from './demand.js';
 import { buildRegister, limit, REGISTER } from '../limits.js';
 import { scaledDefinitions } from './scale.js';
 
@@ -278,4 +284,34 @@ test('counts only research-stage GitHub requests and keeps the latest reported q
   expect(report.github.researchRequests).toBe(2);
   // The quota can rise when a window resets; the report keeps the latest, not the lowest.
   expect(report.github.lastRemaining).toBe(50);
+});
+
+test('counts members by evidence status and reason per category, skipping declarations', () => {
+  const evidence = (status: string, reasons: string[] = []) => ({ status, reasons, sourceIds: [] });
+  const coverage = coverageCounts([
+    { evidence: { vulnerability: evidence('available'), malware: evidence('available') } },
+    {
+      evidence: {
+        vulnerability: evidence('unavailable', ['budget']),
+        malware: evidence('partial', ['budget', 'timeout', 'budget']),
+      },
+    },
+    { evidence: { vulnerability: evidence('unavailable', ['budget']) } },
+    { basis: 'declaration', evidence: { vulnerability: evidence('unavailable', ['missing']) } },
+  ] as never);
+
+  expect(coverage).toEqual({
+    vulnerability: { available: 1, partial: 0, unavailable: 2, reasons: { budget: 2 } },
+    malware: { available: 1, partial: 1, unavailable: 0, reasons: { budget: 1, timeout: 1 } },
+  });
+});
+
+test('reports the coverage it is given, and none by default', () => {
+  const recorder = createDemandRecorder(() => 0);
+  const coverage = {
+    malware: { available: 3, partial: 0, unavailable: 1, reasons: { budget: 1 } },
+  };
+
+  expect(recorder.report({}).coverage).toEqual({});
+  expect(recorder.report({}, undefined, coverage).coverage).toEqual(coverage);
 });
