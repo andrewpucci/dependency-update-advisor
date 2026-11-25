@@ -103,21 +103,36 @@ type Query = {
   maxPageBytes: number;
   records: AdvisoryNames[];
   malformed: number;
+  /** False when a page failed, was not a list, or held a malformed record. */
+  complete: boolean;
 };
 
 /** Every page of one advisory query; a non-200 page or a malformed record is kept as counts. */
 async function query(token: string, url: string): Promise<Query> {
-  const result: Query = { status: 0, pages: 0, maxPageBytes: 0, records: [], malformed: 0 };
+  const result: Query = {
+    status: 0,
+    pages: 0,
+    maxPageBytes: 0,
+    records: [],
+    malformed: 0,
+    complete: true,
+  };
   for (let next: string | null = url; next;) {
     const page = await send(token, next);
     result.status = page.status;
     result.pages += 1;
     result.maxPageBytes = Math.max(result.maxPageBytes, page.bytes);
-    if (page.status !== HTTP_STATUS.ok || !Array.isArray(page.data)) break;
+    if (page.status !== HTTP_STATUS.ok || !Array.isArray(page.data)) {
+      result.complete = false;
+      break;
+    }
     for (const value of page.data) {
       const names = advisoryNames(value);
       if (names) result.records.push(names);
-      else result.malformed += 1;
+      else {
+        result.malformed += 1;
+        result.complete = false;
+      }
     }
     next = nextLink(page.link);
   }
@@ -178,6 +193,7 @@ type NpmSize = {
   pages: number;
   records: number;
   malformed: number;
+  complete: boolean;
   stray: number;
   gaps: Record<string, number>;
   positiveLast: boolean;
@@ -206,22 +222,29 @@ async function npmBatch(
     pages: answer.pages,
     records: answer.records.length,
     malformed: answer.malformed,
+    complete: answer.complete,
     stray: strayRecords('npm', affects.map(packageOf), answer.records).length,
     gaps: countBy(gaps, (g) => g.kind),
     positiveLast,
   };
 }
 
-/** npm: singleton queries versus versioned batches at halving sizes, with a positive last. */
+/**
+ * npm: singleton queries versus versioned batches at halving sizes, with a positive last. A
+ * singleton that did not complete has no known answer, so it is counted and never compared.
+ */
 async function probeNpm(token: string, targets: Target[], type: Type) {
   const group = targets.filter((t) => t.ecosystem === 'npm' && t.type === type);
   const singletons = new Map<string, string[]>();
+  let singletonIncomplete = 0;
   for (const t of group) {
     const answer = await query(token, advisoryUrl('npm', [affect(t)], type, PAGE_SIZE));
-    singletons.set(
-      affect(t),
-      answer.records.map((r) => r.id),
-    );
+    if (answer.complete)
+      singletons.set(
+        affect(t),
+        answer.records.map((r) => r.id),
+      );
+    else singletonIncomplete += 1;
   }
   const positives = group.filter((t) => singletons.get(affect(t))?.length).map(affect);
   const rest = group.map(affect).filter((a) => !positives.includes(a));
@@ -240,7 +263,14 @@ async function probeNpm(token: string, targets: Target[], type: Type) {
     const answer = await query(token, advisoryUrl('npm', all, type, size));
     perPage.push({ perPage: size, pages: answer.pages, maxPageBytes: answer.maxPageBytes });
   }
-  return { type, targets: group.length, singletonPositives: positives.length, sizes, perPage };
+  return {
+    type,
+    targets: group.length,
+    singletonIncomplete,
+    singletonPositives: positives.length,
+    sizes,
+    perPage,
+  };
 }
 
 /** Every spelling the reader's discovery sends for a target name (Package Name Form item 6). */
@@ -279,7 +309,7 @@ async function discover(token: string, ecosystem: Ecosystem, type: Type, names: 
   for (const url of urls) {
     const answer = await query(token, url);
     records.push(...answer.records);
-    complete &&= answer.status === HTTP_STATUS.ok && answer.malformed === 0;
+    complete &&= answer.complete;
   }
   return { records, complete, requests: urls.length };
 }
@@ -310,7 +340,9 @@ async function probeDiscovery(token: string, targets: Target[], ecosystem: Ecosy
     type,
     perTarget.flatMap((t) => spellings(ecosystem, t.name)),
   );
-  const gaps = discoveryBatchCovers(ecosystem, perTarget, batch.records);
+  // A per-target discovery that did not complete has no known answer to compare with.
+  const known = perTarget.filter((t) => t.complete);
+  const gaps = discoveryBatchCovers(ecosystem, known, batch.records);
   return {
     ecosystem,
     type,

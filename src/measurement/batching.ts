@@ -131,10 +131,11 @@ export function graphqlAnswers(
 ): Map<string, GraphqlAnswer> {
   const answers = new Map<string, GraphqlAnswer>(aliases.map(({ alias }) => [alias, 'error']));
   const body = response as { data?: unknown; errors?: unknown } | null;
-  const errors = Array.isArray(body?.errors) ? (body.errors as { path?: unknown }[]) : [];
-  if (!body?.data || typeof body.data !== 'object' || errors.some((e) => !Array.isArray(e.path)))
+  const errors = Array.isArray(body?.errors) ? (body.errors as unknown[]) : [];
+  const paths = errors.map((e) => (e as { path?: unknown } | null)?.path);
+  if (!body?.data || typeof body.data !== 'object' || paths.some((p) => !Array.isArray(p)))
     return answers;
-  const named = new Set(errors.map((e) => String((e.path as unknown[])[0])));
+  const named = new Set(paths.map((p) => String((p as unknown[])[0])));
   const data = body.data as Record<string, unknown>;
   for (const { alias, repository } of aliases)
     answers.set(alias, named.has(alias) ? 'error' : aliasAnswer(data[alias], repository));

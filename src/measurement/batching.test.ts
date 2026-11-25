@@ -174,7 +174,13 @@ test('a null or missing repository with no error is still an error, not a missin
 
 test('an error without a path, or no data, makes every alias an error', () => {
   const data = { c1: { nameWithOwner: 'vitest-dev/vitest', ref: null } };
-  for (const response of [{ data, errors: [{ message: 'boom' }] }, { errors: [] }, null, {}])
+  for (const response of [
+    { data, errors: [{ message: 'boom' }] },
+    { data, errors: [null] },
+    { errors: [] },
+    null,
+    {},
+  ])
     expect([...graphqlAnswers(response, [aliases[1]]).values()], JSON.stringify(response)).toEqual([
       'error',
     ]);
