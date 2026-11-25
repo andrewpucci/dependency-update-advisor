@@ -320,6 +320,40 @@ must satisfy the verification below.
   sanitized result is recorded on #348. The R1 caller is re-pinned only after
   this passes.
 
+### Compaction revision (#412)
+
+**Status: decided by the user on 2026-11-24 on
+[#412](https://github.com/andrewpucci/dependency-update-advisor/issues/412#issuecomment-7150562565).**
+It keeps `limit:comment.maxBodyCodeUnits` and the set of required records, and
+targets a required body at or below half that limit on the recorded R1 input.
+It revises the wording above as follows; every rule in Amendment boundaries
+still holds.
+
+- **Checked, none found:** instead of one line per category, each package
+  appears on one line, the line for the exact set of required categories
+  that are `available` with no finding for it. The line lists those
+  categories, for example
+  `- upstream, vulnerability, and malware: checked, none found for a, b.`
+  A package never appears on a line for a category it was not checked for.
+  The checked-state fixture asserts this form in place of "one line per
+  category".
+- **Queue gaps:** in a decision-queue item, gaps that share a status and
+  reasons are one sentence that lists their categories once and states each
+  distinct manual step once, for example
+  `upstream and vulnerability evidence is unavailable (budget). Not checked
+  within the review's limits; check manually: read its release notes; search
+  the GitHub Advisory Database for it.` Gaps that differ in status or reasons
+  stay separate sentences. A one-unit item names its unit only in the entry;
+  a one-unit item with several members keeps each gap's member name.
+- **Action text:** the fixed manual-check text is reworded without dropping a
+  step: `Not checked within the review's limits;`, `No supported source
+  found;`, and `Source could not be trusted;`, each followed by
+  `check manually:` and the step. A step refers to the package as "it" or
+  "each package" because the line already names it.
+- **Follow-ups:** a unit with more than one model follow-up names its members
+  once, with each follow-up as its own nested line in record order. Model text
+  is unchanged.
+
 ### Amendment boundaries
 
 - **Always:** account for every required decision-bearing record, name every

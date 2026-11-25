@@ -130,12 +130,21 @@ const ACTION_ORDER: readonly ActionGroup[] = [
   'untrusted',
 ];
 
-function manualStep(category: string, name: string): string {
+/** The manual check for a category, said of one package ("it") or of each listed package. */
+function manualStep(category: string, plural: boolean): string {
+  const it = plural ? 'each package' : 'it';
+  const its = plural ? "each package's" : 'its';
   if (category === 'vulnerability' || category === 'malware')
-    return `search the GitHub Advisory Database for ${name}`;
-  if (category === 'installScript') return `review ${name}'s install scripts`;
-  if (category === 'upstream') return `read ${name}'s release notes`;
-  return `review ${name}'s ${readableLabel(category)} evidence`;
+    return `search the GitHub Advisory Database for ${it}`;
+  if (category === 'installScript') return `review ${its} install scripts`;
+  if (category === 'upstream') return `read ${its} release notes`;
+  return `review ${its} ${readableLabel(category)} evidence`;
+}
+
+/** "a", "a and b", or "a, b, and c". */
+function listOf(items: readonly string[]): string {
+  if (items.length <= 2) return items.join(' and ');
+  return `${items.slice(0, -1).join(', ')}, and ${items.at(-1)}`;
 }
 
 /** A whole-second UTC retry time as 24-hour `HH:MM`, rounded up so it is never before the reset. */
@@ -145,17 +154,18 @@ function rerunClock(retryAfter: string): string {
   return rounded.slice(ISO_DATE_TIME.hour[0], ISO_DATE_TIME.minute[1]);
 }
 
+/** The actions for gaps that share reasons; each distinct manual step is stated once. */
 function evidenceActions(
   reasons: readonly EvidenceReason[],
-  category: string,
-  name: string,
+  categories: readonly string[],
   plural = false,
   retryAfter: string | null = null,
 ): string {
   const effective: readonly EvidenceReason[] = reasons.length ? reasons : ['unknown'];
   const groups = new Set(effective.map((reason) => REASON_GROUPS[reason]));
   const rerunOnly = effective.every((reason) => RERUN_REASONS.has(reason));
-  const manual = `check it manually: ${manualStep(category, name)}.`;
+  const steps = [...new Set(categories.map((category) => manualStep(category, plural)))];
+  const manual = `check manually: ${steps.join('; ')}.`;
   const actions: Partial<Record<ActionGroup, string>> = {};
   if (groups.has('permission'))
     actions.permission = rerunOnly
@@ -166,11 +176,40 @@ function evidenceActions(
     actions.retry = retryAfter
       ? `Rerun CI after ${rerunClock(retryAfter)} UTC.`
       : 'Rerun CI later.';
-  if (groups.has('budget'))
-    actions.budget = `The review could not check ${plural ? 'these packages' : 'this package'} within its limits; ${manual}`;
-  if (groups.has('noSource')) actions.noSource = `No supported source was found; ${manual}`;
-  if (groups.has('untrusted')) actions.untrusted = `The source could not be trusted; ${manual}`;
+  if (groups.has('budget')) actions.budget = `Not checked within the review's limits; ${manual}`;
+  if (groups.has('noSource')) actions.noSource = `No supported source found; ${manual}`;
+  if (groups.has('untrusted')) actions.untrusted = `Source could not be trusted; ${manual}`;
   return ACTION_ORDER.flatMap((group) => actions[group] ?? []).join(' ');
+}
+
+type EvidenceLink = DecisionUnit['evidenceLinks'][number];
+
+/**
+ * One sentence for gaps that share a status and reasons: the categories are listed once, then
+ * the shared actions. Callers pass only links with identical status and reasons.
+ */
+function gapSentence(
+  links: readonly EvidenceLink[],
+  plural: boolean,
+  retryAfter: string | null,
+): string {
+  const [first] = links;
+  const categories = links.map((link) => link.category);
+  return `${listOf(categories.map(readableLabel))} evidence is ${readableLabel(first.status)} (${first.reasons.map(readableLabel).join(', ')}). ${evidenceActions(first.reasons, categories, plural, retryAfter)}`;
+}
+
+/** Links grouped by `key`, in first-seen order. */
+function groupLinks(
+  links: readonly EvidenceLink[],
+  key: (link: EvidenceLink) => string,
+): EvidenceLink[][] {
+  const groups = new Map<string, EvidenceLink[]>();
+  for (const link of links) {
+    const entry = groups.get(key(link)) ?? [];
+    entry.push(link);
+    groups.set(key(link), entry);
+  }
+  return [...groups.values()];
 }
 
 export function evidenceGap(
@@ -181,8 +220,7 @@ export function evidenceGap(
   const link = unit.evidenceLinks.find((entry) => entry.id === sourceId);
   const member = unit.members.find((entry) => entry.id === link?.memberId);
   if (!link || !member) throw new RenderFailure('reference');
-  const name = text(member.name);
-  return `${name}: ${readableLabel(link.category)} evidence is ${readableLabel(link.status)} (${link.reasons.map(readableLabel).join(', ')}). ${evidenceActions(link.reasons, link.category, name, false, retryAfter)}`;
+  return `${text(member.name)}: ${gapSentence([link], false, retryAfter)}`;
 }
 
 function unsafeUrl(value: string): boolean {
@@ -711,36 +749,42 @@ function queueLines(r: Review): string[] {
     group.indexes.push(index);
     groups.set(key, group);
   }
+  const retryAfter = input.retryAfter ?? null;
   for (const { reason, category, indexes } of groups.values()) {
     const [first] = indexes;
-    const gaps = summary.units[first].gaps;
+    const links = summary.units[first].gaps.map((gap) => linkOf(units[first], gap.sourceId));
     const tail = `${text(reason)} ${recovery(category)}`;
-    if (indexes.length === 1) {
-      const unit = units[first];
-      const names = unit.members.map((member) => displayName(r, member)).join(', ');
-      const gapText = gaps
-        .map((gap) => evidenceGap(unit, gap.sourceId, r.input.retryAfter ?? null))
-        .join(' ');
-      lines.push(`- ${names} (${plural(unit.memberCount, 'changed update')}): ${tail} ${gapText}`);
-      continue;
-    }
-    const names = indexes.map((index) => {
+    const entries = indexes.map((index) => {
       const unit = units[index];
       const members = unit.members.map((member) => displayName(r, member)).join(', ');
       return `${members} (${plural(unit.memberCount, 'changed update')})`;
     });
-    const gapText = gaps
-      .map((gap) => {
-        const link = linkOf(units[first], gap.sourceId);
-        return `${readableLabel(link.category)} evidence is ${readableLabel(link.status)} (${link.reasons.map(readableLabel).join(', ')}). ${evidenceActions(link.reasons, link.category, 'each listed package', true, r.input.retryAfter ?? null)}`;
+    const unit = units[first];
+    // Gaps that share a status and reasons are stated once. A one-unit item with several
+    // members keeps each gap with its member's name, since the gap belongs to that member.
+    const named = indexes.length === 1 && unit.members.length > 1;
+    const gapText = groupLinks(links, (link) =>
+      JSON.stringify([named ? link.memberId : null, link.status, link.reasons]),
+    )
+      .map((shared) => {
+        const sentence = gapSentence(shared, indexes.length > 1, retryAfter);
+        if (!named) return sentence;
+        const member = unit.members.find((entry) => entry.id === shared[0].memberId);
+        if (!member) throw new RenderFailure('reference');
+        return `${text(member.name)}: ${sentence}`;
       })
       .join(' ');
-    lines.push(`- ${names.join('; ')}: ${tail} ${gapText}`);
+    lines.push(`- ${entries.join('; ')}: ${tail}${gapText ? ` ${gapText}` : ''}`);
   }
   return lines;
 }
 
-/** One action-free line per required category whose available members have no finding. */
+const REQUIRED_CATEGORIES = ['upstream', 'vulnerability', 'malware', 'installScript'];
+
+/**
+ * Action-free lines for available required categories with no finding. Each package is named
+ * once, on the line for the exact set of categories checked for it.
+ */
 function checkedNoneFoundLines(r: Review): string[] {
   const attributed = new Set(
     r.units.flatMap((unit) =>
@@ -749,9 +793,10 @@ function checkedNoneFoundLines(r: Review): string[] {
       ),
     ),
   );
-  return ['upstream', 'vulnerability', 'malware', 'installScript'].flatMap((category) => {
-    const members = r.units.flatMap((unit) =>
-      unit.members.filter((member) => {
+  const sets = new Map<string, { categories: string[]; names: string[] }>();
+  for (const unit of r.units)
+    for (const member of unit.members) {
+      const categories = REQUIRED_CATEGORIES.filter((category) => {
         const link = unit.evidenceLinks.find(
           (entry) => entry.memberId === member.id && entry.category === category,
         );
@@ -759,12 +804,17 @@ function checkedNoneFoundLines(r: Review): string[] {
           link?.status === 'available' &&
           !link.sourceIds.some((id) => attributed.has(JSON.stringify([member.id, id])))
         );
-      }),
-    );
-    if (!members.length) return [];
-    const names = members.map((member) => displayName(r, member)).join(', ');
-    return [`- ${readableLabel(category)}: checked, none found for ${names}.`];
-  });
+      });
+      if (!categories.length) continue;
+      const key = categories.join();
+      const set = sets.get(key) ?? { categories, names: [] };
+      set.names.push(displayName(r, member));
+      sets.set(key, set);
+    }
+  return [...sets.values()].map(
+    ({ categories, names }) =>
+      `- ${listOf(categories.map(readableLabel))}: checked, none found for ${names.join(', ')}.`,
+  );
 }
 
 function coverageLines(r: Review): string[] {
@@ -896,10 +946,28 @@ function gapLines(
   }
   return [...groups.values()].map(({ link, members }) => {
     const list = [...members.values()];
-    const single = list.length === 1;
-    const subject = single ? text(list[0].name) : 'each listed package';
     const names = list.map((member) => displayName(r, member)).join(', ');
-    return `- ${names}: ${readableLabel(link.category)} evidence is ${readableLabel(link.status)} (${link.reasons.map(readableLabel).join(', ')}). ${evidenceActions(link.reasons, link.category, subject, !single, r.input.retryAfter ?? null)}`;
+    return `- ${names}: ${gapSentence([link], list.length > 1, r.input.retryAfter ?? null)}`;
+  });
+}
+
+/** Each unit's model follow-ups under one name prefix; the model text is unchanged. */
+function followupsByUnit(
+  r: Review,
+  followups: readonly {
+    unit: DecisionUnit;
+    followup: NonNullable<UnitRecord['assessment']>['followups'][number];
+  }[],
+): string[] {
+  const byUnit = new Map<DecisionUnit, (typeof followups)[number]['followup'][]>();
+  for (const { unit, followup } of followups)
+    byUnit.set(unit, [...(byUnit.get(unit) ?? []), followup]);
+  return [...byUnit].flatMap(([unit, entries]) => {
+    const names = unit.members.map((member) => displayName(r, member)).join(', ');
+    const line = (followup: (typeof entries)[number]) =>
+      `${text(followup.description)} ${followup.references.map((ref) => reference(ref, unit, r.input)).join(' ')}`;
+    if (entries.length === 1) return [`- ${names}: ${line(entries[0])}`];
+    return [`- ${names}:`, ...entries.map((followup) => `  - ${lineStart(line(followup))}`)];
   });
 }
 
@@ -918,10 +986,7 @@ function followupLines(r: Review): string[] {
     '## Non-blocking follow-ups',
     '',
     ...gapLines(r, assessedGaps),
-    ...followups.map(
-      ({ unit, followup }) =>
-        `- ${unit.members.map((member) => displayName(r, member)).join(', ')}: ${text(followup.description)} ${followup.references.map((ref) => reference(ref, unit, input)).join(' ')}`,
-    ),
+    ...followupsByUnit(r, followups),
   ];
 }
 
