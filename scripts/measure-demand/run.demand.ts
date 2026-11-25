@@ -50,6 +50,7 @@ const hooks = vi.hoisted(() => ({
     side: 'base' | 'head';
     url: string | null;
     target: { ecosystem: string; name: string; version: string } | null;
+    complete: boolean;
   }[],
   // The target each malware read looked up, by its lookup URL: signal attempts carry only the URL.
   malwareTargets: new Map<string, { ecosystem: string; name: string; version: string }>(),
@@ -112,7 +113,12 @@ vi.mock('../../src/evidence/advisories.js', async (importOriginal) => {
       const result = await actual.enrichAdvisories(...args);
       if (result.kind === 'enriched')
         for (const { side, lookup } of result.lookups)
-          hooks.lookups.push({ side, url: lookup?.url ?? null, target: lookup?.target ?? null });
+          hooks.lookups.push({
+            side,
+            url: lookup?.url ?? null,
+            target: lookup?.target ?? null,
+            complete: lookup?.complete ?? false,
+          });
       return result;
     },
   };
@@ -124,12 +130,13 @@ vi.mock('../../src/evidence/policy-signals.js', async (importOriginal) => {
     enrichPolicySignals: async (...args: Parameters<typeof actual.enrichPolicySignals>) => {
       const result = await actual.enrichPolicySignals(...args);
       if (result.kind === 'enriched')
-        for (const { side, url, category } of result.attempts)
+        for (const { side, url, category, outcome } of result.attempts)
           if (category === 'malware')
             hooks.lookups.push({
               side,
               url,
               target: (url && hooks.malwareTargets.get(url)) || null,
+              complete: outcome === 'available',
             });
       return result;
     },

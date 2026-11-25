@@ -26,6 +26,9 @@ export type SettledTarget = Readonly<{
   version: string;
   type: TargetType;
   side: Side;
+  /** False when any lookup of this target on this side did not complete (an HTTP error, 429,
+   * network failure, or any other incomplete read): C2 replays it but cannot treat it as known. */
+  complete: boolean;
 }>;
 export type TagCandidate = Readonly<{ repository: string; tag: string; status: string }>;
 
@@ -84,7 +87,12 @@ export function parseVersionedQuery(url: string): VersionedQuery | null {
  * versioned query for that target. GitHub's stored forms can differ from the target's name in case
  * and separators, so the name comes from the reader's target, never from the URL.
  */
-export function settledTarget(url: string, target: ReaderTarget, side: Side): SettledTarget | null {
+export function settledTarget(
+  url: string,
+  target: ReaderTarget,
+  side: Side,
+  complete: boolean,
+): SettledTarget | null {
   const query = parseVersionedQuery(url);
   if (!query || query.ecosystem !== target.ecosystem || query.version !== target.version)
     return null;
@@ -96,6 +104,7 @@ export function settledTarget(url: string, target: ReaderTarget, side: Side): Se
     version: target.version,
     type: query.type,
     side,
+    complete,
   };
 }
 
@@ -124,23 +133,32 @@ const byKey = <T>(values: Iterable<T>): T[] => {
   return [...seen.entries()].sort(([a], [b]) => (a < b ? -1 : a > b ? 1 : 0)).map(([, v]) => v);
 };
 
+export type ObservedLookup = Readonly<{
+  side: Side;
+  url: string | null;
+  target: ReaderTarget | null | undefined;
+  complete: boolean;
+}>;
+
 /**
- * One settled target per side for each lookup whose versioned URL this run requested. Advisory
- * reads are shared across sides, so one request can settle a target on both.
+ * One settled target per side for each lookup whose versioned URL this run requested, complete
+ * only when every such lookup completed. Advisory reads are shared across sides, so one request
+ * can settle a target on both.
  */
 export function settledTargets(
-  lookups: Iterable<
-    Readonly<{ side: Side; url: string | null; target: ReaderTarget | null | undefined }>
-  >,
+  lookups: Iterable<ObservedLookup>,
   requested: ReadonlySet<string>,
 ): SettledTarget[] {
-  const targets: SettledTarget[] = [];
-  for (const { side, url, target } of lookups) {
+  const targets = new Map<string, SettledTarget>();
+  for (const { side, url, target, complete } of lookups) {
     if (url === null || !target || !requested.has(url)) continue;
-    const settled = settledTarget(url, target, side);
-    if (settled) targets.push(settled);
+    const settled = settledTarget(url, target, side, complete);
+    if (!settled) continue;
+    const key = JSON.stringify({ ...settled, complete: null });
+    const prior = targets.get(key);
+    targets.set(key, { ...settled, complete: complete && (prior?.complete ?? true) });
   }
-  return byKey(targets);
+  return byKey(targets.values());
 }
 
 /** The distinct tag candidates, with each REST status they answered, among this run's requests. */

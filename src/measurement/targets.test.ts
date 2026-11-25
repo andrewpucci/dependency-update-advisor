@@ -53,8 +53,9 @@ test('round-trips npm targets, including scoped names, with their type', () => {
           advisoryUrl('npm', [`${name}@${version}`], type),
           { ecosystem: 'npm', name, version },
           'head',
+          true,
         ),
-      ).toEqual({ ecosystem: 'npm', name, version, type, side: 'head' });
+      ).toEqual({ ecosystem: 'npm', name, version, type, side: 'head', complete: true });
 });
 
 test('names a target as the reader looked it up, not as GitHub stores it', () => {
@@ -64,6 +65,7 @@ test('names a target as the reader looked it up, not as GitHub stores it', () =>
       fixtureUrl('github-tj-actions-versioned'),
       { ecosystem: 'actions', name: 'TJ-Actions/Changed-Files', version: '45.0.7' },
       'base',
+      true,
     ),
   ).toEqual({
     ecosystem: 'actions',
@@ -71,6 +73,7 @@ test('names a target as the reader looked it up, not as GitHub stores it', () =>
     version: '45.0.7',
     type: 'reviewed',
     side: 'base',
+    complete: true,
   });
   // One stored pip form that differs in case and separators still names the normalized target.
   expect(
@@ -78,6 +81,7 @@ test('names a target as the reader looked it up, not as GitHub stores it', () =>
       advisoryUrl('pip', ['Flo_Pro.adk@1.0.0'], 'malware'),
       { ecosystem: 'pip', name: 'flo-pro-adk', version: '1.0.0' },
       'head',
+      true,
     ),
   ).toEqual({
     ecosystem: 'pip',
@@ -85,6 +89,7 @@ test('names a target as the reader looked it up, not as GitHub stores it', () =>
     version: '1.0.0',
     type: 'malware',
     side: 'head',
+    complete: true,
   });
   // Several stored forms of one target.
   expect(
@@ -92,6 +97,7 @@ test('names a target as the reader looked it up, not as GitHub stores it', () =>
       advisoryUrl('actions', ['Owner/Action@v1', 'owner/action@v1'], 'malware'),
       { ecosystem: 'actions', name: 'OWNER/action', version: 'v1' },
       'head',
+      true,
     )?.name,
   ).toBe('OWNER/action');
 });
@@ -107,7 +113,7 @@ test('a versioned query for another target settles nothing', () => {
       { ...pip, ecosystem: 'npm', name: 'lodash' },
     ],
   ] as const)
-    expect(settledTarget(url, target, 'head'), url).toBeNull();
+    expect(settledTarget(url, target, 'head', true), url).toBeNull();
 });
 
 test('a discovery query or an OSV query is not a versioned query', () => {
@@ -163,20 +169,40 @@ test('a versioned query yields its one target once per side, and only when reque
   expect(
     settledTargets(
       [
-        { side: 'head', url: lodash, target: lookup },
-        { side: 'head', url: lodash, target: lookup },
-        { side: 'base', url: lodash, target: lookup },
-        { side: 'head', url: unrequested, target: lookup },
-        { side: 'head', url: discovery, target: lookup },
-        { side: 'base', url: 'https://api.osv.dev/v1/query', target: lookup },
-        { side: 'base', url: null, target: lookup },
-        { side: 'base', url: lodash, target: null },
+        { side: 'head', url: lodash, target: lookup, complete: true },
+        { side: 'head', url: lodash, target: lookup, complete: true },
+        { side: 'base', url: lodash, target: lookup, complete: true },
+        { side: 'head', url: unrequested, target: lookup, complete: true },
+        { side: 'head', url: discovery, target: lookup, complete: true },
+        { side: 'base', url: 'https://api.osv.dev/v1/query', target: lookup, complete: true },
+        { side: 'base', url: null, target: lookup, complete: true },
+        { side: 'base', url: lodash, target: null, complete: true },
       ],
       requested,
     ),
   ).toEqual([
-    { ...target, side: 'base' },
-    { ...target, side: 'head' },
+    { ...target, side: 'base', complete: true },
+    { ...target, side: 'head', complete: true },
+  ]);
+});
+
+test('keeps a target whose lookup failed, marked incomplete on that side', () => {
+  const lodash = advisoryUrl('npm', ['lodash@4.17.20'], 'reviewed');
+  const lookup = { ecosystem: 'npm', name: 'lodash', version: '4.17.20' };
+  const target = { ...lookup, type: 'reviewed' };
+  expect(
+    settledTargets(
+      [
+        { side: 'head', url: lodash, target: lookup, complete: false },
+        { side: 'head', url: lodash, target: lookup, complete: true },
+        { side: 'base', url: lodash, target: lookup, complete: true },
+        { side: 'base', url: lodash, target: lookup, complete: false },
+      ],
+      new Set([lodash]),
+    ),
+  ).toEqual([
+    { ...target, side: 'base', complete: false },
+    { ...target, side: 'head', complete: false },
   ]);
 });
 
