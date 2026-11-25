@@ -330,14 +330,13 @@ async function probeDiscovery(token: string, targets: Target[], ecosystem: Ecosy
   };
 }
 
-const TAG_QUERY_FIELDS = 'nameWithOwner ref(qualifiedName: $q%) { target { oid } }';
+const tagQueryFields = (i: number) => `nameWithOwner ref(qualifiedName: $q${i}) { target { oid } }`;
 
 async function graphqlTags(token: string, candidates: readonly TagCandidate[]) {
   const aliases = candidates.map((c, i) => ({ alias: `c${i}`, repository: c.repository }));
   const params = candidates.map((_, i) => `$o${i}: String!, $n${i}: String!, $q${i}: String!`);
   const fields = candidates.map(
-    (_, i) =>
-      `c${i}: repository(owner: $o${i}, name: $n${i}) { ${TAG_QUERY_FIELDS.replace('%', String(i))} }`,
+    (_, i) => `c${i}: repository(owner: $o${i}, name: $n${i}) { ${tagQueryFields(i)} }`,
   );
   const variables: Record<string, string> = {};
   candidates.forEach((c, i) => {
