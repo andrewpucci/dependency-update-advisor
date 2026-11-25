@@ -24369,6 +24369,11 @@ const RERUN_REASONS = /* @__PURE__ */ new Set([
 	"timeout",
 	"permission"
 ]);
+const MANUAL_GROUPS = [
+	"budget",
+	"noSource",
+	"untrusted"
+];
 const ACTION_ORDER = [
 	"permission",
 	"retry",
@@ -24404,10 +24409,11 @@ function evidenceActions(reasons, categories, plural = false, retryAfter = null)
 	const actions = {};
 	if (groups.has("permission")) actions.permission = rerunOnly ? "Correct the reviewer's token permissions, then rerun CI." : "Correct the reviewer's token permissions.";
 	if (groups.has("retry") && rerunOnly) actions.retry = retryAfter ? `Rerun CI after ${rerunClock(retryAfter)} UTC.` : "Rerun CI later.";
-	if (groups.has("budget")) actions.budget = `Not checked within the review's limits; ${manual}`;
-	if (groups.has("noSource")) actions.noSource = `No supported source found; ${manual}`;
-	if (groups.has("untrusted")) actions.untrusted = `Source could not be trusted; ${manual}`;
-	return ACTION_ORDER.flatMap((group) => actions[group] ?? []).join(" ");
+	if (groups.has("budget")) actions.budget = "Not checked within the review's limits";
+	if (groups.has("noSource")) actions.noSource = "No supported source found";
+	if (groups.has("untrusted")) actions.untrusted = "Source could not be trusted";
+	const manualGroups = MANUAL_GROUPS.flatMap((group) => actions[group] ?? []);
+	return [...ACTION_ORDER.filter((group) => !MANUAL_GROUPS.includes(group)).flatMap((group) => actions[group] ?? []), ...manualGroups.length ? [`${manualGroups.join("; ")}; ${manual}`] : []].join(" ");
 }
 /**
 * One sentence for gaps that share a status and reasons: the categories are listed once, then

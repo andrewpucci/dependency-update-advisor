@@ -122,6 +122,8 @@ const REASON_GROUPS: Record<EvidenceReason, ActionGroup> = {
 
 const RERUN_REASONS: ReadonlySet<EvidenceReason> = new Set(['rate_limit', 'timeout', 'permission']);
 
+const MANUAL_GROUPS: readonly ActionGroup[] = ['budget', 'noSource', 'untrusted'];
+
 const ACTION_ORDER: readonly ActionGroup[] = [
   'permission',
   'retry',
@@ -176,10 +178,17 @@ function evidenceActions(
     actions.retry = retryAfter
       ? `Rerun CI after ${rerunClock(retryAfter)} UTC.`
       : 'Rerun CI later.';
-  if (groups.has('budget')) actions.budget = `Not checked within the review's limits; ${manual}`;
-  if (groups.has('noSource')) actions.noSource = `No supported source found; ${manual}`;
-  if (groups.has('untrusted')) actions.untrusted = `Source could not be trusted; ${manual}`;
-  return ACTION_ORDER.flatMap((group) => actions[group] ?? []).join(' ');
+  if (groups.has('budget')) actions.budget = "Not checked within the review's limits";
+  if (groups.has('noSource')) actions.noSource = 'No supported source found';
+  if (groups.has('untrusted')) actions.untrusted = 'Source could not be trusted';
+  // The manual groups share one sentence, so each manual step is stated once.
+  const manualGroups = MANUAL_GROUPS.flatMap((group) => actions[group] ?? []);
+  return [
+    ...ACTION_ORDER.filter((group) => !MANUAL_GROUPS.includes(group)).flatMap(
+      (group) => actions[group] ?? [],
+    ),
+    ...(manualGroups.length ? [`${manualGroups.join('; ')}; ${manual}`] : []),
+  ].join(' ');
 }
 
 type EvidenceLink = DecisionUnit['evidenceLinks'][number];

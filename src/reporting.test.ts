@@ -193,6 +193,45 @@ test('reports every unavailable unit and configuration recovery', async () => {
     ).toBe(1);
 });
 
+test("keeps each gap's member name on a one-unit queue item with several members", async () => {
+  const { analysisScenario } = await import('../tests/parity/analysis.js');
+  const { analyzeDecisionUnits } = await import('./analysis/batches.js');
+  const { input, scenario } = await analysisScenario({ mode: 'malware-failed' });
+  const analysis = await analyzeDecisionUnits(input, { deadlineMs: 700_000 }, { now: () => 0 });
+  if (!analysis.ok) throw new Error('analysis fixture failed');
+  const result = renderDecisionBrief({
+    binding: input.inventory.packet.binding,
+    generatedAt: '2026-11-08T00:00:00.000Z',
+    coverage: analysis.coverage,
+    records: analysis.records,
+    analysisUnavailable: analysis.analysisUnavailable,
+    signalAttempts: scenario.result.attempts,
+    signalBinding: scenario.result.binding,
+  });
+  if (!result.ok) throw new Error(`render failed: ${result.category}`);
+  const summary = analysis.coverage.policyProvenance.assessments.units;
+  const grouped = input.inventory.units.flatMap((unit, index) =>
+    unit.members.length > 1 && summary[index].gaps.length ? [{ unit, index }] : [],
+  );
+  expect(grouped.length, 'fixture queues a multi-member unit with gaps').toBeGreaterThan(0);
+  for (const { unit, index } of grouped) {
+    const item = queueItemsOf(result.body).find((entry) => unitQueued(queueEntriesOf(entry), unit));
+    expect(item, unit.members[0].name).toBeDefined();
+    expect(queueEntriesOf(item!)).toHaveLength(1);
+    for (const gap of summary[index].gaps) {
+      const link = unit.evidenceLinks.find((entry) => entry.id === gap.sourceId)!;
+      const member = unit.members.find((entry) => entry.id === link.memberId)!;
+      // The gap sentence follows its own member's name, not only the unit entry.
+      const named = new RegExp(
+        `${escapeRegExp(member.name)}: (?:[a-z ,]+ )?${escapeRegExp(categoryLabel(link.category))}`,
+        'u',
+      );
+      expect(item, `${member.name} ${link.category}`).toMatch(named);
+      expect(hasGap(item!, link), gapKey(link)).toBe(true);
+    }
+  }
+});
+
 test('keeps inventory-gap recovery beside configuration recovery when analysis is unavailable', async () => {
   const { analysisScenario } = await import('../tests/parity/analysis.js');
   const { analyzeDecisionUnits } = await import('./analysis/batches.js');
@@ -2044,6 +2083,8 @@ test('orders distinct actions by group and renders each once', () => {
   for (const reasons of [
     ['missing', 'unsupported'],
     ['malformed', 'truncated', 'conflict', 'unknown'],
+    ['budget', 'missing'],
+    ['budget', 'missing', 'malformed'],
   ] as EvidenceReason[][]) {
     const action = actionOf(gap(reasons));
     expect(action.split('check manually').length - 1, reasons.join(',')).toBe(1);
@@ -2827,12 +2868,13 @@ function sharedGapSentence(links: DecisionUnit['evidenceLinks'][number][], plura
   const [first] = links;
   const steps = [...new Set(links.map((link) => MANUAL_STEPS[link.category][plural ? 1 : 0]))];
   const manual = `check manually: ${steps.join('; ')}.`;
-  const actions = [
-    first.reasons.includes('budget') ? `Not checked within the review's limits; ${manual}` : '',
+  const prefixes = [
+    first.reasons.includes('budget') ? "Not checked within the review's limits" : '',
     first.reasons.some((reason) => reason === 'missing' || reason === 'unsupported')
-      ? `No supported source found; ${manual}`
+      ? 'No supported source found'
       : '',
   ].filter(Boolean);
+  const actions = [`${prefixes.join('; ')}; ${manual}`];
   if (first.reasons.some((reason) => !['budget', 'missing', 'unsupported'].includes(reason)))
     throw new Error(`no oracle for reasons ${first.reasons.join(',')}`);
   return `${andList(links.map((link) => categoryLabel(link.category)))} evidence is ${first.status} (${first.reasons.join(', ')}). ${actions.join(' ')}`;
@@ -3280,37 +3322,6 @@ test('the R1-shaped fixture fits the body limit and names every required record'
   expect(assessedGapsOf(render).filter((entry) => entry.unit === unit)).toHaveLength(0);
   const assessed = render.records.filter((entry) => entry.state.state === 'assessed').length;
   expect(coverageSectionOf(body)).toContain(`${assessed} assessed decision unit`);
-});
-
-/** The body without Package assessments and the optional sections after follow-ups. */
-function requiredBodyOf(body: string) {
-  return body
-    .split(/\n(?=## )/u)
-    .filter(
-      (section) =>
-        ![
-          '## Package assessments',
-          '## New capabilities',
-          '## Consider later',
-          '## Unchecked signals',
-        ].some((heading) => section.startsWith(heading)) && !section.startsWith('<details>'),
-    )
-    .join('\n');
-}
-
-test('the R1-shaped fixture keeps its required body within half the comment limit', async () => {
-  // #412: the required body on R1 must leave half the limit free. The fixture is a proxy; the
-  // recorded R1 replay is the acceptance check.
-  const { body } = await renderLargeInventory({
-    members: 91,
-    unresolved: 21,
-    followups: 71,
-    evidence: r1Evidence,
-  });
-  expect(body).toContain('## Package assessments');
-  expect(requiredBodyOf(body).length).toBeLessThanOrEqual(
-    Math.floor(limit('comment.maxBodyCodeUnits') / 2),
-  );
 });
 
 test('renders the checked lines after the coverage counts and before the finding lines', async () => {

@@ -346,10 +346,13 @@ still holds.
   stay separate sentences. A one-unit item names its unit only in the entry;
   a one-unit item with several members keeps each gap's member name.
 - **Action text:** the fixed manual-check text is reworded without dropping a
-  step: `Not checked within the review's limits;`, `No supported source
-  found;`, and `Source could not be trusted;`, each followed by
-  `check manually:` and the step. A step refers to the package as "it" or
-  "each package" because the line already names it.
+  step. Each manual reason group has a short cause: `Not checked within the
+  review's limits`, `No supported source found`, or `Source could not be
+  trusted`. A gap's causes are joined with semicolons and followed once by
+  `check manually:` and its steps, so a gap with reasons from several groups
+  still states each step once. Permission and rerun actions stay separate
+  sentences before it. A step refers to the package as "it" or "each package"
+  because the line already names it.
 - **Follow-ups:** a unit with more than one model follow-up names its members
   once, with each follow-up as its own nested line in record order. Model text
   is unchanged.
