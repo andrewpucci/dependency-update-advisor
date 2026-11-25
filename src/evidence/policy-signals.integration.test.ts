@@ -1,6 +1,7 @@
 import { expect, test } from 'vite-plus/test';
 import { policySignalScenario } from '../../tests/parity/policy-signals.js';
 import { PACKET_LIMITS } from '../schema.js';
+import { limit } from '../limits.js';
 
 test.each([
   'clean',
@@ -152,12 +153,20 @@ test.each([124, 125])(
   async (children) => {
     const r = await policySignalScenario({ inventory: { children, lifecycle: false } });
     expect(r.result.sources.length).toBeLessThanOrEqual(PACKET_LIMITS.sources);
-    expect(Buffer.byteLength(JSON.stringify(r.result))).toBeLessThanOrEqual(PACKET_LIMITS.bytes);
+    const { changes, sources, findings } = r.result;
+    expect(Buffer.byteLength(JSON.stringify({ changes, sources, findings }))).toBeLessThanOrEqual(
+      PACKET_LIMITS.bytes,
+    );
+    expect(Buffer.byteLength(JSON.stringify(r.result))).toBeLessThanOrEqual(
+      limit('research.maxRetainedBytes'),
+    );
     const members = r.result.changes.filter((c) => !('basis' in c));
     // The members that no longer fit carry `budget`; the others keep their signals.
     const budgeted = members.filter((c) => c.evidence.trust?.reasons.includes('budget'));
     expect(budgeted.length).toBeGreaterThan(0);
     expect(budgeted.length).toBeLessThan(members.length);
+    // The cut is strictly by input (research) order: the budgeted members are a suffix.
+    expect(members.slice(members.length - budgeted.length)).toEqual(budgeted);
     expect(members.every((c) => c.evidence.malware.status !== undefined)).toBe(true);
   },
 );

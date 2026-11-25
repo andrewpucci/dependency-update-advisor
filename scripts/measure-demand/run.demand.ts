@@ -367,6 +367,7 @@ test('measure research read demand', async () => {
       envelope: EVIDENCE_READ_ENVELOPE,
       allocation: EVIDENCE_READ_ALLOCATION,
       researchMaxAttempts: limit('research.maxAttempts'),
+      researchMaxRetainedBytes: limit('research.maxRetainedBytes'),
     },
     ...recorder.report(measured, quota, coverage),
   };

@@ -38,7 +38,7 @@ type ResearchProgress = EnrichedEvidence & {
   signalAttempts: readonly SignalAttempt[];
 };
 type Reader = { close: () => void };
-type Fail = (stage: ResearchStage, reason: EvidenceReason) => void;
+type Fail = (stage: ResearchStage, reason: EvidenceReason, limit?: string | null) => void;
 export type ResearchStage = 'upstream' | 'advisories' | 'signals' | 'revalidation';
 /** A stage boundary reported to an optional observer; carries no request data. */
 export type ResearchObservation =
@@ -48,6 +48,8 @@ export type ResearchObservation =
       stage: ResearchStage;
       outcome: 'enriched' | 'unavailable';
       reason: EvidenceReason | null;
+      /** Diagnostics: the reader limit whose exhaustion stopped the stage, when one is known. */
+      limit?: string;
     }>;
 export type ResearchInput = Readonly<{
   packet: Packet;
@@ -224,7 +226,7 @@ async function enrichUpstreamStage(
   progress.publicIdentities = upstream.publicIdentities;
   progress.actionVersions = upstream.actionVersions;
   progress.upstreamAttempts = upstream.attempts;
-  if (upstream.stopped) fail('upstream', upstream.stopped);
+  if (upstream.stopped) fail('upstream', upstream.stopped, opened.reader.stopLimit?.());
 }
 
 async function enrichAdvisoryStage(
@@ -329,6 +331,7 @@ export async function runResearch(input: ResearchInput): Promise<ResearchResult>
       }),
   };
   const unavailable: { stage: ResearchStage; reason: EvidenceReason }[] = [];
+  const stopLimits = new Map<ResearchStage, string>();
   const readers: Reader[] = [];
   const observe = (observation: ResearchObservation) => {
     try {
@@ -342,9 +345,16 @@ export async function runResearch(input: ResearchInput): Promise<ResearchResult>
     const before = unavailable.length;
     await run();
     const failed = unavailable.slice(before).find((entry) => entry.stage === stage);
+    const limit = stopLimits.get(stage);
     observe(
       failed
-        ? { kind: 'stage-end', stage, outcome: 'unavailable', reason: failed.reason }
+        ? {
+            kind: 'stage-end',
+            stage,
+            outcome: 'unavailable',
+            reason: failed.reason,
+            ...(limit ? { limit } : {}),
+          }
         : { kind: 'stage-end', stage, outcome: 'enriched', reason: null },
     );
   };
@@ -359,8 +369,9 @@ export async function runResearch(input: ResearchInput): Promise<ResearchResult>
       upstreamAttempts: [],
       signalAttempts: [],
     };
-    const fail = (stage: ResearchStage, reason: EvidenceReason) => {
+    const fail: Fail = (stage, reason, limit) => {
       unavailable.push({ stage, reason });
+      if (limit) stopLimits.set(stage, limit);
       markStage(progress, stage, reason);
     };
     // Every unit is known before research starts, so each reader's share is final when it opens.

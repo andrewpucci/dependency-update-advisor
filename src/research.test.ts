@@ -253,6 +253,32 @@ test('records a stage whose reader stopped early as unavailable with the stop re
   ]);
 });
 
+test('names the reader limit that stopped a stage to the observer', async () => {
+  const { fixture, packet } = await scenario();
+  const actualUpstream = await vi.importActual<typeof import('./evidence/upstream-read.js')>(
+    './evidence/upstream-read.js',
+  );
+  vi.mocked(upstreamReadModule.createUpstreamReader).mockImplementationOnce((...args) => {
+    const opened = actualUpstream.createUpstreamReader(...args);
+    if (opened.kind !== 'ready') return opened;
+    const reader = {
+      ...opened.reader,
+      stopped: () => 'budget' as const,
+      stopLimit: () => 'maxRetainedBytes',
+    };
+    return { ...opened, reader };
+  });
+  const events: ResearchObservation[] = [];
+  await runResearch({ ...base(fixture, packet), observe: (o) => events.push(o) });
+  expect(events).toContainEqual({
+    kind: 'stage-end',
+    stage: 'upstream',
+    outcome: 'unavailable',
+    reason: 'budget',
+    limit: 'maxRetainedBytes',
+  });
+});
+
 test('reports each stage start and end to an observer, with the stop reason', async () => {
   const { fixture, packet } = await scenario();
   vi.mocked(advisoryModule.enrichAdvisories).mockResolvedValueOnce({
@@ -911,6 +937,8 @@ test('the npm registry reader counts exactly research.maxJsonEntries entries and
   );
   expect(await pastLimit.read(registryRequest)).toEqual({ kind: 'unavailable', reason: 'budget' });
   expect(pastLimit.stopped()).toBe('budget');
+  expect(atLimit.stopLimit()).toBeNull();
+  expect(pastLimit.stopLimit()).toBe('maxJsonEntries');
 });
 
 test('the npm registry reader retains exactly research.maxRetainedBytes and refuses one byte more', async () => {
@@ -938,6 +966,9 @@ test('the npm registry reader retains exactly research.maxRetainedBytes and refu
     registryDocument({ pad: 'x'.repeat(padding + 1) }),
   );
   expect(await pastLimit.read(registryRequest)).toEqual({ kind: 'unavailable', reason: 'budget' });
+  // The measurement report names the limit that stopped the reader (#431).
+  expect(atLimit.stopLimit()).toBeNull();
+  expect(pastLimit.stopLimit()).toBe('maxRetainedBytes');
 });
 
 test('the upstream reader spends exactly research.maxWork units and refuses the next one', () => {
@@ -965,6 +996,8 @@ test('the upstream reader spends exactly research.maxWork units and refuses the 
   const { reader } = opened;
   reader.spend(maxWork);
   expect(reader.stopped?.()).toBeNull();
+  expect(reader.stopLimit?.()).toBeNull();
   expect(() => reader.spend(1)).toThrow();
   expect(reader.stopped?.()).toBe('budget');
+  expect(reader.stopLimit?.()).toBe('maxWork');
 });

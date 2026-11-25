@@ -159,6 +159,11 @@ function statusReason(status: number): EvidenceReason {
   if (status === HTTP_STATUS.tooManyRequests) return 'rate_limit';
   return 'unknown';
 }
+const CONSUMED_LIMIT = {
+  bytes: 'maxTotalBytes',
+  entries: 'maxJsonEntries',
+  retained: 'maxRetainedBytes',
+} as const;
 class RegistryReader {
   private readonly cache = new Map<string, NpmMetadataDocument | EvidenceReason>();
   private requests = 0;
@@ -167,6 +172,7 @@ class RegistryReader {
   private retained = 0;
   private busy = false;
   private stopped: EvidenceReason | null = null;
+  private stoppedBy: string | null = null;
   private readonly clock: BoundedClock;
   constructor(
     private readonly limits: NpmRegistryLimits,
@@ -189,6 +195,7 @@ class RegistryReader {
     this[field] += amount;
     if (this[field] > maximum) {
       this.stopped = 'budget';
+      this.stoppedBy = CONSUMED_LIMIT[field];
       throw new RegistryFailure('budget');
     }
   }
@@ -229,6 +236,9 @@ class RegistryReader {
   stopReason() {
     return this.stopped;
   }
+  stopLimit() {
+    return this.stopped === 'budget' ? this.stoppedBy : null;
+  }
   private async body(
     response: Response,
     aborted: Promise<never>,
@@ -267,6 +277,7 @@ class RegistryReader {
           charge: () => {
             if (this.requests >= this.limits.maxRequests) {
               this.stopped = 'budget';
+              this.stoppedBy = 'maxRequests';
               throw new RegistryFailure('budget');
             }
             this.requests++;
@@ -342,6 +353,8 @@ export function createNpmRegistryReader(
       read: (request: unknown) => Promise<NpmMetadataResult>;
       /** The reason this reader refuses all further reads, or null while it can still read. */
       stopped: () => EvidenceReason | null;
+      /** Diagnostics: the cumulative limit that set a `budget` stop, or null. */
+      stopLimit: () => string | null;
     } {
   try {
     const reader = new RegistryReader(parseLimits(limits), deps);
@@ -349,6 +362,7 @@ export function createNpmRegistryReader(
       kind: 'ready',
       read: (value: unknown) => reader.read(value),
       stopped: () => reader.stopReason(),
+      stopLimit: () => reader.stopLimit(),
     });
   } catch {
     return { kind: 'invalid' };
