@@ -300,6 +300,21 @@ export async function runMemberMalware(
   }
   return settle();
 }
+/**
+ * Runs one signals pass over the members, which arrive in research order (coverage §3.5). Once a
+ * member crosses a packet limit (`run` returns false), every lower-priority member keeps its
+ * `budget` reservation, so the cut is strictly by priority (§1.5) and no read is spent on a
+ * result that could not be kept.
+ */
+export async function inPriorityOrder(
+  changes: readonly PacketChange[],
+  run: (change: PacketChange) => Promise<boolean>,
+): Promise<void> {
+  for (const change of changes) {
+    if ('basis' in change) continue;
+    if (!(await run(change))) return;
+  }
+}
 /** Required malware runs before optional adapters; input/outputs never share mutable records. */
 export async function enrichPolicySignals(
   value: unknown,
@@ -321,24 +336,18 @@ export async function enrichPolicySignals(
   try {
     signalBounds(input, output);
     reserveSignals(input, output);
-    // Members run in research order (coverage §3.5). Once one crosses a packet limit, every
-    // lower-priority member keeps its `budget` reservation, so the cut is strictly by priority
-    // (§1.5) and no read is spent on a result that could not be kept.
     const cache = new Map();
-    let full = false;
-    for (const change of output.changes) {
-      if ('basis' in change || full) continue;
-      full = !(await runMemberMalware(input, output, change, dependencies.malwareReader, cache));
-    }
+    await inPriorityOrder(output.changes, (change) =>
+      runMemberMalware(input, output, change, dependencies.malwareReader, cache),
+    );
     const lockfiles =
       dependencies.artifactSession && cacheLockfileReads(dependencies.artifactSession);
-    full = false;
-    for (const change of output.changes) {
-      if ('basis' in change || full) continue;
-      full = !(await runOptionalSignals(input, output, change, async () => {
+    // A separate pass: the malware cut does not take optional signals from members above it.
+    await inPriorityOrder(output.changes, (change) =>
+      runOptionalSignals(input, output, change, async () => {
         await collectOptionalMember(input, output, change, dependencies, lockfiles);
-      }));
-    }
+      }),
+    );
     return freeze(output);
   } catch (error) {
     return {

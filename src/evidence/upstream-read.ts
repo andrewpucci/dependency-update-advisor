@@ -144,9 +144,10 @@ export function upstreamLimits(value: unknown): UpstreamLimits {
 export function upstreamCopy<T>(value: T, limits: UpstreamLimits, work = { entries: 0 }): T {
   return copyAdvisoryData(value, { ...limits, maxFindings: 1 } as AdvisoryLimits, work);
 }
-function fitsAlone(value: unknown, limits: UpstreamLimits): boolean {
+/** Whether a value copies once the entry cap is lifted, so the entry cap alone refused it. */
+function entriesRefused(value: unknown, limits: UpstreamLimits): boolean {
   try {
-    upstreamCopy(value, limits);
+    upstreamCopy(value, { ...limits, maxJsonEntries: Number.MAX_SAFE_INTEGER });
     return true;
   } catch {
     return false;
@@ -380,10 +381,12 @@ class Reader {
     try {
       return upstreamCopy(value, this.limits, this.work);
     } catch (error) {
-      // The entry count is cumulative across this reader's reads. A value that fits a fresh count
-      // failed only because earlier reads used the cap up, and every later copy fails the same
-      // way: that is a stop, as the register's effect says, not one failed read.
-      if (upstreamFailureReason(error) === 'budget' && fitsAlone(value, this.limits))
+      // The entry count is cumulative across this reader's reads, and a refused copy has already
+      // counted its entries, so once the entry cap refuses a value (too many entries alone, or the
+      // cap used up by earlier reads) every later copy fails too. That is a stop, as the
+      // register's effect says, named on the read that ran out. Depth and string-size failures
+      // fail only their own read.
+      if (upstreamFailureReason(error) === 'budget' && entriesRefused(value, this.limits))
         this.exhaust('maxJsonEntries');
       throw error;
     } finally {

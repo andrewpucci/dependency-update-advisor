@@ -703,6 +703,28 @@ describe('waiting is bounded per reader, by time, by abort, and to GitHub', () =
   });
 });
 
+test('a value with too many entries stops the reader on that read; a too-deep one fails alone', async () => {
+  const wide = { full_name: 'fixture/a', items: Array.from({ length: 40 }, (_, i) => i) };
+  let deep: unknown = 0;
+  for (let i = 0; i < 40; i++) deep = { next: deep };
+  const read = (body: unknown, overrides: object) => {
+    const { reader, fetch } = setup(async () => Response.json(body), overrides);
+    return { reader, fetch };
+  };
+  const repository = { kind: 'github', repository: 'fixture/a', resource: 'repository' };
+  const oversized = read(wide, { maxJsonEntries: 30 });
+  expect(await oversized.reader.read(repository)).toMatchObject({ reasons: ['budget'] });
+  expect(oversized.reader.stopped?.()).toBe('budget');
+  expect(oversized.reader.stopLimit?.()).toBe('maxJsonEntries');
+  oversized.reader.close();
+
+  const tooDeep = read({ full_name: 'fixture/a', deep }, {});
+  expect(await tooDeep.reader.read(repository)).toMatchObject({ status: 'unavailable' });
+  expect(tooDeep.reader.stopped?.()).toBeNull();
+  expect(tooDeep.reader.stopLimit?.()).toBeNull();
+  tooDeep.reader.close();
+});
+
 describe('the stop limit names which cumulative limit stopped the reader (#431)', () => {
   const repository = (name: string) => ({
     kind: 'github',

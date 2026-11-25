@@ -186,7 +186,7 @@ const PACKET_FIELDS = new Set(['changes', 'sources', 'findings']);
  * diagnostics outside the packet, so they count only toward retained bytes. Both equal
  * `Buffer.byteLength(JSON.stringify(...))` of the corresponding object.
  */
-function enrichmentBytes(output: SignalEnrichment): { packet: number; retained: number } {
+export function enrichmentBytes(output: SignalEnrichment): { packet: number; retained: number } {
   const object = (sizes: number[]) =>
     2 + sizes.reduce((total, size) => total + size, 0) + Math.max(sizes.length - 1, 0);
   const members = Object.entries(output).flatMap(([key, value]) => {

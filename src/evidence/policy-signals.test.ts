@@ -1,17 +1,22 @@
 import { expect, test } from 'vite-plus/test';
 import {
   enrichPolicySignals,
+  inPriorityOrder,
   runMemberMalware,
   type PolicySignalInput,
   type SignalEnrichment,
 } from './policy-signals.js';
-import { runOptionalSignals, SIGNAL_ATTEMPTS_PER_MEMBER } from './policy-signals-evidence.js';
+import {
+  enrichmentBytes,
+  runOptionalSignals,
+  SIGNAL_ATTEMPTS_PER_MEMBER,
+} from './policy-signals-evidence.js';
 import { resolveAdvisoryTarget } from './advisories.js';
 import { createMalwareReader, type AdvisoryReader } from './advisory-read.js';
 import { createUpstreamReader } from './upstream-read.js';
 import { enrichUpstream } from './upstream.js';
 import { upstreamScenario, upstreamTestLimits } from '../../tests/parity/upstream.js';
-import { validateReviewPacket } from '../schema.js';
+import { validateReviewPacket, type PacketChange } from '../schema.js';
 import { formDecisionUnits, evaluateUnitPolicy } from '../units.js';
 import { parseReviewConfig } from '../config.js';
 import { AdvisoryFailure } from './advisory-read.js';
@@ -655,4 +660,81 @@ test('a released member returns to exactly its pre-member size', async () => {
       expect.objectContaining({ category, url: null, outcome: 'skipped', reasons: ['budget'] }),
     ),
   );
+});
+
+test('a pass stops at the first member that crosses a limit, even before smaller members', async () => {
+  const changes = [
+    { id: 'a' },
+    { id: 'basis', basis: {} },
+    { id: 'b' },
+    { id: 'c' },
+  ] as unknown as PacketChange[];
+  const ran: string[] = [];
+  await inPriorityOrder(changes, async (change) => {
+    ran.push(change.id);
+    return change.id !== 'b';
+  });
+  // A lower-priority member never runs after one that did not fit, so it keeps its reservation.
+  expect(ran).toEqual(['a', 'b']);
+});
+
+test('optional signals report an overflow even when the rollback fits', async () => {
+  const { f, input } = await fixture(true);
+  const victim = npmVictim(input);
+  const malware = createMalwareReader(input.limits, {
+    now: () => 0,
+    fetch: async () => Response.json([]),
+  });
+  if (malware.kind !== 'ready') throw new Error('reader');
+  const baseline = await enrichPolicySignals(
+    { ...input, npmInventory: f.input.npmInventory },
+    { malwareReader: malware },
+  );
+  malware.close();
+  if (baseline.kind !== 'enriched') throw new Error(JSON.stringify(baseline));
+  const output = structuredClone(baseline) as SignalEnrichment;
+  const change = output.changes.find((c) => c.id === victim.id)!;
+  // Room for the rollback's explained outcomes, not for the oversized source.
+  const limit = Buffer.byteLength(JSON.stringify(output)) + 500;
+  const kept = await runOptionalSignals(
+    { ...input, limits: { ...input.limits, maxRetainedBytes: limit } } as PolicySignalInput,
+    output,
+    change,
+    async () => {
+      output.sources.push({ ...structuredClone(output.sources[0]), id: 'x'.repeat(5000) });
+    },
+  );
+  expect(Buffer.byteLength(JSON.stringify(output))).toBeLessThanOrEqual(limit);
+  expect(output.sources.some((s) => s.id.startsWith('xx'))).toBe(false);
+  expect(kept).toBe(false);
+});
+
+test('signal byte counts equal the serialized packet part and whole output exactly', async () => {
+  const { f, input } = await fixture(true);
+  const malware = createMalwareReader(input.limits, {
+    now: () => 0,
+    fetch: async () => Response.json([]),
+  });
+  if (malware.kind !== 'ready') throw new Error('reader');
+  const result = await enrichPolicySignals(
+    { ...input, npmInventory: f.input.npmInventory },
+    { malwareReader: malware },
+  );
+  malware.close();
+  if (result.kind !== 'enriched') throw new Error(JSON.stringify(result));
+  const empty: SignalEnrichment = {
+    kind: 'enriched',
+    binding: result.binding,
+    changes: [],
+    sources: [],
+    findings: [],
+    attempts: [],
+  };
+  for (const output of [result as SignalEnrichment, empty]) {
+    const { changes, sources, findings } = output;
+    expect(enrichmentBytes(output)).toEqual({
+      packet: Buffer.byteLength(JSON.stringify({ changes, sources, findings })),
+      retained: Buffer.byteLength(JSON.stringify(output)),
+    });
+  }
 });
