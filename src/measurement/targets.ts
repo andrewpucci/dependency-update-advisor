@@ -198,19 +198,26 @@ export function addTargetSides(
   const { input } = prepared;
   for (const change of input.changes) {
     if ('basis' in change) continue;
-    const candidates: Side[] =
-      type === 'malware'
-        ? [change.to ? 'head' : 'base']
-        : [...(change.to ? ['head' as const] : []), ...(change.from ? ['base' as const] : [])];
-    for (const side of candidates) {
+    for (const side of lookupSides(change, type)) {
       const target = resolver.resolveAdvisoryTarget(input, change as never, side);
-      if (!target) continue;
-      const key = sideKey(type, target);
-      const known = sides.get(key) ?? new Set<Side>();
-      known.add(side);
-      sides.set(key, known);
+      if (target) addSide(sides, sideKey(type, target), side);
     }
   }
+}
+
+/** Reviewed lookups check every existing side; a malware lookup checks the proposed one. */
+function lookupSides(change: Readonly<{ from?: unknown; to?: unknown }>, type: TargetType): Side[] {
+  if (type === 'malware') return [change.to ? 'head' : 'base'];
+  const sides: Side[] = [];
+  if (change.to) sides.push('head');
+  if (change.from) sides.push('base');
+  return sides;
+}
+
+function addSide(sides: TargetSides, key: string, side: Side): void {
+  const known = sides.get(key) ?? new Set<Side>();
+  known.add(side);
+  sides.set(key, known);
 }
 
 /**
