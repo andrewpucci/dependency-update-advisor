@@ -2,6 +2,7 @@ import { AsyncLocalStorage } from 'node:async_hooks';
 import { isGithubApi } from '../evidence/github-quota.js';
 import { limit } from '../limits.js';
 import type { ResearchObservation, ResearchStage } from '../research.js';
+import type { DeepReadonly, PacketChange } from '../schema.js';
 
 export type DemandPhase = ResearchStage | 'pre-research' | 'post-research';
 export type DemandUnits = Readonly<Record<string, number>>;
@@ -129,20 +130,17 @@ export function labelReader<L, D extends { fetch: FetchLike }, R>(
   };
 }
 
-type CoverageChange = Readonly<{
-  evidence?: Readonly<Record<string, Readonly<{ status: string; reasons: readonly string[] }>>>;
-}>;
 const STATUSES = ['available', 'partial', 'unavailable'] as const;
 
 /**
  * Counts members' evidence states by category. Declaration (`basis`) records are not members and
  * are skipped. A member with several reasons in one category counts once under each.
  */
-export function coverageCounts(changes: readonly CoverageChange[]): DemandCoverage {
+export function coverageCounts(changes: readonly DeepReadonly<PacketChange>[]): DemandCoverage {
   const coverage: DemandCoverage = {};
   for (const change of changes) {
     if ('basis' in change) continue;
-    for (const [category, evidence] of Object.entries(change.evidence ?? {})) {
+    for (const [category, evidence] of Object.entries(change.evidence)) {
       const row = (coverage[category] ??= {
         available: 0,
         partial: 0,

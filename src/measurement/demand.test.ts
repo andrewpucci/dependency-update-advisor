@@ -8,6 +8,7 @@ import {
 } from './demand.js';
 import { buildRegister, limit, REGISTER } from '../limits.js';
 import { scaledDefinitions } from './scale.js';
+import type { ChangeEvidence, EvidenceReason, EvidenceStatus, PacketChange } from '../schema.js';
 
 const fakeFetch =
   (body = 'abc', status = 200) =>
@@ -287,18 +288,39 @@ test('counts only research-stage GitHub requests and keeps the latest reported q
 });
 
 test('counts members by evidence status and reason per category, skipping declarations', () => {
-  const evidence = (status: string, reasons: string[] = []) => ({ status, reasons, sourceIds: [] });
+  const evidence = (status: EvidenceStatus, reasons: EvidenceReason[] = []): ChangeEvidence => ({
+    status,
+    reasons,
+    sourceIds: [],
+  });
+  const member = (id: string, evidence: Record<string, ChangeEvidence>): PacketChange => ({
+    id,
+    kind: 'update',
+    role: 'transitive',
+    ecosystem: 'npm',
+    from: null,
+    to: null,
+    evidence,
+  });
+  const declaration: PacketChange = {
+    id: 'declaration',
+    kind: 'update',
+    role: 'direct',
+    ecosystem: 'npm',
+    basis: 'declaration',
+    from: null,
+    to: null,
+    evidence: { vulnerability: evidence('unavailable', ['missing']) },
+  };
   const coverage = coverageCounts([
-    { evidence: { vulnerability: evidence('available'), malware: evidence('available') } },
-    {
-      evidence: {
-        vulnerability: evidence('unavailable', ['budget']),
-        malware: evidence('partial', ['budget', 'timeout', 'budget']),
-      },
-    },
-    { evidence: { vulnerability: evidence('unavailable', ['budget']) } },
-    { basis: 'declaration', evidence: { vulnerability: evidence('unavailable', ['missing']) } },
-  ] as never);
+    member('a', { vulnerability: evidence('available'), malware: evidence('available') }),
+    member('b', {
+      vulnerability: evidence('unavailable', ['budget']),
+      malware: evidence('partial', ['budget', 'timeout', 'budget']),
+    }),
+    member('c', { vulnerability: evidence('unavailable', ['budget']) }),
+    declaration,
+  ]);
 
   expect(coverage).toEqual({
     vulnerability: { available: 1, partial: 0, unavailable: 2, reasons: { budget: 2 } },

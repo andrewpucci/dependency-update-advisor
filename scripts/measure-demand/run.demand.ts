@@ -270,7 +270,7 @@ test('measure research read demand', async () => {
       });
       if (researched.kind !== 'ready') return { research: researched.kind };
       measured = units(researched.packet);
-      coverage = coverageCounts(researched.packet.changes as never);
+      coverage = coverageCounts(researched.packet.changes);
       return { unavailable: researched.unavailable };
     },
   );
