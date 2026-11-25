@@ -165,6 +165,7 @@ It reads the PR's snapshot, collectors, and public research sources with the
 model stubbed, and writes nothing to GitHub. `MEASURE_REPO` (default this
 repository), `MEASURE_CI_WORKFLOW` (default `.github/workflows/ci.yml`), and
 `MEASURE_OUT` (a JSON report path) are optional. The report holds counts per
-research stage and host, repeated-URL requests, stage stop reasons, and
-inventory units; it records no URL, header, token, or response body. Share
-only aggregate counts for consumer repositories.
+research stage and host, repeated-URL requests, stage stop reasons, inventory
+units, and members' evidence states and reasons per category; it records no
+URL, header, token, or response body. Share only aggregate counts for consumer
+repositories.

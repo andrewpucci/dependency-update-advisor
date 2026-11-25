@@ -2,6 +2,7 @@ import { AsyncLocalStorage } from 'node:async_hooks';
 import { isGithubApi } from '../evidence/github-quota.js';
 import { limit } from '../limits.js';
 import type { ResearchObservation, ResearchStage } from '../research.js';
+import type { DeepReadonly, PacketChange } from '../schema.js';
 
 export type DemandPhase = ResearchStage | 'pre-research' | 'post-research';
 export type DemandUnits = Readonly<Record<string, number>>;
@@ -13,6 +14,14 @@ export type DemandRow = {
 };
 /** A stage stop that left demand unserved, so the stage's counts are a floor, not its demand. */
 export type Censored = { stage: ResearchStage; reason: string };
+/** Per evidence category: members by status, and how often each reason appears among them. */
+export type CategoryCoverage = {
+  available: number;
+  partial: number;
+  unavailable: number;
+  reasons: Record<string, number>;
+};
+export type DemandCoverage = Record<string, CategoryCoverage>;
 export type DemandReport = {
   totalRequests: number;
   /** Requests whose full URL (including query string) was already requested earlier in this run. */
@@ -29,6 +38,11 @@ export type DemandReport = {
   }[];
   censored: Censored[];
   units: DemandUnits;
+  /**
+   * Members' evidence states after research, per category. A share that stops single members
+   * leaves every stage `enriched`; their `budget` reasons show here instead of in `censored`.
+   */
+  coverage: DemandCoverage;
   /** Research's GitHub use against its approved ceiling, and what the quota guard saw. */
   github: {
     researchRequests: number;
@@ -116,6 +130,32 @@ export function labelReader<L, D extends { fetch: FetchLike }, R>(
   };
 }
 
+const STATUSES = ['available', 'partial', 'unavailable'] as const;
+
+/**
+ * Counts members' evidence states by category. Declaration (`basis`) records are not members and
+ * are skipped. A member with several reasons in one category counts once under each.
+ */
+export function coverageCounts(changes: readonly DeepReadonly<PacketChange>[]): DemandCoverage {
+  const coverage: DemandCoverage = {};
+  for (const change of changes) {
+    if ('basis' in change) continue;
+    for (const [category, evidence] of Object.entries(change.evidence)) {
+      const row = (coverage[category] ??= {
+        available: 0,
+        partial: 0,
+        unavailable: 0,
+        reasons: {},
+      });
+      const status = STATUSES.find((candidate) => candidate === evidence.status);
+      if (status) row[status] += 1;
+      for (const reason of new Set(evidence.reasons))
+        row.reasons[reason] = (row.reasons[reason] ?? 0) + 1;
+    }
+  }
+  return coverage;
+}
+
 function addSample(table: Record<string, DemandRow>, key: string, sample: Sample): void {
   const row = (table[key] ??= { requests: 0, bytes: 0, maxMs: 0, statuses: {} });
   row.requests += 1;
@@ -130,7 +170,11 @@ export function createDemandRecorder(now: () => number): {
   wrap(
     fetch: (url: string, init: RequestInit) => Promise<Response>,
   ): (url: string, init: RequestInit) => Promise<Response>;
-  report(units: DemandUnits, quota?: Readonly<{ refusals(): number }>): DemandReport;
+  report(
+    units: DemandUnits,
+    quota?: Readonly<{ refusals(): number }>,
+    coverage?: DemandCoverage,
+  ): DemandReport;
 } {
   let phase: DemandPhase = 'pre-research';
   let stageStartedAt = 0;
@@ -175,7 +219,11 @@ export function createDemandRecorder(now: () => number): {
     };
   };
 
-  const report = (units: DemandUnits, quota?: Readonly<{ refusals(): number }>): DemandReport => {
+  const report = (
+    units: DemandUnits,
+    quota?: Readonly<{ refusals(): number }>,
+    coverage: DemandCoverage = {},
+  ): DemandReport => {
     const byPhaseHost: Record<string, DemandRow> = {};
     const byShare: Record<string, DemandRow> = {};
     const seenUrls = new Set<string>();
@@ -201,6 +249,7 @@ export function createDemandRecorder(now: () => number): {
         .filter((stage) => CENSORING_REASONS.includes(stage.reason))
         .map(({ stage, reason }) => ({ stage, reason: reason ?? '' })),
       units,
+      coverage,
       github: {
         researchRequests: samples.filter(
           (sample) => isGithubApi(sample.url) && RESEARCH_PHASES.includes(sample.phase),
