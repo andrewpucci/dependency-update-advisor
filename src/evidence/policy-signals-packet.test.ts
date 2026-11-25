@@ -123,7 +123,11 @@ test('attempts count toward retained bytes, not the packet byte limit', async ()
 });
 
 /** Malware records for every query whose package is `name`, and none for any other package. */
-const malwareFor = (limits: Parameters<typeof createMalwareReader>[0], name: string) => {
+const malwareFor = (
+  limits: Parameters<typeof createMalwareReader>[0],
+  name: string,
+  { records = 3, summaryBytes = 200 } = {},
+) => {
   const reader = createMalwareReader(limits, {
     now: () => 0,
     fetch: async (url) => {
@@ -131,15 +135,18 @@ const malwareFor = (limits: Parameters<typeof createMalwareReader>[0], name: str
       const ecosystem = new URL(url).searchParams.get('ecosystem');
       if (!affects.startsWith(name + '@')) return Response.json([]);
       return Response.json(
-        ['GHSA-aaaa-bbbb-cccc', 'GHSA-dddd-eeee-ffff', 'GHSA-gggg-hhhh-jjjj'].map((id) => ({
-          ghsa_id: id,
-          html_url: 'https://github.com/advisories/' + id,
-          summary: 'Synthetic malware ' + 'x'.repeat(200),
-          type: 'malware',
-          severity: 'unknown',
-          withdrawn_at: null,
-          vulnerabilities: [{ package: { ecosystem, name }, vulnerable_version_range: '*' }],
-        })),
+        ['aaaa-bbbb-cccc', 'dddd-eeee-ffff', 'gggg-hhhh-jjjj', ...'kmnpqrstuvwx']
+          .slice(0, records)
+          .map((id) => 'GHSA-' + (id.length > 1 ? id : id.repeat(4) + '-bbbb-cccc'))
+          .map((id) => ({
+            ghsa_id: id,
+            html_url: 'https://github.com/advisories/' + id,
+            summary: 'Synthetic malware ' + 'x'.repeat(summaryBytes),
+            type: 'malware',
+            severity: 'unknown',
+            withdrawn_at: null,
+            vulnerabilities: [{ package: { ecosystem, name }, vulnerable_version_range: '*' }],
+          })),
       );
     },
   });
@@ -203,6 +210,54 @@ test('the cut is strict: no member after the first that overflows keeps malware,
     expect(result.findings.some((f) => f.kind === 'malware')).toBe(false);
   } finally {
     cap.bytes = Infinity;
+    reader.close();
+  }
+});
+
+test('the malware cut leaves optional signals to their own pass, below the cut too', async () => {
+  const input = await signalInput();
+  const members = input.changes.filter((c) => !('basis' in c));
+  const nameOf = (c: PacketChange) => ((c.to ?? c.from) as { name: string }).name;
+  // A large npm member no other member shares, with members of lower priority after it.
+  const index = members.findIndex(
+    (c, i) =>
+      i > 0 &&
+      i < members.length - 1 &&
+      c.ecosystem === 'npm' &&
+      members.filter((m) => nameOf(m) === nameOf(c)).length === 1,
+  );
+  expect(index).toBeGreaterThan(0);
+  const empty = emptyMalware(input.limits);
+  const reader = malwareFor(input.limits, nameOf(members[index]), {
+    records: 12,
+    summaryBytes: 1000,
+  });
+  try {
+    // Every member's malware and optional signals, with no malware records anywhere.
+    const baseline = await enrichPolicySignals(input, { malwareReader: empty });
+    if (baseline.kind !== 'enriched') throw new Error(JSON.stringify(baseline));
+    // Room for that, so only the large member's malware records cross the limit. Members below it
+    // keep a reservation no larger than their checked malware, so their optional signals fit.
+    cap.bytes = packetBytes(baseline);
+    const result = await enrichPolicySignals(input, { malwareReader: reader });
+    if (result.kind !== 'enriched') throw new Error(JSON.stringify(result));
+    const checked = result.changes.filter((c) => !('basis' in c));
+    expect(checked.slice(index).map((c) => c.evidence.malware)).toEqual(
+      checked
+        .slice(index)
+        .map(() => ({ status: 'unavailable', reasons: ['budget'], sourceIds: [] })),
+    );
+    const optional = (c: PacketChange) => {
+      const { publishTime, deprecation, trust, publisher, license } = c.evidence;
+      return { publishTime, deprecation, trust, publisher, license };
+    };
+    const expected = baseline.changes.filter((c) => !('basis' in c)).map(optional);
+    // Mutation "the malware cut ends the optional pass too": members from the cut stay at budget.
+    expect(checked.map(optional)).toEqual(expected);
+    expect(expected.slice(index).some((e) => !e.trust?.reasons.includes('budget'))).toBe(true);
+  } finally {
+    cap.bytes = Infinity;
+    empty.close();
     reader.close();
   }
 });

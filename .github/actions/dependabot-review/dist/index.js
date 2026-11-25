@@ -32489,7 +32489,7 @@ async function runResearch(input) {
 				stage,
 				reason
 			});
-			if (limit && !stopLimits.has(stage)) stopLimits.set(stage, limit);
+			if (limit) stopLimits.set(stage, limit);
 			markStage(progress, stage, reason);
 		};
 		const shares = researchShares(researchShareUnits(packet.changes), input.shareParameters);

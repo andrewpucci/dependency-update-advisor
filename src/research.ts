@@ -371,7 +371,7 @@ export async function runResearch(input: ResearchInput): Promise<ResearchResult>
     };
     const fail: Fail = (stage, reason, limit) => {
       unavailable.push({ stage, reason });
-      if (limit && !stopLimits.has(stage)) stopLimits.set(stage, limit);
+      if (limit) stopLimits.set(stage, limit);
       markStage(progress, stage, reason);
     };
     // Every unit is known before research starts, so each reader's share is final when it opens.
