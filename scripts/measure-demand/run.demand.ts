@@ -12,8 +12,13 @@
  * one at a time while the stage itself ended `enriched`. Its `github` field gives
  * research's GitHub requests beside their approved ceiling, the quota guard's refusals, and the last
  * remaining quota GitHub reported; a run the guard cut short is re-measured after the reset.
+ * Optional: MEASURE_TARGETS_OUT (a path under `.context/`) also writes the targets the advisory and
+ * malware readers settled and the tag candidates the run requested (see `measurement/targets.ts`).
+ * That file names public packages and tags, so it stays out of the report and is never committed.
  */
-import { writeFileSync } from 'node:fs';
+import { mkdirSync, writeFileSync } from 'node:fs';
+import { dirname, resolve, sep } from 'node:path';
+import { fileURLToPath } from 'node:url';
 import { test, vi } from 'vite-plus/test';
 import { authenticatedFetch, researchFetch } from '../../src/adapters.js';
 import {
@@ -34,14 +39,20 @@ import {
   type DemandPhase,
 } from '../../src/measurement/demand.js';
 import { reopenPullRequest } from '../../src/measurement/reopen.js';
+import { settledTargets, tagCandidates } from '../../src/measurement/targets.js';
 import { assembleReviewPacket } from '../../src/packet.js';
 import { dependencyIdentities } from '../../src/pipeline.js';
 import { runResearch } from '../../src/research.js';
 import { createGithubTransport } from '../../src/runtime.js';
 import { createGithubSnapshotReads, withTrustedSnapshot } from '../../src/snapshot.js';
 
-// Mock factories run before imports, so they share the recorder's phase through this holder.
-const hooks = vi.hoisted(() => ({ phase: (): DemandPhase => 'pre-research' }));
+// Mock factories run before imports, so they share the recorder's phase through this holder, and,
+// for MEASURE_TARGETS_OUT, every advisory and malware read and the sides each target was read for.
+const hooks = vi.hoisted(() => ({
+  phase: (): DemandPhase => 'pre-research',
+  reads: [] as import('../../src/measurement/targets.js').ReaderRead[],
+  sides: new Map() as import('../../src/measurement/targets.js').TargetSides,
+}));
 
 vi.mock('../../src/limits.js', async (importOriginal) => {
   const actual = await importOriginal<typeof import('../../src/limits.js')>();
@@ -69,11 +80,53 @@ vi.mock('../../src/evidence/upstream-read.js', async (importOriginal) => {
 vi.mock('../../src/evidence/advisory-read.js', async (importOriginal) => {
   const actual = await importOriginal<typeof import('../../src/evidence/advisory-read.js')>();
   const { labelReader } = await import('../../src/measurement/demand.js');
+  const { recordReads } = await import('../../src/measurement/targets.js');
   const phase = () => hooks.phase();
+  // Reads are kept as the reader answered them: the stage may roll a member back or reconcile it.
+  const recorded =
+    (type: 'reviewed' | 'malware', create: typeof actual.createAdvisoryReader) =>
+    (limits: unknown, deps: Parameters<typeof actual.createAdvisoryReader>[1]) => {
+      const opened = create(limits, deps);
+      return opened.kind === 'ready' ? recordReads(opened, type, hooks.reads) : opened;
+    };
   return {
     ...actual,
-    createAdvisoryReader: labelReader('advisory', actual.createAdvisoryReader, phase),
-    createMalwareReader: labelReader('malware', actual.createMalwareReader, phase),
+    createAdvisoryReader: labelReader(
+      'advisory',
+      recorded('reviewed', actual.createAdvisoryReader),
+      phase,
+    ),
+    createMalwareReader: labelReader(
+      'malware',
+      recorded('malware', actual.createMalwareReader),
+      phase,
+    ),
+  };
+});
+// Request URLs carry no side, so each target's sides come from the stage's own target resolver.
+vi.mock('../../src/evidence/advisories.js', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('../../src/evidence/advisories.js')>();
+  const { addTargetSides } = await import('../../src/measurement/targets.js');
+  return {
+    ...actual,
+    enrichAdvisories: (...args: Parameters<typeof actual.enrichAdvisories>) => {
+      addTargetSides(hooks.sides, args[0], 'reviewed', actual);
+      return actual.enrichAdvisories(...args);
+    },
+  };
+});
+vi.mock('../../src/evidence/policy-signals.js', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('../../src/evidence/policy-signals.js')>();
+  const advisories = await vi.importActual<typeof import('../../src/evidence/advisories.js')>(
+    '../../src/evidence/advisories.js',
+  );
+  const { addTargetSides } = await import('../../src/measurement/targets.js');
+  return {
+    ...actual,
+    enrichPolicySignals: (...args: Parameters<typeof actual.enrichPolicySignals>) => {
+      addTargetSides(hooks.sides, args[0], 'malware', advisories);
+      return actual.enrichPolicySignals(...args);
+    },
   };
 });
 vi.mock('../../src/evidence/npm-publish-times.js', async (importOriginal) => {
@@ -111,6 +164,33 @@ vi.mock('../../src/evidence/policy-signals-read.js', async (importOriginal) => {
 const env = process.env;
 const [owner, name] = (env.MEASURE_REPO ?? 'andrewpucci/dependency-update-advisor').split('/');
 const workflowPath = env.MEASURE_CI_WORKFLOW ?? '.github/workflows/ci.yml';
+const contextDir = fileURLToPath(new URL('../../.context/', import.meta.url));
+
+/** The resolved MEASURE_TARGETS_OUT path, which must lie under `.context/`. */
+function targetsPath(value: string): string {
+  const path = resolve(value);
+  if (!path.startsWith(contextDir.endsWith(sep) ? contextDir : contextDir + sep))
+    throw new Error('MEASURE_TARGETS_OUT must be a path under .context/');
+  return path;
+}
+
+type Observed = { url: string; status: string };
+/** Keeps each request's URL and status for MEASURE_TARGETS_OUT; nothing reaches the report. */
+function observeRequests(
+  observed: Observed[],
+  fetch: (url: string, init: RequestInit) => Promise<Response>,
+) {
+  return async (url: string, init: RequestInit): Promise<Response> => {
+    try {
+      const response = await fetch(url, init);
+      observed.push({ url, status: String(response.status) });
+      return response;
+    } catch (error) {
+      observed.push({ url, status: 'error' });
+      throw error;
+    }
+  };
+}
 
 async function api(token: string, path: string): Promise<any> {
   const response = await fetch(`https://api.github.com/${path}`, {
@@ -186,10 +266,12 @@ test('measure research read demand', async () => {
   const token = env.GITHUB_TOKEN ?? '';
   const pr = Number(env.MEASURE_PR);
   if (!token || !Number.isSafeInteger(pr)) throw new Error('GITHUB_TOKEN and MEASURE_PR required');
+  const targetsOut = env.MEASURE_TARGETS_OUT ? targetsPath(env.MEASURE_TARGETS_OUT) : null;
   const now = () => performance.now();
   const recorder = createDemandRecorder(now);
   hooks.phase = recorder.phase;
-  const base = recorder.wrap((url, init) => fetch(url, init));
+  const observed: Observed[] = [];
+  const base = recorder.wrap(observeRequests(observed, (url, init) => fetch(url, init)));
   const { binding: bound, repository } = await binding(token, pr);
   const started = now();
   const deadline = started + EVIDENCE_READ_ENVELOPE.totalTimeoutMs;
@@ -292,6 +374,17 @@ test('measure research read demand', async () => {
   const text = JSON.stringify(report, null, 2);
   if (env.MEASURE_OUT) writeFileSync(env.MEASURE_OUT, text + '\n');
   console.log(text);
+  if (targetsOut) {
+    const requested = new Set(observed.map(({ url }) => url));
+    const targets = {
+      pr,
+      measuredAt: report.measuredAt,
+      targets: settledTargets(hooks.reads, hooks.sides, requested),
+      tagCandidates: tagCandidates(observed),
+    };
+    mkdirSync(dirname(targetsOut), { recursive: true });
+    writeFileSync(targetsOut, JSON.stringify(targets, null, 2) + '\n');
+  }
   if (Object.keys(measured).length === 0)
     throw new Error(`research did not complete: ${JSON.stringify(snapshot)}`);
 });
