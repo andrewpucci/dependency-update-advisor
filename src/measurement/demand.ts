@@ -34,6 +34,8 @@ export type DemandReport = {
     stage: ResearchStage;
     outcome: 'enriched' | 'unavailable';
     reason: string | null;
+    /** The reader limit that stopped the stage, when research names one. */
+    limit?: string;
     ms: number;
   }[];
   censored: Censored[];
@@ -192,6 +194,7 @@ export function createDemandRecorder(now: () => number): {
       stage: observation.stage,
       outcome: observation.outcome,
       reason: observation.reason,
+      ...(observation.limit ? { limit: observation.limit } : {}),
       ms: Math.round(now() - stageStartedAt),
     });
     phase = 'post-research';

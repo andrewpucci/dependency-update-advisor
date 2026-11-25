@@ -1,17 +1,22 @@
 import { expect, test } from 'vite-plus/test';
 import {
   enrichPolicySignals,
+  inPriorityOrder,
   runMemberMalware,
   type PolicySignalInput,
   type SignalEnrichment,
 } from './policy-signals.js';
-import { runOptionalSignals, SIGNAL_ATTEMPTS_PER_MEMBER } from './policy-signals-evidence.js';
+import {
+  enrichmentBytes,
+  runOptionalSignals,
+  SIGNAL_ATTEMPTS_PER_MEMBER,
+} from './policy-signals-evidence.js';
 import { resolveAdvisoryTarget } from './advisories.js';
 import { createMalwareReader, type AdvisoryReader } from './advisory-read.js';
 import { createUpstreamReader } from './upstream-read.js';
 import { enrichUpstream } from './upstream.js';
 import { upstreamScenario, upstreamTestLimits } from '../../tests/parity/upstream.js';
-import { validateReviewPacket } from '../schema.js';
+import { validateReviewPacket, type PacketChange } from '../schema.js';
 import { formDecisionUnits, evaluateUnitPolicy } from '../units.js';
 import { parseReviewConfig } from '../config.js';
 import { AdvisoryFailure } from './advisory-read.js';
@@ -487,7 +492,7 @@ test('optional discoveries that cross the packet byte limit are dropped for that
     Buffer.byteLength(JSON.stringify(output)) +
     Math.floor(Buffer.byteLength(JSON.stringify(finding)) / 2);
   const change = output.changes.find((c) => c.id === victim.id)!;
-  await runOptionalSignals(
+  const kept = await runOptionalSignals(
     { ...input, limits: { ...input.limits, maxRetainedBytes } } as PolicySignalInput,
     output,
     change,
@@ -495,6 +500,8 @@ test('optional discoveries that cross the packet byte limit are dropped for that
       output.findings.push(structuredClone(finding));
     },
   );
+  // A member that crossed a limit tells the caller to stop the pass there.
+  expect(kept).toBe(false);
   expect(
     output.findings.some((x) => x.kind === 'releaseMetadata' && x.memberId === victim.id),
   ).toBe(false);
@@ -554,9 +561,18 @@ test("a member's malware additions that cross the packet byte limit are rolled b
     },
     close: () => {},
   };
+  // The state just before the victim's check: its malware holds the stage's reservation.
   const start = () => {
     const output = structuredClone(baseline) as SignalEnrichment;
-    return { output, change: output.changes.find((c) => c.id === victim.id)! };
+    const change = output.changes.find((c) => c.id === victim.id)!;
+    const checked = new Set(change.evidence.malware.sourceIds);
+    output.sources = output.sources.filter((s) => !checked.has(s.id));
+    change.evidence.malware = { status: 'unavailable', reasons: ['budget'], sourceIds: [] };
+    Object.assign(
+      output.attempts.find((a) => a.memberId === victim.id && a.category === 'malware')!,
+      { url: null, outcome: 'skipped', reasons: ['budget'], sourceIds: [], truncated: false },
+    );
+    return { output, change };
   };
   // The size a failed check leaves, plus less than one malware record and its finding.
   const failed = start();
@@ -569,7 +585,9 @@ test("a member's malware additions that cross the packet byte limit are rolled b
   await runMemberMalware({ ...input, limits }, output, change, positive, new Map());
   expect(change.evidence.malware).toMatchObject({ status: 'unavailable', reasons: ['budget'] });
   expect(output.findings.some((f) => f.memberId === victim.id && f.kind === 'malware')).toBe(false);
-  expect(output.sources.length).toBe(failed.output.sources.length);
+  // The overflow leaves the reservation, not a failure record that costs more.
+  expect(output.sources.length).toBe(start().output.sources.length);
+  expect(Buffer.byteLength(JSON.stringify(output))).toBeLessThanOrEqual(limits.maxRetainedBytes);
   expect(output.changes.filter((c) => c.id !== victim.id)).toEqual(
     baseline.changes.filter((c) => c.id !== victim.id),
   );
@@ -613,7 +631,7 @@ test('a released member returns to exactly its pre-member size', async () => {
       });
   const limit = Buffer.byteLength(JSON.stringify(output));
   const finding = structuredClone(baseline.findings[0]);
-  await runOptionalSignals(
+  const kept = await runOptionalSignals(
     { ...input, limits: { ...input.limits, maxRetainedBytes: limit } } as PolicySignalInput,
     output,
     change,
@@ -632,6 +650,8 @@ test('a released member returns to exactly its pre-member size', async () => {
       output.findings.push({ ...finding, id: finding.id + ':discovery' });
     },
   );
+  // A member that crossed a limit tells the caller to stop the pass there.
+  expect(kept).toBe(false);
   expect(Buffer.byteLength(JSON.stringify(output))).toBeLessThanOrEqual(limit);
   expect(
     output.attempts.filter((a) => a.memberId === victim.id && a.category !== 'malware'),
@@ -640,4 +660,81 @@ test('a released member returns to exactly its pre-member size', async () => {
       expect.objectContaining({ category, url: null, outcome: 'skipped', reasons: ['budget'] }),
     ),
   );
+});
+
+test('a pass stops at the first member that crosses a limit, even before smaller members', async () => {
+  const changes = [
+    { id: 'a' },
+    { id: 'basis', basis: {} },
+    { id: 'b' },
+    { id: 'c' },
+  ] as unknown as PacketChange[];
+  const ran: string[] = [];
+  await inPriorityOrder(changes, async (change) => {
+    ran.push(change.id);
+    return change.id !== 'b';
+  });
+  // A lower-priority member never runs after one that did not fit, so it keeps its reservation.
+  expect(ran).toEqual(['a', 'b']);
+});
+
+test('optional signals report an overflow even when the rollback fits', async () => {
+  const { f, input } = await fixture(true);
+  const victim = npmVictim(input);
+  const malware = createMalwareReader(input.limits, {
+    now: () => 0,
+    fetch: async () => Response.json([]),
+  });
+  if (malware.kind !== 'ready') throw new Error('reader');
+  const baseline = await enrichPolicySignals(
+    { ...input, npmInventory: f.input.npmInventory },
+    { malwareReader: malware },
+  );
+  malware.close();
+  if (baseline.kind !== 'enriched') throw new Error(JSON.stringify(baseline));
+  const output = structuredClone(baseline) as SignalEnrichment;
+  const change = output.changes.find((c) => c.id === victim.id)!;
+  // Room for the rollback's explained outcomes, not for the oversized source.
+  const limit = Buffer.byteLength(JSON.stringify(output)) + 500;
+  const kept = await runOptionalSignals(
+    { ...input, limits: { ...input.limits, maxRetainedBytes: limit } } as PolicySignalInput,
+    output,
+    change,
+    async () => {
+      output.sources.push({ ...structuredClone(output.sources[0]), id: 'x'.repeat(5000) });
+    },
+  );
+  expect(Buffer.byteLength(JSON.stringify(output))).toBeLessThanOrEqual(limit);
+  expect(output.sources.some((s) => s.id.startsWith('xx'))).toBe(false);
+  expect(kept).toBe(false);
+});
+
+test('signal byte counts equal the serialized packet part and whole output exactly', async () => {
+  const { f, input } = await fixture(true);
+  const malware = createMalwareReader(input.limits, {
+    now: () => 0,
+    fetch: async () => Response.json([]),
+  });
+  if (malware.kind !== 'ready') throw new Error('reader');
+  const result = await enrichPolicySignals(
+    { ...input, npmInventory: f.input.npmInventory },
+    { malwareReader: malware },
+  );
+  malware.close();
+  if (result.kind !== 'enriched') throw new Error(JSON.stringify(result));
+  const empty: SignalEnrichment = {
+    kind: 'enriched',
+    binding: result.binding,
+    changes: [],
+    sources: [],
+    findings: [],
+    attempts: [],
+  };
+  for (const output of [result as SignalEnrichment, empty]) {
+    const { changes, sources, findings } = output;
+    expect(enrichmentBytes(output)).toEqual({
+      packet: Buffer.byteLength(JSON.stringify({ changes, sources, findings })),
+      retained: Buffer.byteLength(JSON.stringify(output)),
+    });
+  }
 });

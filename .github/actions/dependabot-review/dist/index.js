@@ -14753,6 +14753,11 @@ function statusReason(status) {
 	if (status === HTTP_STATUS.tooManyRequests) return "rate_limit";
 	return "unknown";
 }
+const CONSUMED_LIMIT = {
+	bytes: "maxTotalBytes",
+	entries: "maxJsonEntries",
+	retained: "maxRetainedBytes"
+};
 var RegistryReader = class {
 	limits;
 	deps;
@@ -14763,6 +14768,7 @@ var RegistryReader = class {
 	retained = 0;
 	busy = false;
 	stopped = null;
+	stoppedBy = null;
 	clock;
 	constructor(limits, deps) {
 		this.limits = limits;
@@ -14784,6 +14790,7 @@ var RegistryReader = class {
 		this[field] += amount;
 		if (this[field] > maximum) {
 			this.stopped = "budget";
+			this.stoppedBy = CONSUMED_LIMIT[field];
 			throw new RegistryFailure("budget");
 		}
 	}
@@ -14835,6 +14842,9 @@ var RegistryReader = class {
 	stopReason() {
 		return this.stopped;
 	}
+	stopLimit() {
+		return this.stopped === "budget" ? this.stoppedBy : null;
+	}
 	async body(response, aborted, cached) {
 		requireMetadata(response.body, "malformed");
 		const reader = response.body.getReader(), chunks = [];
@@ -14864,6 +14874,7 @@ var RegistryReader = class {
 				charge: () => {
 					if (this.requests >= this.limits.maxRequests) {
 						this.stopped = "budget";
+						this.stoppedBy = "maxRequests";
 						throw new RegistryFailure("budget");
 					}
 					this.requests++;
@@ -14929,7 +14940,8 @@ function createNpmRegistryReader(limits, deps) {
 		return Object.freeze({
 			kind: "ready",
 			read: (value) => reader.read(value),
-			stopped: () => reader.stopReason()
+			stopped: () => reader.stopReason(),
+			stopLimit: () => reader.stopLimit()
 		});
 	} catch {
 		return { kind: "invalid" };
@@ -15150,6 +15162,18 @@ function upstreamCopy(value, limits, work = { entries: 0 }) {
 		maxFindings: 1
 	}, work);
 }
+/** Whether a value copies once the entry cap is lifted, so the entry cap alone refused it. */
+function entriesRefused(value, limits) {
+	try {
+		upstreamCopy(value, {
+			...limits,
+			maxJsonEntries: Number.MAX_SAFE_INTEGER
+		});
+		return true;
+	} catch {
+		return false;
+	}
+}
 function httpReason$2(response, bytes) {
 	let message = "";
 	try {
@@ -15239,6 +15263,7 @@ var Reader = class {
 	closed = false;
 	busy = false;
 	stopped = null;
+	stoppedBy = null;
 	networkReason = null;
 	controller = new AbortController();
 	active = null;
@@ -15293,6 +15318,15 @@ var Reader = class {
 	stopReason() {
 		return this.stopped ?? (this.npm.kind === "ready" ? this.npm.stopped() : null);
 	}
+	stopLimit() {
+		if (this.stopped) return this.stopped === "budget" ? this.stoppedBy : null;
+		return this.npm.kind === "ready" && this.npm.stopped() === "budget" ? "npm." + this.npm.stopLimit() : null;
+	}
+	/** A cumulative limit ran out: every later read is refused with `budget`. */
+	exhaust(limit) {
+		this.stopped = "budget";
+		this.stoppedBy = limit;
+	}
 	close() {
 		this.closed = true;
 		this.active?.();
@@ -15305,7 +15339,7 @@ var Reader = class {
 	}
 	spend(amount) {
 		requireUpstream(Number.isSafeInteger(amount) && amount >= 0);
-		if (amount > this.limits.maxWork - this.effort) this.stopped = "budget";
+		if (amount > this.limits.maxWork - this.effort) this.exhaust("maxWork");
 		requireUpstream(!this.stopped, this.stopped ?? "budget");
 		this.effort += amount;
 	}
@@ -15313,12 +15347,15 @@ var Reader = class {
 		const before = this.work.entries;
 		try {
 			return upstreamCopy(value, this.limits, this.work);
+		} catch (error) {
+			if (upstreamFailureReason(error) === "budget" && entriesRefused(value, this.limits)) this.exhaust("maxJsonEntries");
+			throw error;
 		} finally {
 			this.spend(this.work.entries - before);
 		}
 	}
 	reserve(bytes) {
-		if (bytes > this.limits.maxRetainedBytes - this.retained) this.stopped = "budget";
+		if (bytes > this.limits.maxRetainedBytes - this.retained) this.exhaust("maxRetainedBytes");
 		requireUpstream(!this.stopped, this.stopped ?? "budget");
 		this.retained += bytes;
 	}
@@ -15350,7 +15387,7 @@ var Reader = class {
 		requireUpstream(!this.stopped, this.stopped ?? "budget");
 	}
 	charge() {
-		if (this.requests >= this.limits.maxRequests) this.stopped = "budget";
+		if (this.requests >= this.limits.maxRequests) this.exhaust("maxRequests");
 		requireUpstream(!this.stopped, this.stopped ?? "budget");
 		this.requests++;
 	}
@@ -15364,7 +15401,7 @@ var Reader = class {
 				if (chunk.done) return Buffer.concat(chunks, size);
 				size += chunk.value.byteLength;
 				if (!cached) this.bytes += chunk.value.byteLength;
-				if (this.bytes > this.limits.maxTotalBytes) this.stopped = "budget";
+				if (this.bytes > this.limits.maxTotalBytes) this.exhaust("maxTotalBytes");
 				requireUpstream(!this.stopped && size <= this.limits.maxResponseBytes, "budget");
 				this.remaining();
 				chunks.push(chunk.value);
@@ -15559,7 +15596,8 @@ function createUpstreamReader(value, deps) {
 				read: (t) => reader.read(t),
 				close: () => reader.close(),
 				spend: (amount) => reader.spend(amount),
-				stopped: () => reader.stopReason()
+				stopped: () => reader.stopReason(),
+				stopLimit: () => reader.stopLimit()
 			})
 		};
 	} catch {
@@ -15706,15 +15744,50 @@ const OPTIONAL_CATEGORIES = [
 * data, and members are bounded by `PACKET_LIMITS.changes`.
 */
 const SIGNAL_ATTEMPTS_PER_MEMBER = limit("signals.attemptsPerMember");
+const PACKET_FIELDS = /* @__PURE__ */ new Set([
+	"changes",
+	"sources",
+	"findings"
+]);
+/**
+* Serialized sizes of the enrichment, each part serialized once: `packet` is what it adds to the
+* review packet (changes, sources, findings), and `retained` is the whole output. Attempts are
+* diagnostics outside the packet, so they count only toward retained bytes. Both equal
+* `Buffer.byteLength(JSON.stringify(...))` of the corresponding object.
+*/
+function enrichmentBytes(output) {
+	const object = (sizes) => 2 + sizes.reduce((total, size) => total + size, 0) + Math.max(sizes.length - 1, 0);
+	const members = Object.entries(output).flatMap(([key, value]) => {
+		const json = JSON.stringify(value);
+		return json === void 0 ? [] : [{
+			key,
+			size: Buffer.byteLength(JSON.stringify(key)) + 1 + Buffer.byteLength(json)
+		}];
+	});
+	return {
+		packet: object(members.filter((m) => PACKET_FIELDS.has(m.key)).map((m) => m.size)),
+		retained: object(members.map((m) => m.size))
+	};
+}
+function fitsBytes(input, bytes) {
+	return bytes.packet <= PACKET_LIMITS.bytes && bytes.retained <= input.limits.maxRetainedBytes;
+}
 function signalBounds(input, output) {
 	advisoryCheck(output.changes.every((c) => Object.values(c.evidence).every((e) => e.sourceIds.length <= PACKET_LIMITS.listEntries)), "budget");
-	advisoryCheck(output.sources.length <= PACKET_LIMITS.sources && output.findings.length <= Math.min(PACKET_LIMITS.findings, input.findings.length + input.limits.maxFindings) && Buffer.byteLength(JSON.stringify(output)) <= Math.min(PACKET_LIMITS.bytes, input.limits.maxRetainedBytes), "budget");
+	advisoryCheck(output.sources.length <= PACKET_LIMITS.sources && output.findings.length <= Math.min(PACKET_LIMITS.findings, input.findings.length + input.limits.maxFindings) && fitsBytes(input, enrichmentBytes(output)), "budget");
 }
-/** Reserve explained terminal outcomes before optional reads can spend retention space. */
-function reserveOptionalSignals(input, output) {
+const SIGNAL_CATEGORIES = ["malware", ...OPTIONAL_CATEGORIES];
+/**
+* Reserves every member's explained terminal outcome, malware included, before any read can spend
+* retention space. A member whose results then cross a limit returns to its reservation, which
+* was already counted, so one member's overflow never fails the stage (coverage §1.5). Members
+* run in research order (§3.5), and the first member that does not fit ends that pass, so the
+* members left at `budget` are exactly the lowest-priority ones.
+*/
+function reserveSignals(input, output) {
 	for (const change of output.changes) {
 		if ("basis" in change) continue;
-		for (const category of OPTIONAL_CATEGORIES) {
+		for (const category of SIGNAL_CATEGORIES) {
 			if (category !== "license") change.evidence[category] = {
 				status: "unavailable",
 				reasons: ["budget"],
@@ -15757,11 +15830,13 @@ function explainUnattempted(output, change) {
 }
 /**
 * Checks packet limits after a member's rollback. If the discoveries kept from that member no
-* longer fit, they are dropped too, so only this member loses its optional signals.
+* longer fit, they are dropped too, so only this member loses its optional signals. Returns
+* whether it had to drop them.
 */
 function boundOrRelease(input, output, change, snapshot) {
 	try {
 		signalBounds(input, output);
+		return false;
 	} catch {
 		output.sources = [...snapshot.sources];
 		output.findings = [...snapshot.findings];
@@ -15781,9 +15856,15 @@ function boundOrRelease(input, output, change, snapshot) {
 			});
 		}
 		signalBounds(input, output);
+		return true;
 	}
 }
+/**
+* One member's optional signals. Returns false when the member's results crossed a packet limit,
+* so the caller leaves every lower-priority member at its reservation (coverage §1.5).
+*/
 async function runOptionalSignals(input, output, change, collect) {
+	let overflowed = false;
 	const snapshot = {
 		sources: [...output.sources],
 		findings: [...output.findings],
@@ -15794,8 +15875,13 @@ async function runOptionalSignals(input, output, change, collect) {
 	try {
 		await collect();
 		explainUnattempted(output, change);
-		signalBounds(input, output);
-		return;
+		try {
+			signalBounds(input, output);
+			return true;
+		} catch (error) {
+			overflowed = true;
+			throw error;
+		}
 	} catch (error) {
 		const reason = error instanceof AdvisoryFailure || error instanceof UpstreamFailure ? error.reason : "unknown";
 		const priorIds = new Set(snapshot.findings.map((f) => f.id));
@@ -15822,7 +15908,7 @@ async function runOptionalSignals(input, output, change, collect) {
 			terminal.sourceIds = [...new Set(actual.flatMap((a) => a.sourceIds).filter((id) => refs.has(id)))];
 			terminal.truncated = actual.length > 0;
 		}
-		boundOrRelease(input, output, change, snapshot);
+		return !boundOrRelease(input, output, change, snapshot) && !overflowed;
 	}
 }
 
@@ -17781,7 +17867,7 @@ async function collectPackageComparison(base, head, reader) {
 		const before = repositoryCandidate(base.metadata), after = repositoryCandidate(head.metadata);
 		requireUpstream(before.repository === after.repository && before.directory === after.directory, "conflict");
 		await publicRepository(before.repository, reader);
-		const from = await resolvePackageVersion(base, before, reader), to = await resolvePackageVersion(head, after, reader);
+		const to = await resolvePackageVersion(head, after, reader), from = await resolvePackageVersion(base, before, reader);
 		const compared = await collectExactComparison(before.repository, from, to, reader);
 		try {
 			for (const endpoint of [from, to]) {
@@ -21742,24 +21828,49 @@ async function collectOptionalMember(input, output, change, dependencies, lockfi
 	}
 }
 /**
-* One member's malware check. A failure, including additions that cross a packet limit, rolls back
-* only this member and records its malware as unavailable with the real reason.
+* One member's malware check, run over its reservation. A failure rolls back only this member and
+* records its malware as unavailable with the real reason. If the member's results, or that
+* failure record, cross a packet limit, the member returns to its reserved `budget` outcome and
+* this returns false, so the caller leaves every lower-priority member at its reservation too.
 */
 async function runMemberMalware(input, output, change, reader, cache) {
-	const lengths = [
-		output.sources.length,
-		output.findings.length,
-		output.attempts.length
-	];
-	const malware = structuredClone(change.evidence.malware);
+	const slot = output.attempts.findIndex((a) => a.memberId === change.id && a.category === "malware");
+	advisoryCheck(slot !== -1);
+	const reserved = {
+		sources: output.sources.length,
+		findings: output.findings.length,
+		attempts: output.attempts.length,
+		attempt: output.attempts[slot],
+		malware: structuredClone(change.evidence.malware)
+	};
+	const restore = () => {
+		output.sources.length = reserved.sources;
+		output.findings.length = reserved.findings;
+		output.attempts.length = reserved.attempts;
+		output.attempts[slot] = reserved.attempt;
+		change.evidence.malware = structuredClone(reserved.malware);
+	};
+	/**
+	* Moves the one attempt the record appended into the member's reserved slot, then checks the
+	* limits. Results that cross one leave the reservation, which was already counted.
+	*/
+	const settle = () => {
+		advisoryCheck(output.attempts.length === reserved.attempts + 1);
+		const attempt = output.attempts.pop();
+		advisoryCheck(attempt.memberId === change.id && attempt.category === "malware");
+		output.attempts[slot] = attempt;
+		try {
+			signalBounds(input, output);
+			return true;
+		} catch {
+			restore();
+			return false;
+		}
+	};
 	try {
 		await collectMemberMalware(input, output, change, reader, cache);
-		signalBounds(input, output);
 	} catch (error) {
-		output.sources.length = lengths[0];
-		output.findings.length = lengths[1];
-		output.attempts.length = lengths[2];
-		change.evidence.malware = malware;
+		restore();
 		const reason = error instanceof AdvisoryFailure ? error.reason : "unknown";
 		const side = change.to ? "head" : "base";
 		const target = resolveAdvisoryTarget(input, change, side);
@@ -21771,7 +21882,19 @@ async function runMemberMalware(input, output, change, reader, cache) {
 			records: [],
 			reasons: [reason]
 		} : null);
-		signalBounds(input, output);
+	}
+	return settle();
+}
+/**
+* Runs one signals pass over the members, which arrive in research order (coverage §3.5). Once a
+* member crosses a packet limit (`run` returns false), every lower-priority member keeps its
+* `budget` reservation, so the cut is strictly by priority (§1.5) and no read is spent on a
+* result that could not be kept.
+*/
+async function inPriorityOrder(changes, run) {
+	for (const change of changes) {
+		if ("basis" in change) continue;
+		if (!await run(change)) return;
 	}
 }
 /** Required malware runs before optional adapters; input/outputs never share mutable records. */
@@ -21790,19 +21913,13 @@ async function enrichPolicySignals(value, dependencies) {
 	};
 	try {
 		signalBounds(input, output);
+		reserveSignals(input, output);
 		const cache = /* @__PURE__ */ new Map();
-		for (const change of output.changes) {
-			if ("basis" in change) continue;
-			await runMemberMalware(input, output, change, dependencies.malwareReader, cache);
-		}
-		reserveOptionalSignals(input, output);
+		await inPriorityOrder(output.changes, (change) => runMemberMalware(input, output, change, dependencies.malwareReader, cache));
 		const lockfiles = dependencies.artifactSession && cacheLockfileReads(dependencies.artifactSession);
-		for (const change of output.changes) {
-			if ("basis" in change) continue;
-			await runOptionalSignals(input, output, change, async () => {
-				await collectOptionalMember(input, output, change, dependencies, lockfiles);
-			});
-		}
+		await inPriorityOrder(output.changes, (change) => runOptionalSignals(input, output, change, async () => {
+			await collectOptionalMember(input, output, change, dependencies, lockfiles);
+		}));
 		return freeze$3(output);
 	} catch (error) {
 		return {
@@ -32313,7 +32430,7 @@ async function enrichUpstreamStage(input, dependencies, readers, progress, fail,
 	progress.publicIdentities = upstream.publicIdentities;
 	progress.actionVersions = upstream.actionVersions;
 	progress.upstreamAttempts = upstream.attempts;
-	if (upstream.stopped) fail("upstream", upstream.stopped);
+	if (upstream.stopped) fail("upstream", upstream.stopped, opened.reader.stopLimit?.());
 }
 async function enrichAdvisoryStage(input, dependencies, readers, progress, fail, shares) {
 	const limitsForStage = limits(shares.advisory, input);
@@ -32383,6 +32500,7 @@ async function runResearch(input) {
 		})
 	};
 	const unavailable = [];
+	const stopLimits = /* @__PURE__ */ new Map();
 	const readers = [];
 	const observe = (observation) => {
 		try {
@@ -32397,11 +32515,13 @@ async function runResearch(input) {
 		const before = unavailable.length;
 		await run();
 		const failed = unavailable.slice(before).find((entry) => entry.stage === stage);
+		const limit = stopLimits.get(stage);
 		observe(failed ? {
 			kind: "stage-end",
 			stage,
 			outcome: "unavailable",
-			reason: failed.reason
+			reason: failed.reason,
+			...limit ? { limit } : {}
 		} : {
 			kind: "stage-end",
 			stage,
@@ -32420,11 +32540,12 @@ async function runResearch(input) {
 			upstreamAttempts: [],
 			signalAttempts: []
 		};
-		const fail = (stage, reason) => {
+		const fail = (stage, reason, limit) => {
 			unavailable.push({
 				stage,
 				reason
 			});
+			if (limit) stopLimits.set(stage, limit);
 			markStage(progress, stage, reason);
 		};
 		const shares = researchShares(researchShareUnits(packet.changes), input.shareParameters);

@@ -1,13 +1,17 @@
 import type { Limit, LimitDefinition } from '../limits.js';
 
+const SCALED_RESEARCH = new Set(['research.maxAttempts', 'research.maxRetainedBytes']);
+
 /**
  * The hand-set read budget a demand measurement lifts: every evidence share and envelope value,
- * and the research attempt cap. Derived entries are left for `buildRegister` to recompute, so
- * totals and copies of these values scale with them.
+ * the research attempt cap, and the research retained-byte cap. The retained-byte cap is a memory
+ * guard awaiting measurement (#431), so a run shows retained demand while production keeps the
+ * register value. Derived entries are left for `buildRegister` to recompute, so totals and copies
+ * of these values scale with them.
  */
 export function isReadBudget(entry: Limit): boolean {
   if (entry.basis.kind === 'derived') return false;
-  return entry.id.startsWith('evidence.') || entry.id === 'research.maxAttempts';
+  return entry.id.startsWith('evidence.') || SCALED_RESEARCH.has(entry.id);
 }
 
 /**

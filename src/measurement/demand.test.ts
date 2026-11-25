@@ -166,6 +166,30 @@ test('maps each research reader to the share it reads against', () => {
   expect(readerShare('npmRegistry', 'upstream')).toBeNull();
 });
 
+test('keeps the reader limit research names for a stopped stage', () => {
+  const recorder = createDemandRecorder(() => 0);
+  recorder.observe({ kind: 'stage-start', stage: 'upstream' });
+  recorder.observe({
+    kind: 'stage-end',
+    stage: 'upstream',
+    outcome: 'unavailable',
+    reason: 'budget',
+    limit: 'npm.maxRetainedBytes',
+  });
+  recorder.observe({ kind: 'stage-start', stage: 'advisories' });
+  recorder.observe({ kind: 'stage-end', stage: 'advisories', outcome: 'enriched', reason: null });
+  expect(recorder.report({}).stages).toEqual([
+    {
+      stage: 'upstream',
+      outcome: 'unavailable',
+      reason: 'budget',
+      limit: 'npm.maxRetainedBytes',
+      ms: 0,
+    },
+    { stage: 'advisories', outcome: 'enriched', reason: null, ms: 0 },
+  ]);
+});
+
 test('reports a stage that stopped short of its demand as censored', () => {
   const recorder = createDemandRecorder(() => 0);
   const end = (stage: 'upstream' | 'advisories' | 'signals' | 'revalidation', reason: any) => {
