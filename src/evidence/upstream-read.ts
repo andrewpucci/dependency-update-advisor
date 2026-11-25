@@ -81,6 +81,11 @@ export type UpstreamReader = Readonly<{
   spend: (amount: number) => void;
   /** The reason this reader refuses all further reads, or null while it can still read. */
   stopped?: () => EvidenceReason | null;
+  /**
+   * Diagnostics: the cumulative limit whose exhaustion set a `budget` stop, such as `maxWork` or
+   * `npm.maxRetainedBytes` for the nested registry reader, or null.
+   */
+  stopLimit?: () => string | null;
 }>;
 export type UpstreamDependencies = {
   fetch: (url: string, init: RequestInit) => Promise<Response>;
@@ -280,6 +285,7 @@ class Reader {
   private closed = false;
   private busy = false;
   private stopped: EvidenceReason | null = null;
+  private stoppedBy: string | null = null;
   private networkReason: EvidenceReason | null = null;
   private readonly controller = new AbortController();
   private active: (() => void) | null = null;
@@ -334,6 +340,17 @@ class Reader {
   stopReason() {
     return this.stopped ?? (this.npm.kind === 'ready' ? this.npm.stopped() : null);
   }
+  stopLimit(): string | null {
+    if (this.stopped) return this.stopped === 'budget' ? this.stoppedBy : null;
+    return this.npm.kind === 'ready' && this.npm.stopped() === 'budget'
+      ? 'npm.' + this.npm.stopLimit()
+      : null;
+  }
+  /** A cumulative limit ran out: every later read is refused with `budget`. */
+  private exhaust(limit: keyof UpstreamLimits) {
+    this.stopped = 'budget';
+    this.stoppedBy = limit;
+  }
   close() {
     this.closed = true;
     this.active?.();
@@ -346,7 +363,7 @@ class Reader {
   }
   spend(amount: number) {
     requireUpstream(Number.isSafeInteger(amount) && amount >= 0);
-    if (amount > this.limits.maxWork - this.effort) this.stopped = 'budget';
+    if (amount > this.limits.maxWork - this.effort) this.exhaust('maxWork');
     requireUpstream(!this.stopped, this.stopped ?? 'budget');
     this.effort += amount;
   }
@@ -359,7 +376,7 @@ class Reader {
     }
   }
   private reserve(bytes: number) {
-    if (bytes > this.limits.maxRetainedBytes - this.retained) this.stopped = 'budget';
+    if (bytes > this.limits.maxRetainedBytes - this.retained) this.exhaust('maxRetainedBytes');
     requireUpstream(!this.stopped, this.stopped ?? 'budget');
     this.retained += bytes;
   }
@@ -391,7 +408,7 @@ class Reader {
     requireUpstream(!this.stopped, this.stopped ?? 'budget');
   }
   private charge() {
-    if (this.requests >= this.limits.maxRequests) this.stopped = 'budget';
+    if (this.requests >= this.limits.maxRequests) this.exhaust('maxRequests');
     requireUpstream(!this.stopped, this.stopped ?? 'budget');
     this.requests++;
   }
@@ -407,7 +424,7 @@ class Reader {
         size += chunk.value.byteLength;
         // A cached response was charged to the reader that fetched it.
         if (!cached) this.bytes += chunk.value.byteLength;
-        if (this.bytes > this.limits.maxTotalBytes) this.stopped = 'budget';
+        if (this.bytes > this.limits.maxTotalBytes) this.exhaust('maxTotalBytes');
         requireUpstream(!this.stopped && size <= this.limits.maxResponseBytes, 'budget');
         this.remaining();
         chunks.push(chunk.value);
@@ -640,6 +657,7 @@ export function createUpstreamReader(
         close: () => reader.close(),
         spend: (amount: number) => reader.spend(amount),
         stopped: () => reader.stopReason(),
+        stopLimit: () => reader.stopLimit(),
       }),
     };
   } catch {
