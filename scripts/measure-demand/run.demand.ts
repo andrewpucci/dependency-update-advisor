@@ -7,7 +7,9 @@
  * (default .github/workflows/ci.yml), MEASURE_OUT (write the JSON report to this path),
  * MEASURE_SCALE (a positive integer; multiplies the read budget, see `isReadBudget`, so the run
  * shows demand the current shares would cut off; a report with `censored` stages is still capped).
- * The report holds counts only: no URL, header, token, or response body. Its `github` field gives
+ * The report holds counts only: no URL, header, token, or response body. Its `coverage` field
+ * counts members' evidence states and reasons per category, which shows members a share stopped
+ * one at a time while the stage itself ended `enriched`. Its `github` field gives
  * research's GitHub requests beside their approved ceiling, the quota guard's refusals, and the last
  * remaining quota GitHub reported; a run the guard cut short is re-measured after the reset.
  */
@@ -25,8 +27,10 @@ import { createGithubQuotaGuard } from '../../src/evidence/github-quota.js';
 import { createResearchCache } from '../../src/evidence/research-cache.js';
 import { limit } from '../../src/limits.js';
 import {
+  coverageCounts,
   createDemandRecorder,
   labelShare,
+  type DemandCoverage,
   type DemandPhase,
 } from '../../src/measurement/demand.js';
 import { reopenPullRequest } from '../../src/measurement/reopen.js';
@@ -208,6 +212,7 @@ test('measure research read demand', async () => {
     windowMs: limit('research.githubQuota.windowMs'),
   });
   let measured: Record<string, number> = {};
+  let coverage: DemandCoverage = {};
   // Packet assembly turns a thrown session failure into internal-failure; keep why it failed.
   let sessionOutcome = 'not opened';
   const snapshot = await withTrustedSnapshot(
@@ -265,6 +270,7 @@ test('measure research read demand', async () => {
       });
       if (researched.kind !== 'ready') return { research: researched.kind };
       measured = units(researched.packet);
+      coverage = coverageCounts(researched.packet.changes);
       return { unavailable: researched.unavailable };
     },
   );
@@ -280,7 +286,7 @@ test('measure research read demand', async () => {
       allocation: EVIDENCE_READ_ALLOCATION,
       researchMaxAttempts: limit('research.maxAttempts'),
     },
-    ...recorder.report(measured, quota),
+    ...recorder.report(measured, quota, coverage),
   };
   const text = JSON.stringify(report, null, 2);
   if (env.MEASURE_OUT) writeFileSync(env.MEASURE_OUT, text + '\n');
