@@ -2332,6 +2332,30 @@ const DEFINITIONS = [
       'Each message is cut to this many code units; the run is still inconclusive and nothing else changes.',
     test: 'tests/probe-comment-limit/core.test.ts > an unclassified 422 keeps GitHub validation messages, capped, without links',
   },
+  // The batching equivalence probe (scripts/measure-batching), run by hand with the user's token.
+  unjustified('probe.batching.maxRequests', 1_500, 'count', {
+    protects:
+      "Bounds the REST and GraphQL requests one probe run sends with the user's token, so a run cannot spend that token's hourly quota.",
+    effect:
+      'At the cap the next request is not sent; the probe stops, and its output says the budget ran out.',
+    note: 'awaiting C2 (#389) review; a C1 targets file from PR #276 plus the seeds needs well under this',
+    test: 'src/measurement/batching.test.ts > a request budget refuses the request past its cap',
+  }),
+  unjustified('probe.batching.maxBatchTargets', 1_000, 'count', {
+    protects:
+      'Sets the largest versioned npm batch the probe sends, at the `affects` maximum GitHub documents, so the probe also tries one more to record what GitHub does above it.',
+    effect:
+      'Batch sizes halve down from this value to one; the probe also sends one batch of this many plus one.',
+    note: "GitHub's global advisories docs allow up to 1,000 packages in `affects` (checked 2026-11-19, S1 Batched Lookup Amendment item 1)",
+    test: 'src/measurement/batching.test.ts > batch sizes halve from the maximum down to one',
+  }),
+  unjustified('probe.batching.maxTagsPerQuery', 100, 'count', {
+    protects:
+      'Bounds the tag candidates in one GraphQL existence query the probe sends, so a query stays far below GraphQL node and size limits.',
+    effect: 'Query sizes halve down from this value to one.',
+    note: 'awaiting C2 (#389) review; the candidates-per-query value itself is decided at C3, Ask-first',
+    test: 'src/measurement/batching.test.ts > batch sizes halve from the maximum down to one',
+  }),
   ...allScaledShareEntries(),
 ] as const satisfies readonly LimitDefinition[];
 

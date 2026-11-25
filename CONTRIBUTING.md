@@ -169,3 +169,25 @@ research stage and host, repeated-URL requests, stage stop reasons, inventory
 units, and members' evidence states and reasons per category; it records no
 URL, header, token, or response body. Share only aggregate counts for consumer
 repositories.
+
+`MEASURE_TARGETS_OUT` (a path under `.context/`) also writes the advisory and
+malware targets the readers settled and the tag candidates the run requested.
+That file names public packages and tags, so it stays under `.context/` and is
+never committed.
+
+### Batching equivalence probe
+
+Before a batch path is enabled, the
+[batching reconciliation](docs/specs/SPEC-advisory-lookup.md#batching-reconciliation-amendment)
+requires a recorded check that batches return what per-target queries return.
+Replay a targets file from `measure:demand` both ways with:
+
+```sh
+MEASURE_TARGETS_IN=.context/<targets file> GITHUB_TOKEN=<read token> npm run probe:batching
+```
+
+It runs fixed seeds with or without a targets file, makes no model call, and
+writes nothing to GitHub. Every request counts against
+`probe.batching.maxRequests`. `PROBE_OUT` (a JSON report path) is optional. The
+report holds counts, sizes, and disagreements by kind; it names no package or
+tag and records no URL query, token, or response body.
