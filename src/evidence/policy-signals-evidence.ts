@@ -179,6 +179,14 @@ const OPTIONAL_CATEGORIES = [
  * data, and members are bounded by `PACKET_LIMITS.changes`.
  */
 export const SIGNAL_ATTEMPTS_PER_MEMBER = limit('signals.attemptsPerMember');
+/**
+ * Bytes the enrichment adds to the review packet: changes, sources, and findings. Attempts are
+ * diagnostics outside the packet, so they count only toward the stage's retained bytes.
+ */
+function packetBytes(output: SignalEnrichment): number {
+  const { changes, sources, findings } = output;
+  return Buffer.byteLength(JSON.stringify({ changes, sources, findings }));
+}
 export function signalBounds(input: PolicySignalInput, output: SignalEnrichment) {
   advisoryCheck(
     output.changes.every((c) =>
@@ -190,16 +198,22 @@ export function signalBounds(input: PolicySignalInput, output: SignalEnrichment)
     output.sources.length <= PACKET_LIMITS.sources &&
       output.findings.length <=
         Math.min(PACKET_LIMITS.findings, input.findings.length + input.limits.maxFindings) &&
-      Buffer.byteLength(JSON.stringify(output)) <=
-        Math.min(PACKET_LIMITS.bytes, input.limits.maxRetainedBytes),
+      packetBytes(output) <= PACKET_LIMITS.bytes &&
+      Buffer.byteLength(JSON.stringify(output)) <= input.limits.maxRetainedBytes,
     'budget',
   );
 }
-/** Reserve explained terminal outcomes before optional reads can spend retention space. */
-export function reserveOptionalSignals(input: PolicySignalInput, output: SignalEnrichment) {
+const SIGNAL_CATEGORIES = ['malware', ...OPTIONAL_CATEGORIES] as const;
+/**
+ * Reserves every member's explained terminal outcome, malware included, before any read can spend
+ * retention space. A member whose results then cross a limit returns to its reservation, which
+ * was already counted, so one member's overflow never fails the stage (coverage §1.5). Members
+ * run in research order (§3.5), so the members left at `budget` are the lowest-priority ones.
+ */
+export function reserveSignals(input: PolicySignalInput, output: SignalEnrichment) {
   for (const change of output.changes) {
     if ('basis' in change) continue;
-    for (const category of OPTIONAL_CATEGORIES) {
+    for (const category of SIGNAL_CATEGORIES) {
       if (category !== 'license')
         change.evidence[category] = { status: 'unavailable', reasons: ['budget'], sourceIds: [] };
       output.attempts.push({

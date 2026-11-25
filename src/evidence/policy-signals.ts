@@ -4,7 +4,7 @@ import {
   retainSignalFinding,
   signalId,
   signalBounds,
-  reserveOptionalSignals,
+  reserveSignals,
   runOptionalSignals,
 } from './policy-signals-evidence.js';
 export {
@@ -231,8 +231,9 @@ async function collectOptionalMember(
   }
 }
 /**
- * One member's malware check. A failure, including additions that cross a packet limit, rolls back
- * only this member and records its malware as unavailable with the real reason.
+ * One member's malware check, run over its reservation. A failure rolls back only this member and
+ * records its malware as unavailable with the real reason. If the member's results, or that
+ * failure record, cross a packet limit, the member returns to its reserved `budget` outcome.
  */
 export async function runMemberMalware(
   input: PolicySignalInput,
@@ -241,16 +242,40 @@ export async function runMemberMalware(
   reader: AdvisoryReader,
   cache: Map<string, AdvisoryLookup>,
 ) {
-  const lengths = [output.sources.length, output.findings.length, output.attempts.length];
-  const malware = structuredClone(change.evidence.malware);
+  const reserved = {
+    sources: output.sources.length,
+    findings: output.findings.length,
+    attempts: [...output.attempts],
+    malware: structuredClone(change.evidence.malware),
+  };
+  const slot = output.attempts.findIndex(
+    (a) => a.memberId === change.id && a.category === 'malware',
+  );
+  const restore = () => {
+    output.sources.length = reserved.sources;
+    output.findings.length = reserved.findings;
+    output.attempts = [...reserved.attempts];
+    change.evidence.malware = structuredClone(reserved.malware);
+  };
+  /**
+   * Puts the one attempt a record pushed in place of the member's reservation. Results that cross
+   * a packet limit leave the reservation instead, which was already counted.
+   */
+  const settle = () => {
+    const attempt = output.attempts.pop()!;
+    output.attempts = [...reserved.attempts];
+    if (slot === -1) output.attempts.push(attempt);
+    else output.attempts[slot] = attempt;
+    try {
+      signalBounds(input, output);
+    } catch {
+      restore();
+    }
+  };
   try {
     await collectMemberMalware(input, output, change, reader, cache);
-    signalBounds(input, output);
   } catch (error) {
-    output.sources.length = lengths[0];
-    output.findings.length = lengths[1];
-    output.attempts.length = lengths[2];
-    change.evidence.malware = malware;
+    restore();
     const reason = error instanceof AdvisoryFailure ? error.reason : 'unknown';
     const side = change.to ? 'head' : 'base';
     const target = resolveAdvisoryTarget(input, change, side);
@@ -265,8 +290,8 @@ export async function runMemberMalware(
         }
       : null;
     recordMemberMalware(input, output, change, side, target, failed);
-    signalBounds(input, output);
   }
+  settle();
 }
 /** Required malware runs before optional adapters; input/outputs never share mutable records. */
 export async function enrichPolicySignals(
@@ -288,12 +313,12 @@ export async function enrichPolicySignals(
   };
   try {
     signalBounds(input, output);
+    reserveSignals(input, output);
     const cache = new Map();
     for (const change of output.changes) {
       if ('basis' in change) continue;
       await runMemberMalware(input, output, change, dependencies.malwareReader, cache);
     }
-    reserveOptionalSignals(input, output);
     const lockfiles =
       dependencies.artifactSession && cacheLockfileReads(dependencies.artifactSession);
     for (const change of output.changes) {

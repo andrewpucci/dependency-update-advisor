@@ -554,9 +554,18 @@ test("a member's malware additions that cross the packet byte limit are rolled b
     },
     close: () => {},
   };
+  // The state just before the victim's check: its malware holds the stage's reservation.
   const start = () => {
     const output = structuredClone(baseline) as SignalEnrichment;
-    return { output, change: output.changes.find((c) => c.id === victim.id)! };
+    const change = output.changes.find((c) => c.id === victim.id)!;
+    const checked = new Set(change.evidence.malware.sourceIds);
+    output.sources = output.sources.filter((s) => !checked.has(s.id));
+    change.evidence.malware = { status: 'unavailable', reasons: ['budget'], sourceIds: [] };
+    Object.assign(
+      output.attempts.find((a) => a.memberId === victim.id && a.category === 'malware')!,
+      { url: null, outcome: 'skipped', reasons: ['budget'], sourceIds: [], truncated: false },
+    );
+    return { output, change };
   };
   // The size a failed check leaves, plus less than one malware record and its finding.
   const failed = start();
@@ -569,7 +578,9 @@ test("a member's malware additions that cross the packet byte limit are rolled b
   await runMemberMalware({ ...input, limits }, output, change, positive, new Map());
   expect(change.evidence.malware).toMatchObject({ status: 'unavailable', reasons: ['budget'] });
   expect(output.findings.some((f) => f.memberId === victim.id && f.kind === 'malware')).toBe(false);
-  expect(output.sources.length).toBe(failed.output.sources.length);
+  // The overflow leaves the reservation, not a failure record that costs more.
+  expect(output.sources.length).toBe(start().output.sources.length);
+  expect(Buffer.byteLength(JSON.stringify(output))).toBeLessThanOrEqual(limits.maxRetainedBytes);
   expect(output.changes.filter((c) => c.id !== victim.id)).toEqual(
     baseline.changes.filter((c) => c.id !== victim.id),
   );
