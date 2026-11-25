@@ -937,6 +937,8 @@ test('the npm registry reader counts exactly research.maxJsonEntries entries and
   );
   expect(await pastLimit.read(registryRequest)).toEqual({ kind: 'unavailable', reason: 'budget' });
   expect(pastLimit.stopped()).toBe('budget');
+  expect(atLimit.stopLimit()).toBeNull();
+  expect(pastLimit.stopLimit()).toBe('maxJsonEntries');
 });
 
 test('the npm registry reader retains exactly research.maxRetainedBytes and refuses one byte more', async () => {

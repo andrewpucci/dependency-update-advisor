@@ -233,7 +233,8 @@ async function collectOptionalMember(
 /**
  * One member's malware check, run over its reservation. A failure rolls back only this member and
  * records its malware as unavailable with the real reason. If the member's results, or that
- * failure record, cross a packet limit, the member returns to its reserved `budget` outcome.
+ * failure record, cross a packet limit, the member returns to its reserved `budget` outcome and
+ * this returns false, so the caller leaves every lower-priority member at its reservation too.
  */
 export async function runMemberMalware(
   input: PolicySignalInput,
@@ -241,35 +242,41 @@ export async function runMemberMalware(
   change: PacketChange,
   reader: AdvisoryReader,
   cache: Map<string, AdvisoryLookup>,
-) {
-  const reserved = {
-    sources: output.sources.length,
-    findings: output.findings.length,
-    attempts: [...output.attempts],
-    malware: structuredClone(change.evidence.malware),
-  };
+): Promise<boolean> {
   const slot = output.attempts.findIndex(
     (a) => a.memberId === change.id && a.category === 'malware',
   );
+  advisoryCheck(slot !== -1);
+  const reserved = {
+    sources: output.sources.length,
+    findings: output.findings.length,
+    attempts: output.attempts.length,
+    attempt: output.attempts[slot],
+    malware: structuredClone(change.evidence.malware),
+  };
+  // Recording only appends to these lists, so truncating them undoes this member exactly.
   const restore = () => {
     output.sources.length = reserved.sources;
     output.findings.length = reserved.findings;
-    output.attempts = [...reserved.attempts];
+    output.attempts.length = reserved.attempts;
+    output.attempts[slot] = reserved.attempt;
     change.evidence.malware = structuredClone(reserved.malware);
   };
   /**
-   * Puts the one attempt a record pushed in place of the member's reservation. Results that cross
-   * a packet limit leave the reservation instead, which was already counted.
+   * Moves the one attempt the record appended into the member's reserved slot, then checks the
+   * limits. Results that cross one leave the reservation, which was already counted.
    */
-  const settle = () => {
+  const settle = (): boolean => {
+    advisoryCheck(output.attempts.length === reserved.attempts + 1);
     const attempt = output.attempts.pop()!;
-    output.attempts = [...reserved.attempts];
-    if (slot === -1) output.attempts.push(attempt);
-    else output.attempts[slot] = attempt;
+    advisoryCheck(attempt.memberId === change.id && attempt.category === 'malware');
+    output.attempts[slot] = attempt;
     try {
       signalBounds(input, output);
+      return true;
     } catch {
       restore();
+      return false;
     }
   };
   try {
@@ -291,7 +298,7 @@ export async function runMemberMalware(
       : null;
     recordMemberMalware(input, output, change, side, target, failed);
   }
-  settle();
+  return settle();
 }
 /** Required malware runs before optional adapters; input/outputs never share mutable records. */
 export async function enrichPolicySignals(
@@ -314,18 +321,23 @@ export async function enrichPolicySignals(
   try {
     signalBounds(input, output);
     reserveSignals(input, output);
+    // Members run in research order (coverage §3.5). Once one crosses a packet limit, every
+    // lower-priority member keeps its `budget` reservation, so the cut is strictly by priority
+    // (§1.5) and no read is spent on a result that could not be kept.
     const cache = new Map();
+    let full = false;
     for (const change of output.changes) {
-      if ('basis' in change) continue;
-      await runMemberMalware(input, output, change, dependencies.malwareReader, cache);
+      if ('basis' in change || full) continue;
+      full = !(await runMemberMalware(input, output, change, dependencies.malwareReader, cache));
     }
     const lockfiles =
       dependencies.artifactSession && cacheLockfileReads(dependencies.artifactSession);
+    full = false;
     for (const change of output.changes) {
-      if ('basis' in change) continue;
-      await runOptionalSignals(input, output, change, async () => {
+      if ('basis' in change || full) continue;
+      full = !(await runOptionalSignals(input, output, change, async () => {
         await collectOptionalMember(input, output, change, dependencies, lockfiles);
-      });
+      }));
     }
     return freeze(output);
   } catch (error) {

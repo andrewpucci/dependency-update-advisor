@@ -121,3 +121,88 @@ test('attempts count toward retained bytes, not the packet byte limit', async ()
     reader.close();
   }
 });
+
+/** Malware records for every query whose package is `name`, and none for any other package. */
+const malwareFor = (limits: Parameters<typeof createMalwareReader>[0], name: string) => {
+  const reader = createMalwareReader(limits, {
+    now: () => 0,
+    fetch: async (url) => {
+      const affects = new URL(url).searchParams.get('affects') ?? '';
+      const ecosystem = new URL(url).searchParams.get('ecosystem');
+      if (!affects.startsWith(name + '@')) return Response.json([]);
+      return Response.json(
+        ['GHSA-aaaa-bbbb-cccc', 'GHSA-dddd-eeee-ffff', 'GHSA-gggg-hhhh-jjjj'].map((id) => ({
+          ghsa_id: id,
+          html_url: 'https://github.com/advisories/' + id,
+          summary: 'Synthetic malware ' + 'x'.repeat(200),
+          type: 'malware',
+          severity: 'unknown',
+          withdrawn_at: null,
+          vulnerabilities: [{ package: { ecosystem, name }, vulnerable_version_range: '*' }],
+        })),
+      );
+    },
+  });
+  if (reader.kind !== 'ready') throw new Error('reader');
+  return reader;
+};
+
+test('the cut is strict: no member after the first that overflows keeps malware, even a smaller one', async () => {
+  const input = await signalInput();
+  const members = input.changes.filter((c) => !('basis' in c));
+  const nameOf = (c: PacketChange) => ((c.to ?? c.from) as { name: string }).name;
+  // The large member is an npm package no other member shares, after the top-priority member and
+  // before smaller ones.
+  const index = members.findIndex(
+    (c, i) =>
+      i > 0 &&
+      i < members.length - 1 &&
+      c.ecosystem === 'npm' &&
+      members.filter((m) => nameOf(m) === nameOf(c)).length === 1,
+  );
+  expect(index).toBeGreaterThan(0);
+  const name = nameOf(members[index]);
+  const reader = malwareFor(input.limits, name);
+  // Packet bytes after each member's check, with no limit in the way.
+  const output = structuredClone({
+    kind: 'enriched' as const,
+    binding: input.binding,
+    changes: input.changes,
+    sources: input.sources,
+    findings: input.findings,
+    attempts: [],
+  }) as SignalEnrichment;
+  reserveSignals(input, output);
+  const after: number[] = [];
+  for (const change of output.changes)
+    if (!('basis' in change)) {
+      await runMemberMalware(input, output, change, reader, new Map());
+      after.push(packetBytes(output));
+    }
+  const growth = after.map((bytes, i) => bytes - (i ? after[i - 1] : after[0]));
+  const room = Math.floor(growth[index] / 2);
+  // A later member would fit in the room the large one leaves, so keep-what-fits would keep it.
+  expect(growth.slice(index + 1).some((g) => g <= room)).toBe(true);
+
+  cap.bytes = after[index - 1] + room;
+  try {
+    const result = await enrichPolicySignals(input, { malwareReader: reader });
+    if (result.kind !== 'enriched') throw new Error(JSON.stringify(result));
+    const states = result.changes
+      .filter((c) => !('basis' in c))
+      .map((c) => c.evidence.malware.status);
+    expect(states.slice(0, index).every((s) => s === 'available')).toBe(true);
+    expect(states.slice(index).every((s) => s === 'unavailable')).toBe(true);
+    for (const change of result.changes.filter((c) => !('basis' in c)).slice(index))
+      expect(change.evidence.malware).toEqual({
+        status: 'unavailable',
+        reasons: ['budget'],
+        sourceIds: [],
+      });
+    // A malware finding for the large member never survives the cut.
+    expect(result.findings.some((f) => f.kind === 'malware')).toBe(false);
+  } finally {
+    cap.bytes = Infinity;
+    reader.close();
+  }
+});

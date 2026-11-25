@@ -165,6 +165,8 @@ test.each([124, 125])(
     const budgeted = members.filter((c) => c.evidence.trust?.reasons.includes('budget'));
     expect(budgeted.length).toBeGreaterThan(0);
     expect(budgeted.length).toBeLessThan(members.length);
+    // The cut is strictly by input (research) order: the budgeted members are a suffix.
+    expect(members.slice(members.length - budgeted.length)).toEqual(budgeted);
     expect(members.every((c) => c.evidence.malware.status !== undefined)).toBe(true);
   },
 );

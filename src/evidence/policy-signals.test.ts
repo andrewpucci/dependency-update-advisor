@@ -487,7 +487,7 @@ test('optional discoveries that cross the packet byte limit are dropped for that
     Buffer.byteLength(JSON.stringify(output)) +
     Math.floor(Buffer.byteLength(JSON.stringify(finding)) / 2);
   const change = output.changes.find((c) => c.id === victim.id)!;
-  await runOptionalSignals(
+  const kept = await runOptionalSignals(
     { ...input, limits: { ...input.limits, maxRetainedBytes } } as PolicySignalInput,
     output,
     change,
@@ -495,6 +495,8 @@ test('optional discoveries that cross the packet byte limit are dropped for that
       output.findings.push(structuredClone(finding));
     },
   );
+  // A member that crossed a limit tells the caller to stop the pass there.
+  expect(kept).toBe(false);
   expect(
     output.findings.some((x) => x.kind === 'releaseMetadata' && x.memberId === victim.id),
   ).toBe(false);
@@ -624,7 +626,7 @@ test('a released member returns to exactly its pre-member size', async () => {
       });
   const limit = Buffer.byteLength(JSON.stringify(output));
   const finding = structuredClone(baseline.findings[0]);
-  await runOptionalSignals(
+  const kept = await runOptionalSignals(
     { ...input, limits: { ...input.limits, maxRetainedBytes: limit } } as PolicySignalInput,
     output,
     change,
@@ -643,6 +645,8 @@ test('a released member returns to exactly its pre-member size', async () => {
       output.findings.push({ ...finding, id: finding.id + ':discovery' });
     },
   );
+  // A member that crossed a limit tells the caller to stop the pass there.
+  expect(kept).toBe(false);
   expect(Buffer.byteLength(JSON.stringify(output))).toBeLessThanOrEqual(limit);
   expect(
     output.attempts.filter((a) => a.memberId === victim.id && a.category !== 'malware'),

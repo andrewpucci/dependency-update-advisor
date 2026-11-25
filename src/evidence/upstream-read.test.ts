@@ -702,3 +702,41 @@ describe('waiting is bounded per reader, by time, by abort, and to GitHub', () =
     expect(f.quota.latestRetryAt()).toBeNull();
   });
 });
+
+describe('the stop limit names which cumulative limit stopped the reader (#431)', () => {
+  const repository = (name: string) => ({
+    kind: 'github',
+    repository: 'fixture/' + name,
+    resource: 'repository',
+  });
+  const repo = async (url: string) =>
+    Response.json({
+      full_name: new URL(url).pathname.split('/').slice(2, 4).join('/'),
+      pad: 'x'.repeat(300),
+    });
+  const version = (v: string) => ({ ...target, version: v });
+  const doc = async (url: string) => {
+    const v = decodeURIComponent(new URL(url).pathname.split('/').at(-1)!);
+    return Response.json({ ...document, _id: target.name + '@' + v, version: v });
+  };
+  test.each([
+    ['maxRequests', { maxRequests: 1 }, repo, [repository('a'), repository('b')]],
+    ['maxRetainedBytes', { maxRetainedBytes: 500 }, repo, [repository('a'), repository('b')]],
+    [
+      'maxTotalBytes',
+      { maxTotalBytes: 400, maxResponseBytes: 400 },
+      doc,
+      [version('1.2.3'), version('1.2.4')],
+    ],
+    ['npm.maxRequests', { maxRequests: 1 }, doc, [version('1.2.3'), version('1.2.4')]],
+    ['maxJsonEntries', { maxJsonEntries: 24 }, doc, [version('1.2.3'), version('1.2.4')]],
+    ['npm.maxRetainedBytes', { maxRetainedBytes: 200 }, doc, [target]],
+  ] as const)('%s', async (name, overrides, response, reads) => {
+    const { reader } = setup(response, overrides);
+    expect(reader.stopLimit?.()).toBeNull();
+    for (const read of reads) await reader.read(read);
+    expect(reader.stopped?.()).toBe('budget');
+    expect(reader.stopLimit?.()).toBe(name);
+    reader.close();
+  });
+});
