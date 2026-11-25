@@ -35,7 +35,7 @@ import {
   type DemandPhase,
 } from '../../src/measurement/demand.js';
 import { reopenPullRequest } from '../../src/measurement/reopen.js';
-import { settledTargets, tagCandidates, type Side } from '../../src/measurement/targets.js';
+import { settledTargets, tagCandidates } from '../../src/measurement/targets.js';
 import { assembleReviewPacket } from '../../src/packet.js';
 import { dependencyIdentities } from '../../src/pipeline.js';
 import { runResearch } from '../../src/research.js';
@@ -46,7 +46,13 @@ import { createGithubSnapshotReads, withTrustedSnapshot } from '../../src/snapsh
 // the advisory and malware lookups (side and URL) research settled, for MEASURE_TARGETS_OUT.
 const hooks = vi.hoisted(() => ({
   phase: (): DemandPhase => 'pre-research',
-  lookups: [] as { side: 'base' | 'head'; url: string | null }[],
+  lookups: [] as {
+    side: 'base' | 'head';
+    url: string | null;
+    target: { ecosystem: string; name: string; version: string } | null;
+  }[],
+  // The target each malware read looked up, by its lookup URL: signal attempts carry only the URL.
+  malwareTargets: new Map<string, { ecosystem: string; name: string; version: string }>(),
 }));
 
 vi.mock('../../src/limits.js', async (importOriginal) => {
@@ -79,7 +85,22 @@ vi.mock('../../src/evidence/advisory-read.js', async (importOriginal) => {
   return {
     ...actual,
     createAdvisoryReader: labelReader('advisory', actual.createAdvisoryReader, phase),
-    createMalwareReader: labelReader('malware', actual.createMalwareReader, phase),
+    createMalwareReader: labelReader(
+      'malware',
+      (limits: unknown, deps: Parameters<typeof actual.createMalwareReader>[1]) => {
+        const opened = actual.createMalwareReader(limits, deps);
+        if (opened.kind !== 'ready') return opened;
+        return {
+          ...opened,
+          read: async (target: unknown) => {
+            const lookup = await opened.read(target);
+            if (lookup.url) hooks.malwareTargets.set(lookup.url, lookup.target);
+            return lookup;
+          },
+        };
+      },
+      phase,
+    ),
   };
 });
 // Request URLs carry no side, so the side of each settled lookup comes from the stage outputs.
@@ -91,7 +112,7 @@ vi.mock('../../src/evidence/advisories.js', async (importOriginal) => {
       const result = await actual.enrichAdvisories(...args);
       if (result.kind === 'enriched')
         for (const { side, lookup } of result.lookups)
-          hooks.lookups.push({ side, url: lookup?.url ?? null });
+          hooks.lookups.push({ side, url: lookup?.url ?? null, target: lookup?.target ?? null });
       return result;
     },
   };
@@ -104,7 +125,12 @@ vi.mock('../../src/evidence/policy-signals.js', async (importOriginal) => {
       const result = await actual.enrichPolicySignals(...args);
       if (result.kind === 'enriched')
         for (const { side, url, category } of result.attempts)
-          if (category === 'malware') hooks.lookups.push({ side, url });
+          if (category === 'malware')
+            hooks.lookups.push({
+              side,
+              url,
+              target: (url && hooks.malwareTargets.get(url)) || null,
+            });
       return result;
     },
   };
@@ -356,7 +382,7 @@ test('measure research read demand', async () => {
     const targets = {
       pr,
       measuredAt: report.measuredAt,
-      targets: settledTargets(hooks.lookups as { side: Side; url: string | null }[], requested),
+      targets: settledTargets(hooks.lookups, requested),
       tagCandidates: tagCandidates(observed),
     };
     mkdirSync(dirname(targetsOut), { recursive: true });

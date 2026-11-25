@@ -1,12 +1,16 @@
+import { readFileSync } from 'node:fs';
 import { expect, test } from 'vite-plus/test';
+import { upstreamGithubUrl } from '../evidence/upstream-read.js';
 import {
-  parseAdvisoryTarget,
   parseTagCandidate,
+  parseVersionedQuery,
+  settledTarget,
   settledTargets,
   tagCandidates,
 } from './targets.js';
 
-// The reader's query shape (`githubUrl` in advisory-read.ts).
+// The reader's query shape. `githubUrl` in advisory-read.ts is private, so the recorded name-form
+// fixtures below pin this copy to URLs the reader really sent.
 function advisoryUrl(ecosystem: string, affects: readonly string[], type: string, perPage = '100') {
   const url = new URL('https://api.github.com/advisories');
   url.search = new URLSearchParams({
@@ -18,16 +22,25 @@ function advisoryUrl(ecosystem: string, affects: readonly string[], type: string
   return url.href;
 }
 
-// The upstream reader's ref shape (`upstreamGithubUrl` in upstream-read.ts).
-function tagUrl(repository: string, tag: string) {
-  const ref = 'tags/' + tag;
-  return (
-    'https://api.github.com/repos/' +
-    repository +
-    '/git/ref/' +
-    ref.split('/').map(encodeURIComponent).join('/')
+const fixtureUrl = (name: string): string =>
+  JSON.parse(
+    readFileSync(new URL(`../evidence/fixtures/name-forms/${name}.json`, import.meta.url), 'utf8'),
+  ).request.url;
+
+const tagUrl = (repository: string, tag: string) =>
+  upstreamGithubUrl({ kind: 'github', repository, resource: 'ref', ref: 'tags/' + tag });
+
+test('the copied query shape matches URLs the reader sent', () => {
+  expect(advisoryUrl('actions', ['tj-actions/changed-files@45.0.7'], 'reviewed')).toBe(
+    fixtureUrl('github-tj-actions-versioned'),
   );
-}
+  expect(advisoryUrl('pip', ['flo-pro-adk@1.0.0'], 'malware')).toBe(
+    fixtureUrl('github-flo-pro-adk-malware-versioned'),
+  );
+  expect(advisoryUrl('actions', ['TJ-Actions/Changed-Files'], 'reviewed', '50')).toBe(
+    fixtureUrl('github-tj-actions-discovery'),
+  );
+});
 
 test('round-trips npm targets, including scoped names, with their type', () => {
   for (const [name, version] of [
@@ -35,53 +48,82 @@ test('round-trips npm targets, including scoped names, with their type', () => {
     ['@babel/traverse', '7.22.0'],
   ])
     for (const type of ['reviewed', 'malware'])
-      expect(parseAdvisoryTarget(advisoryUrl('npm', [`${name}@${version}`], type))).toEqual({
-        ecosystem: 'npm',
-        name,
-        version,
-        type,
-      });
+      expect(
+        settledTarget(
+          advisoryUrl('npm', [`${name}@${version}`], type),
+          { ecosystem: 'npm', name, version },
+          'head',
+        ),
+      ).toEqual({ ecosystem: 'npm', name, version, type, side: 'head' });
 });
 
-test('round-trips Actions and pip versioned queries to their one target', () => {
+test('names a target as the reader looked it up, not as GitHub stores it', () => {
+  // The recorded versioned query for TJ-Actions/Changed-Files lists GitHub's lowercase form.
   expect(
-    parseAdvisoryTarget(advisoryUrl('actions', ['tj-actions/changed-files@45.0.7'], 'reviewed')),
+    settledTarget(
+      fixtureUrl('github-tj-actions-versioned'),
+      { ecosystem: 'actions', name: 'TJ-Actions/Changed-Files', version: '45.0.7' },
+      'base',
+    ),
   ).toEqual({
     ecosystem: 'actions',
-    name: 'tj-actions/changed-files',
+    name: 'TJ-Actions/Changed-Files',
     version: '45.0.7',
     type: 'reviewed',
+    side: 'base',
   });
-  // A versioned query for a pip malware hit lists each stored form at the target's version.
+  // One stored pip form that differs in case and separators still names the normalized target.
   expect(
-    parseAdvisoryTarget(
-      advisoryUrl(
-        'pip',
-        ['Flo_Pro.adk@1.0.0', 'flo-pro-adk@1.0.0', 'flo_pro_adk@1.0.0'],
-        'malware',
-      ),
+    settledTarget(
+      advisoryUrl('pip', ['Flo_Pro.adk@1.0.0'], 'malware'),
+      { ecosystem: 'pip', name: 'flo-pro-adk', version: '1.0.0' },
+      'head',
     ),
-  ).toEqual({ ecosystem: 'pip', name: 'flo-pro-adk', version: '1.0.0', type: 'malware' });
-  // Actions forms that differ only in case settle the lowercase name.
+  ).toEqual({
+    ecosystem: 'pip',
+    name: 'flo-pro-adk',
+    version: '1.0.0',
+    type: 'malware',
+    side: 'head',
+  });
+  // Several stored forms of one target.
   expect(
-    parseAdvisoryTarget(advisoryUrl('actions', ['Owner/Action@v1', 'owner/action@v1'], 'malware')),
-  ).toEqual({ ecosystem: 'actions', name: 'owner/action', version: 'v1', type: 'malware' });
+    settledTarget(
+      advisoryUrl('actions', ['Owner/Action@v1', 'owner/action@v1'], 'malware'),
+      { ecosystem: 'actions', name: 'OWNER/action', version: 'v1' },
+      'head',
+    )?.name,
+  ).toBe('OWNER/action');
 });
 
-test('a discovery query or an OSV query yields no target', () => {
+test('a versioned query for another target settles nothing', () => {
+  const pip = { ecosystem: 'pip', name: 'flo-pro-adk', version: '1.0.0' };
+  for (const [url, target] of [
+    [advisoryUrl('pip', ['flo-pro-adk@1.0.0', 'other@1.0.0'], 'malware'), pip],
+    [advisoryUrl('pip', ['flo-pro-adk@1.0.0'], 'malware'), { ...pip, version: '2.0.0' }],
+    [advisoryUrl('pip', ['flo-pro-adk@1.0.0'], 'malware'), { ...pip, ecosystem: 'npm' }],
+    [
+      advisoryUrl('npm', ['Lodash@1.0.0'], 'reviewed'),
+      { ...pip, ecosystem: 'npm', name: 'lodash' },
+    ],
+  ] as const)
+    expect(settledTarget(url, target, 'head'), url).toBeNull();
+});
+
+test('a discovery query or an OSV query is not a versioned query', () => {
   for (const url of [
+    fixtureUrl('github-tj-actions-discovery'),
     advisoryUrl('pip', ['flo-pro-adk', 'flo_pro_adk', 'flo.pro.adk'], 'malware', '50'),
-    advisoryUrl('actions', ['tj-actions/changed-files'], 'reviewed', '50'),
     advisoryUrl('npm', ['@babel/traverse'], 'reviewed', '50'),
     'https://api.osv.dev/v1/query',
   ])
-    expect(parseAdvisoryTarget(url), url).toBeNull();
+    expect(parseVersionedQuery(url), url).toBeNull();
 });
 
-test('rejects URLs that are not one target', () => {
+test('rejects URLs that are not one versioned query', () => {
   for (const url of [
+    advisoryUrl('npm', ['lodash@4.17.20', 'left-pad@4.17.20'], 'reviewed'),
     advisoryUrl('npm', ['lodash@4.17.20', 'left-pad@1.3.0'], 'reviewed'),
-    advisoryUrl('pip', ['flo-pro-adk@1.0.0', 'other@1.0.0'], 'malware'),
     advisoryUrl('pip', ['flo-pro-adk@1.0.0', 'flo_pro_adk@2.0.0'], 'malware'),
     advisoryUrl('rubygems', ['rails@7.0.0'], 'reviewed'),
     advisoryUrl('npm', ['lodash@4.17.20'], 'unreviewed'),
@@ -89,7 +131,7 @@ test('rejects URLs that are not one target', () => {
     'https://example.com/advisories?ecosystem=npm&affects=lodash%404.17.20&type=reviewed',
     'not a url',
   ])
-    expect(parseAdvisoryTarget(url), url).toBeNull();
+    expect(parseVersionedQuery(url), url).toBeNull();
 });
 
 test('round-trips tag candidates with `@` and `/` in the tag, decoding each segment once', () => {
@@ -113,20 +155,22 @@ test('ignores refs that are not tags and other upstream requests', () => {
 
 test('a versioned query yields its one target once per side, and only when requested', () => {
   const lodash = advisoryUrl('npm', ['lodash@4.17.20'], 'reviewed');
-  const unrequested = advisoryUrl('npm', ['left-pad@1.3.0'], 'reviewed');
+  const unrequested = advisoryUrl('npm', ['lodash@4.17.20'], 'malware');
   const discovery = advisoryUrl('pip', ['flo-pro-adk', 'flo_pro_adk'], 'malware', '50');
   const requested = new Set([lodash, discovery, 'https://api.osv.dev/v1/query']);
-  const target = { ecosystem: 'npm', name: 'lodash', version: '4.17.20', type: 'reviewed' };
+  const lookup = { ecosystem: 'npm', name: 'lodash', version: '4.17.20' };
+  const target = { ...lookup, type: 'reviewed' };
   expect(
     settledTargets(
       [
-        { side: 'head', url: lodash },
-        { side: 'head', url: lodash },
-        { side: 'base', url: lodash },
-        { side: 'head', url: unrequested },
-        { side: 'head', url: discovery },
-        { side: 'base', url: 'https://api.osv.dev/v1/query' },
-        { side: 'base', url: null },
+        { side: 'head', url: lodash, target: lookup },
+        { side: 'head', url: lodash, target: lookup },
+        { side: 'base', url: lodash, target: lookup },
+        { side: 'head', url: unrequested, target: lookup },
+        { side: 'head', url: discovery, target: lookup },
+        { side: 'base', url: 'https://api.osv.dev/v1/query', target: lookup },
+        { side: 'base', url: null, target: lookup },
+        { side: 'base', url: lodash, target: null },
       ],
       requested,
     ),

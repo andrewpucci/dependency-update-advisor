@@ -1,23 +1,32 @@
 /**
  * The targets a demand measurement's advisory and malware readers settle, and the tag candidates
- * it requested, parsed from the request URLs the run observes (#388, C1 of the batching track).
- * A settled target comes from a versioned GitHub advisory query: an npm reviewed or malware query,
- * an Actions reviewed query, or a `pip` or Actions malware query. Package-only discovery queries
- * and OSV lookups settle nothing here: `pip` reviewed lookups are not batched (Batching
- * Reconciliation Amendment D1).
+ * it requested, from the lookups research records and the request URLs the run observes (#388,
+ * C1 of the batching track). A settled target comes from a versioned GitHub advisory query: an
+ * npm reviewed or malware query, an Actions reviewed query, or a `pip` or Actions malware query.
+ * Package-only discovery queries and OSV lookups settle nothing here: `pip` reviewed lookups are
+ * not batched (Batching Reconciliation Amendment D1).
  */
 
 export type TargetEcosystem = 'npm' | 'pip' | 'actions';
 export type TargetType = 'reviewed' | 'malware';
 export type Side = 'base' | 'head';
 
-export type ParsedTarget = Readonly<{
+/** What a versioned advisory query's URL says about the one target it settles. */
+export type VersionedQuery = Readonly<{
+  ecosystem: TargetEcosystem;
+  type: TargetType;
+  version: string;
+  /** The names in `affects`: the target's own name, or the stored forms discovery found. */
+  names: readonly string[];
+}>;
+export type ReaderTarget = Readonly<{ ecosystem: string; name: string; version: string }>;
+export type SettledTarget = Readonly<{
   ecosystem: TargetEcosystem;
   name: string;
   version: string;
   type: TargetType;
+  side: Side;
 }>;
-export type SettledTarget = ParsedTarget & Readonly<{ side: Side }>;
 export type TagCandidate = Readonly<{ repository: string; tag: string; status: string }>;
 
 const API_ORIGIN = 'https://api.github.com';
@@ -39,15 +48,11 @@ function splitAffect(entry: string): { name: string; version: string } | null {
 }
 
 /**
- * The one target a versioned GitHub advisory query settles, or null for any other URL: a
- * discovery query (an `affects` entry with no version), an OSV query, or anything else.
- *
- * A `pip` or Actions versioned query lists every stored form of one target's name at its version.
- * Its target name is the forms' shared canonical name: for `pip` that is the normalized name the
- * reader sends; for Actions it is the forms' common spelling, or the lowercase name when the
- * stored forms differ only in case.
+ * The versioned GitHub advisory query a URL is, or null for any other URL: a discovery query (an
+ * `affects` entry with no version), an OSV query, a query at more than one version or, for npm,
+ * more than one name, or anything else.
  */
-export function parseAdvisoryTarget(url: string): ParsedTarget | null {
+export function parseVersionedQuery(url: string): VersionedQuery | null {
   let parsed: URL;
   try {
     parsed = new URL(url);
@@ -60,18 +65,38 @@ export function parseAdvisoryTarget(url: string): ParsedTarget | null {
   const type = params.get('type') ?? '';
   const affects = params.get('affects');
   if (!ECOSYSTEMS.includes(ecosystem) || !TYPES.includes(type) || !affects) return null;
-  const eco = ecosystem as TargetEcosystem;
   const entries = affects.split(',').map(splitAffect);
   if (entries.some((entry) => entry === null)) return null;
   const pairs = entries as { name: string; version: string }[];
   const version = pairs[0].version;
   if (pairs.some((pair) => pair.version !== version)) return null;
-  if (eco === 'npm' && pairs.length !== 1) return null;
-  const names = new Set(pairs.map((pair) => pair.name));
-  const canon = new Set(pairs.map((pair) => canonical(eco, pair.name)));
-  if (canon.size !== 1) return null;
-  const name = eco === 'pip' || names.size > 1 ? [...canon][0] : pairs[0].name;
-  return { ecosystem: eco, name, version, type: type as TargetType };
+  if (ecosystem === 'npm' && pairs.length !== 1) return null;
+  return {
+    ecosystem: ecosystem as TargetEcosystem,
+    type: type as TargetType,
+    version,
+    names: pairs.map((pair) => pair.name),
+  };
+}
+
+/**
+ * The target a lookup settled, named as the reader looked it up, or null when its URL is not a
+ * versioned query for that target. GitHub's stored forms can differ from the target's name in case
+ * and separators, so the name comes from the reader's target, never from the URL.
+ */
+export function settledTarget(url: string, target: ReaderTarget, side: Side): SettledTarget | null {
+  const query = parseVersionedQuery(url);
+  if (!query || query.ecosystem !== target.ecosystem || query.version !== target.version)
+    return null;
+  const expected = canonical(query.ecosystem, target.name);
+  if (query.names.some((name) => canonical(query.ecosystem, name) !== expected)) return null;
+  return {
+    ecosystem: query.ecosystem,
+    name: target.name,
+    version: target.version,
+    type: query.type,
+    side,
+  };
 }
 
 /** The repository and tag of a REST `git/ref/tags/...` request, each path segment decoded once. */
@@ -104,14 +129,16 @@ const byKey = <T>(values: Iterable<T>): T[] => {
  * reads are shared across sides, so one request can settle a target on both.
  */
 export function settledTargets(
-  lookups: Iterable<Readonly<{ side: Side; url: string | null }>>,
+  lookups: Iterable<
+    Readonly<{ side: Side; url: string | null; target: ReaderTarget | null | undefined }>
+  >,
   requested: ReadonlySet<string>,
 ): SettledTarget[] {
   const targets: SettledTarget[] = [];
-  for (const { side, url } of lookups) {
-    if (url === null || !requested.has(url)) continue;
-    const target = parseAdvisoryTarget(url);
-    if (target) targets.push({ ...target, side });
+  for (const { side, url, target } of lookups) {
+    if (url === null || !target || !requested.has(url)) continue;
+    const settled = settledTarget(url, target, side);
+    if (settled) targets.push(settled);
   }
   return byKey(targets);
 }
