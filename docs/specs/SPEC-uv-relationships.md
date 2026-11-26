@@ -13,6 +13,12 @@ This supplements [uv evidence](SPEC-uv-evidence.md), consumes
 No new module, supported lock format, dependency, or T4/T5 amendment is introduced.
 Plan and execution approval are recorded below.
 
+Limit citation amendment (L10,
+[#382](https://github.com/andrewpucci/dependency-update-advisor/issues/382)):
+the user approved this spec's change on 2026-11-26. It cites register
+entries as `limit:<id>` instead of stating their values, with no value
+change.
+
 Confirmed scope decision: the user explicitly chose conservative structural
 matching for markers and extras. Preserve universal-lock variants and exact
 selectors; leave relationships incomplete when proof needs Python version-range

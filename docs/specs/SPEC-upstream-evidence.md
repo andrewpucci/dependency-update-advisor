@@ -7,6 +7,12 @@ This supplies research to the existing npm, Actions, and uv modules; it adds
 no capability-map module or dependency direction. Specification, planning,
 and execution approval remain separate gates.
 
+Limit citation amendment (L10,
+[#382](https://github.com/andrewpucci/dependency-update-advisor/issues/382)):
+the user approved this spec's change on 2026-11-26. It cites register
+entries as `limit:<id>` instead of stating their values, with no value
+change.
+
 Confirmed scope decision, 2026-11-07: the user agreed that S2 should discover
 Actions ref-to-version mappings when bounded GitHub evidence proves the
 relationship, supplying both upstream research and S1 advisory lookup.

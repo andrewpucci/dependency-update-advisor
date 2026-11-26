@@ -3,6 +3,12 @@
 Status: approved for planning, 2026-09-23. Module: `actions-evidence` in
 [the capability map](README.md).
 
+Limit citation amendment (L10,
+[#382](https://github.com/andrewpucci/dependency-update-advisor/issues/382)):
+the user approved this spec's change on 2026-11-26. It cites register
+entries as `limit:<id>` instead of stating their values, with no value
+change.
+
 ## Objective
 
 Account for GitHub Actions and reusable-workflow references changed by a

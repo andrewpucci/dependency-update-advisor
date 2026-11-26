@@ -6,6 +6,12 @@ Status: approved for execution, 2026-11-07. Supporting contract for
 The approved [analysis-provider contract](SPEC-analysis-providers.md) remains
 authoritative. The spike decision is resolved below; paid-call limits remain fixed.
 
+Limit citation amendment (L10,
+[#382](https://github.com/andrewpucci/dependency-update-advisor/issues/382)):
+the user approved this spec's change on 2026-11-26. It cites register
+entries as `limit:<id>` instead of stating their values, with no value
+change.
+
 Confirmed scope decision, 2026-11-07: the user agreed that M1 owns
 provider-neutral request projection and full response validation for one
 batch, as well as Mistral transport. [M2 #22](https://github.com/andrewpucci/dependency-update-advisor/issues/22)

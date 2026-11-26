@@ -11,6 +11,12 @@ separate. This refines the inventory slice of
 [Actions evidence](SPEC-actions-evidence.md); it adds no module,
 dependency direction, or packet-schema amendment.
 
+Limit citation amendment (L10,
+[#382](https://github.com/andrewpucci/dependency-update-advisor/issues/382)):
+the user approved this spec's change on 2026-11-26. It cites register
+entries as `limit:<id>` instead of stating their values, with no value
+change.
+
 Amendment approved 2026-11-01:
 
 - An unsupported reference anywhere in a selected workflow, including an

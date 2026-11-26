@@ -8,6 +8,12 @@ in [the capability map](README.md), scoped to
 This supplies shared research to the approved npm, Actions, and uv evidence
 modules without adding a capability-map module or changing dependency direction.
 
+Limit citation amendment (L10,
+[#382](https://github.com/andrewpucci/dependency-update-advisor/issues/382)):
+the user approved this spec's change on 2026-11-26. It cites register
+entries as `limit:<id>` instead of stating their values, with no value
+change.
+
 Confirmed scope decision: the user agreed to query both current and proposed
 resolved versions so the evidence can distinguish advisories that apply to the
 proposal from advisories the update resolves.

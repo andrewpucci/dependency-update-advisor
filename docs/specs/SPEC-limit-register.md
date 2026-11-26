@@ -8,6 +8,12 @@ Revised the same day to match the intent the user confirmed in an interview
 (see Resolved). A cross-cutting supporting contract for
 `shared-review` in [the capability map](README.md).
 
+Limit citation amendment (L10,
+[#382](https://github.com/andrewpucci/dependency-update-advisor/issues/382)):
+the user approved this spec's change on 2026-11-26. It cites register
+entries as `limit:<id>` instead of stating their values, with no value
+change.
+
 The user asked for this on 2026-11-17, and on the same day approved its
 method: each limit gets exactly one stated basis, recorded in one register,
 with its effect and its boundary test. This spec sets no new values.

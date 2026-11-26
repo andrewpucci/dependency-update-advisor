@@ -17,6 +17,12 @@ It adds repository tooling for measuring read demand. It does not change any
 evidence attribution rule, add a host, authorize publication, or authorize a
 live rerun.
 
+Limit citation amendment (L10,
+[#382](https://github.com/andrewpucci/dependency-update-advisor/issues/382)):
+the user approved this spec's change on 2026-11-26. It cites register
+entries as `limit:<id>` instead of stating their values, with no value
+change.
+
 ## Objective
 
 A maintainer reading a review of an ordinary Dependabot PR should see whether

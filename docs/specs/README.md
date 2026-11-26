@@ -2,6 +2,12 @@
 
 Status: approved for specification, 2026-09-23.
 
+Limit citation amendment (L10,
+[#382](https://github.com/andrewpucci/dependency-update-advisor/issues/382)):
+the user approved this spec's change on 2026-11-26. It cites register
+entries as `limit:<id>` instead of stating their values, with no value
+change.
+
 The v1 product is an advisory reviewer for Dependabot pull requests on GitHub.
 It will serve four initial repositories and cover npm, GitHub Actions, and uv.
 The name leaves room for other update bots and hosts later; v1 does

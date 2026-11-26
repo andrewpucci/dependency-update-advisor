@@ -9,6 +9,12 @@ Approval: the user approved the full revised specification on 2026-10-20 and
 invoked `as-plan`. The user then approved the eight-task plan and invoked
 `as-build auto`, authorizing implementation and one PR for #11 and #77–#84.
 
+Limit citation amendment (L10,
+[#382](https://github.com/andrewpucci/dependency-update-advisor/issues/382)):
+the user approved this spec's change on 2026-11-26. It cites register
+entries as `limit:<id>` instead of stating their values, with no value
+change.
+
 Decisions approved by the user on 2026-10-20: require all three ecosystem
 coverage slots; require inventory evidence for `not_applicable`; cap a packet
 at `limit:packet.changes` changes; reject overflow without exposing a usable

@@ -17,6 +17,12 @@ invocation that day: base identity now comes from the
 [T1 base-identity amendment](SPEC-event-verification.md#base-identity-amendment),
 which D1 depends on. Identity items 1, 2, and 5 and the identity fixtures changed.
 
+Limit citation amendment (L10,
+[#382](https://github.com/andrewpucci/dependency-update-advisor/issues/382)):
+the user approved this spec's change on 2026-11-26. It cites register
+entries as `limit:<id>` instead of stating their values, with no value
+change.
+
 ## Objective
 
 Give npm, Actions, and uv collectors bounded, revision-attributable GitHub

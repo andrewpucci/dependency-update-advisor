@@ -7,6 +7,12 @@ This defines the inventory slice of [npm evidence](SPEC-npm-evidence.md)
 and a declaration-record amendment to [T4](SPEC-review-packet.md) and
 [T5](SPEC-decision-units.md). It adds no module or dependency direction.
 
+Limit citation amendment (L10,
+[#382](https://github.com/andrewpucci/dependency-update-advisor/issues/382)):
+the user approved this spec's change on 2026-11-26. It cites register
+entries as `limit:<id>` instead of stating their values, with no value
+change.
+
 Confirmed interview decision, 2026-10-26: represent declaration-only edits
 explicitly and allow complete inventory coverage when fully accounted for.
 Approval: after reviewing the saved draft, the user explicitly answered `yes`
