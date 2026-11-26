@@ -311,6 +311,19 @@ targets to one exact `package@version` query. It follows validated cursors and
 page tokens, omits credentials, rejects redirects and makes no retries. Close the
 reader in the caller's `finally` block.
 
+The reader also has `settle(targets)`, which runs the
+[batch rules](#batching-reconciliation-amendment) before targets are read:
+npm versioned batches, and discovery batches for Actions reviewed and `pip`
+malware targets. Packages share a discovery batch while all their spellings
+fit one request and the batch holds at most `limit:advisory.batch.maxTargets`
+targets; a package that needs several requests is a batch of its own. It
+resolves to the number of targets it decided, complete or not, so `read` sends
+nothing for them, or null while another read is running. `read` returns a
+settled lookup without a request. A target cleared or attributed from a batch
+carries `batched: true` and cites the unfetched query that would reproduce it.
+A target a batch could not settle is read as before. The stages do not call
+`settle` yet.
+
 `enrichAdvisories(input, { reader })` consumes an `AdvisoryInput`: binding,
 normalized changes/sources/findings, limits, required `publicIdentities`, and
 optional `actionVersions` and bounded D1 `comparisons`. Trusted orchestration

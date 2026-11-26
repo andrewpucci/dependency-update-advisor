@@ -6,6 +6,13 @@ import { waitForRetry, type GithubQuotaGuard } from './github-quota.js';
 import type { ResearchCache } from './research-cache.js';
 import { HTTP_STATUS } from '../format.js';
 import { limit } from '../limits.js';
+import {
+  advisoryBatches,
+  batchUrl,
+  splitBatches,
+  BATCH_MAX_TARGETS,
+  BATCH_URL_BYTES,
+} from './batches.js';
 
 export type AdvisoryLimits = Readonly<{
   maxRequests: number;
@@ -39,9 +46,22 @@ export type AdvisoryLookup = Readonly<{
   complete: boolean;
   records: readonly AdvisoryRecord[];
   reasons: readonly EvidenceReason[];
+  /**
+   * Settled from a complete batch rather than its own query: the lookup equals the complete
+   * result of the query `url` names, which was not itself fetched.
+   */
+  batched?: true;
 }>;
 export type AdvisoryReader = Readonly<{
   read: (target: unknown) => Promise<AdvisoryLookup>;
+  /**
+   * Settles what complete batches can for these targets, before they are read: npm versioned
+   * batches, and discovery batches for Actions reviewed and `pip` malware targets. A target a
+   * batch cannot settle is left to `read`, which then queries it alone. Resolves to the number
+   * of targets it decided, complete or not, so `read` sends nothing for them; or null when the
+   * reader was busy and decided nothing.
+   */
+  settle?: (targets: readonly unknown[]) => Promise<number | null>;
   close: () => void;
   /** The reason this reader refuses all further reads, or null while it can still read. */
   stopped?: () => EvidenceReason | null;
@@ -53,6 +73,12 @@ type Dependencies = {
   cache?: ResearchCache;
   /** The run's research GitHub quota guard; absent outside research. */
   quota?: GithubQuotaGuard;
+  /**
+   * Drops or reorders the planned requests of a discovery batch; a URL it was not given makes
+   * the batch incomplete. Only tests pass it, to show that a batch whose requests miss a
+   * spelling settles nothing.
+   */
+  discoveryPlan?: (urls: string[]) => string[];
 };
 export class AdvisoryFailure extends Error {
   constructor(readonly reason: EvidenceReason) {
@@ -255,22 +281,26 @@ function githubRecordBase(value: unknown, kind: QueryKind) {
   advisoryCheck(Array.isArray(value.vulnerabilities));
   return value as Record<string, unknown> & { vulnerabilities: unknown[] };
 }
-function normalize(value: unknown, t: AdvisoryTarget, kind: QueryKind): AdvisoryRecord {
+/** A GitHub record's own fields, checked apart from its package entries. */
+function githubRecord(value: unknown, kind: QueryKind) {
   const record = githubRecordBase(value, kind);
   advisoryCheck(advisoryText(record.summary));
   advisoryCheck(
     record.withdrawn_at === null ||
       (typeof record.withdrawn_at === 'string' && Number.isFinite(Date.parse(record.withdrawn_at))),
   );
+  return { record, title: record.summary, severity: severityOf(record.severity) };
+}
+function normalize(value: unknown, t: AdvisoryTarget, kind: QueryKind): AdvisoryRecord {
+  const { record, title, severity } = githubRecord(value, kind);
   const matches = packageEntries(record.vulnerabilities, t);
   advisoryCheck(matches.length > 0, 'conflict');
   const ranges = matches.map((m) => m.vulnerable_version_range);
   advisoryCheck(ranges.every(advisoryText), 'conflict');
-  const severity = severityOf(record.severity);
   return {
     id: String(record.ghsa_id),
     url: String(record.html_url),
-    title: record.summary,
+    title,
     range: joinRanges(ranges),
     withdrawn: record.withdrawn_at !== null,
     ...(severity ? { severity } : {}),
@@ -283,6 +313,29 @@ function storedForms(value: unknown, t: AdvisoryTarget, kind: QueryKind): string
   );
   advisoryCheck(forms.length > 0 && forms.every(advisoryText));
   return forms;
+}
+/**
+ * The batched targets one batch record names, by key, each with the names its entries give it in
+ * the batch's ecosystem, as returned. `key` maps a returned name to its target's key, or undefined
+ * for none. Entries in every ecosystem are validated; only the batch's ecosystem names targets. A
+ * malformed entry, or a record naming no batched target, makes the batch untrusted.
+ */
+function batchNames(
+  value: unknown,
+  ecosystem: AdvisoryTarget['ecosystem'],
+  kind: QueryKind,
+  key: (name: string) => string | undefined,
+): Map<string, string[]> {
+  const named = new Map<string, string[]>();
+  for (const entry of githubRecordBase(value, kind).vulnerabilities) {
+    advisoryCheck(isPlainObject(entry) && isPlainObject(entry.package));
+    const { ecosystem: listed, name } = entry.package;
+    advisoryCheck(typeof listed === 'string' && advisoryText(name));
+    const k = listed === ecosystem ? key(name) : undefined;
+    if (k !== undefined) named.set(k, [...(named.get(k) ?? []), name]);
+  }
+  advisoryCheck(named.size > 0);
+  return named;
 }
 function osvRange(entry: Record<string, unknown>): string {
   advisoryCheck(Array.isArray(entry.ranges) && entry.ranges.length === 1, 'conflict');
@@ -442,6 +495,14 @@ function continuation(link: string | null, original: string, seen: Set<string>):
   return next;
 }
 type Discovery = { forms: readonly string[] } | { failure: EvidenceReason };
+const targetKey = (t: AdvisoryTarget) => JSON.stringify([t.ecosystem, t.name, t.version]);
+/** A target's versioned query URL for these stored forms, at the reader's default page size. */
+const versionedUrl = (t: AdvisoryTarget, kind: QueryKind, forms: readonly string[] = [t.name]) =>
+  githubUrl(
+    t.ecosystem,
+    forms.map((f) => `${f}@${t.version}`),
+    kind,
+  );
 class Reader implements AdvisoryReader {
   private requests = 0;
   private bytes = 0;
@@ -461,6 +522,8 @@ class Reader implements AdvisoryReader {
   private waits = 0;
   /** Base and head of one package reuse its discovery reads, including a failed one. */
   private readonly discoveries = new Map<string, Discovery>();
+  /** Lookups `settle` decided, by target; `read` returns them without a request. */
+  private readonly settled = new Map<string, AdvisoryLookup>();
   constructor(
     private limits: AdvisoryLimits,
     private deps: Dependencies,
@@ -715,33 +778,65 @@ class Reader implements AdvisoryReader {
     return [...forms].sort();
   }
   async read(value: unknown): Promise<AdvisoryLookup> {
-    const invalid: AdvisoryTarget = { ecosystem: 'npm', name: '', version: '' };
-    let t = invalid,
-      url = '',
-      records: AdvisoryRecord[] = [];
     if (this.busy)
       return {
-        target: t,
-        url,
+        target: { ecosystem: 'npm', name: '', version: '' },
+        url: '',
         status: 'unavailable',
         complete: false,
-        records,
+        records: [],
         reasons: ['conflict'],
       };
     this.busy = true;
     try {
-      t = target(value);
-      if (t.ecosystem === 'pip' && this.kind === 'reviewed') {
-        url = OSV_QUERY_URL;
-        await this.osv(t, records);
-      } else {
-        const forms = t.ecosystem === 'npm' ? [t.name] : await this.discover(t);
-        const affects = (forms.length ? forms : [t.name]).map((f) => `${f}@${t.version}`);
-        const versioned = githubUrl(t.ecosystem, affects, this.kind);
-        advisoryCheck(versioned.length <= PACKET_LIMITS.identityBytes, 'unsupported');
-        url = versioned;
-        await this.github(url, (value) => this.retain(records, normalize(value, t, this.kind)));
+      let t: AdvisoryTarget;
+      try {
+        t = target(value);
+      } catch (error) {
+        return await this.lookup({ ecosystem: 'npm', name: '', version: '' }, () => {
+          throw error;
+        });
       }
+      return this.settled.get(targetKey(t)) ?? (await this.query(t));
+    } finally {
+      this.busy = false;
+    }
+  }
+  /** One target's own lookup: OSV for `pip` reviewed, else its GitHub versioned query. */
+  private query(t: AdvisoryTarget): Promise<AdvisoryLookup> {
+    return this.lookup(t, async (records, cite) => {
+      if (t.ecosystem === 'pip' && this.kind === 'reviewed') {
+        cite(OSV_QUERY_URL);
+        await this.osv(t, records);
+        return;
+      }
+      const forms = t.ecosystem === 'npm' ? [t.name] : await this.discover(t);
+      await this.versioned(t, forms, records, cite);
+    });
+  }
+  /** The versioned query for these stored forms, or for the target's own name when none. */
+  private async versioned(
+    t: AdvisoryTarget,
+    forms: readonly string[],
+    records: AdvisoryRecord[],
+    cite: (url: string) => void,
+  ) {
+    const url = versionedUrl(t, this.kind, forms.length ? forms : [t.name]);
+    advisoryCheck(url.length <= PACKET_LIMITS.identityBytes, 'unsupported');
+    cite(url);
+    await this.github(url, (value) => this.retain(records, normalize(value, t, this.kind)));
+  }
+  /** The lookup `work` ends in: complete when it returns, else incomplete with its reason. */
+  private async lookup(
+    t: AdvisoryTarget,
+    work: (records: AdvisoryRecord[], cite: (url: string) => void) => Promise<void> | void,
+  ): Promise<AdvisoryLookup> {
+    let url = '';
+    const records: AdvisoryRecord[] = [];
+    try {
+      await work(records, (cited) => {
+        url = cited;
+      });
       return freeze({
         target: t,
         url,
@@ -759,10 +854,201 @@ class Reader implements AdvisoryReader {
         status: records.length ? 'partial' : 'unavailable',
         reasons: [error instanceof AdvisoryFailure ? error.reason : 'unknown'],
       });
+    }
+  }
+  /**
+   * Keeps a complete lookup for `t` from a complete batch: `found` are the records the batch
+   * attributes to it, and `url` the unfetched query whose complete result this equals.
+   */
+  private async fromBatch(t: AdvisoryTarget, url: string, found: readonly AdvisoryRecord[] = []) {
+    const lookup = await this.lookup(t, (records, cite) => {
+      cite(url);
+      for (const record of found) this.retain(records, record);
+    });
+    if (lookup.complete) this.settled.set(targetKey(t), freeze({ ...lookup, batched: true }));
+  }
+  async settle(values: readonly unknown[]): Promise<number | null> {
+    if (this.busy) return null;
+    this.busy = true;
+    const before = this.settled.size;
+    try {
+      const pending = new Map<string, AdvisoryTarget>();
+      for (const value of values) {
+        let t: AdvisoryTarget;
+        try {
+          t = target(value);
+        } catch {
+          continue;
+        }
+        const key = targetKey(t);
+        // A target whose own URL is over the citation bound is left to `read`, which refuses it.
+        const long = versionedUrl(t, this.kind).length > PACKET_LIMITS.identityBytes;
+        if (!this.settled.has(key) && !long) pending.set(key, t);
+      }
+      const targets = [...pending.values()];
+      await this.settleNpm(targets.filter((t) => t.ecosystem === 'npm'));
+      // D1: `pip` reviewed lookups go to OSV unbatched. Actions malware keeps per-target lookups
+      // (Approved Batch Values in the policy signals spec).
+      const discovered = this.kind === 'reviewed' ? 'actions' : 'pip';
+      await this.settleDiscovery(targets.filter((t) => t.ecosystem === discovered));
+      return this.settled.size - before;
     } finally {
       this.busy = false;
     }
   }
+  /**
+   * npm versioned batches. Targets are layered so that no batch lists two versions of one
+   * package, since a record naming that package could not say which version it affects.
+   */
+  private async settleNpm(targets: readonly AdvisoryTarget[]) {
+    const layers: AdvisoryTarget[][] = [];
+    for (const t of targets) {
+      const layer = layers.find((l) => l.every((o) => o.name !== t.name));
+      if (layer) layer.push(t);
+      else layers.push([t]);
+    }
+    for (const layer of layers) {
+      const byAffects = new Map(layer.map((t) => [`${t.name}@${t.version}`, t]));
+      const { batches } = advisoryBatches('npm', [...byAffects.keys()], this.kind);
+      for (const batch of batches) await this.npmBatch(batch.map((a) => byAffects.get(a)!));
+    }
+  }
+  /**
+   * One complete npm batch clears the targets no record names and attributes each record that
+   * names exactly one batched package to it; targets named by a record naming several get their
+   * singleton queries at once (S1 Batched Lookup items 3 to 6, as D2 amends them). An incomplete
+   * or untrusted batch settles nothing.
+   */
+  private async npmBatch(batch: readonly AdvisoryTarget[]) {
+    const byName = new Map(batch.map((t) => [t.name, t]));
+    const attributed = new Map<string, AdvisoryRecord[]>();
+    const shared = new Set<string>();
+    try {
+      const values: unknown[] = [];
+      const affects = batch.map((t) => `${t.name}@${t.version}`);
+      const url = batchUrl('npm', affects, this.kind);
+      await this.github(url, (value) => values.push(value), BATCH_URL_BYTES);
+      for (const value of values) {
+        // npm names are compared exactly as the query sent them.
+        const named = [
+          ...batchNames(value, 'npm', this.kind, (n) => (byName.has(n) ? n : undefined)).keys(),
+        ];
+        // Every record validates as each named target's singleton would, attributed or not.
+        const records = named.map((name) => normalize(value, byName.get(name)!, this.kind));
+        if (named.length > 1) for (const name of named) shared.add(name);
+        else attributed.set(named[0], [...(attributed.get(named[0]) ?? []), records[0]]);
+      }
+    } catch {
+      return;
+    }
+    for (const t of batch)
+      if (!shared.has(t.name))
+        await this.fromBatch(t, versionedUrl(t, this.kind), attributed.get(t.name));
+    // A singleton's result decides even when it fails: it is kept, so `read` does not resend it.
+    for (const t of batch)
+      if (shared.has(t.name)) this.settled.set(targetKey(t), await this.query(t));
+  }
+  /**
+   * Discovery batches over every spelling of these targets (S1 Batching Reconciliation D3).
+   * Packages share a batch while all their spellings fit one discovery request; a package whose
+   * spellings need several requests is a batch of its own. So one failed or oversized page drops
+   * only its own batch back to per-target discovery.
+   */
+  private async settleDiscovery(targets: readonly AdvisoryTarget[]) {
+    const packages = discoveryPackages(targets, this.kind);
+    if (!packages.size) return;
+    const ecosystem = targets[0].ecosystem;
+    const { batches, unbatched } = splitBatches([...packages], BATCH_MAX_TARGETS, (batch) => {
+      const spellings = batch.flatMap(([, p]) => p.spellings);
+      return (
+        spellings.length <= BATCH_MAX_TARGETS &&
+        discoveryUrls(ecosystem, spellings, this.kind).length === 1
+      );
+    });
+    for (const batch of [...batches, ...unbatched.map((p) => [p])])
+      await this.discoveryBatch(ecosystem, new Map(batch));
+  }
+  /**
+   * One discovery batch. A complete batch clears each target no record names, citing its
+   * unfetched versioned URL, and sends each named target its versioned query for the batch's
+   * stored forms; discovery never attributes a record. An incomplete batch settles nothing: a
+   * page failed or did not validate, a record named no batched package, or a spelling of a
+   * batched target was not in a fetched URL.
+   */
+  private async discoveryBatch(
+    ecosystem: AdvisoryTarget['ecosystem'],
+    packages: ReadonlyMap<string, DiscoveryPackage>,
+  ) {
+    const all = [...packages.values()];
+    const forms = new Map<string, Set<string>>();
+    const nameKey = (name: string) => {
+      const key = canonicalName(ecosystem, name);
+      return packages.has(key) ? key : undefined;
+    };
+    try {
+      const fetched = new Set<string>();
+      const planned = discoveryUrls(
+        ecosystem,
+        all.flatMap((p) => p.spellings),
+        this.kind,
+      );
+      for (const url of this.deps.discoveryPlan?.(planned) ?? planned) {
+        advisoryCheck(planned.includes(url));
+        const values: unknown[] = [];
+        await this.github(url, (value) => values.push(value), DISCOVERY_URL_CAP);
+        for (const value of values)
+          for (const [key, names] of batchNames(value, ecosystem, this.kind, nameKey))
+            forms.set(key, new Set([...(forms.get(key) ?? []), ...names]));
+        for (const s of new URL(url).searchParams.get('affects')!.split(',')) fetched.add(s);
+      }
+      // Complete only when every spelling of every batched target was fetched.
+      advisoryCheck(all.every((p) => p.spellings.every((s) => fetched.has(s))));
+    } catch {
+      return;
+    }
+    await this.settleFound(packages, forms);
+  }
+  /** Settles a complete discovery batch's targets from the stored forms it found. */
+  private async settleFound(
+    packages: ReadonlyMap<string, DiscoveryPackage>,
+    forms: ReadonlyMap<string, ReadonlySet<string>>,
+  ) {
+    for (const [key, { targets: named }] of packages) {
+      const stored = [...(forms.get(key) ?? [])].sort();
+      // A hit's versioned query decides even when it fails, as per-target discovery's would.
+      for (const t of named)
+        if (!stored.length) await this.fromBatch(t, versionedUrl(t, this.kind));
+        else
+          this.settled.set(
+            targetKey(t),
+            await this.lookup(t, (records, cite) => this.versioned(t, stored, records, cite)),
+          );
+    }
+  }
+}
+type DiscoveryPackage = { spellings: string[]; targets: AdvisoryTarget[] };
+/**
+ * Discovery targets by canonical package name, each package with every spelling its targets
+ * send. A target per-target discovery would refuse, over the spelling ceiling or the URL cap, is
+ * left out for `read` to refuse.
+ */
+function discoveryPackages(targets: readonly AdvisoryTarget[], kind: QueryKind) {
+  const packages = new Map<string, DiscoveryPackage>();
+  for (const t of targets) {
+    let spellings: string[];
+    try {
+      spellings = discoverySpellings(t.ecosystem, t.name);
+      discoveryUrls(t.ecosystem, spellings, kind);
+    } catch {
+      continue;
+    }
+    const key = canonicalName(t.ecosystem, t.name);
+    const entry = packages.get(key) ?? { spellings: [], targets: [] };
+    entry.spellings.push(...spellings.filter((s) => !entry.spellings.includes(s)));
+    entry.targets.push(t);
+    packages.set(key, entry);
+  }
+  return packages;
 }
 function createReader(
   limits: unknown,
@@ -774,6 +1060,7 @@ function createReader(
     return Object.freeze({
       kind: 'ready',
       read: (value: unknown) => reader.read(value),
+      settle: (targets: readonly unknown[]) => reader.settle(targets),
       close: () => reader.close(),
       stopped: () => reader.stopReason(),
     });

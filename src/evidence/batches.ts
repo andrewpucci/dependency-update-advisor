@@ -7,9 +7,10 @@ import { githubUrl, type AdvisoryTarget, type QueryKind } from './advisory-read.
  */
 export const BATCH_MAX_TARGETS = limit('advisory.batch.maxTargets');
 export const BATCH_PAGE_SIZE = String(limit('advisory.batch.pageSize'));
+/** A batch's continuation URL over this cap is `budget`. */
+export const BATCH_URL_BYTES = limit('advisory.batch.urlBytes');
 /** A batch's first URL leaves room under the URL cap for GitHub's `after` cursor. */
-export const BATCH_FIRST_URL_BYTES =
-  limit('advisory.batch.urlBytes') - limit('advisory.batch.cursorHeadroomBytes');
+export const BATCH_FIRST_URL_BYTES = BATCH_URL_BYTES - limit('advisory.batch.cursorHeadroomBytes');
 export const TAG_QUERY_MAX_CANDIDATES = limit('upstream.tagExistence.maxCandidatesPerQuery');
 
 /**
