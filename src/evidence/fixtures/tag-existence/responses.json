@@ -69,6 +69,41 @@
       "rateLimit": { "cost": 1 }
     }
   },
+  "missingRef": {
+    "data": {
+      "c0": { "nameWithOwner": "fixture/widget" },
+      "c1": { "nameWithOwner": "fixture/widget", "ref": null },
+      "rateLimit": { "cost": 1 }
+    }
+  },
+  "errorsObject": {
+    "data": {
+      "c0": { "nameWithOwner": "fixture/widget", "ref": null },
+      "c1": { "nameWithOwner": "fixture/widget", "ref": null }
+    },
+    "errors": {}
+  },
+  "errorsNull": {
+    "data": {
+      "c0": { "nameWithOwner": "fixture/widget", "ref": null },
+      "c1": { "nameWithOwner": "fixture/widget", "ref": null }
+    },
+    "errors": null
+  },
+  "emptyErrorPath": {
+    "data": {
+      "c0": { "nameWithOwner": "fixture/widget", "ref": null },
+      "c1": { "nameWithOwner": "fixture/widget", "ref": null }
+    },
+    "errors": [{ "path": [], "message": "Something went wrong." }]
+  },
+  "numericErrorPath": {
+    "data": {
+      "c0": { "nameWithOwner": "fixture/widget", "ref": null },
+      "c1": { "nameWithOwner": "fixture/widget", "ref": null }
+    },
+    "errors": [{ "path": [0], "message": "Something went wrong." }]
+  },
   "renames": {
     "data": {
       "c0": { "nameWithOwner": "Fixture/Widget", "ref": null },

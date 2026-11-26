@@ -15499,7 +15499,7 @@ function aliasExistence(value, repository) {
 function tagExistenceAnswers(response, batch) {
 	const unknown = batch.map(() => "unknown");
 	if (!isPlainObject(response) || !isPlainObject(response.data)) return unknown;
-	const errors = response.errors ?? [];
+	const errors = response.errors === void 0 ? [] : response.errors;
 	if (!Array.isArray(errors)) return unknown;
 	const named = /* @__PURE__ */ new Set();
 	for (const error of errors) {
@@ -15830,35 +15830,44 @@ var Reader = class {
 	* One existence query, sent with neither the research cache nor the quota guard: GraphQL
 	* answers never go through the shared cache (item 7), and GraphQL draws on its own budget, not
 	* the REST quota the guard keeps. It counts one request and its bytes against this reader's
-	* share. Any failure answers every candidate `unknown`.
+	* share. A secondary limit gets REST's single wait and resend. Any failure answers every
+	* candidate `unknown`.
 	*/
 	async tagQuery(batch) {
 		const unknown = batch.map(() => "unknown");
 		if (this.graphqlSpent) return unknown;
 		try {
-			this.dispatch(GITHUB_GRAPHQL_URL);
-			const { fetch, now, signal } = this.deps;
-			const parsed = await boundedGet({
-				fetch,
-				now,
-				...signal ? { signal } : {}
-			}, {
-				url: GITHUB_GRAPHQL_URL,
-				accept: "application/json",
-				json: {
-					query: tagExistenceQuery(batch.length),
-					variables: tagExistenceVariables(batch)
-				},
-				timeoutMs: Math.min(this.remaining(), this.limits.requestTimeoutMs),
-				charge: () => this.charge()
-			}, (cancel) => {
-				this.active = cancel;
-			}, (response, aborted) => this.graphqlResponse(response, aborted));
-			if (graphqlPrimaryError(parsed)) this.graphqlSpent = true;
-			return tagExistenceAnswers(parsed, batch);
+			for (;;) try {
+				const parsed = await this.graphqlSend(batch);
+				if (graphqlPrimaryError(parsed)) this.graphqlSpent = true;
+				return tagExistenceAnswers(parsed, batch);
+			} catch (error) {
+				if (!await this.waitedForRetry(GITHUB_GRAPHQL_URL, error)) throw error;
+			}
 		} catch {
 			return unknown;
 		}
+	}
+	async graphqlSend(batch) {
+		this.rateLimited = null;
+		this.dispatch(GITHUB_GRAPHQL_URL);
+		const { fetch, now, signal } = this.deps;
+		return await boundedGet({
+			fetch,
+			now,
+			...signal ? { signal } : {}
+		}, {
+			url: GITHUB_GRAPHQL_URL,
+			accept: "application/json",
+			json: {
+				query: tagExistenceQuery(batch.length),
+				variables: tagExistenceVariables(batch)
+			},
+			timeoutMs: Math.min(this.remaining(), this.limits.requestTimeoutMs),
+			charge: () => this.charge()
+		}, (cancel) => {
+			this.active = cancel;
+		}, (response, aborted) => this.graphqlResponse(response, aborted));
 	}
 	async graphqlResponse(response, aborted) {
 		requireUpstream(!response.redirected && (!response.url || response.url === GITHUB_GRAPHQL_URL), "unsupported");
@@ -15866,10 +15875,8 @@ var Reader = class {
 			let bytes = Buffer.alloc(0);
 			try {
 				if (response.body) bytes = await this.body(response, aborted, false);
-			} finally {
-				this.graphqlRefused(response, bytes);
-			}
-			throw new UpstreamFailure("unknown");
+			} catch {}
+			throw new UpstreamFailure(this.graphqlRefused(response, bytes));
 		}
 		requireUpstream(/^application\/(?:[\w.+-]*\+)?json(?:\s*;|$)/iu.test(response.headers.get("content-type") ?? ""), "unsupported");
 		const bytes = response.body ? await this.body(response, aborted, false) : Buffer.alloc(0);
@@ -15878,16 +15885,17 @@ var Reader = class {
 	}
 	/**
 	* A rate-limited refusal: GraphQL's primary limit stops only later existence queries; a
-	* secondary limit blocks the origin as a REST rate limit does, and records its retry time.
+	* secondary limit blocks the origin as a REST rate limit does and is `rate_limit`, which the
+	* caller's wait may lift. Every other refusal is `unknown`.
 	*/
 	graphqlRefused(response, bytes) {
-		if (httpReason$2(response, bytes) !== "rate_limit") return;
+		if (httpReason$2(response, bytes) !== "rate_limit") return "unknown";
 		if (graphqlPrimaryRefusal(response, bytes)) {
 			this.graphqlSpent = true;
-			return;
+			return "unknown";
 		}
 		this.limitedBy(GITHUB_GRAPHQL_URL, response);
-		this.deps.quota?.recordStop(this.deps.quota.retryAt(response));
+		return "rate_limit";
 	}
 	async tagExistence(value) {
 		const candidates = Array.isArray(value) ? value : [];

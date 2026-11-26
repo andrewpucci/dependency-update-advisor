@@ -41,10 +41,7 @@ const target = {
   name: '@fixture/widget',
   version: '1.2.3',
   integrity,
-  source: {
-    kind: 'registry' as const,
-    identity: 'https://registry.npmjs.org/widget.tgz',
-  },
+  source: { kind: 'registry' as const, identity: 'https://registry.npmjs.org/widget.tgz' },
 };
 const document = {
   _id: '@fixture/widget@1.2.3',
@@ -66,11 +63,7 @@ function setup(
 test('integrity-bound npm reads remain credential-free and attempt-local', async () => {
   const f = setup();
   const r = await f.reader.read(target);
-  expect(r).toMatchObject({
-    status: 'available',
-    fetched: true,
-    data: document,
-  });
+  expect(r).toMatchObject({ status: 'available', fetched: true, data: document });
   expect(f.fetch).toHaveBeenCalledWith(
     'https://registry.npmjs.org/%40fixture%2Fwidget/1.2.3',
     expect.objectContaining({ redirect: 'manual', credentials: 'omit' }),
@@ -105,11 +98,7 @@ test('unsupported sources and invalid limits perform no I/O', async () => {
 });
 test.each([302, 429, 500])('HTTP %s is not successful empty evidence', async (status) => {
   const f = setup(
-    async () =>
-      new Response('{}', {
-        status,
-        headers: { location: 'https://elsewhere.example' },
-      }),
+    async () => new Response('{}', { status, headers: { location: 'https://elsewhere.example' } }),
   );
   expect((await f.reader.read(target)).status).toBe('unavailable');
   expect(f.fetch).toHaveBeenCalledTimes(1);
@@ -130,11 +119,7 @@ test('stream and cumulative request bounds cover nested registry reads', async (
 test('exact public PyPI metadata validates both normalized identity and version', async () => {
   const f = setup(async () =>
     Response.json({
-      info: {
-        name: 'Fixture_Widget',
-        version: '2.0rc1',
-        description: 'Exact prerelease.',
-      },
+      info: { name: 'Fixture_Widget', version: '2.0rc1', description: 'Exact prerelease.' },
     }),
   );
   const py = {
@@ -157,10 +142,7 @@ test('exact public PyPI metadata validates both normalized identity and version'
     (
       await f.reader.read({
         ...py,
-        source: {
-          kind: 'registry',
-          identity: 'https://private.example/simple',
-        },
+        source: { kind: 'registry', identity: 'https://private.example/simple' },
       })
     ).status,
   ).toBe('unavailable');
@@ -177,10 +159,7 @@ test('failed exact metadata is not retried for another identical request', async
     source: { kind: 'registry', identity: 'https://pypi.org/simple' },
   };
   await f.reader.read(py);
-  expect(await f.reader.read(py)).toMatchObject({
-    status: 'unavailable',
-    fetched: false,
-  });
+  expect(await f.reader.read(py)).toMatchObject({ status: 'unavailable', fetched: false });
   expect(f.fetch).toHaveBeenCalledTimes(1);
   f.reader.close();
 });
@@ -305,10 +284,7 @@ describe('run-scoped research cache', () => {
         ? Response.json(otherDocument)
         : status === 200
           ? Response.json(document)
-          : new Response('{}', {
-              status,
-              headers: { 'content-type': 'application/json' },
-            }),
+          : new Response('{}', { status, headers: { 'content-type': 'application/json' } }),
     );
   const registryRead = async (cache: ResearchCache, fetch: ReturnType<typeof live>) => {
     const registry = createNpmRegistryReader(
@@ -333,10 +309,7 @@ describe('run-scoped research cache', () => {
     const fetch = live();
     expect((await registryRead(cache, fetch)).kind).toBe('metadata');
     const reader = upstream(cache, fetch, { maxRequests: 1 });
-    expect(await reader.read(other)).toMatchObject({
-      status: 'available',
-      fetched: true,
-    });
+    expect(await reader.read(other)).toMatchObject({ status: 'available', fetched: true });
     expect(await reader.read(target)).toMatchObject({
       status: 'available',
       fetched: true,
@@ -348,10 +321,7 @@ describe('run-scoped research cache', () => {
   test('a cached npm failure is still reported as fetched', async () => {
     const cache = shared();
     const fetch = live(404);
-    expect(await registryRead(cache, fetch)).toEqual({
-      kind: 'unavailable',
-      reason: 'missing',
-    });
+    expect(await registryRead(cache, fetch)).toEqual({ kind: 'unavailable', reason: 'missing' });
     expect(await upstream(cache, fetch).read(target)).toMatchObject({
       status: 'unavailable',
       fetched: true,
@@ -370,17 +340,12 @@ describe('run-scoped research cache', () => {
       maxTotalBytes: sizes[0] + sizes[1] - 1,
     });
     expect(await reader.read(other)).toMatchObject({ status: 'available' });
-    expect(await reader.read(target)).toMatchObject({
-      status: 'available',
-      data: document,
-    });
+    expect(await reader.read(target)).toMatchObject({ status: 'available', data: document });
   });
 
   test('a direct upstream hit costs no request or total bytes', async () => {
     const cache = shared();
-    const info = (version: string) => ({
-      info: { name: 'fixture-widget', version },
-    });
+    const info = (version: string) => ({ info: { name: 'fixture-widget', version } });
     const fetch = vi.fn(async (url: string) => Response.json(info(url.split('/')[5])));
     const py = (version: string) => ({
       kind: 'pypi',
@@ -388,9 +353,7 @@ describe('run-scoped research cache', () => {
       version,
       source: { kind: 'registry', identity: 'https://pypi.org/simple' },
     });
-    expect(await upstream(cache, fetch).read(py('1.0'))).toMatchObject({
-      status: 'available',
-    });
+    expect(await upstream(cache, fetch).read(py('1.0'))).toMatchObject({ status: 'available' });
     const size = Buffer.byteLength(JSON.stringify(info('1.0')));
     const reader = upstream(cache, fetch, {
       maxRequests: 1,
@@ -398,10 +361,7 @@ describe('run-scoped research cache', () => {
       maxTotalBytes: 2 * size - 1,
     });
     expect(await reader.read(py('2.0'))).toMatchObject({ status: 'available' });
-    expect(await reader.read(py('1.0'))).toMatchObject({
-      status: 'available',
-      fetched: true,
-    });
+    expect(await reader.read(py('1.0'))).toMatchObject({ status: 'available', fetched: true });
     expect(fetch).toHaveBeenCalledTimes(2);
   });
 
@@ -411,10 +371,7 @@ describe('run-scoped research cache', () => {
     await registryRead(cache, fetch);
     const size = Buffer.byteLength(JSON.stringify(document));
     const reader = upstream(cache, fetch, { maxResponseBytes: size - 1 });
-    expect(await reader.read(target)).toMatchObject({
-      status: 'unavailable',
-      reasons: ['budget'],
-    });
+    expect(await reader.read(target)).toMatchObject({ status: 'unavailable', reasons: ['budget'] });
     expect(fetch).toHaveBeenCalledTimes(1);
   });
 });
@@ -425,31 +382,19 @@ test('an npm lookup past the request share reports budget', async () => {
     async (url) =>
       Response.json(
         url.includes('other')
-          ? {
-              ...document,
-              _id: '@fixture/other@2.0.0',
-              name: other.name,
-              version: other.version,
-            }
+          ? { ...document, _id: '@fixture/other@2.0.0', name: other.name, version: other.version }
           : document,
       ),
     { maxRequests: 1 },
   );
   expect(await f.reader.read(target)).toMatchObject({ status: 'available' });
-  expect(await f.reader.read(other)).toMatchObject({
-    status: 'unavailable',
-    reasons: ['budget'],
-  });
+  expect(await f.reader.read(other)).toMatchObject({ status: 'unavailable', reasons: ['budget'] });
   expect(f.fetch).toHaveBeenCalledTimes(1);
 });
 /** An npm document for the version named in the request path, padded to `size` bytes when given. */
 function versionBody(url: string, size?: number) {
   const version = decodeURIComponent(url.split('/').pop() ?? '');
-  const json = JSON.stringify({
-    ...document,
-    _id: `@fixture/widget@${version}`,
-    version,
-  });
+  const json = JSON.stringify({ ...document, _id: `@fixture/widget@${version}`, version });
   if (size === undefined) return json;
   // Whitespace after the opening brace keeps the document valid JSON at the exact size.
   return `{${' '.repeat(size - json.length)}${json.slice(1)}`;
@@ -465,9 +410,7 @@ test('upstream reader spends exactly its request share and refuses the request p
   const share = EVIDENCE_READ_ALLOCATION.upstream.maxRequests;
   const f = requestShareBudget(share);
   for (let i = 0; i < share; i++)
-    expect(await f.reader.read(versionTarget(`1.0.${i}`))).toMatchObject({
-      status: 'available',
-    });
+    expect(await f.reader.read(versionTarget(`1.0.${i}`))).toMatchObject({ status: 'available' });
   expect(await f.reader.read(versionTarget(`1.0.${share}`))).toMatchObject({
     status: 'unavailable',
     reasons: ['budget'],
@@ -479,9 +422,7 @@ test('signals upstream reader spends exactly its request share and refuses the r
   const share = EVIDENCE_READ_ALLOCATION.signals.readers.upstream.maxRequests;
   const f = requestShareBudget(share);
   for (let i = 0; i < share; i++)
-    expect(await f.reader.read(versionTarget(`1.0.${i}`))).toMatchObject({
-      status: 'available',
-    });
+    expect(await f.reader.read(versionTarget(`1.0.${i}`))).toMatchObject({ status: 'available' });
   expect(await f.reader.read(versionTarget(`1.0.${share}`))).toMatchObject({
     status: 'unavailable',
     reasons: ['budget'],
@@ -506,9 +447,7 @@ test('upstream reader accepts a byte share exactly and refuses the byte past it'
   const total = EVIDENCE_READ_ALLOCATION.upstream.maxTotalBytes;
   const exact = byteShareReader(total, 0);
   await exact.reader.read(versionTarget('1.0.0'));
-  expect(await exact.reader.read(versionTarget('1.0.1'))).toMatchObject({
-    status: 'available',
-  });
+  expect(await exact.reader.read(versionTarget('1.0.1'))).toMatchObject({ status: 'available' });
   exact.reader.close();
 
   const over = byteShareReader(total, 1);
@@ -523,9 +462,7 @@ test('signals upstream reader accepts a byte share exactly and refuses the byte 
   const total = EVIDENCE_READ_ALLOCATION.signals.readers.upstream.maxTotalBytes;
   const exact = byteShareReader(total, 0);
   await exact.reader.read(versionTarget('1.0.0'));
-  expect(await exact.reader.read(versionTarget('1.0.1'))).toMatchObject({
-    status: 'available',
-  });
+  expect(await exact.reader.read(versionTarget('1.0.1'))).toMatchObject({ status: 'available' });
   exact.reader.close();
 
   const over = byteShareReader(total, 1);
@@ -556,10 +493,7 @@ describe('waiting for a GitHub rate-limit reset', () => {
       windowMs: limit('research.githubQuota.windowMs'),
     });
     const admitted: string[] = [];
-    const spied = {
-      ...quota,
-      admit: (url: string) => (admitted.push(url), quota.admit(url)),
-    };
+    const spied = { ...quota, admit: (url: string) => (admitted.push(url), quota.admit(url)) };
     let call = 0;
     const fetch = vi.fn(async () =>
       (responses[Math.min(call++, responses.length - 1)] ?? (() => Response.json([])))(),
@@ -591,9 +525,7 @@ describe('waiting for a GitHub rate-limit reset', () => {
 
   test('a retry time that does not fit ends rate_limit at once and records the time', async () => {
     const f = waiting([() => limited('20')]);
-    expect(await f.reader.read(releases(1))).toMatchObject({
-      reasons: ['rate_limit'],
-    });
+    expect(await f.reader.read(releases(1))).toMatchObject({ reasons: ['rate_limit'] });
     expect(f.fetch).toHaveBeenCalledTimes(1);
     expect(f.quota.latestRetryAt()).toBe(WALL + 20_000);
     // A reader that stopped without waiting sends no more GitHub requests.
@@ -661,13 +593,7 @@ test('a GitHub rate limit when no time is left ends rate_limit with its retry ti
   };
   const fetch = vi.fn(
     async () =>
-      ({
-        status: 429,
-        headers,
-        redirected: false,
-        url: '',
-        body: null,
-      }) as unknown as Response,
+      ({ status: 429, headers, redirected: false, url: '', body: null }) as unknown as Response,
   );
   const opened = createUpstreamReader(limits, { fetch, now: () => now, quota });
   if (opened.kind !== 'ready') throw new Error('reader');
@@ -712,12 +638,7 @@ describe('waiting is bounded per reader, by time, by abort, and to GitHub', () =
     );
     const opened = createUpstreamReader(
       { ...limits, ...options.overrides },
-      {
-        fetch,
-        now: () => 0,
-        quota,
-        ...(options.signal ? { signal: options.signal } : {}),
-      },
+      { fetch, now: () => 0, quota, ...(options.signal ? { signal: options.signal } : {}) },
     );
     if (opened.kind !== 'ready') throw new Error('reader');
     return { reader: opened.reader, fetch, quota };
@@ -725,9 +646,7 @@ describe('waiting is bounded per reader, by time, by abort, and to GitHub', () =
 
   test('a later read in the same reader does not wait a second time', async () => {
     const f = reader([() => limited('0'), () => Response.json([]), () => limited('0')]);
-    expect(await settled(() => f.reader.read(releases(1)))).toMatchObject({
-      status: 'available',
-    });
+    expect(await settled(() => f.reader.read(releases(1)))).toMatchObject({ status: 'available' });
     expect(f.quota.latestRetryAt()).toBeNull();
     expect(await settled(() => f.reader.read(releases(2)))).toMatchObject({
       reasons: ['rate_limit'],
@@ -742,9 +661,7 @@ describe('waiting is bounded per reader, by time, by abort, and to GitHub', () =
       vi.useFakeTimers();
       try {
         const run = new AbortController();
-        const f = reader([() => limited('5'), () => Response.json([])], {
-          signal: run.signal,
-        });
+        const f = reader([() => limited('5'), () => Response.json([])], { signal: run.signal });
         let settled = false;
         const read = f.reader.read(releases(1)).finally(() => (settled = true));
         await vi.advanceTimersByTimeAsync(100);
@@ -764,17 +681,13 @@ describe('waiting is bounded per reader, by time, by abort, and to GitHub', () =
     const overrides = { requestTimeoutMs: 2000, totalTimeoutMs: 10_000 };
     // 9 s plus a 2 s request is past the 10 s left: no wait.
     const late = reader([() => limited('9')], { overrides });
-    expect(await late.reader.read(releases(1))).toMatchObject({
-      reasons: ['rate_limit'],
-    });
+    expect(await late.reader.read(releases(1))).toMatchObject({ reasons: ['rate_limit'] });
     expect(late.fetch).toHaveBeenCalledTimes(1);
     expect(late.quota.latestRetryAt()).toBe(WALL + 9000);
     // 7 s plus 2 s fits.
     vi.useFakeTimers();
     try {
-      const fits = reader([() => limited('7'), () => Response.json([])], {
-        overrides,
-      });
+      const fits = reader([() => limited('7'), () => Response.json([])], { overrides });
       const read = fits.reader.read(releases(1));
       await vi.advanceTimersByTimeAsync(7000 + limit('research.githubQuota.retryMarginMs'));
       expect(await read).toMatchObject({ status: 'available' });
@@ -786,42 +699,29 @@ describe('waiting is bounded per reader, by time, by abort, and to GitHub', () =
 
   test('a registry rate limit never waits or records a retry time', async () => {
     const f = reader([() => limited('0')]);
-    expect(await f.reader.read(target)).toMatchObject({
-      reasons: ['rate_limit'],
-    });
+    expect(await f.reader.read(target)).toMatchObject({ reasons: ['rate_limit'] });
     expect(f.fetch).toHaveBeenCalledTimes(1);
     expect(f.quota.latestRetryAt()).toBeNull();
   });
 });
 
 test('a value with too many entries stops the reader on that read; a too-deep one fails alone', async () => {
-  const wide = {
-    full_name: 'fixture/a',
-    items: Array.from({ length: 40 }, (_, i) => i),
-  };
+  const wide = { full_name: 'fixture/a', items: Array.from({ length: 40 }, (_, i) => i) };
   let deep: unknown = 0;
   for (let i = 0; i < 40; i++) deep = { next: deep };
   const read = (body: unknown, overrides: object) => {
     const { reader, fetch } = setup(async () => Response.json(body), overrides);
     return { reader, fetch };
   };
-  const repository = {
-    kind: 'github',
-    repository: 'fixture/a',
-    resource: 'repository',
-  };
+  const repository = { kind: 'github', repository: 'fixture/a', resource: 'repository' };
   const oversized = read(wide, { maxJsonEntries: 30 });
-  expect(await oversized.reader.read(repository)).toMatchObject({
-    reasons: ['budget'],
-  });
+  expect(await oversized.reader.read(repository)).toMatchObject({ reasons: ['budget'] });
   expect(oversized.reader.stopped?.()).toBe('budget');
   expect(oversized.reader.stopLimit?.()).toBe('maxJsonEntries');
   oversized.reader.close();
 
   const tooDeep = read({ full_name: 'fixture/a', deep }, {});
-  expect(await tooDeep.reader.read(repository)).toMatchObject({
-    status: 'unavailable',
-  });
+  expect(await tooDeep.reader.read(repository)).toMatchObject({ status: 'unavailable' });
   expect(tooDeep.reader.stopped?.()).toBeNull();
   expect(tooDeep.reader.stopLimit?.()).toBeNull();
   tooDeep.reader.close();
@@ -841,11 +741,7 @@ describe('the stop limit names which cumulative limit stopped the reader (#431)'
   const version = (v: string) => ({ ...target, version: v });
   const doc = async (url: string) => {
     const v = decodeURIComponent(new URL(url).pathname.split('/').at(-1)!);
-    return Response.json({
-      ...document,
-      _id: target.name + '@' + v,
-      version: v,
-    });
+    return Response.json({ ...document, _id: target.name + '@' + v, version: v });
   };
   test.each([
     ['maxRequests', { maxRequests: 1 }, repo, [repository('a'), repository('b')]],
@@ -891,6 +787,17 @@ describe('batched tag existence (S2 Batched Tag Existence Amendment)', () => {
       wallNow: () => WALL,
       windowMs: limit('research.githubQuota.windowMs'),
     });
+    /** Every URL the quota guard was asked to admit, count, or observe. */
+    const guarded: string[] = [];
+    const spied = {
+      ...quota,
+      admit: (url: string) => (guarded.push(url), quota.admit(url)),
+      started: (url: string) => (guarded.push(url), quota.started(url)),
+      observe: (url: string, response: Response) => (
+        guarded.push(url),
+        quota.observe(url, response)
+      ),
+    };
     const fetch = vi.fn(async (url: string, init: RequestInit) => {
       if (url !== GITHUB_GRAPHQL_URL) return Response.json({ full_name: 'fixture/widget' });
       expect(init.method).toBe('POST');
@@ -903,13 +810,13 @@ describe('batched tag existence (S2 Batched Tag Existence Amendment)', () => {
       {
         fetch,
         now: () => 0,
-        quota,
+        quota: spied,
         githubToken: options.token ?? true,
         ...(options.cache ? { cache: options.cache } : {}),
       },
     );
     if (opened.kind !== 'ready') throw new Error('reader');
-    return { reader: opened.reader, fetch, sent, quota };
+    return { reader: opened.reader, fetch, sent, quota, guarded };
   }
   const fixture = (name: string, init?: ResponseInit) => () => Response.json(responses[name], init);
   const restRead = {
@@ -991,6 +898,19 @@ describe('batched tag existence (S2 Batched Tag Existence Amendment)', () => {
     expect(await f.reader.tagExistence!(pair)).toEqual(['unknown', 'unknown']);
   });
 
+  test.each(['errorsObject', 'errorsNull', 'emptyErrorPath', 'numericErrorPath'])(
+    'malformed errors (%s) make every answer unknown',
+    async (name) => {
+      const f = existence(fixture(name));
+      expect(await f.reader.tagExistence!(pair)).toEqual(['unknown', 'unknown']);
+    },
+  );
+
+  test('a repository without a ref field is unknown, not absent', async () => {
+    const f = existence(fixture('missingRef'));
+    expect(await f.reader.tagExistence!(pair)).toEqual(['unknown', 'absent']);
+  });
+
   test('a null repository is unknown, not absent', async () => {
     const f = existence(fixture('nullRepository'));
     expect(await f.reader.tagExistence!(pair)).toEqual(['unknown', 'absent']);
@@ -1045,6 +965,34 @@ describe('batched tag existence (S2 Batched Tag Existence Amendment)', () => {
     });
     expect(await f.reader.tagExistence!([widget('v1.0.1')])).toEqual(['unknown']);
     expect(f.fetch).toHaveBeenCalledTimes(1);
+  });
+
+  test('a short secondary-limit retry gets REST’s one wait, then resends and unblocks REST', async () => {
+    const limited = fixture('secondaryLimitBody', { status: 429, headers: { 'retry-after': '1' } });
+    let calls = 0;
+    const answered = fixture('absentAndPresent');
+    const f = existence(() => (calls++ === 0 ? limited() : answered()));
+    expect(await settled(() => f.reader.tagExistence!(pair))).toEqual(['absent', 'present']);
+    expect(f.sent).toHaveLength(2);
+    expect(f.quota.latestRetryAt()).toBeNull();
+    expect(await f.reader.read(restRead)).toMatchObject({ status: 'available', fetched: true });
+    // The reader's one wait is spent: a second secondary limit stops at once.
+    calls = 0;
+    expect(await settled(() => f.reader.tagExistence!([widget('v2')]))).toEqual(['unknown']);
+    expect(f.sent).toHaveLength(3);
+    expect(await f.reader.read(restRead)).toMatchObject({
+      fetched: false,
+      reasons: ['rate_limit'],
+    });
+  });
+
+  test('GraphQL never reaches the REST quota guard', async () => {
+    const f = existence(fixture('absentAndPresent'));
+    expect(await f.reader.tagExistence!(pair)).toEqual(['absent', 'present']);
+    expect(f.guarded).toEqual([]);
+    await f.reader.read(restRead);
+    expect(f.guarded).toContain('https://api.github.com/repos/fixture/widget');
+    expect(f.guarded).not.toContain(GITHUB_GRAPHQL_URL);
   });
 
   test('a secondary limit records its retry time', async () => {
@@ -1162,6 +1110,13 @@ describe('batched tag existence (S2 Batched Tag Existence Amendment)', () => {
         }),
     ],
     ['a non-JSON body', () => new Response('<html>', { headers: { 'content-type': 'text/html' } })],
+    [
+      'valid JSON served as text/plain',
+      () =>
+        new Response(JSON.stringify(responses.absentAndPresent), {
+          headers: { 'content-type': 'text/plain' },
+        }),
+    ],
   ])('%s makes every answer unknown', async (_, answer) => {
     const f = existence(answer);
     expect(await f.reader.tagExistence!(pair)).toEqual(['unknown', 'unknown']);
