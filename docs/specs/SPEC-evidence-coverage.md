@@ -683,3 +683,92 @@ orders them before B12.
 
 - Resolved 2026-11-21: release subjects cannot be counted at the start of the
   upstream stage, so B11 counts members only (A1.2).
+
+## Quota Counter Amendment
+
+**Status: draft, awaiting approval
+([#447](https://github.com/andrewpucci/dependency-update-advisor/issues/447)).**
+It refines A2.2 and A3.1 of the Scaled-Share Function Amendment. The rest of
+A2 and A3 is unchanged.
+
+### Why
+
+The #438 live trace on 2026-11-26 (personal token, PR #276 corpus, recorded
+in [PR #445](https://github.com/andrewpucci/dependency-update-advisor/pull/445))
+found two `core` counters on one token. Advisory and signals reads reported
+one counter; every other read reported the other, whose reset was about
+770 s later. Both named limit 5000 and resource `core`, and their `used`
+counts differed. `gh api rate_limit` showed only the second counter.
+
+A2.2 tracks one window: a later reset replaces the estimate, and an earlier
+reset is ignored. The guard therefore follows whichever counter has the later
+reset. When that counter has more remaining than the other, the estimate is
+too high, and research can spend quota that isn't there.
+
+### Q1. One estimate per counter
+
+This replaces A2.2's window rule.
+
+1. **Counters.** The guard identifies a counter by the reset time a valid
+   response names (A2.3). Each distinct reset still in the future is a live
+   counter.
+2. **Per-counter estimate.** For each live counter the guard keeps the
+   lowest valid `x-ratelimit-remaining` seen on a live research response
+   naming that reset, less one for every GitHub research request started
+   after that response arrived. A response cannot say in advance which
+   counter it will draw from, so every started request is charged to every
+   live counter.
+3. **Estimate.** The guard's estimate is the lowest per-counter estimate. A
+   response naming a new reset adds a counter. It never replaces or lowers
+   another counter's reading, and it never raises the estimate.
+4. **Expiry.** A counter is cleared once its reset time passes. With no live
+   counter, the estimate is cleared until the next valid header, as A2.2
+   says.
+5. **Bound.** There is one counter per distinct reset in a valid response,
+   so the number of counters is at most the number of live research
+   responses, which the research shares already bound. No separate limit is
+   needed.
+6. **Unchanged.** A2.2's other rules stand: cached responses are never
+   read, a missing or invalid header leaves the estimate unchanged, and
+   with no estimate only the per-stage shares bound the run.
+
+A late response from a counter that has already reset, whose old reset still
+looks future on a runner clock that is behind GitHub's, adds a counter with a
+low reading. That lowers the estimate until its reset passes, which errs on
+the side of refusing.
+
+### Q2. Retry time
+
+This replaces A3.1's first sentence. For a guard refusal, the retry time is
+the reset time of the counter that gives the lowest estimate. When that
+counter clears, the next-lowest counter's estimate applies, so a wait can
+end in another refusal. A3.2's limit on waits per reader then ends it
+`rate_limit`.
+
+### Q3. Measurement
+
+The demand recorder applies the same rules (A2.8). Its `lastRemaining` is the
+lowest per-counter value over all GitHub API responses, and it reports the
+number of distinct counters seen.
+
+### Quota counter verification
+
+- A fixture with two counters reporting interleaved readings with different
+  resets shows that the estimate never exceeds the lower counter's. It holds
+  whichever counter has the later reset.
+- When the lower counter's reset passes, the estimate moves to the other
+  counter's, less the requests started since that counter's reading.
+- A refusal's retry time is the binding counter's reset.
+- Named mutations fail those checks:
+  - letting a later reset replace an earlier live counter;
+  - ignoring a reading that names an earlier, still-future reset;
+  - charging a started request only to the newest counter;
+  - keeping a counter after its reset passes;
+  - taking the retry time from the latest reset instead of the binding
+    counter's.
+
+### Quota counter open questions
+
+- Does the workflow `GITHUB_TOKEN` show the same split? The trace used a
+  personal token. A no-write R1 run with `MEASURE_QUOTA_TRACE=1` would show
+  it. The rule above is safe either way.
