@@ -1306,9 +1306,11 @@ test('checks ownership every pipeline.ownershipWatchMs while a request is pendin
     });
     running.catch(() => undefined);
     await pendingFetch;
+    // Ownership moves before any check runs, so the first check is the one that aborts. A check
+    // at any shorter interval, including one that divides the register interval, aborts too early.
+    await claims.claim([101, 301, 402, 1, 42, NEXT]);
     await vi.advanceTimersByTimeAsync(interval - 1);
     expect(signal?.aborted).toBe(false);
-    await claims.claim([101, 301, 402, 1, 42, NEXT]);
     await vi.advanceTimersByTimeAsync(1);
     expect(signal?.aborted).toBe(true);
   } finally {

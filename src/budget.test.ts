@@ -4,14 +4,17 @@ import {
   COLLECTION_REGISTRY_SHARE_PARAMETERS,
   EVIDENCE_READ_ALLOCATION,
   EVIDENCE_READ_ENVELOPE,
+  FRESHNESS_ALLOWANCE_MS,
   JOB_BUDGET_MS,
   JOB_WINDOW_MS,
   PRE_STARTUP_ALLOWANCE_MS,
+  RESEARCH_CACHE_LIMITS,
   RESEARCH_SHARE_PARAMETERS,
   researchShareUnits,
   researchShares,
 } from './budget.js';
 import { REGISTER } from './limits.js';
+import { registered, registerShareParameters } from '../tests/parity/shares.js';
 
 const MiB = 1024 * 1024;
 
@@ -433,4 +436,50 @@ test('reads every scaled-share base and rate from its own register entry', () =>
           : ['added', 'direct', 'removed', 'transitive'],
       );
     }
+});
+
+/** Every leaf of a limits object, as `prefix.path` and its value. */
+function leaves(value: unknown, prefix: string): [string, unknown][] {
+  if (typeof value !== 'object' || value === null) return [[prefix, value]];
+  return Object.entries(value).flatMap(([key, child]) => leaves(child, `${prefix}.${key}`));
+}
+
+test('wires every budget constant, share ceiling, and computed share to its register entry', () => {
+  // Each value's path names its register id, and every register id under these prefixes is wired.
+  const wired = [
+    ...leaves(EVIDENCE_READ_ENVELOPE, 'evidence.envelope'),
+    ...leaves(EVIDENCE_READ_ALLOCATION, 'evidence.allocation'),
+    ...leaves(RESEARCH_CACHE_LIMITS, 'research.cache'),
+  ];
+  for (const [id, value] of wired) expect(value, id).toBe(registered(id));
+  const prefixes = ['evidence.envelope.', 'evidence.allocation.', 'research.cache.'];
+  expect(wired.map(([id]) => id).sort()).toEqual(
+    [...REGISTER.keys()].filter((id) => prefixes.some((prefix) => id.startsWith(prefix))).sort(),
+  );
+  expect([JOB_BUDGET_MS, PRE_STARTUP_ALLOWANCE_MS, JOB_WINDOW_MS, FRESHNESS_ALLOWANCE_MS]).toEqual(
+    ['job.budget', 'job.preStartupAllowance', 'job.window', 'job.freshnessAllowance'].map(
+      registered,
+    ),
+  );
+
+  // The scaled shares: their ceilings are the allocation entries, and what the share function
+  // computes from the production parameters is what it computes from the register's.
+  const fromRegister = registerShareParameters();
+  expect(RESEARCH_SHARE_PARAMETERS).toEqual(fromRegister);
+  for (const units of [NO_UNITS, ONE_UNITS, R1_UNITS, R276_UNITS])
+    expect(researchShares(units)).toEqual(researchShares(units, fromRegister));
+  // The byte floor is one full response at the register's envelope response cap.
+  const floor = researchShares(NO_UNITS, testParameters(0, 100 * MiB, { role: 0, eligible: 0 }));
+  expect(floor.upstream.maxTotalBytes).toBe(registered('evidence.envelope.maxResponseBytes'));
+
+  const registryShare = {
+    base: registered('collection.share.registry.requests.base'),
+    ceiling: registered('evidence.allocation.registry.maxRequests'),
+    rates: { npm: registered('collection.share.registry.requests.rate.npm') },
+  };
+  expect(COLLECTION_REGISTRY_SHARE_PARAMETERS).toEqual(registryShare);
+  for (const count of [0, 1, 105, 100_000])
+    expect(collectionRegistryRequests(count), String(count)).toBe(
+      collectionRegistryRequests(count, registryShare),
+    );
 });

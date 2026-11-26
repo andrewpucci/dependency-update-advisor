@@ -1209,7 +1209,10 @@ test('the session refuses the read that passes evidence.allocation.session.maxTo
   const initial = Buffer.byteLength(JSON.stringify(pr()));
   const empty = Buffer.byteLength(JSON.stringify([{ pad: '' }]));
   const atLimit = JSON.stringify([{ pad: 'x'.repeat(total - initial - empty) }]);
-  const f = fixture([json(pr()), new Response(atLimit), json([])], {
+  // The next read's body is a single byte, so it passes the total by exactly one.
+  const onePast = '0';
+  expect(Buffer.byteLength(onePast)).toBe(1);
+  const f = fixture([json(pr()), new Response(atLimit), new Response(onePast)], {
     maxResponseBytes: total,
     maxTotalBytes: total,
     maxRetainedBytes: 2 * total,

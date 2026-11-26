@@ -1,4 +1,5 @@
-import { expect, test } from 'vite-plus/test';
+import { expect, test, vi } from 'vite-plus/test';
+import * as limitsModule from '../limits.js';
 import {
   AdvisoryFailure,
   createAdvisoryReader,
@@ -16,6 +17,12 @@ import {
   collectAdvisoryNpm,
   collectMixedAdvisoryInventories,
 } from '../../tests/parity/advisories.js';
+
+// Wraps the register lookup, so a test can see which limits validation read before it stopped.
+vi.mock('../limits.js', async (original) => {
+  const actual = await original<typeof import('../limits.js')>();
+  return { ...actual, limit: vi.fn(actual.limit) };
+});
 
 export const advisoryLimits = {
   maxRequests: 20,
@@ -786,11 +793,26 @@ test('accepts exactly advisories.maxLookups public identities and refuses one mo
     publicIdentities: identities,
   };
   expect(identities).toHaveLength(limit('advisories.maxLookups'));
-  expect(prepareAdvisoryInput(atLimit).ok).toBe(true);
-  // A 257th lookup must repeat a (member, side) pair, since packet.changes caps the changes at 128;
-  // the length check refuses it before the pair check does.
+  // The register limits validation reads, in order: an accepted input reads the lookup cap for the
+  // public identity length check, then again for the action versions, and more limits after that.
+  const limitsRead = (candidate: typeof atLimit) => {
+    vi.mocked(limitsModule.limit).mockClear();
+    const ok = prepareAdvisoryInput({ ...candidate, actionVersions: [] }).ok;
+    return { ok, read: vi.mocked(limitsModule.limit).mock.calls.map(([id]) => id) };
+  };
+  const accepted = limitsRead(atLimit);
+  expect(accepted.ok).toBe(true);
+  const lengthCheck = accepted.read.indexOf('advisories.maxLookups');
+  expect(accepted.read[lengthCheck + 1]).toBe('advisories.maxLookups');
+  expect(accepted.read.length).toBeGreaterThan(lengthCheck + 2);
+  // A lookup past the cap must repeat a (member, side) pair, since packet.changes caps the changes,
+  // so the later uniqueness check would refuse it too. Validation stopping right after it reads the
+  // cap for the length check shows that the length check refused it, before any later check ran.
   const onePast = { ...atLimit, publicIdentities: [...identities, identities[0]] };
-  expect(prepareAdvisoryInput(onePast).ok).toBe(false);
+  expect(limitsRead(onePast)).toEqual({
+    ok: false,
+    read: accepted.read.slice(0, lengthCheck + 1),
+  });
 });
 
 /** The packet fields of an enrichment, with batched source text read as the singleton's. */

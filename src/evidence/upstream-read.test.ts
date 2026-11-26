@@ -398,35 +398,39 @@ function versionBody(url: string, size?: number) {
   return `{${' '.repeat(size - json.length)}${json.slice(1)}`;
 }
 const versionTarget = (version: string) => ({ ...target, version });
-function requestShareBudget(share: number) {
-  const f = setup(async (url) => Response.json(JSON.parse(versionBody(url))), {
-    maxRequests: share,
+/**
+ * GitHub repository lookups, which upstream dispatches itself. An npm lookup would go through the
+ * nested registry reader, whose own request count (the same share) would refuse it first.
+ */
+const repositoryTarget = (index: number) => ({
+  kind: 'github',
+  repository: `fixture/repo-${index}`,
+  resource: 'repository',
+});
+async function expectRequestShare(share: number) {
+  const { reader, fetch } = setup(
+    async (url) =>
+      Response.json({ full_name: new URL(url).pathname.split('/').slice(2, 4).join('/') }),
+    { maxRequests: share },
+  );
+  for (let i = 0; i < share; i++)
+    expect(await reader.read(repositoryTarget(i)), String(i)).toMatchObject({
+      status: 'available',
+    });
+  expect(reader.stopLimit?.()).toBeNull();
+  expect(await reader.read(repositoryTarget(share))).toMatchObject({
+    status: 'unavailable',
+    reasons: ['budget'],
   });
-  return f;
+  expect(fetch).toHaveBeenCalledTimes(share);
+  expect(reader.stopLimit?.()).toBe('maxRequests');
+  reader.close();
 }
 test('upstream reader spends exactly its request share and refuses the request past it', async () => {
-  const share = EVIDENCE_READ_ALLOCATION.upstream.maxRequests;
-  const f = requestShareBudget(share);
-  for (let i = 0; i < share; i++)
-    expect(await f.reader.read(versionTarget(`1.0.${i}`))).toMatchObject({ status: 'available' });
-  expect(await f.reader.read(versionTarget(`1.0.${share}`))).toMatchObject({
-    status: 'unavailable',
-    reasons: ['budget'],
-  });
-  expect(f.fetch).toHaveBeenCalledTimes(share);
-  f.reader.close();
+  await expectRequestShare(EVIDENCE_READ_ALLOCATION.upstream.maxRequests);
 });
 test('signals upstream reader spends exactly its request share and refuses the request past it', async () => {
-  const share = EVIDENCE_READ_ALLOCATION.signals.readers.upstream.maxRequests;
-  const f = requestShareBudget(share);
-  for (let i = 0; i < share; i++)
-    expect(await f.reader.read(versionTarget(`1.0.${i}`))).toMatchObject({ status: 'available' });
-  expect(await f.reader.read(versionTarget(`1.0.${share}`))).toMatchObject({
-    status: 'unavailable',
-    reasons: ['budget'],
-  });
-  expect(f.fetch).toHaveBeenCalledTimes(share);
-  f.reader.close();
+  await expectRequestShare(EVIDENCE_READ_ALLOCATION.signals.readers.upstream.maxRequests);
 });
 /** Two npm reads whose bodies total `total + overflow` bytes; each body alone fits the share. */
 function byteShareReader(total: number, overflow: number) {
@@ -446,6 +450,7 @@ test('upstream reader accepts a byte share exactly and refuses the byte past it'
   const exact = byteShareReader(total, 0);
   await exact.reader.read(versionTarget('1.0.0'));
   expect(await exact.reader.read(versionTarget('1.0.1'))).toMatchObject({ status: 'available' });
+  expect(exact.reader.stopLimit?.()).toBeNull();
   exact.reader.close();
 
   const over = byteShareReader(total, 1);
@@ -454,6 +459,8 @@ test('upstream reader accepts a byte share exactly and refuses the byte past it'
     status: 'unavailable',
     reasons: ['budget'],
   });
+  // Upstream's own byte count refused the read, not the nested registry reader's.
+  expect(over.reader.stopLimit?.()).toBe('maxTotalBytes');
   over.reader.close();
 });
 test('signals upstream reader accepts a byte share exactly and refuses the byte past it', async () => {
@@ -461,6 +468,7 @@ test('signals upstream reader accepts a byte share exactly and refuses the byte 
   const exact = byteShareReader(total, 0);
   await exact.reader.read(versionTarget('1.0.0'));
   expect(await exact.reader.read(versionTarget('1.0.1'))).toMatchObject({ status: 'available' });
+  expect(exact.reader.stopLimit?.()).toBeNull();
   exact.reader.close();
 
   const over = byteShareReader(total, 1);
@@ -469,6 +477,8 @@ test('signals upstream reader accepts a byte share exactly and refuses the byte 
     status: 'unavailable',
     reasons: ['budget'],
   });
+  // Upstream's own byte count refused the read, not the nested registry reader's.
+  expect(over.reader.stopLimit?.()).toBe('maxTotalBytes');
   over.reader.close();
 });
 
