@@ -6,9 +6,11 @@
  * Amendment D3).
  */
 
+import { minVersion, satisfies, validRange } from 'semver';
+import { canonicalName, type AdvisoryTarget } from '../evidence/advisory-read.js';
 import { HTTP_STATUS } from '../format.js';
 
-export type Ecosystem = 'npm' | 'pip' | 'actions';
+export type Ecosystem = AdvisoryTarget['ecosystem'];
 
 const FOUND = String(HTTP_STATUS.ok);
 const MISSING = String(HTTP_STATUS.notFound);
@@ -34,12 +36,6 @@ export function advisoryNames(value: unknown): AdvisoryNames | null {
     packages.push({ ecosystem: pkg.ecosystem, name: pkg.name });
   }
   return { id: record.ghsa_id, packages };
-}
-
-/** The reader's name comparison (S1 Package Name Form Amendment item 6). */
-export function canonicalName(ecosystem: Ecosystem, name: string): string {
-  if (ecosystem === 'pip') return name.toLowerCase().replace(/[-_.]+/gu, '-');
-  return ecosystem === 'actions' ? name.toLowerCase() : name;
 }
 
 const namesIn = (record: AdvisoryNames, ecosystem: Ecosystem): string[] =>
@@ -75,6 +71,46 @@ export function advisoryBatchCovers(
 }
 
 /**
+ * A batch answer the per-target queries lacked: the reverse direction of a coverage check.
+ * `attributable`: a record naming exactly one batched package, which Batched Lookup Amendment
+ * item 5 would attribute to it with no singleton query. `shared`: a record naming two or more,
+ * whose singleton queries decide. `form`: a stored form per-target discovery did not find.
+ */
+export type ExtraMatch = Readonly<{
+  target: string;
+  item: string;
+  kind: 'attributable' | 'shared' | 'form';
+}>;
+
+/**
+ * Every record a versioned npm batch returns for a batched package that none of that package's
+ * singleton queries returned. `ids` is null for a target whose singleton did not complete; a
+ * package with any such target has no known answer and is not judged. Names are compared exactly,
+ * in the batch's ecosystem, as the clearing and attribution rules do (items 4 to 6).
+ */
+export function advisoryBatchExtras(
+  ecosystem: Ecosystem,
+  targets: readonly Readonly<{ name: string; ids: readonly string[] | null }>[],
+  batch: readonly AdvisoryNames[],
+): ExtraMatch[] {
+  const expected = new Map<string, Set<string> | null>();
+  for (const { name, ids } of targets) {
+    const prior = expected.get(name);
+    if (prior === null) continue;
+    expected.set(name, ids === null ? null : new Set([...(prior ?? []), ...ids]));
+  }
+  const extras: ExtraMatch[] = [];
+  for (const record of batch) {
+    const named = [...new Set(namesIn(record, ecosystem).filter((n) => expected.has(n)))];
+    const kind = named.length === 1 ? 'attributable' : 'shared';
+    for (const name of named)
+      if (expected.get(name)?.has(record.id) === false)
+        extras.push({ target: name, item: record.id, kind });
+  }
+  return extras;
+}
+
+/**
  * Every stored form per-target discovery found that its discovery batch misses. A batch record
  * names a target when one of its entries in the query ecosystem matches the target canonically;
  * each form per-target discovery found must appear, spelled exactly, among the names the batch's
@@ -97,6 +133,29 @@ export function discoveryBatchCovers(
       if (!named.has(form)) gaps.push({ target: name, item: form, kind: 'absent' });
   }
   return gaps;
+}
+
+/**
+ * Every stored form a discovery batch gives a target that its per-target discovery did not find.
+ * The batch's forms feed the versioned query, so an extra form changes what that query asks.
+ */
+export function discoveryBatchExtras(
+  ecosystem: Ecosystem,
+  perTarget: readonly Readonly<{ name: string; forms: readonly string[] }>[],
+  batch: readonly AdvisoryNames[],
+): ExtraMatch[] {
+  const extras: ExtraMatch[] = [];
+  for (const { name, forms } of perTarget) {
+    const target = canonicalName(ecosystem, name);
+    const named = new Set(
+      batch.flatMap((record) =>
+        namesIn(record, ecosystem).filter((n) => canonicalName(ecosystem, n) === target),
+      ),
+    );
+    for (const form of named)
+      if (!forms.includes(form)) extras.push({ target: name, item: form, kind: 'form' });
+  }
+  return extras;
 }
 
 /**
@@ -130,16 +189,25 @@ export function graphqlAnswers(
   aliases: readonly Readonly<{ alias: string; repository: string }>[],
 ): Map<string, GraphqlAnswer> {
   const answers = new Map<string, GraphqlAnswer>(aliases.map(({ alias }) => [alias, 'error']));
-  const body = response as { data?: unknown; errors?: unknown } | null;
-  const errors = Array.isArray(body?.errors) ? (body.errors as unknown[]) : [];
-  const paths = errors.map((e) => (e as { path?: unknown } | null)?.path);
-  if (!body?.data || typeof body.data !== 'object' || paths.some((p) => !Array.isArray(p)))
-    return answers;
-  const named = new Set(paths.map((p) => String((p as unknown[])[0])));
-  const data = body.data as Record<string, unknown>;
+  if (!graphqlAnswered(response)) return answers;
+  const body = response as { data: Record<string, unknown>; errors?: unknown };
+  const errors = Array.isArray(body.errors) ? (body.errors as { path: unknown[] }[]) : [];
+  const named = new Set(errors.map((e) => String(e.path[0])));
+  const data = body.data;
   for (const { alias, repository } of aliases)
     answers.set(alias, named.has(alias) ? 'error' : aliasAnswer(data[alias], repository));
   return answers;
+}
+
+/**
+ * Whether a GraphQL response answers per alias at all: it has a `data` object and every error has
+ * a path. Otherwise the whole query failed (item 4) and no alias has an answer to compare.
+ */
+export function graphqlAnswered(response: unknown): boolean {
+  const body = response as { data?: unknown; errors?: unknown } | null;
+  if (!body?.data || typeof body.data !== 'object') return false;
+  const errors = Array.isArray(body.errors) ? (body.errors as unknown[]) : [];
+  return errors.every((e) => Array.isArray((e as { path?: unknown } | null)?.path));
 }
 
 function aliasAnswer(value: unknown, repository: string): GraphqlAnswer {
@@ -152,6 +220,7 @@ function aliasAnswer(value: unknown, repository: string): GraphqlAnswer {
 
 export type TagAgreement =
   | 'agree'
+  | 'rest-conflict'
   | 'rest-found-graphql-null'
   | 'rest-missing-graphql-found'
   | 'graphql-error'
@@ -169,11 +238,71 @@ export function tagAnswersAgree(restStatus: string, graphql: GraphqlAnswer): Tag
   return graphql === 'null' ? 'agree' : 'rest-missing-graphql-found';
 }
 
+/**
+ * The distinct tag candidates, each with every distinct REST status recorded for it, in first-seen
+ * order. C1 records a candidate once per request, so one tag can carry two statuses.
+ */
+export function distinctTags(
+  tags: Iterable<Readonly<{ repository: string; tag: string; status: string }>>,
+): { repository: string; tag: string; statuses: string[] }[] {
+  const byKey = new Map<string, { repository: string; tag: string; statuses: string[] }>();
+  for (const { repository, tag, status } of tags) {
+    const key = JSON.stringify([repository, tag]);
+    const entry = byKey.get(key) ?? { repository, tag, statuses: [] };
+    if (!entry.statuses.includes(status)) entry.statuses.push(status);
+    byKey.set(key, entry);
+  }
+  return [...byKey.values()];
+}
+
+/**
+ * One candidate's agreement over all its REST statuses. Statuses that conflict are reported as
+ * such, never collapsed into one: GraphQL cannot agree with both.
+ */
+export function tagAgreement(statuses: readonly string[], graphql: GraphqlAnswer): TagAgreement {
+  return statuses.length > 1 ? 'rest-conflict' : tagAnswersAgree(statuses[0] ?? '', graphql);
+}
+
+/**
+ * A version inside a GitHub `vulnerable_version_range` (comma-separated npm comparators, such as
+ * `>= 1.0.0, < 1.2.0`), or null when the range does not parse or holds no version.
+ */
+export function versionInRange(range: string): string | null {
+  const comparators = range
+    .split(',')
+    .map((part) => part.trim().replace(/^([<>]=?|=)\s+/u, '$1'))
+    .filter(Boolean);
+  const npmRange = comparators.length ? validRange(comparators.join(' ')) : null;
+  const version = npmRange ? minVersion(npmRange)?.version : null;
+  return version && npmRange && satisfies(version, npmRange) ? version : null;
+}
+
 /** Sizes from `max` down to one, each half the last (rounded down): the probe's batch sizes. */
 export function halvingSizes(max: number): number[] {
   const sizes: number[] = [];
   for (let size = max; size >= 1; size = Math.floor(size / 2)) sizes.push(size);
   return sizes;
+}
+
+/**
+ * Every target split into as few batches of at most `max` as hold them all, with the positives
+ * spread across the batches and placed last in each, so every positive is checked in a batch.
+ */
+export function sweepChunks(
+  rest: readonly string[],
+  positives: readonly string[],
+  max: number,
+): string[][] {
+  const count = Math.ceil((rest.length + positives.length) / max);
+  const tails = Array.from({ length: count }, (): string[] => []);
+  positives.forEach((positive, i) => tails[i % count].push(positive));
+  let next = 0;
+  return tails.map((tail) => {
+    const room = max - tail.length;
+    const head = rest.slice(next, next + room);
+    next += room;
+    return [...head, ...tail];
+  });
 }
 
 /** Thrown when the probe's request budget is spent. */
