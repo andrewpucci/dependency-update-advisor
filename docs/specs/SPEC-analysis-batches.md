@@ -6,6 +6,12 @@ The user's invocation of `as-plan` on the reviewed draft approves it for
 planning under the repository instructions. The user approved the plan and
 `as-build auto` execution on 2026-11-07.
 
+Limit citation amendment (L10,
+[#382](https://github.com/andrewpucci/dependency-update-advisor/issues/382)):
+the user approved this spec's change on 2026-11-26. It cites register
+entries as `limit:<id>` instead of stating their values, with no value
+change.
+
 Review revision accepted by the user, 2026-11-07: a multi-unit `budget`
 preparation failure may be re-prepared as smaller batches without a model
 call. The reviewed revisions are included in the planning approval above.

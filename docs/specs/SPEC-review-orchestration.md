@@ -12,6 +12,12 @@ and [reusable workflow](SPEC-reusable-workflow.md), together with
 and [packet validation](SPEC-review-packet.md), remain authoritative. This
 draft does not select a production claim backend or authorize live publication.
 
+Limit citation amendment (L10,
+[#382](https://github.com/andrewpucci/dependency-update-advisor/issues/382)):
+the user approved this spec's change on 2026-11-26. It cites register
+entries as `limit:<id>` instead of stating their values, with no value
+change.
+
 **Diagnostic amendment, approved for planning 2026-11-11:** The R1 no-write
 rehearsal recorded the intentionally redacted `internal-failure` outcome, but
 that aggregate does not identify a safe investigation boundary. The evidence

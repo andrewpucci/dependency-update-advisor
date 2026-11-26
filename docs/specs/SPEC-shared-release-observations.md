@@ -13,6 +13,12 @@ authorizes the tasks in dependency order, their verification checkpoints, and
 one closing PR; merge, publication, adoption, parity, and cutover remain
 separate gates.
 
+Limit citation amendment (L10,
+[#382](https://github.com/andrewpucci/dependency-update-advisor/issues/382)):
+the user approved this spec's change on 2026-11-26. It cites register
+entries as `limit:<id>` instead of stating their values, with no value
+change.
+
 Confirmed scope decision, 2026-11-09: an orchestrator-owned release-observation
 cache is charged to the existing **Signals: PyPI metadata** allocation
 (`limit:evidence.allocation.signals.readers.metadata.maxRequests` requests and

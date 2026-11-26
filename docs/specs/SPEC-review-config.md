@@ -3,6 +3,12 @@
 Status: approved for planning, 2026-09-23. Module: `review-config` in
 [the capability map](README.md).
 
+Limit citation amendment (L10,
+[#382](https://github.com/andrewpucci/dependency-update-advisor/issues/382)):
+the user approved this spec's change on 2026-11-26. It cites register
+entries as `limit:<id>` instead of stating their values, with no value
+change.
+
 Implementation checkpoint: [C1](SPEC-config-parser.md),
 [C2](SPEC-source-context.md), and [C3](SPEC-advisory-policy.md) are complete
 and merged into `main`. Their evidence links and open integration gates live

@@ -6,6 +6,12 @@ Module: `review-config` in [the capability map](README.md); consumed by
 [W2 review orchestration](SPEC-review-orchestration.md). Contract ID: C4,
 confirmed 2026-11-08.
 
+Limit citation amendment (L10,
+[#382](https://github.com/andrewpucci/dependency-update-advisor/issues/382)):
+the user approved this spec's change on 2026-11-26. It cites register
+entries as `limit:<id>` instead of stating their values, with no value
+change.
+
 ## Objective
 
 Give the npm (N1) and uv (U2) collectors the trusted configured roots their

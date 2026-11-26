@@ -5,6 +5,12 @@ Status: approved for C3 execution, 2026-10-12. Supporting contract for
 [the capability map](README.md), scoped to
 [issue #7: C3](https://github.com/andrewpucci/dependency-update-advisor/issues/7).
 
+Limit citation amendment (L10,
+[#382](https://github.com/andrewpucci/dependency-update-advisor/issues/382)):
+the user approved this spec's change on 2026-11-26. It cites register
+entries as `limit:<id>` instead of stating their values, with no value
+change.
+
 Approval: the user approved this contract and the C3 implementation plan for
 execution on 2026-10-12. The approved
 [configuration module](SPEC-review-config.md) remains authoritative.

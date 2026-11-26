@@ -8,6 +8,12 @@ This supplies evidence to the approved [C3 policy](SPEC-advisory-policy.md);
 it adds no capability-map module or dependency direction. Specification,
 planning, and execution approval remain separate gates.
 
+Limit citation amendment (L10,
+[#382](https://github.com/andrewpucci/dependency-update-advisor/issues/382)):
+the user approved this spec's change on 2026-11-26. It cites register
+entries as `limit:<id>` instead of stating their values, with no value
+change.
+
 Specification approval, 2026-11-07: the user reviewed and updated the draft,
 then invoked `as-plan`. Under the repository approval rule, this approves
 the revised specification for planning, including its removal coverage,

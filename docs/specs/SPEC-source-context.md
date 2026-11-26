@@ -13,6 +13,12 @@ the whole file, and a missing config file skips configured-path checks. The
 approved
 [configuration module](SPEC-review-config.md) remains authoritative.
 
+Limit citation amendment (L10,
+[#382](https://github.com/andrewpucci/dependency-update-advisor/issues/382)):
+the user approved this spec's change on 2026-11-26. It cites register
+entries as `limit:<id>` instead of stating their values, with no value
+change.
+
 Implementation: completed and merged into `main` for C2 #6. Tasks #44–#47
 are closed; [verification evidence](https://github.com/andrewpucci/dependency-update-advisor/issues/47)
 records the tested revision and remaining disclosure-integration gates.

@@ -8,6 +8,12 @@ C1 implementation plan was approved for execution on the same date, including
 draft-07 and test-only `ajv@8.20.0`. The approved
 [configuration module](SPEC-review-config.md) remains authoritative.
 
+Limit citation amendment (L10,
+[#382](https://github.com/andrewpucci/dependency-update-advisor/issues/382)):
+the user approved this spec's change on 2026-11-26. It cites register
+entries as `limit:<id>` instead of stating their values, with no value
+change.
+
 Implementation: completed and merged into `main` for C1 #5, including the
 approved C3 amendment below. [C1 verification evidence](https://github.com/andrewpucci/dependency-update-advisor/issues/5#issuecomment-6116293460)
 and [C3 verification evidence](https://github.com/andrewpucci/dependency-update-advisor/issues/52)

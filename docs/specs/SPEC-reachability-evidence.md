@@ -13,6 +13,12 @@ It proposes amendments to the [T4 packet](SPEC-review-packet.md),
 authoritative until the amendments are applied.
 The implemented initial T5 scope does not depend on this draft.
 
+Limit citation amendment (L10,
+[#382](https://github.com/andrewpucci/dependency-update-advisor/issues/382)):
+the user approved this spec's change on 2026-11-26. It cites register
+entries as `limit:<id>` instead of stating their values, with no value
+change.
+
 The 2026-11-09 interview settled four choices, recorded under
 [Decisions](#decisions): per-pair verdict evidence, an in-place v1 amendment,
 candidate accounting on every side a candidate exists, and a
