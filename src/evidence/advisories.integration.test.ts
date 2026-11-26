@@ -535,3 +535,27 @@ test('real uv marker variants keep exact separate subjects through shared adviso
   );
   expect(packet.ok, JSON.stringify(packet)).toBe(true);
 });
+
+test('a one-target npm batch asks the handler and attributes its record, not clears it', async () => {
+  const asked: string[] = [];
+  const reader = createAdvisoryReader(advisoryTestLimits, {
+    now: () => 0,
+    fetch: viaAdvisoryHttp(async (url) => {
+      asked.push(url);
+      return Response.json(
+        new URL(url).searchParams.get('affects') === 'fixture-anchor@1.1.0'
+          ? [syntheticAdvisory]
+          : [],
+      );
+    }),
+  });
+  if (reader.kind !== 'ready') throw new Error('reader');
+  const target = { ecosystem: 'npm', name: 'fixture-anchor', version: '1.1.0' } as const;
+  expect(await reader.settle!([target])).toBe(1);
+  const lookup = await reader.read(target);
+  reader.close();
+  // The handler answered the lone batch through its singleton query.
+  expect(asked).toHaveLength(1);
+  expect(lookup).toMatchObject({ batched: true, complete: true });
+  expect(lookup.records.map((r) => r.id)).toEqual([syntheticAdvisory.ghsa_id]);
+});

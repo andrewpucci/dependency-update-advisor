@@ -62,6 +62,8 @@ export type AdvisoryReader = Readonly<{
    * reader was busy and decided nothing.
    */
   settle?: (targets: readonly unknown[]) => Promise<number | null>;
+  /** Whether `read` answers this target from a lookup `settle` decided, sending nothing. */
+  isSettled?: (target: unknown) => boolean;
   close: () => void;
   /** The reason this reader refuses all further reads, or null while it can still read. */
   stopped?: () => EvidenceReason | null;
@@ -867,6 +869,13 @@ class Reader implements AdvisoryReader {
     });
     if (lookup.complete) this.settled.set(targetKey(t), freeze({ ...lookup, batched: true }));
   }
+  isSettled(value: unknown): boolean {
+    try {
+      return this.settled.has(targetKey(target(value)));
+    } catch {
+      return false;
+    }
+  }
   async settle(values: readonly unknown[]): Promise<number | null> {
     if (this.busy) return null;
     this.busy = true;
@@ -1061,6 +1070,7 @@ function createReader(
       kind: 'ready',
       read: (value: unknown) => reader.read(value),
       settle: (targets: readonly unknown[]) => reader.settle(targets),
+      isSettled: (target: unknown) => reader.isSettled(target),
       close: () => reader.close(),
       stopped: () => reader.stopReason(),
     });

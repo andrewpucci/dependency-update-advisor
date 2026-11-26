@@ -13637,6 +13637,13 @@ var Reader$1 = class {
 			batched: true
 		}));
 	}
+	isSettled(value) {
+		try {
+			return this.settled.has(targetKey(target$1(value)));
+		} catch {
+			return false;
+		}
+	}
 	async settle(values) {
 		if (this.busy) return null;
 		this.busy = true;
@@ -13795,6 +13802,7 @@ function createReader(limits, dependencies, kind) {
 			kind: "ready",
 			read: (value) => reader.read(value),
 			settle: (targets) => reader.settle(targets),
+			isSettled: (target) => reader.isSettled(target),
 			close: () => reader.close(),
 			stopped: () => reader.stopReason()
 		});
@@ -16841,10 +16849,22 @@ async function settleTargets(input, output, reader) {
 		if (targets.length) await reader.settle(targets);
 	} catch {}
 }
-/** A stopped reader refuses every later read, so members after `last` are unresearched. */
-function markUnresearched$1(input, output, last, stopped) {
+/** Whether every target the member has was settled by the pre-pass, so its reads send nothing. */
+function settledMember(input, change, reader) {
+	const targets = ["head", "base"].map((side) => prePassTarget(input, change, side)).filter((target) => target !== null);
+	return targets.length > 0 && targets.every((target) => reader.isSettled?.(target) === true);
+}
+/**
+* A stopped reader refuses every later request. Members after `last` whose targets the pre-pass
+* settled still take those lookups; every other member is unresearched with the stop reason.
+*/
+async function finishStopped(input, output, last, stopped, reader, cache) {
 	output.stopped = stopped;
-	for (const rest of output.changes.slice(output.changes.indexOf(last) + 1)) if (!("basis" in rest)) failureGap(output, rest, stopped);
+	for (const rest of output.changes.slice(output.changes.indexOf(last) + 1)) {
+		if ("basis" in rest) continue;
+		if (settledMember(input, rest, reader)) await enrichMember(input, output, rest, reader, cache);
+		else failureGap(output, rest, stopped);
+	}
 	advisoryCheck(fits(output, input), "budget");
 }
 async function enrichAdvisories(value, dependencies) {
@@ -16868,7 +16888,7 @@ async function enrichAdvisories(value, dependencies) {
 			await enrichMember(input, output, change, dependencies.reader, cache);
 			const stopped = dependencies.reader.stopped?.() ?? null;
 			if (stopped) {
-				markUnresearched$1(input, output, change, stopped);
+				await finishStopped(input, output, change, stopped, dependencies.reader, cache);
 				break;
 			}
 		}

@@ -632,16 +632,31 @@ async function settleTargets(
     // A failed pre-pass settles nothing; every target is then read alone, as before.
   }
 }
-/** A stopped reader refuses every later read, so members after `last` are unresearched. */
-function markUnresearched(
+/** Whether every target the member has was settled by the pre-pass, so its reads send nothing. */
+function settledMember(input: AdvisoryInput, change: PacketChange, reader: AdvisoryReader) {
+  const targets = (['head', 'base'] as const)
+    .map((side) => prePassTarget(input, change, side))
+    .filter((target) => target !== null);
+  return targets.length > 0 && targets.every((target) => reader.isSettled?.(target) === true);
+}
+/**
+ * A stopped reader refuses every later request. Members after `last` whose targets the pre-pass
+ * settled still take those lookups; every other member is unresearched with the stop reason.
+ */
+async function finishStopped(
   input: AdvisoryInput,
   output: AdvisoryEnrichment,
   last: PacketChange,
   stopped: EvidenceReason,
+  reader: AdvisoryReader,
+  cache: Map<string, AdvisoryLookup>,
 ) {
   output.stopped = stopped;
-  for (const rest of output.changes.slice(output.changes.indexOf(last) + 1))
-    if (!('basis' in rest)) failureGap(output, rest, stopped);
+  for (const rest of output.changes.slice(output.changes.indexOf(last) + 1)) {
+    if ('basis' in rest) continue;
+    if (settledMember(input, rest, reader)) await enrichMember(input, output, rest, reader, cache);
+    else failureGap(output, rest, stopped);
+  }
   advisoryCheck(fits(output, input), 'budget');
 }
 export async function enrichAdvisories(
@@ -668,7 +683,7 @@ export async function enrichAdvisories(
       await enrichMember(input, output, change, dependencies.reader, cache);
       const stopped = dependencies.reader.stopped?.() ?? null;
       if (stopped) {
-        markUnresearched(input, output, change, stopped);
+        await finishStopped(input, output, change, stopped, dependencies.reader, cache);
         break;
       }
     }

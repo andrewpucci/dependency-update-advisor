@@ -5,13 +5,17 @@ import {
   type AdvisoryReader,
   type AdvisoryTarget,
 } from './advisory-read.js';
-import { enrichAdvisories, prepareAdvisoryInput } from './advisories.js';
+import { enrichAdvisories, prepareAdvisoryInput, resolveAdvisoryTarget } from './advisories.js';
 import { limit } from '../limits.js';
 import { createGithubReadSession } from '../github-read.js';
 import { collectNpmInventory } from './npm.js';
 import { validateReviewPacket, type PacketChange, type PacketSource } from '../schema.js';
 import { npmScenario } from '../../tests/parity/npm-inventory.js';
-import { collectAdvisoryActions } from '../../tests/parity/advisories.js';
+import {
+  collectAdvisoryActions,
+  collectAdvisoryNpm,
+  collectMixedAdvisoryInventories,
+} from '../../tests/parity/advisories.js';
 
 export const advisoryLimits = {
   maxRequests: 20,
@@ -787,4 +791,132 @@ test('accepts exactly advisories.maxLookups public identities and refuses one mo
   // the length check refuses it before the pair check does.
   const onePast = { ...atLimit, publicIdentities: [...identities, identities[0]] };
   expect(prepareAdvisoryInput(onePast).ok).toBe(false);
+});
+
+/** The packet fields of an enrichment, with batched source text read as the singleton's. */
+function asUnbatched(output: Awaited<ReturnType<typeof enrichAdvisories>>) {
+  if (output.kind !== 'enriched') throw new Error('evidence');
+  const { changes, sources, findings } = output;
+  return JSON.parse(
+    JSON.stringify({ changes, sources, findings }).replaceAll(
+      BATCHED,
+      'The complete exact-version query checked reviewed advisories for this target.',
+    ),
+  );
+}
+
+test.each([false, true])(
+  'a reader stopping after the pre-pass keeps settled members; failed head batch=%s',
+  async (failHeads) => {
+    const { input } = await fixture(true, 3);
+    const members = input.changes.filter((c) => !('basis' in c));
+    const heads = new Set(
+      members.flatMap((c) => {
+        const to = c.to as { name: string; version: string } | null;
+        return to ? [`${to.name}@${to.version}`] : [];
+      }),
+    );
+    const answer = (url: URL) =>
+      failHeads &&
+      url.searchParams.get('per_page') !== '100' &&
+      url.searchParams
+        .get('affects')!
+        .split(',')
+        .some((a) => heads.has(a))
+        ? Response.json({}, { status: 500 })
+        : Response.json([]);
+    const baseline = await enrichAdvisories(input, { reader: recordingReader(answer).reader });
+    const real = recordingReader(answer).reader;
+    let reads = 0;
+    // The stop comes after the first member's reads, once the pre-pass has settled what it can.
+    const reader: AdvisoryReader = {
+      ...real,
+      read: (target) => (reads++, real.read(target)),
+      stopped: () => (reads > 0 ? 'rate_limit' : null),
+    };
+    const result = await enrichAdvisories(input, { reader });
+    if (baseline.kind !== 'enriched' || result.kind !== 'enriched') throw new Error('evidence');
+    expect(result.stopped).toBe('rate_limit');
+    const [first, ...later] = members;
+    expect(later.length).toBeGreaterThanOrEqual(2);
+    expect(vulnerability(result, first.id)).toEqual(vulnerability(baseline, first.id));
+    for (const member of later)
+      if (failHeads)
+        expect(vulnerability(result, member.id)).toMatchObject({
+          status: 'unavailable',
+          reasons: ['rate_limit'],
+        });
+      else expect(vulnerability(result, member.id)).toEqual(vulnerability(baseline, member.id));
+  },
+);
+
+test.each(['throws', 'returns null'] as const)(
+  'a pre-pass that %s leaves the packet as an unbatched run makes it',
+  async (mode) => {
+    const { input } = await fixture(true, 3);
+    const empty = () => Response.json([]);
+    const plain = recordingReader(empty, { batched: false });
+    const failing = recordingReader(empty);
+    const reader: AdvisoryReader = {
+      ...failing.reader,
+      settle: async () => {
+        if (mode === 'throws') throw new Error('settle');
+        return null;
+      },
+    };
+    const expected = await enrichAdvisories(input, { reader: plain.reader });
+    const result = await enrichAdvisories(input, { reader });
+    expect(result).toEqual(expected);
+    expect(failing.sent).toEqual(plain.sent);
+  },
+);
+
+test('the pre-pass leaves basis members out', async () => {
+  const { input } = await collectAdvisoryNpm('empty', 1, undefined, { declaration: true });
+  expect(input.changes.some((c) => 'basis' in c)).toBe(true);
+  const empty = () => Response.json([]);
+  const batched = recordingReader(empty);
+  const settled: unknown[] = [];
+  const reader: AdvisoryReader = {
+    ...batched.reader,
+    settle: (targets) => (settled.push(...targets), batched.reader.settle!(targets)),
+  };
+  const plain = recordingReader(empty, { batched: false });
+  const result = await enrichAdvisories(input, { reader });
+  const expected = await enrichAdvisories(input, { reader: plain.reader });
+  expect(asUnbatched(result)).toEqual(asUnbatched(expected));
+  // settle gets exactly the targets of the members the loop researches, so none of a basis member.
+  const researched = input.changes
+    .filter((c) => !('basis' in c))
+    .flatMap((c) =>
+      (['head', 'base'] as const).flatMap((side) => {
+        const target = (side === 'head' ? c.to : c.from)
+          ? resolveAdvisoryTarget(input, c as PacketChange, side)
+          : null;
+        return target ? [target] : [];
+      }),
+    );
+  expect(researched.length).toBeGreaterThan(0);
+  expect(settled).toEqual(researched);
+});
+
+test('the pre-pass never hands pip targets to settle', async () => {
+  const f = await collectMixedAdvisoryInventories();
+  const settled: AdvisoryTarget[] = [];
+  const real = createAdvisoryReader(advisoryLimits, {
+    now: () => 0,
+    fetch: async (url) =>
+      new URL(url).origin === 'https://api.osv.dev' ? Response.json({}) : Response.json([]),
+  });
+  if (real.kind !== 'ready') throw new Error('reader');
+  const reader: AdvisoryReader = {
+    ...real,
+    settle: (targets) => (settled.push(...(targets as AdvisoryTarget[])), real.settle!(targets)),
+  };
+  const result = await enrichAdvisories(f.input, { reader });
+  if (result.kind !== 'enriched') throw new Error('evidence');
+  // The uv members are still read, through OSV, in the member loop.
+  expect(result.lookups.some((l) => l.lookup?.target.ecosystem === 'pip')).toBe(true);
+  expect(settled.length).toBeGreaterThan(0);
+  expect(settled.some((t) => t.ecosystem === 'pip')).toBe(false);
 });

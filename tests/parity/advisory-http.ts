@@ -1,9 +1,11 @@
+import { BATCH_PAGE_SIZE } from '../../src/evidence/batches.js';
+
 /**
  * Serves S1/S3 advisory requests from a synthetic handler written for one exact GitHub query.
  * Stored-name discovery finds no stored form unless `stored` gives one, so the versioned query
- * names the normalized or mapped package exactly as before. A pip reviewed lookup arrives as an OSV query; the handler
- * answers the equivalent GitHub query and the records are returned in OSV form. An npm batch
- * is answered from its singleton queries.
+ * names the normalized or mapped package exactly as before. A pip reviewed lookup arrives as an
+ * OSV query; the handler answers the equivalent GitHub query and the records are returned in OSV
+ * form. An npm batch is answered from its singleton queries.
  */
 type Handler = (url: string, init: RequestInit) => Response | Promise<Response>;
 type GithubRecord = {
@@ -133,8 +135,9 @@ export function viaAdvisoryHttp(
       const ecosystem = u.searchParams.get('ecosystem'),
         type = u.searchParams.get('type'),
         affects = u.searchParams.get('affects')!.split(',');
-      // npm has no discovery; its batches share the discovery page size.
-      if (ecosystem === 'npm' && affects.length > 1) return npmBatch(github, u, affects, init);
+      // npm has no discovery, so an npm query at the batch page size is a batch, even of one.
+      if (ecosystem === 'npm' && u.searchParams.get('per_page') === BATCH_PAGE_SIZE)
+        return npmBatch(github, u, affects, init);
       if (u.searchParams.get('per_page') === '50') {
         const records = new Map<string, GithubRecord>();
         for (const name of affects) {

@@ -732,40 +732,46 @@ test('still runs, with request timeouts no longer than the time left, near the d
   }
 });
 
-test('researches a group of 32 changed packages without exhausting any reader', async () => {
-  // One npm anchor, one Action, one uv package, and 29 npm children.
-  const { fixture, packet } = await scenario({ children: 29 } as never);
-  expect(packet.changes.length).toBe(32);
-  const counts: Record<string, number> = {};
-  const bump = (key: string) => (counts[key] = (counts[key] ?? 0) + 1);
-  const result = await runResearch({
-    ...base(fixture, packet),
-    fetch: async (url, init) => {
-      const target = new URL(url);
-      if (target.pathname.startsWith('/advisories'))
-        bump(target.searchParams.get('type') === 'malware' ? 'malware' : 'advisory');
-      return fixture.fetch(url, init);
-    },
-  });
-  expect(result.kind).toBe('ready');
-  if (result.kind !== 'ready') return;
-  expect(result.unavailable).toEqual([]);
-  // Every package was looked up, and none was cut short by a share running out.
-  const { readers } = EVIDENCE_READ_ALLOCATION.signals;
-  expect(counts.malware).toBeGreaterThan(25);
-  expect(counts.malware).toBeLessThanOrEqual(readers.malware.maxRequests);
-  // Batches check the 31 GitHub-backed packages' both sides in a few requests.
-  expect(counts.advisory).toBeGreaterThan(0);
-  expect(counts.advisory).toBeLessThan(10);
-  for (const change of result.packet.changes)
-    if (!('basis' in change)) expect(change.evidence.vulnerability.status).toBe('available');
-  // No stage of research ran out of any share, in the packet or in its own attempt records.
-  expect(JSON.stringify(result.packet)).not.toContain('budget');
-  expect(JSON.stringify(result.upstreamAttempts)).not.toContain('budget');
-  expect(JSON.stringify(result.signalAttempts)).not.toContain('budget');
-  expect(result.signalAttempts.length).toBeGreaterThan(0);
-  expect(result.upstreamAttempts.length).toBeGreaterThan(0);
-});
+test.each([true, false])(
+  'researches a group of 32 changed packages without exhausting any reader; batched=%s',
+  async (batched) => {
+    // One npm anchor, one Action, one uv package, and 29 npm children.
+    const { fixture, packet } = await scenario({ children: 29 } as never);
+    expect(packet.changes.length).toBe(32);
+    if (!batched) await dropAdvisoryPrePass();
+    const counts: Record<string, number> = {};
+    const bump = (key: string) => (counts[key] = (counts[key] ?? 0) + 1);
+    const result = await runResearch({
+      ...base(fixture, packet),
+      fetch: async (url, init) => {
+        const target = new URL(url);
+        if (target.pathname.startsWith('/advisories'))
+          bump(target.searchParams.get('type') === 'malware' ? 'malware' : 'advisory');
+        return fixture.fetch(url, init);
+      },
+    });
+    expect(result.kind).toBe('ready');
+    if (result.kind !== 'ready') return;
+    expect(result.unavailable).toEqual([]);
+    // Every package was looked up, and none was cut short by a share running out.
+    const { readers } = EVIDENCE_READ_ALLOCATION.signals;
+    expect(counts.malware).toBeGreaterThan(25);
+    expect(counts.malware).toBeLessThanOrEqual(readers.malware.maxRequests);
+    // Batches check both sides of the 31 GitHub-backed packages in a few requests: one npm batch
+    // per side and the Action's discovery batch. Read alone, they still fit the stage's share.
+    if (batched) expect(counts.advisory).toBe(3);
+    else expect(counts.advisory).toBeGreaterThan(50);
+    expect(counts.advisory).toBeLessThanOrEqual(EVIDENCE_READ_ALLOCATION.advisory.maxRequests);
+    for (const change of result.packet.changes)
+      if (!('basis' in change)) expect(change.evidence.vulnerability.status).toBe('available');
+    // No stage of research ran out of any share, in the packet or in its own attempt records.
+    expect(JSON.stringify(result.packet)).not.toContain('budget');
+    expect(JSON.stringify(result.upstreamAttempts)).not.toContain('budget');
+    expect(JSON.stringify(result.signalAttempts)).not.toContain('budget');
+    expect(result.signalAttempts.length).toBeGreaterThan(0);
+    expect(result.upstreamAttempts.length).toBeGreaterThan(0);
+  },
+);
 
 const PLACEHOLDER = { status: 'unavailable', reasons: ['missing'], sourceIds: [] };
 const BUDGET = { status: 'unavailable', reasons: ['budget'], sourceIds: [] };
@@ -815,18 +821,21 @@ const BATCHED_EXCERPT = 'A complete batched query checked reviewed advisories fo
 const SINGLETON_EXCERPT =
   'The complete exact-version query checked reviewed advisories for this target.';
 
+/** Makes the next advisory reader one without `settle`, so its stage reads every target alone. */
+async function dropAdvisoryPrePass() {
+  const actual = await vi.importActual<typeof import('./evidence/advisory-read.js')>(
+    './evidence/advisory-read.js',
+  );
+  vi.mocked(advisoryReadModule.createAdvisoryReader).mockImplementationOnce((...args) => {
+    const reader = actual.createAdvisoryReader(...args);
+    return reader.kind === 'ready' ? { ...reader, settle: undefined } : reader;
+  });
+}
+
 /** Runs research once, with or without the advisory pre-pass, counting reviewed GitHub queries. */
 async function advisoryRun(batched: boolean) {
   const { fixture, packet } = await scenario({ vulnerableNpm: true, children: 3 } as never);
-  if (!batched) {
-    const actual = await vi.importActual<typeof import('./evidence/advisory-read.js')>(
-      './evidence/advisory-read.js',
-    );
-    vi.mocked(advisoryReadModule.createAdvisoryReader).mockImplementationOnce((...args) => {
-      const reader = actual.createAdvisoryReader(...args);
-      return reader.kind === 'ready' ? { ...reader, settle: undefined } : reader;
-    });
-  }
+  if (!batched) await dropAdvisoryPrePass();
   const sent: string[] = [];
   const result = await runResearch({
     ...base(fixture, packet),

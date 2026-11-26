@@ -325,7 +325,10 @@ A target a batch could not settle is read as before. `enrichAdvisories` calls
 `settle` once before its per-member loop, with the eligible targets of both
 sides, so its requests and bytes count against the advisory stage's share; a
 lookup a batch settled says in its source text that it was checked in a
-batched query. The signals stage does not call `settle` yet.
+batched query. `isSettled(target)` says whether `read` would answer a target
+from `settle` without a request: after the reader stops, a later member whose
+targets were all settled keeps those lookups, and only the rest get the stop
+reason. The signals stage does not call `settle` yet.
 
 `enrichAdvisories(input, { reader })` consumes an `AdvisoryInput`: binding,
 normalized changes/sources/findings, limits, required `publicIdentities`, and

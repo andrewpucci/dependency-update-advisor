@@ -230,8 +230,8 @@ function addSide(sides: TargetSides, key: string, side: Side): void {
 
 /**
  * One settled target per side for each read whose versioned URL this run requested, or that a
- * batch this run sent settled, complete only when every read of it completed. Advisory reads are shared across sides, so one request can
- * settle a target on both.
+ * batch this run sent settled, complete only when every read of it completed. Advisory reads are
+ * shared across sides, so one request can settle a target on both.
  */
 export function settledTargets(
   reads: Iterable<ReaderRead>,
