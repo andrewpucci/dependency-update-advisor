@@ -814,6 +814,41 @@ test('runs advisory lookups for members with retained identities after an upstre
   expect(reviewed.some((query) => query.includes('ecosystem=npm&affects=orbit@2.0.0'))).toBe(true);
 });
 
+type ReadyResearch = Extract<Awaited<ReturnType<typeof runResearch>>, { kind: 'ready' }>;
+type ResearchedChange = ReadyResearch['packet']['changes'][number];
+
+/** The members upstream left with nothing retained, with the reasons it recorded for them. */
+function cutMembers(packet: ReadyResearch['packet'], reason: string) {
+  return packet.changes.filter(
+    (change) =>
+      !('basis' in change) &&
+      change.evidence.upstream.status === 'unavailable' &&
+      change.evidence.upstream.sourceIds.length === 0 &&
+      change.evidence.upstream.reasons.includes(reason as never),
+  );
+}
+
+/** Each cut member reports the upstream stop's reason, never `unsupported`, in every lookup category. */
+function expectStopReason(result: ReadyResearch, cut: readonly ResearchedChange[], reason: string) {
+  for (const change of cut) {
+    const categories = ['vulnerability', 'malware'];
+    if (change.ecosystem === 'npm') categories.push('publishTime');
+    for (const category of categories) {
+      const evidence = (
+        change.evidence as Readonly<Record<string, ResearchedChange['evidence']['upstream']>>
+      )[category];
+      expect(evidence, `${change.id} ${category}`).toMatchObject({
+        status: 'unavailable',
+        reasons: [reason],
+      });
+      const query = evidence?.sourceIds[0];
+      const reasons = result.packet.sources.find((s) => s.id === query)?.reasons;
+      expect(reasons, `${change.id} ${category} source`).toEqual([reason]);
+    }
+  }
+}
+
+// The #439 reproduction cuts the upstream share, the stage that establishes identity proofs.
 test('a member whose identity proof an exhausted upstream share cut reports budget, not unsupported (#439)', async () => {
   const { fixture, packet } = await scenario({ children: 4 });
   // A three-request upstream share runs out after the first member's identity proof.
@@ -827,27 +862,43 @@ test('a member whose identity proof an exhausted upstream share cut reports budg
   const result = await runResearch({ ...base(fixture, packet), shareParameters });
   if (result.kind !== 'ready') throw new Error('research');
   expect(result.unavailable).toContainEqual({ stage: 'upstream', reason: 'budget' });
-  const cut = result.packet.changes.filter(
-    (change) =>
-      change.ecosystem !== 'actions' &&
-      change.evidence.upstream.status === 'unavailable' &&
-      change.evidence.upstream.reasons.includes('budget'),
-  );
-  expect(cut.map((change) => change.ecosystem).sort()).toEqual(['npm', 'npm', 'npm', 'npm', 'uv']);
-  for (const change of cut)
-    for (const category of ['vulnerability', 'malware'] as const) {
-      expect(change.evidence[category], `${change.id} ${category}`).toMatchObject({
-        status: 'unavailable',
-        reasons: ['budget'],
-      });
-      const [query] = change.evidence[category].sourceIds;
-      expect(result.packet.sources.find((s) => s.id === query)?.reasons).toEqual(['budget']);
-    }
+  const cut = cutMembers(result.packet, 'budget');
+  // The Action lost its ref mapping to the same stop.
+  expect(cut.map((change) => change.ecosystem).sort()).toEqual([
+    'actions',
+    'npm',
+    'npm',
+    'npm',
+    'npm',
+    'uv',
+  ]);
+  expectStopReason(result, cut, 'budget');
   // The member that kept its proof was looked up.
   const kept = result.packet.changes.filter(
     (change) => change.ecosystem === 'npm' && change.evidence.vulnerability.status === 'available',
   );
   expect(kept).toHaveLength(1);
+});
+
+test('a member whose identity proof a rate-limited upstream read cut reports rate_limit (#439)', async () => {
+  const { fixture, packet } = await scenario({ children: 4 });
+  // The registry and GitHub repository reads are throttled, so upstream blocks both origins: the
+  // npm members and the Action lose their identity reads, while uv metadata still arrives.
+  const throttled = (url: URL) =>
+    url.origin === 'https://registry.npmjs.org' ||
+    (url.origin === 'https://api.github.com' && url.pathname.startsWith('/repos/'));
+  const result = await runResearch({
+    ...base(fixture, packet),
+    fetch: async (url, init) =>
+      throttled(new URL(url))
+        ? new Response('{}', { status: 429, headers: { 'content-type': 'application/json' } })
+        : fixture.fetch(url, init),
+  });
+  if (result.kind !== 'ready') throw new Error('research');
+  const cut = cutMembers(result.packet, 'rate_limit');
+  expect(cut.filter((change) => change.ecosystem === 'npm')).toHaveLength(5);
+  expect(cut.filter((change) => change.ecosystem === 'actions')).toHaveLength(1);
+  expectStopReason(result, cut, 'rate_limit');
 });
 
 test('a public registry member whose identity is missing upstream stays unsupported', async () => {

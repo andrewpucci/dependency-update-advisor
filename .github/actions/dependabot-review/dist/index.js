@@ -16437,14 +16437,24 @@ function provenance(change, side, lookup, record) {
 function publicRegistry(ecosystem, origin) {
 	return (ecosystem === "npm" ? origin.origin === "https://registry.npmjs.org" : origin.origin === "https://pypi.org" && ["/simple", "/simple/"].includes(origin.pathname)) && !origin.username && !origin.password && !origin.hash && !origin.search;
 }
+/** Whether S2 could establish a lookup identity for this instance: an Action, or a public registry package. */
+function identityPossible(change, side) {
+	const instance = side === "head" ? change.to : change.from;
+	if (!instance) return false;
+	if ("action" in instance) return true;
+	return "source" in instance && instance.source.kind === "registry" && URL.canParse(instance.source.identity) && publicRegistry(change.ecosystem, new URL(instance.source.identity));
+}
 /**
-* Why a side has no lookup target. A public registry member whose upstream research ended in
-* `budget` before it retained anything lost its identity proof to an exhausted share, so a rerun or
-* a larger share can cover it (SPEC-evidence-coverage §1.2); any other missing target is unsupported.
+* Why a side has no lookup target. When upstream research retained nothing for a member that could
+* have an identity proof or Actions mapping, its upstream reasons say why the proof is absent, such
+* as the `budget`, `timeout`, or `rate_limit` of a stopped stage, and a rerun or a larger share can
+* cover it (SPEC-evidence-coverage §1.2). The #439 reproduction cuts the upstream share. Only where
+* upstream found no identity (`missing`, `unsupported`) or none can exist is the target unsupported.
 */
 function unresolvedReasons(change, side) {
-	const instance = side === "head" ? change.to : change.from, upstream = change.evidence.upstream;
-	return upstream.status === "unavailable" && upstream.reasons.includes("budget") && instance && "source" in instance && instance.source.kind === "registry" && URL.canParse(instance.source.identity) && publicRegistry(change.ecosystem, new URL(instance.source.identity)) ? ["budget"] : ["unsupported"];
+	const upstream = change.evidence.upstream;
+	const stopped = upstream.status === "unavailable" && !upstream.sourceIds.length && identityPossible(change, side) ? upstream.reasons.filter((reason) => reason !== "missing" && reason !== "unsupported") : [];
+	return stopped.length ? [...stopped] : ["unsupported"];
 }
 function source$1(change, side, lookup, record) {
 	const success = !!lookup && (record || lookup.complete);
@@ -22306,7 +22316,10 @@ async function collectNpmTimes(input, output, change, reader) {
 		const target = resolveAdvisoryTarget(input, change, side);
 		const versions = target ? npmTimeVersions(change, target.name) : [];
 		const key = JSON.stringify([target?.name, versions]);
-		const result = cache.get(key) ?? (target && reader ? await reader.read({
+		const result = !target ? {
+			kind: "unavailable",
+			reason: unresolvedReasons(change, side)[0]
+		} : cache.get(key) ?? (reader ? await reader.read({
 			name: target.name,
 			versions,
 			source: instance.source,

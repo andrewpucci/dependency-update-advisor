@@ -118,23 +118,34 @@ export function publicRegistry(ecosystem: PacketChange['ecosystem'], origin: URL
     !origin.search
   );
 }
-/**
- * Why a side has no lookup target. A public registry member whose upstream research ended in
- * `budget` before it retained anything lost its identity proof to an exhausted share, so a rerun or
- * a larger share can cover it (SPEC-evidence-coverage §1.2); any other missing target is unsupported.
- */
-export function unresolvedReasons(change: PacketChange, side: 'head' | 'base'): EvidenceReason[] {
-  const instance = side === 'head' ? change.to : change.from,
-    upstream = change.evidence.upstream;
-  return upstream.status === 'unavailable' &&
-    upstream.reasons.includes('budget') &&
-    instance &&
+/** Whether S2 could establish a lookup identity for this instance: an Action, or a public registry package. */
+function identityPossible(change: PacketChange, side: 'head' | 'base'): boolean {
+  const instance = side === 'head' ? change.to : change.from;
+  if (!instance) return false;
+  if ('action' in instance) return true;
+  return (
     'source' in instance &&
     instance.source.kind === 'registry' &&
     URL.canParse(instance.source.identity) &&
     publicRegistry(change.ecosystem, new URL(instance.source.identity))
-    ? ['budget']
-    : ['unsupported'];
+  );
+}
+/**
+ * Why a side has no lookup target. When upstream research retained nothing for a member that could
+ * have an identity proof or Actions mapping, its upstream reasons say why the proof is absent, such
+ * as the `budget`, `timeout`, or `rate_limit` of a stopped stage, and a rerun or a larger share can
+ * cover it (SPEC-evidence-coverage §1.2). The #439 reproduction cuts the upstream share. Only where
+ * upstream found no identity (`missing`, `unsupported`) or none can exist is the target unsupported.
+ */
+export function unresolvedReasons(change: PacketChange, side: 'head' | 'base'): EvidenceReason[] {
+  const upstream = change.evidence.upstream;
+  const stopped =
+    upstream.status === 'unavailable' &&
+    !upstream.sourceIds.length &&
+    identityPossible(change, side)
+      ? upstream.reasons.filter((reason) => reason !== 'missing' && reason !== 'unsupported')
+      : [];
+  return stopped.length ? [...stopped] : ['unsupported'];
 }
 export function source(
   change: PacketChange,
