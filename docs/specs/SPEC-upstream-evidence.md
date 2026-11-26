@@ -556,3 +556,19 @@ has no tags starting with `@vitest` and tags releases `v<version>`, so every
 `@vitest/*` package's candidate misses. Fixing that adds candidates, so it
 interacts with this amendment, but it is a coverage question for its own
 amendment.
+
+## Approved Tag Query Size
+
+**Status: approved, 2026-11-26.** The user approved the candidates-per-query
+value that the [Batched Tag Existence Amendment](#batched-tag-existence-amendment)
+leaves Ask first, from the C3 probe run
+([#390](https://github.com/andrewpucci/dependency-update-advisor/issues/390)).
+The amendment's text is not edited.
+
+- **Value.** One existence query carries at most
+  `limit:upstream.tagExistence.maxCandidatesPerQuery` candidates; the next
+  candidate starts another query.
+- **Basis.** In the C3 run, GraphQL matched REST for all 241 tag candidates
+  from the L8 corpus. Every measured query size, up to the register value,
+  answered at a cost of 1 point, and the largest query's response was 7,139
+  bytes.

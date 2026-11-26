@@ -823,9 +823,9 @@ const DEFINITIONS = [
   }),
   unjustified('advisory.discovery.urlBytes', 4096, 'bytes', {
     protects:
-      "Discovery URLs stay under the length GitHub accepted (414 at 8,259 bytes). The batching probe also uses it as a stand-in bound for versioned npm batch URLs; it is not the npm batch URL length S1's Batched Lookup Amendment item 2 leaves Ask first.",
+      'Discovery URLs stay under the length GitHub accepted (414 at 8,259 bytes). Batch URLs reuse it through limit:advisory.batch.urlBytes.',
     effect:
-      "Spellings split across as many discovery requests as the cap requires; a continuation URL over it is budget. In the batching probe, a sweep batch's first URL and the batch at the proposed maximum stay within it less limit:advisory.discovery.cursorHeadroomBytes, and only a 414 to a batch size whose URL is over it leaves the verdict unaffected (tests/measure-batching/probe.test.ts > a URL of exactly the cap is inside it and one byte longer is over it; > the sweep fits each first URL at the longest page size, leaving the cursor headroom; > sizes GitHub rejects as too long are reported as rejected and do not block complete).",
+      'Spellings split across as many discovery requests as the cap requires; a continuation URL over it is budget.',
     note: "approved 2026-11-20 from GitHub probes recorded in S1's Package Name Form Amendment; no repository command reproduces them",
     test: 'src/evidence/advisory-read.name-forms.test.ts > a continuation URL of exactly 4,096 bytes is followed; one byte longer is budget',
   }),
@@ -844,6 +844,84 @@ const DEFINITIONS = [
     note: "approved 2026-11-20 from GitHub probes recorded in S1's Package Name Form Amendment; no repository command reproduces them",
     test: 'src/evidence/advisory-read.name-forms.test.ts > a name over the spelling ceiling sends no request',
   }),
+  // Request batching values, approved by the user on 2026-11-26 from the C3 probe run (#390).
+  {
+    id: 'advisory.batch.maxTargets',
+    value: 1_000,
+    unit: 'count',
+    protects:
+      'A versioned advisory batch never lists more targets than GitHub documents for one `affects` filter.',
+    basis: {
+      kind: 'external',
+      url: 'https://docs.github.com/en/rest/security-advisories/global-advisories',
+      checked: '2026-11-26',
+      platformValue: 1_000,
+      margin:
+        'none: the documented maximum is the ceiling, and the URL cap (limit:advisory.batch.urlBytes) binds first on real targets, at about 90 npm targets in the C3 run',
+    },
+    effect:
+      'A batch holds at most this many targets; the next target starts another batch, and a batch is never refused for its count.',
+    test: 'src/evidence/batches.test.ts > a batch holds exactly the register maximum of targets, and one more starts another batch',
+  },
+  derived(
+    'advisory.batch.urlBytes',
+    'bytes',
+    ['advisory.discovery.urlBytes'],
+    copy,
+    'Batch URLs reuse the discovery URL cap (user-approved 2026-11-26). The C3 probe (`npm run probe:batching`, L8 corpus targets) saw npm batch URLs answered 200 up to 5,694 bytes and 414 from 8,893 bytes; the discovery probe saw 200 at 4,371 and 414 at 8,259.',
+    {
+      protects:
+        'Batch URLs stay below the shortest URL GitHub rejected as too long (8,259 bytes), with margin.',
+      effect:
+        "A batch's first URL is filled to at most this cap less limit:advisory.batch.cursorHeadroomBytes, and the next target starts another batch; a target that cannot fit alone is left to its singleton query. In the batching probe, a sweep batch's first URL and the batch at the proposed maximum stay within the same bound, and only a 414 to a batch size whose URL is over this cap leaves the verdict unaffected (tests/measure-batching/probe.test.ts > a URL of exactly the cap is inside it and one byte longer is over it; > the sweep fits each first URL at the longest page size, leaving the cursor headroom; > sizes GitHub rejects as too long are reported as rejected and do not block complete).",
+      test: 'src/evidence/batches.test.ts > a batch first URL of exactly the cap less the cursor headroom fits; one byte longer does not',
+    },
+  ),
+  derived(
+    'advisory.batch.cursorHeadroomBytes',
+    'bytes',
+    ['advisory.discovery.cursorHeadroomBytes'],
+    copy,
+    "Batches reuse discovery's first-URL cursor headroom (user-approved 2026-11-26).",
+    {
+      protects:
+        "Each batch's first URL leaves room under the URL cap for GitHub's `after` cursor on later pages.",
+      effect: "A batch's first URL is at most limit:advisory.batch.urlBytes less this headroom.",
+      test: 'src/evidence/batches.test.ts > a batch first URL of exactly the cap less the cursor headroom fits; one byte longer does not',
+    },
+  ),
+  derived(
+    'advisory.batch.pageSize',
+    'count',
+    ['advisory.discovery.pageSize'],
+    copy,
+    "Batches reuse discovery's page size (user-approved 2026-11-26). The C3 probe's largest npm batch page was 121,579 bytes at 100 records, but a batch can return a heavily advised record set like the 100-record pillow page (1,009,662 bytes), so 50 keeps discovery's measured margin under the 1 MiB response cap.",
+    {
+      protects: 'A batch page of heavily advised packages fits the per-response byte cap.',
+      effect: 'A batch asks for this many records per page and follows every page.',
+      test: 'src/evidence/batches.test.ts > a batch URL asks for the register page size',
+    },
+  ),
+  {
+    id: 'upstream.tagExistence.maxCandidatesPerQuery',
+    value: 100,
+    unit: 'count',
+    protects:
+      'One GraphQL tag existence query stays far below GraphQL node and size limits and costs one point.',
+    basis: {
+      kind: 'measured',
+      command: 'npm run probe:batching',
+      corpus: 'the 241 tag candidates recorded from the L8 corpus by `npm run measure:demand`',
+      statistic:
+        'max: every query size up to 100 candidates answered 200 at cost 1; the 100-candidate response was 7,139 bytes',
+      headroom:
+        'none at the measured top size; GitHub documents 500,000 nodes per call, and 100 candidates request a few hundred',
+      measured: '2026-11-26',
+    },
+    effect:
+      'Candidates are split into queries of at most this many; the next candidate starts another query.',
+    test: 'src/evidence/batches.test.ts > a tag query holds exactly the register maximum of candidates, and one more starts another',
+  },
   unjustified('evidence.allocation.signals.readers.publishTimes.maxRequests', 40, 'count', {
     protects:
       'Caps npm publish-time lookups at one per extra changed package, so the signals stage stays inside its share.',
@@ -2379,7 +2457,7 @@ const DEFINITIONS = [
       checked: '2026-11-26',
       platformValue: 1_000,
       margin:
-        "none: GitHub's documented `affects` maximum bounds the sizes the probe measures, and the one batch above it records what GitHub does there. The proposed maximum the verification requires (S1 Batched Lookup Amendment) is the largest positive-last batch at or below this value whose first URL fits limit:advisory.discovery.urlBytes less limit:advisory.discovery.cursorHeadroomBytes; the URL cap, not this value, sets it on real targets",
+        "none: GitHub's documented `affects` maximum bounds the sizes the probe measures, and the one batch above it records what GitHub does there. The proposed maximum the verification requires (S1 Batched Lookup Amendment) is the largest positive-last batch at or below this value whose first URL fits limit:advisory.batch.urlBytes less limit:advisory.batch.cursorHeadroomBytes; the URL cap, not this value, sets it on real targets",
     },
     effect:
       'Batch sizes halve down from this value to one as measurement, and the probe also sends one batch of this many plus one, which the verdict ignores. The batch at the proposed maximum (`maxFitTargets`) and every sweep batch hold at most this many, with a first URL within the URL cap less the cursor headroom; the proposed-maximum batch must complete for the verdict to.',
@@ -2394,7 +2472,7 @@ const DEFINITIONS = [
     basis: {
       kind: 'safety',
       reason:
-        "GitHub documents no alias, field, or query-size limit for GraphQL; its documented bounds are 500,000 nodes per call, a 10-second processing timeout, and per-hour and per-minute point limits (https://docs.github.com/en/graphql/overview/rate-limits-and-query-limits-for-the-graphql-api, checked 2026-11-26). Each candidate selects one repository, one ref, and its target, with no connection, so 100 candidates request a few hundred nodes, under a thousandth of the node limit, in one query of a few tens of KB. 100 is the top of the probe's measured sizes, not the production value, which C3 proposes Ask-first from this probe's cost and bytes per size. A size GitHub rejects is recorded as an unanswered query, never as a disagreement.",
+        "GitHub documents no alias, field, or query-size limit for GraphQL; its documented bounds are 500,000 nodes per call, a 10-second processing timeout, and per-hour and per-minute point limits (https://docs.github.com/en/graphql/overview/rate-limits-and-query-limits-for-the-graphql-api, checked 2026-11-26). Each candidate selects one repository, one ref, and its target, with no connection, so 100 candidates request a few hundred nodes, under a thousandth of the node limit, in one query of a few tens of KB. 100 is the top of the probe's measured sizes; the production value, limit:upstream.tagExistence.maxCandidatesPerQuery, was approved at the same size from this probe's cost and bytes (2026-11-26). A size GitHub rejects is recorded as an unanswered query, never as a disagreement.",
     },
     effect:
       'Agreement queries carry at most this many candidates each, and the cost sweep halves down from this value to one.',

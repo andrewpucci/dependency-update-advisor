@@ -200,10 +200,10 @@ was found, `true` only for a complete run with none, and `null` otherwise.
 Targets counted as `skippedUnsupported` are left out of `complete`: the reader
 cannot discover them either, so there is no per-target answer to compare.
 
-npm batch URLs are checked against `limit:advisory.discovery.urlBytes`, a
-stand-in for the batch URL bound S1 leaves Ask first. A batch fits when its
-first URL, at the longest `per_page` form, is within that cap less
-`limit:advisory.discovery.cursorHeadroomBytes`. For each npm type the probe
+npm batch URLs are checked against `limit:advisory.batch.urlBytes`, the batch
+URL cap approved on 2026-11-26. A batch fits when its first URL, at the
+longest `per_page` form, is within that cap less
+`limit:advisory.batch.cursorHeadroomBytes`. For each npm type the probe
 reports `maxFitTargets`, the most targets a positive-last batch holds and
 still fits, and sends that batch; if it does not complete, the run is
 incomplete (`npmMaxFitIncomplete`). The sweep splits each group into batches

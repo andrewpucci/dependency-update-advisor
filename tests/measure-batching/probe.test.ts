@@ -8,8 +8,8 @@ import { runProbe, type ProbeInput, type Target } from '../../scripts/measure-ba
 const MAX_BATCH = limit('probe.batching.maxBatchTargets');
 const MAX_TAGS = limit('probe.batching.maxTagsPerQuery');
 const MAX_REQUESTS = limit('probe.batching.maxRequests');
-const URL_CAP = limit('advisory.discovery.urlBytes');
-const FIRST_URL_CAP = URL_CAP - limit('advisory.discovery.cursorHeadroomBytes');
+const URL_CAP = limit('advisory.batch.urlBytes');
+const FIRST_URL_CAP = URL_CAP - limit('advisory.batch.cursorHeadroomBytes');
 const PAGE_SIZE = limit('github.pageSize');
 /** The halving batch sizes below the maximum, as the probe sends them. */
 const HALVED = [2, 4, 8, 16, 32, 64, 128, 256, 512].map((d) => Math.floor(MAX_BATCH / d));
