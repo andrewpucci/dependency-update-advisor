@@ -358,6 +358,14 @@ test('sweep batches also fit a length check, with positives still spread and las
   ]);
 });
 
+test('positives that cannot share one batch are split even with no other target', () => {
+  const fits = (chunk: readonly string[]) => chunk.join('').length <= 8;
+  expect(sweepChunks([], ['pppp', 'qqqq', 'rrrr'], 10, fits).chunks).toEqual([
+    ['pppp', 'rrrr'],
+    ['qqqq'],
+  ]);
+});
+
 test('a target too long for a batch on its own is skipped, not carried', () => {
   const fits = (chunk: readonly string[]) => chunk.join('').length <= 4;
   expect(sweepChunks(['r0', 'long-r'], ['p0', 'long-p'], 10, fits)).toEqual({
