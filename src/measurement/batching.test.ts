@@ -250,7 +250,11 @@ test('reports batch records the singletons lacked, by whether they would be attr
 });
 
 test('a package is judged on all its batched versions, and not at all when one is unknown', () => {
-  const batch = [record('GHSA-1', ['npm', 'lodash']), record('GHSA-2', ['npm', 'left-pad'])];
+  const batch = [
+    record('GHSA-1', ['npm', 'lodash']),
+    record('GHSA-2', ['npm', 'left-pad']),
+    record('GHSA-3', ['npm', 'right-pad']),
+  ];
   expect(
     advisoryBatchExtras(
       'npm',
@@ -259,6 +263,8 @@ test('a package is judged on all its batched versions, and not at all when one i
         { name: 'lodash', ids: [] },
         { name: 'left-pad', ids: [] },
         { name: 'left-pad', ids: null },
+        { name: 'right-pad', ids: null },
+        { name: 'right-pad', ids: [] },
       ],
       batch,
     ),
@@ -305,6 +311,10 @@ test('keeps every distinct REST status of one tag, and reports two as a conflict
   expect(tagAgreement(tags[0].statuses, 'null')).toBe('rest-conflict');
   expect(tagAgreement(tags[0].statuses, 'found')).toBe('rest-conflict');
   expect(tagAgreement(tags[1].statuses, 'found')).toBe('agree');
+  // Only 200 and 404 decide: another status beside one of them is ignored, and alone it is other.
+  expect(tagAgreement(['404', '502'], 'null')).toBe('agree');
+  expect(tagAgreement(['502', '200'], 'null')).toBe('rest-found-graphql-null');
+  expect(tagAgreement(['502', '403'], 'null')).toBe('rest-other');
 });
 
 test('chooses a version inside a GitHub range, or none', () => {

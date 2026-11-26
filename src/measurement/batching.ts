@@ -6,7 +6,7 @@
  * Amendment D3).
  */
 
-import { minVersion, satisfies, validRange } from 'semver';
+import { minVersion, validRange } from 'semver';
 import { canonicalName, type AdvisoryTarget } from '../evidence/advisory-read.js';
 import { HTTP_STATUS } from '../format.js';
 
@@ -256,11 +256,15 @@ export function distinctTags(
 }
 
 /**
- * One candidate's agreement over all its REST statuses. Statuses that conflict are reported as
- * such, never collapsed into one: GraphQL cannot agree with both.
+ * One candidate's agreement over all its REST statuses. Only found (200) and missing (404) decide;
+ * any other status is ignored while one of them remains, and with neither the candidate is
+ * `rest-other`. Both found and missing is a `rest-conflict`, never collapsed into one: GraphQL
+ * cannot agree with both.
  */
 export function tagAgreement(statuses: readonly string[], graphql: GraphqlAnswer): TagAgreement {
-  return statuses.length > 1 ? 'rest-conflict' : tagAnswersAgree(statuses[0] ?? '', graphql);
+  const decisive = statuses.filter((s) => s === FOUND || s === MISSING);
+  if (decisive.includes(FOUND) && decisive.includes(MISSING)) return 'rest-conflict';
+  return tagAnswersAgree(decisive[0] ?? statuses[0] ?? '', graphql);
 }
 
 /**
@@ -273,8 +277,8 @@ export function versionInRange(range: string): string | null {
     .map((part) => part.trim().replace(/^([<>]=?|=)\s+/u, '$1'))
     .filter(Boolean);
   const npmRange = comparators.length ? validRange(comparators.join(' ')) : null;
-  const version = npmRange ? minVersion(npmRange)?.version : null;
-  return version && npmRange && satisfies(version, npmRange) ? version : null;
+  // minVersion returns null when no version satisfies the range.
+  return (npmRange && minVersion(npmRange)?.version) || null;
 }
 
 /** Sizes from `max` down to one, each half the last (rounded down): the probe's batch sizes. */

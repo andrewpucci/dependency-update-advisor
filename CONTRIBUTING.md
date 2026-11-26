@@ -196,6 +196,10 @@ Use a personal read token: the request cap's basis assumes its hourly quota,
 not a workflow `GITHUB_TOKEN`'s. The report's `verdict` is `complete` only when
 the run finished and every answer it needed was compared; `incomplete` counts
 what was not compared, by kind. `equivalent` is `false` when any disagreement
-was found, `true` only for a complete run with none, and `null` otherwise. A
+was found, `true` only for a complete run with none, and `null` otherwise.
+Targets counted as `skippedUnsupported` are left out of `complete`: the reader
+cannot discover them either, so there is no per-target answer to compare. A
+REST status of both 200 and 404 for one tag is reported as `tagRestConflict`,
+which leaves the run incomplete rather than showing a batch gap. A
 run stopped by the request cap or a request error still writes what it
 measured, with `stopped` saying why.

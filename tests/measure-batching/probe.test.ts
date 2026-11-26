@@ -24,6 +24,8 @@ type FakeOptions = {
   malwareSeed?: { name: string; range: string } | null;
   /** Repositories and tags that exist, as `owner/name@tag`. */
   tags?: string[];
+  /** Repositories GraphQL reports missing: a null alias with a NOT_FOUND error naming it. */
+  missingRepos?: string[];
   /** Drop or add advisories for one query, given its `affects` list. */
   answer?: (affects: string[], found: Advisory[]) => Advisory[];
   /** A status to answer a query with instead of 200. */
@@ -72,15 +74,21 @@ function fakeGitHub(options: FakeOptions = {}) {
     if (status) return json(status, { message: 'failed' });
     if (url.pathname === '/graphql') {
       const data: Record<string, unknown> = { rateLimit: { cost: 1 } };
+      const errors: unknown[] = [];
       for (let i = 0; i < call.aliases; i += 1) {
         const repository = `${variables[`o${i}`]}/${variables[`n${i}`]}`;
+        if (options.missingRepos?.includes(repository)) {
+          data[`c${i}`] = null;
+          errors.push({ type: 'NOT_FOUND', path: [`c${i}`], message: 'Could not resolve' });
+          continue;
+        }
         const tag = variables[`q${i}`].replace('refs/tags/', '');
         data[`c${i}`] = {
           nameWithOwner: repository,
           ref: tags.has(`${repository}@${tag}`) ? { target: { oid: 'abc' } } : null,
         };
       }
-      return json(200, { data });
+      return json(200, errors.length ? { data, errors } : { data });
     }
     const type = url.searchParams.get('type');
     if (!url.searchParams.has('affects')) {
@@ -340,21 +348,224 @@ test('a request error stops the run but keeps every section it reached', async (
   expect(JSON.stringify(report)).not.toContain('fetch failed');
 });
 
-test('conflicting REST statuses for one tag are reported, not collapsed', async () => {
+test('REST statuses decide only when found or missing; both is a named conflict, not a gap', async () => {
   const fake = fakeGitHub({
     advisories: [...SEED_ADVISORIES, SEED_ADVISORY],
     malwareSeed: SEED,
     tags: ['vitejs/vite@v5.0.0'],
   });
   const report = await probe(fake, {
-    tags: [tag('vitejs/vite', 'v5.0.0', '404'), tag('vitejs/vite', 'v5.0.0', '200')],
+    tags: [
+      // A failed read beside a decisive 404 is ignored.
+      tag('vitejs/vite', 'v1.0.0', '404'),
+      tag('vitejs/vite', 'v1.0.0', '502'),
+      // Found and missing: REST changed its answer.
+      tag('vitejs/vite', 'v5.0.0', '404'),
+      tag('vitejs/vite', 'v5.0.0', '200'),
+      // No decisive status at all.
+      tag('vitejs/vite', 'v2.0.0', '502'),
+    ],
   });
   expect(report.tags).toMatchObject({
-    candidates: 1,
+    candidates: 3,
     restConflicts: 1,
-    agreements: { 'rest-conflict': 1 },
+    agreements: { agree: 1, 'rest-conflict': 1, 'rest-other': 1 },
   });
-  expect(report.disagreements).toEqual({ 'tag-rest-conflict': 1 });
+  expect(report.disagreements).toEqual({});
+  expect(report.incomplete).toEqual({ tagRestConflict: 1, tagRestOther: 1 });
+  expect(report).toMatchObject({ verdict: 'incomplete', equivalent: null });
+});
+
+test('a GraphQL error naming one alias leaves that candidate uncompared', async () => {
+  const fake = fakeGitHub({
+    advisories: [...SEED_ADVISORIES, SEED_ADVISORY],
+    malwareSeed: SEED,
+    missingRepos: ['gone/repo'],
+  });
+  const report = await probe(fake, {
+    tags: [tag('gone/repo', 'v1.0.0', '404'), tag('vitejs/vite', 'v9.9.9', '404')],
+  });
+  expect(report.tags?.agreements).toEqual({ agree: 1, 'graphql-error': 1 });
+  expect(report.disagreements).toEqual({});
+  expect(report.incomplete).toEqual({ tagGraphqlError: 1 });
+  expect(report).toMatchObject({ verdict: 'incomplete', equivalent: null });
+});
+
+const isVersioned = (call: Call) =>
+  call.affects.length > 0 && call.affects.every((a) => a.lastIndexOf('@') > 0);
+
+test('failed npm batches and sweep batches, and a positive no batch checked, are each counted', async () => {
+  const fake = fakeGitHub({
+    advisories: [...SEED_ADVISORIES, SEED_ADVISORY],
+    malwareSeed: SEED,
+    status: (call) => (isVersioned(call) && call.affects.length > 1 ? 502 : undefined),
+  });
+  const report = await probe(fake);
+  // Nine sizes per type fail (the one above the maximum is not counted, and size one succeeds);
+  // reviewed's sweep batch of two fails at each page size, so @babel/traverse is never checked.
+  expect(report.incomplete).toEqual({ npmBatch: 18, npmSweepBatch: 7, npmPositiveUnchecked: 1 });
+  expect(report.npm[0].positivesUnchecked).toBe(1);
+  expect(report.disagreements).toEqual({});
+});
+
+test('GitHub rejecting the batch at the maximum size is reported as rejected', async () => {
+  const fake = fakeGitHub({
+    advisories: [...SEED_ADVISORIES, SEED_ADVISORY],
+    malwareSeed: SEED,
+    status: (call) => (isVersioned(call) && call.affects.length === MAX_BATCH ? 414 : undefined),
+  });
+  const report = await probe(fake);
+  expect(report.npm[0].sizes[1]).toMatchObject({ size: MAX_BATCH, rejected: true });
+  expect(report.npm[0].sizes.filter((s) => s.rejected)).toHaveLength(1);
+  expect(report.incomplete).toEqual({ npmBatchRejected: 2 });
+});
+
+test('a failed singleton is counted and leaves its package unjudged in both directions', async () => {
+  // pkgx@1.0.0's singleton fails, and it precedes pkgx@2.0.0, whose singleton completes empty.
+  const pkgx: Advisory = {
+    id: 'GHSA-pkgx',
+    type: 'reviewed',
+    packages: [['npm', 'pkgx']],
+    range: '<2.0.0',
+  };
+  const fake = fakeGitHub({
+    advisories: [...SEED_ADVISORIES, SEED_ADVISORY, pkgx],
+    malwareSeed: SEED,
+    status: (call) =>
+      call.affects.length === 1 && ['pkgx@1.0.0', 'lodash@4.17.20'].includes(call.affects[0])
+        ? 502
+        : undefined,
+  });
+  const report = await probe(fake, {
+    targets: [npmTarget('pkgx'), { ...npmTarget('pkgx'), version: '2.0.0' }],
+  });
+  expect(report.npm[0]).toMatchObject({ singletonIncomplete: 2, singletonPositives: 1 });
+  expect(report.incomplete).toEqual({ npmSingleton: 2 });
+  expect(report.disagreements).toEqual({});
+});
+
+const FLO_BATCH = (affects: string[]) => affects.includes('flo_pro_adk') && affects.length > 9;
+
+test('a failed per-target discovery is counted and never compared with the batch', async () => {
+  const fake = fakeGitHub({
+    advisories: [...SEED_ADVISORIES, SEED_ADVISORY],
+    malwareSeed: SEED,
+    status: (call) =>
+      call.affects.includes('flo_pro_adk') && call.affects.length === 9 ? 502 : undefined,
+  });
+  const report = await probe(fake);
+  expect(report.discovery[2]).toMatchObject({ perTargetIncomplete: 1, batchComplete: true });
+  expect(report.incomplete).toEqual({ discoveryPerTarget: 1, discoveryNoHits: 1 });
+  expect(report.disagreements).toEqual({});
+});
+
+test('a stored form the discovery batch misses is a disagreement', async () => {
+  const fake = fakeGitHub({
+    advisories: [...SEED_ADVISORIES, SEED_ADVISORY],
+    malwareSeed: SEED,
+    answer: (affects, found) =>
+      FLO_BATCH(affects) ? found.filter((a) => a.id !== 'GHSA-flo') : found,
+  });
+  const report = await probe(fake);
+  expect(report.disagreements).toEqual({ 'discovery-absent': 1 });
+  expect(report.incomplete).toEqual({});
+  expect(report.equivalent).toBe(false);
+});
+
+test('a stored form only the discovery batch returns is a disagreement', async () => {
+  const extra: Advisory = { id: 'GHSA-flo2', type: 'malware', packages: [['pip', 'Flo.Pro.Adk']] };
+  const fake = fakeGitHub({
+    advisories: [...SEED_ADVISORIES, SEED_ADVISORY],
+    malwareSeed: SEED,
+    answer: (affects, found) => (FLO_BATCH(affects) ? [...found, extra] : found),
+  });
+  const report = await probe(fake);
+  expect(report.discovery[2].extras).toEqual({ form: 1 });
+  expect(report.disagreements).toEqual({ 'discovery-extra-form': 1 });
+  expect(report.equivalent).toBe(false);
+});
+
+test('a batch record naming two batched packages is counted but is not a disagreement', async () => {
+  const shared: Advisory = {
+    id: 'GHSA-shared',
+    type: 'reviewed',
+    packages: [
+      ['npm', 'lodash'],
+      ['npm', '@babel/traverse'],
+    ],
+  };
+  const fake = fakeGitHub({
+    advisories: [...SEED_ADVISORIES, SEED_ADVISORY],
+    malwareSeed: SEED,
+    answer: (affects, found) =>
+      affects.length > 1 &&
+      affects.includes('lodash@4.17.20') &&
+      affects.includes('@babel/traverse@7.22.0')
+        ? [...found, shared]
+        : found,
+  });
+  const report = await probe(fake);
+  expect(report.npm[0].sweep[0].extras).toEqual({ shared: 2 });
+  expect(report.disagreements).toEqual({});
+  expect(report).toMatchObject({ verdict: 'complete', equivalent: true });
+});
+
+test('a section with no known positive or no discovery hit leaves the run incomplete', async () => {
+  const fake = fakeGitHub({
+    advisories: SEED_ADVISORIES.filter((a) => a.id !== 'GHSA-tjm'),
+    malwareSeed: null,
+  });
+  const report = await probe(fake);
+  expect(report.incomplete).toEqual({ malwareSeed: 1, npmNoPositives: 1, discoveryNoHits: 1 });
+});
+
+test('batch records naming no batched package are counted as incomplete', async () => {
+  const npmStray: Advisory = {
+    id: 'GHSA-npm-stray',
+    type: 'reviewed',
+    packages: [['npm', 'other']],
+  };
+  const pipStray: Advisory = {
+    id: 'GHSA-pip-stray',
+    type: 'malware',
+    packages: [['pip', 'other']],
+  };
+  const fake = fakeGitHub({
+    advisories: [...SEED_ADVISORIES, SEED_ADVISORY],
+    malwareSeed: SEED,
+    answer: (affects, found) => {
+      if (FLO_BATCH(affects)) return [...found, pipStray];
+      return affects.includes('lodash@4.17.20') && affects.length > 1
+        ? [...found, npmStray]
+        : found;
+    },
+  });
+  const report = await probe(fake);
+  // lodash is last in the batches of 1,001 (not counted), 500, 125, 31, and 7, and is in
+  // reviewed's sweep batch at each of its seven page sizes.
+  expect(report.npm[0].sizes.filter((s) => s.stray).map((s) => s.size)).toEqual([
+    MAX_BATCH + 1,
+    500,
+    125,
+    31,
+    7,
+  ]);
+  expect(report.npm[0].sweep.every((s) => s.stray === 1)).toBe(true);
+  expect(report.discovery[2].stray).toBe(1);
+  expect(report.incomplete).toEqual({ npmStray: 11, discoveryStray: 1 });
+});
+
+test('discovery counts one target per canonical package name', async () => {
+  const fake = fakeGitHub({ advisories: [...SEED_ADVISORIES, SEED_ADVISORY], malwareSeed: SEED });
+  const tj = { ecosystem: 'actions', name: 'TJ-Actions/Changed-Files', type: 'reviewed' } as const;
+  const report = await probe(fake, {
+    targets: [
+      { ...tj, version: '44.0.0' },
+      { ...tj, version: '45.0.7' },
+    ],
+  });
+  expect(report.discovery[0]).toMatchObject({ targets: 1, perTargetHits: 1 });
+  expect(report.verdict).toBe('complete');
 });
 
 test('a GraphQL query that fails as a whole leaves its candidates unanswered, not disagreeing', async () => {

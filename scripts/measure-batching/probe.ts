@@ -194,6 +194,8 @@ async function malwareSeed(run: Run): Promise<{ target: Target | null; status: S
 }
 
 const affect = (t: Target) => `${t.name}@${t.version}`;
+const isRejected = (status: number) =>
+  status >= HTTP_STATUS.clientErrorMin && status < HTTP_STATUS.serverErrorMin;
 const packageOf = (entry: string) => entry.slice(0, entry.lastIndexOf('@'));
 
 /** Each real target's singleton match ids, or null when its singleton did not complete. */
@@ -232,6 +234,8 @@ type NpmBatch = {
   records: number;
   malformed: number;
   complete: boolean;
+  /** GitHub refused the query itself (a 4xx status), as it would a URL too long or too wide. */
+  rejected: boolean;
   stray: number;
   /** Null when the batch did not complete: a failed answer is not compared. */
   gaps: Counts | null;
@@ -247,6 +251,7 @@ type NpmSweep = {
   pages: number;
   maxPageBytes: number;
   complete: boolean;
+  stray: number;
   gaps: Counts;
   extras: Counts;
 };
@@ -300,8 +305,14 @@ async function npmSizes(run: Run, plan: NpmPlan, section: NpmSection) {
     const url = advisoryUrl('npm', affects, section.type, PAGE_SIZE);
     const answer = await query(run, url);
     const comparison = answer.complete ? compareNpm(affects, answer, known) : null;
-    if (comparison && !overMaximum) tallyNpm(run, comparison, plan.checked);
-    else if (!overMaximum) bump(run.incomplete, 'npmBatch');
+    const rejected = isRejected(answer.status);
+    const stray = strayRecords('npm', affects.map(packageOf), answer.records).length;
+    if (!overMaximum) {
+      if (comparison) tallyNpm(run, comparison, plan.checked);
+      else bump(run.incomplete, rejected ? 'npmBatchRejected' : 'npmBatch');
+      // A record naming no batched package makes the reader's batch fall back (item 6).
+      bump(run.incomplete, 'npmStray', stray);
+    }
     section.sizes.push({
       size,
       urlLength: url.length,
@@ -310,7 +321,8 @@ async function npmSizes(run: Run, plan: NpmPlan, section: NpmSection) {
       records: answer.records.length,
       malformed: answer.malformed,
       complete: answer.complete,
-      stray: strayRecords('npm', affects.map(packageOf), answer.records).length,
+      rejected,
+      stray,
       gaps: comparison?.gaps ?? null,
       extras: comparison?.extras ?? null,
       positiveLast: last !== undefined,
@@ -329,6 +341,7 @@ async function npmSweep(run: Run, plan: NpmPlan, section: NpmSection) {
       pages: 0,
       maxPageBytes: 0,
       complete: true,
+      stray: 0,
       gaps: {},
       extras: {},
     };
@@ -343,6 +356,9 @@ async function npmSweep(run: Run, plan: NpmPlan, section: NpmSection) {
         bump(run.incomplete, 'npmSweepBatch');
         continue;
       }
+      const stray = strayRecords('npm', chunk.map(packageOf), answer.records).length;
+      sweep.stray += stray;
+      bump(run.incomplete, 'npmStray', stray);
       const comparison = compareNpm(chunk, answer, plan.known);
       add(sweep.gaps, comparison.gaps);
       add(sweep.extras, comparison.extras);
@@ -362,6 +378,8 @@ async function probeNpm(run: Run, targets: readonly Target[], section: NpmSectio
   const known = await npmSingletons(run, group, section);
   const positives = group.map(affect).filter((a) => known.get(a)?.length);
   section.singletonPositives = positives.length;
+  // The spec's check needs known positives; without one, no batch can show it keeps a match.
+  if (!positives.length) bump(run.incomplete, 'npmNoPositives');
   const rest = group.map(affect).filter((a) => !positives.includes(a));
   const plan: NpmPlan = { known, positives, rest, checked: new Set() };
   await npmSizes(run, plan, section);
@@ -412,7 +430,14 @@ function targetUrls(ecosystem: Ecosystem, type: QueryKind, name: string) {
 /** Discovery: per-target discovery versus one discovery batch per ecosystem and type. */
 async function probeDiscovery(run: Run, targets: readonly Target[], section: DiscoverySection) {
   const { ecosystem, type } = section;
-  const group = unique(targets.filter((t) => t.ecosystem === ecosystem && t.type === type));
+  // Discovery is package-only, so two versions of one package are one target.
+  const group = [
+    ...new Map(
+      targets
+        .filter((t) => t.ecosystem === ecosystem && t.type === type)
+        .map((t) => [canonicalName(ecosystem, t.name), t]),
+    ).values(),
+  ];
   section.targets = group.length;
   const perTarget: { name: string; spellings: string[]; forms: string[]; complete: boolean }[] = [];
   for (const t of group) {
@@ -441,6 +466,7 @@ async function probeDiscovery(run: Run, targets: readonly Target[], section: Dis
       bump(run.incomplete, 'discoveryPerTarget');
     }
   }
+  if (!section.perTargetHits) bump(run.incomplete, 'discoveryNoHits');
   const urls = discoveryUrls(
     ecosystem,
     perTarget.flatMap((t) => t.spellings),
@@ -465,6 +491,8 @@ async function probeDiscovery(run: Run, targets: readonly Target[], section: Dis
     perTarget.map((t) => t.name),
     batch.records,
   ).length;
+  // A record naming no batched target makes the discovery batch `malformed` (D3, Validation).
+  bump(run.incomplete, 'discoveryStray', section.stray);
   for (const [kind, by] of Object.entries(gaps)) bump(run.disagreements, `discovery-${kind}`, by);
   bump(run.disagreements, 'discovery-extra-form', extras.form ?? 0);
 }
@@ -509,7 +537,7 @@ async function graphqlTags(run: Run, candidates: readonly { repository: string; 
 
 export type TagSection = {
   candidates: number;
-  /** Candidates C1 recorded with two or more different REST statuses. */
+  /** Candidates C1 recorded as both found (200) and missing (404): REST itself changed. */
   restConflicts: number;
   /** Candidates in a query that failed as a whole, so they have no GraphQL answer. */
   unanswered: number;
@@ -518,17 +546,26 @@ export type TagSection = {
   sizes: { size: number; status: number; bytes: number; cost: number | null; answered: boolean }[];
 };
 
-const TAG_DISAGREEMENTS = new Set([
-  'rest-found-graphql-null',
-  'rest-missing-graphql-found',
-  'rest-conflict',
-]);
+const TAG_DISAGREEMENTS = new Set(['rest-found-graphql-null', 'rest-missing-graphql-found']);
+
+/**
+ * Answers that leave a candidate uncompared, so the run is incomplete: a REST status that neither
+ * finds nor misses the tag, REST answering both ways (instability, not a batch gap), and a GraphQL
+ * error naming the alias, which the reader would send back to REST (item 4).
+ */
+const TAG_INCOMPLETE: Readonly<Record<string, string>> = {
+  'rest-other': 'tagRestOther',
+  'rest-conflict': 'tagRestConflict',
+  'graphql-error': 'tagGraphqlError',
+};
 
 /** Tags: each candidate's recorded REST statuses versus GraphQL's answer, and cost per size. */
 async function probeTags(run: Run, tags: readonly TagCandidate[], section: TagSection) {
   const candidates = distinctTags(tags);
   section.candidates = candidates.length;
-  section.restConflicts = candidates.filter((c) => c.statuses.length > 1).length;
+  section.restConflicts = candidates.filter(
+    (c) => tagAgreement(c.statuses, 'null') === 'rest-conflict',
+  ).length;
   for (let i = 0; i < candidates.length; i += MAX_TAGS) {
     const chunk = candidates.slice(i, i + MAX_TAGS);
     const result = await graphqlTags(run, chunk);
@@ -542,8 +579,7 @@ async function probeTags(run: Run, tags: readonly TagCandidate[], section: TagSe
       const agreement = tagAgreement(c.statuses, result.answers.get(`c${j}`) ?? 'error');
       bump(section.agreements, agreement);
       if (TAG_DISAGREEMENTS.has(agreement)) bump(run.disagreements, `tag-${agreement}`);
-      // A REST status other than found or missing leaves the candidate with nothing to compare.
-      if (agreement === 'rest-other') bump(run.incomplete, 'tagRestOther');
+      if (agreement in TAG_INCOMPLETE) bump(run.incomplete, TAG_INCOMPLETE[agreement]);
     });
   }
   for (const size of halvingSizes(MAX_TAGS).filter((s) => s <= candidates.length)) {
