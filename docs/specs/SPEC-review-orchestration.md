@@ -1071,8 +1071,9 @@ This changes no W2 outcome, reason, trace, stderr form, or publication rule.
 
 ## Amendment 7: Tag Existence Query in the No-Write Guard
 
-**Status: draft, awaiting the user's approval.** The shipped bundle's no-write
-guard flagged the GraphQL tag existence query added by the S2
+**Status: approved for execution, 2026-11-26.** The user explicitly approved
+this amendment after the shipped bundle's no-write guard flagged the GraphQL
+tag existence query added by the S2
 [Batched Tag Existence Amendment](SPEC-upstream-evidence.md#batched-tag-existence-amendment)
 once research began sending it in C9
 ([#396](https://github.com/andrewpucci/dependency-update-advisor/issues/396)).
