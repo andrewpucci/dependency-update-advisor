@@ -9,7 +9,9 @@ import {
   type AdvisoryTarget,
   type QueryKind,
 } from './advisory-read.js';
+import { BATCH_URL_BYTES } from './batches.js';
 import { limit } from '../limits.js';
+import { PACKET_LIMITS } from '../schema.js';
 
 // Every record here is synthetic unless its test names a recorded fixture.
 const limits = {
@@ -51,9 +53,10 @@ function ready(
   kind: QueryKind,
   fetch: (url: string, init: RequestInit) => Promise<Response>,
   overrides = {},
+  deps = {},
 ) {
   const factory = kind === 'reviewed' ? createAdvisoryReader : createMalwareReader;
-  const reader = factory({ ...limits, ...overrides }, { fetch, now: () => 0 });
+  const reader = factory({ ...limits, ...overrides }, { fetch, now: () => 0, ...deps });
   if (reader.kind !== 'ready' || !reader.settle) throw new Error('reader');
   return reader as typeof reader & { settle: NonNullable<typeof reader.settle> };
 }
@@ -96,7 +99,7 @@ test.each(['reviewed', 'malware'] as const)(
   async (kind) => {
     const fake = server((u) => (isBatch(u) ? Response.json([]) : undefined));
     const reader = ready(kind, fake.fetch);
-    await reader.settle(npmTargets);
+    expect(await reader.settle(npmTargets)).toBe(npmTargets.length);
     expect(fake.requests).toHaveLength(1);
     const sent = fake.batches().flatMap(affectsOf);
     for (const t of npmTargets) {
@@ -171,7 +174,10 @@ test('a record naming two batched packages sends both singleton queries, which d
   // The singletons ran during settle; reading makes no request.
   expect(fake.requests).toHaveLength(3);
   expect(widget).toEqual(
-    expect.objectContaining({ complete: true, records: [expect.objectContaining({})] }),
+    expect.objectContaining({
+      complete: true,
+      records: [expect.objectContaining({ id: shared.ghsa_id })],
+    }),
   );
   expect(widget).not.toHaveProperty('batched');
   expect(leftPad).toMatchObject({ complete: true, records: [] });
@@ -185,20 +191,46 @@ test('a failed singleton for a shared record leaves that target incomplete with 
   );
   const reader = ready('malware', fake.fetch);
   await reader.settle(npmTargets);
+  const before = fake.requests.length;
   expect(await reader.read(npmTargets[0])).toMatchObject({
     complete: false,
     records: [],
     reasons: ['unknown'],
   });
   reader.close();
+  // The failed singleton decided during settle; reading does not resend it.
+  expect(fake.requests).toHaveLength(before);
 });
 
-const page2 = (u: URL) => {
+const page2 = (u: URL, cursor = 'page-2') => {
   const link = new URL(u);
-  link.searchParams.set('after', 'page-2');
+  link.searchParams.set('after', cursor);
   return link.href;
 };
+/** A record naming two batched packages, changed so that one field fails S1's validation. */
+const sharedWith = (change: Record<string, unknown>) => ({
+  ...record('reviewed', ['npm', 'widget', '< 2.0.0'], ['npm', 'left-pad', '< 2.0.0']),
+  ...change,
+});
+const invalidShared: [string, Record<string, unknown>][] = [
+  ['no summary', { summary: undefined }],
+  ['an unknown severity', { severity: 'bogus' }],
+  ['an invalid withdrawn time', { withdrawn_at: 'not-a-date' }],
+  [
+    'a missing range',
+    {
+      vulnerabilities: [
+        { package: { ecosystem: 'npm', name: 'widget' } },
+        { package: { ecosystem: 'npm', name: 'left-pad' }, vulnerable_version_range: '<2' },
+      ],
+    },
+  ],
+];
 test.each([
+  ...invalidShared.map(([label, change]): [string, (u: URL) => Response | null] => [
+    `a two-package record with ${label}`,
+    (u: URL) => (isBatch(u) ? Response.json([sharedWith(change)]) : null),
+  ]),
   [
     'a record naming no batched package',
     (u: URL) => (isBatch(u) ? Response.json([record('reviewed', ['npm', 'other', '<1'])]) : null),
@@ -262,6 +294,98 @@ test.each([
     npmTargets.map((t) => singletonUrl(t, 'reviewed')).sort(),
   );
 });
+test('a continuation URL over the batch URL cap is budget, and the batch falls back', async () => {
+  // Forty long names fill one batch's first URL close to the cap less the cursor headroom.
+  const targets = Array.from({ length: 40 }, (_, i) => npm(`p${i}-${'x'.repeat(80)}`));
+  const cursor = 'c'.repeat(PACKET_LIMITS.identityBytes);
+  const fake = server((u) => {
+    if (!isBatch(u) || u.searchParams.has('after')) return Response.json([]);
+    return Response.json([], { headers: { link: `<${page2(u, cursor)}>; rel="next"` } });
+  });
+  const reader = ready('reviewed', fake.fetch, { maxRequests: 100, maxPages: 100 });
+  const settled = await reader.settle(targets);
+  const firsts = fake.batches().filter((u) => !new URL(u).searchParams.has('after'));
+  const overCap = firsts.filter((u) => page2(new URL(u), cursor).length > BATCH_URL_BYTES);
+  expect(overCap.length).toBeGreaterThan(0);
+  const fellBack = targets.filter((t) =>
+    overCap.some((u) => affectsOf(u).includes(`${t.name}@${t.version}`)),
+  );
+  expect(settled).toBe(targets.length - fellBack.length);
+  for (const t of fellBack) expect(await reader.read(t)).not.toHaveProperty('batched');
+  reader.close();
+});
+test('an attributed record past the findings bound leaves its target to its singleton', async () => {
+  const hits = [
+    record('reviewed', ['npm', 'widget', '<2']),
+    record('reviewed', ['npm', 'widget', '<3']),
+  ];
+  const fake = server((u) => (isBatch(u) ? Response.json(hits) : Response.json([])));
+  const reader = ready('reviewed', fake.fetch, { maxFindings: 1 });
+  expect(await reader.settle(npmTargets)).toBe(npmTargets.length - 1);
+  const before = fake.requests.length;
+  expect(await reader.read(npmTargets[0])).not.toHaveProperty('batched');
+  expect(fake.requests.slice(before)).toEqual([singletonUrl(npmTargets[0], 'reviewed')]);
+  reader.close();
+});
+test('a record on the second page of a batch is attributed', async () => {
+  const hit = record('reviewed', ['npm', 'widget', '< 2.0.0']);
+  const fake = server((u) =>
+    !isBatch(u)
+      ? undefined
+      : u.searchParams.has('after')
+        ? Response.json([hit])
+        : Response.json([], { headers: { link: `<${page2(u)}>; rel="next"` } }),
+  );
+  const reader = ready('reviewed', fake.fetch);
+  await reader.settle(npmTargets);
+  expect(fake.requests).toHaveLength(2);
+  expect(await reader.read(npmTargets[0])).toMatchObject({
+    batched: true,
+    records: [{ id: hit.ghsa_id }],
+  });
+  reader.close();
+});
+test('a withdrawn batch record is attributed as withdrawn', async () => {
+  const hit = {
+    ...record('reviewed', ['npm', 'widget', '<2']),
+    withdrawn_at: '2026-01-01T00:00:00Z',
+  };
+  const reader = ready('reviewed', server(() => Response.json([hit])).fetch);
+  await reader.settle(npmTargets);
+  expect(await reader.read(npmTargets[0])).toMatchObject({
+    batched: true,
+    records: [{ id: hit.ghsa_id, withdrawn: true }],
+  });
+  reader.close();
+});
+test('duplicate targets are batched once and settled once', async () => {
+  const fake = server(() => Response.json([]));
+  const reader = ready('reviewed', fake.fetch);
+  expect(await reader.settle([npmTargets[0], npmTargets[1], { ...npmTargets[0] }])).toBe(2);
+  expect(fake.batches().map(affectsOf)).toEqual([['widget@1.0.0', '@scope/gadget@2.0.0']]);
+  // Settled targets are not batched again.
+  expect(await reader.settle(npmTargets)).toBe(1);
+  expect(fake.batches().map(affectsOf)[1]).toEqual(['left-pad@1.3.0']);
+  reader.close();
+});
+test('settle on a busy reader settles nothing and says so', async () => {
+  let release = () => {};
+  const gate = new Promise<void>((resolve) => {
+    release = resolve;
+  });
+  const fake = server(() => Response.json([]));
+  const reader = ready('reviewed', async (url) => {
+    await gate;
+    return fake.fetch(url);
+  });
+  const pending = reader.read(npm('other'));
+  expect(await reader.settle(npmTargets)).toBeNull();
+  release();
+  await pending;
+  expect(fake.batches()).toHaveLength(0);
+  expect(await reader.settle(npmTargets)).toBe(npmTargets.length);
+  reader.close();
+});
 test('a GitHub rate limit leaves unsettled targets rate_limit and still lets OSV read', async () => {
   const fake = server((u) =>
     u.hostname === 'api.osv.dev' ? Response.json({}) : Response.json({}, { status: 429 }),
@@ -276,6 +400,20 @@ test('a GitHub rate limit leaves unsettled targets rate_limit and still lets OSV
   expect(await reader.read({ ecosystem: 'pip', name: 'pyyaml', version: '3.13' })).toMatchObject({
     complete: true,
   });
+  reader.close();
+});
+test('a record from the batch holding one version is attributed to that version only', async () => {
+  const hit = record('reviewed', ['npm', 'widget', '< 2.0.0']);
+  const fake = server((u) =>
+    Response.json(isBatch(u) && affectsOf(u.href).includes('widget@1.0.0') ? [hit] : []),
+  );
+  const reader = ready('reviewed', fake.fetch);
+  await reader.settle([npm('widget'), npm('widget', '2.0.0')]);
+  expect(await reader.read(npm('widget'))).toMatchObject({
+    batched: true,
+    records: [{ id: hit.ghsa_id }],
+  });
+  expect(await reader.read(npm('widget', '2.0.0'))).toMatchObject({ batched: true, records: [] });
   reader.close();
 });
 test('two versions of one npm package are never in one batch', async () => {
@@ -431,22 +569,94 @@ test('a discovery record naming no batched target makes the batch malformed and 
     ['flo-pro-adk@1.0.0'],
   ]);
 });
-test('a failed second discovery request makes every target in the batch fall back', async () => {
+const long = pipTargets[1];
+const carries = (u: string, t: AdvisoryTarget) =>
+  affectsOf(u).some((s) => discoverySpellings(t.ecosystem, t.name).includes(s));
+test('a failed second request of a discovery batch makes every target in it fall back', async () => {
   let discovery = 0;
   const fake = server((u) =>
-    isDiscovery(u) && ++discovery === 2 ? Response.json({}, { status: 503 }) : Response.json([]),
+    isDiscovery(u) && carries(u.href, long) && ++discovery === 2
+      ? Response.json({}, { status: 503 })
+      : Response.json([]),
   );
   const reader = ready('malware', fake.fetch);
-  await reader.settle(pipTargets);
-  const batch = fake.requests.slice();
-  // flo-pro-adk was carried by the first request, which succeeded.
-  expect(affectsOf(batch[0])).toContain('flo-pro-adk');
-  for (const t of pipTargets) {
+  const both = [long, { ...long, version: '2.0.0' }];
+  // The long name's spellings need several requests, so it is a batch of its own.
+  expect(await reader.settle([pipTargets[0], ...both])).toBe(1);
+  expect(fake.requests.filter((u) => carries(u, long)).length).toBeGreaterThan(1);
+  expect(await reader.read(pipTargets[0])).toMatchObject({ batched: true });
+  for (const t of both) {
     const before = fake.requests.length;
-    const lookup = await reader.read(t);
-    expect(lookup).not.toHaveProperty('batched');
+    expect(await reader.read(t)).not.toHaveProperty('batched');
     expect(fake.requests.length).toBeGreaterThan(before);
   }
+  reader.close();
+});
+test('a failed second page drops every package of a shared discovery batch', async () => {
+  const small = [pipTargets[0], pipTargets[2], pip('pillow', '8.0.0')];
+  const fake = server((u) =>
+    !isDiscovery(u)
+      ? undefined
+      : u.searchParams.has('after')
+        ? Response.json({}, { status: 503 })
+        : Response.json([], { headers: { link: `<${page2(u)}>; rel="next"` } }),
+  );
+  const reader = ready('malware', fake.fetch);
+  expect(await reader.settle(small)).toBe(0);
+  // One request carried all three packages.
+  expect(fake.requests.filter((u) => !new URL(u).searchParams.has('after'))).toHaveLength(1);
+  reader.close();
+});
+test('an oversized discovery page drops only its own batch', async () => {
+  const fake = server((u) =>
+    isDiscovery(u) && carries(u.href, long)
+      ? new Response(`[${' '.repeat(limits.maxResponseBytes)}]`, {
+          headers: { 'content-type': 'application/json' },
+        })
+      : Response.json([]),
+  );
+  const reader = ready('malware', fake.fetch);
+  expect(await reader.settle(pipTargets)).toBe(3);
+  expect(await reader.read(pipTargets[0])).toMatchObject({ batched: true });
+  expect(await reader.read(pipTargets[3])).toMatchObject({ batched: true });
+  expect(await reader.read(long)).not.toHaveProperty('batched');
+  reader.close();
+});
+test('packages share a discovery batch only while their spellings fit one request', async () => {
+  const many = Array.from({ length: 30 }, (_, i) => pip(`pkg${i}-alpha-beta`));
+  const fake = server(() => Response.json([]));
+  const reader = ready('malware', fake.fetch);
+  expect(await reader.settle(many)).toBe(many.length);
+  reader.close();
+  expect(fake.requests.length).toBeGreaterThan(1);
+  for (const t of many)
+    expect(fake.requests.filter((u) => carries(u, t)).map(affectsOf)).toEqual([
+      expect.arrayContaining(discoverySpellings('pip', t.name)),
+    ]);
+});
+test('a continuation URL over the discovery cap is budget, and the batch falls back', async () => {
+  const fake = server((u) => {
+    if (!isDiscovery(u) || u.searchParams.has('after')) return Response.json([]);
+    return Response.json([], {
+      headers: { link: `<${page2(u, 'c'.repeat(600))}>; rel="next"` },
+    });
+  });
+  const reader = ready('malware', fake.fetch);
+  expect(await reader.settle([long])).toBe(0);
+  reader.close();
+});
+test('a discovery batch whose requests miss a spelling settles nothing', async () => {
+  const fake = server(() => Response.json([]));
+  // The test seam drops the first request, so the long name's first spellings are never fetched.
+  const reader = ready(
+    'malware',
+    fake.fetch,
+    {},
+    { discoveryPlan: (urls: string[]) => urls.slice(1) },
+  );
+  expect(await reader.settle([long])).toBe(0);
+  expect(fake.requests.length).toBeGreaterThan(0);
+  expect(await reader.read(long)).not.toHaveProperty('batched');
   reader.close();
 });
 test('reading a settled discovery target makes no request', async () => {
