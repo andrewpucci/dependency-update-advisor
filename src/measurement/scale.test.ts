@@ -24,6 +24,23 @@ test('scales the hand-set evidence shares, envelope values, and research caps', 
     expect(valueAt(10, id), id).toBe(10 * (REGISTER.get(id)?.value ?? 0));
 });
 
+test('scales the fitted share bases and rates with their ceilings, without binary noise', () => {
+  for (const id of [
+    'research.share.upstream.requests.base',
+    'research.share.upstream.requests.rate.direct',
+    'research.share.signals.malware.requests.rate.eligible',
+    'collection.share.registry.requests.base',
+    'collection.share.registry.requests.rate.npm',
+  ])
+    expect(valueAt(10, id), id).toBe(10 * (REGISTER.get(id)?.value ?? 0));
+  // 0.1 × 3 is 0.30000000000000004 in binary floating point; the scaled rate stays 0.3.
+  expect(valueAt(3, 'research.share.signals.malware.requests.rate.eligible')).toBe(0.3);
+  // A base the fit kept at its ceiling is derived, so it follows the scaled ceiling.
+  expect(valueAt(10, 'research.share.upstream.bytes.base')).toBe(
+    10 * (REGISTER.get('evidence.allocation.upstream.maxTotalBytes')?.value ?? 0),
+  );
+});
+
 test('recomputes derived entries from the scaled inputs', () => {
   for (const id of [
     'evidence.allocation.signals.maxRequests',

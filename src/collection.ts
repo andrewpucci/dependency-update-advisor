@@ -1,3 +1,4 @@
+import { collectionRegistryRequests, researchShareUnits } from './budget.js';
 import { collectorRoots, type DependabotRootsOutcome } from './dependabot-roots.js';
 import type { ReviewBinding } from './event.js';
 import { collectActionsInventory } from './evidence/actions.js';
@@ -61,6 +62,7 @@ export const W2_EVIDENCE_LIMITS = Object.freeze({
     maxRetainedBytes: limit('w2.graph.maxRetainedBytes'),
   }),
   registry: Object.freeze({
+    // The ceiling; the reader opens with the share scaled from npm members under it.
     maxRequests: limit('w2.registry.maxRequests'),
     maxResponseBytes: limit('w2.registry.maxResponseBytes'),
     maxTotalBytes: limit('w2.registry.maxTotalBytes'),
@@ -200,6 +202,9 @@ export function createEvidenceCollectors(
     if (inventory.kind !== 'inventory') return noInventory(inventory);
     input.onNpmInventory?.(inventory);
     const total = remaining(input);
+    // The registry share scales with the npm members of the trusted inventory just read from the
+    // bound snapshot, never with PR text; it is known here, before the registry reader opens.
+    const npmMembers = researchShareUnits(inventory.changes).eligible.registry;
     const enriched = await enrichNpmEvidence(
       {
         inventory,
@@ -207,6 +212,7 @@ export function createEvidenceCollectors(
         limits: {
           ...W2_EVIDENCE_LIMITS.graph,
           ...W2_EVIDENCE_LIMITS.registry,
+          maxRequests: collectionRegistryRequests(npmMembers),
           ...timeouts(W2_EVIDENCE_LIMITS.registry.requestTimeoutMs, total),
         },
       },

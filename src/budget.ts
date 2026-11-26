@@ -56,12 +56,12 @@ export const EVIDENCE_READ_ALLOCATION = Object.freeze({
     maxRequests: limit('evidence.allocation.registry.maxRequests'),
     maxTotalBytes: limit('evidence.allocation.registry.maxTotalBytes'),
   }),
-  // Research reads scale with the group: measured at about 7 upstream (5 GitHub plus 2 registry),
-  // 2 advisory, and 1 each malware and publish-time request per extra npm package, so these cover
-  // a group of 32 npm packages. pip and Actions malware lookups take at least 2 requests (stored-name
-  // discovery, then the versioned query) and Actions reviewed lookups 3 per update, so the malware
-  // share covers about 20 such packages and the advisory share about 26 Actions updates; S1's
-  // Package Name Form Amendment states this limit.
+  // Research shares scale with the change (`researchShares`, from the B12 fit), and these entries
+  // are their ceilings; the collection registry share above scales the same way on npm members
+  // (`collectionRegistryRequests`). pip and Actions malware lookups take at least 2 requests
+  // (stored-name discovery, then the versioned query) and Actions reviewed lookups 3 per update,
+  // so the malware ceiling covers about 20 such packages and the advisory ceiling about 26 Actions
+  // updates; S1's Package Name Form Amendment states this limit.
   upstream: Object.freeze({
     maxRequests: limit('evidence.allocation.upstream.maxRequests'),
     maxTotalBytes: limit('evidence.allocation.upstream.maxTotalBytes'),
@@ -221,26 +221,37 @@ function exactDecimal(name: string, value: number): { digits: bigint; places: nu
  * `base + Σ rate × count`, rounded up, computed on exact decimals so a rate such as 1.1 never
  * picks up a binary rounding error that would push the share over a whole number.
  */
+function exactShare(
+  base: number,
+  terms: readonly Readonly<{ name: string; rate: number; count: number }>[],
+): number {
+  const decimals = [
+    { ...exactDecimal('base', base), count: 1n },
+    ...terms.map((term) => ({ ...exactDecimal(term.name, term.rate), count: BigInt(term.count) })),
+  ];
+  const places = Math.max(...decimals.map((term) => term.places));
+  const scale = DECIMAL_BASE ** BigInt(places);
+  const numerator = decimals.reduce(
+    (sum, term) => sum + term.digits * term.count * DECIMAL_BASE ** BigInt(places - term.places),
+    0n,
+  );
+  return Number((numerator + scale - 1n) / scale);
+}
+
 function scaled(
   parameters: ShareDimensionParameters,
   units: ResearchShareUnits,
   eligible: number,
   floor: number,
 ): number {
-  const terms = [
-    { ...exactDecimal('base', parameters.base), count: 1n },
-    ...Object.entries(parameters.rates).map(([unit, rate]) => ({
-      ...exactDecimal(unit, rate ?? 0),
-      count: BigInt(unit === 'eligible' ? eligible : units[unit as RoleUnit]),
+  const total = exactShare(
+    parameters.base,
+    Object.entries(parameters.rates).map(([unit, rate]) => ({
+      name: unit,
+      rate: rate ?? 0,
+      count: unit === 'eligible' ? eligible : units[unit as RoleUnit],
     })),
-  ];
-  const places = Math.max(...terms.map((term) => term.places));
-  const scale = DECIMAL_BASE ** BigInt(places);
-  const numerator = terms.reduce(
-    (sum, term) => sum + term.digits * term.count * DECIMAL_BASE ** BigInt(places - term.places),
-    0n,
   );
-  const total = Number((numerator + scale - 1n) / scale);
   return Math.min(parameters.ceiling, Math.max(floor, total));
 }
 
@@ -282,4 +293,35 @@ export function researchShares(
       readers,
     },
   };
+}
+
+export type CollectionRegistryShareParameters = Readonly<{
+  base: number;
+  ceiling: number;
+  rates: Readonly<{ npm: number }>;
+}>;
+
+/** The register's collection registry request share, capped by the registry allocation. */
+export const COLLECTION_REGISTRY_SHARE_PARAMETERS: CollectionRegistryShareParameters =
+  Object.freeze({
+    base: limit('collection.share.registry.requests.base'),
+    ceiling: EVIDENCE_READ_ALLOCATION.registry.maxRequests,
+    rates: Object.freeze({ npm: limit('collection.share.registry.requests.rate.npm') }),
+  });
+
+/**
+ * The collection registry reader's request share for a trusted npm inventory of `npmMembers`
+ * members: `min(ceiling, base + rate × npmMembers)`, rounded up, and at least 1. Its byte share
+ * stays fixed. These reads go to the npm registry, never to the GitHub quota.
+ */
+export function collectionRegistryRequests(
+  npmMembers: number,
+  parameters: CollectionRegistryShareParameters = COLLECTION_REGISTRY_SHARE_PARAMETERS,
+): number {
+  if (!Number.isSafeInteger(npmMembers) || npmMembers < 0)
+    throw new Error('invalid npm member count');
+  const total = exactShare(parameters.base, [
+    { name: 'npm', rate: parameters.rates.npm, count: npmMembers },
+  ]);
+  return Math.min(parameters.ceiling, Math.max(1, total));
 }

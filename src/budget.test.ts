@@ -1,5 +1,7 @@
 import { expect, test } from 'vite-plus/test';
 import {
+  collectionRegistryRequests,
+  COLLECTION_REGISTRY_SHARE_PARAMETERS,
   EVIDENCE_READ_ALLOCATION,
   EVIDENCE_READ_ENVELOPE,
   JOB_BUDGET_MS,
@@ -21,7 +23,7 @@ test('records the job window as the budget less the pre-startup allowance', () =
 
 test('records the evidence-read envelope', () => {
   expect(EVIDENCE_READ_ENVELOPE).toEqual({
-    maxRequests: 944,
+    maxRequests: 1520,
     maxResponseBytes: MiB,
     maxTotalBytes: 54 * MiB,
     requestTimeoutMs: 15_000,
@@ -38,7 +40,7 @@ test('splits the envelope with nothing unallocated or over-allocated', () => {
       freshness: { maxRequests: 24, maxTotalBytes: 3 * MiB },
     },
     session: { maxRequests: 160, maxTotalBytes: 12 * MiB },
-    registry: { maxRequests: 64, maxTotalBytes: 4 * MiB },
+    registry: { maxRequests: 640, maxTotalBytes: 4 * MiB },
     upstream: { maxRequests: 240, maxTotalBytes: 15 * MiB },
     advisory: { maxRequests: 80, maxTotalBytes: 5 * MiB },
     signals: {
@@ -134,24 +136,95 @@ function testParameters(
   };
 }
 
-test('starting parameters reproduce the current research shares for any change', () => {
-  for (const units of [NO_UNITS, R1_UNITS]) {
+/** R1, PR #276: 105 npm members, 2 direct and 103 transitive. */
+const R276_UNITS: Units = {
+  direct: 2,
+  transitive: 103,
+  added: 0,
+  removed: 0,
+  eligible: { malware: 105, publishTimes: 105, registry: 105, metadata: 0, upstream: 0 },
+};
+/** One direct npm member. */
+const ONE_UNITS: Units = {
+  ...NO_UNITS,
+  direct: 1,
+  eligible: { ...NO_UNITS.eligible, malware: 1, publishTimes: 1, registry: 1 },
+};
+const READERS = ['malware', 'publishTimes', 'registry', 'metadata', 'upstream'] as const;
+
+test('shares the fit keeps at their ceilings stay there for any change', () => {
+  for (const units of [NO_UNITS, ONE_UNITS, R1_UNITS, R276_UNITS]) {
     const shares = researchShares(units);
     const { upstream, advisory, signals } = EVIDENCE_READ_ALLOCATION;
-    expect(shares.upstream).toEqual({
-      maxRequests: upstream.maxRequests,
-      maxTotalBytes: upstream.maxTotalBytes,
-    });
-    expect(shares.advisory).toEqual({
-      maxRequests: advisory.maxRequests,
-      maxTotalBytes: advisory.maxTotalBytes,
-    });
-    expect(shares.signals).toEqual({
-      maxRequests: signals.maxRequests,
-      maxTotalBytes: signals.maxTotalBytes,
-      readers: signals.readers,
-    });
+    // Every byte share stays at its ceiling.
+    expect(shares.upstream.maxTotalBytes).toBe(upstream.maxTotalBytes);
+    expect(shares.advisory.maxTotalBytes).toBe(advisory.maxTotalBytes);
+    for (const reader of READERS)
+      expect(shares.signals.readers[reader].maxTotalBytes, reader).toBe(
+        signals.readers[reader].maxTotalBytes,
+      );
+    expect(shares.signals.maxTotalBytes).toBe(signals.maxTotalBytes);
+    // The registry, metadata, and upstream signals readers keep their request ceilings too.
+    for (const reader of ['registry', 'metadata', 'upstream'] as const)
+      expect(shares.signals.readers[reader], reader).toEqual(signals.readers[reader]);
   }
+});
+
+type FittedRequests = Readonly<
+  Record<'upstream' | 'advisory' | 'malware' | 'publishTimes', number>
+>;
+const fittedRequests = (shares: ReturnType<typeof researchShares>): FittedRequests => ({
+  upstream: shares.upstream.maxRequests,
+  advisory: shares.advisory.maxRequests,
+  malware: shares.signals.readers.malware.maxRequests,
+  publishTimes: shares.signals.readers.publishTimes.maxRequests,
+});
+
+test('the fitted values give a one-member change a smaller share than R1 #276', () => {
+  const { upstream, signals } = EVIDENCE_READ_ALLOCATION;
+  const small = researchShares(ONE_UNITS);
+  const large = researchShares(R276_UNITS);
+  // One member: 9 + 5.9 = 14.9, 3 + 0.2 = 3.2, 2 + 0.1 = 2.1, and 2 + 1.2 = 3.2, rounded up.
+  expect(fittedRequests(small)).toEqual({ upstream: 15, advisory: 4, malware: 3, publishTimes: 4 });
+  // 105 members: 9 + 5.9 × 105 and 2 + 1.2 × 105 pass their ceilings; 3 + 0.2 × 105 = 24 and
+  // 2 + 0.1 × 105 = 12.5 stay under theirs.
+  expect(fittedRequests(large)).toEqual({
+    upstream: upstream.maxRequests,
+    advisory: 24,
+    malware: 13,
+    publishTimes: signals.readers.publishTimes.maxRequests,
+  });
+  const largeRequests = fittedRequests(large);
+  for (const [share, count] of Object.entries(fittedRequests(small)))
+    expect(count, share).toBeLessThan(largeRequests[share as keyof FittedRequests]);
+  expect(small.signals.maxRequests).toBeLessThan(large.signals.maxRequests);
+  // The collection registry share: 5 + 2.5 = 7.5 and 5 + 2.5 × 105 = 267.5, rounded up.
+  expect(collectionRegistryRequests(ONE_UNITS.eligible.registry)).toBe(8);
+  expect(collectionRegistryRequests(R276_UNITS.eligible.registry)).toBe(268);
+});
+
+test('the collection registry share scales with npm members and stops at its ceiling', () => {
+  const ceiling = EVIDENCE_READ_ALLOCATION.registry.maxRequests;
+  expect(COLLECTION_REGISTRY_SHARE_PARAMETERS).toEqual({
+    base: REGISTER.get('collection.share.registry.requests.base')?.value,
+    ceiling,
+    rates: { npm: REGISTER.get('collection.share.registry.requests.rate.npm')?.value },
+  });
+  // 5 + 2.5 × count, rounded up: no members, one, two, and R1 #276's 105.
+  expect([0, 1, 2, 105].map((count) => collectionRegistryRequests(count))).toEqual([5, 8, 10, 268]);
+  // 5 + 2.5 × 254 reaches the ceiling exactly; more members are capped there.
+  expect(collectionRegistryRequests(253)).toBeLessThan(ceiling);
+  expect(collectionRegistryRequests(254)).toBe(ceiling);
+  expect(collectionRegistryRequests(255)).toBe(ceiling);
+  expect(collectionRegistryRequests(100_000)).toBe(ceiling);
+  for (let count = 0; count < 300; count++)
+    expect(collectionRegistryRequests(count + 1)).toBeGreaterThanOrEqual(
+      collectionRegistryRequests(count),
+    );
+  // A request share is at least 1, and a count that is not a whole number is refused.
+  expect(collectionRegistryRequests(0, { base: 0, ceiling, rates: { npm: 0 } })).toBe(1);
+  for (const count of [-1, 1.5, Number.NaN])
+    expect(() => collectionRegistryRequests(count), String(count)).toThrow(/npm member count/);
 });
 
 test('a share is its base plus each rate times its count, rounded up, under its ceiling', () => {

@@ -5,6 +5,7 @@ import * as npmGraphModule from './evidence/npm-graph.js';
 import * as uvGraphModule from './evidence/uv-graph.js';
 import * as readModule from './github-read.js';
 import { npmScenario } from '../tests/parity/npm-inventory.js';
+import { collectionRegistryRequests } from './budget.js';
 import { uvMetadataScenario } from '../tests/parity/uv-metadata.js';
 import { createEvidenceCollectors, openEvidenceSession, W2_EVIDENCE_LIMITS } from './collection.js';
 import type { DependabotRootsOutcome } from './dependabot-roots.js';
@@ -430,7 +431,7 @@ test.each([
   ['the time left before the deadline', 100_000, 40_000, 60_000],
   ['the full 240,000 ms when more than that remains', 900_000, 0, 240_000],
 ])(
-  'limits registry enrichment to %s and the registry allocation',
+  'limits registry enrichment to %s and the registry share scaled from npm members',
   async (_label, deadline, now, expected) => {
     const fixture = npmScenario(2, false, 'empty', true);
     const opened = await openEvidenceSession({
@@ -441,20 +442,27 @@ test.each([
     });
     if (opened.kind !== 'ready') throw new Error('expected a D1 session');
     const configRevision = fixture.expected.contextRevision;
+    const seen: { changes: { ecosystem: string; basis?: unknown }[] }[] = [];
     const collectors = createEvidenceCollectors({
       binding: fixture.binding,
       dependabot: configured(configRevision),
       registryFetch: async () => new Response('{}'),
+      onNpmInventory: (inventory) => seen.push(inventory as never),
       now: () => now,
       deadline,
     });
     vi.mocked(npmGraphModule.enrichNpmEvidence).mockClear();
     await collectors.npm(opened.session);
+    // The share counts the trusted inventory's npm members; declaration records are not members.
+    const members = seen[0]?.changes.filter((c) => c.ecosystem === 'npm' && !('basis' in c));
+    expect(members?.length).toBeGreaterThan(0);
+    const share = collectionRegistryRequests(members?.length ?? 0);
+    expect(share).toBeLessThan(W2_EVIDENCE_LIMITS.registry.maxRequests);
     expect(npmGraphModule.enrichNpmEvidence).toHaveBeenCalledWith(
       expect.objectContaining({
         limits: expect.objectContaining({
           totalTimeoutMs: expected,
-          maxRequests: 64,
+          maxRequests: share,
           maxTotalBytes: 4 * 1024 * 1024,
         }),
       }),

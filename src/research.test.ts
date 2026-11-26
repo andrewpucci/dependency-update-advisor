@@ -15,6 +15,7 @@ import {
   researchShareUnits,
   researchShares,
 } from './budget.js';
+import { CEILING_SHARES } from '../tests/parity/shares.js';
 import { researchOrder, runResearch, type ResearchObservation } from './research.js';
 import { limit } from './limits.js';
 import type { PacketChange } from './schema.js';
@@ -417,26 +418,46 @@ test('caps every reader at its share, so the readers together stay inside the en
   expect(upstream).toHaveLength(2);
   expect(advisory).toHaveLength(1);
   const { readers } = EVIDENCE_READ_ALLOCATION.signals;
+  // Each reader opens with the register's share for this packet, under its allocation ceiling.
+  const shares = researchShares(researchShareUnits(packet.changes));
+  const computed = shares.signals.readers;
   const expected = [
-    ['S2 upstream', upstream[0], EVIDENCE_READ_ALLOCATION.upstream],
-    ['advisory', advisory[0], EVIDENCE_READ_ALLOCATION.advisory],
-    ['malware', calls(advisoryReadModule.createMalwareReader)[0], readers.malware],
-    ['npm registry', registry[1], readers.registry],
+    ['S2 upstream', upstream[0], shares.upstream, EVIDENCE_READ_ALLOCATION.upstream],
+    ['advisory', advisory[0], shares.advisory, EVIDENCE_READ_ALLOCATION.advisory],
+    [
+      'malware',
+      calls(advisoryReadModule.createMalwareReader)[0],
+      computed.malware,
+      readers.malware,
+    ],
+    ['npm registry', registry[1], computed.registry, readers.registry],
     [
       'publish times',
       calls(publishTimesModule.createNpmPublishTimeReader)[0],
+      computed.publishTimes,
       readers.publishTimes,
     ],
-    ['metadata', calls(signalReadModule.createPolicySignalReader)[0], readers.metadata],
-    ['S3 upstream', upstream[1], readers.upstream],
+    [
+      'metadata',
+      calls(signalReadModule.createPolicySignalReader)[0],
+      computed.metadata,
+      readers.metadata,
+    ],
+    ['S3 upstream', upstream[1], computed.upstream, readers.upstream],
   ] as const;
-  for (const [name, actual, share] of expected)
+  for (const [name, actual, share, ceiling] of expected) {
     expect(actual, name).toMatchObject({
       maxRequests: share.maxRequests,
       maxTotalBytes: share.maxTotalBytes,
       maxResponseBytes: Math.min(MiB, share.maxTotalBytes),
     });
+    expect(share.maxRequests, name).toBeLessThanOrEqual(ceiling.maxRequests);
+    expect(share.maxTotalBytes, name).toBe(ceiling.maxTotalBytes);
+  }
+  // The fitted shares give this four-member packet less than the upstream ceiling.
+  expect(shares.upstream.maxRequests).toBeLessThan(EVIDENCE_READ_ALLOCATION.upstream.maxRequests);
   const used = expected.reduce((sum, [, actual]) => sum + actual.maxRequests, 0);
+  const ceilings = expected.reduce((sum, [, , , ceiling]) => sum + ceiling.maxRequests, 0);
   const bytes = expected.reduce((sum, [, actual]) => sum + actual.maxTotalBytes, 0);
   // The transport, evidence session, and registry shares hold the rest of the envelope.
   const others = [
@@ -444,9 +465,9 @@ test('caps every reader at its share, so the readers together stay inside the en
     EVIDENCE_READ_ALLOCATION.session,
     EVIDENCE_READ_ALLOCATION.registry,
   ];
-  expect(used + others.reduce((sum, share) => sum + share.maxRequests, 0)).toBe(
-    EVIDENCE_READ_ENVELOPE.maxRequests,
-  );
+  const otherRequests = others.reduce((sum, share) => sum + share.maxRequests, 0);
+  expect(ceilings + otherRequests).toBe(EVIDENCE_READ_ENVELOPE.maxRequests);
+  expect(used + otherRequests).toBeLessThan(EVIDENCE_READ_ENVELOPE.maxRequests);
   expect(bytes + others.reduce((sum, share) => sum + share.maxTotalBytes, 0)).toBe(
     EVIDENCE_READ_ENVELOPE.maxTotalBytes,
   );
@@ -660,8 +681,10 @@ test('a run with no GitHub rate-limit stop has no retry time, even when OSV is r
   const plain = await runResearch(base(fixture, packet));
   if (plain.kind !== 'ready') throw new Error(plain.kind);
   expect(plain.packet.retryAfter).toBeNull();
+  // At the ceilings, so the Action's and pip lookups reach OSV instead of stopping on budget.
   const osvLimited = await runResearch({
     ...base(fixture, packet),
+    shareParameters: CEILING_SHARES,
     fetch: async (url: string, init: RequestInit) =>
       new URL(url).host === 'api.osv.dev'
         ? new Response(null, { status: 429, headers: { 'retry-after': '1' } })
@@ -733,8 +756,11 @@ test.each([true, false])(
     if (!batched) await dropAdvisoryPrePass();
     const counts: Record<string, number> = {};
     const bump = (key: string) => (counts[key] = (counts[key] ?? 0) + 1);
+    // Batched, the register's fitted shares cover the group. The fit sized no unbatched run, so
+    // that baseline gets the ceilings, which it must still fit.
     const result = await runResearch({
       ...base(fixture, packet),
+      ...(batched ? {} : { shareParameters: CEILING_SHARES }),
       fetch: async (url, init) => {
         const target = new URL(url);
         if (target.pathname.startsWith('/advisories'))
@@ -1192,8 +1218,11 @@ async function advisoryRun(batched: boolean) {
   const { fixture, packet } = await scenario({ vulnerableNpm: true, children: 3 } as never);
   if (!batched) await dropAdvisoryPrePass();
   const sent: string[] = [];
+  // Both runs read at the ceilings, so the unbatched baseline is not cut by the fitted shares and
+  // the two packets differ only in the batched source text.
   const result = await runResearch({
     ...base(fixture, packet),
+    shareParameters: CEILING_SHARES,
     fetch: async (url, init) => {
       const target = new URL(url);
       if (target.pathname === '/advisories' && target.searchParams.get('type') === 'reviewed')
