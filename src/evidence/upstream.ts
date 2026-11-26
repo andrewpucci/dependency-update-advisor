@@ -912,19 +912,19 @@ export async function enrichUpstream(
  * and access stops that SPEC-evidence-coverage §1.2 says a member keeps, each with its own next
  * action in §4. Any other upstream reason leaves those lookups `unsupported`.
  */
-export const IDENTITY_LOSS_REASONS: readonly EvidenceReason[] = [
+export const IDENTITY_LOSS_REASONS: readonly EvidenceReason[] = Object.freeze([
   'budget',
   'timeout',
   'rate_limit',
   'permission',
-];
+]);
 /** A side upstream tried to prove an identity for but did not, with why. */
 export type IdentityGap = Readonly<{
   memberId: string;
   side: 'base' | 'head';
   reasons: readonly EvidenceReason[];
 }>;
-type IdentityGapInput = Pick<UpstreamInput, 'npmInventory' | 'sources'> & {
+export type IdentityGapInput = Pick<UpstreamInput, 'npmInventory' | 'sources'> & {
   changes: readonly ReadonlyData<PacketChange>[];
   publicIdentities: readonly PublicPackageIdentity[];
   actionVersions: readonly ActionVersionMapping[];
@@ -950,6 +950,8 @@ function identityTried(
     // An npm side without lock integrity has no metadata target, so upstream never tries it.
     return metadataTarget(input, change, side) !== null;
   } catch {
+    // The lock node check throws when the node or its lockfile source disagrees with the change,
+    // which upstream treats as invalid input and never researches.
     return false;
   }
 }

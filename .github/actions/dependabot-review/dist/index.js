@@ -20989,12 +20989,12 @@ async function enrichUpstream(value, dependencies) {
 * and access stops that SPEC-evidence-coverage §1.2 says a member keeps, each with its own next
 * action in §4. Any other upstream reason leaves those lookups `unsupported`.
 */
-const IDENTITY_LOSS_REASONS = [
+const IDENTITY_LOSS_REASONS = Object.freeze([
 	"budget",
 	"timeout",
 	"rate_limit",
 	"permission"
-];
+]);
 /** Whether upstream tries an identity for this side: an Action, or a public registry package it can read. */
 function identityTried(input, change, side) {
 	const instance = side === "base" ? change.from : change.to;
@@ -21281,7 +21281,12 @@ function validateProofs(input) {
 function validateGaps(input) {
 	if (input.identityGaps === void 0) return;
 	advisoryCheck(Array.isArray(input.identityGaps) && input.identityGaps.length <= 2 * PACKET_LIMITS.changes);
-	for (const g of input.identityGaps) advisoryCheck(input.changes.some((c) => c.id === g.memberId) && (g.side === "base" || g.side === "head") && Array.isArray(g.reasons) && g.reasons.length > 0 && g.reasons.every((r) => IDENTITY_LOSS_REASONS.includes(r)));
+	const sides = /* @__PURE__ */ new Set();
+	for (const g of input.identityGaps) {
+		const change = input.changes.find((c) => c.id === g.memberId);
+		advisoryCheck(change && !("basis" in change) && (g.side === "base" || g.side === "head") && (g.side === "base" ? change.from : change.to) && !sides.has(g.memberId + ":" + g.side) && Array.isArray(g.reasons) && g.reasons.length > 0 && g.reasons.every((r) => IDENTITY_LOSS_REASONS.includes(r)));
+		sides.add(g.memberId + ":" + g.side);
+	}
 }
 function validate(input) {
 	advisoryCheck(parseReviewBinding(input.binding));
@@ -33151,14 +33156,15 @@ async function runResearch(input) {
 		const sharedMetadata = metadata.kind === "ready" ? metadata : null;
 		if (sharedMetadata) readers.push(sharedMetadata);
 		await runStage("upstream", () => enrichUpstreamStage(input, dependencies, readers, progress, fail, shares, sharedMetadata ?? void 0));
-		progress.identityGaps = identityGaps({
+		const gapInput = {
 			changes: progress.changes,
 			sources: progress.sources,
-			npmInventory: input.npmInventory ?? void 0,
+			...input.npmInventory ? { npmInventory: input.npmInventory } : {},
 			publicIdentities: progress.publicIdentities,
 			actionVersions: progress.actionVersions,
 			attempts: progress.upstreamAttempts
-		});
+		};
+		progress.identityGaps = identityGaps(gapInput);
 		await runStage("advisories", () => enrichAdvisoryStage(input, dependencies, readers, progress, fail, shares));
 		await runStage("signals", () => enrichSignalsStage(input, dependencies, readers, progress, fail, sharedMetadata, shares));
 		restorePacketOrder(progress, packet);

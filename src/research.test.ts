@@ -1054,22 +1054,122 @@ test('only budget, timeout, rate_limit and permission pass from upstream to look
   expect(gapsFor(orbit.id)).toEqual([]);
 });
 
-test('advisory lookup rejects an identity gap with a reason outside the allowlist', async () => {
-  const { fixture, packet } = await scenario();
+/** The advisory and signals stage inputs research built, with members to aim identity gaps at. */
+async function stageInputs() {
+  const { fixture, packet } = await scenario({ declaration: true, extras: true });
   vi.mocked(advisoryModule.enrichAdvisories).mockClear();
+  vi.mocked(policySignalsModule.enrichPolicySignals).mockClear();
   await runResearch(base(fixture, packet));
-  const [input, deps] = vi.mocked(advisoryModule.enrichAdvisories).mock.calls[0]!;
-  const member = packet.changes[0]!.id;
-  const gap = (reasons: string[]) => ({
-    ...(input as object),
-    identityGaps: [{ memberId: member, side: 'head', reasons }],
+  const [advisory, advisoryDeps] = vi.mocked(advisoryModule.enrichAdvisories).mock.calls[0]!;
+  const [signals, signalDeps] = vi.mocked(policySignalsModule.enrichPolicySignals).mock.calls[0]!;
+  const find = (match: (change: ResearchedChange) => boolean) => {
+    const change = packet.changes.find(match);
+    if (!change) throw new Error('fixture member');
+    return change.id;
+  };
+  return {
+    advisory: (gaps: unknown) =>
+      advisoryModule.enrichAdvisories(
+        { ...(advisory as object), identityGaps: gaps } as never,
+        advisoryDeps,
+      ),
+    signals: (gaps: unknown) =>
+      policySignalsModule.enrichPolicySignals(
+        { ...(signals as object), identityGaps: gaps } as never,
+        signalDeps,
+      ),
+    updated: find((c) => !('basis' in c) && c.ecosystem === 'npm' && !!c.from && !!c.to),
+    added: find((c) => !('basis' in c) && !c.from && !!c.to),
+    declaration: find((c) => 'basis' in c),
+  };
+}
+type Members = Awaited<ReturnType<typeof stageInputs>>;
+
+test.each([
+  [
+    'an unknown member',
+    (_m: Members) => [{ memberId: 'npm:none', side: 'head', reasons: ['budget'] }],
+  ],
+  ['side x', (m: Members) => [{ memberId: m.updated, side: 'x', reasons: ['budget'] }]],
+  ['empty reasons', (m: Members) => [{ memberId: m.updated, side: 'head', reasons: [] }]],
+  [
+    'a reason outside the allowlist',
+    (m: Members) => [{ memberId: m.updated, side: 'head', reasons: ['malformed'] }],
+  ],
+  [
+    'a non-array input',
+    (m: Members) => ({ memberId: m.updated, side: 'head', reasons: ['budget'] }),
+  ],
+  [
+    'more entries than the length bound',
+    (m: Members) =>
+      Array.from({ length: 2 * schemaModule.PACKET_LIMITS.changes + 1 }, () => ({
+        memberId: m.updated,
+        side: 'head',
+        reasons: ['budget'],
+      })),
+  ],
+  [
+    'a duplicate member and side',
+    (m: Members) => [
+      { memberId: m.updated, side: 'head', reasons: ['budget'] },
+      { memberId: m.updated, side: 'head', reasons: ['timeout'] },
+    ],
+  ],
+  [
+    'a side with no instance',
+    (m: Members) => [{ memberId: m.added, side: 'base', reasons: ['budget'] }],
+  ],
+  [
+    'a declaration-basis change',
+    (m: Members) => [{ memberId: m.declaration, side: 'head', reasons: ['budget'] }],
+  ],
+] as const)('advisory and signals inputs reject identity gaps with %s', async (_name, gaps) => {
+  const inputs = await stageInputs();
+  expect((await inputs.advisory(gaps(inputs))).kind).toBe('invalid');
+  expect((await inputs.signals(gaps(inputs))).kind).toBe('invalid');
+});
+
+test('advisory and signals inputs accept a well-formed identity gap', async () => {
+  const inputs = await stageInputs();
+  const gaps = [
+    { memberId: inputs.updated, side: 'base', reasons: ['budget'] },
+    { memberId: inputs.updated, side: 'head', reasons: ['rate_limit', 'permission'] },
+  ];
+  expect((await inputs.advisory(gaps)).kind).toBe('enriched');
+  expect((await inputs.signals(gaps)).kind).toBe('enriched');
+});
+
+test('a whole-stage upstream failure gives every identity lookup the stage reason (#439)', async () => {
+  const { fixture, packet } = await scenario();
+  vi.mocked(upstreamModule.enrichUpstream).mockResolvedValueOnce({
+    kind: 'unavailable',
+    reason: 'budget',
   });
-  expect((await advisoryModule.enrichAdvisories(gap(['budget']) as never, deps)).kind).toBe(
-    'enriched',
-  );
-  expect((await advisoryModule.enrichAdvisories(gap(['malformed']) as never, deps)).kind).toBe(
-    'invalid',
-  );
+  const result = await runResearch(base(fixture, packet));
+  if (result.kind !== 'ready') throw new Error('research');
+  expect(result.unavailable).toContainEqual({ stage: 'upstream', reason: 'budget' });
+  const lookups = result.packet.changes.filter((change) => !('basis' in change));
+  expect(lookups.map((change) => change.ecosystem).sort()).toEqual(['actions', 'npm', 'npm', 'uv']);
+  for (const change of lookups)
+    for (const category of ['vulnerability', 'malware'] as const)
+      expect(change.evidence[category].reasons, `${change.id} ${category}`).toEqual(['budget']);
+});
+
+test('a lock node that disagrees with its change gives no identity gap', async () => {
+  const { input, orbit, gapsFor } = await budgetCut();
+  const instance = orbit.to as { root: string; lockPath: string };
+  const root = (
+    input.npmInventory as {
+      roots: {
+        root: string;
+        head: { packages: Record<string, { instance: { version: string } }> };
+      }[];
+    }
+  ).roots.find((r) => r.root === instance.root)!;
+  // The node check throws on the disagreement; upstream never researches such a side.
+  root.head.packages[instance.lockPath]!.instance.version = '9.9.9';
+  expect(gapsFor(orbit.id)).toEqual([['base', ['budget']]]);
 });
 
 const BATCHED_EXCERPT = 'A complete batched query checked reviewed advisories for this target.';

@@ -19,6 +19,7 @@ import {
   enrichUpstream,
   identityGaps,
   type IdentityGap,
+  type IdentityGapInput,
   type UpstreamAttempt,
 } from './evidence/upstream.js';
 import { createUpstreamReader } from './evidence/upstream-read.js';
@@ -403,14 +404,15 @@ export async function runResearch(input: ResearchInput): Promise<ResearchResult>
       ),
     );
     // After upstream, including a failed stage's marks: the identities it tried and lost, and why.
-    progress.identityGaps = identityGaps({
-      changes: progress.changes,
-      sources: progress.sources,
-      npmInventory: input.npmInventory ?? undefined,
-      publicIdentities: progress.publicIdentities,
-      actionVersions: progress.actionVersions,
+    const gapInput: IdentityGapInput = {
+      changes: progress.changes as readonly PacketChange[],
+      sources: progress.sources as IdentityGapInput['sources'],
+      ...(input.npmInventory ? { npmInventory: input.npmInventory } : {}),
+      publicIdentities: progress.publicIdentities as IdentityGapInput['publicIdentities'],
+      actionVersions: progress.actionVersions as IdentityGapInput['actionVersions'],
       attempts: progress.upstreamAttempts,
-    } as never);
+    };
+    progress.identityGaps = identityGaps(gapInput);
     await runStage('advisories', () =>
       enrichAdvisoryStage(input, dependencies, readers, progress, fail, shares),
     );

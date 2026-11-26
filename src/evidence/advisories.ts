@@ -494,14 +494,22 @@ function validateGaps(input: AdvisoryInput) {
   advisoryCheck(
     Array.isArray(input.identityGaps) && input.identityGaps.length <= 2 * PACKET_LIMITS.changes,
   );
-  for (const g of input.identityGaps)
+  const sides = new Set<string>();
+  for (const g of input.identityGaps) {
+    const change = input.changes.find((c) => c.id === g.memberId);
+    // A gap names one side of a researched member that has an instance there, once.
     advisoryCheck(
-      input.changes.some((c) => c.id === g.memberId) &&
+      change &&
+        !('basis' in change) &&
         (g.side === 'base' || g.side === 'head') &&
+        (g.side === 'base' ? change.from : change.to) &&
+        !sides.has(g.memberId + ':' + g.side) &&
         Array.isArray(g.reasons) &&
         g.reasons.length > 0 &&
         g.reasons.every((r: EvidenceReason) => IDENTITY_LOSS_REASONS.includes(r)),
     );
+    sides.add(g.memberId + ':' + g.side);
+  }
 }
 function validate(input: AdvisoryInput) {
   advisoryCheck(parseReviewBinding(input.binding));
