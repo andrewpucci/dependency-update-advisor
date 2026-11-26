@@ -1,4 +1,5 @@
-import { expect, test } from 'vite-plus/test';
+import { expect, test, vi } from 'vite-plus/test';
+import * as limitsModule from '../limits.js';
 import {
   AdvisoryFailure,
   createAdvisoryReader,
@@ -16,6 +17,12 @@ import {
   collectAdvisoryNpm,
   collectMixedAdvisoryInventories,
 } from '../../tests/parity/advisories.js';
+
+// Wraps the register lookup, so a test can see which limits validation read before it stopped.
+vi.mock('../limits.js', async (original) => {
+  const actual = await original<typeof import('../limits.js')>();
+  return { ...actual, limit: vi.fn(actual.limit) };
+});
 
 export const advisoryLimits = {
   maxRequests: 20,
@@ -787,10 +794,21 @@ test('accepts exactly advisories.maxLookups public identities and refuses one mo
   };
   expect(identities).toHaveLength(limit('advisories.maxLookups'));
   expect(prepareAdvisoryInput(atLimit).ok).toBe(true);
-  // A 257th lookup must repeat a (member, side) pair, since packet.changes caps the changes at 128;
-  // the length check refuses it before the pair check does.
-  const onePast = { ...atLimit, publicIdentities: [...identities, identities[0]] };
-  expect(prepareAdvisoryInput(onePast).ok).toBe(false);
+  // At the real cap, a lookup past it must repeat a (member, side) pair, since packet.changes caps
+  // the changes, so the uniqueness check would refuse it too. With the cap one below these unique
+  // pairs, only the length check can refuse them.
+  const actual = await vi.importActual<typeof import('../limits.js')>('../limits.js');
+  const lowered = identities.length - 1;
+  vi.mocked(limitsModule.limit).mockImplementation((id) =>
+    id === 'advisories.maxLookups' ? lowered : actual.limit(id),
+  );
+  try {
+    expect(prepareAdvisoryInput(atLimit).ok).toBe(false);
+    const atLowered = { ...atLimit, publicIdentities: identities.slice(0, lowered) };
+    expect(prepareAdvisoryInput(atLowered).ok).toBe(true);
+  } finally {
+    vi.mocked(limitsModule.limit).mockImplementation(actual.limit);
+  }
 });
 
 /** The packet fields of an enrichment, with batched source text read as the singleton's. */

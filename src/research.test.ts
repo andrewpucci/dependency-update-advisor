@@ -15,6 +15,7 @@ import {
   researchShareUnits,
   researchShares,
 } from './budget.js';
+import { registered, registerShareParameters } from '../tests/parity/shares.js';
 import { researchOrder, runResearch, type ResearchObservation } from './research.js';
 import { limit } from './limits.js';
 import type { PacketChange } from './schema.js';
@@ -546,6 +547,69 @@ test('opens each reader with the share scaled from the packet members', async ()
   expect(pick(stage.limits)).toEqual({
     maxRequests: expected.signals.maxRequests,
     maxTotalBytes: expected.signals.maxTotalBytes,
+  });
+});
+
+test('opens every research reader with its register limits and the share the register computes', async () => {
+  const { fixture, packet } = await scenario();
+  const readerMocks = [
+    upstreamReadModule.createUpstreamReader,
+    advisoryReadModule.createAdvisoryReader,
+    advisoryReadModule.createMalwareReader,
+    npmRegistryModule.createNpmRegistryReader,
+    publishTimesModule.createNpmPublishTimeReader,
+    signalReadModule.createPolicySignalReader,
+    policySignalsModule.enrichPolicySignals,
+  ];
+  for (const mock of readerMocks) vi.mocked(mock).mockClear();
+  // A deadline past the envelope's total time, so both timeouts are the envelope's own.
+  await runResearch({ ...base(fixture, packet), deadline: Number.MAX_SAFE_INTEGER });
+  const calls = (mock: unknown) =>
+    vi.mocked(mock as (value: unknown) => unknown).mock.calls.map(([value]) => value);
+  // Every value is read from the register here, and each share from the register's parameters.
+  const shares = researchShares(researchShareUnits(packet.changes), registerShareParameters());
+  const { readers } = shares.signals;
+  const upstream = calls(upstreamReadModule.createUpstreamReader);
+  // Registry calls are [S2 inner, S3 registry, S3 upstream inner]; only the middle one is research's.
+  const opened = [
+    ['S2 upstream', upstream[0], shares.upstream],
+    ['advisory', calls(advisoryReadModule.createAdvisoryReader)[0], shares.advisory],
+    ['malware', calls(advisoryReadModule.createMalwareReader)[0], readers.malware],
+    ['npm registry', calls(npmRegistryModule.createNpmRegistryReader)[1], readers.registry],
+    [
+      'publish times',
+      calls(publishTimesModule.createNpmPublishTimeReader)[0],
+      readers.publishTimes,
+    ],
+    ['metadata', calls(signalReadModule.createPolicySignalReader)[0], readers.metadata],
+    ['S3 upstream', upstream[1], readers.upstream],
+  ] as const;
+  for (const [name, actual, share] of opened)
+    expect(actual, name).toEqual({
+      maxRequests: share.maxRequests,
+      maxPages: share.maxRequests,
+      maxTagCandidates: registered('research.maxTagCandidates'),
+      maxTagDepth: registered('research.maxTagDepth'),
+      maxResponseBytes: Math.min(
+        registered('evidence.envelope.maxResponseBytes'),
+        share.maxTotalBytes,
+      ),
+      maxTotalBytes: share.maxTotalBytes,
+      maxJsonEntries: registered('research.maxJsonEntries'),
+      maxJsonDepth: registered('research.maxJsonDepth'),
+      maxWork: registered('research.maxWork'),
+      maxRetainedBytes: registered('research.maxRetainedBytes'),
+      maxAttempts: registered('research.maxAttempts'),
+      maxFindings: registered('research.maxFindings'),
+      requestTimeoutMs: registered('evidence.envelope.requestTimeoutMs'),
+      totalTimeoutMs: registered('evidence.envelope.totalTimeoutMs'),
+    });
+  const stage = calls(policySignalsModule.enrichPolicySignals)[0] as {
+    limits: { maxRequests: number; maxTotalBytes: number };
+  };
+  expect(stage.limits).toMatchObject({
+    maxRequests: shares.signals.maxRequests,
+    maxTotalBytes: shares.signals.maxTotalBytes,
   });
 });
 
