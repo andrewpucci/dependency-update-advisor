@@ -109,10 +109,10 @@ retained bytes. Package count overstates the first and ignores the second.
    enter the packet, such as attempt and lookup records, count only toward
    the research retained-byte limit. If the enriched packet still exceeds a
    packet limit at revalidation, optional evidence gives way before required
-   research. The lowest-priority members' optional signals (`publishTime`,
-   `deprecation`, `trust`, `publisher`, and license) become `unavailable`
-   with `budget` first, and their optional signal sources and findings leave
-   the packet. Required research (`upstream`, `installScript`,
+   research. The lowest-priority members' `publishTime`, `deprecation`,
+   `trust`, and `publisher` become `unavailable` with `budget` first, and
+   their optional signal sources and findings, license included, leave the
+   packet. Required research (`upstream`, `installScript`,
    `vulnerability`, `malware`) reverts, lowest priority first, only if the
    packet does not fit with every member's optional signals stripped; the
    members that keep their research then keep no optional signals. Status:

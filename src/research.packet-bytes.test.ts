@@ -50,6 +50,19 @@ vi.mock('./revalidation.js', async (original) => {
   };
 });
 
+/** Every source a signal attempt cites is in the packet and belongs to the attempt's member. */
+function expectAttemptsCited(result: {
+  packet: { sources: readonly { id: string; memberIds: readonly string[] }[] };
+  signalAttempts: readonly { memberId: string; category: string; sourceIds: readonly string[] }[];
+}) {
+  for (const attempt of result.signalAttempts)
+    for (const id of attempt.sourceIds)
+      expect(
+        result.packet.sources.some((s) => s.id === id && s.memberIds.includes(attempt.memberId)),
+        `${attempt.memberId} ${attempt.category} ${id}`,
+      ).toBe(true);
+}
+
 vi.setConfig({ testTimeout: limit('tests.largeInventoryRenderTimeoutMs') });
 
 const OPTIONAL = ['publishTime', 'deprecation', 'trust', 'publisher'] as const;
@@ -95,6 +108,7 @@ test('research on 110 children passes revalidation with every required check and
   const { fixture, packet, result } = await research110();
   // Mutation "drop the non-change part from the bound": revalidation reverts members to budget.
   expect(result.unavailable).toEqual([]);
+  expectAttemptsCited(result);
   const members = researchOrder(result.packet.changes, fixture.npm).filter((c) => !('basis' in c));
   expect(members).toHaveLength(113);
   for (const member of members)
@@ -142,6 +156,9 @@ test('when the assembled packet still overflows, revalidation strips optional si
     const { fixture, result } = await research110();
     // Fix 1 alone would revert members' required research here; the strip keeps all of it.
     expect(result.unavailable).toEqual([{ stage: 'revalidation', reason: 'budget' }]);
+    // Mutation "keep the attempts research recorded": stripped members' attempts cite sources
+    // that left the packet.
+    expectAttemptsCited(result);
     const members = researchOrder(result.packet.changes, fixture.npm).filter(
       (c) => !('basis' in c),
     );

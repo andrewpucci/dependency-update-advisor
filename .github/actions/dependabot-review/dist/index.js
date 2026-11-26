@@ -12779,7 +12779,11 @@ function freeze$3(value) {
 	}
 	return value;
 }
-/** Retained size never grows as changes are dropped, so search for the longest fitting prefix. */
+/**
+* Searches for the longest fitting prefix. It relies on fit being monotonic in the prefix length:
+* retained size never grows as changes are dropped, and a packet never grows as more members'
+* optional signals are stripped or their research reverted.
+*/
 function longestFittingPrefix(length, prefix, fits) {
 	if (!fits(prefix(0))) return null;
 	let low = 0, high = length;
@@ -33159,15 +33163,20 @@ function reconcilePacket(input) {
 		return {
 			packet: result.ok ? result.packet : collected,
 			reasons,
-			whole: true
+			whole: true,
+			stripped: NONE,
+			reverted: /* @__PURE__ */ new Map()
 		};
 	};
 	const everyone = attempt(new Set(members), /* @__PURE__ */ new Map());
-	if (everyone.ok) return {
-		packet: everyone.packet,
-		reasons: [],
-		whole: false
-	};
+	const partial = (packet, reasons, stripped, reverted) => ({
+		packet,
+		reasons,
+		whole: false,
+		stripped,
+		reverted
+	});
+	if (everyone.ok) return partial(everyone.packet, [], NONE, /* @__PURE__ */ new Map());
 	const bad = members.filter((id) => {
 		const alone = attempt(/* @__PURE__ */ new Set([id]), /* @__PURE__ */ new Map());
 		return !alone.ok && alone.error.category !== "budget";
@@ -33177,37 +33186,36 @@ function reconcilePacket(input) {
 	const malformed = bad.length > 0 ? ["malformed"] : [];
 	const kept = members.filter((id) => !badSet.has(id));
 	const withoutBad = attempt(new Set(kept), badReasons);
-	if (withoutBad.ok) return {
-		packet: withoutBad.packet,
-		reasons: malformed,
-		whole: false
-	};
+	if (withoutBad.ok) return partial(withoutBad.packet, malformed, NONE, badReasons);
 	if (withoutBad.error.category !== "budget") return whole(["malformed"]);
 	const rank = new Map(input.priority.map((id, index) => [id, index]));
 	const ordered = [...kept].sort((a, b) => (rank.get(a) ?? Infinity) - (rank.get(b) ?? Infinity));
 	const keptSet = new Set(kept);
 	const reasons = [...malformed, "budget"];
-	const strip = (count) => attempt(keptSet, badReasons, new Set(ordered.slice(count)));
-	const optionalFit = longestFittingPrefix(ordered.length, strip, (result) => result.ok);
-	if (optionalFit?.ok) return {
-		packet: optionalFit.packet,
-		reasons,
-		whole: false
+	const strip = (count) => {
+		const stripped = new Set(ordered.slice(count));
+		return {
+			stripped,
+			result: attempt(keptSet, badReasons, stripped)
+		};
 	};
-	const strippedAll = strip(0);
-	const allStripped = !strippedAll.ok && strippedAll.error.category === "budget" ? keptSet : NONE;
+	const optionalFit = longestFittingPrefix(ordered.length, strip, ({ result }) => result.ok);
+	if (optionalFit?.result.ok) return partial(optionalFit.result.packet, reasons, optionalFit.stripped, badReasons);
+	const strippedAll = strip(0).result;
+	if (!strippedAll.ok && strippedAll.error.category !== "budget") return whole(["malformed"]);
 	const fits = (count) => {
 		const reasonOf = new Map(badReasons);
 		for (const id of ordered.slice(count)) reasonOf.set(id, "budget");
-		return attempt(new Set(ordered.slice(0, count)), reasonOf, allStripped);
+		const keptPrefix = new Set(ordered.slice(0, count));
+		return {
+			keptPrefix,
+			reasonOf,
+			result: attempt(keptPrefix, reasonOf, keptSet)
+		};
 	};
-	const best = longestFittingPrefix(ordered.length, fits, (result) => result.ok);
-	if (!best?.ok) return whole(["malformed"]);
-	return {
-		packet: best.packet,
-		reasons,
-		whole: false
-	};
+	const best = longestFittingPrefix(ordered.length, fits, ({ result }) => result.ok);
+	if (!best?.result.ok) return whole(["malformed"]);
+	return partial(best.result.packet, reasons, best.keptPrefix, best.reasonOf);
 }
 
 // src/research.ts
@@ -33284,6 +33292,35 @@ function researchOrder(changes, npmInventory) {
 function restorePacketOrder(progress, packet) {
 	const position = new Map(packet.changes.map((change, index) => [change.id, index]));
 	progress.changes = [...progress.changes].sort((a, b) => (position.get(a.id) ?? 0) - (position.get(b.id) ?? 0));
+}
+/** The signal categories with no required research: optional signals, license included. */
+const OPTIONAL_SIGNAL_CATEGORIES = /* @__PURE__ */ new Set([
+	"publishTime",
+	"deprecation",
+	"trust",
+	"publisher",
+	"license"
+]);
+/**
+* Signal attempts as reconciliation left the packet: an attempt of a member whose optional signals
+* were stripped (optional categories) or whose research reverted (every category) becomes a skip
+* with the member's reason and no sources, as a member released to its reservation does, so no
+* attempt cites a source that left the packet.
+*/
+function reconciledAttempts(attempts, reconciled) {
+	return attempts.map((attempt) => {
+		const reverted = reconciled.reverted.get(attempt.memberId);
+		const stripped = reconciled.stripped.has(attempt.memberId) && OPTIONAL_SIGNAL_CATEGORIES.has(attempt.category);
+		if (!reverted && !stripped) return attempt;
+		return {
+			...attempt,
+			url: null,
+			outcome: "skipped",
+			reasons: [reverted ?? "budget"],
+			sourceIds: [],
+			truncated: false
+		};
+	});
 }
 function replaceEvidence(progress, evidence) {
 	progress.changes = evidence.changes;
@@ -33486,7 +33523,7 @@ async function runResearch(input) {
 			packet: reconciled.packet,
 			unavailable,
 			upstreamAttempts: reconciled.whole ? [] : progress.upstreamAttempts,
-			signalAttempts: reconciled.whole ? [] : progress.signalAttempts
+			signalAttempts: reconciled.whole ? [] : reconciledAttempts(progress.signalAttempts, reconciled)
 		};
 	} catch {
 		return { kind: "internal-failure" };

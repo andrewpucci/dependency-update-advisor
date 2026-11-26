@@ -30,7 +30,12 @@ import type { PacketChange, PacketExpected, PacketResult } from './schema.js';
 import type { ChangeEvidence, EvidenceReason, NpmSide } from './schema.js';
 import { DURATION_MS } from './format.js';
 import { limit } from './limits.js';
-import { isResearchPlaceholder, reconcilePacket, researchPacketBytes } from './revalidation.js';
+import {
+  isResearchPlaceholder,
+  reconcilePacket,
+  researchPacketBytes,
+  type Reconciled,
+} from './revalidation.js';
 
 type Packet = Extract<PacketResult, { ok: true }>['packet'];
 /** A packet change as the packet exposes it, which is readonly all the way down. */
@@ -196,6 +201,41 @@ function restorePacketOrder(progress: ResearchProgress, packet: Packet): void {
   progress.changes = [...(progress.changes as readonly PacketChange[])].sort(
     (a, b) => (position.get(a.id) ?? 0) - (position.get(b.id) ?? 0),
   );
+}
+
+/** The signal categories with no required research: optional signals, license included. */
+const OPTIONAL_SIGNAL_CATEGORIES = new Set([
+  'publishTime',
+  'deprecation',
+  'trust',
+  'publisher',
+  'license',
+]);
+
+/**
+ * Signal attempts as reconciliation left the packet: an attempt of a member whose optional signals
+ * were stripped (optional categories) or whose research reverted (every category) becomes a skip
+ * with the member's reason and no sources, as a member released to its reservation does, so no
+ * attempt cites a source that left the packet.
+ */
+function reconciledAttempts(
+  attempts: readonly SignalAttempt[],
+  reconciled: Reconciled,
+): SignalAttempt[] {
+  return attempts.map((attempt) => {
+    const reverted = reconciled.reverted.get(attempt.memberId);
+    const stripped =
+      reconciled.stripped.has(attempt.memberId) && OPTIONAL_SIGNAL_CATEGORIES.has(attempt.category);
+    if (!reverted && !stripped) return attempt;
+    return {
+      ...attempt,
+      url: null,
+      outcome: 'skipped',
+      reasons: [reverted ?? 'budget'],
+      sourceIds: [],
+      truncated: false,
+    };
+  });
 }
 
 function replaceEvidence(progress: ResearchProgress, evidence: EnrichedEvidence): void {
@@ -448,7 +488,9 @@ export async function runResearch(input: ResearchInput): Promise<ResearchResult>
       packet: reconciled.packet,
       unavailable,
       upstreamAttempts: reconciled.whole ? [] : progress.upstreamAttempts,
-      signalAttempts: reconciled.whole ? [] : progress.signalAttempts,
+      signalAttempts: reconciled.whole
+        ? []
+        : reconciledAttempts(progress.signalAttempts, reconciled),
     };
   } catch {
     return { kind: 'internal-failure' };

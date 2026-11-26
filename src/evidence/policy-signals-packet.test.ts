@@ -7,6 +7,7 @@ import { enrichUpstream } from './upstream.js';
 import { researchOrder } from '../research.js';
 import { upstreamScenario, upstreamTestLimits } from '../../tests/parity/upstream.js';
 import type { PacketChange } from '../schema.js';
+import { limit } from '../limits.js';
 
 // The packet byte limit is lowered per test so a small fixture's signals overflow it.
 const cap = vi.hoisted(() => ({ bytes: Infinity }));
@@ -370,7 +371,7 @@ test('signals keep every member at a research byte bound equal to their packet b
   }
 });
 
-test.each([0, -1, 1.5, '1', Infinity])(
+test.each([0, -1, 1.5, '1', Infinity, limit('packet.bytes') + 1])(
   'signals refuse a research byte bound of %s',
   async (bound) => {
     const input = await signalInput();

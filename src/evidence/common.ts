@@ -39,7 +39,11 @@ export function freeze<T>(value: T): T {
   }
   return value;
 }
-/** Retained size never grows as changes are dropped, so search for the longest fitting prefix. */
+/**
+ * Searches for the longest fitting prefix. It relies on fit being monotonic in the prefix length:
+ * retained size never grows as changes are dropped, and a packet never grows as more members'
+ * optional signals are stripped or their research reverted.
+ */
 export function longestFittingPrefix<T>(
   length: number,
   prefix: (count: number) => T,
