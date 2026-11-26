@@ -22,29 +22,26 @@ publication/production-claim gates are in the W2 spec.
 split-depth diagnostics, are merged. The [capability map](docs/specs/README.md)
 is authoritative for all contract status and remaining integration gates.
 
-The R1 no-write rehearsal ended fail closed at `render-size`; see
-[#348](https://github.com/andrewpucci/dependency-update-advisor/issues/348).
+The R1 `render-size` outcome is decided and its comment capacity amendment is
+merged ([#348](https://github.com/andrewpucci/dependency-update-advisor/issues/348)).
 
 ## Next action
 
-Plan [evidence coverage](docs/specs/SPEC-evidence-coverage.md)
-([#350](https://github.com/andrewpucci/dependency-update-advisor/issues/350)),
-then the
-[comment capacity amendment](docs/specs/SPEC-comment-experience.md#comment-capacity-amendment)
-(#348), which renders its evidence states. Both are approved for planning,
-2026-11-16; plan and execution approval are separate gates. Each is accepted
-by a local R1 measurement or replay before any re-pin. Publication,
-production claim storage, adoption, parity, and cutover remain separate gates.
+Request batching, Track C of limit-register measurement
+([#380](https://github.com/andrewpucci/dependency-update-advisor/issues/380)):
+fix #438 and #440, then the ask-first C3 probe run (#390). Evidence-coverage
+rate fitting (B12 #370, B13 #371) waits for the batched corpus remeasure
+(C10 #397), decided 2026-11-26. The
+[implementation project](https://github.com/users/andrewpucci/projects/2)
+holds the working order. Each change is accepted by a local R1 measurement or
+replay before any re-pin. Publication, production claim storage, adoption,
+parity, and cutover remain separate gates.
 
 - The [capability map](docs/specs/README.md) indexes module and contract status.
-- The S1/S3 [package name form amendment](docs/specs/SPEC-advisory-lookup.md#package-name-form-amendment)
-  is implemented, pending review and merge
-  ([#398](https://github.com/andrewpucci/dependency-update-advisor/issues/398)).
-- The L9 [external citations amendment](docs/specs/SPEC-limit-register.md#external-citations-amendment)
-  ([#381](https://github.com/andrewpucci/dependency-update-advisor/issues/381))
-  is merged into `main` (PR #425).
 - The [scaled-share function amendment](docs/specs/SPEC-evidence-coverage.md#scaled-share-function-amendment)
-  (B11 #369, #414–#422) is merged into `main` (PR #423); B12 (#370) measures
-  and fits its values.
+  is merged (PR #423); B12 fits its values.
+- [#412](https://github.com/andrewpucci/dependency-update-advisor/issues/412)
+  keeps the required brief under half the comment cap; compaction is merged
+  (PR #434), and the R1 replay and re-pin remain.
 - The [ADR guide](docs/adr/README.md) indexes durable architecture decisions.
 - Issues/PRs hold task results; `tasks/plan.md` is gitignored.
