@@ -370,7 +370,67 @@ test('reports the quota as the guard reads it: core only, lowest per window, rai
     windows: 2,
     ignoredReadings: 4,
   });
+
+  // A reset earlier than the current window's but still ahead of the wall clock (the local clock
+  // behind GitHub's) changes nothing and is counted as ignored; a response without rate-limit
+  // headers is not counted at all.
+  const earlier = String(Number(RESET) + 10 * 60);
+  responses.set('https://api.github.com/j', quotaHeaders('5', earlier));
+  responses.set('https://api.github.com/k', {});
+  await fetch('https://api.github.com/j', {});
+  await fetch('https://api.github.com/k', {});
+  expect(recorder.report({}).github).toMatchObject({
+    lastRemaining: 999,
+    lastReset: '2026-11-25T01:30:00.000Z',
+    windows: 2,
+    risesWithinWindow: 2,
+    ignoredReadings: 5,
+  });
   expect(recorder.report({}).github.trace).toBeUndefined();
+});
+
+test('a quota trace reports an unexpected header value as invalid', async () => {
+  const recorder = createDemandRecorder(() => 0, { wallNow: () => WALL, trace: true });
+  const atLimit = '9'.repeat(limit('measureDemand.quotaTraceValueUnits'));
+  const fetch = recorder.wrap(
+    async () =>
+      new Response('{}', {
+        headers: {
+          ...quotaHeaders('98').headers,
+          'x-ratelimit-resource': 'Core/x',
+          'x-ratelimit-limit': atLimit,
+          'x-ratelimit-used': `${atLimit}9`,
+        },
+      }),
+  );
+  await fetch('https://api.github.com/repos/o/r', {});
+  expect(recorder.report({}).github.trace).toEqual([
+    expect.objectContaining({
+      resource: 'invalid',
+      limit: atLimit,
+      used: 'invalid',
+      remaining: '98',
+      reset: RESET,
+    }),
+  ]);
+});
+
+test('a quota trace records the phase a request started in, not the one it completed in', async () => {
+  const recorder = createDemandRecorder(() => 0, { wallNow: () => WALL, trace: true });
+  let release = () => {};
+  const fetch = recorder.wrap(async () => {
+    await new Promise<void>((resolve) => (release = resolve));
+    return new Response('{}', quotaHeaders('98'));
+  });
+  recorder.observe({ kind: 'stage-start', stage: 'upstream' });
+  const pending = fetch('https://api.github.com/repos/o/r', {});
+  recorder.observe({ kind: 'stage-end', stage: 'upstream', outcome: 'enriched', reason: null });
+  recorder.observe({ kind: 'stage-start', stage: 'advisories' });
+  release();
+  await pending;
+  expect(recorder.report({}).github.trace).toEqual([
+    expect.objectContaining({ started: 1, phase: 'upstream' }),
+  ]);
 });
 
 test('a quota trace lists GitHub rate-limit headers in completion order, without URLs', async () => {

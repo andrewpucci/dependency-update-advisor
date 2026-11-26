@@ -7,14 +7,17 @@
  * (default .github/workflows/ci.yml), MEASURE_OUT (write the JSON report to this path),
  * MEASURE_SCALE (a positive integer; multiplies the read budget, see `isReadBudget`, so the run
  * shows demand the current shares would cut off; a report with `censored` stages is still capped).
- * The report holds counts only: no URL, header, token, or response body. Its `coverage` field
- * counts members' evidence states and reasons per category, which shows members a share stopped
- * one at a time while the stage itself ended `enriched`. Its `github` field gives
- * research's GitHub requests beside their approved ceiling, the quota guard's refusals, and the
- * remaining quota read by the guard's rules (lowest core value in the latest window, with that
- * window's reset); a run the guard cut short is re-measured after the reset.
+ * The report holds no URL, token, or response body, and header values appear only in the opt-in
+ * quota trace below; otherwise it holds counts. Its `coverage` field counts members' evidence
+ * states and reasons per category, which shows members a share stopped one at a time while the
+ * stage itself ended `enriched`. Its `github` field gives research's GitHub requests beside their
+ * approved ceiling, the quota guard's refusals, and the remaining quota by the guard's validity
+ * and window rules over all of the run's GitHub API responses (lowest core value in the latest
+ * window, with that window's reset; not the guard's own estimate); a run the guard cut short is
+ * re-measured after the reset.
  * Optional: MEASURE_QUOTA_TRACE=1 adds `github.trace`, each GitHub API response's rate-limit
- * headers (resource, limit, remaining, used, reset) with its start order and status, and no URL.
+ * header values (resource, limit, remaining, used, reset, each a short lowercase token or digits,
+ * else `invalid`) with its start order, phase at start, and status, and no URL.
  * Optional: MEASURE_TARGETS_OUT (a path under `.context/`) also writes the targets the advisory and
  * malware readers settled and the tag candidates the run requested (see `measurement/targets.ts`).
  * That file names public packages and tags, so it stays out of the report and is never committed.

@@ -71,7 +71,8 @@ export type QuotaReading = Readonly<{ remaining: number; reset: number }>;
  * The response's core `x-ratelimit-remaining` and its reset in Unix milliseconds, or null when the
  * response is from another host, names another resource, or either header is invalid or its reset
  * is past or beyond the quota window. The guard and the demand measurement read quota only
- * through this, so the measurement reports what the guard saw.
+ * through this, so both apply the same validity rules; the measurement applies them to every live
+ * GitHub API response the run makes, while the guard sees only research's.
  */
 export function quotaReading(
   url: string,

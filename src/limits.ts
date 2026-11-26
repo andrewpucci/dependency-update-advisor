@@ -1931,6 +1931,21 @@ const DEFINITIONS = [
     note: 'awaiting L8 measurement',
     test: 'none: the timeout of the manual demand measurement, which needs a live token and is not part of npm test',
   }),
+  {
+    id: 'measureDemand.quotaTraceValueUnits',
+    value: 32,
+    unit: 'code units',
+    protects:
+      'Keeps the opt-in quota trace to short rate-limit header values, so an unexpected or oversized header value never reaches a report the maintainer shares.',
+    basis: {
+      kind: 'safety',
+      reason:
+        'GitHub rate-limit headers are a short resource name or a whole number (Unix-second resets have 10 digits); 32 code units keeps every expected value with room to spare while rejecting free text.',
+    },
+    effect:
+      "A trace header value that is longer, or is not lowercase letters, digits, and underscores, is reported as 'invalid'.",
+    test: 'src/measurement/demand.test.ts > a quota trace reports an unexpected header value as invalid',
+  },
   // Limits moved from call sites by the L5 register sweep (issue #377).
   unjustified('signals.reasonCodeUnits', 350, 'code units', {
     protects:

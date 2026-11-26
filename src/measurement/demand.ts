@@ -45,14 +45,20 @@ export type DemandReport = {
    * leaves every stage `enriched`; their `budget` reasons show here instead of in `censored`.
    */
   coverage: DemandCoverage;
-  /** Research's GitHub use against its approved ceiling, and what the quota guard saw. */
+  /**
+   * Research's GitHub use against its approved ceiling, the quota guard's refusals, and the quota
+   * GitHub reported, read by the guard's rules over all of the run's GitHub API responses.
+   */
   github: {
     researchRequests: number;
     ceiling: number;
     refusals: number;
     /**
-     * The lowest valid core `x-ratelimit-remaining` in the latest quota window seen this run, read
-     * by the guard's own rules (`quotaReading`): within a window it never rises. Null before any.
+     * The lowest valid core `x-ratelimit-remaining` in the latest quota window seen this run, by
+     * the guard's validity and window rules (`quotaReading`), applied to every live GitHub API
+     * response the run made: snapshot, session, and research alike. It is not the guard's
+     * estimate, which sees only research responses and subtracts requests started since. Within a
+     * window it never rises. Null before any valid reading.
      */
     lastRemaining: number | null;
     /** That window's reset as an ISO time, or null before any valid reading. */
@@ -62,8 +68,9 @@ export type DemandReport = {
     /** Valid readings above their window's lowest so far: the raw headers' non-monotonic steps. */
     risesWithinWindow: number;
     /**
-     * GitHub API responses carrying `x-ratelimit-remaining` that the guard's rules reject: another
-     * resource, an invalid value, or a reset that is past or beyond the quota window.
+     * GitHub API responses carrying `x-ratelimit-remaining` whose reading is not used: another
+     * resource, an invalid remaining or reset, a reset that is past or beyond the quota window, or
+     * a reset earlier than the current window's. A response without the header is not counted.
      */
     ignoredReadings: number;
     /** Present only when the recorder was built with `trace`; see `QuotaTraceEntry`. */
@@ -74,8 +81,9 @@ export type DemandReport = {
 /**
  * One GitHub API response's rate-limit headers, in the order responses completed. No URL, token,
  * or body: `started` is the request's start order among GitHub API requests, so a response that
- * started earlier but completed later shows as out of order. A header value that is not a short
- * lowercase token or digit string is reported as `invalid`.
+ * started earlier but completed later shows as out of order, and `phase` is the phase when the
+ * request started. A header value that is not a short lowercase token or digit string is reported
+ * as `invalid`.
  */
 export type QuotaTraceEntry = {
   started: number;
@@ -109,11 +117,13 @@ const shareStore = new AsyncLocalStorage<string>();
 const UNATTRIBUTED = 'unattributed';
 const CENSORING_REASONS: readonly (string | null)[] = ['budget', 'timeout', 'rate_limit'];
 const RESEARCH_PHASES: readonly DemandPhase[] = ['upstream', 'advisories', 'signals'];
-const TRACE_VALUE = /^[a-z0-9_]{1,32}$/;
+const TRACE_VALUE = /^[a-z0-9_]+$/;
 
 function traceValue(value: string | null): string | null {
   if (value === null) return null;
-  return TRACE_VALUE.test(value) ? value : 'invalid';
+  return value.length <= limit('measureDemand.quotaTraceValueUnits') && TRACE_VALUE.test(value)
+    ? value
+    : 'invalid';
 }
 
 /**
@@ -243,12 +253,15 @@ export function createDemandRecorder(
 
   // The guard's window rule, without its count of requests started: a later reset starts a new
   // window, an earlier one is ignored, and within a window only a lower remaining is kept.
-  const readQuota = (url: string, response: Response, started: number) => {
+  const readQuota = (
+    url: string,
+    response: Response,
+    request: Readonly<{ started: number; phase: DemandPhase }>,
+  ) => {
     if (options.trace) {
       const header = (name: string) => traceValue(response.headers.get(name));
       trace.push({
-        started,
-        phase,
+        ...request,
         status: String(response.status),
         resource: header('x-ratelimit-resource'),
         limit: header('x-ratelimit-limit'),
@@ -265,9 +278,13 @@ export function createDemandRecorder(
     if (!quotaWindow || reading.reset > quotaWindow.reset) {
       quotaWindow = reading;
       windows += 1;
-    } else if (reading.reset === quotaWindow.reset) {
-      if (reading.remaining > quotaWindow.remaining) risesWithinWindow += 1;
-      else quotaWindow = reading;
+    } else if (reading.reset < quotaWindow.reset) {
+      // Still in the future, so the local clock runs behind GitHub's; the guard ignores it too.
+      ignoredReadings += 1;
+    } else if (reading.remaining > quotaWindow.remaining) {
+      risesWithinWindow += 1;
+    } else {
+      quotaWindow = reading;
     }
   };
 
@@ -301,7 +318,8 @@ export function createDemandRecorder(
         throw error;
       }
       const ms = now() - startedAt;
-      if (githubOrder > 0) readQuota(url, response, githubOrder);
+      if (githubOrder > 0)
+        readQuota(url, response, { started: githubOrder, phase: sampleBase.phase });
       const bytes = (await response.clone().arrayBuffer()).byteLength;
       samples.push({ ...sampleBase, status: String(response.status), bytes, ms });
       return response;
