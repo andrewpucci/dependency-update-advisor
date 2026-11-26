@@ -1298,6 +1298,12 @@ const readyPromise = !isDeno && !isBun && typeof process == "object" && process?
 }, () => {}) : Promise.resolve();
 const fixUtf8Stream = (options) => impl(options);
 
+// node_modules/stream-json/src/core/utils/max-depth.js
+const DEFAULT_MAX_DEPTH = 1024;
+
+// node_modules/stream-json/src/core/utils/max-packed-length.js
+const DEFAULT_MAX_PACKED_LENGTH = 2 ** 28;
+
 // node_modules/stream-json/src/core/parser.js
 const patterns = {
 	value1: /[\"\{\[\]\-\d]|true\b|false\b|null\b|\s{1,256}/y,
@@ -1395,6 +1401,9 @@ const jsonParser = (options) => {
 	!packKeys && (streamKeys = true);
 	!packStrings && (streamStrings = true);
 	!packNumbers && (streamNumbers = true);
+	const maxDepth = options?.maxDepth ?? 1024;
+	const depthError = () => /* @__PURE__ */ new RangeError(`parser: JSON nesting depth exceeds maxDepth (${maxDepth})`);
+	const maxPackedLength = options?.maxPackedLength ?? DEFAULT_MAX_PACKED_LENGTH;
 	let done = false, expect = jsonStreaming ? "done" : "value", parent = "", openNumber = false, accumulator = "", heldSurrogate = "", buffer = "";
 	const stack = [];
 	const pushStringChunk = (tokens, value) => {
@@ -1502,6 +1511,7 @@ const jsonParser = (options) => {
 					continue main;
 				}
 				if (cc === ASCII_OPEN_BRACE) {
+					if (stack.length >= maxDepth) throw depthError();
 					tokens.push(tokenStartObject);
 					stack.push(parent);
 					parent = "object";
@@ -1510,6 +1520,7 @@ const jsonParser = (options) => {
 					continue main;
 				}
 				if (cc === ASCII_OPEN_BRACKET) {
+					if (stack.length >= maxDepth) throw depthError();
 					tokens.push(tokenStartArray);
 					stack.push(parent);
 					parent = "array";
@@ -2015,6 +2026,7 @@ const jsonParser = (options) => {
 				accumulator = "";
 			}
 		}
+		if (accumulator.length > maxPackedLength) throw new RangeError(`parser: a packed value exceeds maxPackedLength (${maxPackedLength})`);
 		buffer = buffer.slice(index);
 		return tokens.length ? many(tokens) : none;
 	});
