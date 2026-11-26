@@ -105,6 +105,37 @@ function provenance(
       : {}),
   };
 }
+/** Whether a registry source origin is the public registry S1 can look the member up in. */
+export function publicRegistry(ecosystem: PacketChange['ecosystem'], origin: URL): boolean {
+  return (
+    (ecosystem === 'npm'
+      ? origin.origin === 'https://registry.npmjs.org'
+      : origin.origin === 'https://pypi.org' &&
+        ['/simple', '/simple/'].includes(origin.pathname)) &&
+    !origin.username &&
+    !origin.password &&
+    !origin.hash &&
+    !origin.search
+  );
+}
+/**
+ * Why a side has no lookup target. A public registry member whose upstream research ended in
+ * `budget` before it retained anything lost its identity proof to an exhausted share, so a rerun or
+ * a larger share can cover it (SPEC-evidence-coverage §1.2); any other missing target is unsupported.
+ */
+export function unresolvedReasons(change: PacketChange, side: 'head' | 'base'): EvidenceReason[] {
+  const instance = side === 'head' ? change.to : change.from,
+    upstream = change.evidence.upstream;
+  return upstream.status === 'unavailable' &&
+    upstream.reasons.includes('budget') &&
+    instance &&
+    'source' in instance &&
+    instance.source.kind === 'registry' &&
+    URL.canParse(instance.source.identity) &&
+    publicRegistry(change.ecosystem, new URL(instance.source.identity))
+    ? ['budget']
+    : ['unsupported'];
+}
 export function source(
   change: PacketChange,
   side: 'head' | 'base',
@@ -118,7 +149,7 @@ export function source(
     ecosystems: [change.ecosystem],
     memberIds: [change.id],
     status: success ? 'available' : 'unavailable',
-    reasons: success ? [] : [...(lookup?.reasons ?? ['unsupported'])],
+    reasons: success ? [] : [...(lookup?.reasons ?? unresolvedReasons(change, side))],
     provenance: success ? provenance(change, side, lookup!, record) : { kind: 'unavailable' },
   };
 }

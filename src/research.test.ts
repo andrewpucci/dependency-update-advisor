@@ -11,6 +11,7 @@ import * as policySignalsModule from './evidence/policy-signals.js';
 import {
   EVIDENCE_READ_ALLOCATION,
   EVIDENCE_READ_ENVELOPE,
+  RESEARCH_SHARE_PARAMETERS,
   researchShareUnits,
   researchShares,
 } from './budget.js';
@@ -811,6 +812,52 @@ test('runs advisory lookups for members with retained identities after an upstre
     .filter((url) => url.includes('/advisories') && url.includes('type=reviewed'))
     .map((url) => decodeURIComponent(new URL(url).search));
   expect(reviewed.some((query) => query.includes('ecosystem=npm&affects=orbit@2.0.0'))).toBe(true);
+});
+
+test('a member whose identity proof an exhausted upstream share cut reports budget, not unsupported (#439)', async () => {
+  const { fixture, packet } = await scenario({ children: 4 });
+  // A three-request upstream share runs out after the first member's identity proof.
+  const shareParameters = {
+    ...RESEARCH_SHARE_PARAMETERS,
+    upstream: {
+      ...RESEARCH_SHARE_PARAMETERS.upstream,
+      requests: { base: 3, ceiling: 3, rates: {} },
+    },
+  };
+  const result = await runResearch({ ...base(fixture, packet), shareParameters });
+  if (result.kind !== 'ready') throw new Error('research');
+  expect(result.unavailable).toContainEqual({ stage: 'upstream', reason: 'budget' });
+  const cut = result.packet.changes.filter(
+    (change) =>
+      change.ecosystem !== 'actions' &&
+      change.evidence.upstream.status === 'unavailable' &&
+      change.evidence.upstream.reasons.includes('budget'),
+  );
+  expect(cut.map((change) => change.ecosystem).sort()).toEqual(['npm', 'npm', 'npm', 'npm', 'uv']);
+  for (const change of cut)
+    for (const category of ['vulnerability', 'malware'] as const) {
+      expect(change.evidence[category], `${change.id} ${category}`).toMatchObject({
+        status: 'unavailable',
+        reasons: ['budget'],
+      });
+      const [query] = change.evidence[category].sourceIds;
+      expect(result.packet.sources.find((s) => s.id === query)?.reasons).toEqual(['budget']);
+    }
+  // The member that kept its proof was looked up.
+  const kept = result.packet.changes.filter(
+    (change) => change.ecosystem === 'npm' && change.evidence.vulnerability.status === 'available',
+  );
+  expect(kept).toHaveLength(1);
+});
+
+test('a public registry member whose identity is missing upstream stays unsupported', async () => {
+  const { fixture, packet } = await scenario({ missingPyPI: true });
+  const result = await runResearch(base(fixture, packet));
+  if (result.kind !== 'ready') throw new Error('research');
+  const uv = result.packet.changes.find((change) => change.ecosystem === 'uv');
+  expect(uv?.evidence.upstream.reasons).not.toContain('budget');
+  expect(uv?.evidence.vulnerability.reasons).toEqual(['unsupported']);
+  expect(uv?.evidence.malware.reasons).toEqual(['unsupported']);
 });
 
 const BATCHED_EXCERPT = 'A complete batched query checked reviewed advisories for this target.';

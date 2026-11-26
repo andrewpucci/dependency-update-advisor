@@ -16433,6 +16433,19 @@ function provenance(change, side, lookup, record) {
 		} : {}
 	};
 }
+/** Whether a registry source origin is the public registry S1 can look the member up in. */
+function publicRegistry(ecosystem, origin) {
+	return (ecosystem === "npm" ? origin.origin === "https://registry.npmjs.org" : origin.origin === "https://pypi.org" && ["/simple", "/simple/"].includes(origin.pathname)) && !origin.username && !origin.password && !origin.hash && !origin.search;
+}
+/**
+* Why a side has no lookup target. A public registry member whose upstream research ended in
+* `budget` before it retained anything lost its identity proof to an exhausted share, so a rerun or
+* a larger share can cover it (SPEC-evidence-coverage §1.2); any other missing target is unsupported.
+*/
+function unresolvedReasons(change, side) {
+	const instance = side === "head" ? change.to : change.from, upstream = change.evidence.upstream;
+	return upstream.status === "unavailable" && upstream.reasons.includes("budget") && instance && "source" in instance && instance.source.kind === "registry" && URL.canParse(instance.source.identity) && publicRegistry(change.ecosystem, new URL(instance.source.identity)) ? ["budget"] : ["unsupported"];
+}
 function source$1(change, side, lookup, record) {
 	const success = !!lookup && (record || lookup.complete);
 	return {
@@ -16445,7 +16458,7 @@ function source$1(change, side, lookup, record) {
 		ecosystems: [change.ecosystem],
 		memberIds: [change.id],
 		status: success ? "available" : "unavailable",
-		reasons: success ? [] : [...lookup?.reasons ?? ["unsupported"]],
+		reasons: success ? [] : [...lookup?.reasons ?? unresolvedReasons(change, side)],
 		provenance: success ? provenance(change, side, lookup, record) : { kind: "unavailable" }
 	};
 }
@@ -16535,7 +16548,7 @@ function resolveAdvisoryTarget(input, change, side) {
 	const instance = side === "head" ? change.to : change.from;
 	if (!instance || !("source" in instance) || instance.source.kind !== "registry") return null;
 	const origin = new URL(instance.source.identity);
-	if ((change.ecosystem === "npm" ? origin.origin !== "https://registry.npmjs.org" : origin.origin !== "https://pypi.org" || !["/simple", "/simple/"].includes(origin.pathname)) || origin.username || origin.password || origin.hash || origin.search) return null;
+	if (!publicRegistry(change.ecosystem, origin)) return null;
 	const proof = input.publicIdentities.find((p) => p.memberId === change.id && p.side === side);
 	if (!proof || proof.ecosystem !== change.ecosystem || proof.name !== instance.name || proof.version !== instance.version || proof.sourceIdentity !== instance.source.identity || !proof.sourceIds.length) return null;
 	return proof.sourceIds.every((ref) => {
@@ -16632,14 +16645,14 @@ async function collectSide(input, change, side, output, reader, cache) {
 	addSource(output, evidence);
 	if (side === "head" || !change.to) change.evidence.vulnerability = {
 		status: lookup?.complete ? "available" : lookup?.records.length ? "partial" : "unavailable",
-		reasons: lookup?.complete ? [] : [...lookup?.reasons ?? ["unsupported"]],
+		reasons: lookup?.complete ? [] : [...lookup?.reasons ?? unresolvedReasons(change, side)],
 		sourceIds: [evidence.id]
 	};
 	output.lookups.push({
 		memberId: change.id,
 		side,
 		lookup,
-		reasons: lookup?.reasons ?? ["unsupported"]
+		reasons: lookup?.reasons ?? unresolvedReasons(change, side)
 	});
 	const records = /* @__PURE__ */ new Map();
 	for (const record of lookup?.records ?? []) {
@@ -16963,7 +16976,7 @@ function malwareSource(input, change, side, lookup, record) {
 		ecosystems: [change.ecosystem],
 		memberIds: [change.id],
 		status: success ? "available" : "unavailable",
-		reasons: success ? [] : [...lookup?.reasons ?? ["unsupported"]],
+		reasons: success ? [] : [...lookup?.reasons ?? unresolvedReasons(change, side)],
 		provenance: success ? malwareProvenance(change, side, lookup, record) : { kind: "unavailable" }
 	};
 }
@@ -17065,7 +17078,7 @@ function recordMemberMalware(input, output, change, side, target, lookup) {
 	change.evidence.malware = {
 		status: lookup?.complete ? "available" : ids.length > 1 ? "partial" : "unavailable",
 		sourceIds: ids,
-		reasons: lookup?.complete ? [] : [...lookup?.reasons ?? ["unsupported"]]
+		reasons: lookup?.complete ? [] : [...lookup?.reasons ?? unresolvedReasons(change, side)]
 	};
 	output.attempts.push({
 		memberId: change.id,

@@ -1,5 +1,7 @@
 import {
   source,
+  publicRegistry,
+  unresolvedReasons,
   attachFindings,
   reconcileRecords,
   addSource,
@@ -134,17 +136,7 @@ export function resolveAdvisoryTarget(
   const instance = side === 'head' ? change.to : change.from;
   if (!instance || !('source' in instance) || instance.source.kind !== 'registry') return null;
   const origin = new URL(instance.source.identity);
-  if (
-    (change.ecosystem === 'npm'
-      ? origin.origin !== 'https://registry.npmjs.org'
-      : origin.origin !== 'https://pypi.org' ||
-        !['/simple', '/simple/'].includes(origin.pathname)) ||
-    origin.username ||
-    origin.password ||
-    origin.hash ||
-    origin.search
-  )
-    return null;
+  if (!publicRegistry(change.ecosystem, origin)) return null;
   const proof = input.publicIdentities.find((p) => p.memberId === change.id && p.side === side);
   if (
     !proof ||
@@ -322,14 +314,14 @@ async function collectSide(
   if (side === 'head' || !change.to)
     change.evidence.vulnerability = {
       status: lookup?.complete ? 'available' : lookup?.records.length ? 'partial' : 'unavailable',
-      reasons: lookup?.complete ? [] : [...(lookup?.reasons ?? ['unsupported'])],
+      reasons: lookup?.complete ? [] : [...(lookup?.reasons ?? unresolvedReasons(change, side))],
       sourceIds: [evidence.id],
     };
   output.lookups.push({
     memberId: change.id,
     side,
     lookup,
-    reasons: lookup?.reasons ?? ['unsupported'],
+    reasons: lookup?.reasons ?? unresolvedReasons(change, side),
   });
   const records = new Map<string, PacketSource>();
   for (const record of lookup?.records ?? []) {
