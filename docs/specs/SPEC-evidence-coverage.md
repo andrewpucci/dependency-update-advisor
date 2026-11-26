@@ -864,8 +864,8 @@ amendment.
 
 For these shares this replaces A1.6's starting entries (a `derived` base
 equal to the ceiling and `unjustified` zero rates). Each base and rate,
-including a fitted share's zero rates, is a `measured` register entry
-citing this corpus:
+including a fitted share's zero rates, is a `measured` register entry. All
+but the two direct-member rates below cite this corpus:
 
 | Share                 | Base                                                      | Rate per member                                                                                                                                    | Ceiling                                                              |
 | --------------------- | --------------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------- | -------------------------------------------------------------------- |
@@ -891,12 +891,14 @@ citing this corpus:
   per side: three requests per update (S1's group capacity statement). A
   malware lookup reads the proposed side only: one discovery, then the
   versioned query, two requests. Both paths are the per-target `query`,
-  `discover`, and `versioned` steps of the advisory reader. Transitive
-  members keep the fitted advisory rate, and malware keeps its fitted
-  `eligible` rate on top.
-- With these values a one-member change gets a share of 4 to 15 requests
-  for each fitted reader, so a runaway reader stops sooner. R1's PR #276
-  (105 npm members, 2 direct) gets the upstream and publish-time ceilings.
+  `discover`, and `versioned` steps of the advisory reader, and the two
+  entries cite `src/evidence/advisory-read.costs.test.ts`, which counts
+  them for one Actions update. Transitive members keep the fitted advisory
+  rate, and malware keeps its fitted `eligible` rate on top.
+- With these values a one-member change gets a share of 3 to 15 requests
+  for each fitted reader (4 to 15 when the member is direct), so a runaway
+  reader stops sooner. R1's PR #276 (105 npm members, 2 direct) gets the
+  upstream and publish-time ceilings.
 - `limit:research.githubQuota.researchCeiling` stays the sum of the
   research request ceilings, so it is unchanged. An R1-sized change can
   spend the upstream ceiling plus its advisory and malware shares, well

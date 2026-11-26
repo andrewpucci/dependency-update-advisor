@@ -181,19 +181,19 @@ receives `process.env` or a general fetch function.
    freshness reads are bounded by the job window (Diagnostic Amendments 2
    and 3).
 
-   | Reader                                    | Request ceiling                                                      | Request share scales on       | Bytes                                                                  |
-   | ----------------------------------------- | -------------------------------------------------------------------- | ----------------------------- | ---------------------------------------------------------------------- |
-   | Snapshot reads (repository, commit, tree) | `limit:evidence.allocation.transport.snapshot.maxRequests`           | fixed                         | `limit:evidence.allocation.transport.snapshot.maxTotalBytes`           |
-   | Freshness (workflow, run, PR, compare)    | `limit:evidence.allocation.transport.freshness.maxRequests`          | fixed                         | `limit:evidence.allocation.transport.freshness.maxTotalBytes`          |
-   | GitHub evidence session                   | `limit:evidence.allocation.session.maxRequests`                      | fixed                         | `limit:evidence.allocation.session.maxTotalBytes`                      |
-   | npm registry details                      | `limit:evidence.allocation.registry.maxRequests`                     | npm inventory members         | `limit:evidence.allocation.registry.maxTotalBytes`                     |
-   | Upstream evidence                         | `limit:evidence.allocation.upstream.maxRequests`                     | direct and transitive members | `limit:evidence.allocation.upstream.maxTotalBytes`                     |
-   | Advisory lookup                           | `limit:evidence.allocation.advisory.maxRequests`                     | direct and transitive members | `limit:evidence.allocation.advisory.maxTotalBytes`                     |
-   | Signals: malware                          | `limit:evidence.allocation.signals.readers.malware.maxRequests`      | every member                  | `limit:evidence.allocation.signals.readers.malware.maxTotalBytes`      |
-   | Signals: npm publish times                | `limit:evidence.allocation.signals.readers.publishTimes.maxRequests` | npm members                   | `limit:evidence.allocation.signals.readers.publishTimes.maxTotalBytes` |
-   | Signals: npm registry policy              | `limit:evidence.allocation.signals.readers.registry.maxRequests`     | fixed at the ceiling          | `limit:evidence.allocation.signals.readers.registry.maxTotalBytes`     |
-   | Signals: PyPI metadata                    | `limit:evidence.allocation.signals.readers.metadata.maxRequests`     | fixed at the ceiling          | `limit:evidence.allocation.signals.readers.metadata.maxTotalBytes`     |
-   | Signals: Actions upstream                 | `limit:evidence.allocation.signals.readers.upstream.maxRequests`     | fixed at the ceiling          | `limit:evidence.allocation.signals.readers.upstream.maxTotalBytes`     |
+   | Reader                                    | Request ceiling                                                      | Request share scales on        | Bytes                                                                  |
+   | ----------------------------------------- | -------------------------------------------------------------------- | ------------------------------ | ---------------------------------------------------------------------- |
+   | Snapshot reads (repository, commit, tree) | `limit:evidence.allocation.transport.snapshot.maxRequests`           | fixed                          | `limit:evidence.allocation.transport.snapshot.maxTotalBytes`           |
+   | Freshness (workflow, run, PR, compare)    | `limit:evidence.allocation.transport.freshness.maxRequests`          | fixed                          | `limit:evidence.allocation.transport.freshness.maxTotalBytes`          |
+   | GitHub evidence session                   | `limit:evidence.allocation.session.maxRequests`                      | fixed                          | `limit:evidence.allocation.session.maxTotalBytes`                      |
+   | npm registry details                      | `limit:evidence.allocation.registry.maxRequests`                     | npm inventory members          | `limit:evidence.allocation.registry.maxTotalBytes`                     |
+   | Upstream evidence                         | `limit:evidence.allocation.upstream.maxRequests`                     | direct and transitive members  | `limit:evidence.allocation.upstream.maxTotalBytes`                     |
+   | Advisory lookup                           | `limit:evidence.allocation.advisory.maxRequests`                     | direct and transitive members  | `limit:evidence.allocation.advisory.maxTotalBytes`                     |
+   | Signals: malware                          | `limit:evidence.allocation.signals.readers.malware.maxRequests`      | every member, plus direct ones | `limit:evidence.allocation.signals.readers.malware.maxTotalBytes`      |
+   | Signals: npm publish times                | `limit:evidence.allocation.signals.readers.publishTimes.maxRequests` | npm members                    | `limit:evidence.allocation.signals.readers.publishTimes.maxTotalBytes` |
+   | Signals: npm registry policy              | `limit:evidence.allocation.signals.readers.registry.maxRequests`     | fixed at the ceiling           | `limit:evidence.allocation.signals.readers.registry.maxTotalBytes`     |
+   | Signals: PyPI metadata                    | `limit:evidence.allocation.signals.readers.metadata.maxRequests`     | fixed at the ceiling           | `limit:evidence.allocation.signals.readers.metadata.maxTotalBytes`     |
+   | Signals: Actions upstream                 | `limit:evidence.allocation.signals.readers.upstream.maxRequests`     | fixed at the ceiling           | `limit:evidence.allocation.signals.readers.upstream.maxTotalBytes`     |
 
    Fitted share values amendment
    ([#371](https://github.com/andrewpucci/dependency-update-advisor/issues/371)):

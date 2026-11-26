@@ -471,6 +471,37 @@ test.each([
   },
 );
 
+test('counts only npm members of the inventory for the registry share, not declarations or other ecosystems', async () => {
+  const { session, collectors } = await readySession();
+  const change = (id: string, ecosystem: string, role: string, kind: string, extra = {}) => ({
+    id,
+    ecosystem,
+    role,
+    kind,
+    ...extra,
+  });
+  // Two npm members, one npm declaration record, and an Actions and a uv member: 5 records.
+  vi.mocked(npmModule.collectNpmInventory).mockResolvedValueOnce({
+    kind: 'inventory',
+    changes: [
+      change('a', 'npm', 'direct', 'update'),
+      change('b', 'npm', 'transitive', 'addition'),
+      change('decl', 'npm', 'direct', 'update', { basis: 'declaration' }),
+      change('c', 'actions', 'direct', 'update'),
+      change('d', 'uv', 'direct', 'update'),
+    ],
+  } as never);
+  vi.mocked(npmGraphModule.enrichNpmEvidence).mockClear();
+  vi.mocked(npmGraphModule.enrichNpmEvidence).mockResolvedValueOnce({ kind: 'invalid' } as never);
+  await collectors.npm(session);
+  // 5 + 2.5 × 2 = 10. Counting all 5 records would give 18, and all 4 members (malware's
+  // eligible count) 15.
+  expect(npmGraphModule.enrichNpmEvidence).toHaveBeenCalledWith(
+    expect.objectContaining({ limits: expect.objectContaining({ maxRequests: 10 }) }),
+    expect.anything(),
+  );
+});
+
 test('hands the authentic npm inventory to the caller for upstream research', async () => {
   const fixture = npmScenario(2, false, 'empty', true);
   const opened = await openEvidenceSession({
