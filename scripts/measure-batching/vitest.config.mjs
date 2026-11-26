@@ -8,6 +8,6 @@ export default defineConfig({
   test: {
     environment: 'node',
     include: ['scripts/measure-batching/run.batching.ts'],
-    testTimeout: limit('measureDemand.testTimeoutMs'),
+    testTimeout: limit('probe.batching.testTimeoutMs'),
   },
 });

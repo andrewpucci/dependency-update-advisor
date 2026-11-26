@@ -8,6 +8,6 @@
     "moduleResolution": "NodeNext",
     "types": ["node"]
   },
-  "include": ["src/**/*.ts", "tests/**/*.ts", "vite.config.ts"],
+  "include": ["src/**/*.ts", "tests/**/*.ts", "scripts/**/*.ts", "vite.config.ts"],
   "exclude": [".context", "node_modules", "coverage", "dist"]
 }

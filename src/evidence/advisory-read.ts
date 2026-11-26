@@ -142,7 +142,7 @@ function target(value: unknown): AdvisoryTarget {
     version: value.version,
   };
 }
-type QueryKind = 'reviewed' | 'malware';
+export type QueryKind = 'reviewed' | 'malware';
 type Provider = 'github' | 'osv';
 const GHSA_ID = /^GHSA-[a-z\d]{4}-[a-z\d]{4}-[a-z\d]{4}$/u;
 /** The OSV endpoint; a complete empty PyPI reviewed lookup cites it. */
@@ -154,7 +154,8 @@ const DISCOVERY_CURSOR_HEADROOM = limit('advisory.discovery.cursorHeadroomBytes'
 const SPELLING_CEILING = limit('advisory.discovery.spellingCeiling');
 /** PEP 503 treats each of these as the same separator. */
 const PIP_SEPARATORS = ['-', '_', '.'] as const;
-function githubUrl(
+/** One GitHub global advisory query URL, with the reader's fixed filters. */
+export function githubUrl(
   ecosystem: AdvisoryTarget['ecosystem'],
   affects: readonly string[],
   kind: QueryKind,
@@ -169,13 +170,19 @@ function githubUrl(
   }).toString();
   return url.href;
 }
-/** GitHub stores package names as each advisory spells them; compare them the way the ecosystem does. */
-function canonical(ecosystem: AdvisoryTarget['ecosystem'], name: string): string {
+/**
+ * GitHub stores package names as each advisory spells them; compare them the way the ecosystem
+ * does (S1 Package Name Form Amendment item 6).
+ */
+export function canonicalName(ecosystem: AdvisoryTarget['ecosystem'], name: string): string {
   if (ecosystem === 'pip') return name.toLowerCase().replace(/[-_.]+/gu, '-');
   return ecosystem === 'actions' ? name.toLowerCase() : name;
 }
-/** Every spelling of a normalized PyPI name with each separator replaced by `-`, `_`, or `.`. */
-function pipSpellings(name: string): string[] {
+/**
+ * Every spelling of a normalized PyPI name with each separator replaced by `-`, `_`, or `.`.
+ * Throws an `unsupported` AdvisoryFailure past the spelling ceiling.
+ */
+export function pipSpellings(name: string): string[] {
   const parts = name.split('-');
   advisoryCheck(PIP_SEPARATORS.length ** (parts.length - 1) <= SPELLING_CEILING, 'unsupported');
   let spellings = [parts[0]];
@@ -183,22 +190,34 @@ function pipSpellings(name: string): string[] {
     spellings = spellings.flatMap((s) => PIP_SEPARATORS.map((sep) => s + sep + part));
   return spellings;
 }
-/** Package-only discovery URLs, each with room left under the cap for a pagination cursor. */
-function discoveryUrls(t: AdvisoryTarget, kind: QueryKind): string[] {
-  const spellings = t.ecosystem === 'pip' ? pipSpellings(t.name) : [t.name];
+/** Every spelling discovery sends for a target name: all PyPI separator forms, or the name. */
+export function discoverySpellings(ecosystem: AdvisoryTarget['ecosystem'], name: string): string[] {
+  return ecosystem === 'pip' ? pipSpellings(name) : [name];
+}
+/**
+ * Package-only discovery URLs over these spellings, each with room left under the cap for a
+ * pagination cursor, and none for no spellings. Throws an `unsupported` AdvisoryFailure when one spelling alone cannot fit.
+ */
+export function discoveryUrls(
+  ecosystem: AdvisoryTarget['ecosystem'],
+  spellings: readonly string[],
+  kind: QueryKind,
+): string[] {
+  // No spellings means no query: an empty `affects` would list every advisory.
+  if (!spellings.length) return [];
   const limit = DISCOVERY_URL_CAP - DISCOVERY_CURSOR_HEADROOM;
   const urls: string[] = [];
   let chunk: string[] = [];
   for (const spelling of spellings) {
-    if (githubUrl(t.ecosystem, [...chunk, spelling], kind, DISCOVERY_PAGE_SIZE).length <= limit) {
+    if (githubUrl(ecosystem, [...chunk, spelling], kind, DISCOVERY_PAGE_SIZE).length <= limit) {
       chunk.push(spelling);
       continue;
     }
     advisoryCheck(chunk.length > 0, 'unsupported');
-    urls.push(githubUrl(t.ecosystem, chunk, kind, DISCOVERY_PAGE_SIZE));
+    urls.push(githubUrl(ecosystem, chunk, kind, DISCOVERY_PAGE_SIZE));
     chunk = [spelling];
   }
-  urls.push(githubUrl(t.ecosystem, chunk, kind, DISCOVERY_PAGE_SIZE));
+  urls.push(githubUrl(ecosystem, chunk, kind, DISCOVERY_PAGE_SIZE));
   return urls;
 }
 /** An advisory may list one package several times; GitHub does not say which range matched. */
@@ -219,14 +238,14 @@ function severityOf(value: unknown): AdvisoryRecord['severity'] | undefined {
     : undefined;
 }
 function packageEntries(value: unknown[], t: AdvisoryTarget) {
-  const name = canonical(t.ecosystem, t.name);
+  const name = canonicalName(t.ecosystem, t.name);
   return value.filter(
     (v): v is Record<string, unknown> & { package: Record<string, unknown> } =>
       isPlainObject(v) &&
       isPlainObject(v.package) &&
       v.package.ecosystem === t.ecosystem &&
       typeof v.package.name === 'string' &&
-      canonical(t.ecosystem, v.package.name) === name,
+      canonicalName(t.ecosystem, v.package.name) === name,
   );
 }
 function githubRecordBase(value: unknown, kind: QueryKind) {
@@ -670,7 +689,11 @@ class Reader implements AdvisoryReader {
   /** The stored spellings of the target's package, from package-only queries. */
   private async discover(t: AdvisoryTarget): Promise<string[]> {
     const forms = new Set<string>();
-    for (const url of discoveryUrls(t, this.kind)) {
+    for (const url of discoveryUrls(
+      t.ecosystem,
+      discoverySpellings(t.ecosystem, t.name),
+      this.kind,
+    )) {
       let found = this.discoveries.get(url);
       if (!found) {
         const names: string[] = [];

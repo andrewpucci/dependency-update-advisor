@@ -1,7 +1,14 @@
 import { expect, test } from 'vite-plus/test';
 import {
   advisoryBatchCovers,
+  advisoryBatchExtras,
   advisoryNames,
+  discoveryBatchExtras,
+  distinctTags,
+  graphqlAnswered,
+  sweepChunks,
+  tagAgreement,
+  versionInRange,
   BudgetSpent,
   halvingSizes,
   requestBudget,
@@ -215,4 +222,119 @@ test('a request budget refuses the request past its cap', () => {
   budget.spend();
   expect(() => budget.spend()).toThrow(BudgetSpent);
   expect(budget.used()).toBe(2);
+});
+
+test('reports batch records the singletons lacked, by whether they would be attributed', () => {
+  const batch = [
+    record('GHSA-1', ['npm', 'lodash']),
+    record('GHSA-2', ['npm', 'lodash'], ['npm', 'left-pad']),
+    record('GHSA-3', ['npm', 'lodash'], ['rubygems', 'left-pad']),
+    record('GHSA-4', ['npm', 'dua-probe-filler-0']),
+  ];
+  expect(
+    advisoryBatchExtras(
+      'npm',
+      [
+        { name: 'lodash', ids: ['GHSA-1'] },
+        { name: 'left-pad', ids: [] },
+        { name: 'dua-probe-filler-0', ids: [] },
+      ],
+      batch,
+    ),
+  ).toEqual([
+    { target: 'lodash', item: 'GHSA-2', kind: 'shared' },
+    { target: 'left-pad', item: 'GHSA-2', kind: 'shared' },
+    { target: 'lodash', item: 'GHSA-3', kind: 'attributable' },
+    { target: 'dua-probe-filler-0', item: 'GHSA-4', kind: 'attributable' },
+  ]);
+});
+
+test('a package is judged on all its batched versions, and not at all when one is unknown', () => {
+  const batch = [
+    record('GHSA-1', ['npm', 'lodash']),
+    record('GHSA-2', ['npm', 'left-pad']),
+    record('GHSA-3', ['npm', 'right-pad']),
+  ];
+  expect(
+    advisoryBatchExtras(
+      'npm',
+      [
+        { name: 'lodash', ids: ['GHSA-1'] },
+        { name: 'lodash', ids: [] },
+        { name: 'left-pad', ids: [] },
+        { name: 'left-pad', ids: null },
+        { name: 'right-pad', ids: null },
+        { name: 'right-pad', ids: [] },
+      ],
+      batch,
+    ),
+  ).toEqual([]);
+  // npm names are compared exactly, as the clearing rule does.
+  expect(
+    advisoryBatchExtras(
+      'npm',
+      [{ name: 'lodash', ids: [] }],
+      [record('GHSA-1', ['npm', 'Lodash'])],
+    ),
+  ).toEqual([]);
+});
+
+test('reports a stored form the discovery batch gives a target that per-target discovery lacked', () => {
+  const batch = [
+    record('GHSA-1', ['pip', 'flo_pro_adk']),
+    record('GHSA-2', ['pip', 'Flo.Pro.Adk']),
+    record('GHSA-3', ['npm', 'flo-pro-adk']),
+  ];
+  expect(
+    discoveryBatchExtras('pip', [{ name: 'flo-pro-adk', forms: ['flo_pro_adk'] }], batch),
+  ).toEqual([{ target: 'flo-pro-adk', item: 'Flo.Pro.Adk', kind: 'form' }]);
+});
+
+test('a GraphQL response is answered only with a data object and a path on every error', () => {
+  expect(graphqlAnswered({ data: {} })).toBe(true);
+  expect(graphqlAnswered({ data: {}, errors: [{ path: ['c0'] }] })).toBe(true);
+  for (const response of [null, {}, { data: null }, { data: {}, errors: [{ message: 'x' }] }])
+    expect(graphqlAnswered(response), JSON.stringify(response)).toBe(false);
+});
+
+test('keeps every distinct REST status of one tag, and reports two as a conflict', () => {
+  const tags = distinctTags([
+    { repository: 'a/b', tag: 'v1', status: '404' },
+    { repository: 'a/b', tag: 'v1', status: '404' },
+    { repository: 'a/b', tag: 'v1', status: '200' },
+    { repository: 'a/b', tag: 'v2', status: '200' },
+  ]);
+  expect(tags).toEqual([
+    { repository: 'a/b', tag: 'v1', statuses: ['404', '200'] },
+    { repository: 'a/b', tag: 'v2', statuses: ['200'] },
+  ]);
+  expect(tagAgreement(tags[0].statuses, 'null')).toBe('rest-conflict');
+  expect(tagAgreement(tags[0].statuses, 'found')).toBe('rest-conflict');
+  expect(tagAgreement(tags[1].statuses, 'found')).toBe('agree');
+  // Only 200 and 404 decide: another status beside one of them is ignored, and alone it is other.
+  expect(tagAgreement(['404', '502'], 'null')).toBe('agree');
+  expect(tagAgreement(['502', '200'], 'null')).toBe('rest-found-graphql-null');
+  expect(tagAgreement(['502', '403'], 'null')).toBe('rest-other');
+});
+
+test('chooses a version inside a GitHub range, or none', () => {
+  expect(versionInRange('>= 1.0.0, < 1.2.0')).toBe('1.0.0');
+  expect(versionInRange('< 2.0.0')).toBe('0.0.0');
+  expect(versionInRange('> 1.0.0')).toBe('1.0.1');
+  expect(versionInRange('= 1.0.4')).toBe('1.0.4');
+  expect(versionInRange('>= 0')).toBe('0.0.0');
+  for (const range of ['', 'garbage', '>= 2.0.0, < 1.0.0'])
+    expect(versionInRange(range), range).toBeNull();
+});
+
+test('sweep batches hold every target, at most the maximum each, with positives spread and last', () => {
+  const rest = ['r0', 'r1', 'r2', 'r3', 'r4'];
+  expect(sweepChunks(rest, ['p0', 'p1', 'p2'], 3)).toEqual([
+    ['r0', 'r1', 'p0'],
+    ['r2', 'r3', 'p1'],
+    ['r4', 'p2'],
+  ]);
+  expect(sweepChunks([], ['p0', 'p1', 'p2'], 2)).toEqual([['p0', 'p2'], ['p1']]);
+  expect(sweepChunks(rest, ['p0'], 10)).toEqual([[...rest, 'p0']]);
+  expect(sweepChunks([], [], 10)).toEqual([]);
 });
