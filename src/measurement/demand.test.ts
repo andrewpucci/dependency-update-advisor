@@ -238,13 +238,20 @@ test('a labeled reader factory reads against the share for the phase it was buil
   ]);
 });
 
+/** 2026-11-25T00:00:00Z, and a reset half an hour after it, in the header's Unix seconds. */
+const WALL = Date.UTC(2026, 10, 25);
+const RESET = String(WALL / 1000 + 30 * 60);
+const quotaHeaders = (remaining: string, reset = RESET, extra: Record<string, string> = {}) => ({
+  headers: { 'x-ratelimit-remaining': remaining, 'x-ratelimit-reset': reset, ...extra },
+});
+
 test('reports research GitHub requests against the R1 ceiling, with refusals and the last quota', async () => {
-  const recorder = createDemandRecorder(() => 0);
+  const recorder = createDemandRecorder(() => 0, { wallNow: () => WALL });
   let remaining = 100;
   const fetch = recorder.wrap(async (url) =>
     new URL(url).host === 'api.github.com'
-      ? new Response('{}', { headers: { 'x-ratelimit-remaining': String(remaining--) } })
-      : new Response('{}', { headers: { 'x-ratelimit-remaining': '0' } }),
+      ? new Response('{}', quotaHeaders(String(remaining--)))
+      : new Response('{}', quotaHeaders('0')),
   );
   // A read before research spends quota but is not research's.
   await fetch('https://api.github.com/repos/o/r/pulls/1', {});
@@ -261,6 +268,10 @@ test('reports research GitHub requests against the R1 ceiling, with refusals and
     ceiling: limit('research.githubQuota.researchCeiling'),
     refusals: 3,
     lastRemaining: 98,
+    lastReset: '2026-11-25T00:30:00.000Z',
+    windows: 1,
+    risesWithinWindow: 0,
+    ignoredReadings: 0,
   });
   // No body, token, or URL reaches the report.
   expect(JSON.stringify(report)).not.toContain('repos/o/r');
@@ -273,6 +284,10 @@ test('without a guard, the report shows no refusals and no quota until GitHub re
     ceiling: limit('research.githubQuota.researchCeiling'),
     refusals: 0,
     lastRemaining: null,
+    lastReset: null,
+    windows: 0,
+    risesWithinWindow: 0,
+    ignoredReadings: 0,
   });
 });
 
@@ -288,13 +303,12 @@ test('the R1 ceiling is the sum of the research request ceilings and scales with
   expect(scaled.get('research.githubQuota.researchCeiling')?.value).toBe(10 * sum(REGISTER));
 });
 
-test('counts only research-stage GitHub requests and keeps the latest reported quota', async () => {
-  const recorder = createDemandRecorder(() => 0);
+test('counts only research-stage GitHub requests and keeps the lowest quota in the window', async () => {
+  const recorder = createDemandRecorder(() => 0, { wallNow: () => WALL });
   const remaining = ['40', '30', '35', '50'];
   let call = 0;
   const fetch = recorder.wrap(
-    async () =>
-      new Response('{}', { headers: { 'x-ratelimit-remaining': remaining[call++] ?? '0' } }),
+    async () => new Response('{}', quotaHeaders(remaining[call++] ?? '0')),
   );
   recorder.observe({ kind: 'stage-start', stage: 'upstream' });
   await fetch('https://api.github.com/repos/o/r/releases', {});
@@ -307,8 +321,107 @@ test('counts only research-stage GitHub requests and keeps the latest reported q
   await fetch('https://api.github.com/repos/o/r/pulls/1', {});
   const report = recorder.report({});
   expect(report.github.researchRequests).toBe(2);
-  // The quota can rise when a window resets; the report keeps the latest, not the lowest.
-  expect(report.github.lastRemaining).toBe(50);
+  // Within one window the report never rises: 35 and 50 arrived after 30 for the same reset.
+  expect(report.github).toMatchObject({ lastRemaining: 30, windows: 1, risesWithinWindow: 2 });
+});
+
+test('reports the quota as the guard reads it: core only, lowest per window, raised by a reset (#438)', async () => {
+  const wall = { now: WALL };
+  const later = String(Number(RESET) + 60 * 60);
+  // Out of completion order, with other resources, another host, and invalid resets mixed in.
+  const sequence: [string, ResponseInit][] = [
+    ['https://api.github.com/a', quotaHeaders('97')],
+    ['https://api.github.com/b', quotaHeaders('99')],
+    [
+      'https://api.github.com/c',
+      quotaHeaders('4990', later, { 'x-ratelimit-resource': 'graphql' }),
+    ],
+    ['https://api.github.com/d', quotaHeaders('29', RESET, { 'x-ratelimit-resource': 'search' })],
+    ['https://codeload.github.com/o/r', quotaHeaders('4999', later)],
+    ['https://api.github.com/e', quotaHeaders('650', String(WALL / 1000 - 1))],
+    ['https://api.github.com/f', quotaHeaders('96', RESET, { 'x-ratelimit-resource': 'core' })],
+    ['https://api.github.com/g', quotaHeaders('98')],
+  ];
+  const responses = new Map(sequence);
+  const recorder = createDemandRecorder(() => 0, { wallNow: () => wall.now });
+  const fetch = recorder.wrap(async (url) => new Response('{}', responses.get(url)));
+  const seen: (number | null)[] = [];
+  for (const [url] of sequence) {
+    await fetch(url, {});
+    seen.push(recorder.report({}).github.lastRemaining);
+  }
+  expect(seen).toEqual([97, 97, 97, 97, 97, 97, 96, 96]);
+  expect(recorder.report({}).github).toMatchObject({
+    lastReset: '2026-11-25T00:30:00.000Z',
+    windows: 1,
+    risesWithinWindow: 2,
+    ignoredReadings: 3,
+  });
+
+  // The next window's reading raises it; a late reading from the old window does not.
+  wall.now = WALL + 31 * 60 * 1000;
+  responses.set('https://api.github.com/h', quotaHeaders('3'));
+  responses.set('https://api.github.com/i', quotaHeaders('999', later));
+  await fetch('https://api.github.com/h', {});
+  await fetch('https://api.github.com/i', {});
+  expect(recorder.report({}).github).toMatchObject({
+    lastRemaining: 999,
+    lastReset: '2026-11-25T01:30:00.000Z',
+    windows: 2,
+    ignoredReadings: 4,
+  });
+  expect(recorder.report({}).github.trace).toBeUndefined();
+});
+
+test('a quota trace lists GitHub rate-limit headers in completion order, without URLs', async () => {
+  const recorder = createDemandRecorder(() => 0, { wallNow: () => WALL, trace: true });
+  const gates = new Map<string, () => void>();
+  const fetch = recorder.wrap(async (url) => {
+    await new Promise<void>((resolve) => gates.set(url, resolve));
+    return new Response('{}', {
+      status: url.endsWith('/b') ? 404 : 200,
+      headers: {
+        ...quotaHeaders(url.endsWith('/a') ? '99' : '98').headers,
+        'x-ratelimit-resource': 'core',
+        'x-ratelimit-limit': '1000',
+        'x-ratelimit-used': url.endsWith('/a') ? '1' : '2',
+      },
+    });
+  });
+  recorder.observe({ kind: 'stage-start', stage: 'upstream' });
+  const first = fetch('https://api.github.com/repos/secret/a', {});
+  const second = fetch('https://api.github.com/repos/secret/b', {});
+  const npm = fetch('https://registry.npmjs.org/secret', {});
+  await Promise.resolve();
+  gates.get('https://api.github.com/repos/secret/b')!();
+  await second;
+  gates.get('https://api.github.com/repos/secret/a')!();
+  gates.get('https://registry.npmjs.org/secret')!();
+  await Promise.all([first, npm]);
+  const report = recorder.report({});
+  expect(report.github.trace).toEqual([
+    {
+      started: 2,
+      phase: 'upstream',
+      status: '404',
+      resource: 'core',
+      limit: '1000',
+      remaining: '98',
+      used: '2',
+      reset: RESET,
+    },
+    {
+      started: 1,
+      phase: 'upstream',
+      status: '200',
+      resource: 'core',
+      limit: '1000',
+      remaining: '99',
+      used: '1',
+      reset: RESET,
+    },
+  ]);
+  expect(JSON.stringify(report)).not.toContain('secret');
 });
 
 test('counts members by evidence status and reason per category, skipping declarations', () => {

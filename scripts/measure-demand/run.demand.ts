@@ -10,8 +10,11 @@
  * The report holds counts only: no URL, header, token, or response body. Its `coverage` field
  * counts members' evidence states and reasons per category, which shows members a share stopped
  * one at a time while the stage itself ended `enriched`. Its `github` field gives
- * research's GitHub requests beside their approved ceiling, the quota guard's refusals, and the last
- * remaining quota GitHub reported; a run the guard cut short is re-measured after the reset.
+ * research's GitHub requests beside their approved ceiling, the quota guard's refusals, and the
+ * remaining quota read by the guard's rules (lowest core value in the latest window, with that
+ * window's reset); a run the guard cut short is re-measured after the reset.
+ * Optional: MEASURE_QUOTA_TRACE=1 adds `github.trace`, each GitHub API response's rate-limit
+ * headers (resource, limit, remaining, used, reset) with its start order and status, and no URL.
  * Optional: MEASURE_TARGETS_OUT (a path under `.context/`) also writes the targets the advisory and
  * malware readers settled and the tag candidates the run requested (see `measurement/targets.ts`).
  * That file names public packages and tags, so it stays out of the report and is never committed.
@@ -268,7 +271,7 @@ test('measure research read demand', async () => {
   if (!token || !Number.isSafeInteger(pr)) throw new Error('GITHUB_TOKEN and MEASURE_PR required');
   const targetsOut = env.MEASURE_TARGETS_OUT ? targetsPath(env.MEASURE_TARGETS_OUT) : null;
   const now = () => performance.now();
-  const recorder = createDemandRecorder(now);
+  const recorder = createDemandRecorder(now, { trace: env.MEASURE_QUOTA_TRACE === '1' });
   hooks.phase = recorder.phase;
   const observed: Observed[] = [];
   const base = recorder.wrap(observeRequests(observed, (url, init) => fetch(url, init)));

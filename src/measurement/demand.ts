@@ -1,5 +1,5 @@
 import { AsyncLocalStorage } from 'node:async_hooks';
-import { isGithubApi } from '../evidence/github-quota.js';
+import { isGithubApi, quotaReading, type QuotaReading } from '../evidence/github-quota.js';
 import { limit } from '../limits.js';
 import type { ResearchObservation, ResearchStage } from '../research.js';
 import type { DeepReadonly, PacketChange } from '../schema.js';
@@ -50,10 +50,50 @@ export type DemandReport = {
     researchRequests: number;
     ceiling: number;
     refusals: number;
-    /** The last `x-ratelimit-remaining` GitHub reported this run, or null before any. */
+    /**
+     * The lowest valid core `x-ratelimit-remaining` in the latest quota window seen this run, read
+     * by the guard's own rules (`quotaReading`): within a window it never rises. Null before any.
+     */
     lastRemaining: number | null;
+    /** That window's reset as an ISO time, or null before any valid reading. */
+    lastReset: string | null;
+    /** How many quota windows the run saw: more than one means a reset fell inside the run. */
+    windows: number;
+    /** Valid readings above their window's lowest so far: the raw headers' non-monotonic steps. */
+    risesWithinWindow: number;
+    /**
+     * GitHub API responses carrying `x-ratelimit-remaining` that the guard's rules reject: another
+     * resource, an invalid value, or a reset that is past or beyond the quota window.
+     */
+    ignoredReadings: number;
+    /** Present only when the recorder was built with `trace`; see `QuotaTraceEntry`. */
+    trace?: QuotaTraceEntry[];
   };
 };
+
+/**
+ * One GitHub API response's rate-limit headers, in the order responses completed. No URL, token,
+ * or body: `started` is the request's start order among GitHub API requests, so a response that
+ * started earlier but completed later shows as out of order. A header value that is not a short
+ * lowercase token or digit string is reported as `invalid`.
+ */
+export type QuotaTraceEntry = {
+  started: number;
+  phase: DemandPhase;
+  status: string;
+  resource: string | null;
+  limit: string | null;
+  remaining: string | null;
+  used: string | null;
+  reset: string | null;
+};
+
+export type DemandRecorderOptions = Readonly<{
+  /** Wall time in Unix milliseconds, for judging reset headers; `Date.now` by default. */
+  wallNow?: () => number;
+  /** Adds `github.trace` to the report. */
+  trace?: boolean;
+}>;
 
 type Sample = {
   phase: DemandPhase;
@@ -69,7 +109,12 @@ const shareStore = new AsyncLocalStorage<string>();
 const UNATTRIBUTED = 'unattributed';
 const CENSORING_REASONS: readonly (string | null)[] = ['budget', 'timeout', 'rate_limit'];
 const RESEARCH_PHASES: readonly DemandPhase[] = ['upstream', 'advisories', 'signals'];
-const DIGITS = /^\d+$/;
+const TRACE_VALUE = /^[a-z0-9_]{1,32}$/;
+
+function traceValue(value: string | null): string | null {
+  if (value === null) return null;
+  return TRACE_VALUE.test(value) ? value : 'invalid';
+}
 
 /**
  * Counts every request made through `fetch` against `share`. When labels nest, the outermost one
@@ -166,7 +211,10 @@ function addSample(table: Record<string, DemandRow>, key: string, sample: Sample
   row.statuses[sample.status] = (row.statuses[sample.status] ?? 0) + 1;
 }
 
-export function createDemandRecorder(now: () => number): {
+export function createDemandRecorder(
+  now: () => number,
+  options: DemandRecorderOptions = {},
+): {
   phase(): DemandPhase;
   observe(observation: ResearchObservation): void;
   wrap(
@@ -181,8 +229,47 @@ export function createDemandRecorder(now: () => number): {
   let phase: DemandPhase = 'pre-research';
   let stageStartedAt = 0;
   const samples: Sample[] = [];
-  let lastRemaining: number | null = null;
   const stages: DemandReport['stages'] = [];
+  const quotaOptions = {
+    wallNow: options.wallNow ?? Date.now,
+    windowMs: limit('research.githubQuota.windowMs'),
+  };
+  let quotaWindow: QuotaReading | null = null;
+  let windows = 0;
+  let risesWithinWindow = 0;
+  let ignoredReadings = 0;
+  let githubStarted = 0;
+  const trace: QuotaTraceEntry[] = [];
+
+  // The guard's window rule, without its count of requests started: a later reset starts a new
+  // window, an earlier one is ignored, and within a window only a lower remaining is kept.
+  const readQuota = (url: string, response: Response, started: number) => {
+    if (options.trace) {
+      const header = (name: string) => traceValue(response.headers.get(name));
+      trace.push({
+        started,
+        phase,
+        status: String(response.status),
+        resource: header('x-ratelimit-resource'),
+        limit: header('x-ratelimit-limit'),
+        remaining: header('x-ratelimit-remaining'),
+        used: header('x-ratelimit-used'),
+        reset: header('x-ratelimit-reset'),
+      });
+    }
+    const reading = quotaReading(url, response, quotaOptions);
+    if (!reading) {
+      if (response.headers.has('x-ratelimit-remaining')) ignoredReadings += 1;
+      return;
+    }
+    if (!quotaWindow || reading.reset > quotaWindow.reset) {
+      quotaWindow = reading;
+      windows += 1;
+    } else if (reading.reset === quotaWindow.reset) {
+      if (reading.remaining > quotaWindow.remaining) risesWithinWindow += 1;
+      else quotaWindow = reading;
+    }
+  };
 
   const observe = (observation: ResearchObservation) => {
     if (observation.kind === 'stage-start') {
@@ -205,6 +292,7 @@ export function createDemandRecorder(now: () => number): {
       const share = shareStore.getStore() ?? UNATTRIBUTED;
       const sampleBase = { phase, share, host: new URL(url).host, url };
       const startedAt = now();
+      const githubOrder = isGithubApi(url) ? ++githubStarted : 0;
       let response: Response;
       try {
         response = await fetch(url, init);
@@ -213,9 +301,7 @@ export function createDemandRecorder(now: () => number): {
         throw error;
       }
       const ms = now() - startedAt;
-      const remaining = response.headers.get('x-ratelimit-remaining');
-      if (isGithubApi(url) && remaining !== null && DIGITS.test(remaining))
-        lastRemaining = Number(remaining);
+      if (githubOrder > 0) readQuota(url, response, githubOrder);
       const bytes = (await response.clone().arrayBuffer()).byteLength;
       samples.push({ ...sampleBase, status: String(response.status), bytes, ms });
       return response;
@@ -259,7 +345,12 @@ export function createDemandRecorder(now: () => number): {
         ).length,
         ceiling: limit('research.githubQuota.researchCeiling'),
         refusals: quota?.refusals() ?? 0,
-        lastRemaining,
+        lastRemaining: quotaWindow?.remaining ?? null,
+        lastReset: quotaWindow ? new Date(quotaWindow.reset).toISOString() : null,
+        windows,
+        risesWithinWindow,
+        ignoredReadings,
+        ...(options.trace ? { trace: trace.map((entry) => ({ ...entry })) } : {}),
       },
     };
   };
