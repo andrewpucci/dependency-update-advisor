@@ -10,6 +10,12 @@ This supplements [npm evidence](SPEC-npm-evidence.md), consumes
 [T4 packet](SPEC-review-packet.md) and [T5 unit](SPEC-decision-units.md) contracts.
 No new capability-map module or dependency direction is proposed.
 
+Limit citation amendment (L10,
+[#382](https://github.com/andrewpucci/dependency-update-advisor/issues/382)):
+the user approved this spec's change on 2026-11-26. It cites register
+entries as `limit:<id>` instead of stating their values, with no value
+change.
+
 Confirmed scope decision, 2026-11-01: the user explicitly chose to preserve
 T5's rule requiring exactly one changed direct resolved dependency per root.
 Broader reachability and multi-anchor grouping remain in
@@ -247,8 +253,9 @@ leave affected members ungrouped with visible diagnostics. A lifecycle lookup
 failure affects member `installScript` evidence, not discovery completeness.
 Never mark other required research categories complete from lifecycle data.
 
-Respect existing T4 limits, including 128 combined changes, 256 relationships,
-32 instances per path, source membership bounds, and packet bytes. An overlong
+Respect existing T4 limits, including `limit:packet.changes` combined changes,
+`limit:packet.relationships` relationships, `limit:packet.pathInstances`
+instances per path, source membership bounds, and packet bytes. An overlong
 path cannot be truncated into a proof. If output cannot retain every inventory
 record and necessary evidence limit, return an explicit bounded failure;
 never trim changes or hide gaps to make a packet fit. T4 still rejects an

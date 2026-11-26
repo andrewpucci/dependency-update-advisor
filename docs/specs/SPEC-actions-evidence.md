@@ -3,6 +3,12 @@
 Status: approved for planning, 2026-09-23. Module: `actions-evidence` in
 [the capability map](README.md).
 
+Limit citation amendment (L10,
+[#382](https://github.com/andrewpucci/dependency-update-advisor/issues/382)):
+the user approved this spec's change on 2026-11-26. It cites register
+entries as `limit:<id>` instead of stating their values, with no value
+change.
+
 ## Objective
 
 Account for GitHub Actions and reusable-workflow references changed by a
@@ -70,9 +76,9 @@ if (oldRef === null) return { kind: 'addition', fromRef: null, toRef: newRef };
 1. Paginate the full PR file list and select changed workflow files,
    including adds, removals, and renames. GitHub's
    [list-files endpoint](https://docs.github.com/en/rest/pulls/pulls#list-pull-requests-files)
-   has a 3,000-file cap; hitting it or losing a page is incomplete coverage.
-   Read bounded complete blobs at the verified base and head SHAs instead of
-   relying on possibly truncated diff patches.
+   has a `limit:github.treeMaxFiles` file cap; hitting it or losing a page is
+   incomplete coverage. Read bounded complete blobs at the verified base and
+   head SHAs instead of relying on possibly truncated diff patches.
 2. Parse workflow YAML as untrusted data without running expressions or
    actions. Inventory external `jobs[*].steps[*].uses` actions and
    `jobs[*].uses` reusable workflows, including repository subpaths. Ignore

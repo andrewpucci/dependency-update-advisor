@@ -8,6 +8,12 @@ comment described below; it does not authorize a new required merge gate.
 Analyzer choice: on 2026-10-12 the user selected SonarJS through the existing
 Vite+/Oxlint engine after comparing alternatives.
 
+Limit citation amendment (L10,
+[#382](https://github.com/andrewpucci/dependency-update-advisor/issues/382)):
+the user approved this spec's change on 2026-11-26. It cites register
+entries as `limit:<id>` instead of stating their values, with no value
+change.
+
 Implementation: completed and merged into `main` in
 [PR #65](https://github.com/andrewpucci/dependency-update-advisor/pull/65);
 issue #64 is closed. The PR records local and CI verification and its limits,
@@ -51,9 +57,9 @@ count as new; anonymous functions share a name and are matched by rank.
 Show zero-complexity functions in the headline count as well. Inline lint
 suppressions must not hide complexity scores.
 
-Show at most 100 regression rows, ordered by descending score, and state when
-the list is truncated. The comment job must reject reports exceeding 60,000
-characters.
+Show at most `limit:complexity.maxListedFindings` regression rows, ordered by
+descending score, and state when the list is truncated. The comment job must
+reject reports exceeding 60,000 characters.
 
 ## Workflow and boundaries
 

@@ -13,9 +13,17 @@ authorizes the tasks in dependency order, their verification checkpoints, and
 one closing PR; merge, publication, adoption, parity, and cutover remain
 separate gates.
 
+Limit citation amendment (L10,
+[#382](https://github.com/andrewpucci/dependency-update-advisor/issues/382)):
+the user approved this spec's change on 2026-11-26. It cites register
+entries as `limit:<id>` instead of stating their values, with no value
+change.
+
 Confirmed scope decision, 2026-11-09: an orchestrator-owned release-observation
-cache is charged to the existing **Signals: PyPI metadata** allocation (16
-requests and 0.5 MiB). S2 consumes the validated result without spending the
+cache is charged to the existing **Signals: PyPI metadata** allocation
+(`limit:evidence.allocation.signals.readers.metadata.maxRequests` requests and
+`limit:evidence.allocation.signals.readers.metadata.maxTotalBytes` bytes). S2
+consumes the validated result without spending the
 upstream-evidence allocation. This preserves the approved W2 total envelope;
 it does not create a budget that either stage may borrow.
 
@@ -148,7 +156,8 @@ endpoint diagnostics.
    previously untested outcome path.
 4. W2 allocation tests prove release observation charges Signals: PyPI metadata,
    leaves S2 upstream allocation unchanged for cache hits, and cannot exceed
-   the approved 944-request/54-MiB envelope.
+   the approved `limit:evidence.envelope.maxRequests` request and
+   `limit:evidence.envelope.maxTotalBytes` byte envelope.
 5. The full verification sequence succeeds. Review, publication, adoption,
    parity, and cutover remain separate gates.
 

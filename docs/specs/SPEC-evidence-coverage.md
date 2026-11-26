@@ -17,6 +17,12 @@ It adds repository tooling for measuring read demand. It does not change any
 evidence attribution rule, add a host, authorize publication, or authorize a
 live rerun.
 
+Limit citation amendment (L10,
+[#382](https://github.com/andrewpucci/dependency-update-advisor/issues/382)):
+the user approved this spec's change on 2026-11-26. It cites register
+entries as `limit:<id>` instead of stating their values, with no value
+change.
+
 ## Objective
 
 A maintainer reading a review of an ordinary Dependabot PR should see whether
@@ -325,9 +331,10 @@ Decisions confirmed on 2026-11-21:
 ### Why the cap follows the reported quota
 
 Every research and consumer read uses the workflow's `GITHUB_TOKEN`. GitHub
-documents its limit as 1,000 requests per hour per repository, or 15,000 for
-resources in a GitHub Enterprise Cloud account, with a secondary limit of 900
-points per minute, where most `GET` requests cost 1 point
+documents its limit as `limit:github.token.restRequestsPerHour` requests per
+hour per repository, or 15,000 for resources in a GitHub Enterprise Cloud
+account, with a secondary limit of 900 points per minute, where most `GET`
+requests cost 1 point
 ([REST API rate limits](https://docs.github.com/en/rest/using-the-rest-api/rate-limits-for-the-rest-api),
 checked 2026-11-21). Reruns and simultaneous Dependabot PRs draw from the
 same hourly quota, which a fixed per-run number cannot see. In R1 at ×10 one

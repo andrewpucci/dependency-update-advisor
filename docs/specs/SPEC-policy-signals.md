@@ -8,6 +8,12 @@ This supplies evidence to the approved [C3 policy](SPEC-advisory-policy.md);
 it adds no capability-map module or dependency direction. Specification,
 planning, and execution approval remain separate gates.
 
+Limit citation amendment (L10,
+[#382](https://github.com/andrewpucci/dependency-update-advisor/issues/382)):
+the user approved this spec's change on 2026-11-26. It cites register
+entries as `limit:<id>` instead of stating their values, with no value
+change.
+
 Specification approval, 2026-11-07: the user reviewed and updated the draft,
 then invoked `as-plan`. Under the repository approval rule, this approves
 the revised specification for planning, including its removal coverage,
@@ -485,9 +491,9 @@ implementation completion.
 Integration limits: X1 represents owner/repository replacements as removal
 plus addition, so those records do not establish a paired S3 identity finding.
 Rich research can reach T4's independent source/output caps before reaching
-the 128-change limit; rejection remains explicit and fail secure. Live
-transport, workflow diagnostics and budget allocation, M2/O1/W2, packaging,
-adoption, parity, and cutover remain separate gates in #207.
+the `limit:packet.changes` change limit; rejection remains explicit and fail
+secure. Live transport, workflow diagnostics and budget allocation, M2/O1/W2,
+packaging, adoption, parity, and cutover remain separate gates in #207.
 
 ## Approved Scope and Planning Decisions
 

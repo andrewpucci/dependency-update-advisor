@@ -12,6 +12,12 @@ and [reusable workflow](SPEC-reusable-workflow.md), together with
 and [packet validation](SPEC-review-packet.md), remain authoritative. This
 draft does not select a production claim backend or authorize live publication.
 
+Limit citation amendment (L10,
+[#382](https://github.com/andrewpucci/dependency-update-advisor/issues/382)):
+the user approved this spec's change on 2026-11-26. It cites register
+entries as `limit:<id>` instead of stating their values, with no value
+change.
+
 **Diagnostic amendment, approved for planning 2026-11-11:** The R1 no-write
 rehearsal recorded the intentionally redacted `internal-failure` outcome, but
 that aggregate does not identify a safe investigation boundary. The evidence
@@ -161,48 +167,55 @@ receives `process.env` or a general fetch function.
    bodies. Existing distinctions, including permission/feature versus rate-limit
    403, are preserved.
 
-   Approved execution envelope, amended 2026-11-09: 944 total requests, 1 MiB
-   per response, 54 MiB total response bytes, a 15,000 ms request timeout, and
-   a 240,000 ms total deadline. Exceeding any bound is a fail-closed
-   unavailable outcome; it does not replace an individual reader's approved
-   limits.
+   Approved execution envelope, amended 2026-11-09:
+   `limit:evidence.envelope.maxRequests` total requests,
+   `limit:evidence.envelope.maxResponseBytes` per response,
+   `limit:evidence.envelope.maxTotalBytes` total response bytes, a
+   `limit:evidence.envelope.requestTimeoutMs` request timeout, and a
+   `limit:evidence.envelope.totalTimeoutMs` total deadline. Exceeding any
+   bound is a fail-closed unavailable outcome; it does not replace an
+   individual reader's approved limits.
 
    The requests and bytes are divided between readers; one reader never
    borrows from another. The time limit is one shared deadline, except that
    freshness reads are bounded by the job window (Diagnostic Amendments 2
    and 3).
 
-   | Reader                                    | Requests | Bytes   |
-   | ----------------------------------------- | -------- | ------- |
-   | Snapshot reads (repository, commit, tree) | 200      | 9 MiB   |
-   | Freshness (workflow, run, PR, compare)    | 24       | 3 MiB   |
-   | GitHub evidence session                   | 160      | 12 MiB  |
-   | npm registry details                      | 64       | 4 MiB   |
-   | Upstream evidence                         | 240      | 15 MiB  |
-   | Advisory lookup                           | 80       | 5 MiB   |
-   | Signals: malware                          | 40       | 1.5 MiB |
-   | Signals: npm publish times                | 40       | 1.5 MiB |
-   | Signals: npm registry policy              | 64       | 2 MiB   |
-   | Signals: PyPI metadata                    | 16       | 0.5 MiB |
-   | Signals: Actions upstream                 | 16       | 0.5 MiB |
+   | Reader                                    | Requests                                                             | Bytes                                                                  |
+   | ----------------------------------------- | -------------------------------------------------------------------- | ---------------------------------------------------------------------- |
+   | Snapshot reads (repository, commit, tree) | `limit:evidence.allocation.transport.snapshot.maxRequests`           | `limit:evidence.allocation.transport.snapshot.maxTotalBytes`           |
+   | Freshness (workflow, run, PR, compare)    | `limit:evidence.allocation.transport.freshness.maxRequests`          | `limit:evidence.allocation.transport.freshness.maxTotalBytes`          |
+   | GitHub evidence session                   | `limit:evidence.allocation.session.maxRequests`                      | `limit:evidence.allocation.session.maxTotalBytes`                      |
+   | npm registry details                      | `limit:evidence.allocation.registry.maxRequests`                     | `limit:evidence.allocation.registry.maxTotalBytes`                     |
+   | Upstream evidence                         | `limit:evidence.allocation.upstream.maxRequests`                     | `limit:evidence.allocation.upstream.maxTotalBytes`                     |
+   | Advisory lookup                           | `limit:evidence.allocation.advisory.maxRequests`                     | `limit:evidence.allocation.advisory.maxTotalBytes`                     |
+   | Signals: malware                          | `limit:evidence.allocation.signals.readers.malware.maxRequests`      | `limit:evidence.allocation.signals.readers.malware.maxTotalBytes`      |
+   | Signals: npm publish times                | `limit:evidence.allocation.signals.readers.publishTimes.maxRequests` | `limit:evidence.allocation.signals.readers.publishTimes.maxTotalBytes` |
+   | Signals: npm registry policy              | `limit:evidence.allocation.signals.readers.registry.maxRequests`     | `limit:evidence.allocation.signals.readers.registry.maxTotalBytes`     |
+   | Signals: PyPI metadata                    | `limit:evidence.allocation.signals.readers.metadata.maxRequests`     | `limit:evidence.allocation.signals.readers.metadata.maxTotalBytes`     |
+   | Signals: Actions upstream                 | `limit:evidence.allocation.signals.readers.upstream.maxRequests`     | `limit:evidence.allocation.signals.readers.upstream.maxTotalBytes`     |
 
    Research reads scale with the group. Measured per extra npm package, the
    upstream reader needs about 7 requests (5 GitHub plus 2 registry), advisory
-   lookup 2, and the malware and publish-time readers 1 each, so these shares
-   cover a group of 32 changed packages, as a test confirms. A larger group
-   exhausts a share and ends incomplete with a `budget` reason; the 240,000 ms
-   deadline, not the request count, bounds a very large group.
+   lookup 2, and the malware and publish-time readers 1 each, so at the
+   current share values these shares cover a group of 32 changed packages,
+   the size a test pins. A larger group
+   exhausts a share and ends incomplete with a `budget` reason; the
+   `limit:evidence.envelope.totalTimeoutMs` deadline, not the request count,
+   bounds a very large group.
 
    The [evidence coverage spec](SPEC-evidence-coverage.md), approved for
    planning 2026-11-16, replaces these fixed research shares with shares
    scaled to the change and capped by measured ceilings. Until it is
    implemented and its fitted values are approved, the table above applies.
 
-   The snapshot share covers C1's 128 excerpt files with their directories.
-   Freshness reads are reserved separately so a heavy snapshot cannot prevent
-   the checks that keep a finished review valid. A failed freshness read is
-   an internal failure, never a stale head; its time bound is the job window,
-   not the shared 240,000 ms deadline (Diagnostic Amendments 2 and 3).
+   The snapshot share covers C1's `limit:context.maxSourceCandidates` excerpt
+   files with their directories. Freshness reads are reserved separately so a
+   heavy snapshot cannot prevent the checks that keep a finished review
+   valid. A failed freshness read is an internal failure, never a stale head;
+   its time bound is the job window, not the shared
+   `limit:evidence.envelope.totalTimeoutMs` deadline (Diagnostic Amendments 2
+   and 3).
 
 3. **Credential separation.** `github-token` performs GitHub reads;
    `app-token` is reserved for later publication. Collectors, source context,
@@ -333,47 +346,52 @@ comment, configuration, permission, token, trigger, or network-write change.
 
 **Status: approved for planning and execution 2026-11-11; implemented and
 merged into `main` (#299-#303); the R1 re-pin and rehearsal (#304) remain.**
-The user approved this amendment and its `freshnessAllowanceMs` of 45,000 ms
-for planning on 2026-11-11 (it was Ask-first under the approved execution
-envelope and the first amendment's boundaries), approved the plan, and approved
-its execution the same day. The amendment does not authorize live publication
-or a production claim backend. Effort tier: L (crosses `startup`, the GitHub
-transport, `pipeline`, `handoff`, and amends approved text). Evidence and the
-reproduction are in [#297](https://github.com/andrewpucci/dependency-update-advisor/issues/297).
+The user approved this amendment and its `freshnessAllowanceMs` of
+`limit:job.freshnessAllowance` for planning on 2026-11-11 (it was Ask-first
+under the approved execution envelope and the first amendment's boundaries),
+approved the plan, and approved its execution the same day. The amendment does
+not authorize live publication or a production claim backend. Effort tier: L
+(crosses `startup`, the GitHub transport, `pipeline`, `handoff`, and amends
+approved text). Evidence and the reproduction are in
+[#297](https://github.com/andrewpucci/dependency-update-advisor/issues/297).
 
-A rehearsal whose model step ends after the GitHub transport's 240-second
-window cannot make its final freshness reads, so a valid result is reported
-as `internal-failure at unclassified`. The approved text causes this: the
-transport clock starts before `runReview`, "the time limit is one shared
-deadline", and "a failed freshness read is an internal failure". The result
-must still be re-verified; ending it as `incomplete-evidence` would hand off a
-comment-eligible result without checking the head, so this amendment does not
-do that.
+A rehearsal whose model step ends after the GitHub transport's
+`limit:github.totalTimeoutMs` window cannot make its final freshness reads, so a
+valid result is reported as `internal-failure at unclassified`. The approved
+text causes this: the transport clock starts before `runReview`, "the time limit
+is one shared deadline", and "a failed freshness read is an internal failure".
+The result must still be re-verified; ending it as `incomplete-evidence` would
+hand off a comment-eligible result without checking the head, so this amendment
+does not do that.
 
 1. **Freshness reads use the job window.** One job-start timestamp, taken by
    startup before the first GitHub read, is the only clock origin for the
    GitHub transport and for `runReview` (its evidence, research, and analysis
    deadlines). Freshness reads (workflow, run, PR, comparison) are exempt from
-   the shared 240,000 ms evidence deadline and are bounded instead by their own
-   request and byte shares, the 15,000 ms request timeout, and the end of the
-   job window (job start plus the 900,000 ms job budget). Each freshness
+   the shared `limit:evidence.envelope.totalTimeoutMs` evidence deadline and
+   are bounded instead by their own request and byte shares, the
+   `limit:github.requestTimeoutMs` request timeout, and the end of the job
+   window (job start plus the `limit:job.budget` job budget). Each freshness
    request's timer is the smaller of the request timeout and the time left in
-   the job window, so a read after 240,000 ms is neither refused nor clamped to
-   a near-zero timer. Every other reader keeps the shared deadline. Freshness
-   reads still return the fixed `budget` reason once their own bounds are
-   spent.
+   the job window, so a read after `limit:evidence.envelope.totalTimeoutMs` is
+   neither refused nor clamped to a near-zero timer. Every other reader keeps
+   the shared deadline. Freshness reads still return the fixed `budget` reason
+   once their own bounds are spent.
 2. **Reserved analysis deadline.** The deadline passed to analysis is the job
    start plus the job budget minus `freshnessAllowanceMs`, so the final
    freshness check always has the allowance inside the job. The analysis layer
-   already stops at the smaller of that deadline minus its 60,000 ms
-   publication reserve and 600,000 ms after its own start; the allowance stacks
-   on that reserve, so the model ends by 795,000 ms after the job start and the
-   final check by about 840,000 ms.
-3. **Value: `freshnessAllowanceMs` = 45,000.** It is the derived minimum:
-   three sequential reads (run, PR, comparison) at the 15,000 ms request
-   timeout cover one full re-verification, the only freshness check that must
-   follow the model. The user approved this value on 2026-11-11; changing it
-   needs a new approval.
+   already stops at the smaller of that deadline minus its
+   `limit:analysis.publicationReserveMs` publication reserve and
+   `limit:analysis.maxAnalysisMs` after its own start; the allowance stacks on
+   that reserve, so the model ends by `limit:job.budget` minus
+   `limit:job.freshnessAllowance` and `limit:analysis.publicationReserveMs`
+   after the job start and the final check by about `limit:job.budget` minus
+   `limit:analysis.publicationReserveMs`.
+3. **Value: `freshnessAllowanceMs` = `limit:job.freshnessAllowance`.** It
+   is the derived minimum: three sequential reads (run, PR, comparison) at the
+   `limit:github.requestTimeoutMs` request timeout cover one full
+   re-verification, the only freshness check that must follow the model. The
+   user approved this value on 2026-11-11; changing it needs a new approval.
 4. **Fixed freshness detail.** Add `freshness` to `InternalFailureStage`. It
    replaces `unclassified` at the entry check, the checks before research and
    before the model, and the final check, whether the check returned `error`
@@ -415,16 +433,18 @@ do that.
    every handoff, and a freshness read that fails within the job window is still
    an internal failure.
 8. **Required checks.** Tests must prove:
-   - the motivating case: a model step that finishes after the 240,000 ms
-     window, with an unmoved head, completes its freshness re-verification and
-     reports its normal outcome, not `internal-failure`, through the real
-     startup harness with an injected clock;
+   - the motivating case: a model step that finishes after the
+     `limit:github.totalTimeoutMs` window, with an unmoved head, completes its
+     freshness re-verification and reports its normal outcome, not
+     `internal-failure`, through the real startup harness with an injected
+     clock;
    - one clock origin: a job start that differs from the pipeline's own `now()`
      moves the evidence, research, and analysis deadlines, and a clock that
      advances during workflow resolution does not shift the job window;
    - the request timer: with fake timers, a freshness read made after
-     240,000 ms stays pending for the 15,000 ms request timeout and then times
-     out, and one made near the job end times out at the time left;
+     `limit:github.totalTimeoutMs` stays pending for the
+     `limit:github.requestTimeoutMs` request timeout and then times out, and
+     one made near the job end times out at the time left;
    - a head that moved during that late window is still `stale`, and a
      freshness read that fails within the job window reports
      `internal-failure at freshness (<field> <reason>)` for each `field`,
@@ -438,9 +458,10 @@ do that.
 
    Named mutations that must each fail a test: exempting a non-freshness
    reader from the shared deadline; removing the analysis-deadline reservation
-   (asserted directly on the deadline, because the existing 60,000 ms reserve
-   hides it end to end); using the pipeline's own clock instead of the shared
-   job start; computing a freshness request timer from the 240,000 ms window;
+   (asserted directly on the deadline, because the existing
+   `limit:analysis.publicationReserveMs` reserve hides it end to end); using
+   the pipeline's own clock instead of the shared job start; computing a
+   freshness request timer from the `limit:github.totalTimeoutMs` window;
    mapping `field` while ignoring the
    read result's `category`; reporting an unlisted `field` or `reason` or
    deriving either from an exception name or message; and recording either on a
@@ -476,9 +497,10 @@ do that.
 
 **Status: approved for planning and execution 2026-11-11; implemented
 (#310-#312), pending merge.** The user chose the fixed-margin
-approach and a `preStartupAllowanceMs` of 60,000, then invoked `as-plan` on this
-reviewed draft, which is the approval for planning. Plan and execution
-approval were separate gates, and the user approved execution the same day.
+approach and a `preStartupAllowanceMs` of `limit:job.preStartupAllowance`,
+then invoked `as-plan` on this reviewed draft, which is the approval for
+planning. Plan and execution approval were separate gates, and the user approved
+execution the same day.
 It does not authorize live publication or a
 production claim backend. Effort tier: L (crosses `budget`, the GitHub
 transport, and `pipeline`, and amends approved text, as Amendment 2 did).
@@ -486,13 +508,16 @@ Evidence is in
 [#306](https://github.com/andrewpucci/dependency-update-advisor/issues/306),
 found in the fresh-context review of PR #305.
 
-`JOB_BUDGET_MS` (900,000 ms) equals the review workflow's `timeout-minutes: 15`,
-but every deadline measures it from the job-start timestamp `runStartup` takes
-after the app-token step, action setup, Node load, and self-check. Time spent
-before that timestamp is not counted, so the pipeline's window can end after
-the runner's. By code reading, the final freshness check ends at about 840,000
-ms on the startup clock today and the 60,000 ms publication reserve absorbs
-the pre-startup time; no rehearsal has reached it. It becomes reachable once
+`JOB_BUDGET_MS` (`limit:job.budget`) equals the review workflow's
+`timeout-minutes` (`limit:workflow.dependabotReview.review.timeoutMinutes`),
+but every deadline measures it from the job-start
+timestamp `runStartup` takes after the app-token step, action setup, Node load,
+and self-check. Time spent before that timestamp is not counted, so the
+pipeline's window can end after the runner's. By code reading, the final
+freshness check ends at about `limit:job.budget` minus
+`limit:analysis.publicationReserveMs` on the startup clock today and the
+`limit:analysis.publicationReserveMs` publication reserve absorbs the
+pre-startup time; no rehearsal has reached it. It becomes reachable once
 publication spends that reserve.
 
 1. **A fixed margin, not a new anchor.** The pipeline treats the job window as
@@ -500,22 +525,27 @@ publication spends that reserve.
    existing startup job-start timestamp. No workflow-run or job start time is
    read, and no epoch time is converted to the monotonic clock. `timeout-minutes`
    and `JOB_BUDGET_MS` are unchanged.
-2. **Value: `preStartupAllowanceMs` = 60,000.** The user chose it on 2026-11-11.
-   It is an allowance for the app-token step, action download, Node load, and
-   self-check, not a measured minimum: no recorded rehearsal timing exists in
-   this repository. Changing it needs a new approval. If a rehearsal shows
-   pre-startup time near or above it, that is a finding for this amendment's
-   owner, not a reason to tune the value silently.
+2. **Value: `preStartupAllowanceMs` = `limit:job.preStartupAllowance`.** The
+   user chose it on 2026-11-11. It is an allowance for the app-token step,
+   action download, Node load, and self-check, not a measured minimum: no
+   recorded rehearsal timing exists in this repository. Changing it needs a new
+   approval. If a rehearsal shows pre-startup time near or above it, that is a
+   finding for this amendment's owner, not a reason to tune the value silently.
 3. **Both readers use the window.** Wherever Amendment 2 says "the job window"
    or "job start plus the job budget" (the freshness read window and each
    freshness request's timer, and the analysis deadline), the end is
    `jobWindowMs` after the job start. The analysis deadline is the job start
-   plus `jobWindowMs` minus `freshnessAllowanceMs`. With the unchanged 60,000
-   ms analysis reserve, the model ends by 735,000 ms after the job start and
-   the final freshness check by about 780,000 ms. With the full 60,000 ms
-   allowance spent, that is 840,000 ms on the runner clock, leaving 60,000 ms
-   for publication. The shared 240,000 ms evidence deadline and
-   every other deadline are unchanged.
+   plus `jobWindowMs` minus `freshnessAllowanceMs`. With the unchanged
+   `limit:analysis.publicationReserveMs` analysis reserve, the model ends by
+   `limit:job.window` minus `limit:job.freshnessAllowance` and
+   `limit:analysis.publicationReserveMs` after the job start and the final
+   freshness check by about `limit:job.window` minus
+   `limit:analysis.publicationReserveMs`. With the full
+   `limit:job.preStartupAllowance` allowance spent, that is `limit:job.budget`
+   minus `limit:analysis.publicationReserveMs` on the runner clock, leaving
+   `limit:analysis.publicationReserveMs` for publication. The shared
+   `limit:evidence.envelope.totalTimeoutMs` evidence deadline and every other
+   deadline are unchanged.
 4. **One definition.** `jobWindowMs` is derived in `src/budget.ts` and is the
    only value the transport and the pipeline read; neither subtracts the
    allowance itself.
@@ -527,27 +557,32 @@ publication spends that reserve.
    fixed `timeout` reason, as Amendment 2 item 8 requires.
 6. **Required checks.** Tests must prove:
    - through the real startup harness, with an injected clock that reads
-     60,000 when startup takes the job start (the full allowance spent before
-     startup), a model that advances that same clock to one millisecond before
-     the analysis deadline it receives, and an earlier advance during evidence
-     so the publication reserve, not the 600,000 ms analysis cap, sets that
-     deadline: every read of the final freshness check ends no later than
-     840,000 on the injected clock, which leaves the 60,000 ms publication
-     reserve intact. The limit is stated as a literal, not derived from the
-     constants under test, and a control with the same evidence advance and no
-     model delay is compared. The check fails on the code before this
-     amendment (the final reads end at about 855,000);
+     `limit:job.preStartupAllowance` when startup takes the job start (the
+     full allowance spent before startup), a model that advances that same
+     clock to one millisecond before the analysis deadline it receives, and an
+     earlier advance during evidence so the publication reserve, not the
+     `limit:analysis.maxAnalysisMs` analysis cap, sets that deadline: every
+     read of the final freshness check ends no later than `limit:job.budget`
+     minus `limit:analysis.publicationReserveMs` on the injected clock, which
+     leaves the `limit:analysis.publicationReserveMs` publication reserve
+     intact. The test hard-codes the literal value of that formula, not one
+     derived from the constants under test, and a control with the same
+     evidence advance and no model delay is compared. The check fails on the
+     code before this amendment (the final reads end at about 855,000);
    - the analysis deadline passed to `reviewPacket` equals job start plus
      `jobWindowMs` minus `freshnessAllowanceMs`, asserted against the literal
      value, not a recomputation from the constants (the analysis layer
-     subtracts its own 60,000 ms reserve from it, which hides it end to end);
+     subtracts its own `limit:analysis.publicationReserveMs` reserve from it,
+     which hides it end to end);
    - a freshness read made at `jobWindowMs` after the job start is refused with
      `budget`, one made just before it is served, and its request timer is the
      smaller of the request timeout and the time left in `jobWindowMs`;
-   - evidence readers still stop at the shared 240,000 ms deadline;
-   - `src/budget.test.ts` pins `preStartupAllowanceMs` to 60,000 and
-     `jobWindowMs` to 840,000 as literals, so an allowance of zero or one
-     subtracted twice inside `budget` fails.
+   - evidence readers still stop at the shared
+     `limit:evidence.envelope.totalTimeoutMs` deadline;
+   - `src/budget.test.ts` pins `preStartupAllowanceMs` to
+     `limit:job.preStartupAllowance` and `jobWindowMs` to `limit:job.window`
+     as literals, so an allowance of zero or one subtracted twice inside
+     `budget` fails.
 
    Named mutations that must each fail a test: measuring the transport window
    or the analysis deadline from `JOB_BUDGET_MS` instead of `jobWindowMs`; using
@@ -557,9 +592,10 @@ publication spends that reserve.
    change to `jobWindowMs` with this amendment, including the two refusal
    tests at the end of the window, so each is tied to the new window explicitly.
 
-7. **Supersedes when implemented.** Amendment 2's references to "the 900,000 ms
-   job budget" and to a final check at about 840,000 ms are narrowed by items 1
-   and 3; the `freshnessAllowanceMs` value is unchanged. The `src/pipeline.test.ts`
+7. **Supersedes when implemented.** Amendment 2's references to "the
+   `limit:job.budget` job budget" and to a final check at about
+   `limit:job.budget` minus `limit:analysis.publicationReserveMs` are narrowed
+   by items 1 and 3; the `freshnessAllowanceMs` value is unchanged. The `src/pipeline.test.ts`
    expectations of an analysis deadline of 755,000 ms (job start -100,000) and
    855,000 ms become 695,000 ms and 795,000 ms.
 8. **Revisit with publication.** The reserve this amendment protects is first
@@ -899,10 +935,12 @@ them.
 
 5. **Bounds.** The line stays one line, and every part is an integer or a
    literal from item 1 or Amendments 2 and 4. M2 clips each call to the
-   remaining analysis time, at most 600,000 ms, and the transport timeout is
-   240,000 ms, so a production value has at most six digits. The printer clamps
-   any value above 999,999 to 999,999, so an injected clock cannot lengthen the
-   line; the carried data is not clamped.
+   remaining analysis time, at most `limit:analysis.maxAnalysisMs`, and the
+   transport timeout is `limit:analysis.requestTimeoutMs`, so a production
+   value is at most the larger of the two, which has six digits at current
+   values. The printer clamps any value above
+   `limit:startup.maxReportedDurationMs` to that cap, so an injected clock
+   cannot lengthen the line; the carried data is not clamped.
 6. **Fail-closed preservation.** Neither value changes an outcome, status,
    comment, freshness gate, claim, or write. If a finished assessment is then
    discarded, the reason and the timing are dropped with it, as Amendment 4
@@ -950,7 +988,8 @@ Each is written first and shown failing on the prior code or a named mutation:
   (including a coverage failure after calls ran), and when something throws
   after M2 returned.
 - The printed segment matches item 4 for 0, 1, 2, and 32 calls, and a duration
-  of 999,999 and of 1,000,000 both print as 999999.
+  of `limit:startup.maxReportedDurationMs` and of one more both print as that
+  cap.
 - A reason or timing is dropped when the final freshness check turns the outcome
   into `stale` or `internal-failure at freshness`, and when the snapshot's
   post-callback `active()` re-check discards a finished assessment.

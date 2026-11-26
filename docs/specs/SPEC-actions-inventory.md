@@ -11,6 +11,12 @@ separate. This refines the inventory slice of
 [Actions evidence](SPEC-actions-evidence.md); it adds no module,
 dependency direction, or packet-schema amendment.
 
+Limit citation amendment (L10,
+[#382](https://github.com/andrewpucci/dependency-update-advisor/issues/382)):
+the user approved this spec's change on 2026-11-26. It cites register
+entries as `limit:<id>` instead of stating their values, with no value
+change.
+
 Amendment approved 2026-11-01:
 
 - An unsupported reference anywhere in a selected workflow, including an
@@ -99,8 +105,8 @@ parsed nodes/entries, nesting depth, alias expansion, occurrences, and retained
 result bytes. Check byte bounds before decoding/parsing and structural bounds
 before unbounded traversal or expansion. Limit exhaustion retains only
 bounded, attributable evidence with `budget`; it never silently trims a
-complete inventory. D1's network budgets and T4's combined 128-change ceiling
-remain independent and unchanged.
+complete inventory. D1's network budgets and T4's combined
+`limit:packet.changes` change ceiling remain independent and unchanged.
 
 Inventory these locations, retaining zero-based step indexes:
 
@@ -291,7 +297,7 @@ and independent coverage rather than only matching snapshots.
 | One record for repeated occurrences; `v`-stripped version; unmatched record                               | Set corroborated; version discrepancy visible; unmatched record is a `conflict` gap.                                   |
 | Mixed npm/Actions/uv packet, including zero Actions changes with a gap                                    | T4/T5 preserve per-ecosystem gaps and distinct repeated occurrences.                                                   |
 | Each parsing/retention limit at and above boundary; reordered input maps                                  | Bounded results with explicit exhaustion; deterministic IDs and output.                                                |
-| More than 128 combined packet changes; mutated returned data                                              | Existing packet rejection preserved; no silent trimming or shared mutation.                                            |
+| More than `limit:packet.changes` combined packet changes; mutated returned data                           | Existing packet rejection preserved; no silent trimming or shared mutation.                                            |
 
 The [PR #302 baseline handoff](../../tests/parity/scenarios.md#public-actions-comparison-omission-pr-302)
 records workflow-derived evidence for `voidzero-dev/setup-vp`,
@@ -420,7 +426,8 @@ while the same workflow without comments fits. The spec bounds parsed nodes and
 entries, so formatting is outside the contract.
 
 `preflight` is also C4's only node counter: `parseDependabotRoots` calls it
-under its approved 20,000-node cap with no later effective-graph walk.
+under its approved `limit:dependabot.maxYamlNodes` node cap with no later
+effective-graph walk.
 
 ### Contract
 
@@ -446,17 +453,18 @@ under its approved 20,000-node cap with no later effective-graph walk.
    amplification still consumes budget before the graph is walked.
 4. Adding, removing, or reflowing comments, blank lines, or indentation does
    not change the debit, so it cannot change whether a workflow fits.
-5. Numeric limits are unchanged, including C4's 20,000-node cap. Under C4 the
-   cap now counts collections, scalars, and aliases only. Besides formatting,
-   commas, `-`/`:` indicators, and entries are free, and an empty sequence item
-   costs nothing. Measured on yaml@2.9.1, about 20,000 list elements now fit
-   where 10,001 used to exceed the cap, and 32,000 empty `-` items parse under
-   the 20,000 cap. The 65,536-byte cap still bounds the work, so this is
+5. Numeric limits are unchanged, including C4's `limit:dependabot.maxYamlNodes`
+   node cap. Under C4 the cap now counts collections, scalars, and aliases only.
+   Besides formatting, commas, `-`/`:` indicators, and entries are free, and an
+   empty sequence item costs nothing. Measured on yaml@2.9.1, about 20,000 list
+   elements now fit where 10,001 used to exceed the cap, and 32,000 empty `-`
+   items parse under the `limit:dependabot.maxYamlNodes` cap. The
+   `limit:dependabot.maxFileBytes` byte cap still bounds the work, so this is
    accepted as defense in depth, not a defect. The user confirmed keeping
-   20,000 on 2026-11-11, and again after this effect was stated. Free entries
-   also let maps with empty or null keys reach composition: C4 `x: {` with
-   60,000 commas measured 35 ms `budget` before and 190 ms `malformed` after.
-   The user accepted that cost on 2026-11-11.
+   `limit:dependabot.maxYamlNodes` on 2026-11-11, and again after this effect
+   was stated. Free entries also let maps with empty or null keys reach
+   composition: C4 `x: {` with 60,000 commas measured 35 ms `budget` before and
+   190 ms `malformed` after. The user accepted that cost on 2026-11-11.
 6. Output, gaps, and retained evidence are unchanged; no formatting, comments,
    or raw YAML are retained.
 
@@ -504,9 +512,9 @@ only, rather than drop it, so a spent cumulative budget is still detected before
 composition and C4 retains a node bound.
 
 - The issue states that nothing sets a production `maxYamlNodes`; code does
-  (`src/collection.ts` sets 100,000 for Actions, `src/startup.ts` a startup
-  probe, and C4 20,000). The user confirmed on 2026-11-11 that these numbers
-  stay unchanged.
+  (`src/collection.ts` sets `limit:w2.actions.maxYamlNodes` for Actions,
+  `src/startup.ts` a startup probe, and C4 `limit:dependabot.maxYamlNodes`). The
+  user confirmed on 2026-11-11 that these numbers stay unchanged.
 - Add a one-line pointer in [SPEC-dependabot-roots.md](SPEC-dependabot-roots.md)
   that its node cap now counts structure.
 - The committed action bundle contains `preflight`, so the implementation

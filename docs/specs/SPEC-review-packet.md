@@ -9,9 +9,16 @@ Approval: the user approved the full revised specification on 2026-10-20 and
 invoked `as-plan`. The user then approved the eight-task plan and invoked
 `as-build auto`, authorizing implementation and one PR for #11 and #77–#84.
 
+Limit citation amendment (L10,
+[#382](https://github.com/andrewpucci/dependency-update-advisor/issues/382)):
+the user approved this spec's change on 2026-11-26. It cites register
+entries as `limit:<id>` instead of stating their values, with no value
+change.
+
 Decisions approved by the user on 2026-10-20: require all three ecosystem
 coverage slots; require inventory evidence for `not_applicable`; cap a packet
-at 128 changes; reject overflow without exposing a usable partial packet.
+at `limit:packet.changes` changes; reject overflow without exposing a usable
+partial packet.
 Full-spec approval also covers the resource ceilings, finding links, and
 intentional parity difference recorded below. Resource ceilings bound work;
 they are not measured performance or test-coverage thresholds.
@@ -22,10 +29,11 @@ with the changes' recorded instances.
 
 [N1 inventory](SPEC-npm-inventory.md#declaration-amendment-to-t4-and-t5)
 is approved for planning, 2026-10-26. It amends this contract with an npm
-declaration variant, matching validation rules, and combined 128-record
-accounting. Declarations carry an empty `evidence` object, and resolved npm
-sides require a non-null `lockPath`. The amendment is implemented on `issue-14`,
-pending review and merge; resolved-side rules apply to resolved records.
+declaration variant, matching validation rules, and combined record
+accounting within `limit:packet.changes`. Declarations carry an empty
+`evidence` object, and resolved npm sides require a non-null `lockPath`. The
+amendment is implemented on `issue-14`, pending review and merge; resolved-side
+rules apply to resolved records.
 
 ## Objective
 
@@ -287,30 +295,31 @@ coverage. Count all
 entries, including duplicates, before duplicate detection; never silently slice
 arrays, shorten identities, or delete findings to fit.
 
-| Dimension                                                       | Limit                                                                              |
-| --------------------------------------------------------------- | ---------------------------------------------------------------------------------- |
-| Complete serialized packet                                      | 1,048,576 UTF-8 bytes                                                              |
-| Changes                                                         | 128 total across all ecosystems; approved                                          |
-| Source records / findings / relationship proofs                 | 1,024 / 512 / 256 per packet                                                       |
-| Reachability verdicts                                           | 1,024 per packet (see the reachability amendment)                                  |
-| Relationship path                                               | 32 package instances per proof                                                     |
-| IDs and package names                                           | 1–256 UTF-16 code units, matching C2's existing bound                              |
-| Other identity strings, versions, refs, markers, paths, URLs    | 1,024 UTF-8 bytes each; shorter C2 limits still apply                              |
-| Rationale, reason detail, title, or upstream excerpt            | 2,048 UTF-8 bytes each                                                             |
-| References, reasons, extras/groups, or action texts in one list | 32 entries; each action text also obeys the text cap                               |
-| Source context                                                  | Existing C2 caps, including 65,536 serialized bytes and 500 code units per excerpt |
+| Dimension                                                       | Limit                                                                                                                               |
+| --------------------------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------- |
+| Complete serialized packet                                      | `limit:packet.bytes` UTF-8 bytes                                                                                                    |
+| Changes                                                         | `limit:packet.changes` total across all ecosystems; approved                                                                        |
+| Source records / findings / relationship proofs                 | `limit:packet.sources` / `limit:packet.findings` / `limit:packet.relationships` per packet                                          |
+| Reachability verdicts                                           | `limit:packet.reachability` per packet (see the reachability amendment)                                                             |
+| Relationship path                                               | `limit:packet.pathInstances` package instances per proof                                                                            |
+| IDs and package names                                           | 1–`limit:packet.idCodeUnits` UTF-16 code units, matching C2's existing bound                                                        |
+| Other identity strings, versions, refs, markers, paths, URLs    | `limit:packet.identityBytes` UTF-8 bytes each; shorter C2 limits still apply                                                        |
+| Rationale, reason detail, title, or upstream excerpt            | `limit:packet.textBytes` UTF-8 bytes each                                                                                           |
+| References, reasons, extras/groups, or action texts in one list | `limit:packet.listEntries` entries; each action text also obeys the text cap                                                        |
+| Source context                                                  | Existing C2 caps, including `limit:packet.contextBytes` serialized bytes and `limit:packet.excerptCodeUnits` code units per excerpt |
 
-The cap deliberately rejects PRs containing more than 128 detected changes.
+The cap deliberately rejects PRs containing more than `limit:packet.changes`
+detected changes.
 [Public PR #307](../../tests/parity/scenarios.md#public-npm-unpaired-additions-pr-307)
 exceeds it: its pilot recorded 131 paired updates plus 20 unpaired additions.
 The exact packet count depends on collector rules, but any plausible count is
-over 128. The shared reviewer will therefore reject a PR like #307 with a
-`budget` error, publish a failed current-head status, and leave the prior
-comment unchanged. [Parity requirement 4](SPEC-parity-cutover.md#requirements)
-must record this as an intentional difference from the current reviewer; the
-synthetic 20-addition fixture still covers requirement 5. Never trim
-inventory to claim coverage; supporting larger packets requires a reviewed
-contract change.
+over `limit:packet.changes`. The shared reviewer will therefore reject a PR
+like #307 with a `budget` error, publish a failed current-head status, and
+leave the prior comment unchanged.
+[Parity requirement 4](SPEC-parity-cutover.md#requirements) must record this
+as an intentional difference from the current reviewer; the synthetic
+20-addition fixture still covers requirement 5. Never trim inventory to claim
+coverage; supporting larger packets requires a reviewed contract change.
 
 Paths are canonical repository-relative slash-separated strings. Root is
 represented explicitly as `.`; other paths reject absolute/drive paths,
@@ -482,10 +491,12 @@ review and merge.
   or `null`, `outcome`, `reasons`). The empty array is explicit and means no
   absence evidence. A packet missing the field is rejected by the closed-field
   rule; nothing is read as a complete graph.
-- Limit: 1,024 verdicts per packet. Overflow rejects the packet; collectors and
-  the packet assembler drop optional evidence first, never changes, sources,
-  findings, or a claimed anchor's proof. The 128-change, 256-proof, 32-instance,
-  and 1 MiB ceilings are unchanged.
+- Limit: `limit:packet.reachability` verdicts per packet. Overflow rejects the
+  packet; collectors and the packet assembler drop optional evidence first,
+  never changes, sources, findings, or a claimed anchor's proof. The
+  `limit:packet.changes` change, `limit:packet.relationships` proof,
+  `limit:packet.pathInstances` instance, and `limit:packet.bytes` ceilings are
+  unchanged.
 - Validation stays structural. Verdicts name known resolved changes in one
   ecosystem and root, an anchor with role `direct` and a member with role
   `transitive`, each with an instance on `side`; cite a lock source whose path

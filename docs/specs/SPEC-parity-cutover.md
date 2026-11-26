@@ -3,6 +3,12 @@
 Status: approved for planning, 2026-09-23. Module: `parity-cutover` in
 [the capability map](README.md).
 
+Limit citation amendment (L10,
+[#382](https://github.com/andrewpucci/dependency-update-advisor/issues/382)):
+the user approved this spec's change on 2026-11-26. It cites register
+entries as `limit:<id>` instead of stating their values, with no value
+change.
+
 ## Objective
 
 Adopt the shared Dependabot reviewer in four initial consumers, then retire
@@ -72,7 +78,8 @@ resolves at the called workflow's commit; callers do not select a moving tag.
    Before enabling source excerpts, review the exact
    `context.excerptFiles` allowlist and a no-send model-packet sample. Record
    the allowed Python, JavaScript, and
-   Svelte source-line shape, 500-character bound, exclusions, Mistral
+   Svelte source-line shape, `limit:context.maxSourceExcerptCodeUnits`
+   code-unit bound, exclusions, Mistral
    destination, and residual risk that a checked-in line can contain a
    sensitive value despite screening. Do not rely on GitHub log redaction,
    which [GitHub says is not guaranteed](https://docs.github.com/en/actions/concepts/security/secrets).

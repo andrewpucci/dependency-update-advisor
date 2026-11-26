@@ -6,6 +6,12 @@ Module: `review-config` in [the capability map](README.md); consumed by
 [W2 review orchestration](SPEC-review-orchestration.md). Contract ID: C4,
 confirmed 2026-11-08.
 
+Limit citation amendment (L10,
+[#382](https://github.com/andrewpucci/dependency-update-advisor/issues/382)):
+the user approved this spec's change on 2026-11-26. It cites register
+entries as `limit:<id>` instead of stating their values, with no value
+change.
+
 ## Objective
 
 Give the npm (N1) and uv (U2) collectors the trusted configured roots their
@@ -72,8 +78,11 @@ src/packet.ts or coordinator  → passes roots and configRevision to N1/U2
    fetched. Any limit breach is `budget`. Invalid UTF-8 or YAML is
    `malformed`.
 
-   Limits approved 2026-11-08: 65,536 bytes, 20,000 YAML nodes, depth 16, 0
-   alias expansions, 256 update entries, and 256 roots per ecosystem.
+   Limits approved 2026-11-08: `limit:dependabot.maxFileBytes` bytes,
+   `limit:dependabot.maxYamlNodes` YAML nodes, depth
+   `limit:dependabot.maxYamlDepth`, `limit:dependabot.maxAliasExpansions` alias
+   expansions, `limit:dependabot.maxUpdates` update entries, and
+   `limit:dependabot.maxRoots` roots per ecosystem.
 
    The node cap counts structure (collections, scalars, aliases), not
    formatting; see the
@@ -96,7 +105,7 @@ src/packet.ts or coordinator  → passes roots and configRevision to N1/U2
    - Convert each Dependabot directory to a repository-relative path: strip
      one leading `/`, and map the repository root to `.`.
    - Reject `..`, `.` segments, empty segments, backslashes, control
-     characters, and paths over 1,024 UTF-8 bytes.
+     characters, and paths over `limit:dependabot.maxPathBytes` UTF-8 bytes.
    - Sort and deduplicate per ecosystem.
    - Any glob character (`*`, `?`, `[`, `{`) makes that ecosystem
      `unsupported`, because exact roots can't be established without
@@ -149,20 +158,20 @@ Use source-adjacent `vite-plus/test` tests with synthetic fixtures. Every
 failure path asserts that its result and diagnostics omit a sentinel string
 placed in an ignored key.
 
-| Scenario                                                      | Required assertion                                                        |
-| ------------------------------------------------------------- | ------------------------------------------------------------------------- |
-| `npm` and `uv` entries with `directory` and `directories`     | Sorted, deduplicated, canonical roots; provenance equals the snapshot SHA |
-| `/` and `/packages/a/`                                        | `.` and `packages/a`                                                      |
-| Both file names absent                                        | `absent`; no blob read                                                    |
-| Both names present, symlink, or directory                     | `unsupported`; no flattened target                                        |
-| Failed listing or blob read, size mismatch, cancellation      | `unavailable` with reason; never `absent` or empty roots                  |
-| Over byte cap (by tree size), node cap, depth cap, any alias  | `budget`; oversized file not fetched                                      |
-| Invalid UTF-8 or YAML, wrong `version`, mistyped required key | `malformed`                                                               |
-| Glob in an `npm` directory with valid `uv` roots              | npm `unsupported`; uv roots still usable                                  |
-| `..`, backslash, control character, or 1,025-byte directory   | That ecosystem `malformed`                                                |
-| Unknown ecosystems and ignored keys containing a sentinel     | Ignored; sentinel absent from result                                      |
-| PR head changes the Dependabot file                           | Roots still come from the default-branch snapshot                         |
-| W2 with `unavailable`                                         | Collector not called with `[]`; outcome `incomplete-evidence`             |
+| Scenario                                                                                         | Required assertion                                                        |
+| ------------------------------------------------------------------------------------------------ | ------------------------------------------------------------------------- |
+| `npm` and `uv` entries with `directory` and `directories`                                        | Sorted, deduplicated, canonical roots; provenance equals the snapshot SHA |
+| `/` and `/packages/a/`                                                                           | `.` and `packages/a`                                                      |
+| Both file names absent                                                                           | `absent`; no blob read                                                    |
+| Both names present, symlink, or directory                                                        | `unsupported`; no flattened target                                        |
+| Failed listing or blob read, size mismatch, cancellation                                         | `unavailable` with reason; never `absent` or empty roots                  |
+| Over byte cap (by tree size), node cap, depth cap, any alias                                     | `budget`; oversized file not fetched                                      |
+| Invalid UTF-8 or YAML, wrong `version`, mistyped required key                                    | `malformed`                                                               |
+| Glob in an `npm` directory with valid `uv` roots                                                 | npm `unsupported`; uv roots still usable                                  |
+| `..`, backslash, control character, or a directory one byte over `limit:dependabot.maxPathBytes` | That ecosystem `malformed`                                                |
+| Unknown ecosystems and ignored keys containing a sentinel                                        | Ignored; sentinel absent from result                                      |
+| PR head changes the Dependabot file                                                              | Roots still come from the default-branch snapshot                         |
+| W2 with `unavailable`                                                                            | Collector not called with `[]`; outcome `incomplete-evidence`             |
 
 The suite must reject these mutations:
 

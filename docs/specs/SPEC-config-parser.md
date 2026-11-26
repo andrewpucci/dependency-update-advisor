@@ -8,6 +8,12 @@ C1 implementation plan was approved for execution on the same date, including
 draft-07 and test-only `ajv@8.20.0`. The approved
 [configuration module](SPEC-review-config.md) remains authoritative.
 
+Limit citation amendment (L10,
+[#382](https://github.com/andrewpucci/dependency-update-advisor/issues/382)):
+the user approved this spec's change on 2026-11-26. It cites register
+entries as `limit:<id>` instead of stating their values, with no value
+change.
+
 Implementation: completed and merged into `main` for C1 #5, including the
 approved C3 amendment below. [C1 verification evidence](https://github.com/andrewpucci/dependency-update-advisor/issues/5#issuecomment-6116293460)
 and [C3 verification evidence](https://github.com/andrewpucci/dependency-update-advisor/issues/52)
@@ -18,8 +24,8 @@ Amendment approved 2026-10-11:
 - Accept the overridable `compatibilityUncertainty`, `supplyChainChange`,
   `licenseChange`, `recentRelease`, and `deprecatedRelease` rules, each
   defaulting to `merge_with_followups`.
-- Accept `policy.minimumReleaseAgeDays`, an integer from 1 through 30 that
-  defaults to 1.
+- Accept `policy.minimumReleaseAgeDays`, an integer from 1 through
+  `limit:config.maxReleaseAgeDays` that defaults to 1.
 - Treat `maliciousPackage` as a fixed hold, not a configurable rule.
 
 The [C3 policy contract](SPEC-advisory-policy.md) defines applicability, and
@@ -114,9 +120,10 @@ configurations and exact file allowlists in their consumer repositories.
 1. Load only `.github/dependabot-review.json` beneath the supplied trusted
    checkout. Do not execute configuration or resolve imports or remote refs.
    The config file itself must not resolve outside that checkout.
-2. Read at most 16,384 bytes plus one overflow-detection byte. Reject a file
-   exceeding 16,384 bytes before parsing, including whitespace. Test exact
-   byte boundaries with both ASCII and multibyte UTF-8 input.
+2. Read at most `limit:config.maxBytes` plus one overflow-detection byte.
+   Reject a file exceeding `limit:config.maxBytes` before parsing, including
+   whitespace. Test exact byte boundaries with both ASCII and multibyte UTF-8
+   input.
 3. Decode valid UTF-8 and parse ordinary JSON. Reject malformed encoding,
    empty files, invalid JSON, comments, and trailing commas. The document
    must be an object, not `null`, an array, or another JSON primitive.
@@ -132,19 +139,19 @@ configurations and exact file allowlists in their consumer repositories.
 All object sections and their fields are optional except where stated below.
 An optional field supplied as `null` is invalid, not equivalent to omission.
 
-| Field                               | Present-file contract                                                  | Runtime default when omitted                                                    |
-| ----------------------------------- | ---------------------------------------------------------------------- | ------------------------------------------------------------------------------- |
-| `version`                           | Required numeric value `1`; no string coercion                         | Missing file uses internal v1 defaults; a present file still requires `version` |
-| `analysis`                          | Object containing both `provider` and `model`                          | No selected provider or model                                                   |
-| `analysis.provider`                 | Exactly `mistral`                                                      | No implicit provider                                                            |
-| `analysis.model`                    | Nonempty bounded provider model ID                                     | No implicit model                                                               |
-| `context`                           | Object with only the three fields below                                | Secure context defaults                                                         |
-| `context.sourceRoots`               | Array of at most 16 relative path strings                              | `["src"]`                                                                       |
-| `context.sendSourceExcerptsToModel` | Boolean                                                                | `false`                                                                         |
-| `context.excerptFiles`              | Array of at most 128 distinct exact relative path strings              | Empty allowlist                                                                 |
-| `policy`                            | Object containing only optional `verdicts` and `minimumReleaseAgeDays` | Shared policy defaults                                                          |
-| `policy.verdicts`                   | Object with only the ten named rules below                             | Shared default for each omitted rule                                            |
-| `policy.minimumReleaseAgeDays`      | Integer from 1 through 30                                              | `1`                                                                             |
+| Field                               | Present-file contract                                                                     | Runtime default when omitted                                                    |
+| ----------------------------------- | ----------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------- |
+| `version`                           | Required numeric value `1`; no string coercion                                            | Missing file uses internal v1 defaults; a present file still requires `version` |
+| `analysis`                          | Object containing both `provider` and `model`                                             | No selected provider or model                                                   |
+| `analysis.provider`                 | Exactly `mistral`                                                                         | No implicit provider                                                            |
+| `analysis.model`                    | Nonempty bounded provider model ID                                                        | No implicit model                                                               |
+| `context`                           | Object with only the three fields below                                                   | Secure context defaults                                                         |
+| `context.sourceRoots`               | Array of at most `limit:context.maxSourceRoots` relative path strings                     | `["src"]`                                                                       |
+| `context.sendSourceExcerptsToModel` | Boolean                                                                                   | `false`                                                                         |
+| `context.excerptFiles`              | Array of at most `limit:context.maxSourceCandidates` distinct exact relative path strings | Empty allowlist                                                                 |
+| `policy`                            | Object containing only optional `verdicts` and `minimumReleaseAgeDays`                    | Shared policy defaults                                                          |
+| `policy.verdicts`                   | Object with only the ten named rules below                                                | Shared default for each omitted rule                                            |
+| `policy.minimumReleaseAgeDays`      | Integer from 1 through `limit:config.maxReleaseAgeDays`                                   | `1`                                                                             |
 
 An empty `analysis` object is invalid. Empty `context`, `policy`, and
 `policy.verdicts` objects retain their respective defaults. Empty source-root
@@ -175,12 +182,12 @@ No configured value may alter findings, coverage, or execution status.
 
 ### Model and path syntax
 
-A model ID contains 1–128 ASCII characters matching
+A model ID contains 1–`limit:config.maxModelCodeUnits` ASCII characters matching
 `[A-Za-z0-9][A-Za-z0-9._-]*`. Reject whitespace, URLs, slash-separated paths,
-and control characters without trimming or rewriting. This accepts the
-approved `mistral-medium-latest` example. It is syntactic validation, not a
-network lookup or a guarantee that the credential can access that model.
-Provider endpoints and credentials are never configuration fields.
+and control characters without trimming or rewriting. This accepts the approved
+`mistral-medium-latest` example. It is syntactic validation, not a network
+lookup or a guarantee that the credential can access that model. Provider
+endpoints and credentials are never configuration fields.
 
 Use canonical slash-separated relative paths with nonempty segments:
 reject absolute POSIX and Windows paths, backslashes, empty strings, trailing
@@ -249,8 +256,9 @@ Required fixture groups:
   independent across calls.
 - Missing, wrong-type, and unsupported versions; unknown fields at every
   nesting level; prototype-like names; invalid object and scalar types.
-- File sizes at and beyond 16,384 bytes, including multibyte text; roots at
-  16 and 17 entries; excerpt files at 128 and 129 entries and duplicates.
+- File sizes at and beyond `limit:config.maxBytes`, including multibyte text;
+  roots at `limit:context.maxSourceRoots` entries and one more; excerpt files
+  at `limit:context.maxSourceCandidates` entries and one more, and duplicates.
 - Supported and unsupported providers; missing provider or model; model IDs
   at proposed syntax/length boundaries; no fallback provider or model.
 - Lexical path rejection, config-file containment, and an exact excerpt path

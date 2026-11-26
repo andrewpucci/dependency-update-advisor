@@ -5,6 +5,12 @@ Status: approved for C3 execution, 2026-10-12. Supporting contract for
 [the capability map](README.md), scoped to
 [issue #7: C3](https://github.com/andrewpucci/dependency-update-advisor/issues/7).
 
+Limit citation amendment (L10,
+[#382](https://github.com/andrewpucci/dependency-update-advisor/issues/382)):
+the user approved this spec's change on 2026-11-26. It cites register
+entries as `limit:<id>` instead of stating their values, with no value
+change.
+
 Approval: the user approved this contract and the C3 implementation plan for
 execution on 2026-10-12. The approved
 [configuration module](SPEC-review-config.md) remains authoritative.
@@ -43,10 +49,10 @@ prove the policy invariants without claiming those integrations are complete.
   configuration module and the [C1 parser contract](SPEC-config-parser.md):
   `src/config.ts`, its tests, and the JSON Schema accept the five new rule
   names, each defaulting to `merge_with_followups`, and
-  `policy.minimumReleaseAgeDays`, an integer from 1 through 30 that defaults
-  to 1. `maliciousPackage` is not a configuration key; a present
-  `policy.verdicts.maliciousPackage` is an unknown field and fails
-  validation. No other configuration field changes.
+  `policy.minimumReleaseAgeDays`, an integer from 1 through
+  `limit:config.maxReleaseAgeDays` that defaults to 1. `maliciousPackage` is
+  not a configuration key; a present `policy.verdicts.maliciousPackage` is an
+  unknown field and fails validation. No other configuration field changes.
 - The caller supplies the review evaluation time with the normalized input.
   C3 never reads the clock, so release-age matching stays deterministic.
 - The [B1 baseline](../../tests/parity/README.md) identifies the immutable
