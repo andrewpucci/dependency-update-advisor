@@ -32,6 +32,7 @@ import {
   type AdvisoryLookup,
   type AdvisoryRecord,
 } from './advisory-read.js';
+import { IDENTITY_LOSS_REASONS, type IdentityGap } from './upstream.js';
 
 export type PublicPackageIdentity = Readonly<{
   memberId: string;
@@ -61,6 +62,8 @@ export type AdvisoryInput = Readonly<{
   limits: AdvisoryLimits;
   comparisons?: readonly GithubComparison[];
   actionVersions?: readonly ActionVersionMapping[];
+  /** Sides whose identity proof upstream tried and lost, with the stop reason their lookups carry. */
+  identityGaps?: readonly IdentityGap[];
 }>;
 export type MemberAdvisoryLookup = Readonly<{
   memberId: string;
@@ -309,19 +312,20 @@ async function collectSide(
     }
     lookup = withComparison(input, change, side, target, checked);
   }
-  const evidence = source(change, side, lookup);
+  const missing = unresolvedReasons(input, change, side);
+  const evidence = source(change, side, lookup, undefined, missing);
   addSource(output, evidence);
   if (side === 'head' || !change.to)
     change.evidence.vulnerability = {
       status: lookup?.complete ? 'available' : lookup?.records.length ? 'partial' : 'unavailable',
-      reasons: lookup?.complete ? [] : [...(lookup?.reasons ?? unresolvedReasons(change, side))],
+      reasons: lookup?.complete ? [] : [...(lookup?.reasons ?? missing)],
       sourceIds: [evidence.id],
     };
   output.lookups.push({
     memberId: change.id,
     side,
     lookup,
-    reasons: lookup?.reasons ?? unresolvedReasons(change, side),
+    reasons: lookup?.reasons ?? missing,
   });
   const records = new Map<string, PacketSource>();
   for (const record of lookup?.records ?? []) {
@@ -485,6 +489,20 @@ function validateProofs(input: AdvisoryInput) {
     );
   }
 }
+function validateGaps(input: AdvisoryInput) {
+  if (input.identityGaps === undefined) return;
+  advisoryCheck(
+    Array.isArray(input.identityGaps) && input.identityGaps.length <= 2 * PACKET_LIMITS.changes,
+  );
+  for (const g of input.identityGaps)
+    advisoryCheck(
+      input.changes.some((c) => c.id === g.memberId) &&
+        (g.side === 'base' || g.side === 'head') &&
+        Array.isArray(g.reasons) &&
+        g.reasons.length > 0 &&
+        g.reasons.every((r: EvidenceReason) => IDENTITY_LOSS_REASONS.includes(r)),
+    );
+}
 function validate(input: AdvisoryInput) {
   advisoryCheck(parseReviewBinding(input.binding));
   advisoryCheck(Array.isArray(input.changes) && input.changes.length <= PACKET_LIMITS.changes);
@@ -519,6 +537,7 @@ function validate(input: AdvisoryInput) {
   validateSources(input);
   validateChanges(input);
   validateProofs(input);
+  validateGaps(input);
 }
 export function prepareAdvisoryInput(
   value: AdvisoryInput,

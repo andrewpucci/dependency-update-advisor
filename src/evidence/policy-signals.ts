@@ -151,9 +151,10 @@ async function collectNpmTimes(
     const target = resolveAdvisoryTarget(input, change, side);
     const versions = target ? npmTimeVersions(change, target.name) : [];
     const key = JSON.stringify([target?.name, versions]);
-    // A side with no target carries why its identity proof is absent, as vulnerability does.
+    // A side with no lookup target carries why its identity proof is absent, as vulnerability does.
+    // These records carry one reason; a gap usually holds just one, and its first is kept.
     const result = !target
-      ? { kind: 'unavailable' as const, reason: unresolvedReasons(change, side)[0]! }
+      ? { kind: 'unavailable' as const, reason: unresolvedReasons(input, change, side)[0]! }
       : (cache.get(key) ??
         (reader
           ? await reader.read({

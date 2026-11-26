@@ -15,7 +15,12 @@ import { enrichPolicySignals } from './evidence/policy-signals.js';
 import type { SignalAttempt } from './evidence/policy-signals.js';
 import { createPolicySignalReader } from './evidence/policy-signals-read.js';
 import type { PolicyMetadataReader } from './evidence/policy-signals-read.js';
-import { enrichUpstream, type UpstreamAttempt } from './evidence/upstream.js';
+import {
+  enrichUpstream,
+  identityGaps,
+  type IdentityGap,
+  type UpstreamAttempt,
+} from './evidence/upstream.js';
 import { createUpstreamReader } from './evidence/upstream-read.js';
 import { createResearchCache, type ResearchCache } from './evidence/research-cache.js';
 import { createGithubQuotaGuard, type GithubQuotaGuard } from './evidence/github-quota.js';
@@ -34,6 +39,7 @@ type EnrichedEvidence = { changes: unknown; sources: unknown; findings: unknown 
 type ResearchProgress = EnrichedEvidence & {
   publicIdentities: unknown;
   actionVersions: unknown;
+  identityGaps: readonly IdentityGap[];
   upstreamAttempts: readonly UpstreamAttempt[];
   signalAttempts: readonly SignalAttempt[];
 };
@@ -249,6 +255,7 @@ async function enrichAdvisoryStage(
       findings: progress.findings,
       publicIdentities: progress.publicIdentities,
       actionVersions: progress.actionVersions,
+      identityGaps: progress.identityGaps,
       limits: limitsForStage,
       ...(input.comparison?.kind === 'available' ? { comparisons: [input.comparison] } : {}),
     } as never,
@@ -293,6 +300,7 @@ async function enrichSignalsStage(
       findings: progress.findings,
       publicIdentities: progress.publicIdentities,
       actionVersions: progress.actionVersions,
+      identityGaps: progress.identityGaps,
       evaluationTime: input.evaluationTime,
       limits: limitsForStage,
     },
@@ -366,6 +374,7 @@ export async function runResearch(input: ResearchInput): Promise<ResearchResult>
       findings: packet.findings,
       publicIdentities: [],
       actionVersions: [],
+      identityGaps: [],
       upstreamAttempts: [],
       signalAttempts: [],
     };
@@ -393,6 +402,15 @@ export async function runResearch(input: ResearchInput): Promise<ResearchResult>
         sharedMetadata ?? undefined,
       ),
     );
+    // After upstream, including a failed stage's marks: the identities it tried and lost, and why.
+    progress.identityGaps = identityGaps({
+      changes: progress.changes,
+      sources: progress.sources,
+      npmInventory: input.npmInventory ?? undefined,
+      publicIdentities: progress.publicIdentities,
+      actionVersions: progress.actionVersions,
+      attempts: progress.upstreamAttempts,
+    } as never);
     await runStage('advisories', () =>
       enrichAdvisoryStage(input, dependencies, readers, progress, fail, shares),
     );

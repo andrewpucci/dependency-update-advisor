@@ -9,7 +9,7 @@ import {
   type AdvisoryLookup,
   type AdvisoryRecord,
 } from './advisory-read.js';
-import type { AdvisoryEnrichment } from './advisories.js';
+import type { AdvisoryEnrichment, AdvisoryInput } from './advisories.js';
 export function reconcileRecords(values: readonly AdvisoryRecord[]) {
   const records = new Map<string, AdvisoryRecord>(),
     conflicts = new Set<string>();
@@ -118,40 +118,26 @@ export function publicRegistry(ecosystem: PacketChange['ecosystem'], origin: URL
     !origin.search
   );
 }
-/** Whether S2 could establish a lookup identity for this instance: an Action, or a public registry package. */
-function identityPossible(change: PacketChange, side: 'head' | 'base'): boolean {
-  const instance = side === 'head' ? change.to : change.from;
-  if (!instance) return false;
-  if ('action' in instance) return true;
-  return (
-    'source' in instance &&
-    instance.source.kind === 'registry' &&
-    URL.canParse(instance.source.identity) &&
-    publicRegistry(change.ecosystem, new URL(instance.source.identity))
-  );
-}
 /**
- * Why a side has no lookup target. When upstream research retained nothing for a member that could
- * have an identity proof or Actions mapping, its upstream reasons say why the proof is absent, such
- * as the `budget`, `timeout`, or `rate_limit` of a stopped stage, and a rerun or a larger share can
- * cover it (SPEC-evidence-coverage §1.2). The #439 reproduction cuts the upstream share. Only where
- * upstream found no identity (`missing`, `unsupported`) or none can exist is the target unsupported.
+ * Why a side has no lookup target. A side whose identity proof upstream tried and lost to a stop
+ * carries that stop's reason (`budget`, `timeout`, `rate_limit` or `permission`), as
+ * SPEC-evidence-coverage §1.2 requires and §4 gives a next action for. Every other side, where
+ * upstream found no identity or none can exist, is `unsupported`.
  */
-export function unresolvedReasons(change: PacketChange, side: 'head' | 'base'): EvidenceReason[] {
-  const upstream = change.evidence.upstream;
-  const stopped =
-    upstream.status === 'unavailable' &&
-    !upstream.sourceIds.length &&
-    identityPossible(change, side)
-      ? upstream.reasons.filter((reason) => reason !== 'missing' && reason !== 'unsupported')
-      : [];
-  return stopped.length ? [...stopped] : ['unsupported'];
+export function unresolvedReasons(
+  input: Pick<AdvisoryInput, 'identityGaps'>,
+  change: PacketChange,
+  side: 'head' | 'base',
+): EvidenceReason[] {
+  const gap = input.identityGaps?.find((g) => g.memberId === change.id && g.side === side);
+  return gap ? [...gap.reasons] : ['unsupported'];
 }
 export function source(
   change: PacketChange,
   side: 'head' | 'base',
   lookup: AdvisoryLookup | null,
   record?: AdvisoryRecord,
+  missing: readonly EvidenceReason[] = ['unsupported'],
 ): PacketSource {
   const success = !!lookup && (record || lookup.complete);
   return {
@@ -160,7 +146,7 @@ export function source(
     ecosystems: [change.ecosystem],
     memberIds: [change.id],
     status: success ? 'available' : 'unavailable',
-    reasons: success ? [] : [...(lookup?.reasons ?? unresolvedReasons(change, side))],
+    reasons: success ? [] : [...(lookup?.reasons ?? missing)],
     provenance: success ? provenance(change, side, lookup!, record) : { kind: 'unavailable' },
   };
 }

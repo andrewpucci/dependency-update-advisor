@@ -126,8 +126,9 @@ async function pypiReleaseSide(
 ) {
   const target = resolveAdvisoryTarget(input, change, side);
   // A side with no lookup target carries why its identity proof is absent, as vulnerability does.
+  // These records carry one reason; a gap usually holds just one, and its first is kept.
   const result = !target
-    ? { kind: 'unavailable' as const, reason: unresolvedReasons(change, side)[0]! }
+    ? { kind: 'unavailable' as const, reason: unresolvedReasons(input, change, side)[0]! }
     : reader
       ? await reader.read({
           kind: 'pypi',

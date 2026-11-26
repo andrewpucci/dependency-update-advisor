@@ -924,6 +924,154 @@ test('a public registry member whose identity is missing upstream stays unsuppor
   expect(uv?.evidence.malware.reasons).toEqual(['unsupported']);
 });
 
+test('a side whose own identity read failed carries its reason while the other side keeps its proof (#439)', async () => {
+  const { fixture, packet } = await scenario();
+  // Only orbit's base registry read is refused, so its head proof stands.
+  const result = await runResearch({
+    ...base(fixture, packet),
+    fetch: async (url, init) =>
+      url === 'https://registry.npmjs.org/orbit/1.0.0'
+        ? new Response('{}', { status: 401, headers: { 'content-type': 'application/json' } })
+        : fixture.fetch(url, init),
+  });
+  if (result.kind !== 'ready') throw new Error('research');
+  const orbit = result.packet.changes.find(
+    (change) =>
+      change.ecosystem === 'npm' && change.to && 'name' in change.to && change.to.name === 'orbit',
+  );
+  if (!orbit) throw new Error('orbit');
+  expect(orbit.evidence.vulnerability.status).toBe('available');
+  // Malware reads only the reviewed side; the base advisory lookup is the one the base read cut.
+  const failed = result.packet.sources.filter(
+    (s) => s.kind === 'advisory' && s.memberIds.includes(orbit.id) && s.status === 'unavailable',
+  );
+  expect(failed.map((s) => s.reasons)).toEqual([['permission']]);
+});
+
+/** Collected changes as upstream would leave them after a budget stop, with no proof or attempt. */
+async function budgetCut() {
+  const { fixture, packet } = await scenario();
+  const changes = structuredClone(packet.changes) as PacketChange[];
+  for (const change of changes)
+    change.evidence.upstream = { status: 'unavailable', reasons: ['budget'], sourceIds: [] };
+  const orbit = changes.find(
+    (c) => c.ecosystem === 'npm' && c.to && 'name' in c.to && c.to.name === 'orbit',
+  )!;
+  const input = {
+    changes,
+    sources: packet.sources as never,
+    npmInventory: structuredClone(fixture.npm) as never,
+    publicIdentities: [],
+    actionVersions: [],
+    attempts: [],
+  };
+  const gapsFor = (id: string) =>
+    upstreamModule
+      .identityGaps(input)
+      .filter((g) => g.memberId === id)
+      .map((g) => [g.side, g.reasons]);
+  return { input, orbit, gapsFor };
+}
+
+test('a budget stop gives a public npm member with lock integrity a gap on both sides', async () => {
+  const { orbit, gapsFor } = await budgetCut();
+  expect(gapsFor(orbit.id)).toEqual([
+    ['base', ['budget']],
+    ['head', ['budget']],
+  ]);
+});
+
+test('a private-registry npm member cut by a budget stop stays unsupported', async () => {
+  const { input, orbit, gapsFor } = await budgetCut();
+  // The lockfile node agrees with the change, so only the registry origin rules the member out.
+  const identity = 'https://npm.example.com/';
+  for (const side of ['from', 'to'] as const) {
+    const instance = orbit[side] as {
+      source: { identity: string };
+      root: string;
+      lockPath: string;
+    };
+    instance.source.identity = identity;
+    const root = (
+      input.npmInventory as { roots: { root: string; base: never; head: never }[] }
+    ).roots.find((r) => r.root === instance.root)!;
+    const node = (
+      root[side === 'from' ? 'base' : 'head'] as {
+        packages: Record<string, { instance: { source: { identity: string } } }>;
+      }
+    ).packages[instance.lockPath]!;
+    node.instance.source.identity = identity;
+  }
+  expect(gapsFor(orbit.id)).toEqual([]);
+});
+
+test('an npm member without lock integrity cut by a budget stop stays unsupported', async () => {
+  const { input, orbit, gapsFor } = await budgetCut();
+  const instance = orbit.to as { root: string; lockPath: string };
+  const root = (
+    input.npmInventory as {
+      roots: { root: string; head: { packages: Record<string, { integrity: string | null }> } }[];
+    }
+  ).roots.find((r) => r.root === instance.root)!;
+  root.head.packages[instance.lockPath]!.integrity = null;
+  // Upstream never tries the head identity without integrity; the base side still has a gap.
+  expect(gapsFor(orbit.id)).toEqual([['base', ['budget']]]);
+});
+
+test.each([
+  ['partial with retained sources', 'partial', true],
+  ['unavailable with retained sources', 'unavailable', true],
+  ['partial with nothing retained', 'partial', false],
+] as const)(
+  'a budget-cut member whose upstream is %s and has no proof stays unsupported',
+  async (_name, status, retained) => {
+    const { orbit, gapsFor } = await budgetCut();
+    orbit.evidence.upstream = {
+      status,
+      reasons: ['budget'],
+      sourceIds: retained ? [orbit.to!.sourceId] : [],
+    };
+    expect(gapsFor(orbit.id)).toEqual([]);
+  },
+);
+
+test('only budget, timeout, rate_limit and permission pass from upstream to lookups', async () => {
+  const { orbit, gapsFor } = await budgetCut();
+  orbit.evidence.upstream = {
+    status: 'unavailable',
+    reasons: ['malformed', 'conflict', 'missing', 'unknown', 'timeout'],
+    sourceIds: [],
+  };
+  expect(gapsFor(orbit.id)).toEqual([
+    ['base', ['timeout']],
+    ['head', ['timeout']],
+  ]);
+  orbit.evidence.upstream = {
+    status: 'unavailable',
+    reasons: ['malformed', 'conflict'],
+    sourceIds: [],
+  };
+  expect(gapsFor(orbit.id)).toEqual([]);
+});
+
+test('advisory lookup rejects an identity gap with a reason outside the allowlist', async () => {
+  const { fixture, packet } = await scenario();
+  vi.mocked(advisoryModule.enrichAdvisories).mockClear();
+  await runResearch(base(fixture, packet));
+  const [input, deps] = vi.mocked(advisoryModule.enrichAdvisories).mock.calls[0]!;
+  const member = packet.changes[0]!.id;
+  const gap = (reasons: string[]) => ({
+    ...(input as object),
+    identityGaps: [{ memberId: member, side: 'head', reasons }],
+  });
+  expect((await advisoryModule.enrichAdvisories(gap(['budget']) as never, deps)).kind).toBe(
+    'enriched',
+  );
+  expect((await advisoryModule.enrichAdvisories(gap(['malformed']) as never, deps)).kind).toBe(
+    'invalid',
+  );
+});
+
 const BATCHED_EXCERPT = 'A complete batched query checked reviewed advisories for this target.';
 const SINGLETON_EXCERPT =
   'The complete exact-version query checked reviewed advisories for this target.';
