@@ -95,7 +95,12 @@ function repository(value: string | undefined, id: string | undefined): Reposito
     !/^\d+$/u.test(id)
   )
     return null;
-  return Object.freeze({ id: numericId, owner: pieces[0], name: pieces[1] });
+  // GitHub names are case-insensitive; every identity is compared lowercased, as the binding is.
+  return Object.freeze({
+    id: numericId,
+    owner: pieces[0].toLowerCase(),
+    name: pieces[1].toLowerCase(),
+  });
 }
 
 function workflow(value: string | undefined): Readonly<{ path: string; file: string }> | null {
@@ -216,12 +221,18 @@ export function createGithubTransport(dependencies: TransportDependencies): Gith
       const value = json(body);
       // Error bodies feed github-read's classifier so permission, missing, and rate limits stay distinct.
       if (response.status !== HTTP_STATUS.ok)
-        return { kind: 'unavailable', reason: httpReason(response, value ?? null) };
+        return {
+          kind: 'unavailable',
+          reason: httpReason(response, value ?? null),
+        };
       return value === undefined
         ? { kind: 'unavailable', reason: 'malformed' }
         : { kind: 'available', value };
     } catch {
-      return { kind: 'unavailable', reason: controller.signal.aborted ? 'timeout' : 'unknown' };
+      return {
+        kind: 'unavailable',
+        reason: controller.signal.aborted ? 'timeout' : 'unknown',
+      };
     } finally {
       clearTimeout(timer);
       signal?.removeEventListener('abort', cancel);

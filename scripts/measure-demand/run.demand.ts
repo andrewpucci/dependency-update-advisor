@@ -71,7 +71,12 @@ vi.mock('../../src/limits.js', async (importOriginal) => {
     if (entry === undefined) throw new Error(`unknown limit id: ${id}`);
     return entry;
   };
-  return { ...actual, REGISTER: register, limitEntry, limit: (id: string) => limitEntry(id).value };
+  return {
+    ...actual,
+    REGISTER: register,
+    limitEntry,
+    limit: (id: string) => limitEntry(id).value,
+  };
 });
 
 // Each research reader's requests count against its allocation share.
@@ -201,7 +206,10 @@ function observeRequests(
 
 async function api(token: string, path: string): Promise<any> {
   const response = await fetch(`https://api.github.com/${path}`, {
-    headers: { authorization: `Bearer ${token}`, accept: 'application/vnd.github+json' },
+    headers: {
+      authorization: `Bearer ${token}`,
+      accept: 'application/vnd.github+json',
+    },
   });
   if (!response.ok) throw new Error(`binding read failed: ${response.status}`);
   return response.json();
@@ -248,7 +256,7 @@ async function binding(token: string, pr: number) {
   };
   const parsed = parseReviewBinding(value);
   if (!parsed) throw new Error('binding invalid');
-  return { binding: parsed, repository: { id: repo.id, owner, name } };
+  return { binding: parsed, repository: parsed.repository };
 }
 
 function units(packet: any): Record<string, number> {
@@ -277,7 +285,9 @@ test('measure research read demand', async () => {
   if (!token || !Number.isSafeInteger(pr)) throw new Error('GITHUB_TOKEN and MEASURE_PR required');
   const targetsOut = env.MEASURE_TARGETS_OUT ? targetsPath(env.MEASURE_TARGETS_OUT) : null;
   const now = () => performance.now();
-  const recorder = createDemandRecorder(now, { trace: env.MEASURE_QUOTA_TRACE === '1' });
+  const recorder = createDemandRecorder(now, {
+    trace: env.MEASURE_QUOTA_TRACE === '1',
+  });
   hooks.phase = recorder.phase;
   const observed: Observed[] = [];
   const base = recorder.wrap(observeRequests(observed, (url, init) => fetch(url, init)));
