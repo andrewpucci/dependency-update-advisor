@@ -30,8 +30,8 @@ merged ([#348](https://github.com/andrewpucci/dependency-update-advisor/issues/3
 Request batching, Track C of limit-register measurement
 ([#380](https://github.com/andrewpucci/dependency-update-advisor/issues/380)):
 fix #438 and #440, then the ask-first C3 probe run (#390). Evidence-coverage
-rate fitting (B12 #370, B13 #371) waits for the batched corpus remeasure
-(C10 #397), decided 2026-11-26. The
+rate fitting (B12 #370) was approved 2026-11-26 from the C10 remeasure
+(#397); B13 (#371) applies it. The
 [implementation project](https://github.com/users/andrewpucci/projects/2)
 holds the working order. Each change is accepted by a local R1 measurement or
 replay before any re-pin. Publication, production claim storage, adoption,
@@ -39,7 +39,9 @@ parity, and cutover remain separate gates.
 
 - The [capability map](docs/specs/README.md) indexes module and contract status.
 - The [scaled-share function amendment](docs/specs/SPEC-evidence-coverage.md#scaled-share-function-amendment)
-  is merged (PR #423); B12 fits its values.
+  is merged (PR #423); its
+  [fitted values](docs/specs/SPEC-evidence-coverage.md#fitted-share-values-amendment)
+  are approved.
 - [#412](https://github.com/andrewpucci/dependency-update-advisor/issues/412)
   keeps the required brief under half the comment cap; compaction is merged
   (PR #434), and the R1 replay and re-pin remain.

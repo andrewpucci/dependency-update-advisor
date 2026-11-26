@@ -828,3 +828,106 @@ second apart are jitter.
 - Does the workflow `GITHUB_TOKEN` show the same split? The trace used a
   personal token. A no-write R1 run with `MEASURE_QUOTA_TRACE=1` would show
   it, using the criterion in Q3. The rule above is safe either way.
+
+## Fitted Share Values Amendment
+
+**Status: approved by the user, 2026-11-26.** The maintainer approved the
+B12 fit's method, every value, and scaling the collection registry share,
+recorded in the
+[#370 approval comment](https://github.com/andrewpucci/dependency-update-advisor/issues/370#issuecomment-7197038235).
+B13 ([#371](https://github.com/andrewpucci/dependency-update-advisor/issues/371))
+applies them. It refines section 3.4 and A1 of the scaled-share function
+amendment.
+
+### F1. Method
+
+1. **Corpus.** The C10 remeasure
+   ([#397](https://github.com/andrewpucci/dependency-update-advisor/issues/397))
+   of every Dependabot PR in this repository, run with
+   `MEASURE_SCALE=10 npm run measure:demand` at `66a21f8` on 2026-11-26.
+2. **Headroom.** Every uncensored corpus PR gets at least 1.25 × its
+   measured demand. A stage cut by `budget` is censored: its demand counts
+   only as a lower bound.
+3. **Base.** 1.25 × the highest demand among the PRs with one to three
+   members (#123 and #172), rounded up.
+4. **Rate.** The smallest rate that meets the headroom on every uncensored
+   PR, rounded up to the next 0.1. `direct` and `transitive` take the same
+   rate, since every member is one or the other; `added` and `removed`
+   take 0. Signals readers scale on their own `eligible` members instead,
+   and their role rates are 0.
+5. **Ceilings.** The allocation entries stay the ceilings, unchanged except
+   for the collection registry share (F3).
+
+### F2. Request values
+
+For these shares this replaces A1.6's starting entries (a `derived` base
+equal to the ceiling and `unjustified` zero rates). Each base and rate,
+including a fitted share's zero rates, is a `measured` register entry
+citing this corpus:
+
+| Share                 | Base                                                      | Rate per member                                                                                                                      | Ceiling                                                              |
+| --------------------- | --------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------ | -------------------------------------------------------------------- |
+| Upstream              | `limit:research.share.upstream.requests.base`             | `limit:research.share.upstream.requests.rate.direct` (direct), `limit:research.share.upstream.requests.rate.transitive` (transitive) | `limit:evidence.allocation.upstream.maxRequests`                     |
+| Advisory              | `limit:research.share.advisory.requests.base`             | `limit:research.share.advisory.requests.rate.direct` (direct), `limit:research.share.advisory.requests.rate.transitive` (transitive) | `limit:evidence.allocation.advisory.maxRequests`                     |
+| Signals: malware      | `limit:research.share.signals.malware.requests.base`      | `limit:research.share.signals.malware.requests.rate.eligible` (every member)                                                         | `limit:evidence.allocation.signals.readers.malware.maxRequests`      |
+| Signals: publish time | `limit:research.share.signals.publishTimes.requests.base` | `limit:research.share.signals.publishTimes.requests.rate.eligible` (npm members)                                                     | `limit:evidence.allocation.signals.readers.publishTimes.maxRequests` |
+
+- The npm registry policy, PyPI metadata, and Actions upstream signals
+  readers made no requests in the corpus. Their request shares, and every
+  share's byte dimension, keep the base at the ceiling with every rate at 0.
+  The byte limit that binds is the packet limit
+  ([#457](https://github.com/andrewpucci/dependency-update-advisor/issues/457)),
+  which these shares do not control.
+- With these values a one-member change gets a share of 3 to 15 requests
+  for each fitted reader, so a runaway reader stops sooner. R1's PR #276
+  (105 npm members, 2 direct) gets the upstream and publish-time ceilings.
+- `limit:research.githubQuota.researchCeiling` stays the sum of the
+  research request ceilings, so it is unchanged. An R1-sized change can
+  spend the upstream ceiling plus its advisory and malware shares, well
+  inside it.
+
+### F3. Collection registry share
+
+This supersedes A1.1's "The collection registry share stays fixed", the
+amendment boundary that makes scaling it ask-first, and the amendment's
+out-of-scope item "Scaling the collection registry share".
+
+1. **Function.** The N2 registry reader's request share is
+   `min(ceiling, base + rate × npm members)`, rounded up exactly and at
+   least 1, with base `limit:collection.share.registry.requests.base`, rate
+   `limit:collection.share.registry.requests.rate.npm`, and ceiling
+   `limit:evidence.allocation.registry.maxRequests`. Its byte share stays
+   `limit:evidence.allocation.registry.maxTotalBytes`.
+2. **Unit.** The npm members of the trusted npm inventory, counted as
+   section A1.2 counts members, with declaration records left out. The
+   inventory is read from the bound snapshot before the registry reader
+   opens, so the count is known when the share is computed (section 3.1).
+   PR text never supplies it.
+3. **Ceiling.** The ×10 value of the former fixed share, under which every
+   collected corpus PR completed. At ×1 the fixed share cut 28 of #276's
+   105 members' vulnerability and malware coverage with `budget`; the
+   scaled share covers all of them.
+4. **Host.** These reads go to `registry.npmjs.org` with no credential.
+   They are not research GitHub requests, so
+   `limit:research.githubQuota.researchCeiling` and the quota guard never
+   count them. The envelope's `limit:evidence.envelope.maxRequests` stays
+   the derived sum of every ceiling, so it grows with this ceiling.
+
+### F4. Measurement scale
+
+A demand measurement at `MEASURE_SCALE` multiplies every fitted base and
+rate with the ceilings, so a scaled run still shows the demand the fitted
+shares would cut off.
+
+### Fitted share verification
+
+- With the register's values, a one-member npm change gets a smaller
+  request share than #276 in every fitted reader, the signals stage, and the
+  collection registry share. The test pins both sides of each.
+- Every unfitted share and every byte share equals its ceiling for no
+  members, one member, R1, and #276.
+- The collection registry share grows with npm members, reaches its ceiling
+  exactly, and stays there. The collection stage opens the registry reader
+  with the share for its inventory's npm members.
+- The envelope request total is the sum of the ceilings, and each research
+  reader opens with its computed share, at most its ceiling.
