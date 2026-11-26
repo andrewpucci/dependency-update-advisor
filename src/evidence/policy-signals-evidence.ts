@@ -155,8 +155,17 @@ export function attachSignalCoverage(
     reasons,
   };
 }
+const SIGNAL_ID_PREFIX = 'signal:';
 export const signalId = (...values: unknown[]) =>
-  'signal:' + createHash('sha256').update(JSON.stringify(values)).digest('hex');
+  SIGNAL_ID_PREFIX + createHash('sha256').update(JSON.stringify(values)).digest('hex');
+/**
+ * Whether a source or finding is an optional signal record: one the signals stage made under a
+ * `signalId` for anything but malware. Malware, the only required category signals owns, keeps
+ * the kind `malware` on its sources and findings.
+ */
+export function isOptionalSignalRecord(record: { id: string; kind: string }): boolean {
+  return record.id.startsWith(SIGNAL_ID_PREFIX) && record.kind !== 'malware';
+}
 export function retainSignalSource(output: SignalEnrichment, source: PacketSource) {
   const previous = output.sources.find((s) => s.id === source.id);
   advisoryCheck(!previous || isDeepStrictEqual(previous, source), 'conflict');

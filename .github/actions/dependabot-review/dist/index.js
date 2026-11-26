@@ -16361,7 +16361,16 @@ function attachSignalCoverage(change, category, sources) {
 		reasons
 	};
 }
-const signalId = (...values) => "signal:" + createHash("sha256").update(JSON.stringify(values)).digest("hex");
+const SIGNAL_ID_PREFIX = "signal:";
+const signalId = (...values) => SIGNAL_ID_PREFIX + createHash("sha256").update(JSON.stringify(values)).digest("hex");
+/**
+* Whether a source or finding is an optional signal record: one the signals stage made under a
+* `signalId` for anything but malware. Malware, the only required category signals owns, keeps
+* the kind `malware` on its sources and findings.
+*/
+function isOptionalSignalRecord(record) {
+	return record.id.startsWith(SIGNAL_ID_PREFIX) && record.kind !== "malware";
+}
 function retainSignalSource(output, source) {
 	const previous = output.sources.find((s) => s.id === source.id);
 	advisoryCheck(!previous || isDeepStrictEqual(previous, source), "conflict");
@@ -16372,7 +16381,7 @@ function retainSignalFinding(output, finding) {
 	advisoryCheck(!previous || isDeepStrictEqual(previous, finding), "conflict");
 	if (!previous) output.findings.push(finding);
 }
-const OPTIONAL_CATEGORIES = [
+const OPTIONAL_CATEGORIES$1 = [
 	"publishTime",
 	"deprecation",
 	"trust",
@@ -16396,7 +16405,7 @@ function signalBounds(input, output) {
 	advisoryCheck(output.changes.every((c) => Object.values(c.evidence).every((e) => e.sourceIds.length <= PACKET_LIMITS.listEntries)), "budget");
 	advisoryCheck(output.sources.length <= PACKET_LIMITS.sources && output.findings.length <= Math.min(PACKET_LIMITS.findings, input.findings.length + input.limits.maxFindings) && fitsBytes(input, enrichmentBytes(output)), "budget");
 }
-const SIGNAL_CATEGORIES = ["malware", ...OPTIONAL_CATEGORIES];
+const SIGNAL_CATEGORIES = ["malware", ...OPTIONAL_CATEGORIES$1];
 /**
 * Reserves every member's explained terminal outcome, malware included, before any read can spend
 * retention space. A member whose results then cross a limit returns to its reservation, which
@@ -16429,7 +16438,7 @@ function reserveSignals(input, output) {
 }
 /** A collector with no side to observe, e.g. proposed-only deprecation for a removal. */
 function explainUnattempted(output, change) {
-	for (const category of OPTIONAL_CATEGORIES) {
+	for (const category of OPTIONAL_CATEGORIES$1) {
 		if (output.attempts.some((a) => a.memberId === change.id && a.category === category)) continue;
 		if (category !== "license") change.evidence[category] = {
 			status: "unavailable",
@@ -16460,7 +16469,7 @@ function boundOrRelease(input, output, change, snapshot) {
 	} catch {
 		output.sources = [...snapshot.sources];
 		output.findings = [...snapshot.findings];
-		for (const category of OPTIONAL_CATEGORIES) {
+		for (const category of OPTIONAL_CATEGORIES$1) {
 			if (category !== "license") change.evidence[category] = {
 				status: "unavailable",
 				reasons: ["budget"],
@@ -16514,7 +16523,7 @@ async function runOptionalSignals(input, output, change, collect) {
 		output.findings = [...snapshot.findings, ...discoveries];
 		output.attempts = snapshot.attempts;
 		change.evidence = snapshot.evidence;
-		for (const category of OPTIONAL_CATEGORIES) {
+		for (const category of OPTIONAL_CATEGORIES$1) {
 			if (category !== "license") change.evidence[category] = {
 				status: "unavailable",
 				reasons: [reason],
@@ -33008,6 +33017,14 @@ const RESEARCH_CATEGORIES = [
 	"vulnerability",
 	"malware"
 ];
+/** The optional signal categories, which give way before any member's required research (§1.5). */
+const OPTIONAL_CATEGORIES = [
+	"publishTime",
+	"deprecation",
+	"trust",
+	"publisher"
+];
+const NONE = /* @__PURE__ */ new Set();
 /** The collector's "not researched yet" value, which research replaces with its own result. */
 function isResearchPlaceholder(evidence) {
 	return evidence?.status === "unavailable" && evidence.reasons.length === 1 && evidence.reasons[0] === "missing" && evidence.sourceIds.length === 0;
@@ -33025,6 +33042,23 @@ function withResearch(change, evidence) {
 			...Object.fromEntries(categories)
 		}
 	};
+}
+/** A kept member's enriched change with its optional signal categories left at `budget`; copies. */
+function withoutOptional(change) {
+	const evidence = { ...change.evidence };
+	for (const key of OPTIONAL_CATEGORIES) if (evidence[key]) evidence[key] = {
+		status: "unavailable",
+		reasons: ["budget"],
+		sourceIds: []
+	};
+	return {
+		...change,
+		evidence
+	};
+}
+/** Whether an optional signal record belongs only to members whose optional signals are stripped. */
+function strippedRecord(record, memberIds, stripped) {
+	return isOptionalSignalRecord(record) && memberIds.every((id) => id !== null && stripped.has(id));
 }
 /** A whole-second UTC retry time; every such value serializes to the same number of bytes. */
 const RETRY_AFTER_SHAPE = "1970-01-01T00:00:00Z";
@@ -33051,9 +33085,11 @@ function researchPacketBytes(collected) {
 	return PACKET_LIMITS.bytes - (whole - part);
 }
 /**
-* Keeps every member's research that validates, in priority order within packet limits (coverage
-* §1.4, §1.5). Members are attributed one at a time; an unattributable failure falls back to the
-* collected packet with every member marked malformed.
+* Keeps every member's research that validates, within packet limits (coverage §1.4, §1.5).
+* Members are attributed one at a time; an unattributable failure falls back to the collected
+* packet with every member marked malformed. Over a packet limit, the lowest-priority members'
+* optional signals give way first; only if every member's optional signals are stripped and the
+* packet still does not fit are members' required research reverted, lowest priority first.
 */
 function reconcilePacket(input) {
 	const { collected } = input;
@@ -33067,12 +33103,18 @@ function reconcilePacket(input) {
 	const researchFindings = input.enriched.findings.filter((finding) => !collectedFindingIds.has(finding.id));
 	const members = collectedChanges.filter((change) => !("basis" in change) && JSON.stringify(enrichedById.get(change.id)) !== JSON.stringify(change)).map((change) => change.id);
 	const memberSet = new Set(members);
-	/** A candidate with `kept` members enriched; other members are reverted with `reasonOf`. */
-	const attempt = (kept, reasonOf) => {
+	/**
+	* A candidate with `kept` members enriched, of which the `stripped` ones lose their optional
+	* signals; other members are reverted with `reasonOf`.
+	*/
+	const attempt = (kept, reasonOf, stripped = NONE) => {
 		const keptEveryone = members.every((id) => kept.has(id));
 		const changes = collectedChanges.map((change) => {
 			if (!memberSet.has(change.id)) return change;
-			if (kept.has(change.id)) return enrichedById.get(change.id);
+			if (kept.has(change.id)) {
+				const enriched = enrichedById.get(change.id);
+				return stripped.has(change.id) ? withoutOptional(enriched) : enriched;
+			}
 			return withResearch(change, {
 				status: "unavailable",
 				reasons: [reasonOf.get(change.id) ?? "malformed"],
@@ -33087,8 +33129,8 @@ function reconcilePacket(input) {
 			context: collected.context,
 			coverage: collected.coverage,
 			changes,
-			sources: [...collectedSources, ...researchSources.filter((source) => source.memberIds.some((id) => kept.has(id)))],
-			findings: [...collectedFindings, ...researchFindings.filter((finding) => finding.memberId === null ? keptEveryone : kept.has(finding.memberId))],
+			sources: [...collectedSources, ...researchSources.filter((source) => source.memberIds.some((id) => kept.has(id)) && !strippedRecord(source, source.memberIds, stripped))],
+			findings: [...collectedFindings, ...researchFindings.filter((finding) => (finding.memberId === null ? keptEveryone : kept.has(finding.memberId)) && !strippedRecord(finding, [finding.memberId], stripped))],
 			relationships: collected.relationships,
 			reachability: collected.reachability,
 			retryAfter: input.enriched.retryAfter ?? collected.retryAfter
@@ -33143,26 +33185,27 @@ function reconcilePacket(input) {
 	if (withoutBad.error.category !== "budget") return whole(["malformed"]);
 	const rank = new Map(input.priority.map((id, index) => [id, index]));
 	const ordered = [...kept].sort((a, b) => (rank.get(a) ?? Infinity) - (rank.get(b) ?? Infinity));
+	const keptSet = new Set(kept);
+	const reasons = [...malformed, "budget"];
+	const strip = (count) => attempt(keptSet, badReasons, new Set(ordered.slice(count)));
+	const optionalFit = longestFittingPrefix(ordered.length, strip, (result) => result.ok);
+	if (optionalFit?.ok) return {
+		packet: optionalFit.packet,
+		reasons,
+		whole: false
+	};
+	const strippedAll = strip(0);
+	const allStripped = !strippedAll.ok && strippedAll.error.category === "budget" ? keptSet : NONE;
 	const fits = (count) => {
 		const reasonOf = new Map(badReasons);
 		for (const id of ordered.slice(count)) reasonOf.set(id, "budget");
-		return attempt(new Set(ordered.slice(0, count)), reasonOf);
+		return attempt(new Set(ordered.slice(0, count)), reasonOf, allStripped);
 	};
-	let best = fits(0);
-	if (!best.ok) return whole(["malformed"]);
-	let low = 0;
-	let high = ordered.length;
-	while (low < high) {
-		const middle = Math.ceil((low + high) / 2);
-		const result = fits(middle);
-		if (result.ok) {
-			low = middle;
-			best = result;
-		} else high = middle - 1;
-	}
+	const best = longestFittingPrefix(ordered.length, fits, (result) => result.ok);
+	if (!best?.ok) return whole(["malformed"]);
 	return {
-		packet: best.ok ? best.packet : collected,
-		reasons: [...malformed, "budget"],
+		packet: best.packet,
+		reasons,
 		whole: false
 	};
 }

@@ -1,4 +1,6 @@
 import type { Finding } from './policy.js';
+import { longestFittingPrefix } from './evidence/common.js';
+import { isOptionalSignalRecord } from './evidence/policy-signals-evidence.js';
 import {
   PACKET_LIMITS,
   validateReviewPacket,
@@ -16,6 +18,9 @@ type Validated = Extract<PacketResult, { ok: true }>;
 type Failed = Extract<PacketResult, { ok: false }>;
 
 const RESEARCH_CATEGORIES = ['upstream', 'installScript', 'vulnerability', 'malware'] as const;
+/** The optional signal categories, which give way before any member's required research (§1.5). */
+const OPTIONAL_CATEGORIES = ['publishTime', 'deprecation', 'trust', 'publisher'] as const;
+const NONE: ReadonlySet<string> = new Set();
 
 /** The collector's "not researched yet" value, which research replaces with its own result. */
 export function isResearchPlaceholder(evidence: ChangeEvidence | undefined): boolean {
@@ -38,6 +43,24 @@ function withResearch(change: PacketChange, evidence: ChangeEvidence): PacketCha
   return { ...change, evidence: { ...change.evidence, ...Object.fromEntries(categories) } };
 }
 
+/** A kept member's enriched change with its optional signal categories left at `budget`; copies. */
+function withoutOptional(change: PacketChange): PacketChange {
+  const evidence: Record<string, ChangeEvidence> = { ...change.evidence };
+  for (const key of OPTIONAL_CATEGORIES)
+    if (evidence[key])
+      evidence[key] = { status: 'unavailable', reasons: ['budget'], sourceIds: [] };
+  return { ...change, evidence } as PacketChange;
+}
+
+/** Whether an optional signal record belongs only to members whose optional signals are stripped. */
+function strippedRecord(
+  record: { id: string; kind: string },
+  memberIds: readonly (string | null)[],
+  stripped: ReadonlySet<string>,
+): boolean {
+  return isOptionalSignalRecord(record) && memberIds.every((id) => id !== null && stripped.has(id));
+}
+
 /** A whole-second UTC retry time; every such value serializes to the same number of bytes. */
 const RETRY_AFTER_SHAPE = '1970-01-01T00:00:00Z';
 
@@ -58,9 +81,11 @@ export function researchPacketBytes(collected: Packet): number {
 }
 
 /**
- * Keeps every member's research that validates, in priority order within packet limits (coverage
- * §1.4, §1.5). Members are attributed one at a time; an unattributable failure falls back to the
- * collected packet with every member marked malformed.
+ * Keeps every member's research that validates, within packet limits (coverage §1.4, §1.5).
+ * Members are attributed one at a time; an unattributable failure falls back to the collected
+ * packet with every member marked malformed. Over a packet limit, the lowest-priority members'
+ * optional signals give way first; only if every member's optional signals are stripped and the
+ * packet still does not fit are members' required research reverted, lowest priority first.
  */
 export function reconcilePacket(input: {
   collected: Packet; // the validated collected packet
@@ -93,12 +118,22 @@ export function reconcilePacket(input: {
     .map((change) => change.id);
   const memberSet = new Set(members);
 
-  /** A candidate with `kept` members enriched; other members are reverted with `reasonOf`. */
-  const attempt = (kept: ReadonlySet<string>, reasonOf: ReadonlyMap<string, Reason>) => {
+  /**
+   * A candidate with `kept` members enriched, of which the `stripped` ones lose their optional
+   * signals; other members are reverted with `reasonOf`.
+   */
+  const attempt = (
+    kept: ReadonlySet<string>,
+    reasonOf: ReadonlyMap<string, Reason>,
+    stripped: ReadonlySet<string> = NONE,
+  ) => {
     const keptEveryone = members.every((id) => kept.has(id));
     const changes = collectedChanges.map((change) => {
       if (!memberSet.has(change.id)) return change;
-      if (kept.has(change.id)) return enrichedById.get(change.id);
+      if (kept.has(change.id)) {
+        const enriched = enrichedById.get(change.id)!;
+        return stripped.has(change.id) ? withoutOptional(enriched) : enriched;
+      }
       const reason = reasonOf.get(change.id) ?? 'malformed';
       return withResearch(change, { status: 'unavailable', reasons: [reason], sourceIds: [] });
     });
@@ -113,12 +148,18 @@ export function reconcilePacket(input: {
         changes,
         sources: [
           ...collectedSources,
-          ...researchSources.filter((source) => source.memberIds.some((id) => kept.has(id))),
+          ...researchSources.filter(
+            (source) =>
+              source.memberIds.some((id) => kept.has(id)) &&
+              !strippedRecord(source, source.memberIds, stripped),
+          ),
         ],
         findings: [
           ...collectedFindings,
-          ...researchFindings.filter((finding) =>
-            finding.memberId === null ? keptEveryone : kept.has(finding.memberId),
+          ...researchFindings.filter(
+            (finding) =>
+              (finding.memberId === null ? keptEveryone : kept.has(finding.memberId)) &&
+              !strippedRecord(finding, [finding.memberId], stripped),
           ),
         ],
         relationships: collected.relationships,
@@ -173,29 +214,28 @@ export function reconcilePacket(input: {
   if (withoutBad.ok) return { packet: withoutBad.packet, reasons: malformed, whole: false };
   if (withoutBad.error.category !== 'budget') return whole(['malformed']);
 
-  // Within limits: keep members in priority order, as many as validate.
   const rank = new Map(input.priority.map((id, index) => [id, index]));
   const ordered = [...kept].sort((a, b) => (rank.get(a) ?? Infinity) - (rank.get(b) ?? Infinity));
+  const keptSet = new Set(kept);
+  const reasons: Reason[] = [...malformed, 'budget'];
+
+  // Optional before required (§1.5): strip optional signals from the lowest-priority members
+  // first, keeping as many of the highest-priority members' optional signals as fit.
+  const strip = (count: number) => attempt(keptSet, badReasons, new Set(ordered.slice(count)));
+  const optionalFit = longestFittingPrefix(ordered.length, strip, (result) => result.ok);
+  if (optionalFit?.ok) return { packet: optionalFit.packet, reasons, whole: false };
+
+  // Even with no optional signals the packet does not fit: keep members' required research in
+  // priority order, as many as validate. A limit failure strips every kept member's optional
+  // signals, since none may outrank another member's required research.
+  const strippedAll = strip(0);
+  const allStripped = !strippedAll.ok && strippedAll.error.category === 'budget' ? keptSet : NONE;
   const fits = (count: number): Validated | Failed => {
     const reasonOf = new Map<string, Reason>(badReasons);
     for (const id of ordered.slice(count)) reasonOf.set(id, 'budget');
-    return attempt(new Set(ordered.slice(0, count)), reasonOf);
+    return attempt(new Set(ordered.slice(0, count)), reasonOf, allStripped);
   };
-  let best = fits(0);
-  if (!best.ok) return whole(['malformed']);
-  let low = 0;
-  let high = ordered.length;
-  while (low < high) {
-    const middle = Math.ceil((low + high) / 2);
-    const result = fits(middle);
-    if (result.ok) {
-      low = middle;
-      best = result;
-    } else high = middle - 1;
-  }
-  return {
-    packet: best.ok ? best.packet : collected,
-    reasons: [...malformed, 'budget'],
-    whole: false,
-  };
+  const best = longestFittingPrefix(ordered.length, fits, (result) => result.ok);
+  if (!best?.ok) return whole(['malformed']);
+  return { packet: best.packet, reasons, whole: false };
 }

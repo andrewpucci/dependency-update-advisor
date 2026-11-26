@@ -196,6 +196,22 @@ test('keeps the retry time research set, including when one member reverts', asy
   expect(reverted.packet.retryAfter).toBe(retryAfter);
 });
 
+const OPTIONAL = ['publishTime', 'deprecation', 'trust', 'publisher'] as const;
+/** An optional signal source or finding: made by the signals stage for anything but malware. */
+const optionalRecord = (record: { id: string; kind: string }) =>
+  record.id.startsWith('signal:') && record.kind !== 'malware';
+/** Members that still carry optional signal sources in a candidate packet. */
+function optionalMembers(candidate: unknown): number {
+  const { sources } = candidate as { sources: { id: string; kind: string; memberIds: string[] }[] };
+  return new Set(sources.filter(optionalRecord).flatMap((source) => source.memberIds)).size;
+}
+/** A change with every optional signal category it has left at budget. */
+function withoutOptional<T extends { evidence: object }>(change: T): T {
+  const evidence = { ...change.evidence } as Record<string, unknown>;
+  for (const key of OPTIONAL) if (key in evidence) evidence[key] = BUDGET;
+  return { ...change, evidence };
+}
+
 test('keeps members in priority order within packet limits', async () => {
   const { fixture, packet, enriched, members } = await enrichedResult();
   const keep = 1;
@@ -214,8 +230,10 @@ test('keeps members in priority order within packet limits', async () => {
   expect(result.reasons).toEqual(['budget']);
   expect(result.whole).toBe(false);
   const byId = (id: string) => result.packet.changes.find((change) => change.id === id);
+  // Required research is reverted only once no member keeps optional signals (coverage §1.5).
   for (const id of kept)
-    expect(byId(id), id).toEqual(enriched.changes.find((change) => change.id === id));
+    expect(byId(id), id).toEqual(withoutOptional(enriched.changes.find((c) => c.id === id)!));
+  expect(optionalMembers(result.packet)).toBe(0);
   // A reverted member's own research sources leave with its research.
   const collectedIds = new Set(packet.sources.map((source) => source.id));
   const revertedOnly = result.packet.sources.filter(
@@ -231,6 +249,55 @@ test('keeps members in priority order within packet limits', async () => {
   for (const id of priority.slice(keep))
     for (const key of RESEARCH.filter((category) => category in (byId(id)?.evidence ?? {})))
       expect(byId(id)?.evidence[key], `${id} ${key}`).toEqual(reverted(packet, id, key, BUDGET));
+});
+
+test('over a packet limit, strips the lowest-priority members’ optional signals before any required research', async () => {
+  const { fixture, packet, enriched, members } = await enrichedResult();
+  const keep = 1;
+  // Room for one member's optional signals, and for every member's required research.
+  rejects = (candidate) =>
+    optionalMembers(candidate) > keep
+      ? { ok: false, error: { category: 'budget', field: 'packet' } }
+      : null;
+  expect(optionalMembers(enriched)).toBe(members.length);
+  const priority = [...members].reverse();
+  const result = reconcilePacket({
+    collected: packet,
+    enriched: enrichedInput(enriched),
+    trusted: fixture.expected,
+    priority,
+  });
+  expect(result.reasons).toEqual(['budget']);
+  expect(result.whole).toBe(false);
+  const byId = (changes: Packet['changes'], id: string) => changes.find((c) => c.id === id)!;
+  // Mutation "revert before stripping": the lower-priority members lose required research.
+  for (const id of members)
+    for (const key of RESEARCH.filter(
+      (category) => category in byId(enriched.changes, id).evidence,
+    ))
+      expect(byId(result.packet.changes, id).evidence[key], `${id} ${key}`).toEqual(
+        byId(enriched.changes, id).evidence[key],
+      );
+  // The highest-priority member keeps everything; the rest lose only their optional signals.
+  expect(byId(result.packet.changes, priority[0])).toEqual(byId(enriched.changes, priority[0]));
+  for (const id of priority.slice(keep))
+    expect(byId(result.packet.changes, id), id).toEqual(
+      withoutOptional(byId(enriched.changes, id)),
+    );
+  expect(optionalMembers(result.packet)).toBe(keep);
+  const strippedRecords = (records: readonly { id: string; kind: string }[], ids: string[]) =>
+    records.filter((r) => optionalRecord(r) && ids.some((id) => JSON.stringify(r).includes(id)));
+  const strippedIds = priority.slice(keep);
+  expect(strippedRecords(enriched.findings, strippedIds).length).toBeGreaterThan(0);
+  expect(strippedRecords(result.packet.findings, strippedIds)).toEqual([]);
+  // Every other research record stays: only optional signal records of stripped members left.
+  const left = (all: readonly { id: string }[], now: readonly { id: string }[]) =>
+    all.filter((r) => !now.some((n) => n.id === r.id));
+  for (const record of [
+    ...left(enriched.sources, result.packet.sources),
+    ...left(enriched.findings, result.packet.findings),
+  ])
+    expect(optionalRecord(record as { id: string; kind: string }), record.id).toBe(true);
 });
 
 test('the whole-packet fallback keeps the retry time research set', async () => {

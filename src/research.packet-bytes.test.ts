@@ -37,6 +37,19 @@ vi.mock('./evidence/policy-signals.js', async (original) => {
   };
 });
 
+// When `loose`, stages get the whole packet limit as their bound, as before fix 1, so signals
+// fills the limit with its own lists and the assembled packet overflows at revalidation.
+const bound = vi.hoisted(() => ({ loose: false }));
+vi.mock('./revalidation.js', async (original) => {
+  const actual = await original<typeof import('./revalidation.js')>();
+  const { PACKET_LIMITS } = await import('./schema.js');
+  return {
+    ...actual,
+    researchPacketBytes: (packet: Parameters<typeof actual.researchPacketBytes>[0]) =>
+      bound.loose ? PACKET_LIMITS.bytes : actual.researchPacketBytes(packet),
+  };
+});
+
 vi.setConfig({ testTimeout: limit('tests.largeInventoryRenderTimeoutMs') });
 
 const OPTIONAL = ['publishTime', 'deprecation', 'trust', 'publisher'] as const;
@@ -44,9 +57,7 @@ const bytes = (value: unknown) => Buffer.byteLength(JSON.stringify(value));
 const packetPart = ({ changes, sources, findings }: Omit<SignalEnrichment, 'attempts'>) =>
   bytes({ changes, sources, findings });
 
-// 110 children is the smallest count of this fixture at which, before the research byte bound,
-// signals filled the packet limit with its own lists and revalidation reverted members to budget.
-test('research on 110 children passes revalidation with every required check and cuts only optional signals', async () => {
+async function research110() {
   const fixture = await upstreamScenario({ children: 110 });
   const collected = validateReviewPacket(
     {
@@ -75,6 +86,13 @@ test('research on 110 children passes revalidation with every required check and
     evaluationTime: Date.parse('2026-11-07T00:00:00Z'),
   });
   if (result.kind !== 'ready') throw new Error('research');
+  return { fixture, packet, result };
+}
+
+// 110 children is the smallest count of this fixture at which, before the research byte bound,
+// signals filled the packet limit with its own lists and revalidation reverted members to budget.
+test('research on 110 children passes revalidation with every required check and cuts only optional signals', async () => {
+  const { fixture, packet, result } = await research110();
   // Mutation "drop the non-change part from the bound": revalidation reverts members to budget.
   expect(result.unavailable).toEqual([]);
   const members = researchOrder(result.packet.changes, fixture.npm).filter((c) => !('basis' in c));
@@ -116,4 +134,36 @@ test('research on 110 children passes revalidation with every required check and
   };
   const kept = members.slice(0, members.length - cut.length).map((m) => optionalBytes(m.id));
   expect(Math.min(...kept)).toBeGreaterThan(bound - packetPart(output));
+});
+
+test('when the assembled packet still overflows, revalidation strips optional signals, not required research', async () => {
+  bound.loose = true;
+  try {
+    const { fixture, result } = await research110();
+    // Fix 1 alone would revert members' required research here; the strip keeps all of it.
+    expect(result.unavailable).toEqual([{ stage: 'revalidation', reason: 'budget' }]);
+    const members = researchOrder(result.packet.changes, fixture.npm).filter(
+      (c) => !('basis' in c),
+    );
+    expect(members).toHaveLength(113);
+    for (const member of members)
+      for (const category of ['upstream', 'vulnerability', 'malware'] as const)
+        expect(member.evidence[category].status, `${member.id} ${category}`).toBe('available');
+    expect(bytes(result.packet)).toBeLessThanOrEqual(PACKET_LIMITS.bytes);
+    // Revalidation stripped members whose optional signals the stage had kept, and the members
+    // without optional signals are the lowest-priority suffix.
+    const output = signals.output as SignalEnrichment;
+    const budgeted = (
+      evidence: Readonly<Record<string, { reasons: readonly string[] } | undefined>>,
+    ) => OPTIONAL.every((c) => !evidence[c] || evidence[c]!.reasons.includes('budget'));
+    const stageCut = new Set(
+      output.changes.filter((c) => !('basis' in c) && budgeted(c.evidence)).map((c) => c.id),
+    );
+    const cut = members.filter((m) => budgeted(m.evidence));
+    expect(cut.some((m) => !stageCut.has(m.id))).toBe(true);
+    expect(cut.length).toBeLessThan(members.length);
+    expect(members.slice(members.length - cut.length)).toEqual(cut);
+  } finally {
+    bound.loose = false;
+  }
 });
