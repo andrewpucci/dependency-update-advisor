@@ -22,7 +22,7 @@ import {
   type IdentityGapInput,
   type UpstreamAttempt,
 } from './evidence/upstream.js';
-import { createUpstreamReader } from './evidence/upstream-read.js';
+import { createUpstreamReader, type TagExistenceMap } from './evidence/upstream-read.js';
 import { createResearchCache, type ResearchCache } from './evidence/research-cache.js';
 import { createGithubQuotaGuard, type GithubQuotaGuard } from './evidence/github-quota.js';
 import type { NpmInventoryResult } from './evidence/npm.js';
@@ -45,6 +45,12 @@ type ResearchProgress = EnrichedEvidence & {
   signalAttempts: readonly SignalAttempt[];
 };
 type Reader = { close: () => void };
+type StageDependencies = Pick<ResearchInput, 'now' | 'fetch' | 'signal'>;
+/** What the upstream readers alone receive: the token flag and the run's existence map. */
+type UpstreamStageDependencies = StageDependencies & {
+  githubToken: boolean;
+  existence: TagExistenceMap;
+};
 type Fail = (stage: ResearchStage, reason: EvidenceReason, limit?: string | null) => void;
 export type ResearchStage = 'upstream' | 'advisories' | 'signals' | 'revalidation';
 /** A stage boundary reported to an optional observer; carries no request data. */
@@ -67,6 +73,12 @@ export type ResearchInput = Readonly<{
   comparison: GithubComparison | null;
   /** Credential-free fetch for public registries and advisory sources. */
   fetch: (url: string, init: RequestInit) => Promise<Response>;
+  /**
+   * Whether `fetch` adds a GitHub token to api.github.com requests, as `researchFetch` does. It
+   * enables the batched tag existence query, which GitHub's GraphQL API serves only with a token;
+   * off when absent.
+   */
+  githubToken?: boolean;
   /** The run's research cache, shared with collection's registry reads; created here when absent. */
   cache?: ResearchCache;
   /** Scaled-share parameters; the register's when absent. */
@@ -206,7 +218,7 @@ function replaceEvidence(progress: ResearchProgress, evidence: EnrichedEvidence)
 
 async function enrichUpstreamStage(
   input: ResearchInput,
-  dependencies: Pick<ResearchInput, 'now' | 'fetch' | 'signal'>,
+  dependencies: UpstreamStageDependencies,
   readers: Reader[],
   progress: ResearchProgress,
   fail: Fail,
@@ -269,7 +281,7 @@ async function enrichAdvisoryStage(
 
 async function enrichSignalsStage(
   input: ResearchInput,
-  dependencies: Pick<ResearchInput, 'now' | 'fetch' | 'signal'>,
+  dependencies: UpstreamStageDependencies,
   readers: Reader[],
   progress: ResearchProgress,
   fail: Fail,
@@ -278,10 +290,15 @@ async function enrichSignalsStage(
 ): Promise<void> {
   const limitsForStage = limits(stageShares.signals, input);
   const { readers: shares } = stageShares.signals;
-  const malware = createMalwareReader(limits(shares.malware, input), dependencies);
-  const registry = createNpmRegistryReader(limits(shares.registry, input), dependencies);
-  const times = createNpmPublishTimeReader(limits(shares.publishTimes, input), dependencies);
-  const upstream = createUpstreamReader(limits(shares.upstream, input), dependencies);
+  const { githubToken, existence, ...shared } = dependencies;
+  const malware = createMalwareReader(limits(shares.malware, input), shared);
+  const registry = createNpmRegistryReader(limits(shares.registry, input), shared);
+  const times = createNpmPublishTimeReader(limits(shares.publishTimes, input), shared);
+  const upstream = createUpstreamReader(limits(shares.upstream, input), {
+    ...shared,
+    githubToken,
+    existence,
+  });
   // The npm registry reader holds no timers or listeners, so it has nothing to close.
   for (const opened of [malware, times]) if (opened.kind === 'ready') readers.push(opened);
   if (upstream.kind === 'ready') readers.push(upstream.reader);
@@ -339,6 +356,13 @@ export async function runResearch(input: ResearchInput): Promise<ResearchResult>
         windowMs: limit('research.githubQuota.windowMs'),
       }),
   };
+  // One existence map per run, shared by the upstream stage and the signals upstream reader; it
+  // is never kept across runs (amendment item 7).
+  const upstreamDependencies = {
+    ...dependencies,
+    githubToken: input.githubToken === true,
+    existence: new Map() as TagExistenceMap,
+  };
   const unavailable: { stage: ResearchStage; reason: EvidenceReason }[] = [];
   const stopLimits = new Map<ResearchStage, string>();
   const readers: Reader[] = [];
@@ -395,7 +419,7 @@ export async function runResearch(input: ResearchInput): Promise<ResearchResult>
     await runStage('upstream', () =>
       enrichUpstreamStage(
         input,
-        dependencies,
+        upstreamDependencies,
         readers,
         progress,
         fail,
@@ -417,7 +441,15 @@ export async function runResearch(input: ResearchInput): Promise<ResearchResult>
       enrichAdvisoryStage(input, dependencies, readers, progress, fail, shares),
     );
     await runStage('signals', () =>
-      enrichSignalsStage(input, dependencies, readers, progress, fail, sharedMetadata, shares),
+      enrichSignalsStage(
+        input,
+        upstreamDependencies,
+        readers,
+        progress,
+        fail,
+        sharedMetadata,
+        shares,
+      ),
     );
 
     restorePacketOrder(progress, packet);

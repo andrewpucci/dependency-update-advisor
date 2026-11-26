@@ -393,6 +393,64 @@ test('sends no credentials to any public source', async () => {
   for (const sent of headers) expect(sent).not.toHaveProperty('authorization');
 });
 
+const GRAPHQL = 'https://api.github.com/graphql';
+/** The upstream readers' dependencies from the calls since `from`: the stage's, then signals'. */
+function upstreamReaderDeps(from: number) {
+  return vi
+    .mocked(upstreamReadModule.createUpstreamReader)
+    .mock.calls.slice(from)
+    .map(([, deps]) => deps);
+}
+async function monorepoRun(githubToken: boolean | undefined) {
+  const { fixture, packet } = await scenario({ monorepo: true });
+  const from = vi.mocked(upstreamReadModule.createUpstreamReader).mock.calls.length;
+  const result = await runResearch({
+    ...base(fixture, packet),
+    ...(githubToken === undefined ? {} : { githubToken }),
+  });
+  const github = fixture.requests.filter((url) => url.startsWith('https://api.github.com/'));
+  return {
+    result,
+    graphql: github.filter((url) => url === GRAPHQL).length,
+    rest: github.filter((url) => url !== GRAPHQL).length,
+    deps: upstreamReaderDeps(from),
+  };
+}
+
+test.each([undefined, false])(
+  'without a research token (%s), no tag existence query is sent',
+  async (githubToken) => {
+    const run = await monorepoRun(githubToken);
+    expect(run.graphql).toBe(0);
+    expect(run.deps).toHaveLength(2);
+    for (const deps of run.deps) expect(deps.githubToken).toBe(false);
+  },
+);
+
+test('with a research token, a fixture packet is unchanged with fewer REST requests', async () => {
+  const today = await monorepoRun(false);
+  const batched = await monorepoRun(true);
+  expect(today.result.kind).toBe('ready');
+  expect(batched.result).toEqual(today.result);
+  // Every npm package shares one repository, so one query answers all of its absent tags.
+  expect(batched.graphql).toBe(1);
+  expect(batched.rest).toBeLessThan(today.rest);
+  // The upstream stage and the signals upstream reader share the run's one existence map.
+  expect(batched.deps).toHaveLength(2);
+  for (const deps of batched.deps) expect(deps.githubToken).toBe(true);
+  expect(batched.deps[0].existence).toBeInstanceOf(Map);
+  expect(batched.deps[1].existence).toBe(batched.deps[0].existence);
+});
+
+test('another run does not reuse the existence map: its query reaches the network again', async () => {
+  const first = await monorepoRun(true);
+  const second = await monorepoRun(true);
+  expect(first.graphql).toBe(1);
+  expect(second.graphql).toBe(1);
+  expect(second.rest).toBe(first.rest);
+  expect(second.deps[0].existence).not.toBe(first.deps[0].existence);
+});
+
 test('caps every reader at its share, so the readers together stay inside the envelope', async () => {
   const { fixture, packet } = await scenario();
   for (const mock of [
@@ -860,37 +918,35 @@ function expectStopReason(
 // The #439 reproduction cuts the upstream share, the stage that establishes identity proofs.
 test('a member whose identity proof an exhausted upstream share cut reports budget, not unsupported (#439)', async () => {
   const { fixture, packet } = await scenario({ children: 4 });
-  // A three-request upstream share runs out after the first member's identity proof.
+  // A two-request upstream share runs out after the first npm and PyPI identity proofs, between
+  // members, so no member keeps one side's proof and loses the other's.
   const shareParameters = {
     ...RESEARCH_SHARE_PARAMETERS,
     upstream: {
       ...RESEARCH_SHARE_PARAMETERS.upstream,
-      requests: { base: 3, ceiling: 3, rates: {} },
+      requests: { base: 2, ceiling: 2, rates: {} },
     },
   };
   const result = await runResearch({ ...base(fixture, packet), shareParameters });
   if (result.kind !== 'ready') throw new Error('research');
   expect(result.unavailable).toContainEqual({ stage: 'upstream', reason: 'budget' });
   const cut = cutMembers(result.packet, 'budget');
-  // The Action lost its ref mapping to the same stop.
+  // The Action lost its ref mapping to the same stop. Metadata is read ahead for every member, so
+  // the PyPI member and one npm member keep their proofs.
   expect(cut.map((change) => change.ecosystem).sort()).toEqual([
     'actions',
     'npm',
     'npm',
     'npm',
     'npm',
-    'uv',
   ]);
-  // The npm and PyPI metadata categories share the vulnerability rule.
-  expectStopReason(result, cut, 'budget', {
-    npm: ['trust', 'publisher', 'deprecation'],
-    uv: ['publishTime', 'deprecation'],
-  });
-  // The member that kept its proof was looked up.
+  // The npm metadata categories share the vulnerability rule.
+  expectStopReason(result, cut, 'budget', { npm: ['trust', 'publisher', 'deprecation'] });
+  // The members that kept their proofs were looked up.
   const kept = result.packet.changes.filter(
-    (change) => change.ecosystem === 'npm' && change.evidence.vulnerability.status === 'available',
+    (change) => change.evidence.vulnerability.status === 'available',
   );
-  expect(kept).toHaveLength(1);
+  expect(kept.map((change) => change.ecosystem).sort()).toEqual(['npm', 'uv']);
 });
 
 test('a member whose identity proof a rate-limited upstream read cut reports rate_limit (#439)', async () => {

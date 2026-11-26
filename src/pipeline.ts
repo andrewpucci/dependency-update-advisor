@@ -19,7 +19,7 @@ import {
   type ReviewBinding,
 } from './event.js';
 import { createReviewHandoff, type RehearsalSink, type ReviewHandoff } from './handoff.js';
-import { guardedFetch } from './adapters.js';
+import { guardedFetch, withTokenFlag, type TokenFetch } from './adapters.js';
 import { assembleReviewPacket, type PacketGap } from './packet.js';
 import type { DroppedOptional } from './optional-evidence.js';
 import { runResearch } from './research.js';
@@ -53,8 +53,11 @@ export type PipelineInput = Readonly<{
   sink: RehearsalSink;
   /** Authenticated fetch for the consumer repository; the only holder of the read token. */
   githubFetch: (url: string, init: RequestInit) => Promise<Response>;
-  /** Fetch for public registries and advisory sources; only api.github.com carries a credential. */
-  publicFetch: (url: string, init: RequestInit) => Promise<Response>;
+  /**
+   * Fetch for public registries and advisory sources; only api.github.com carries a credential.
+   * Its `githubToken` flag, set by `researchFetchWithToken`, says it adds the read token there.
+   */
+  publicFetch: TokenFetch;
   model?: AssessmentInput['model'];
   /** Monotonic milliseconds. */
   now: () => number;
@@ -267,7 +270,11 @@ export async function runReview(input: PipelineInput): Promise<PipelineResult> {
     if (!input.llmApiKey)
       return { kind: 'model-unavailable', modelUnavailableReason: 'no-key', body: null };
     return evaluateEvidence(
-      { ...input, githubFetch: guard(input.githubFetch), publicFetch: guard(input.publicFetch) },
+      {
+        ...input,
+        githubFetch: guard(input.githubFetch),
+        publicFetch: withTokenFlag(guard(input.publicFetch), input.publicFetch),
+      },
       binding,
       started,
       attempt.signal,
@@ -479,6 +486,7 @@ async function evaluateEvidence(
             npmInventory: npmInventory as never,
             comparison: null,
             fetch: input.publicFetch,
+            ...(input.publicFetch.githubToken ? { githubToken: true } : {}),
             cache: researchCache,
             now: input.now,
             deadline: evidenceDeadline,

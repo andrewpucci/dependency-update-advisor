@@ -24,6 +24,27 @@ export const upstreamTestLimits = {
   maxRetainedBytes: 2_000_000,
 };
 const integrity = 'sha512-' + Buffer.alloc(64, 7).toString('base64');
+/**
+ * A GraphQL tag existence answer for one sent query, from the same tag set the REST fixture
+ * serves: every alias resolves its repository, and its ref is null exactly when `exists` says so.
+ */
+export function graphqlTagAnswer(
+  init: RequestInit,
+  exists: (repository: string, tag: string) => boolean,
+): Response {
+  const { variables } = JSON.parse(String(init.body)) as { variables: Record<string, string> };
+  const data: Record<string, unknown> = { rateLimit: { cost: 1 } };
+  for (let i = 0; `q${i}` in variables; i++) {
+    const repository = variables[`o${i}`] + '/' + variables[`n${i}`];
+    const tag = variables[`q${i}`].slice('refs/tags/'.length);
+    data[`c${i}`] = {
+      nameWithOwner: repository,
+      ref: exists(repository, tag) ? { target: { oid: '0'.repeat(40) } } : null,
+    };
+  }
+  return Response.json({ data });
+}
+const FIXTURE_TAGS = ['tags/v1.0.0', 'tags/v2.0.0'];
 type Options = {
   lifecycle?: boolean;
   children?: number;
@@ -41,6 +62,8 @@ type Options = {
   duplicateNames?: number;
   /** Discovery records for one spelling; the harness default stores each target as itself. */
   stored?: Parameters<typeof viaAdvisoryHttp>[1];
+  /** Every npm package names one shared repository directory, so its tags are `<name>@<version>`. */
+  monorepo?: boolean;
 };
 function packageNode(name: string, version: string) {
   return {
@@ -111,7 +134,7 @@ function githubResponse(url: URL) {
   if (!tail) return Response.json({ private: false, full_name: repository });
   if (tail.startsWith('commits/')) return Response.json({ sha: tail.slice('commits/'.length) });
   const ref = tail.slice('git/ref/'.length);
-  if (tail.startsWith('git/ref/') && ['tags/v1.0.0', 'tags/v2.0.0'].includes(ref))
+  if (tail.startsWith('git/ref/') && FIXTURE_TAGS.includes(ref))
     return Response.json({
       ref: 'refs/' + ref,
       object: { type: 'commit', sha: (ref.endsWith('1.0.0') ? '1' : '2').repeat(40) },
@@ -149,7 +172,9 @@ function researchFetch(options: Options, requests: string[]) {
         dist: { integrity },
         scripts: {},
         description: 'Exact npm version metadata.',
-        repository: { url: 'https://github.com/fixture/npm-' + name },
+        repository: options.monorepo
+          ? { url: 'https://github.com/fixture/npm-monorepo', directory: 'packages/' + name }
+          : { url: 'https://github.com/fixture/npm-' + name },
       });
     }
     if (url.origin === 'https://pypi.org')
@@ -188,6 +213,8 @@ function researchFetch(options: Options, requests: string[]) {
           : [],
       );
     }
+    if (url.href === 'https://api.github.com/graphql')
+      return graphqlTagAnswer(init, (_, tag) => FIXTURE_TAGS.includes('tags/' + tag));
     if (url.origin === 'https://api.github.com') return githubResponse(url);
     throw new Error('Unexpected research host');
   }, options.stored);

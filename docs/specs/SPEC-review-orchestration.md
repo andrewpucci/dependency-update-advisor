@@ -1069,6 +1069,38 @@ nothing.
 
 This changes no W2 outcome, reason, trace, stderr form, or publication rule.
 
+## Amendment 7: Tag Existence Query in the No-Write Guard
+
+**Status: approved for execution, 2026-11-26.** The user explicitly approved
+this amendment after the shipped bundle's no-write guard flagged the GraphQL
+tag existence query added by the S2
+[Batched Tag Existence Amendment](SPEC-upstream-evidence.md#batched-tag-existence-amendment)
+once research began sending it in C9
+([#396](https://github.com/andrewpucci/dependency-update-advisor/issues/396)).
+Effort tier: L.
+
+It amends Amendment 6's named mutation. GitHub's GraphQL endpoint accepts
+only POST, so a tag existence lookup is a POST that reads data and writes
+nothing. It carries the research read token, as the REST reads do.
+
+1. The guard exempts exactly three requests: the one model call, the
+   unauthenticated OSV query, both as before, and a `POST` to
+   `https://api.github.com/graphql` that carries the read token and whose
+   body's query text is exactly the fixed tag existence query for its number
+   of candidates.
+2. Any other GraphQL request stays a live write, including a mutation, any
+   other query text, a body whose query does not match its candidate count, a
+   request without the read token or with any other credential, and any method
+   other than POST.
+3. The named mutation now reads: loosening the guard beyond the model
+   endpoint, the unauthenticated OSV query, and the read-token tag existence
+   query. Each of these mutations must fail the guard's unit test: exempting
+   every `api.github.com/graphql` POST, exempting it without the read token or
+   with another credential, and accepting query text other than the fixed
+   query.
+
+This changes no W2 outcome, reason, trace, stderr form, or publication rule.
+
 ## Testing Strategy
 
 Use source-adjacent `vite-plus/test` tests with injected clock, fetch,
