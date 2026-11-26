@@ -12,9 +12,9 @@
  * states and reasons per category, which shows members a share stopped one at a time while the
  * stage itself ended `enriched`. Its `github` field gives research's GitHub requests beside their
  * approved ceiling, the quota guard's refusals, and the remaining quota by the guard's validity
- * and window rules over all of the run's GitHub API responses (lowest core value in the latest
- * window, with that window's reset; not the guard's own estimate); a run the guard cut short is
- * re-measured after the reset.
+ * and counter rules over all of the run's GitHub API responses (each counter's reset and lowest
+ * core value, and the lowest among counters still live at the end, with its reset; not the guard's
+ * own estimate); a run the guard cut short is re-measured after the reset.
  * Optional: MEASURE_QUOTA_TRACE=1 adds `github.trace`, each GitHub API response's rate-limit
  * header values (resource, limit, remaining, used, reset, each a short lowercase token or digits,
  * else `invalid`) with its start order, phase at start, and status, and no URL.

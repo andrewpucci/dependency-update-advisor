@@ -91,22 +91,20 @@ test('judges a reset on the wall clock: past or beyond the window is ignored', (
   expect(guard.admit(API)).toMatchObject({ allowed: false, retryAt: WALL + 2 * MINUTE });
 });
 
-test('keeps the lowest remaining in a window and starts a new window on a later reset', () => {
-  const wall = { now: WALL };
-  const guard = guardAt(wall);
-  guard.observe(API, rateLimited('7', WALL + MINUTE));
+test('keeps the lowest remaining a counter reports and accepts only a reading at or below it', () => {
+  const reading = (remaining: string) =>
+    ({ kind: 'response', remaining, reset: WALL + MINUTE }) as const;
   // A higher remaining for the same reset does not raise the estimate.
-  guard.observe(API, rateLimited('50', WALL + MINUTE));
-  expect(admitUntilRefused(guard)).toBe(2);
-  // An earlier reset than the current window's is ignored.
-  guard.observe(API, rateLimited('50', WALL + 30 * SECOND));
-  expect(guard.admit(API).allowed).toBe(false);
-  // A later reset starts a new window with its own remaining.
-  guard.observe(API, rateLimited('50', WALL + 10 * MINUTE));
-  expect(admitUntilRefused(guard)).toBe(45);
+  expect(estimateAfter([reading('9'), reading('50')])).toBe(9);
+  // After two started requests the counter's estimate is 7: a reading of 8 is above it and is not
+  // accepted, so both requests still count; a reading of 7 or below is accepted and restarts it.
+  const started: QuotaEvent[] = [reading('9'), { kind: 'start' }, { kind: 'start' }];
+  expect(estimateAfter([...started, reading('8')])).toBe(7);
+  expect(estimateAfter([...started, reading('7')])).toBe(7);
+  expect(estimateAfter([...started, reading('7'), { kind: 'start' }])).toBe(6);
 });
 
-test('clears the estimate once the window reset passes', () => {
+test('clears a counter once the wall clock reaches its reset', () => {
   const wall = { now: WALL };
   const guard = guardAt(wall);
   guard.observe(API, rateLimited('5', WALL + MINUTE));
@@ -262,7 +260,7 @@ function estimateAfter(events: readonly QuotaEvent[], reserve = 5): number {
   return admitUntilRefused(guard, 5000) + reserve;
 }
 
-test('a non-monotonic header sequence never raises the estimate within a window (#438)', () => {
+test('a non-monotonic header sequence never raises the estimate within a counter (#438)', () => {
   const first = WALL + 30 * MINUTE;
   const second = first + HOUR;
   // Four requests in flight, served by GitHub as 99, 98, 97, 96 but completing out of order,
@@ -274,7 +272,7 @@ test('a non-monotonic header sequence never raises the estimate within a window 
     { kind: 'start' },
     { kind: 'response', remaining: '97', reset: first },
     { kind: 'response', remaining: '99', reset: first },
-    // Read as core, the first would start a later window and the second would lower this one.
+    // Read as core, the first would add a counter and the second would lower this one.
     { kind: 'response', remaining: '4990', reset: first + MINUTE, resource: 'graphql' },
     { kind: 'response', remaining: '29', reset: first, resource: 'search' },
     { kind: 'response', remaining: '650', reset: first + MINUTE, resource: 'code_scanning_upload' },
@@ -292,8 +290,8 @@ test('a non-monotonic header sequence never raises the estimate within a window 
     expect(read[i], `step ${i + 4}`).toBeLessThanOrEqual(read[i - 1]!);
   expect(read.at(-1)).toBe(95);
 
-  // After the reset passes, a late response from the old window changes nothing; the next
-  // window's first reading raises the estimate.
+  // After the reset passes, a late response from the old counter is invalid and changes nothing;
+  // the next counter's first reading sets the estimate.
   const afterReset: QuotaEvent[] = [
     ...window,
     { kind: 'wall', now: first + SECOND },
@@ -301,7 +299,115 @@ test('a non-monotonic header sequence never raises the estimate within a window 
     { kind: 'response', remaining: '999', reset: second },
   ];
   expect(estimateAfter(afterReset)).toBe(999);
-  // A later reset raises the estimate even before the current window's reset passes.
+  // A later reset adds a counter; it never raises the estimate before the first counter clears.
   const later = { kind: 'response', remaining: '990', reset: first + 10 * MINUTE } as const;
-  expect(estimateAfter([...window, later])).toBe(990);
+  expect(estimateAfter([...window, later])).toBe(95);
+});
+
+// Two `core` counters on one token, as the #447 trace found: one for some reads, the other, with
+// a reset about 770 s later, for the rest.
+const EARLY = WALL + 20 * MINUTE;
+const LATE = EARLY + 770 * SECOND;
+const at = (remaining: number, reset: number) =>
+  ({ kind: 'response', remaining: String(remaining), reset }) as const;
+const start = { kind: 'start' } as const;
+
+test.each([
+  ['the earlier-reset counter lower, arriving first', EARLY, LATE, true],
+  ['the earlier-reset counter lower, arriving second', EARLY, LATE, false],
+  ['the later-reset counter lower, arriving first', LATE, EARLY, true],
+  ['the later-reset counter lower, arriving second', LATE, EARLY, false],
+] as const)(
+  'two interleaved counters never give an estimate above the lower one: %s',
+  (_, lowReset, highReset, lowFirst) => {
+    // Each counter falls on its own; their readings interleave, and requests start between them.
+    const low = [60, 58, 55, 51].map((remaining) => at(remaining, lowReset));
+    const high = [4000, 3998, 3995, 3991].map((remaining) => at(remaining, highReset));
+    const events: QuotaEvent[] = [];
+    for (let i = 0; i < low.length; i++)
+      events.push(...(lowFirst ? [low[i]!, high[i]!] : [high[i]!, low[i]!]), start);
+    for (let step = 1; step <= events.length; step++) {
+      const prefix = events.slice(0, step);
+      const lastLow = prefix.findLastIndex(
+        (event) => event.kind === 'response' && event.reset === lowReset,
+      );
+      if (lastLow < 0) continue;
+      // The lower counter's estimate: its last reading less the requests started since.
+      const reading = prefix[lastLow] as ReturnType<typeof at>;
+      const startedSince = prefix.slice(lastLow).filter((event) => event.kind === 'start').length;
+      expect(estimateAfter(prefix), `step ${step}`).toBeLessThanOrEqual(
+        Number(reading.remaining) - startedSince,
+      );
+    }
+    expect(estimateAfter(events)).toBe(50);
+  },
+);
+
+test('a new counter with a higher remaining leaves the estimate unchanged', () => {
+  const first: QuotaEvent[] = [at(40, EARLY), start, start];
+  expect(estimateAfter(first)).toBe(38);
+  expect(estimateAfter([...first, at(4000, LATE)])).toBe(38);
+  expect(estimateAfter([...first, at(4000, EARLY - MINUTE)])).toBe(38);
+});
+
+test('when the lower counter clears, the estimate is the other counter less requests started since its reading', () => {
+  const events: QuotaEvent[] = [
+    // The higher counter, with the later reset, reads first; the lower one is the newest.
+    at(50, LATE),
+    at(20, EARLY),
+    start,
+    start,
+    start,
+    // Accepted for the lower counter only: its count restarts, the other's does not.
+    at(16, EARLY),
+    start,
+  ];
+  // Every started request is charged to both counters: 16 - 1 and 50 - 4.
+  expect(estimateAfter(events)).toBe(15);
+  expect(estimateAfter([...events, { kind: 'wall', now: EARLY - SECOND }])).toBe(15);
+  const cleared: QuotaEvent[] = [...events, { kind: 'wall', now: EARLY }];
+  expect(estimateAfter(cleared)).toBe(46);
+  // Only the lower counter cleared: the other still bounds the run until its own reset, after
+  // which no counter is live and the guard admits every request.
+  expect(estimateAfter([...cleared, { kind: 'wall', now: LATE }])).toBe(5000 + 5);
+});
+
+test('a late reading from a counter that has already reset lowers the estimate until its reset passes', () => {
+  // The runner clock runs behind GitHub's: GitHub has already reset the counter that named EARLY,
+  // and its next counter reports LATE, but a late response naming EARLY still looks future here.
+  const events: QuotaEvent[] = [at(4000, LATE), start, at(12, EARLY)];
+  expect(estimateAfter(events)).toBe(12);
+  expect(estimateAfter([...events, { kind: 'wall', now: EARLY }])).toBe(3999);
+});
+
+test('a reset one second apart on one counter refuses until the later of the two', () => {
+  const wall = { now: WALL };
+  const guard = guardAt(wall);
+  guard.observe(API, rateLimited('5', EARLY));
+  guard.observe(API, rateLimited('5', EARLY + SECOND));
+  expect(guard.admit(API)).toMatchObject({ allowed: false, retryAt: EARLY + SECOND });
+  wall.now = EARLY;
+  expect(guard.admit(API)).toMatchObject({ allowed: false, retryAt: EARLY + SECOND });
+  wall.now = EARLY + SECOND;
+  expect(guard.admit(API).allowed).toBe(true);
+});
+
+test('the retry time is the latest reset among the counters that would refuse', () => {
+  const wall = { now: WALL };
+  const guard = guardAt(wall);
+  // Both refuse; the lower estimate has the earlier reset, so it does not set the time.
+  guard.observe(API, rateLimited('5', LATE));
+  guard.observe(API, rateLimited('3', EARLY));
+  const refused = guard.admit(API);
+  expect(refused).toMatchObject({ allowed: false, retryAt: LATE });
+  if (refused.allowed) throw new Error('expected a refusal');
+  expect(guard.retryAt(refused.response)).toBe(LATE);
+
+  // A counter that would admit the request does not set it, though its reset is later.
+  const mixed = guardAt(wall);
+  mixed.observe(API, rateLimited('4000', LATE));
+  mixed.observe(API, rateLimited('5', EARLY));
+  expect(mixed.admit(API)).toMatchObject({ allowed: false, retryAt: EARLY });
+  wall.now = EARLY;
+  expect(mixed.admit(API).allowed).toBe(true);
 });

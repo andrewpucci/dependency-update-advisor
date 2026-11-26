@@ -12761,7 +12761,11 @@ function quotaReading(url, response, options) {
 	};
 }
 function createGithubQuotaGuard(options) {
-	let window = null;
+	/**
+	* One token can draw on more than one `core` counter at once, each with its own reset (#447), so
+	* the guard keeps one estimate per reset and never lets one counter's reading stand for another.
+	*/
+	const counters = /* @__PURE__ */ new Map();
 	let refused = 0;
 	/** The guard's own refusals and their retry times; no other response can stand in for one. */
 	const ownRefusals = /* @__PURE__ */ new WeakMap();
@@ -12770,46 +12774,44 @@ function createGithubQuotaGuard(options) {
 		const now = options.wallNow();
 		return time >= now && time <= now + options.windowMs;
 	};
-	const current = () => {
-		if (window && options.wallNow() >= window.reset) window = null;
-		return window;
+	/** The live counters: each is cleared, on its own, once the wall clock reaches its reset. */
+	const live = () => {
+		const now = options.wallNow();
+		for (const reset of counters.keys()) if (now >= reset) counters.delete(reset);
+		return counters;
 	};
 	return {
 		admit(url) {
 			if (!isGithubApi(url)) return { allowed: true };
-			const estimate = current();
-			if (!estimate) return { allowed: true };
-			if (estimate.remaining - estimate.started - 1 < options.reserve) {
-				refused += 1;
-				const response = new Response(null, { status: HTTP_STATUS.tooManyRequests });
-				ownRefusals.set(response, estimate.reset);
-				return {
-					allowed: false,
-					retryAt: estimate.reset,
-					response
-				};
+			let retryAt = null;
+			for (const [reset, counter] of live()) {
+				if (counter.remaining - counter.started - 1 >= options.reserve) continue;
+				if (retryAt === null || reset > retryAt) retryAt = reset;
 			}
-			return { allowed: true };
+			if (retryAt === null) return { allowed: true };
+			refused += 1;
+			const response = new Response(null, { status: HTTP_STATUS.tooManyRequests });
+			ownRefusals.set(response, retryAt);
+			return {
+				allowed: false,
+				retryAt,
+				response
+			};
 		},
 		started(url) {
 			if (!isGithubApi(url)) return;
-			const estimate = current();
-			if (estimate) estimate.started += 1;
+			for (const counter of live().values()) counter.started += 1;
 		},
 		observe(url, response) {
 			const reading = quotaReading(url, response, options);
 			if (!reading) return;
 			const { remaining, reset } = reading;
-			const estimate = current();
-			if (estimate && reset < estimate.reset) return;
-			if (estimate && reset === estimate.reset) {
-				if (remaining > estimate.remaining - estimate.started) return;
-			}
-			window = {
-				reset,
+			const counter = live().get(reset);
+			if (counter && remaining > counter.remaining - counter.started) return;
+			counters.set(reset, {
 				remaining,
 				started: 0
-			};
+			});
 		},
 		refusals: () => refused,
 		retryAt(response) {

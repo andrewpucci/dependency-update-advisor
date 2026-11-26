@@ -27,9 +27,9 @@ export type GithubQuotaGuard = Readonly<{
   /** How many requests the guard has refused this run. */
   refusals(): number;
   /**
-   * When a rate-limited GitHub response can be retried: the guard's own refusal time, else its
-   * `retry-after`, else its reset when the quota is spent. Null when the time is unknown or outside
-   * the window.
+   * When a rate-limited GitHub response can be retried: for the guard's own refusal, the latest
+   * reset among the counters that refused it; else the response's `retry-after`, else its reset
+   * when the quota is spent. Null when the time is unknown or outside the window.
    */
   retryAt(response: Response): number | null;
   /** Wall milliseconds from now until `retryAt`. */
@@ -91,8 +91,18 @@ export function quotaReading(
   return { remaining, reset };
 }
 
+/**
+ * One GitHub quota counter's estimate (Q1.2): its last accepted remaining and the research requests
+ * started since that reading.
+ */
+type Counter = { remaining: number; started: number };
+
 export function createGithubQuotaGuard(options: GithubQuotaOptions): GithubQuotaGuard {
-  let window: { reset: number; remaining: number; started: number } | null = null;
+  /**
+   * One token can draw on more than one `core` counter at once, each with its own reset (#447), so
+   * the guard keeps one estimate per reset and never lets one counter's reading stand for another.
+   */
+  const counters = new Map<number, Counter>();
   let refused = 0;
   /** The guard's own refusals and their retry times; no other response can stand in for one. */
   const ownRefusals = new WeakMap<Response, number | null>();
@@ -101,40 +111,46 @@ export function createGithubQuotaGuard(options: GithubQuotaOptions): GithubQuota
     const now = options.wallNow();
     return time >= now && time <= now + options.windowMs;
   };
-  const current = () => {
-    if (window && options.wallNow() >= window.reset) window = null;
-    return window;
+  /** The live counters: each is cleared, on its own, once the wall clock reaches its reset. */
+  const live = () => {
+    const now = options.wallNow();
+    for (const reset of counters.keys()) if (now >= reset) counters.delete(reset);
+    return counters;
   };
   return {
     admit(url) {
       if (!isGithubApi(url)) return { allowed: true };
-      const estimate = current();
-      if (!estimate) return { allowed: true };
-      if (estimate.remaining - estimate.started - 1 < options.reserve) {
-        refused += 1;
-        const response = new Response(null, { status: HTTP_STATUS.tooManyRequests });
-        ownRefusals.set(response, estimate.reset);
-        return { allowed: false, retryAt: estimate.reset, response };
+      // The request may draw on any live counter, so each one that would fall below the reserve
+      // refuses it, and the retry time is the latest of their resets (Q2): only once they have
+      // all cleared can the request be admitted.
+      let retryAt: number | null = null;
+      for (const [reset, counter] of live()) {
+        if (counter.remaining - counter.started - 1 >= options.reserve) continue;
+        if (retryAt === null || reset > retryAt) retryAt = reset;
       }
-      return { allowed: true };
+      if (retryAt === null) return { allowed: true };
+      refused += 1;
+      const response = new Response(null, { status: HTTP_STATUS.tooManyRequests });
+      ownRefusals.set(response, retryAt);
+      return { allowed: false, retryAt, response };
     },
     started(url) {
       if (!isGithubApi(url)) return;
-      const estimate = current();
-      if (estimate) estimate.started += 1;
+      // No response says in advance which counter it draws on, so every live counter is charged,
+      // and no later response refunds one (Q1.3).
+      for (const counter of live().values()) counter.started += 1;
     },
     observe(url, response) {
       const reading = quotaReading(url, response, options);
       if (!reading) return;
       const { remaining, reset } = reading;
-      const estimate = current();
-      if (estimate && reset < estimate.reset) return;
-      // Within one window the estimate never rises: a higher remaining is a response served
-      // earlier, or counted by another GitHub node, arriving late. Only a later reset raises it.
-      if (estimate && reset === estimate.reset) {
-        if (remaining > estimate.remaining - estimate.started) return;
-      }
-      window = { reset, remaining, started: 0 };
+      const counter = live().get(reset);
+      // A counter's estimate never rises: a higher remaining for its reset is a response served
+      // earlier, or counted by another GitHub node, arriving late. A new counter starts at its
+      // own reading, which cannot raise the guard's estimate, the lowest of them; only a counter
+      // clearing can.
+      if (counter && remaining > counter.remaining - counter.started) return;
+      counters.set(reset, { remaining, started: 0 });
     },
     refusals: () => refused,
     retryAt(response) {
