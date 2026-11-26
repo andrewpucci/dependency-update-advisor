@@ -308,11 +308,11 @@ const FIT_NOTE =
 const FIT_BASE_STATISTIC =
   '1.25 × the highest measured demand among the one-to-three-member PRs (#123 and #172), rounded up';
 const FIT_RATE_STATISTIC =
-  'the smallest rate giving every uncensored PR 1.25 × its measured demand, rounded up to the next 0.1; direct and transitive take the same rate';
+  'the smallest rate giving every uncensored PR 1.25 × its measured demand, rounded up to the next 0.1; the fit gives direct and transitive the same rate unless a direct cost replaces it';
 const FIT_ZERO_STATISTIC = {
   role: 'the fit sets this rate to 0: every member is direct or transitive, so those rates carry the scaling and added and removed add nothing',
   signals:
-    'the fit sets this rate to 0: a signals reader scales with its own eligible members only',
+    'the fit sets this rate to 0: a signals reader scales with its own eligible members, and malware also with its direct members',
 } as const;
 
 type FittedShare = Readonly<{ base: number; rates: Readonly<Partial<Record<ShareUnit, number>>> }>;
@@ -323,19 +323,51 @@ type FittedShare = Readonly<{ base: number; rates: Readonly<Partial<Record<Share
  */
 const FITTED_REQUESTS: Readonly<Partial<Record<ScaledShare, FittedShare>>> = {
   upstream: { base: 9, rates: { direct: 5.9, transitive: 5.9 } },
-  advisory: { base: 3, rates: { direct: 0.2, transitive: 0.2 } },
-  'signals.malware': { base: 2, rates: { eligible: 0.1 } },
+  advisory: { base: 3, rates: { direct: 3, transitive: 0.2 } },
+  'signals.malware': { base: 2, rates: { direct: 2, eligible: 0.1 } },
   'signals.publishTimes': { base: 2, rates: { eligible: 1.2 } },
+};
+
+type MeasuredBasis = Readonly<{
+  command: string;
+  corpus: string;
+  statistic: string;
+  headroom: string;
+  measured: string;
+}>;
+
+/**
+ * Direct-member rates sized from the unbatched per-target request cost rather than fitted from the
+ * corpus, approved by the user on 2026-11-26 with the fit (#370). Actions and pip members are
+ * direct, and their lookups are not settled by an npm batch.
+ */
+const DIRECT_COST: Readonly<Partial<Record<ScaledShare, Omit<MeasuredBasis, 'measured'>>>> = {
+  advisory: {
+    command: 'npx vp test run src/research.test.ts -t "researches a group of 32"',
+    corpus:
+      "the per-target reviewed lookup in src/evidence/advisory-read.ts (`query`, then `discover` and `versioned`), whose discovery reads base and head share; S1's Group capacity statement",
+    statistic:
+      'an Actions reviewed lookup takes 3 requests per update: one stored-name discovery, then a versioned query for each of base and head',
+    headroom: 'none beyond the per-update cost; transitive npm members keep the fitted rate',
+  },
+  'signals.malware': {
+    command: 'npx vp test run src/evidence/policy-signals-malware.test.ts -t "batch-cleared"',
+    corpus:
+      'the per-target malware lookup in src/evidence/advisory-read.ts (`query`, then `discover` and `versioned`), which reads the proposed side only; Actions malware is never batched',
+    statistic:
+      'an Actions or pip malware lookup takes 2 requests: one stored-name discovery, then the versioned query',
+    headroom: 'none beyond the per-member cost; the eligible rate still adds to it',
+  },
 };
 
 type FittedAudit = Readonly<{ protects: string; effect: string; test: string }>;
 
-/** A value fitted to the B12 demand corpus; `statistic` says how this one was chosen. */
+/** A value fitted to the B12 demand corpus, or sized with it; `basis` says how this one was. */
 function fitted<const Id extends string>(
   id: Id,
   value: number,
   unit: LimitUnit,
-  statistic: string,
+  basis: string | MeasuredBasis,
   audit: FittedAudit,
 ) {
   return {
@@ -344,13 +376,18 @@ function fitted<const Id extends string>(
     unit,
     protects: audit.protects,
     effect: audit.effect,
-    basis: { kind: 'measured', ...B12_FIT, statistic },
+    basis:
+      typeof basis === 'string'
+        ? ({ kind: 'measured', ...B12_FIT, statistic: basis } as const)
+        : ({ kind: 'measured', ...basis } as const),
     test: audit.test,
   } as const;
 }
 
-/** Why a fitted share's rate has its value: the measured rate, or why the fit sets it to 0. */
-function rateStatistic(share: ScaledShare, rate: number): string {
+/** Why a fitted share's rate has its value: the measured rate, its direct cost, or why it is 0. */
+function rateBasis(share: ScaledShare, unit: ShareUnit, rate: number): string | MeasuredBasis {
+  const direct = unit === 'direct' ? DIRECT_COST[share] : undefined;
+  if (direct) return { ...direct, measured: B12_FIT.measured };
   if (rate > 0) return FIT_RATE_STATISTIC;
   return share.startsWith('signals.') ? FIT_ZERO_STATISTIC.signals : FIT_ZERO_STATISTIC.role;
 }
@@ -396,7 +433,7 @@ function scaledShareEntries<const S extends ScaledShare, const D extends ShareDi
       test: rate > 0 ? SHARE_FIT_TEST : SHARE_FORMULA_TEST,
     };
     return fit
-      ? fitted(id, rate, unit, rateStatistic(share, rate), audit)
+      ? fitted(id, rate, unit, rateBasis(share, rateUnit, rate), audit)
       : unjustified(id, 0, unit, { ...audit, note: FIT_NOTE });
   });
   return [base, ...rates];

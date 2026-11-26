@@ -14,9 +14,9 @@ const shareAtCeiling = (share: ShareParameters): ShareParameters => ({
 });
 
 /**
- * Every research share at its ceiling, as before the B12 fit. For runs whose fixtures the fit
- * does not size: an unbatched advisory baseline, and the mixed-ecosystem fixtures, whose Actions
- * and pip lookups take more requests per member than the fitted rates allow.
+ * Every research share at its ceiling, as before the B12 fit. For runs the fit does not size,
+ * such as an unbatched advisory baseline over a large npm group, whose per-target lookups take
+ * more requests per transitive member than the fitted rate allows.
  */
 export const CEILING_SHARES: ResearchShareParameters = {
   upstream: shareAtCeiling(RESEARCH_SHARE_PARAMETERS.upstream),

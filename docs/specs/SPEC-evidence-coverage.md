@@ -854,7 +854,9 @@ amendment.
    PR, rounded up to the next 0.1. `direct` and `transitive` take the same
    rate, since every member is one or the other; `added` and `removed`
    take 0. Signals readers scale on their own `eligible` members instead,
-   and their role rates are 0.
+   and their role rates are 0. F2's direct-member rates for advisory and
+   malware are the exceptions; they are sized from request costs, not
+   fitted.
 5. **Ceilings.** The allocation entries stay the ceilings, unchanged except
    for the collection registry share (F3).
 
@@ -865,12 +867,12 @@ equal to the ceiling and `unjustified` zero rates). Each base and rate,
 including a fitted share's zero rates, is a `measured` register entry
 citing this corpus:
 
-| Share                 | Base                                                      | Rate per member                                                                                                                      | Ceiling                                                              |
-| --------------------- | --------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------ | -------------------------------------------------------------------- |
-| Upstream              | `limit:research.share.upstream.requests.base`             | `limit:research.share.upstream.requests.rate.direct` (direct), `limit:research.share.upstream.requests.rate.transitive` (transitive) | `limit:evidence.allocation.upstream.maxRequests`                     |
-| Advisory              | `limit:research.share.advisory.requests.base`             | `limit:research.share.advisory.requests.rate.direct` (direct), `limit:research.share.advisory.requests.rate.transitive` (transitive) | `limit:evidence.allocation.advisory.maxRequests`                     |
-| Signals: malware      | `limit:research.share.signals.malware.requests.base`      | `limit:research.share.signals.malware.requests.rate.eligible` (every member)                                                         | `limit:evidence.allocation.signals.readers.malware.maxRequests`      |
-| Signals: publish time | `limit:research.share.signals.publishTimes.requests.base` | `limit:research.share.signals.publishTimes.requests.rate.eligible` (npm members)                                                     | `limit:evidence.allocation.signals.readers.publishTimes.maxRequests` |
+| Share                 | Base                                                      | Rate per member                                                                                                                                    | Ceiling                                                              |
+| --------------------- | --------------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------- | -------------------------------------------------------------------- |
+| Upstream              | `limit:research.share.upstream.requests.base`             | `limit:research.share.upstream.requests.rate.direct` (direct), `limit:research.share.upstream.requests.rate.transitive` (transitive)               | `limit:evidence.allocation.upstream.maxRequests`                     |
+| Advisory              | `limit:research.share.advisory.requests.base`             | `limit:research.share.advisory.requests.rate.direct` (direct), `limit:research.share.advisory.requests.rate.transitive` (transitive)               | `limit:evidence.allocation.advisory.maxRequests`                     |
+| Signals: malware      | `limit:research.share.signals.malware.requests.base`      | `limit:research.share.signals.malware.requests.rate.eligible` (every member), `limit:research.share.signals.malware.requests.rate.direct` (direct) | `limit:evidence.allocation.signals.readers.malware.maxRequests`      |
+| Signals: publish time | `limit:research.share.signals.publishTimes.requests.base` | `limit:research.share.signals.publishTimes.requests.rate.eligible` (npm members)                                                                   | `limit:evidence.allocation.signals.readers.publishTimes.maxRequests` |
 
 - The npm registry policy, PyPI metadata, and Actions upstream signals
   readers made no requests in the corpus. Their request shares, and every
@@ -878,7 +880,21 @@ citing this corpus:
   The byte limit that binds is the packet limit
   ([#457](https://github.com/andrewpucci/dependency-update-advisor/issues/457)),
   which these shares do not control.
-- With these values a one-member change gets a share of 3 to 15 requests
+- **Direct-member rates.** The user approved
+  `limit:research.share.advisory.requests.rate.direct` and
+  `limit:research.share.signals.malware.requests.rate.direct` on 2026-11-26,
+  in the same #370 thread as the fit. They are not fitted from the corpus.
+  They are each `measured` entries sized from the unbatched per-target
+  request cost of an Actions or pip member, which is
+  direct and is not settled by an npm batch. An Actions reviewed lookup is
+  one stored-name discovery that base and head share, then a versioned query
+  per side: three requests per update (S1's group capacity statement). A
+  malware lookup reads the proposed side only: one discovery, then the
+  versioned query, two requests. Both paths are the per-target `query`,
+  `discover`, and `versioned` steps of the advisory reader. Transitive
+  members keep the fitted advisory rate, and malware keeps its fitted
+  `eligible` rate on top.
+- With these values a one-member change gets a share of 4 to 15 requests
   for each fitted reader, so a runaway reader stops sooner. R1's PR #276
   (105 npm members, 2 direct) gets the upstream and publish-time ceilings.
 - `limit:research.githubQuota.researchCeiling` stays the sum of the
@@ -924,6 +940,10 @@ shares would cut off.
 - With the register's values, a one-member npm change gets a smaller
   request share than #276 in every fitted reader, the signals stage, and the
   collection registry share. The test pins both sides of each.
+- The default four-member research fixture (an npm, an Actions, and a uv
+  direct member, plus one transitive npm member) completes advisory and
+  malware coverage under the register's values, and its computed shares
+  are pinned.
 - Every unfitted share and every byte share equals its ceiling for no
   members, one member, R1, and #276.
 - The collection registry share grows with npm members, reaches its ceiling

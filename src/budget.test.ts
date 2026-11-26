@@ -184,14 +184,14 @@ test('the fitted values give a one-member change a smaller share than R1 #276', 
   const { upstream, signals } = EVIDENCE_READ_ALLOCATION;
   const small = researchShares(ONE_UNITS);
   const large = researchShares(R276_UNITS);
-  // One member: 9 + 5.9 = 14.9, 3 + 0.2 = 3.2, 2 + 0.1 = 2.1, and 2 + 1.2 = 3.2, rounded up.
-  expect(fittedRequests(small)).toEqual({ upstream: 15, advisory: 4, malware: 3, publishTimes: 4 });
-  // 105 members: 9 + 5.9 × 105 and 2 + 1.2 × 105 pass their ceilings; 3 + 0.2 × 105 = 24 and
-  // 2 + 0.1 × 105 = 12.5 stay under theirs.
+  // One direct member: 9 + 5.9 = 14.9, 3 + 3 = 6, 2 + 2 + 0.1 = 4.1, and 2 + 1.2 = 3.2, rounded up.
+  expect(fittedRequests(small)).toEqual({ upstream: 15, advisory: 6, malware: 5, publishTimes: 4 });
+  // 105 members, 2 direct: 9 + 5.9 × 105 and 2 + 1.2 × 105 pass their ceilings;
+  // 3 + 3 × 2 + 0.2 × 103 = 29.6 and 2 + 2 × 2 + 0.1 × 105 = 16.5 stay under theirs.
   expect(fittedRequests(large)).toEqual({
     upstream: upstream.maxRequests,
-    advisory: 24,
-    malware: 13,
+    advisory: 30,
+    malware: 17,
     publishTimes: signals.readers.publishTimes.maxRequests,
   });
   const largeRequests = fittedRequests(large);

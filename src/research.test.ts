@@ -454,7 +454,16 @@ test('caps every reader at its share, so the readers together stay inside the en
     expect(share.maxRequests, name).toBeLessThanOrEqual(ceiling.maxRequests);
     expect(share.maxTotalBytes, name).toBe(ceiling.maxTotalBytes);
   }
-  // The fitted shares give this four-member packet less than the upstream ceiling.
+  // Three direct members (npm, Action, uv) and one transitive npm member: upstream
+  // 9 + 5.9 × 4 = 32.6, advisory 3 + 3 × 3 + 0.2 = 12.2, malware 2 + 2 × 3 + 0.1 × 4 = 8.4, and
+  // publish times 2 + 1.2 × 2 = 4.4, each rounded up and under its ceiling.
+  expect(researchShareUnits(packet.changes)).toMatchObject({ direct: 3, transitive: 1 });
+  expect([
+    shares.upstream.maxRequests,
+    shares.advisory.maxRequests,
+    computed.malware.maxRequests,
+    computed.publishTimes.maxRequests,
+  ]).toEqual([33, 13, 9, 5]);
   expect(shares.upstream.maxRequests).toBeLessThan(EVIDENCE_READ_ALLOCATION.upstream.maxRequests);
   const used = expected.reduce((sum, [, actual]) => sum + actual.maxRequests, 0);
   const ceilings = expected.reduce((sum, [, , , ceiling]) => sum + ceiling.maxRequests, 0);
@@ -680,11 +689,11 @@ test('a run with no GitHub rate-limit stop has no retry time, even when OSV is r
   const { fixture, packet } = await scenario();
   const plain = await runResearch(base(fixture, packet));
   if (plain.kind !== 'ready') throw new Error(plain.kind);
+  // The direct-member rates cover the fixture's Actions and pip lookups under the fitted shares.
+  expect(JSON.stringify(plain.packet)).not.toContain('budget');
   expect(plain.packet.retryAfter).toBeNull();
-  // At the ceilings, so the Action's and pip lookups reach OSV instead of stopping on budget.
   const osvLimited = await runResearch({
     ...base(fixture, packet),
-    shareParameters: CEILING_SHARES,
     fetch: async (url: string, init: RequestInit) =>
       new URL(url).host === 'api.osv.dev'
         ? new Response(null, { status: 429, headers: { 'retry-after': '1' } })
@@ -1218,11 +1227,8 @@ async function advisoryRun(batched: boolean) {
   const { fixture, packet } = await scenario({ vulnerableNpm: true, children: 3 } as never);
   if (!batched) await dropAdvisoryPrePass();
   const sent: string[] = [];
-  // Both runs read at the ceilings, so the unbatched baseline is not cut by the fitted shares and
-  // the two packets differ only in the batched source text.
   const result = await runResearch({
     ...base(fixture, packet),
-    shareParameters: CEILING_SHARES,
     fetch: async (url, init) => {
       const target = new URL(url);
       if (target.pathname === '/advisories' && target.searchParams.get('type') === 'reviewed')

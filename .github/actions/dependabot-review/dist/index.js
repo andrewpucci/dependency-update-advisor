@@ -8906,10 +8906,10 @@ const B12_FIT = {
 };
 const FIT_NOTE = "the B12 fit approved 2026-11-26 (#370) keeps this dimension at its ceiling with every rate at 0";
 const FIT_BASE_STATISTIC = "1.25 × the highest measured demand among the one-to-three-member PRs (#123 and #172), rounded up";
-const FIT_RATE_STATISTIC = "the smallest rate giving every uncensored PR 1.25 × its measured demand, rounded up to the next 0.1; direct and transitive take the same rate";
+const FIT_RATE_STATISTIC = "the smallest rate giving every uncensored PR 1.25 × its measured demand, rounded up to the next 0.1; the fit gives direct and transitive the same rate unless a direct cost replaces it";
 const FIT_ZERO_STATISTIC = {
 	role: "the fit sets this rate to 0: every member is direct or transitive, so those rates carry the scaling and added and removed add nothing",
-	signals: "the fit sets this rate to 0: a signals reader scales with its own eligible members only"
+	signals: "the fit sets this rate to 0: a signals reader scales with its own eligible members, and malware also with its direct members"
 };
 /**
 * The B12 fit's request bases and non-zero rates. A fitted share's other rates are 0. Every share
@@ -8926,37 +8926,67 @@ const FITTED_REQUESTS = {
 	advisory: {
 		base: 3,
 		rates: {
-			direct: .2,
+			direct: 3,
 			transitive: .2
 		}
 	},
 	"signals.malware": {
 		base: 2,
-		rates: { eligible: .1 }
+		rates: {
+			direct: 2,
+			eligible: .1
+		}
 	},
 	"signals.publishTimes": {
 		base: 2,
 		rates: { eligible: 1.2 }
 	}
 };
-/** A value fitted to the B12 demand corpus; `statistic` says how this one was chosen. */
-function fitted(id, value, unit, statistic, audit) {
+/**
+* Direct-member rates sized from the unbatched per-target request cost rather than fitted from the
+* corpus, approved by the user on 2026-11-26 with the fit (#370). Actions and pip members are
+* direct, and their lookups are not settled by an npm batch.
+*/
+const DIRECT_COST = {
+	advisory: {
+		command: "npx vp test run src/research.test.ts -t \"researches a group of 32\"",
+		corpus: "the per-target reviewed lookup in src/evidence/advisory-read.ts (`query`, then `discover` and `versioned`), whose discovery reads base and head share; S1's Group capacity statement",
+		statistic: "an Actions reviewed lookup takes 3 requests per update: one stored-name discovery, then a versioned query for each of base and head",
+		headroom: "none beyond the per-update cost; transitive npm members keep the fitted rate"
+	},
+	"signals.malware": {
+		command: "npx vp test run src/evidence/policy-signals-malware.test.ts -t \"batch-cleared\"",
+		corpus: "the per-target malware lookup in src/evidence/advisory-read.ts (`query`, then `discover` and `versioned`), which reads the proposed side only; Actions malware is never batched",
+		statistic: "an Actions or pip malware lookup takes 2 requests: one stored-name discovery, then the versioned query",
+		headroom: "none beyond the per-member cost; the eligible rate still adds to it"
+	}
+};
+/** A value fitted to the B12 demand corpus, or sized with it; `basis` says how this one was. */
+function fitted(id, value, unit, basis, audit) {
 	return {
 		id,
 		value,
 		unit,
 		protects: audit.protects,
 		effect: audit.effect,
-		basis: {
+		basis: typeof basis === "string" ? {
 			kind: "measured",
 			...B12_FIT,
-			statistic
+			statistic: basis
+		} : {
+			kind: "measured",
+			...basis
 		},
 		test: audit.test
 	};
 }
-/** Why a fitted share's rate has its value: the measured rate, or why the fit sets it to 0. */
-function rateStatistic(share, rate) {
+/** Why a fitted share's rate has its value: the measured rate, its direct cost, or why it is 0. */
+function rateBasis(share, unit, rate) {
+	const direct = unit === "direct" ? DIRECT_COST[share] : void 0;
+	if (direct) return {
+		...direct,
+		measured: B12_FIT.measured
+	};
 	if (rate > 0) return FIT_RATE_STATISTIC;
 	return share.startsWith("signals.") ? FIT_ZERO_STATISTIC.signals : FIT_ZERO_STATISTIC.role;
 }
@@ -8980,7 +9010,7 @@ function scaledShareEntries(share, dimension) {
 			effect: "Adds rate times the count to the share, rounded up and capped at the ceiling; zero leaves the share at its base.",
 			test: rate > 0 ? SHARE_FIT_TEST : SHARE_FORMULA_TEST
 		};
-		return fit ? fitted(id, rate, unit, rateStatistic(share, rate), audit) : unjustified(id, 0, unit, {
+		return fit ? fitted(id, rate, unit, rateBasis(share, rateUnit, rate), audit) : unjustified(id, 0, unit, {
 			...audit,
 			note: FIT_NOTE
 		});
