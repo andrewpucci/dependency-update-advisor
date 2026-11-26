@@ -163,17 +163,8 @@ test('feeds upstream proofs to advisory lookup and signals, and returns a revali
     .map((url) => decodeURIComponent(new URL(url).search));
   // The npm target needs a public-identity proof and the Actions target an Actions mapping.
   expect(reviewed.some((query) => query.includes('ecosystem=npm&affects=orbit@2.0.0'))).toBe(true);
-  // A discovery batch clears the Actions target, which cites its unfetched versioned query.
-  expect(reviewed.some((query) => query.includes('affects=fixture/action@2.0.0'))).toBe(false);
   expect(
-    result.packet.sources.some(
-      (s) =>
-        s.provenance.kind === 'upstream' &&
-        decodeURIComponent(s.provenance.url).includes(
-          'ecosystem=actions&affects=fixture/action@2.0.0',
-        ) &&
-        s.provenance.excerpt.includes('batched'),
-    ),
+    reviewed.some((query) => query.includes('ecosystem=actions&affects=fixture/action@2.0.0')),
   ).toBe(true);
   const malware = fixture.requests
     .filter((url) => url.includes('/advisories') && url.includes('type=malware'))
@@ -753,13 +744,18 @@ test.each([true, false])(
     expect(result.kind).toBe('ready');
     if (result.kind !== 'ready') return;
     expect(result.unavailable).toEqual([]);
-    // Every package was looked up, and none was cut short by a share running out.
+    // Every package was looked up, and none was cut short by a share running out. Malware is
+    // settled in batches: one npm batch for all 30 npm packages, one pip discovery batch and the
+    // hit's versioned query, and the Action's own discovery and versioned query.
     const { readers } = EVIDENCE_READ_ALLOCATION.signals;
-    expect(counts.malware).toBeGreaterThan(25);
+    expect(counts.malware).toBe(5);
+    expect(
+      result.packet.changes.every((c) => 'basis' in c || c.evidence.malware.status === 'available'),
+    ).toBe(true);
     expect(counts.malware).toBeLessThanOrEqual(readers.malware.maxRequests);
-    // Batches check both sides of the 31 GitHub-backed packages in a few requests: one npm batch
-    // per side and the Action's discovery batch. Read alone, they still fit the stage's share.
-    if (batched) expect(counts.advisory).toBe(3);
+    // Reviewed advisories take one npm batch per side, and the Action's discovery batch, whose
+    // hit sends both versioned queries. Read alone, they still fit the stage's share.
+    if (batched) expect(counts.advisory).toBe(5);
     else expect(counts.advisory).toBeGreaterThan(50);
     expect(counts.advisory).toBeLessThanOrEqual(EVIDENCE_READ_ALLOCATION.advisory.maxRequests);
     for (const change of result.packet.changes)
@@ -857,20 +853,22 @@ test('the advisory pre-pass changes only cleared source text and sends fewer req
   const settled = batched.packet.sources.filter(
     (s) => s.provenance.kind === 'upstream' && s.provenance.excerpt === BATCHED_EXCERPT,
   );
-  // Every GitHub-backed lookup of both sides was settled, the vulnerable npm head among them.
-  const github = batched.packet.sources.filter(
+  // Every npm lookup of both sides was settled, the vulnerable head among them. The fixture
+  // stores the Action under its own name, so its discovery batch is a hit and it sends its
+  // versioned query as before.
+  const npm = batched.packet.sources.filter(
     (s) =>
       s.kind === 'advisory' &&
+      s.ecosystems.includes('npm') &&
       s.provenance.kind === 'upstream' &&
-      !s.provenance.advisoryId &&
-      new URL(s.provenance.url).origin === 'https://api.github.com',
+      !s.provenance.advisoryId,
   );
-  expect(settled).toEqual(github);
+  expect(settled).toEqual(npm);
   const sides = settled.flatMap((s) =>
     s.provenance.kind === 'upstream' ? s.provenance.subjects.map((subject) => subject.side) : [],
   );
   expect(new Set(sides)).toEqual(new Set(['base', 'head']));
-  expect(new Set(settled.flatMap((s) => s.ecosystems))).toEqual(new Set(['npm', 'actions']));
+  expect(new Set(settled.flatMap((s) => s.ecosystems))).toEqual(new Set(['npm']));
   for (const source of settled) {
     if (source.provenance.kind !== 'upstream') continue;
     // Each cites the exact-version query the unbatched run fetched, which the batched run did not.

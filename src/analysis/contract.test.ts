@@ -309,33 +309,33 @@ test('batch identity and request bytes stay pinned for fixed selections', async 
   const pinned = [
     [
       [a, b, c],
-      'f387279033b190dc580b88bc547ed93a166a05da9592fc74890c6f078f658f17',
-      54_702,
-      'b3eb5576a8e3cddde95e52891e18c457058b49e4201fe83eeaa12729a9749d3f',
+      'b785cff6e974d52516a49dd0d8e9683af12af7e989494f41907cb2ee589cdd3b',
+      54_774,
+      '6448cb424115759b71301f93b81bc1dca8d667b5f3524ede55c5c873ed9bed52',
     ],
     [
       [a],
-      '50b5b83b9326e62b87f6db82ecff8448d7e0a771d8d68c6c894b7081f8a8380f',
-      15_783,
-      '9a088a295b781a9382370eb53971d1c68e850d3d7e28c82f5016ead4d68c4f34',
+      'e44a46639135a635919281bd8fe22c65b5c352b2fdc59258d6c716516174ed72',
+      15_799,
+      '570a5bca169fcfe3d732962a20b2c6ccdeb695007720c0ae037174e29cb5b00c',
     ],
     [
       [b],
-      'bc557353192ae31e4428bced428b121e73222abf9606e00af269a4f717951cd4',
-      34_667,
-      'd935a30c90c27d66d189d89ea848013cc6e9a1b8e006c354f274b1bafd6be065',
+      '0da0072193047499e03832915d4d307534ce2b53d61b717782a3f928306215a5',
+      34_723,
+      '8d9cceb63bf211fb57523f9b6967f8f1fcce03b2ed60ff5ac41af9df82522543',
     ],
     [
       [c],
-      'a3ca04dd8bb4a2433e9fe58d22ef77acab6c8f65bdc3c7336b498a3354807e8e',
+      'a8f8b564ac6390ebb92d817f2f1030bb5f49ee86a45b39e48e801c7e2c902868',
       15_516,
       '703578ac60cb36b4722ff05927cd5df080cacfdf24fef44ae39328f75c63f9fb',
     ],
     [
       [a, c],
-      '3d643e1e30f99f43ee0144b4928dc6391ab34dc0cf1ce639fd92b07974681d0a',
-      25_620,
-      '66154ae716e58f781b2623d6ce78b6fc7bfab263faef34d58ffdafc8beed3c05',
+      '200576ceddc1ba84b25f1397c687141ecc1119e6eee5f07e635f9b192e8eaaf7',
+      25_636,
+      '0c271e16f7909e7e1ba430c2a20cd2a0b7f102519a997b2aea6f9fd3b333927d',
     ],
   ] as const;
   expect(input.unitIds).toHaveLength(3);

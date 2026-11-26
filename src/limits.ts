@@ -2001,6 +2001,21 @@ const DEFINITIONS = [
       "A reporting or parity test past the allowance fails under vitest's timeout behavior, as any timed-out test does.",
     test: 'none: a test-runner allowance for src/reporting.test.ts and tests/parity/large-inventory.test.ts, which no application code reads',
   },
+  {
+    id: 'tests.largeInventoryPacketHeadroomBytes',
+    value: 4_096,
+    unit: 'bytes',
+    protects:
+      "Makes a source-text change that eats the 93-member large-inventory packet's margin under `limit:packet.bytes` fail its own test, before a real review of that size exceeds the cap.",
+    basis: {
+      kind: 'safety',
+      reason:
+        'With the C6 and C7 batched source text, that packet is 1,042,761 of 1,048,576 bytes, 5,815 bytes under the cap; 4 KiB keeps most of that margin as the alarm threshold while allowing a short wording change.',
+    },
+    effect:
+      'The large-inventory parity test fails when that packet comes within this many bytes of the packet cap.',
+    test: 'tests/parity/large-inventory.test.ts > builds 93 members plus two same-named nested copies as standalone npm units',
+  },
   // The demand measurement runs one whole review per test, from scripts/measure-demand.
   unjustified('measureDemand.testTimeoutMs', 900_000, 'milliseconds', {
     protects:

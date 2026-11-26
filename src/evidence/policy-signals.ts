@@ -30,7 +30,11 @@ import {
   type AdvisoryLookup,
   type AdvisoryReader,
 } from './advisory-read.js';
-import { collectMemberMalware, recordMemberMalware } from './policy-signals-malware.js';
+import {
+  collectMemberMalware,
+  recordMemberMalware,
+  settleMalware,
+} from './policy-signals-malware.js';
 import type { NpmPublishTimeReader, NpmTimesResult } from './npm-publish-times.js';
 import type { UpstreamInput } from './upstream.js';
 import { metadataTarget } from './upstream.js';
@@ -303,8 +307,10 @@ export async function runMemberMalware(
 /**
  * Runs one signals pass over the members, which arrive in research order (coverage §3.5). Once a
  * member crosses a packet limit (`run` returns false), every lower-priority member keeps its
- * `budget` reservation, so the cut is strictly by priority (§1.5) and no read is spent on a
- * result that could not be kept.
+ * `budget` reservation, so the cut is strictly by priority (§1.5) and no member read is spent on
+ * a result that could not be kept. The malware pre-pass is the exception: its batch reads are
+ * charged to the stage's share, and a member below the cut keeps `budget` even when a batch
+ * settled its lookup.
  */
 export async function inPriorityOrder(
   changes: readonly PacketChange[],
@@ -337,6 +343,7 @@ export async function enrichPolicySignals(
     signalBounds(input, output);
     reserveSignals(input, output);
     const cache = new Map();
+    await settleMalware(input, output.changes, dependencies.malwareReader);
     await inPriorityOrder(output.changes, (change) =>
       runMemberMalware(input, output, change, dependencies.malwareReader, cache),
     );

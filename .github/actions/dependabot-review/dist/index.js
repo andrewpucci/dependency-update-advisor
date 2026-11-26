@@ -10033,6 +10033,18 @@ const DEFINITIONS = [
 		effect: "A reporting or parity test past the allowance fails under vitest's timeout behavior, as any timed-out test does.",
 		test: "none: a test-runner allowance for src/reporting.test.ts and tests/parity/large-inventory.test.ts, which no application code reads"
 	},
+	{
+		id: "tests.largeInventoryPacketHeadroomBytes",
+		value: 4096,
+		unit: "bytes",
+		protects: "Makes a source-text change that eats the 93-member large-inventory packet's margin under `limit:packet.bytes` fail its own test, before a real review of that size exceeds the cap.",
+		basis: {
+			kind: "safety",
+			reason: "With the C6 and C7 batched source text, that packet is 1,042,761 of 1,048,576 bytes, 5,815 bytes under the cap; 4 KiB keeps most of that margin as the alarm threshold while allowing a short wording change."
+		},
+		effect: "The large-inventory parity test fails when that packet comes within this many bytes of the packet cap.",
+		test: "tests/parity/large-inventory.test.ts > builds 93 members plus two same-named nested copies as standalone npm units"
+	},
 	unjustified("measureDemand.testTimeoutMs", 9e5, "milliseconds", {
 		protects: "A hung review run inside the demand measurement would otherwise run indefinitely; the timeout ends that test. It equals the 15-minute review job limit.",
 		effect: "A test past the timeout fails under vitest's timeout behavior, which is not read in this repo.",
@@ -16915,7 +16927,7 @@ function malwareProvenance(change, side, lookup, record) {
 		kind: "upstream",
 		url: record?.url ?? lookup.url,
 		title: record?.title ?? "Exact target malware query",
-		excerpt: change.ecosystem === "actions" ? "GitHub malware advisory result for this exact mapped action; this is not a scan of action code." : "GitHub malware advisory result for this exact target.",
+		excerpt: change.ecosystem === "actions" ? "GitHub malware advisory result for this exact mapped action; this is not a scan of action code." : lookup.batched && !record ? "GitHub malware advisory result for this exact target, checked in a batched query." : "GitHub malware advisory result for this exact target.",
 		excerptTruncated: false,
 		subjects: [{
 			memberId: change.id,
@@ -16996,6 +17008,25 @@ function malwareFinding(input, output, change, record, source) {
 		remediation: ["Do not merge this version; select an unaffected version."],
 		validation: ["Re-run the exact malware lookup before reconsidering."]
 	});
+}
+/**
+* The malware pre-pass, run before the per-member loop: the reader settles what complete
+* `type=malware` batches can decide, npm versioned batches and `pip` discovery batches, so `read`
+* returns those lookups without a request. Its requests count against the malware reader's
+* share, not any member's. Actions malware keeps per-target lookups (Approved Batch Values), so
+* its targets are not sent. A reader without `settle`, or one that fails, leaves every target to
+* its own `read`.
+*/
+async function settleMalware(input, changes, reader) {
+	const targets = changes.flatMap((change) => {
+		if ("basis" in change) return [];
+		const target = resolveAdvisoryTarget(input, change, change.to ? "head" : "base");
+		return target && target.ecosystem !== "actions" ? [target] : [];
+	});
+	if (!reader.settle || !targets.length) return;
+	try {
+		await reader.settle(targets);
+	} catch {}
 }
 async function collectMemberMalware(input, output, change, reader, cache) {
 	const side = change.to ? "head" : "base";
@@ -22365,8 +22396,10 @@ async function runMemberMalware(input, output, change, reader, cache) {
 /**
 * Runs one signals pass over the members, which arrive in research order (coverage §3.5). Once a
 * member crosses a packet limit (`run` returns false), every lower-priority member keeps its
-* `budget` reservation, so the cut is strictly by priority (§1.5) and no read is spent on a
-* result that could not be kept.
+* `budget` reservation, so the cut is strictly by priority (§1.5) and no member read is spent on
+* a result that could not be kept. The malware pre-pass is the exception: its batch reads are
+* charged to the stage's share, and a member below the cut keeps `budget` even when a batch
+* settled its lookup.
 */
 async function inPriorityOrder(changes, run) {
 	for (const change of changes) {
@@ -22392,6 +22425,7 @@ async function enrichPolicySignals(value, dependencies) {
 		signalBounds(input, output);
 		reserveSignals(input, output);
 		const cache = /* @__PURE__ */ new Map();
+		await settleMalware(input, output.changes, dependencies.malwareReader);
 		await inPriorityOrder(output.changes, (change) => runMemberMalware(input, output, change, dependencies.malwareReader, cache));
 		const lockfiles = dependencies.artifactSession && cacheLockfileReads(dependencies.artifactSession);
 		await inPriorityOrder(output.changes, (change) => runOptionalSignals(input, output, change, async () => {

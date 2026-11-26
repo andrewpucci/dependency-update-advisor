@@ -321,14 +321,16 @@ resolves to the number of targets it decided, complete or not, so `read` sends
 nothing for them, or null while another read is running. `read` returns a
 settled lookup without a request. A target cleared or attributed from a batch
 carries `batched: true` and cites the unfetched query that would reproduce it.
-A target a batch could not settle is read as before. `enrichAdvisories` calls
-`settle` once before its per-member loop, with the eligible targets of both
-sides, so its requests and bytes count against the advisory stage's share; a
-lookup a batch settled says in its source text that it was checked in a
-batched query. `isSettled(target)` says whether `read` would answer a target
-from `settle` without a request: after the reader stops, a later member whose
-targets were all settled keeps those lookups, and only the rest get the stop
-reason. The signals stage does not call `settle` yet.
+A target a batch could not settle is read as before. Both stages call `settle`
+once before their per-member loops, so its requests and bytes count against
+that stage's share. `enrichAdvisories` passes the eligible targets of both
+sides; the signals stage passes its non-Actions malware targets. A lookup a
+batch settled says in its source text that it was checked in a batched query:
+an advisory lookup source, or a malware query source for a cleared or an
+attributed target. `isSettled(target)` says whether `read` would answer a
+target from `settle` without a request: after the advisory reader stops, a
+later member whose targets were all settled keeps those lookups, and only the
+rest get the stop reason.
 
 `enrichAdvisories(input, { reader })` consumes an `AdvisoryInput`: binding,
 normalized changes/sources/findings, limits, required `publicIdentities`, and
