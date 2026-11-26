@@ -198,7 +198,17 @@ the run finished and every answer it needed was compared; `incomplete` counts
 what was not compared, by kind. `equivalent` is `false` when any disagreement
 was found, `true` only for a complete run with none, and `null` otherwise.
 Targets counted as `skippedUnsupported` are left out of `complete`: the reader
-cannot discover them either, so there is no per-target answer to compare. A
+cannot discover them either, so there is no per-target answer to compare.
+
+URLs are checked against `limit:advisory.discovery.urlBytes`. The npm sweep
+splits each group into batches whose URLs fit it, and records each batch's
+size, URL length, and HTTP status; an npm target too long to fit alone is
+counted as `skippedUnsupported`. The npm batch sizes still halve from the
+`affects` maximum. A size whose URL is over the cap and fails is counted in
+`overUrlCap`, as `npmBatchRejected` for a 414 or `npmBatchFailed` otherwise,
+and does not make the run incomplete: `complete` needs every batch that fits
+the cap compared. A 414 to a batch that fits the cap is counted in
+`incomplete`, as `npmSweepBatchRejected` or `npmBatchRejectedUnderCap`. A
 REST status of both 200 and 404 for one tag is reported as `tagRestConflict`,
 which leaves the run incomplete rather than showing a batch gap. A
 run stopped by the request cap or a request error still writes what it

@@ -824,7 +824,7 @@ const DEFINITIONS = [
   unjustified('advisory.discovery.urlBytes', 4096, 'bytes', {
     protects: 'Discovery URLs stay under the length GitHub accepted (414 at 8,259 bytes).',
     effect:
-      'Spellings split across as many discovery requests as the cap requires; a continuation URL over it is budget.',
+      "Spellings split across as many discovery requests as the cap requires; a continuation URL over it is budget. The batching probe's npm sweep splits batches to fit it, and a probe batch size over it that fails is recorded but does not make the verdict incomplete.",
     note: "approved 2026-11-20 from GitHub probes recorded in S1's Package Name Form Amendment; no repository command reproduces them",
     test: 'src/evidence/advisory-read.name-forms.test.ts > a continuation URL of exactly 4,096 bytes is followed; one byte longer is budget',
   }),
@@ -2381,7 +2381,7 @@ const DEFINITIONS = [
         "none: GitHub's documented `affects` maximum is the size the probe must check (S1 Batched Lookup Amendment, Verification), and the one batch above it records what GitHub does there",
     },
     effect:
-      'Batch sizes halve down from this value to one, and the probe also sends one batch of this many plus one, which the verdict ignores. The sweep splits a larger group into batches of at most this many.',
+      'Batch sizes halve down from this value to one, and the probe also sends one batch of this many plus one, which the verdict ignores. The sweep splits a larger group into batches of at most this many, each with a URL within `limit:advisory.discovery.urlBytes`.',
     test: 'tests/measure-batching/probe.test.ts > npm batches reach the register maximum and one more, and the sweep splits a larger group at the maximum',
   },
   {

@@ -7,6 +7,7 @@ import { runProbe, type ProbeInput, type Target } from '../../scripts/measure-ba
 const MAX_BATCH = limit('probe.batching.maxBatchTargets');
 const MAX_TAGS = limit('probe.batching.maxTagsPerQuery');
 const MAX_REQUESTS = limit('probe.batching.maxRequests');
+const URL_CAP = limit('advisory.discovery.urlBytes');
 
 type Advisory = {
   id: string;
@@ -16,7 +17,14 @@ type Advisory = {
   range?: string;
 };
 
-type Call = { method: string; path: string; affects: string[]; perPage: number; aliases: number };
+type Call = {
+  method: string;
+  path: string;
+  affects: string[];
+  perPage: number;
+  aliases: number;
+  urlLength: number;
+};
 
 type FakeOptions = {
   advisories?: Advisory[];
@@ -32,6 +40,8 @@ type FakeOptions = {
   status?: (call: Call) => number | undefined;
   /** Throw instead of answering. */
   throws?: (call: Call) => boolean;
+  /** Answer 414 to a URL longer than this, as GitHub does to one too long. */
+  maxUrlLength?: number;
 };
 
 const raw = (a: Advisory) => ({
@@ -67,9 +77,12 @@ function fakeGitHub(options: FakeOptions = {}) {
       affects: (url.searchParams.get('affects') ?? '').split(',').filter(Boolean),
       perPage: Number(url.searchParams.get('per_page')),
       aliases: Object.keys(variables).length / 3,
+      urlLength: String(input).length,
     };
     calls.push(call);
     if (options.throws?.(call)) throw new TypeError('fetch failed');
+    if (call.urlLength > (options.maxUrlLength ?? Infinity))
+      return json(414, { message: 'URI Too Long' });
     const status = options.status?.(call);
     if (status) return json(status, { message: 'failed' });
     if (url.pathname === '/graphql') {
@@ -250,15 +263,22 @@ test('a failed batch answer is incomplete, never a coverage gap', async () => {
   const fake = fakeGitHub({
     advisories: [...SEED_ADVISORIES, SEED_ADVISORY],
     malwareSeed: SEED,
-    status: (call) => (call.affects.length >= MAX_BATCH / 2 ? 502 : undefined),
+    status: (call) => (call.affects.length >= MAX_BATCH / 8 ? 502 : undefined),
   });
   const report = await probe(fake);
   const failed = report.npm[0].sizes.filter((s) => !s.complete);
-  expect(failed.map((s) => s.size)).toEqual([MAX_BATCH + 1, MAX_BATCH, MAX_BATCH / 2]);
+  expect(failed.map((s) => [s.size, s.overUrlCap])).toEqual([
+    [MAX_BATCH + 1, true],
+    [MAX_BATCH, true],
+    [500, true],
+    [250, true],
+    [125, false],
+  ]);
   expect(failed.every((s) => s.gaps === null && s.extras === null)).toBe(true);
   expect(report.disagreements).toEqual({});
-  // The batch above the documented maximum is recorded but not counted.
-  expect(report.incomplete).toEqual({ npmBatch: 4 });
+  // Only the batch that fits the URL cap counts; the one above the maximum is not counted at all.
+  expect(report.incomplete).toEqual({ npmBatch: 2 });
+  expect(report.overUrlCap).toEqual({ npmBatchFailed: 6 });
   expect(report).toMatchObject({ verdict: 'incomplete', equivalent: null });
 });
 
@@ -299,8 +319,13 @@ test('npm batches reach the register maximum and one more, and the sweep splits 
     3,
     1,
   ]);
-  // Reviewed: the extra targets plus two seeds need two sweep batches of at most the maximum.
-  expect(report.npm[0].sweep.every((s) => s.batches === 2)).toBe(true);
+  // Reviewed: the extra targets plus two seeds split into sweep batches of at most the maximum,
+  // each within the URL cap, together carrying every target once.
+  for (const sweep of report.npm[0].sweep) {
+    expect(sweep.batches).toBeGreaterThan(1);
+    expect(sweep.results.every((r) => r.targets <= MAX_BATCH && r.urlLength <= URL_CAP)).toBe(true);
+    expect(sweep.results.reduce((sum, r) => sum + r.targets, 0)).toBe(MAX_BATCH + 3);
+  }
   expect(report.npm[1].sweep.every((s) => s.batches === 1)).toBe(true);
   expect(report.verdict).toBe('complete');
 });
@@ -402,22 +427,138 @@ test('failed npm batches and sweep batches, and a positive no batch checked, are
   });
   const report = await probe(fake);
   // Nine sizes per type fail (the one above the maximum is not counted, and size one succeeds);
-  // reviewed's sweep batch of two fails at each page size, so @babel/traverse is never checked.
-  expect(report.incomplete).toEqual({ npmBatch: 18, npmSweepBatch: 7, npmPositiveUnchecked: 1 });
+  // three of them are over the URL cap. Reviewed's sweep batch of two fails at each page size, so
+  // @babel/traverse is never checked.
+  expect(report.incomplete).toEqual({ npmBatch: 12, npmSweepBatch: 7, npmPositiveUnchecked: 1 });
+  expect(report.overUrlCap).toEqual({ npmBatchFailed: 6 });
   expect(report.npm[0].positivesUnchecked).toBe(1);
   expect(report.disagreements).toEqual({});
 });
 
-test('GitHub rejecting the batch at the maximum size is reported as rejected', async () => {
+test('sizes GitHub rejects as too long are reported as rejected and do not block complete', async () => {
   const fake = fakeGitHub({
     advisories: [...SEED_ADVISORIES, SEED_ADVISORY],
     malwareSeed: SEED,
-    status: (call) => (isVersioned(call) && call.affects.length === MAX_BATCH ? 414 : undefined),
+    maxUrlLength: URL_CAP,
   });
   const report = await probe(fake);
-  expect(report.npm[0].sizes[1]).toMatchObject({ size: MAX_BATCH, rejected: true });
-  expect(report.npm[0].sizes.filter((s) => s.rejected)).toHaveLength(1);
-  expect(report.incomplete).toEqual({ npmBatchRejected: 2 });
+  const rejected = report.npm[0].sizes.filter((s) => s.status === 414);
+  expect(rejected.map((s) => s.size)).toEqual([MAX_BATCH + 1, MAX_BATCH, 500, 250]);
+  expect(rejected.every((s) => s.rejected && s.overUrlCap && s.urlLength > URL_CAP)).toBe(true);
+  // The batch above the documented maximum is recorded but not counted.
+  expect(report.overUrlCap).toEqual({ npmBatchRejected: 6 });
+  expect(report).toMatchObject({ verdict: 'complete', equivalent: true, incomplete: {} });
+});
+
+test('a size that fits the URL cap but is rejected still leaves the run incomplete', async () => {
+  const fake = fakeGitHub({
+    advisories: [...SEED_ADVISORIES, SEED_ADVISORY],
+    malwareSeed: SEED,
+    status: (call) =>
+      isVersioned(call) && call.affects.length === MAX_BATCH / 8 ? 414 : undefined,
+  });
+  const report = await probe(fake);
+  expect(report.npm[0].sizes.find((s) => s.size === MAX_BATCH / 8)).toMatchObject({
+    overUrlCap: false,
+    rejected: true,
+  });
+  expect(report.incomplete).toEqual({ npmBatchRejectedUnderCap: 2 });
+  expect(report.verdict).toBe('incomplete');
+});
+
+/** A corpus like L8's reviewed group: many scoped names, a few of them positives. */
+const longCorpus = (count: number, positives: number) => {
+  const targets = Array.from({ length: count }, (_, i) =>
+    npmTarget(`@corpus-scope-${i}/a-longer-package-name-${i}`),
+  );
+  const advisories: Advisory[] = targets.slice(0, positives).map((t, i) => ({
+    id: `GHSA-long-${i}`,
+    type: 'reviewed',
+    packages: [['npm', t.name]],
+  }));
+  return {
+    targets,
+    advisories,
+    positives: new Set(targets.slice(0, positives).map((t) => t.name)),
+  };
+};
+
+/** The distinct sweep batches sent at the smallest page size, which only the sweep uses. */
+const sweepBatches = (calls: readonly Call[]) => [
+  ...new Map(
+    calls.filter((c) => c.perPage === 1 && isVersioned(c)).map((c) => [c.affects.join(','), c]),
+  ).values(),
+];
+
+test('the sweep splits a group by URL length, so every batch fits and every positive is checked', async () => {
+  const corpus = longCorpus(278, 15);
+  const fake = fakeGitHub({
+    advisories: [...SEED_ADVISORIES, SEED_ADVISORY, ...corpus.advisories],
+    malwareSeed: SEED,
+    maxUrlLength: URL_CAP,
+  });
+  const report = await probe(fake, { targets: corpus.targets });
+  const [reviewed] = report.npm;
+  expect(reviewed).toMatchObject({ singletonPositives: 17, positivesUnchecked: 0 });
+  expect(reviewed.sweep).toHaveLength(7);
+  for (const sweep of reviewed.sweep) {
+    expect(sweep.batches).toBeGreaterThan(1);
+    expect(sweep.complete).toBe(true);
+    expect(sweep.results.every((r) => r.status === 200 && r.urlLength <= URL_CAP)).toBe(true);
+  }
+  // Every sweep batch carries a positive, and each batch's positives come last.
+  const isPositive = (entry: string) =>
+    corpus.positives.has(entry.slice(0, entry.lastIndexOf('@'))) ||
+    ['lodash@4.17.20', '@babel/traverse@7.22.0'].includes(entry);
+  const batches = sweepBatches(fake.calls).filter((c) =>
+    c.affects.some((a) => a.startsWith('@corpus')),
+  );
+  expect(batches).toHaveLength(reviewed.sweep[0].batches);
+  for (const { affects } of batches) {
+    const first = affects.findIndex(isPositive);
+    expect(first).toBeGreaterThanOrEqual(0);
+    expect(affects.slice(first).every(isPositive)).toBe(true);
+  }
+  expect(report).toMatchObject({ verdict: 'complete', equivalent: true, incomplete: {} });
+});
+
+test('a sweep batch GitHub rejects as too long is recorded and counted apart from other failures', async () => {
+  const corpus = longCorpus(278, 15);
+  const fake = fakeGitHub({
+    advisories: [...SEED_ADVISORIES, SEED_ADVISORY, ...corpus.advisories],
+    malwareSeed: SEED,
+    // Shorter than the cap: the longest sweep batches are rejected as GitHub would.
+    maxUrlLength: URL_CAP / 2,
+  });
+  const report = await probe(fake, { targets: corpus.targets });
+  const results = report.npm[0].sweep.flatMap((s) => s.results);
+  const tooLong = results.filter((r) => r.urlLength > URL_CAP / 2);
+  expect(tooLong.length).toBeGreaterThan(0);
+  expect(tooLong.every((r) => r.status === 414 && !r.complete)).toBe(true);
+  expect(results.filter((r) => r.status !== 414).every((r) => r.status === 200)).toBe(true);
+  expect(report.incomplete.npmSweepBatchRejected).toBe(tooLong.length);
+  expect(report.incomplete.npmSweepBatch).toBeUndefined();
+  expect(report.verdict).toBe('incomplete');
+});
+
+test('a target whose URL alone is over the cap is skipped as unsupported, not left unchecked', async () => {
+  const name = `long-${'x'.repeat(URL_CAP)}`;
+  const advisory: Advisory = { id: 'GHSA-long', type: 'reviewed', packages: [['npm', name]] };
+  const fake = fakeGitHub({
+    advisories: [...SEED_ADVISORIES, SEED_ADVISORY, advisory],
+    malwareSeed: SEED,
+    // Its singleton is answered, so it is a known positive; every batch carrying it is too long.
+    status: (call) => (call.affects.length > 1 && call.urlLength > URL_CAP ? 414 : undefined),
+  });
+  const report = await probe(fake, { targets: [npmTarget(name)] });
+  expect(report.npm[0]).toMatchObject({
+    singletonPositives: 3,
+    skippedUnsupported: 1,
+    positivesUnchecked: 0,
+  });
+  const swept = sweepBatches(fake.calls).flatMap((c) => c.affects);
+  expect(swept.some((a) => a.startsWith('long-'))).toBe(false);
+  expect(report).toMatchObject({ verdict: 'complete', incomplete: {} });
 });
 
 test('a failed singleton is counted and leaves its package unjudged in both directions', async () => {

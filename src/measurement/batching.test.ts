@@ -329,12 +329,39 @@ test('chooses a version inside a GitHub range, or none', () => {
 
 test('sweep batches hold every target, at most the maximum each, with positives spread and last', () => {
   const rest = ['r0', 'r1', 'r2', 'r3', 'r4'];
-  expect(sweepChunks(rest, ['p0', 'p1', 'p2'], 3)).toEqual([
+  expect(sweepChunks(rest, ['p0', 'p1', 'p2'], 3).chunks).toEqual([
     ['r0', 'r1', 'p0'],
     ['r2', 'r3', 'p1'],
     ['r4', 'p2'],
   ]);
-  expect(sweepChunks([], ['p0', 'p1', 'p2'], 2)).toEqual([['p0', 'p2'], ['p1']]);
-  expect(sweepChunks(rest, ['p0'], 10)).toEqual([[...rest, 'p0']]);
-  expect(sweepChunks([], [], 10)).toEqual([]);
+  expect(sweepChunks([], ['p0', 'p1', 'p2'], 2).chunks).toEqual([['p0', 'p2'], ['p1']]);
+  expect(sweepChunks(rest, ['p0'], 10)).toEqual({ chunks: [[...rest, 'p0']], skipped: [] });
+  expect(sweepChunks([], [], 10)).toEqual({ chunks: [], skipped: [] });
+});
+
+test('sweep batches also fit a length check, with positives still spread and last', () => {
+  // A batch fits when its entries, joined, are at most 8 characters: four two-character entries.
+  const fits = (chunk: readonly string[]) => chunk.join('').length <= 8;
+  const rest = ['r0', 'r1', 'r2', 'r3', 'r4', 'r5', 'r6'];
+  const { chunks, skipped } = sweepChunks(rest, ['p0', 'p1', 'p2'], 10, fits);
+  expect(chunks).toEqual([
+    ['r0', 'r1', 'r2', 'p0'],
+    ['r3', 'r4', 'r5', 'p1'],
+    ['r6', 'p2'],
+  ]);
+  expect(skipped).toEqual([]);
+  // Five positives cannot share one batch; the split adds a batch instead.
+  const tight = sweepChunks(['r0', 'r1', 'r2'], ['p0', 'p1', 'p2', 'p3', 'p4'], 10, fits);
+  expect(tight.chunks).toEqual([
+    ['r0', 'p0', 'p2', 'p4'],
+    ['r1', 'r2', 'p1', 'p3'],
+  ]);
+});
+
+test('a target too long for a batch on its own is skipped, not carried', () => {
+  const fits = (chunk: readonly string[]) => chunk.join('').length <= 4;
+  expect(sweepChunks(['r0', 'long-r'], ['p0', 'long-p'], 10, fits)).toEqual({
+    chunks: [['r0', 'p0']],
+    skipped: ['long-r', 'long-p'],
+  });
 });

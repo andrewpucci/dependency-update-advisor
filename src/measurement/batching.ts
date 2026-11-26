@@ -289,24 +289,54 @@ export function halvingSizes(max: number): number[] {
 }
 
 /**
- * Every target split into as few batches of at most `max` as hold them all, with the positives
- * spread across the batches and placed last in each, so every positive is checked in a batch.
+ * Every target split into as few batches as hold them all, each of at most `max` targets and
+ * accepted by `fits` (such as a URL length cap), with the positives spread across the batches and
+ * placed last in each, so every positive is checked in a batch. A target that `fits` rejects on
+ * its own can be in no batch, so it is returned as `skipped` instead.
  */
 export function sweepChunks(
   rest: readonly string[],
   positives: readonly string[],
   max: number,
-): string[][] {
-  const count = Math.ceil((rest.length + positives.length) / max);
+  fits: (chunk: readonly string[]) => boolean = () => true,
+): { chunks: string[][]; skipped: string[] } {
+  const alone = (target: string) => fits([target]);
+  const skipped = [...rest, ...positives].filter((target) => !alone(target));
+  const fill = rest.filter(alone);
+  const last = positives.filter(alone);
+  const total = fill.length + last.length;
+  // With one batch per target every batch fits, so this always ends with a split.
+  for (let count = Math.ceil(total / max); count <= total; count += 1) {
+    const chunks = splitInto(count, fill, last, max, fits);
+    if (chunks) return { chunks, skipped };
+  }
+  return { chunks: [], skipped };
+}
+
+/** `count` batches with the positives dealt round-robin last, or null when they cannot hold all. */
+function splitInto(
+  count: number,
+  rest: readonly string[],
+  positives: readonly string[],
+  max: number,
+  fits: (chunk: readonly string[]) => boolean,
+): string[][] | null {
   const tails = Array.from({ length: count }, (): string[] => []);
   positives.forEach((positive, i) => tails[i % count].push(positive));
+  const chunks: string[][] = [];
   let next = 0;
-  return tails.map((tail) => {
-    const room = max - tail.length;
-    const head = rest.slice(next, next + room);
-    next += room;
-    return [...head, ...tail];
-  });
+  for (const tail of tails) {
+    if (tail.length > max || (tail.length > 0 && !fits(tail))) return null;
+    const head: string[] = [];
+    while (
+      next < rest.length &&
+      head.length + tail.length < max &&
+      fits([...head, rest[next], ...tail])
+    )
+      head.push(rest[next++]);
+    chunks.push([...head, ...tail]);
+  }
+  return next < rest.length ? null : chunks.filter((chunk) => chunk.length);
 }
 
 /** Thrown when the probe's request budget is spent. */

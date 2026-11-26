@@ -47,6 +47,8 @@ const API = 'https://api.github.com';
 const PAGE_SIZE = limit('github.pageSize');
 const MAX_BATCH = limit('probe.batching.maxBatchTargets');
 const MAX_TAGS = limit('probe.batching.maxTagsPerQuery');
+/** The reader's discovery URL cap, the longest URL GitHub is known to accept (S1 Package Name Form). */
+const URL_CAP = limit('advisory.discovery.urlBytes');
 
 /** The fixed seeds (#389 as reconciled by D4): known positives and a three-separator name. */
 export const SEEDS: readonly Target[] = [
@@ -67,6 +69,7 @@ type Run = {
   budget: ReturnType<typeof requestBudget>;
   incomplete: Counts;
   disagreements: Counts;
+  overUrlCap: Counts;
 };
 
 function bump(counts: Counts, key: string, by = 1): void {
@@ -200,6 +203,7 @@ const isRejected = (status: number) =>
   status < HTTP_STATUS.serverErrorMin &&
   status !== HTTP_STATUS.forbidden &&
   status !== HTTP_STATUS.tooManyRequests;
+const overCap = (url: string) => url.length > URL_CAP;
 const packageOf = (entry: string) => entry.slice(0, entry.lastIndexOf('@'));
 
 /** Each real target's singleton match ids, or null when its singleton did not complete. */
@@ -247,11 +251,17 @@ type NpmBatch = {
   positiveLast: boolean;
   /** Above GitHub's documented `affects` maximum: recorded, never counted in the verdict. */
   overMaximum: boolean;
+  /** Its URL is over the URL cap: a failure is counted in `overUrlCap`, not the verdict. */
+  overUrlCap: boolean;
 };
+
+type SweepBatch = { targets: number; urlLength: number; status: number; complete: boolean };
 
 type NpmSweep = {
   perPage: number;
   batches: number;
+  /** Each batch's size, URL length, and last HTTP status, in the order sent. */
+  results: SweepBatch[];
   pages: number;
   maxPageBytes: number;
   complete: boolean;
@@ -267,6 +277,8 @@ export type NpmSection = {
   singletonPositives: number;
   /** Positives no complete batch carried, so neither direction was checked for them. */
   positivesUnchecked: number;
+  /** Targets whose URL alone is over the URL cap: no batch can carry them, so none is compared. */
+  skippedUnsupported: number;
   sizes: NpmBatch[];
   sweep: NpmSweep[];
 };
@@ -293,7 +305,14 @@ async function npmSingletons(run: Run, group: readonly Target[], section: NpmSec
   return known;
 }
 
-type NpmPlan = { known: Known; positives: string[]; rest: string[]; checked: Set<string> };
+type NpmPlan = {
+  known: Known;
+  positives: string[];
+  rest: string[];
+  checked: Set<string>;
+  /** Targets no batch can carry within the URL cap, left out of the verdict as discovery does. */
+  skipped: Set<string>;
+};
 
 /** Batches at halving sizes from one above the maximum, each with one positive placed last. */
 async function npmSizes(run: Run, plan: NpmPlan, section: NpmSection) {
@@ -311,9 +330,16 @@ async function npmSizes(run: Run, plan: NpmPlan, section: NpmSection) {
     const comparison = answer.complete ? compareNpm(affects, answer, known) : null;
     const rejected = isRejected(answer.status);
     const stray = strayRecords('npm', affects.map(packageOf), answer.records).length;
+    const overUrlCap = overCap(url);
     if (!overMaximum) {
       if (comparison) tallyNpm(run, comparison, plan.checked);
-      else bump(run.incomplete, rejected ? 'npmBatchRejected' : 'npmBatch');
+      else if (overUrlCap)
+        // A size whose URL GitHub cannot accept is a measurement, not a gap in the comparison.
+        bump(
+          run.overUrlCap,
+          answer.status === HTTP_STATUS.uriTooLong ? 'npmBatchRejected' : 'npmBatchFailed',
+        );
+      else bump(run.incomplete, rejected ? 'npmBatchRejectedUnderCap' : 'npmBatch');
       // A record naming no batched package makes the reader's batch fall back (item 6).
       bump(run.incomplete, 'npmStray', stray);
     }
@@ -331,17 +357,26 @@ async function npmSizes(run: Run, plan: NpmPlan, section: NpmSection) {
       extras: comparison?.extras ?? null,
       positiveLast: last !== undefined,
       overMaximum,
+      overUrlCap,
     });
   }
 }
 
-/** Every target, in batches of at most the maximum, at each page size, compared both ways. */
+/**
+ * Every target, in batches of at most the maximum whose URL fits the URL cap, at each page size,
+ * compared both ways. The cap is checked at the largest page size, whose URL is the longest.
+ */
 async function npmSweep(run: Run, plan: NpmPlan, section: NpmSection) {
-  const chunks = sweepChunks(plan.rest, plan.positives, MAX_BATCH);
+  const fits = (chunk: readonly string[]) =>
+    !overCap(advisoryUrl('npm', chunk, section.type, PAGE_SIZE));
+  const { chunks, skipped } = sweepChunks(plan.rest, plan.positives, MAX_BATCH, fits);
+  section.skippedUnsupported = skipped.length;
+  for (const target of skipped) plan.skipped.add(target);
   for (const perPage of chunks.length ? halvingSizes(PAGE_SIZE) : []) {
     const sweep: NpmSweep = {
       perPage,
       batches: 0,
+      results: [],
       pages: 0,
       maxPageBytes: 0,
       complete: true,
@@ -351,13 +386,21 @@ async function npmSweep(run: Run, plan: NpmPlan, section: NpmSection) {
     };
     section.sweep.push(sweep);
     for (const chunk of chunks) {
-      const answer = await query(run, advisoryUrl('npm', chunk, section.type, perPage));
+      const url = advisoryUrl('npm', chunk, section.type, perPage);
+      const answer = await query(run, url);
       sweep.batches += 1;
+      sweep.results.push({
+        targets: chunk.length,
+        urlLength: url.length,
+        status: answer.status,
+        complete: answer.complete,
+      });
       sweep.pages += answer.pages;
       sweep.maxPageBytes = Math.max(sweep.maxPageBytes, answer.maxPageBytes);
       if (!answer.complete) {
         sweep.complete = false;
-        bump(run.incomplete, 'npmSweepBatch');
+        const tooLong = answer.status === HTTP_STATUS.uriTooLong;
+        bump(run.incomplete, tooLong ? 'npmSweepBatchRejected' : 'npmSweepBatch');
         continue;
       }
       const stray = strayRecords('npm', chunk.map(packageOf), answer.records).length;
@@ -385,10 +428,12 @@ async function probeNpm(run: Run, targets: readonly Target[], section: NpmSectio
   // The spec's check needs known positives; without one, no batch can show it keeps a match.
   if (!positives.length) bump(run.incomplete, 'npmNoPositives');
   const rest = group.map(affect).filter((a) => !positives.includes(a));
-  const plan: NpmPlan = { known, positives, rest, checked: new Set() };
+  const plan: NpmPlan = { known, positives, rest, checked: new Set(), skipped: new Set() };
   await npmSizes(run, plan, section);
   await npmSweep(run, plan, section);
-  section.positivesUnchecked = positives.filter((p) => !plan.checked.has(p)).length;
+  section.positivesUnchecked = positives.filter(
+    (p) => !plan.checked.has(p) && !plan.skipped.has(p),
+  ).length;
   bump(run.incomplete, 'npmPositiveUnchecked', section.positivesUnchecked);
 }
 
@@ -602,6 +647,11 @@ export type ProbeReport = {
   error?: string;
   incomplete: Counts;
   disagreements: Counts;
+  /**
+   * Batch sizes whose URL is over the URL cap and did not complete: `npmBatchRejected` for a 414,
+   * `npmBatchFailed` otherwise. GitHub is not expected to accept them, so the verdict ignores them.
+   */
+  overUrlCap: Counts;
   probedAt: string;
   requests: number;
   inputTargets: number;
@@ -617,6 +667,7 @@ const npmSection = (type: QueryKind): NpmSection => ({
   singletonIncomplete: 0,
   singletonPositives: 0,
   positivesUnchecked: 0,
+  skippedUnsupported: 0,
   sizes: [],
   sweep: [],
 });
@@ -678,12 +729,14 @@ export async function runProbe(deps: ProbeDeps): Promise<ProbeReport> {
     budget: requestBudget(limit('probe.batching.maxRequests')),
     incomplete: {},
     disagreements: {},
+    overUrlCap: {},
   };
   const report: ProbeReport = {
     verdict: 'incomplete',
     equivalent: null,
     incomplete: run.incomplete,
     disagreements: run.disagreements,
+    overUrlCap: run.overUrlCap,
     probedAt: new Date().toISOString(),
     requests: 0,
     inputTargets: deps.input.targets.length,
