@@ -343,17 +343,17 @@ type MeasuredBasis = Readonly<{
  */
 const DIRECT_COST: Readonly<Partial<Record<ScaledShare, Omit<MeasuredBasis, 'measured'>>>> = {
   advisory: {
-    command: 'npx vp test run src/research.test.ts -t "researches a group of 32"',
+    command: 'npx vp test run src/evidence/advisory-read.costs.test.ts',
     corpus:
-      "the per-target reviewed lookup in src/evidence/advisory-read.ts (`query`, then `discover` and `versioned`), whose discovery reads base and head share; S1's Group capacity statement",
+      "one Actions update (base and head) in the costs test, read through the per-target reviewed lookup in src/evidence/advisory-read.ts (`query`, then `discover` and `versioned`), whose discovery reads base and head share; S1's Group capacity statement",
     statistic:
       'an Actions reviewed lookup takes 3 requests per update: one stored-name discovery, then a versioned query for each of base and head',
     headroom: 'none beyond the per-update cost; transitive npm members keep the fitted rate',
   },
   'signals.malware': {
-    command: 'npx vp test run src/evidence/policy-signals-malware.test.ts -t "batch-cleared"',
+    command: 'npx vp test run src/evidence/advisory-read.costs.test.ts',
     corpus:
-      'the per-target malware lookup in src/evidence/advisory-read.ts (`query`, then `discover` and `versioned`), which reads the proposed side only; Actions malware is never batched',
+      'one Actions update in the costs test, read through the per-target malware lookup in src/evidence/advisory-read.ts (`query`, then `discover` and `versioned`), which reads the proposed side only; Actions malware is never batched',
     statistic:
       'an Actions or pip malware lookup takes 2 requests: one stored-name discovery, then the versioned query',
     headroom: 'none beyond the per-member cost; the eligible rate still adds to it',
@@ -840,7 +840,7 @@ const DEFINITIONS = [
     'collection.share.registry.requests.base',
     5,
     'count',
-    'approved with the B12 fit (#370), which records no separate derivation for this base; the rate carries the per-member demand',
+    '1.25 × the highest demand among the one-to-three-member PRs (4 reads on #172), rounded up',
     {
       protects:
         'Sets the collection registry share a change with no npm members gets, before the per-member rate is added.',

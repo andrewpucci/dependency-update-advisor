@@ -853,7 +853,8 @@ test.each([true, false])(
     ).toBe(true);
     expect(counts.malware).toBeLessThanOrEqual(readers.malware.maxRequests);
     // Reviewed advisories take one npm batch per side, and the Action's discovery batch, whose
-    // hit sends both versioned queries. Read alone, they still fit the stage's share.
+    // hit sends both versioned queries. Read alone, they exceed the fitted share but still fit
+    // the advisory ceiling, which the unbatched run is given (CEILING_SHARES).
     if (batched) expect(counts.advisory).toBe(5);
     else expect(counts.advisory).toBeGreaterThan(50);
     expect(counts.advisory).toBeLessThanOrEqual(EVIDENCE_READ_ALLOCATION.advisory.maxRequests);
