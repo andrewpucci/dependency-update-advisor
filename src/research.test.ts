@@ -417,26 +417,55 @@ test('caps every reader at its share, so the readers together stay inside the en
   expect(upstream).toHaveLength(2);
   expect(advisory).toHaveLength(1);
   const { readers } = EVIDENCE_READ_ALLOCATION.signals;
+  // Each reader opens with the register's share for this packet, under its allocation ceiling.
+  const shares = researchShares(researchShareUnits(packet.changes));
+  const computed = shares.signals.readers;
   const expected = [
-    ['S2 upstream', upstream[0], EVIDENCE_READ_ALLOCATION.upstream],
-    ['advisory', advisory[0], EVIDENCE_READ_ALLOCATION.advisory],
-    ['malware', calls(advisoryReadModule.createMalwareReader)[0], readers.malware],
-    ['npm registry', registry[1], readers.registry],
+    ['S2 upstream', upstream[0], shares.upstream, EVIDENCE_READ_ALLOCATION.upstream],
+    ['advisory', advisory[0], shares.advisory, EVIDENCE_READ_ALLOCATION.advisory],
+    [
+      'malware',
+      calls(advisoryReadModule.createMalwareReader)[0],
+      computed.malware,
+      readers.malware,
+    ],
+    ['npm registry', registry[1], computed.registry, readers.registry],
     [
       'publish times',
       calls(publishTimesModule.createNpmPublishTimeReader)[0],
+      computed.publishTimes,
       readers.publishTimes,
     ],
-    ['metadata', calls(signalReadModule.createPolicySignalReader)[0], readers.metadata],
-    ['S3 upstream', upstream[1], readers.upstream],
+    [
+      'metadata',
+      calls(signalReadModule.createPolicySignalReader)[0],
+      computed.metadata,
+      readers.metadata,
+    ],
+    ['S3 upstream', upstream[1], computed.upstream, readers.upstream],
   ] as const;
-  for (const [name, actual, share] of expected)
+  for (const [name, actual, share, ceiling] of expected) {
     expect(actual, name).toMatchObject({
       maxRequests: share.maxRequests,
       maxTotalBytes: share.maxTotalBytes,
       maxResponseBytes: Math.min(MiB, share.maxTotalBytes),
     });
+    expect(share.maxRequests, name).toBeLessThanOrEqual(ceiling.maxRequests);
+    expect(share.maxTotalBytes, name).toBe(ceiling.maxTotalBytes);
+  }
+  // Three direct members (npm, Action, uv) and one transitive npm member: upstream
+  // 9 + 5.9 × 4 = 32.6, advisory 3 + 3 × 3 + 2 = 14, malware 2 + 2 × 3 + 1 × 4 = 12, and
+  // publish times 2 + 1.2 × 2 = 4.4, each rounded up and under its ceiling.
+  expect(researchShareUnits(packet.changes)).toMatchObject({ direct: 3, transitive: 1 });
+  expect([
+    shares.upstream.maxRequests,
+    shares.advisory.maxRequests,
+    computed.malware.maxRequests,
+    computed.publishTimes.maxRequests,
+  ]).toEqual([33, 14, 12, 5]);
+  expect(shares.upstream.maxRequests).toBeLessThan(EVIDENCE_READ_ALLOCATION.upstream.maxRequests);
   const used = expected.reduce((sum, [, actual]) => sum + actual.maxRequests, 0);
+  const ceilings = expected.reduce((sum, [, , , ceiling]) => sum + ceiling.maxRequests, 0);
   const bytes = expected.reduce((sum, [, actual]) => sum + actual.maxTotalBytes, 0);
   // The transport, evidence session, and registry shares hold the rest of the envelope.
   const others = [
@@ -444,9 +473,9 @@ test('caps every reader at its share, so the readers together stay inside the en
     EVIDENCE_READ_ALLOCATION.session,
     EVIDENCE_READ_ALLOCATION.registry,
   ];
-  expect(used + others.reduce((sum, share) => sum + share.maxRequests, 0)).toBe(
-    EVIDENCE_READ_ENVELOPE.maxRequests,
-  );
+  const otherRequests = others.reduce((sum, share) => sum + share.maxRequests, 0);
+  expect(ceilings + otherRequests).toBe(EVIDENCE_READ_ENVELOPE.maxRequests);
+  expect(used + otherRequests).toBeLessThan(EVIDENCE_READ_ENVELOPE.maxRequests);
   expect(bytes + others.reduce((sum, share) => sum + share.maxTotalBytes, 0)).toBe(
     EVIDENCE_READ_ENVELOPE.maxTotalBytes,
   );
@@ -659,6 +688,8 @@ test('a run with no GitHub rate-limit stop has no retry time, even when OSV is r
   const { fixture, packet } = await scenario();
   const plain = await runResearch(base(fixture, packet));
   if (plain.kind !== 'ready') throw new Error(plain.kind);
+  // The direct-member rates cover the fixture's Actions and pip lookups under the fitted shares.
+  expect(JSON.stringify(plain.packet)).not.toContain('budget');
   expect(plain.packet.retryAfter).toBeNull();
   const osvLimited = await runResearch({
     ...base(fixture, packet),
@@ -733,6 +764,12 @@ test.each([true, false])(
     if (!batched) await dropAdvisoryPrePass();
     const counts: Record<string, number> = {};
     const bump = (key: string) => (counts[key] = (counts[key] ?? 0) + 1);
+    // The register's shares cover the group batched and unbatched: 3 direct and 29 transitive
+    // members give advisory 3 + 3 × 3 + 2 × 29 = 70 and malware 2 + 2 × 3 + 1 × 32 = 40.
+    expect(researchShares(researchShareUnits(packet.changes))).toMatchObject({
+      advisory: { maxRequests: 70 },
+      signals: { readers: { malware: { maxRequests: 40 } } },
+    });
     const result = await runResearch({
       ...base(fixture, packet),
       fetch: async (url, init) => {
@@ -755,7 +792,7 @@ test.each([true, false])(
     ).toBe(true);
     expect(counts.malware).toBeLessThanOrEqual(readers.malware.maxRequests);
     // Reviewed advisories take one npm batch per side, and the Action's discovery batch, whose
-    // hit sends both versioned queries. Read alone, they still fit the stage's share.
+    // hit sends both versioned queries. Read alone, they still fit the cost-sized share.
     if (batched) expect(counts.advisory).toBe(5);
     else expect(counts.advisory).toBeGreaterThan(50);
     expect(counts.advisory).toBeLessThanOrEqual(EVIDENCE_READ_ALLOCATION.advisory.maxRequests);
@@ -769,6 +806,34 @@ test.each([true, false])(
     expect(result.upstreamAttempts.length).toBeGreaterThan(0);
   },
 );
+
+test('a uv change of one direct and seven transitive pip packages keeps every vulnerability check', async () => {
+  const CHILDREN = 7;
+  const { fixture, packet } = await scenario({ uvChildren: CHILDREN });
+  const uv = packet.changes.filter((c) => c.ecosystem === 'uv' && !('basis' in c));
+  expect(uv.map((c) => c.role).sort()).toEqual([
+    'direct',
+    ...Array.from({ length: CHILDREN }, () => 'transitive'),
+  ]);
+  // pip reviewed lookups go to OSV one target at a time, two per member (base and head); the
+  // transitive rate is sized for that: the advisory share is 3 + 3 × 3 + 2 × 8 = 28 for these
+  // 16 OSV lookups and the npm batches and Action. At a transitive rate of 0.2 it would be
+  // 3 + 3 × 3 + 0.2 × 8, rounded up to 14, and pip members would end with `budget`.
+  let osv = 0;
+  const result = await runResearch({
+    ...base(fixture, packet),
+    fetch: async (url, init) => {
+      if (new URL(url).host === 'api.osv.dev') osv++;
+      return fixture.fetch(url, init);
+    },
+  });
+  if (result.kind !== 'ready') throw new Error(result.kind);
+  expect(osv).toBe(2 * (CHILDREN + 1));
+  for (const change of result.packet.changes)
+    if (change.ecosystem === 'uv' && !('basis' in change))
+      expect(change.evidence.vulnerability, change.id).toMatchObject({ status: 'available' });
+  expect(JSON.stringify(result.packet)).not.toContain('budget');
+});
 
 const PLACEHOLDER = { status: 'unavailable', reasons: ['missing'], sourceIds: [] };
 const BUDGET = { status: 'unavailable', reasons: ['budget'], sourceIds: [] };

@@ -8895,22 +8895,147 @@ const ROLE_UNITS$1 = [
 	"removed"
 ];
 const SHARE_FORMULA_TEST = "src/budget.test.ts > a share is its base plus each rate times its count, rounded up, under its ceiling";
-const SHARE_START_TEST = "src/budget.test.ts > starting parameters reproduce the current research shares for any change";
+const SHARE_CEILING_TEST = "src/budget.test.ts > shares the fit keeps at their ceilings stay there for any change";
+const SHARE_FIT_TEST = "src/budget.test.ts > the fitted values give a one-member change a smaller share than R1 #276";
+/** The B12 demand fit, approved by the user on 2026-11-26 (#370 comment 7197038235). */
+const B12_FIT = {
+	command: "npm run measure:demand (MEASURE_SCALE=10)",
+	corpus: "this repository's Dependabot PRs at 66a21f8, C10 remeasure (#397)",
+	headroom: "1.25× measured demand on every uncensored PR",
+	measured: "2026-11-26"
+};
+const FIT_NOTE = "the B12 fit approved 2026-11-26 (#370) keeps this dimension at its ceiling with every rate at 0";
+const FIT_BASE_STATISTIC = "1.25 × the highest measured demand among the one-to-three-member PRs (#123 and #172), rounded up";
+const FIT_RATE_STATISTIC = "the smallest rate giving every uncensored PR 1.25 × its measured demand, rounded up to the next 0.1; upstream gives direct and transitive the same rate";
+const FIT_ZERO_STATISTIC = {
+	role: "the fit sets this rate to 0: every member is direct or transitive, so those rates carry the scaling and added and removed add nothing",
+	signals: "the fit sets this rate to 0: a signals reader scales with its own eligible members, and malware also with its direct members"
+};
+/**
+* The B12 fit's request bases and non-zero rates. A fitted share's other rates are 0. Every share
+* and dimension not listed keeps its base at its ceiling with every rate at 0. The advisory and
+* malware rates are sized from request costs instead (`COST_SIZED`).
+*/
+const FITTED_REQUESTS = {
+	upstream: {
+		base: 9,
+		rates: {
+			direct: 5.9,
+			transitive: 5.9
+		}
+	},
+	advisory: {
+		base: 3,
+		rates: {
+			direct: 3,
+			transitive: 2
+		}
+	},
+	"signals.malware": {
+		base: 2,
+		rates: {
+			direct: 2,
+			eligible: 1
+		}
+	},
+	"signals.publishTimes": {
+		base: 2,
+		rates: { eligible: 1.2 }
+	}
+};
+const COSTS_TEST = "npx vp test run src/evidence/advisory-read.costs.test.ts";
+const PER_TARGET = "per-target lookup in src/evidence/advisory-read.ts (`query`: OSV for pip reviewed, else `discover` for non-npm targets, then `versioned`)";
+/**
+* Advisory and malware rates sized from the unbatched per-target request cost rather than fitted
+* from the corpus, so a change whose batches fail, or are not used, still fits its share. Approved
+* by the user on 2026-11-26 in the B12 thread (#370). An incomplete batch settles nothing, so its
+* targets fall back to these per-target lookups (`settle`, `discoveryBatch`); pip reviewed lookups
+* always go to OSV one target at a time. Actions and pip members are direct.
+*/
+const COST_SIZED = {
+	advisory: {
+		direct: {
+			command: COSTS_TEST,
+			corpus: `one Actions update (base and head) in the costs test, read through the ${PER_TARGET}, whose discovery reads base and head share; S1's Group capacity statement`,
+			statistic: "an Actions reviewed lookup takes 3 requests per update: one stored-name discovery, then a versioned query for each of base and head",
+			headroom: "none beyond the per-update cost"
+		},
+		transitive: {
+			command: COSTS_TEST,
+			corpus: `one npm and one pip update (base and head) in the costs test, read through the ${PER_TARGET}`,
+			statistic: "an unbatched npm or pip reviewed lookup takes 2 requests per member: one versioned GitHub query or one OSV query for each of base and head",
+			headroom: "none beyond the per-member cost; a paged response takes more"
+		}
+	},
+	"signals.malware": {
+		direct: {
+			command: COSTS_TEST,
+			corpus: `one Actions update in the costs test, read through the ${PER_TARGET}, which reads the proposed side only; Actions malware is never batched`,
+			statistic: "an Actions or pip malware lookup takes 2 requests: one stored-name discovery, then the versioned query",
+			headroom: "none beyond the per-member cost; the eligible rate adds to it"
+		},
+		eligible: {
+			command: COSTS_TEST,
+			corpus: `one npm update in the costs test, read through the ${PER_TARGET}, which reads the proposed side only`,
+			statistic: "an unbatched npm malware lookup takes 1 request per member: the versioned query for the proposed side; the direct rate covers the second request of an Actions or pip lookup",
+			headroom: "none beyond the per-member cost; a paged response takes more"
+		}
+	}
+};
+/** A value fitted to the B12 demand corpus, or sized with it; `basis` says how this one was. */
+function fitted(id, value, unit, basis, audit) {
+	return {
+		id,
+		value,
+		unit,
+		protects: audit.protects,
+		effect: audit.effect,
+		basis: typeof basis === "string" ? {
+			kind: "measured",
+			...B12_FIT,
+			statistic: basis
+		} : {
+			kind: "measured",
+			...basis
+		},
+		test: audit.test
+	};
+}
+/** Why a fitted share's rate has its value: its request cost, the measured rate, or why it is 0. */
+function rateBasis(share, unit, rate) {
+	const cost = COST_SIZED[share]?.[unit];
+	if (cost) return {
+		...cost,
+		measured: B12_FIT.measured
+	};
+	if (rate > 0) return FIT_RATE_STATISTIC;
+	return share.startsWith("signals.") ? FIT_ZERO_STATISTIC.signals : FIT_ZERO_STATISTIC.role;
+}
 /** One scaled share's base and rate entries for one dimension; its ceiling is the allocation entry. */
 function scaledShareEntries(share, dimension) {
 	const ceiling = `${SCALED_SHARES[share]}.${SHARE_DIMENSIONS[dimension]}`;
 	const unit = dimension === "bytes" ? "bytes" : "count";
 	const units = share.startsWith("signals.") ? [...ROLE_UNITS$1, "eligible"] : ROLE_UNITS$1;
-	return [derived(`research.share.${share}.${dimension}.base`, unit, [ceiling], copy, `The ${share} ${dimension} share starts at its ceiling until B12 fits a smaller base.`, {
+	const fit = dimension === "requests" ? FITTED_REQUESTS[share] : void 0;
+	const baseId = `research.share.${share}.${dimension}.base`;
+	const baseAudit = {
 		protects: "Sets the share a change of no counted members gets, before any per-member rate is added.",
-		effect: "The computed share starts here; with every rate at zero it equals the ceiling, as before scaling.",
-		test: SHARE_START_TEST
-	}), ...units.map((rateUnit) => unjustified(`research.share.${share}.${dimension}.rate.${rateUnit}`, 0, unit, {
-		protects: `Grows the ${share} ${dimension} share with each ${rateUnit} member, so a larger change gets more and a small one fails faster.`,
-		effect: "Adds rate times the count to the share, rounded up and capped at the ceiling; zero leaves the share at its base.",
-		note: "awaiting B12/L8 measurement",
-		test: SHARE_FORMULA_TEST
-	}))];
+		effect: fit ? "The computed share starts here; each rate adds to it, rounded up and capped at the ceiling." : "The computed share starts here; with every rate at zero it equals the ceiling.",
+		test: fit ? SHARE_FIT_TEST : SHARE_CEILING_TEST
+	};
+	return [fit ? fitted(baseId, fit.base, unit, FIT_BASE_STATISTIC, baseAudit) : derived(baseId, unit, [ceiling], copy, `The B12 fit (approved 2026-11-26, #370) keeps the ${share} ${dimension} share at its ceiling.`, baseAudit), ...units.map((rateUnit) => {
+		const id = `research.share.${share}.${dimension}.rate.${rateUnit}`;
+		const rate = fit?.rates[rateUnit] ?? 0;
+		const audit = {
+			protects: `Grows the ${share} ${dimension} share with each ${rateUnit} member, so a larger change gets more and a small one fails faster.`,
+			effect: "Adds rate times the count to the share, rounded up and capped at the ceiling; zero leaves the share at its base.",
+			test: rate > 0 ? SHARE_FIT_TEST : SHARE_FORMULA_TEST
+		};
+		return fit ? fitted(id, rate, unit, rateBasis(share, rateUnit, rate), audit) : unjustified(id, 0, unit, {
+			...audit,
+			note: FIT_NOTE
+		});
+	})];
 }
 /** Base and rate entries for every scaled research share and dimension. */
 function allScaledShareEntries() {
@@ -9215,11 +9340,29 @@ const DEFINITIONS = [
 		note: "awaiting L8 measurement",
 		test: "src/github-read.test.ts > the session refuses the read that passes evidence.allocation.session.maxTotalBytes"
 	}),
-	unjustified("evidence.allocation.registry.maxRequests", 64, "count", {
-		protects: "Caps npm registry detail requests for one review so a large dependency set cannot spend the shared evidence time on registry reads.",
-		effect: "The request past the cap returns budget and no request is sent.",
-		note: "awaiting L8 measurement",
+	{
+		id: "evidence.allocation.registry.maxRequests",
+		value: 640,
+		unit: "count",
+		protects: "Caps npm registry detail requests for one review so a large dependency set cannot spend the shared evidence time on registry reads. These go to registry.npmjs.org, never to the GitHub quota.",
+		basis: {
+			kind: "measured",
+			...B12_FIT,
+			statistic: "the ×10 value of the former fixed share, under which every collected corpus PR completed; the largest used 216 reads",
+			headroom: "about 3× the largest measured demand"
+		},
+		effect: "The ceiling of the scaled collection registry share; the request past the computed share returns budget and no request is sent.",
 		test: "src/evidence/npm-registry.test.ts > the registry request share allows exactly its count and refuses the next read unsent"
+	},
+	fitted("collection.share.registry.requests.base", 5, "count", "1.25 × the highest demand among the one-to-three-member PRs (4 reads on #172), rounded up", {
+		protects: "Sets the collection registry share a change with no npm members gets, before the per-member rate is added.",
+		effect: "The share starts here; the npm member rate adds to it, rounded up and capped at limit:evidence.allocation.registry.maxRequests.",
+		test: "src/budget.test.ts > the collection registry share scales with npm members and stops at its ceiling"
+	}),
+	fitted("collection.share.registry.requests.rate.npm", 2.5, "count", "1.25 × the highest measured demand per npm member: 1.6 to 2.0 reads per member across the corpus", {
+		protects: "Grows the collection registry share with each npm member, so a large lockfile change keeps its install-script and vulnerability coverage and a small one fails faster.",
+		effect: "Adds rate times the npm member count to the share, rounded up and capped at the ceiling.",
+		test: "src/budget.test.ts > the collection registry share scales with npm members and stops at its ceiling"
 	}),
 	unjustified("evidence.allocation.registry.maxTotalBytes", 4 * MiB, "bytes", {
 		protects: "Caps response bytes of npm registry detail reads so they cannot exhaust runner memory or the envelope.",
@@ -9618,7 +9761,7 @@ const DEFINITIONS = [
 		test: "src/evidence/npm-graph.test.ts > second proofs are dropped after pair verdicts, and core overflow still fails the result",
 		note: "awaiting L8 measurement"
 	}),
-	derived("w2.registry.maxRequests", "count", ["evidence.allocation.registry.maxRequests"], copy, "The registry reader's request cap is its allocation share's request cap.", {
+	derived("w2.registry.maxRequests", "count", ["evidence.allocation.registry.maxRequests"], copy, "The registry reader's request ceiling is its allocation share's request cap; the reader gets the share scaled from the npm inventory's members, capped here.", {
 		protects: "Caps uncached registry requests per session, so the credential-free registry fetch cannot run past the registry share of the envelope.",
 		effect: "The next uncached request throws budget before dispatch, and later uncached reads return unavailable with reason budget.",
 		test: "src/evidence/npm-registry.test.ts > a request budget stops subsequent uncached reads"
@@ -26096,18 +26239,25 @@ function exactDecimal(name, value) {
 * `base + Σ rate × count`, rounded up, computed on exact decimals so a rate such as 1.1 never
 * picks up a binary rounding error that would push the share over a whole number.
 */
-function scaled(parameters, units, eligible, floor) {
-	const terms = [{
-		...exactDecimal("base", parameters.base),
+function exactShare(base, terms) {
+	const decimals = [{
+		...exactDecimal("base", base),
 		count: 1n
-	}, ...Object.entries(parameters.rates).map(([unit, rate]) => ({
-		...exactDecimal(unit, rate ?? 0),
-		count: BigInt(unit === "eligible" ? eligible : units[unit])
+	}, ...terms.map((term) => ({
+		...exactDecimal(term.name, term.rate),
+		count: BigInt(term.count)
 	}))];
-	const places = Math.max(...terms.map((term) => term.places));
+	const places = Math.max(...decimals.map((term) => term.places));
 	const scale = DECIMAL_BASE ** BigInt(places);
-	const numerator = terms.reduce((sum, term) => sum + term.digits * term.count * DECIMAL_BASE ** BigInt(places - term.places), 0n);
-	const total = Number((numerator + scale - 1n) / scale);
+	const numerator = decimals.reduce((sum, term) => sum + term.digits * term.count * DECIMAL_BASE ** BigInt(places - term.places), 0n);
+	return Number((numerator + scale - 1n) / scale);
+}
+function scaled(parameters, units, eligible, floor) {
+	const total = exactShare(parameters.base, Object.entries(parameters.rates).map(([unit, rate]) => ({
+		name: unit,
+		rate: rate ?? 0,
+		count: unit === "eligible" ? eligible : units[unit]
+	})));
 	return Math.min(parameters.ceiling, Math.max(floor, total));
 }
 function share(parameters, units, eligible = 0) {
@@ -26134,6 +26284,26 @@ function researchShares(units, parameters = RESEARCH_SHARE_PARAMETERS) {
 			readers
 		}
 	};
+}
+/** The register's collection registry request share, capped by the registry allocation. */
+const COLLECTION_REGISTRY_SHARE_PARAMETERS = Object.freeze({
+	base: limit("collection.share.registry.requests.base"),
+	ceiling: EVIDENCE_READ_ALLOCATION.registry.maxRequests,
+	rates: Object.freeze({ npm: limit("collection.share.registry.requests.rate.npm") })
+});
+/**
+* The collection registry reader's request share for a trusted npm inventory of `npmMembers`
+* members: `min(ceiling, base + rate × npmMembers)`, rounded up, and at least 1. Its byte share
+* stays fixed. These reads go to the npm registry, never to the GitHub quota.
+*/
+function collectionRegistryRequests(npmMembers, parameters = COLLECTION_REGISTRY_SHARE_PARAMETERS) {
+	if (!Number.isSafeInteger(npmMembers) || npmMembers < 0) throw new Error("invalid npm member count");
+	const total = exactShare(parameters.base, [{
+		name: "npm",
+		rate: parameters.rates.npm,
+		count: npmMembers
+	}]);
+	return Math.min(parameters.ceiling, Math.max(1, total));
 }
 
 // src/evidence/research-cache.ts
@@ -32216,12 +32386,14 @@ function createEvidenceCollectors(input) {
 		if (inventory.kind !== "inventory") return noInventory(inventory);
 		input.onNpmInventory?.(inventory);
 		const total = remaining$1(input);
+		const npmMembers = researchShareUnits(inventory.changes).eligible.registry;
 		const enriched = await enrichNpmEvidence({
 			inventory,
 			binding,
 			limits: {
 				...W2_EVIDENCE_LIMITS.graph,
 				...W2_EVIDENCE_LIMITS.registry,
+				maxRequests: collectionRegistryRequests(npmMembers),
 				...timeouts(W2_EVIDENCE_LIMITS.registry.requestTimeoutMs, total)
 			}
 		}, {

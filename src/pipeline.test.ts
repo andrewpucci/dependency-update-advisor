@@ -1698,8 +1698,10 @@ test.each([
 });
 
 test('hands a group too large to render off as a failure that says so, never as a defect', async () => {
-  // Model follow-ups are required and never merged, so these push the body over the limit.
-  const { input, sink } = await setup({ evidence: 'changes', children: 100, followupsPerUnit: 8 });
+  // Model follow-ups are required and never merged, so these push the body over the limit. The
+  // collection registry share scales with npm members, so a group this size keeps its
+  // install-script evidence and renders fewer gaps: it takes 110 children, not 100, to overflow.
+  const { input, sink } = await setup({ evidence: 'changes', children: 110, followupsPerUnit: 8 });
   const result = await runReview(input);
   // The brief must not truncate a required unit, so it fails; the prior comment is preserved.
   expect(result).toMatchObject({

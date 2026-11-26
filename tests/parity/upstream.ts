@@ -39,6 +39,8 @@ type Options = {
   actionChange?: 'owner' | 'mutable';
   anchorUnchanged?: boolean;
   duplicateNames?: number;
+  /** Transitive pip packages under the uv `orbit` member, each moving from 1.0.0 to 2.0.0. */
+  uvChildren?: number;
   /** Discovery records for one spelling; the harness default stores each target as itself. */
   stored?: Parameters<typeof viaAdvisoryHttp>[1];
 };
@@ -200,7 +202,15 @@ export async function upstreamScenario(options: Options = {}) {
       : '';
   const python = (head: boolean) => {
     const version = head ? '2.0.0' : '1.0.0';
-    if (!options.uvVariants) return uvLock(version, artifacts(version));
+    const children = Array.from({ length: options.uvChildren ?? 0 }, (_, i) => `pychild-${i}`);
+    const dependencies = children.length
+      ? `dependencies=[${children.map((name) => `{name="${name}"}`).join(',')}]\n`
+      : '';
+    if (!options.uvVariants)
+      return (
+        uvLock(version, dependencies + artifacts(version)) +
+        children.map((name) => uvPackage(name, version)).join('')
+      );
     return (
       uvLock(version, 'resolution-markers=["sys_platform == \'linux\'"]\n' + artifacts(version)) +
       uvPackage(

@@ -31,12 +31,6 @@
   },
   {
     "file": "docs/specs/SPEC-advisory-lookup.md",
-    "line": "bytes for names with up to one separator, 944\u2013998 bytes for three-separator",
-    "values": [944],
-    "reason": "measurement: discovery URL lengths of 944-998 bytes measured on 2026-11-19 and 2026-11-20, not a register value"
-  },
-  {
-    "file": "docs/specs/SPEC-advisory-lookup.md",
     "line": "| Discovery page size   | `limit:advisory.discovery.pageSize`                       | A 100-record `pillow` page was 1,009,662 bytes against the `limit:evidence.envelope.maxResponseBytes` cap; the cited size leaves about half. |",
     "values": [100],
     "reason": "measurement: the 100-record pillow page from the 2026-11-20 probe, an observed page, not a register value"
@@ -69,12 +63,6 @@
     "file": "docs/specs/SPEC-evidence-coverage.md",
     "line": "| Signals    | Stage `budget` in 57 ms, before any request              | 101 requests, then stage `budget`               | 512 attempts, then not isolated  |",
     "values": [512],
-    "reason": "historical measurement: the R1 demand run (PR #276) records the limits in force when it ran, not the current register value"
-  },
-  {
-    "file": "docs/specs/SPEC-evidence-coverage.md",
-    "line": "| Total      | 348 requests                                             | 967 requests, 592 to `api.github.com`, 172 s    | 944-request envelope             |",
-    "values": [944],
     "reason": "historical measurement: the R1 demand run (PR #276) records the limits in force when it ran, not the current register value"
   },
   {

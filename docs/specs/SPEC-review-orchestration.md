@@ -181,33 +181,34 @@ receives `process.env` or a general fetch function.
    freshness reads are bounded by the job window (Diagnostic Amendments 2
    and 3).
 
-   | Reader                                    | Requests                                                             | Bytes                                                                  |
-   | ----------------------------------------- | -------------------------------------------------------------------- | ---------------------------------------------------------------------- |
-   | Snapshot reads (repository, commit, tree) | `limit:evidence.allocation.transport.snapshot.maxRequests`           | `limit:evidence.allocation.transport.snapshot.maxTotalBytes`           |
-   | Freshness (workflow, run, PR, compare)    | `limit:evidence.allocation.transport.freshness.maxRequests`          | `limit:evidence.allocation.transport.freshness.maxTotalBytes`          |
-   | GitHub evidence session                   | `limit:evidence.allocation.session.maxRequests`                      | `limit:evidence.allocation.session.maxTotalBytes`                      |
-   | npm registry details                      | `limit:evidence.allocation.registry.maxRequests`                     | `limit:evidence.allocation.registry.maxTotalBytes`                     |
-   | Upstream evidence                         | `limit:evidence.allocation.upstream.maxRequests`                     | `limit:evidence.allocation.upstream.maxTotalBytes`                     |
-   | Advisory lookup                           | `limit:evidence.allocation.advisory.maxRequests`                     | `limit:evidence.allocation.advisory.maxTotalBytes`                     |
-   | Signals: malware                          | `limit:evidence.allocation.signals.readers.malware.maxRequests`      | `limit:evidence.allocation.signals.readers.malware.maxTotalBytes`      |
-   | Signals: npm publish times                | `limit:evidence.allocation.signals.readers.publishTimes.maxRequests` | `limit:evidence.allocation.signals.readers.publishTimes.maxTotalBytes` |
-   | Signals: npm registry policy              | `limit:evidence.allocation.signals.readers.registry.maxRequests`     | `limit:evidence.allocation.signals.readers.registry.maxTotalBytes`     |
-   | Signals: PyPI metadata                    | `limit:evidence.allocation.signals.readers.metadata.maxRequests`     | `limit:evidence.allocation.signals.readers.metadata.maxTotalBytes`     |
-   | Signals: Actions upstream                 | `limit:evidence.allocation.signals.readers.upstream.maxRequests`     | `limit:evidence.allocation.signals.readers.upstream.maxTotalBytes`     |
+   | Reader                                    | Request ceiling                                                      | Request share scales on        | Bytes                                                                  |
+   | ----------------------------------------- | -------------------------------------------------------------------- | ------------------------------ | ---------------------------------------------------------------------- |
+   | Snapshot reads (repository, commit, tree) | `limit:evidence.allocation.transport.snapshot.maxRequests`           | fixed                          | `limit:evidence.allocation.transport.snapshot.maxTotalBytes`           |
+   | Freshness (workflow, run, PR, compare)    | `limit:evidence.allocation.transport.freshness.maxRequests`          | fixed                          | `limit:evidence.allocation.transport.freshness.maxTotalBytes`          |
+   | GitHub evidence session                   | `limit:evidence.allocation.session.maxRequests`                      | fixed                          | `limit:evidence.allocation.session.maxTotalBytes`                      |
+   | npm registry details                      | `limit:evidence.allocation.registry.maxRequests`                     | npm inventory members          | `limit:evidence.allocation.registry.maxTotalBytes`                     |
+   | Upstream evidence                         | `limit:evidence.allocation.upstream.maxRequests`                     | direct and transitive members  | `limit:evidence.allocation.upstream.maxTotalBytes`                     |
+   | Advisory lookup                           | `limit:evidence.allocation.advisory.maxRequests`                     | direct and transitive members  | `limit:evidence.allocation.advisory.maxTotalBytes`                     |
+   | Signals: malware                          | `limit:evidence.allocation.signals.readers.malware.maxRequests`      | every member, plus direct ones | `limit:evidence.allocation.signals.readers.malware.maxTotalBytes`      |
+   | Signals: npm publish times                | `limit:evidence.allocation.signals.readers.publishTimes.maxRequests` | npm members                    | `limit:evidence.allocation.signals.readers.publishTimes.maxTotalBytes` |
+   | Signals: npm registry policy              | `limit:evidence.allocation.signals.readers.registry.maxRequests`     | fixed at the ceiling           | `limit:evidence.allocation.signals.readers.registry.maxTotalBytes`     |
+   | Signals: PyPI metadata                    | `limit:evidence.allocation.signals.readers.metadata.maxRequests`     | fixed at the ceiling           | `limit:evidence.allocation.signals.readers.metadata.maxTotalBytes`     |
+   | Signals: Actions upstream                 | `limit:evidence.allocation.signals.readers.upstream.maxRequests`     | fixed at the ceiling           | `limit:evidence.allocation.signals.readers.upstream.maxTotalBytes`     |
 
-   Research reads scale with the group. Measured per extra npm package, the
-   upstream reader needs about 7 requests (5 GitHub plus 2 registry), advisory
-   lookup 2, and the malware and publish-time readers 1 each, so at the
-   current share values these shares cover a group of 32 changed packages,
-   the size a test pins. A larger group
-   exhausts a share and ends incomplete with a `budget` reason; the
-   `limit:evidence.envelope.totalTimeoutMs` deadline, not the request count,
-   bounds a very large group.
-
-   The [evidence coverage spec](SPEC-evidence-coverage.md), approved for
-   planning 2026-11-16, replaces these fixed research shares with shares
-   scaled to the change and capped by measured ceilings. Until it is
-   implemented and its fitted values are approved, the table above applies.
+   Fitted share values amendment
+   ([#371](https://github.com/andrewpucci/dependency-update-advisor/issues/371)):
+   the user approved the B12 fit on 2026-11-26. A scaled reader's request
+   share is `min(ceiling, base + rate × members)`, rounded up, computed from
+   trusted inventory when the reader opens. The bases and rates are the
+   `measured` register entries listed in the
+   [fitted share values amendment](SPEC-evidence-coverage.md#fitted-share-values-amendment)
+   (F2 and F3). Byte shares stay at the values above. A one-member change
+   gets a few requests per scaled reader, so a runaway reader stops sooner;
+   a large group gets more, up to the ceiling, and past it ends incomplete
+   with a `budget` reason. The `limit:evidence.envelope.totalTimeoutMs`
+   deadline, not the request count, bounds a very large group. The npm
+   registry reads go to `registry.npmjs.org` and never count against the
+   research GitHub quota.
 
    The snapshot share covers C1's `limit:context.maxSourceCandidates` excerpt
    files with their directories. Freshness reads are reserved separately so a
