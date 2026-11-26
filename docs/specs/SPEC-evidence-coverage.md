@@ -955,7 +955,7 @@ shares would cut off.
   direct member, plus one transitive npm member) completes advisory and
   malware coverage under the register's values, and its computed shares
   are pinned. So does the 32-member group with the advisory pre-pass
-  removed, and a uv change of one direct and three transitive `pip`
+  removed, and a uv change of one direct and seven transitive `pip`
   packages keeps every vulnerability check.
 - The costs test counts an unbatched Actions update at three reviewed and
   two malware requests, and an npm or `pip` update at two reviewed

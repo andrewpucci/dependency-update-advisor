@@ -807,17 +807,18 @@ test.each([true, false])(
   },
 );
 
-test('a uv change of one direct and three transitive pip packages keeps every vulnerability check', async () => {
-  const { fixture, packet } = await scenario({ uvChildren: 3 });
+test('a uv change of one direct and seven transitive pip packages keeps every vulnerability check', async () => {
+  const CHILDREN = 7;
+  const { fixture, packet } = await scenario({ uvChildren: CHILDREN });
   const uv = packet.changes.filter((c) => c.ecosystem === 'uv' && !('basis' in c));
   expect(uv.map((c) => c.role).sort()).toEqual([
     'direct',
-    'transitive',
-    'transitive',
-    'transitive',
+    ...Array.from({ length: CHILDREN }, () => 'transitive'),
   ]);
   // pip reviewed lookups go to OSV one target at a time, two per member (base and head); the
-  // transitive rate is sized for that, so none of them is cut by the advisory share.
+  // transitive rate is sized for that: the advisory share is 3 + 3 × 3 + 2 × 8 = 28 for these
+  // 16 OSV lookups and the npm batches and Action. At a transitive rate of 0.2 it would be
+  // 3 + 3 × 3 + 0.2 × 8, rounded up to 14, and pip members would end with `budget`.
   let osv = 0;
   const result = await runResearch({
     ...base(fixture, packet),
@@ -827,7 +828,7 @@ test('a uv change of one direct and three transitive pip packages keeps every vu
     },
   });
   if (result.kind !== 'ready') throw new Error(result.kind);
-  expect(osv).toBe(8);
+  expect(osv).toBe(2 * (CHILDREN + 1));
   for (const change of result.packet.changes)
     if (change.ecosystem === 'uv' && !('basis' in change))
       expect(change.evidence.vulnerability, change.id).toMatchObject({ status: 'available' });
