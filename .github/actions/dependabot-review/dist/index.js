@@ -15262,6 +15262,48 @@ function interpretNpmLifecycle(change, input) {
 	});
 }
 
+// src/evidence/batches.ts
+/**
+* Approved batch values (C3, 2026-11-26): S1's Batched Lookup Amendment item 2 and the Batching
+* Reconciliation Amendment D2, and S2's tag existence query size.
+*/
+const BATCH_MAX_TARGETS = limit("advisory.batch.maxTargets");
+const BATCH_PAGE_SIZE = String(limit("advisory.batch.pageSize"));
+/** A batch's first URL leaves room under the URL cap for GitHub's `after` cursor. */
+const BATCH_FIRST_URL_BYTES = limit("advisory.batch.urlBytes") - limit("advisory.batch.cursorHeadroomBytes");
+const TAG_QUERY_MAX_CANDIDATES = limit("upstream.tagExistence.maxCandidatesPerQuery");
+/**
+* Items split in order into as few consecutive batches as `fits` allows, each of at most `max`.
+* An item `fits` rejects on its own can be in no batch, so it is returned as `unbatched`.
+*/
+function splitBatches(items, max, fits) {
+	if (!Number.isSafeInteger(max) || max < 1) throw new RangeError("batch maximum must be positive");
+	const batches = [];
+	const unbatched = [];
+	let batch = [];
+	for (const item of items) {
+		if (!fits([item])) {
+			unbatched.push(item);
+			continue;
+		}
+		if (batch.length < max && fits([...batch, item])) {
+			batch.push(item);
+			continue;
+		}
+		batches.push(batch);
+		batch = [item];
+	}
+	if (batch.length) batches.push(batch);
+	return {
+		batches,
+		unbatched
+	};
+}
+/** Tag existence candidates split into GraphQL queries of at most the approved size. */
+function tagQueryBatches(candidates) {
+	return splitBatches(candidates, TAG_QUERY_MAX_CANDIDATES, () => true).batches;
+}
+
 // src/evidence/upstream-read.ts
 /** Each halving of the register's release page size down to 1, for the page-size retry ladder. */
 function halvingFrom(start) {
@@ -15401,6 +15443,88 @@ function upstreamGithubUrl(t) {
 		case "releases": return base + "/releases?per_page=" + t.perPage + "&page=" + t.page;
 	}
 }
+/** The one GraphQL route: tag existence queries only (amendment item 8). */
+const GITHUB_GRAPHQL_URL = GITHUB_API_ORIGIN + "/graphql";
+/**
+* The fixed existence query for `count` candidates. Its text depends on the count alone: every
+* owner, name, and tag is a variable (amendment item 1), so no candidate value enters the text.
+*/
+function tagExistenceQuery(count) {
+	const params = [];
+	const fields = [];
+	for (let i = 0; i < count; i++) {
+		params.push(`$o${i}: String!, $n${i}: String!, $q${i}: String!`);
+		fields.push(`c${i}: repository(owner: $o${i}, name: $n${i}) { nameWithOwner ref(qualifiedName: $q${i}) { target { oid } } }`);
+	}
+	return `query(${params.join(", ")}) { ${fields.join(" ")} rateLimit { cost } }`;
+}
+/** The variables for one query's candidates, in alias order. */
+function tagExistenceVariables(batch) {
+	const variables = {};
+	batch.forEach((c, i) => {
+		const [owner, name] = c.repository.split("/");
+		variables[`o${i}`] = owner;
+		variables[`n${i}`] = name;
+		variables[`q${i}`] = "refs/tags/" + c.tag;
+	});
+	return variables;
+}
+/** A candidate the REST ref probe could also ask about; anything else is never sent. */
+function tagCandidate(value) {
+	if (!isPlainObject(value)) return false;
+	try {
+		githubTarget({
+			kind: "github",
+			repository: value.repository,
+			resource: "ref",
+			ref: "tags/" + String(value.tag)
+		});
+		return isEvidencePath(value.tag);
+	} catch {
+		return false;
+	}
+}
+/** One alias's answer: absent only for a resolved, same-named repository with a null ref (item 2). */
+function aliasExistence(value, repository) {
+	if (!isPlainObject(value) || typeof value.nameWithOwner !== "string") return "unknown";
+	if (value.nameWithOwner.toLowerCase() !== repository.toLowerCase()) return "unknown";
+	if (value.ref === null) return "absent";
+	return isPlainObject(value.ref) ? "present" : "unknown";
+}
+/**
+* Each candidate's answer in one GraphQL response, in alias order. An error naming an alias makes
+* that alias `unknown`; an error without a path, or no `data` object, makes every alias `unknown`
+* (item 4).
+*/
+function tagExistenceAnswers(response, batch) {
+	const unknown = batch.map(() => "unknown");
+	if (!isPlainObject(response) || !isPlainObject(response.data)) return unknown;
+	const errors = response.errors ?? [];
+	if (!Array.isArray(errors)) return unknown;
+	const named = /* @__PURE__ */ new Set();
+	for (const error of errors) {
+		const path = isPlainObject(error) && Array.isArray(error.path) ? error.path : [];
+		if (typeof path[0] !== "string") return unknown;
+		named.add(path[0]);
+	}
+	const data = response.data;
+	return batch.map((c, i) => {
+		const alias = "c" + i;
+		return named.has(alias) || !Object.hasOwn(data, alias) ? "unknown" : aliasExistence(data[alias], c.repository);
+	});
+}
+/** Whether a 200 GraphQL response reports its own primary limit spent. */
+function graphqlPrimaryError(response) {
+	return isPlainObject(response) && Array.isArray(response.errors) && response.errors.some((e) => isPlainObject(e) && e.type === "RATE_LIMITED");
+}
+/**
+* Whether a rate-limited GraphQL refusal is GraphQL's own primary limit: its spent `graphql`
+* counter, with no retry time or secondary-limit message. Anything else is a secondary limit,
+* shared with REST (item 5).
+*/
+function graphqlPrimaryRefusal(response, bytes) {
+	return response.headers.get("x-ratelimit-resource") === "graphql" && response.headers.get("x-ratelimit-remaining") === "0" && !response.headers.has("retry-after") && !/secondary rate limit/iu.test(bytes.toString("utf8"));
+}
 function targetUrl(t) {
 	if (t.kind === "github") return upstreamGithubUrl(t);
 	const identity = encodeURIComponent(t.name) + "/" + encodeURIComponent(t.version);
@@ -15431,6 +15555,8 @@ var Reader = class {
 	effort = 0;
 	nextPages = /* @__PURE__ */ new Map();
 	pages = 0;
+	/** GraphQL's own primary limit is spent: later existence queries answer `unknown` unsent. */
+	graphqlSpent = false;
 	npm;
 	/** Responses served from the run cache; a hit is a read for attempt outcomes, not a charge. */
 	hits = 0;
@@ -15700,6 +15826,100 @@ var Reader = class {
 			reasons: [reason]
 		});
 	}
+	/**
+	* One existence query, sent with neither the research cache nor the quota guard: GraphQL
+	* answers never go through the shared cache (item 7), and GraphQL draws on its own budget, not
+	* the REST quota the guard keeps. It counts one request and its bytes against this reader's
+	* share. Any failure answers every candidate `unknown`.
+	*/
+	async tagQuery(batch) {
+		const unknown = batch.map(() => "unknown");
+		if (this.graphqlSpent) return unknown;
+		try {
+			this.dispatch(GITHUB_GRAPHQL_URL);
+			const { fetch, now, signal } = this.deps;
+			const parsed = await boundedGet({
+				fetch,
+				now,
+				...signal ? { signal } : {}
+			}, {
+				url: GITHUB_GRAPHQL_URL,
+				accept: "application/json",
+				json: {
+					query: tagExistenceQuery(batch.length),
+					variables: tagExistenceVariables(batch)
+				},
+				timeoutMs: Math.min(this.remaining(), this.limits.requestTimeoutMs),
+				charge: () => this.charge()
+			}, (cancel) => {
+				this.active = cancel;
+			}, (response, aborted) => this.graphqlResponse(response, aborted));
+			if (graphqlPrimaryError(parsed)) this.graphqlSpent = true;
+			return tagExistenceAnswers(parsed, batch);
+		} catch {
+			return unknown;
+		}
+	}
+	async graphqlResponse(response, aborted) {
+		requireUpstream(!response.redirected && (!response.url || response.url === GITHUB_GRAPHQL_URL), "unsupported");
+		if (response.status !== HTTP_STATUS.ok) {
+			let bytes = Buffer.alloc(0);
+			try {
+				if (response.body) bytes = await this.body(response, aborted, false);
+			} finally {
+				this.graphqlRefused(response, bytes);
+			}
+			throw new UpstreamFailure("unknown");
+		}
+		requireUpstream(/^application\/(?:[\w.+-]*\+)?json(?:\s*;|$)/iu.test(response.headers.get("content-type") ?? ""), "unsupported");
+		const bytes = response.body ? await this.body(response, aborted, false) : Buffer.alloc(0);
+		this.remaining();
+		return this.copy(JSON.parse(new TextDecoder("utf-8", { fatal: true }).decode(bytes)));
+	}
+	/**
+	* A rate-limited refusal: GraphQL's primary limit stops only later existence queries; a
+	* secondary limit blocks the origin as a REST rate limit does, and records its retry time.
+	*/
+	graphqlRefused(response, bytes) {
+		if (httpReason$2(response, bytes) !== "rate_limit") return;
+		if (graphqlPrimaryRefusal(response, bytes)) {
+			this.graphqlSpent = true;
+			return;
+		}
+		this.limitedBy(GITHUB_GRAPHQL_URL, response);
+		this.deps.quota?.recordStop(this.deps.quota.retryAt(response));
+	}
+	async tagExistence(value) {
+		const candidates = Array.isArray(value) ? value : [];
+		const answers = candidates.map(() => "unknown");
+		if (!this.deps.githubToken || this.busy) return freeze$3(answers);
+		this.busy = true;
+		try {
+			const unique = /* @__PURE__ */ new Map();
+			candidates.forEach((c, i) => {
+				if (!tagCandidate(c)) return;
+				const key = JSON.stringify([c.repository, c.tag]);
+				const entry = unique.get(key) ?? {
+					candidate: {
+						repository: c.repository,
+						tag: c.tag
+					},
+					at: []
+				};
+				entry.at.push(i);
+				unique.set(key, entry);
+			});
+			for (const batch of tagQueryBatches([...unique.values()])) {
+				const result = await this.tagQuery(batch.map((entry) => entry.candidate));
+				batch.forEach((entry, j) => {
+					for (const i of entry.at) answers[i] = result[j];
+				});
+			}
+		} finally {
+			this.busy = false;
+		}
+		return freeze$3(answers);
+	}
 	async read(value) {
 		const before = this.reads;
 		let url = null;
@@ -15746,6 +15966,7 @@ function createUpstreamReader(value, deps) {
 			reader: Object.freeze({
 				limits,
 				read: (t) => reader.read(t),
+				tagExistence: (candidates) => reader.tagExistence(candidates),
 				close: () => reader.close(),
 				spend: (amount) => reader.spend(amount),
 				stopped: () => reader.stopReason(),
