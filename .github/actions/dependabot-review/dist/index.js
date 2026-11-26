@@ -9992,6 +9992,18 @@ const DEFINITIONS = [
 		note: "awaiting L8 measurement",
 		test: "none: the timeout of the manual demand measurement, which needs a live token and is not part of npm test"
 	}),
+	{
+		id: "measureDemand.quotaTraceValueUnits",
+		value: 32,
+		unit: "code units",
+		protects: "Keeps the opt-in quota trace to short rate-limit header values, so an unexpected or oversized header value never reaches a report the maintainer shares.",
+		basis: {
+			kind: "safety",
+			reason: "GitHub rate-limit headers are a short resource name or a whole number (Unix-second resets have 10 digits); 32 code units keeps every expected value with room to spare while rejecting free text."
+		},
+		effect: "A trace header value that is longer, or is not lowercase letters, digits, and underscores, is reported as 'invalid'.",
+		test: "src/measurement/demand.test.ts > a quota trace reports an unexpected header value as invalid"
+	},
 	unjustified("signals.reasonCodeUnits", 350, "code units", {
 		protects: "Registry deprecation text is untrusted; an unbounded reason would bloat the packet's text and the comment.",
 		effect: "Longer text is cut at the cap without splitting a surrogate pair and marked '[reason truncated]'.",
@@ -12696,6 +12708,28 @@ function count(value) {
 	const parsed = Number(value);
 	return Number.isSafeInteger(parsed) ? parsed : null;
 }
+/**
+* The response's core `x-ratelimit-remaining` and its reset in Unix milliseconds, or null when the
+* response is from another host, names another resource, or either header is invalid or its reset
+* is past or beyond the quota window. The guard and the demand measurement read quota only
+* through this, so both apply the same validity rules; the measurement applies them to every live
+* GitHub API response the run makes, while the guard sees only research's.
+*/
+function quotaReading(url, response, options) {
+	if (!isGithubApi(url)) return null;
+	const resource = response.headers.get("x-ratelimit-resource");
+	if (resource !== null && resource !== "core") return null;
+	const remaining = count(response.headers.get("x-ratelimit-remaining"));
+	const resetSeconds = count(response.headers.get("x-ratelimit-reset"));
+	if (remaining === null || resetSeconds === null) return null;
+	const reset = resetSeconds * DURATION_MS.second;
+	const now = options.wallNow();
+	if (reset <= now || reset > now + options.windowMs) return null;
+	return {
+		remaining,
+		reset
+	};
+}
 function createGithubQuotaGuard(options) {
 	let window = null;
 	let refused = 0;
@@ -12733,15 +12767,9 @@ function createGithubQuotaGuard(options) {
 			if (estimate) estimate.started += 1;
 		},
 		observe(url, response) {
-			if (!isGithubApi(url)) return;
-			const resource = response.headers.get("x-ratelimit-resource");
-			if (resource !== null && resource !== "core") return;
-			const remaining = count(response.headers.get("x-ratelimit-remaining"));
-			const resetSeconds = count(response.headers.get("x-ratelimit-reset"));
-			if (remaining === null || resetSeconds === null) return;
-			const reset = resetSeconds * DURATION_MS.second;
-			const now = options.wallNow();
-			if (reset <= now || reset > now + options.windowMs) return;
+			const reading = quotaReading(url, response, options);
+			if (!reading) return;
+			const { remaining, reset } = reading;
 			const estimate = current();
 			if (estimate && reset < estimate.reset) return;
 			if (estimate && reset === estimate.reset) {
