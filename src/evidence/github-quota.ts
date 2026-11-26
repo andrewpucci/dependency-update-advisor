@@ -64,6 +64,33 @@ function count(value: string | null): number | null {
   return Number.isSafeInteger(parsed) ? parsed : null;
 }
 
+/** A valid core rate-limit reading from one live GitHub API response (A2.3). */
+export type QuotaReading = Readonly<{ remaining: number; reset: number }>;
+
+/**
+ * The response's core `x-ratelimit-remaining` and its reset in Unix milliseconds, or null when the
+ * response is from another host, names another resource, or either header is invalid or its reset
+ * is past or beyond the quota window. The guard and the demand measurement read quota only
+ * through this, so both apply the same validity rules; the measurement applies them to every live
+ * GitHub API response the run makes, while the guard sees only research's.
+ */
+export function quotaReading(
+  url: string,
+  response: Response,
+  options: Pick<GithubQuotaOptions, 'wallNow' | 'windowMs'>,
+): QuotaReading | null {
+  if (!isGithubApi(url)) return null;
+  const resource = response.headers.get('x-ratelimit-resource');
+  if (resource !== null && resource !== 'core') return null;
+  const remaining = count(response.headers.get('x-ratelimit-remaining'));
+  const resetSeconds = count(response.headers.get('x-ratelimit-reset'));
+  if (remaining === null || resetSeconds === null) return null;
+  const reset = resetSeconds * DURATION_MS.second;
+  const now = options.wallNow();
+  if (reset <= now || reset > now + options.windowMs) return null;
+  return { remaining, reset };
+}
+
 export function createGithubQuotaGuard(options: GithubQuotaOptions): GithubQuotaGuard {
   let window: { reset: number; remaining: number; started: number } | null = null;
   let refused = 0;
@@ -97,17 +124,13 @@ export function createGithubQuotaGuard(options: GithubQuotaOptions): GithubQuota
       if (estimate) estimate.started += 1;
     },
     observe(url, response) {
-      if (!isGithubApi(url)) return;
-      const resource = response.headers.get('x-ratelimit-resource');
-      if (resource !== null && resource !== 'core') return;
-      const remaining = count(response.headers.get('x-ratelimit-remaining'));
-      const resetSeconds = count(response.headers.get('x-ratelimit-reset'));
-      if (remaining === null || resetSeconds === null) return;
-      const reset = resetSeconds * DURATION_MS.second;
-      const now = options.wallNow();
-      if (reset <= now || reset > now + options.windowMs) return;
+      const reading = quotaReading(url, response, options);
+      if (!reading) return;
+      const { remaining, reset } = reading;
       const estimate = current();
       if (estimate && reset < estimate.reset) return;
+      // Within one window the estimate never rises: a higher remaining is a response served
+      // earlier, or counted by another GitHub node, arriving late. Only a later reset raises it.
       if (estimate && reset === estimate.reset) {
         if (remaining > estimate.remaining - estimate.started) return;
       }

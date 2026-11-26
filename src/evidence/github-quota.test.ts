@@ -233,3 +233,75 @@ test('deciding alone never lowers the estimate; only a started request does', ()
   guard.started(NPM);
   expect(admitUntilRefused(guard)).toBe(2);
 });
+
+type QuotaEvent =
+  | Readonly<{ kind: 'start' }>
+  | Readonly<{ kind: 'wall'; now: number }>
+  | Readonly<{
+      kind: 'response';
+      url?: string;
+      remaining: string;
+      reset: number;
+      resource?: string;
+    }>;
+
+/**
+ * The guard's estimate after `events`: how many requests it admits before refusing, plus the
+ * reserve. Each prefix is replayed on a fresh guard, so probing never changes the guard measured.
+ */
+function estimateAfter(events: readonly QuotaEvent[], reserve = 5): number {
+  const wall = { now: WALL };
+  const guard = guardAt(wall, reserve);
+  for (const event of events) {
+    if (event.kind === 'start') {
+      expect(guard.admit(API).allowed).toBe(true);
+      guard.started(API);
+    } else if (event.kind === 'wall') wall.now = event.now;
+    else guard.observe(event.url ?? API, rateLimited(event.remaining, event.reset, event.resource));
+  }
+  return admitUntilRefused(guard, 5000) + reserve;
+}
+
+test('a non-monotonic header sequence never raises the estimate within a window (#438)', () => {
+  const first = WALL + 30 * MINUTE;
+  const second = first + HOUR;
+  // Four requests in flight, served by GitHub as 99, 98, 97, 96 but completing out of order,
+  // with headers for other resources and another host's quota interleaved.
+  const window: QuotaEvent[] = [
+    { kind: 'start' },
+    { kind: 'start' },
+    { kind: 'start' },
+    { kind: 'start' },
+    { kind: 'response', remaining: '97', reset: first },
+    { kind: 'response', remaining: '99', reset: first },
+    // Read as core, the first would start a later window and the second would lower this one.
+    { kind: 'response', remaining: '4990', reset: first + MINUTE, resource: 'graphql' },
+    { kind: 'response', remaining: '29', reset: first, resource: 'search' },
+    { kind: 'response', remaining: '650', reset: first + MINUTE, resource: 'code_scanning_upload' },
+    { kind: 'start' },
+    { kind: 'response', remaining: '96', reset: first, resource: 'core' },
+    { kind: 'response', remaining: '98', reset: first },
+    { kind: 'response', url: 'https://codeload.github.com/o/r', remaining: '4999', reset: first },
+    { kind: 'response', remaining: '95', reset: first },
+  ];
+  const estimates = window.map((_, index) => estimateAfter(window.slice(0, index + 1)));
+  // With no estimate yet the guard admits everything; from the first reading on it only falls.
+  const read = estimates.slice(4);
+  expect(read[0]).toBe(97);
+  for (let i = 1; i < read.length; i++)
+    expect(read[i], `step ${i + 4}`).toBeLessThanOrEqual(read[i - 1]!);
+  expect(read.at(-1)).toBe(95);
+
+  // After the reset passes, a late response from the old window changes nothing; the next
+  // window's first reading raises the estimate.
+  const afterReset: QuotaEvent[] = [
+    ...window,
+    { kind: 'wall', now: first + SECOND },
+    { kind: 'response', remaining: '3', reset: first },
+    { kind: 'response', remaining: '999', reset: second },
+  ];
+  expect(estimateAfter(afterReset)).toBe(999);
+  // A later reset raises the estimate even before the current window's reset passes.
+  const later = { kind: 'response', remaining: '990', reset: first + 10 * MINUTE } as const;
+  expect(estimateAfter([...window, later])).toBe(990);
+});
