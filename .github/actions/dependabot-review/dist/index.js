@@ -95,6 +95,7 @@ const HTTP_STATUS = Object.freeze({
 	unauthorized: 401,
 	forbidden: 403,
 	notFound: 404,
+	uriTooLong: 414,
 	unprocessableContent: 422,
 	tooManyRequests: 429,
 	serverErrorMin: 500,
@@ -9291,8 +9292,8 @@ const DEFINITIONS = [
 		test: "src/evidence/advisory-read.name-forms.test.ts > a long name splits discovery so every spelling is sent once with cursor headroom"
 	}),
 	unjustified("advisory.discovery.urlBytes", 4096, "bytes", {
-		protects: "Discovery URLs stay under the length GitHub accepted (414 at 8,259 bytes).",
-		effect: "Spellings split across as many discovery requests as the cap requires; a continuation URL over it is budget.",
+		protects: "Discovery URLs stay under the length GitHub accepted (414 at 8,259 bytes). The batching probe also uses it as a stand-in bound for versioned npm batch URLs; it is not the npm batch URL length S1's Batched Lookup Amendment item 2 leaves Ask first.",
+		effect: "Spellings split across as many discovery requests as the cap requires; a continuation URL over it is budget. In the batching probe, a sweep batch's first URL and the batch at the proposed maximum stay within it less limit:advisory.discovery.cursorHeadroomBytes, and only a 414 to a batch size whose URL is over it leaves the verdict unaffected (tests/measure-batching/probe.test.ts > a URL of exactly the cap is inside it and one byte longer is over it; > the sweep fits each first URL at the longest page size, leaving the cursor headroom; > sizes GitHub rejects as too long are reported as rejected and do not block complete).",
 		note: "approved 2026-11-20 from GitHub probes recorded in S1's Package Name Form Amendment; no repository command reproduces them",
 		test: "src/evidence/advisory-read.name-forms.test.ts > a continuation URL of exactly 4,096 bytes is followed; one byte longer is budget"
 	}),
@@ -10325,9 +10326,9 @@ const DEFINITIONS = [
 			url: "https://docs.github.com/en/rest/security-advisories/global-advisories",
 			checked: "2026-11-26",
 			platformValue: 1e3,
-			margin: "none: GitHub's documented `affects` maximum is the size the probe must check (S1 Batched Lookup Amendment, Verification), and the one batch above it records what GitHub does there"
+			margin: "none: GitHub's documented `affects` maximum bounds the sizes the probe measures, and the one batch above it records what GitHub does there. The proposed maximum the verification requires (S1 Batched Lookup Amendment) is the largest positive-last batch at or below this value whose first URL fits limit:advisory.discovery.urlBytes less limit:advisory.discovery.cursorHeadroomBytes; the URL cap, not this value, sets it on real targets"
 		},
-		effect: "Batch sizes halve down from this value to one, and the probe also sends one batch of this many plus one, which the verdict ignores. The sweep splits a larger group into batches of at most this many.",
+		effect: "Batch sizes halve down from this value to one as measurement, and the probe also sends one batch of this many plus one, which the verdict ignores. The batch at the proposed maximum (`maxFitTargets`) and every sweep batch hold at most this many, with a first URL within the URL cap less the cursor headroom; the proposed-maximum batch must complete for the verdict to.",
 		test: "tests/measure-batching/probe.test.ts > npm batches reach the register maximum and one more, and the sweep splits a larger group at the maximum"
 	},
 	{
@@ -10773,6 +10774,7 @@ function actor(value) {
 		type: value.type
 	};
 }
+/** Whether an actor is the Dependabot bot account. */
 function isDependabot(value) {
 	return value.login === "dependabot[bot]" && value.type === "Bot";
 }

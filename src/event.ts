@@ -217,7 +217,8 @@ function actor(value: unknown): Actor | null {
   return { id: value.id, login: value.login, type: value.type };
 }
 
-function isDependabot(value: Actor): boolean {
+/** Whether an actor is the Dependabot bot account. */
+export function isDependabot(value: Actor): boolean {
   return value.login === 'dependabot[bot]' && value.type === 'Bot';
 }
 

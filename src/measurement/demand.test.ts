@@ -4,6 +4,7 @@ import {
   createDemandRecorder,
   labelReader,
   labelShare,
+  newestDependabotRun,
   readerShare,
 } from './demand.js';
 import { buildRegister, limit, REGISTER } from '../limits.js';
@@ -597,4 +598,22 @@ test('reports the coverage it is given, and none by default', () => {
 
   expect(recorder.report({}).coverage).toEqual({});
   expect(recorder.report({}, undefined, coverage).coverage).toEqual(coverage);
+});
+
+test('the newest run Dependabot started is bound, skipping people and runs with no actor', () => {
+  const dependabot = { id: 49_699_333, login: 'dependabot[bot]', type: 'Bot' };
+  const person = { id: 7, login: 'octocat', type: 'User' };
+  const lookalike = { id: 8, login: 'dependabot[bot]', type: 'User' };
+  // GitHub lists a head's runs newest first.
+  const runs = [
+    { id: 5, actor: person },
+    { id: 4, actor: null },
+    { id: 3 },
+    { id: 2, actor: lookalike },
+    { id: 1, actor: dependabot },
+    { id: 0, actor: dependabot },
+  ];
+  expect(newestDependabotRun(runs)?.id).toBe(1);
+  expect(newestDependabotRun(runs.slice(0, 4))).toBeNull();
+  expect(newestDependabotRun([])).toBeNull();
 });

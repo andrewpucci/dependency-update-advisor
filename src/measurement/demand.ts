@@ -1,10 +1,24 @@
 import { AsyncLocalStorage } from 'node:async_hooks';
+import { isDependabot } from '../event.js';
 import { isGithubApi, quotaReading, type QuotaReading } from '../evidence/github-quota.js';
 import { limit } from '../limits.js';
 import type { ResearchObservation, ResearchStage } from '../research.js';
 import type { DeepReadonly, PacketChange } from '../schema.js';
 
 export type DemandPhase = ResearchStage | 'pre-research' | 'post-research';
+
+type RunActor = Parameters<typeof isDependabot>[0];
+
+/**
+ * The newest workflow run Dependabot started, from GitHub's newest-first run list, or null. A head
+ * can also have runs a person started by pushing or re-running; the reviewer binds only
+ * Dependabot's. A run with no actor (a deleted account) is skipped.
+ */
+export function newestDependabotRun<T extends { actor?: unknown }>(runs: readonly T[]): T | null {
+  const byDependabot = (actor: unknown) =>
+    !!actor && typeof actor === 'object' && isDependabot(actor as RunActor);
+  return runs.find((run) => byDependabot(run.actor)) ?? null;
+}
 export type DemandUnits = Readonly<Record<string, number>>;
 export type DemandRow = {
   requests: number;

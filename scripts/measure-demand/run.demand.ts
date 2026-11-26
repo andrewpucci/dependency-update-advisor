@@ -41,6 +41,7 @@ import {
   coverageCounts,
   createDemandRecorder,
   labelShare,
+  newestDependabotRun,
   type DemandCoverage,
   type DemandPhase,
 } from '../../src/measurement/demand.js';
@@ -220,10 +221,12 @@ async function binding(token: string, pr: number) {
   );
   const runs = await api(
     token,
-    `repos/${owner}/${name}/actions/workflows/${workflow.id}/runs?head_sha=${pull.head.sha}&event=pull_request&per_page=1`,
+    `repos/${owner}/${name}/actions/workflows/${workflow.id}/runs?head_sha=${pull.head.sha}&event=pull_request&per_page=${limit('github.pageSize')}`,
   );
-  const run = runs.workflow_runs[0];
-  if (!run) throw new Error('no CI run for the PR head');
+  // The reviewer only binds a Dependabot run; binding a person's run on the head would fail later
+  // as a session conflict and surface only as `internal-failure`.
+  const run = newestDependabotRun<any>(runs.workflow_runs ?? []);
+  if (!run) throw new Error('no Dependabot-started CI run exists for the PR head');
   const value = {
     repository: { id: repo.id, owner, name },
     workflow: { id: workflow.id, path: workflow.path },
