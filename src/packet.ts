@@ -1,43 +1,38 @@
-import { record } from "./event.js";
-import { REGISTER } from "./limits.js";
-import {
-  fitOptionalEvidence,
-  type DroppedOptional,
-} from "./optional-evidence.js";
+import { record } from './event.js';
+import { REGISTER } from './limits.js';
+import { fitOptionalEvidence, type DroppedOptional } from './optional-evidence.js';
 import {
   EVIDENCE_REASONS,
   validateReviewPacket,
   type EvidenceReason,
   type PacketResult,
-} from "./schema.js";
+} from './schema.js';
 
-type Ecosystem = "npm" | "actions" | "uv";
+type Ecosystem = 'npm' | 'actions' | 'uv';
 type Session = Readonly<{ close: () => void }>;
 /**
  * Which source gave no usable evidence, and a fixed reason; never error text. A collector that a
  * register cap stopped also names the cap's id as `limit` and the count it measured.
  */
 export type PacketGap = Readonly<{
-  source: Ecosystem | "packet" | "brief";
+  source: Ecosystem | 'packet' | 'brief';
   reason: EvidenceReason;
   limit?: string;
   count?: number;
 }>;
 
 function gapReason(value: unknown): EvidenceReason {
-  if (!record(value, ["kind"])) return "malformed";
-  if (value.kind !== "unavailable") return "malformed";
-  return (
-    EVIDENCE_REASONS.find((reason) => reason === value.reason) ?? "unknown"
-  );
+  if (!record(value, ['kind'])) return 'malformed';
+  if (value.kind !== 'unavailable') return 'malformed';
+  return EVIDENCE_REASONS.find((reason) => reason === value.reason) ?? 'unknown';
 }
 /** A collector's gap, keeping its stopping cap only when it is a register id with a count. */
 function collectorGap(value: unknown, source: Ecosystem): PacketGap {
   const reason = gapReason(value);
   if (
-    reason !== "budget" ||
-    !record(value, ["limit", "count"]) ||
-    typeof value.limit !== "string" ||
+    reason !== 'budget' ||
+    !record(value, ['limit', 'count']) ||
+    typeof value.limit !== 'string' ||
     !REGISTER.has(value.limit) ||
     !Number.isSafeInteger(value.count) ||
     (value.count as number) < 0
@@ -47,15 +42,15 @@ function collectorGap(value: unknown, source: Ecosystem): PacketGap {
 }
 export type PacketAssemblyResult =
   | Readonly<{
-      kind: "ready";
-      packet: Extract<PacketResult, { ok: true }>["packet"];
+      kind: 'ready';
+      packet: Extract<PacketResult, { ok: true }>['packet'];
       /** Optional reachability evidence dropped to fit packet budgets; empty when everything fit. */
       droppedOptional: readonly DroppedOptional[];
     }>
-  | Readonly<{ kind: "incomplete"; gaps: readonly PacketGap[] }>
-  | Readonly<{ kind: "stale" | "internal-failure" }>
+  | Readonly<{ kind: 'incomplete'; gaps: readonly PacketGap[] }>
+  | Readonly<{ kind: 'stale' | 'internal-failure' }>
   /** C2 could not produce a usable context; `category` is C2's own failure category. */
-  | Readonly<{ kind: "context-failure"; category: string }>;
+  | Readonly<{ kind: 'context-failure'; category: string }>;
 export type PacketAssemblyInput<S extends Session = Session> = Readonly<{
   /** Binding, base SHA, and context revision; `context` too unless `collectContext` supplies it. */
   trusted: unknown;
@@ -82,34 +77,33 @@ type Fragment = Readonly<{
 }>;
 
 type CollectedFragments =
-  | Readonly<{ kind: "ready"; fragments: readonly Fragment[] }>
-  | Readonly<{ kind: "incomplete"; gaps: readonly PacketGap[] }>
-  | Readonly<{ kind: "stale" }>;
+  | Readonly<{ kind: 'ready'; fragments: readonly Fragment[] }>
+  | Readonly<{ kind: 'incomplete'; gaps: readonly PacketGap[] }>
+  | Readonly<{ kind: 'stale' }>;
 type TrustedContext =
-  | Readonly<{ kind: "ready"; trusted: Record<string, unknown> }>
-  | Readonly<{ kind: "context-failure"; category: string }>
-  | Readonly<{ kind: "internal-failure" | "stale" }>;
+  | Readonly<{ kind: 'ready'; trusted: Record<string, unknown> }>
+  | Readonly<{ kind: 'context-failure'; category: string }>
+  | Readonly<{ kind: 'internal-failure' | 'stale' }>;
 
 function fragment(value: unknown, ecosystem: Ecosystem): Fragment | null {
   if (
     !record(value, [
-      "kind",
-      "ecosystem",
-      "coverage",
-      "changes",
-      "sources",
-      "findings",
-      "relationships",
+      'kind',
+      'ecosystem',
+      'coverage',
+      'changes',
+      'sources',
+      'findings',
+      'relationships',
     ]) ||
-    value.kind !== "complete" ||
+    value.kind !== 'complete' ||
     value.ecosystem !== ecosystem ||
     !Array.isArray(value.changes) ||
     !Array.isArray(value.sources) ||
     !Array.isArray(value.findings) ||
     !Array.isArray(value.relationships) ||
     (value.reachability !== undefined && !Array.isArray(value.reachability)) ||
-    (value.optionalRelationships !== undefined &&
-      !Array.isArray(value.optionalRelationships))
+    (value.optionalRelationships !== undefined && !Array.isArray(value.optionalRelationships))
   )
     return null;
   return value as Fragment;
@@ -120,43 +114,38 @@ async function collectFragments<S extends Session>(
   session: S,
 ): Promise<CollectedFragments> {
   const fragments: Fragment[] = [];
-  for (const ecosystem of ["npm", "actions", "uv"] as const) {
-    if (!input.isCurrent()) return { kind: "stale" };
+  for (const ecosystem of ['npm', 'actions', 'uv'] as const) {
+    if (!input.isCurrent()) return { kind: 'stale' };
     const result = await input.collectors[ecosystem](session);
     const value = fragment(result, ecosystem);
     if (!value || !input.isCurrent())
       return input.isCurrent()
-        ? { kind: "incomplete", gaps: [collectorGap(result, ecosystem)] }
-        : { kind: "stale" };
+        ? { kind: 'incomplete', gaps: [collectorGap(result, ecosystem)] }
+        : { kind: 'stale' };
     fragments.push(value);
   }
-  return { kind: "ready", fragments };
+  return { kind: 'ready', fragments };
 }
 
 async function collectTrustedContext<S extends Session>(
   input: PacketAssemblyInput<S>,
   fragments: readonly Fragment[],
 ): Promise<TrustedContext> {
-  if (!record(input.trusted, ["binding", "baseSha", "contextRevision"]))
-    return { kind: "internal-failure" };
+  if (!record(input.trusted, ['binding', 'baseSha', 'contextRevision']))
+    return { kind: 'internal-failure' };
   let trusted: Record<string, unknown> = input.trusted;
   if (input.collectContext) {
-    const context = await input.collectContext(
-      fragments.flatMap((item) => item.changes),
-    );
-    if (!input.isCurrent()) return { kind: "stale" };
-    if (!record(context, ["ok"])) return { kind: "internal-failure" };
+    const context = await input.collectContext(fragments.flatMap((item) => item.changes));
+    if (!input.isCurrent()) return { kind: 'stale' };
+    if (!record(context, ['ok'])) return { kind: 'internal-failure' };
     if (context.ok !== true)
       return {
-        kind: "context-failure",
-        category: record(context.error, ["category"])
-          ? String(context.error.category)
-          : "unknown",
+        kind: 'context-failure',
+        category: record(context.error, ['category']) ? String(context.error.category) : 'unknown',
       };
     trusted = { ...trusted, context };
-  } else if (!Object.hasOwn(trusted, "context"))
-    return { kind: "internal-failure" };
-  return { kind: "ready", trusted };
+  } else if (!Object.hasOwn(trusted, 'context')) return { kind: 'internal-failure' };
+  return { kind: 'ready', trusted };
 }
 
 /** Owns one read session and delegates all structural acceptance to T4 validation. */
@@ -165,34 +154,28 @@ export async function assembleReviewPacket<S extends Session>(
 ): Promise<PacketAssemblyResult> {
   let session: S | undefined;
   try {
-    if (!input.isCurrent()) return { kind: "stale" };
+    if (!input.isCurrent()) return { kind: 'stale' };
     session = await input.openSession();
     const collected = await collectFragments(input, session);
-    if (collected.kind !== "ready") return collected;
+    if (collected.kind !== 'ready') return collected;
     const context = await collectTrustedContext(input, collected.fragments);
-    if (context.kind !== "ready") return context;
+    if (context.kind !== 'ready') return context;
     const fragments = collected.fragments;
     const list = (pick: (item: Fragment) => unknown) =>
       fragments.flatMap((item) => {
         const value = pick(item);
         return Array.isArray(value) ? value : [];
       });
-    const build = (
-      reachability: readonly unknown[],
-      relationships: readonly unknown[],
-    ) => ({
+    const build = (reachability: readonly unknown[], relationships: readonly unknown[]) => ({
       version: 1,
       binding: context.trusted.binding,
       baseSha: context.trusted.baseSha,
       contextRevision: context.trusted.contextRevision,
       context: context.trusted.context,
-      coverage: Object.fromEntries(
-        fragments.map((item) => [item.ecosystem, item.coverage]),
-      ),
+      coverage: Object.fromEntries(fragments.map((item) => [item.ecosystem, item.coverage])),
       changes: fragments.flatMap((item) => item.changes),
       sources: [
-        ...(input.inventorySource === null ||
-        input.inventorySource === undefined
+        ...(input.inventorySource === null || input.inventorySource === undefined
           ? []
           : [input.inventorySource]),
         ...fragments.flatMap((item) => item.sources),
@@ -219,21 +202,21 @@ export async function assembleReviewPacket<S extends Session>(
     );
     if (packet.ok)
       return {
-        kind: "ready",
+        kind: 'ready',
         packet: packet.packet,
         droppedOptional: current.dropped,
       };
     return {
-      kind: "incomplete",
+      kind: 'incomplete',
       gaps: [
         {
-          source: "packet",
-          reason: packet.error.category === "budget" ? "budget" : "malformed",
+          source: 'packet',
+          reason: packet.error.category === 'budget' ? 'budget' : 'malformed',
         },
       ],
     };
   } catch {
-    return { kind: "internal-failure" };
+    return { kind: 'internal-failure' };
   } finally {
     try {
       session?.close();
