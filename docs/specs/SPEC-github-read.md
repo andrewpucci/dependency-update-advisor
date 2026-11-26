@@ -102,12 +102,14 @@ complete or `not_applicable` merely because its HTTP calls succeeded.
 ### Paginated changed files
 
 1. Use `GET /repos/{owner}/{repo}/pulls/{pull_number}/files`, with explicit
-   `per_page=100` and consecutive pages starting at 1. GitHub documents the
-   [100-entry page maximum and 3,000-file endpoint cap](https://docs.github.com/en/rest/pulls/pulls#list-pull-requests-files).
+   `per_page` of `limit:github.pageSize` and consecutive pages starting at 1.
+   GitHub documents the [`limit:github.pageSize`-entry page maximum and
+   `limit:github.treeMaxFiles`-file endpoint cap](https://docs.github.com/en/rest/pulls/pulls#list-pull-requests-files).
    Continue through a full page; require a terminal short/empty page consistent
    with pagination metadata and the PR's `changed_files` count. Validate that
    count as a nonnegative safe integer and compare it before/after collection.
-2. Reaching 3,000 files is incomplete even if no next page is advertised.
+2. Reaching `limit:github.treeMaxFiles` files is incomplete even if no next
+   page is advertised.
    Caller page/file budgets, a missing page, duplicate/conflicting paths,
    malformed rows, inconsistent counts, an unexpected empty page, or a looping
    or contradictory next-page link cannot yield a completed discovery result.
@@ -134,7 +136,8 @@ complete or `not_applicable` merely because its HTTP calls succeeded.
    A rename uses the previous path on the base side and current path on the
    head side; an addition/removal does not authorize guessing the missing side.
 2. Reject absolute paths, traversal segments, empty segments, backslashes,
-   control characters, and paths exceeding T4's 1,024 UTF-8-byte identity bound.
+   control characters, and paths exceeding T4's UTF-8 byte identity bound,
+   `limit:packet.identityBytes`.
    Encode literal path segments when constructing fixed-origin API requests;
    reject URL-shaped targets and never interpret percent escapes as traversal.
    Hidden paths such as `.github/workflows/example.yml` remain supported.
@@ -377,21 +380,21 @@ Use synthetic table-driven fixtures and streaming transport stubs in
 `src/github-read.test.ts`. Assert requested repository/path/SHA, dispatch
 count, cancellation, detached outputs, and retained failure provenance.
 
-| Fixture                                                                | Required result                                                                              |
-| ---------------------------------------------------------------------- | -------------------------------------------------------------------------------------------- |
-| Multiple pages; exactly 100 rows; zero files                           | Fetch terminal page as needed; reconcile counts; empty success requires completed discovery. |
-| Exactly 3,000 files; missing/duplicate page; loop; count mismatch      | Explicit incomplete discovery; no absent-ecosystem proof.                                    |
-| Head move, retarget, closure, wrong repo/author, invalid binding       | Obsolete/conflicting result; no mixing or retargeting.                                       |
-| Base SHA moves mid-collection: same or changed merge base; read fails  | Same: collection continues. Changed: obsolete. Failed comparison: explicit unavailable.      |
-| Binding merge base differs from binding base                           | Incomplete discovery under the user-selected conservative v1 rule; no ancestry read.         |
-| Add/remove/rename across roots or ecosystems; unchanged companion      | Both paths and correct immutable side/repository preserved.                                  |
-| Same path at different SHAs/repos; conflicting blob ID or size         | Separate provenance; reject contradictions and invalid reuse.                                |
-| Zero-byte blob; confirmed absent path; generic 404                     | Available empty bytes, affirmative absence, and failed lookup remain distinct.               |
-| Malformed Base64; truncated tree/body; symlink/submodule; unknown mode | No usable partial file or target-following; explicit limits.                                 |
-| Empty/omitted comparison; feature 403; primary/secondary rate limit    | Known file evidence retained; independent comparison reasons; no safety inference.           |
-| Each supplied count/byte/time bound, exact boundary and one beyond     | Accept complete in-budget evidence; abort overflow with fixed reasons.                       |
-| Multibyte bytes; chunked/oversized body; ignored abort; reused session | Correct accounting and cancellation; no budget reset or late success.                        |
-| Malicious URL/path/link/error text; mixed npm/Actions/uv               | Fixed-origin reads and safe diagnostics; gaps retain their affected scope.                   |
+| Fixture                                                                                 | Required result                                                                              |
+| --------------------------------------------------------------------------------------- | -------------------------------------------------------------------------------------------- |
+| Multiple pages; exactly `limit:github.pageSize` rows; zero files                        | Fetch terminal page as needed; reconcile counts; empty success requires completed discovery. |
+| Exactly `limit:github.treeMaxFiles` files; missing/duplicate page; loop; count mismatch | Explicit incomplete discovery; no absent-ecosystem proof.                                    |
+| Head move, retarget, closure, wrong repo/author, invalid binding                        | Obsolete/conflicting result; no mixing or retargeting.                                       |
+| Base SHA moves mid-collection: same or changed merge base; read fails                   | Same: collection continues. Changed: obsolete. Failed comparison: explicit unavailable.      |
+| Binding merge base differs from binding base                                            | Incomplete discovery under the user-selected conservative v1 rule; no ancestry read.         |
+| Add/remove/rename across roots or ecosystems; unchanged companion                       | Both paths and correct immutable side/repository preserved.                                  |
+| Same path at different SHAs/repos; conflicting blob ID or size                          | Separate provenance; reject contradictions and invalid reuse.                                |
+| Zero-byte blob; confirmed absent path; generic 404                                      | Available empty bytes, affirmative absence, and failed lookup remain distinct.               |
+| Malformed Base64; truncated tree/body; symlink/submodule; unknown mode                  | No usable partial file or target-following; explicit limits.                                 |
+| Empty/omitted comparison; feature 403; primary/secondary rate limit                     | Known file evidence retained; independent comparison reasons; no safety inference.           |
+| Each supplied count/byte/time bound, exact boundary and one beyond                      | Accept complete in-budget evidence; abort overflow with fixed reasons.                       |
+| Multibyte bytes; chunked/oversized body; ignored abort; reused session                  | Correct accounting and cancellation; no budget reset or late success.                        |
+| Malicious URL/path/link/error text; mixed npm/Actions/uv                                | Fixed-origin reads and safe diagnostics; gaps retain their affected scope.                   |
 
 ## Boundaries and Success Criteria
 

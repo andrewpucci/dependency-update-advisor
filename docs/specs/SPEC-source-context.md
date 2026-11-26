@@ -46,9 +46,10 @@ An empty context result is not evidence that a dependency has no usages.
   intervening directories, and excerpt files. C1's config-file link behavior
   stays unchanged.
 - The [selected B1 baseline](../../tests/parity/README.md) supplies the existing
-  source suffix family, 500-character excerpt cap, and 20-fact cap per
-  dependency. Its manifest and workflow context are not source-file opt-in;
-  evidence collectors retain ownership of those data under their own specs.
+  source suffix family, `limit:context.maxSourceExcerptCodeUnits` excerpt
+  cap, and 20-fact cap per dependency. Its manifest and workflow context are
+  not source-file opt-in; evidence collectors retain ownership of those data
+  under their own specs.
 - C2 retains that source suffix family rather than adding Python or
   another file class. A uv dependency can have no eligible source context;
   that limit must remain visible rather than inventing usage evidence.
@@ -182,20 +183,20 @@ records remain in consumer repositories.
     or `.` plus one (`react` matches `react/jsx-runtime`, not `react-dom`,
     `preact`, `@scope/react`, `./react`, or `lodash.merge` for `lodash`).
     The token check uses the whole line, so truncation cannot hide a longer
-    name. Emit its canonical relative path and at most 500 UTF-16
-    code units, preserving complete characters; never adjacent lines or a
-    whole file. If shortening removes the dependency name, omit that excerpt.
-    Use deterministic ordering and deduplicate overlapping roots and repeated
-    matches.
+    name. Emit its canonical relative path and at most
+    `limit:context.maxSourceExcerptCodeUnits` UTF-16 code units, preserving
+    complete characters; never adjacent lines or a whole file. If shortening
+    removes the dependency name, omit that excerpt. Use deterministic ordering
+    and deduplicate overlapping roots and repeated matches.
 13. Reject a suspicious entire line before truncation or model projection.
     Shared checks must cover credential-like assignments, authorization
     headers, recognizable token/key formats, private-key material, URL
-    credentials, and sensitive-value fields. A suspicious value beyond
-    character 500 still disqualifies the line. Do not redact the value and
-    send the remaining line. A later independently safe matching line may
-    supply the sole excerpt for that dependency/file pair. Lines inside a
-    detected multiline credential block remain ineligible even when that
-    individual line has no credential marker.
+    credentials, and sensitive-value fields. A suspicious value beyond the
+    `limit:context.maxSourceExcerptCodeUnits` excerpt cap still disqualifies the
+    line. Do not redact the value and send the remaining line. A later
+    independently safe matching line may supply the sole excerpt for that
+    dependency/file pair. Lines inside a detected multiline credential block
+    remain ineligible even when that individual line has no credential marker.
 14. Use the approved suspicious-line predicates and synthetic positive and
     negative fixtures below. If the entire line cannot be inspected
     within its read budget, omit it; a checked prefix cannot establish safety
@@ -254,10 +255,11 @@ do not add a production filesystem interface or injectable arbitrary reader.
 For enabled exact selection, keep only bounded membership matches rather than
 materializing the full inventory; stop once every eligible exact path is found.
 
-Validate dependency IDs/names as nonempty strings of at most 256 UTF-16 code
-units without control characters; IDs must be unique. Do not invent an
-ecosystem parser here. C2's bounded input check supplements the future shared
-packet validation without deciding dependency coverage.
+Validate dependency IDs/names as nonempty strings of at most
+`limit:context.maxIdCodeUnits` UTF-16 code units without control characters; IDs
+must be unique. Do not invent an ecosystem parser here. C2's bounded input check
+supplements the future shared packet validation without deciding dependency
+coverage.
 
 Public result contract:
 
@@ -305,18 +307,18 @@ These are approved bounded-work ceilings, not measured performance targets.
 Existing C1 and baseline bounds remain unchanged. Raising a ceiling requires
 review; no consumer can configure it.
 
-| Constant                          | Approved value | Behavior at the boundary                                                   |
-| --------------------------------- | -------------- | -------------------------------------------------------------------------- |
-| `MAX_CONTEXT_DEPENDENCIES`        | 128            | Reject excess input before enumeration or content reads                    |
-| `MAX_CONTEXT_ID_CODE_UNITS`       | 256            | Bound each dependency ID and name; reject invalid input                    |
-| `MAX_CONTEXT_PATH_BYTES`          | 1,024          | Reject oversized configured/inventory paths before filesystem operations   |
-| `MAX_TRACKED_PATH_ENTRIES`        | 10,000         | Count duplicates too; stop with partial status on one overflow record      |
-| `MAX_SOURCE_CANDIDATES`           | 128            | Deduplicate eligible paths; stop with partial status on overflow           |
-| `MAX_SOURCE_FILE_BYTES`           | 65,536         | Read at most cap plus one probe byte; omit an incomplete or oversized file |
-| `MAX_TOTAL_SOURCE_READ_BYTES`     | 1,048,576      | Count all returned bytes including probes; stop content reads at the cap   |
-| `MAX_SOURCE_EXCERPT_CODE_UNITS`   | 500            | Existing cap; preserve complete characters and the dependency name         |
-| `MAX_SOURCE_FACTS_PER_DEPENDENCY` | 20             | Existing cap; expose partial status if further safe matches exist          |
-| `MAX_SOURCE_CONTEXT_BYTES`        | 65,536         | UTF-8 bytes of the complete serialized public result, including metadata   |
+| Constant                          | Approved value                            | Behavior at the boundary                                                   |
+| --------------------------------- | ----------------------------------------- | -------------------------------------------------------------------------- |
+| `MAX_CONTEXT_DEPENDENCIES`        | `limit:context.maxDependencies`           | Reject excess input before enumeration or content reads                    |
+| `MAX_CONTEXT_ID_CODE_UNITS`       | `limit:context.maxIdCodeUnits`            | Bound each dependency ID and name; reject invalid input                    |
+| `MAX_CONTEXT_PATH_BYTES`          | `limit:context.maxPathBytes`              | Reject oversized configured/inventory paths before filesystem operations   |
+| `MAX_TRACKED_PATH_ENTRIES`        | `limit:context.maxTrackedPathEntries`     | Count duplicates too; stop with partial status on one overflow record      |
+| `MAX_SOURCE_CANDIDATES`           | `limit:context.maxSourceCandidates`       | Deduplicate eligible paths; stop with partial status on overflow           |
+| `MAX_SOURCE_FILE_BYTES`           | `limit:context.maxSourceFileBytes`        | Read at most cap plus one probe byte; omit an incomplete or oversized file |
+| `MAX_TOTAL_SOURCE_READ_BYTES`     | `limit:context.maxTotalSourceReadBytes`   | Count all returned bytes including probes; stop content reads at the cap   |
+| `MAX_SOURCE_EXCERPT_CODE_UNITS`   | `limit:context.maxSourceExcerptCodeUnits` | Existing cap; preserve complete characters and the dependency name         |
+| `MAX_SOURCE_FACTS_PER_DEPENDENCY` | 20                                        | Existing cap; expose partial status if further safe matches exist          |
+| `MAX_SOURCE_CONTEXT_BYTES`        | `limit:context.maxSourceContextBytes`     | UTF-8 bytes of the complete serialized public result, including metadata   |
 
 Check string length before computing UTF-8 path size so a hostile oversized
 path cannot cause unbounded inspection. Do not read an overflowing inventory
@@ -333,7 +335,8 @@ strictly. I/O/encoding uncertainty fails the result without partial facts.
 
 Inspect complete bounded files/lines before choosing one safe match per
 dependency/file pair. Check the unshortened line, then trim leading whitespace
-and cap its excerpt at 500 code units without splitting a surrogate pair.
+and cap its excerpt at `limit:context.maxSourceExcerptCodeUnits` code units
+without splitting a surrogate pair.
 Recognize LF, CRLF, CR, and Unicode line/paragraph separators as line boundaries;
 none may survive inside an emitted source-line excerpt.
 If the retained prefix omits the dependency name, omit the fact and mark the
@@ -446,12 +449,14 @@ Required fixture groups:
   in a file list, with nearby eligible counterexamples. Naming a file cannot
   override its exclusion; unsupported Python does not yield usage facts.
 - Credential-like and private-value lines, including a suspicious tail beyond
-  character 500, multiline private-key material, ordinary safe imports,
-  matches beyond the retained prefix, and a safe match after a rejected line.
-- Exact 500-character and 20-fact boundaries, multibyte text, duplicate matches,
-  deterministic ordering, and each selected read/count/serialized-byte budget
-  at and beyond its limit. Prove limits stop work instead of slicing an
-  unbounded read after collection.
+  the `limit:context.maxSourceExcerptCodeUnits` excerpt cap, multiline
+  private-key material, ordinary safe imports, matches beyond the retained
+  prefix, and a safe match after a rejected line.
+- Exact excerpt-cap (`limit:context.maxSourceExcerptCodeUnits`) and 20-fact
+  boundaries, multibyte text, duplicate matches, deterministic ordering, and
+  each selected read/count/serialized-byte budget at and beyond its limit.
+  Prove limits stop work instead of slicing an unbounded read after
+  collection.
 - Failure with no partial excerpts, safe diagnostics, and correct disabled,
   unavailable, partial, and available context without changing other evidence.
 
@@ -480,8 +485,9 @@ head. Do not claim provider transport, workflow status, or parity from C2 tests.
    zero source excerpts. Private opt-in without an exact list fails before
    content collection; valid opt-in returns only eligible trusted source.
 3. Each excerpt contains the dependency name, at most one source line, and
-   at most 500 UTF-16 code units. Excluded and suspicious content never reaches
-   the result, including sensitive values after the retained prefix.
+   at most `limit:context.maxSourceExcerptCodeUnits` UTF-16 code units.
+   Excluded and suspicious content never reaches the result, including
+   sensitive values after the retained prefix.
 4. Bounds stop enumeration/reads, cap facts and serialized context, and expose
    availability/truncation honestly. A failure has no usable partial context.
 5. Required fixtures and all four repository quality commands pass on the same

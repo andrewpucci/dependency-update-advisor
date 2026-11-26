@@ -485,9 +485,9 @@ implementation completion.
 Integration limits: X1 represents owner/repository replacements as removal
 plus addition, so those records do not establish a paired S3 identity finding.
 Rich research can reach T4's independent source/output caps before reaching
-the 128-change limit; rejection remains explicit and fail secure. Live
-transport, workflow diagnostics and budget allocation, M2/O1/W2, packaging,
-adoption, parity, and cutover remain separate gates in #207.
+the `limit:packet.changes` change limit; rejection remains explicit and fail
+secure. Live transport, workflow diagnostics and budget allocation, M2/O1/W2,
+packaging, adoption, parity, and cutover remain separate gates in #207.
 
 ## Approved Scope and Planning Decisions
 

@@ -11,9 +11,9 @@ Confirmed interview decision, 2026-10-26: represent declaration-only edits
 explicitly and allow complete inventory coverage when fully accounted for.
 Approval: after reviewing the saved draft, the user explicitly answered `yes`
 to approval for planning on 2026-10-26. This approves the full specification,
-including the declaration variant, combined 128-record accounting, and minimal
-T4/T5 amendments. The collector and amendments are implemented on `issue-14`,
-pending review and merge.
+including the declaration variant, combined `limit:packet.changes` record
+accounting, and minimal T4/T5 amendments. The collector and amendments are
+implemented on `issue-14`, pending review and merge.
 
 Plan approval, 2026-10-26: after reviewing the eight-task plan, the user
 explicitly answered `approve`. The approved order is N1.1–N1.8,
@@ -215,8 +215,9 @@ can be `complete`. The manifest edit does not itself create an inventory gap.
 When both declarations and resolved instances change, retain both facts in
 their distinct bases. Count each once within its own basis and label the
 counts distinctly; do not present their sum as a count of distinct packages.
-The existing 128-change packet limit counts **all** records across both bases
-and all ecosystems. No second allowance or silent trimming is introduced.
+The existing `limit:packet.changes` packet limit counts **all** records
+across both bases and all ecosystems. No second allowance or silent trimming
+is introduced.
 
 The T4 amendment must also:
 
@@ -325,7 +326,7 @@ Behavior changes must leave regression checks that catch the original defect.
 | Empty/omitted comparison, permission/unknown/rate-limit 403, partial prefix                                                                                                                          | Immutable inventory retained, comparison reason preserved, no zero-vulnerability inference.                                                                                                    |
 | Budgets, hostile JSON, excessive nesting, invalid paths or sensitive URLs                                                                                                                            | Bounded processing, no execution, no unsafe retained values or raw diagnostics; overflow never claims complete coverage.                                                                       |
 | Reordered/frozen inputs, input mutation after return, mixed ecosystems                                                                                                                               | Stable IDs/order, detached immutable outputs, no input mutation or cross-review state, independent coverage.                                                                                   |
-| Exactly 128 records; 129 across bases/ecosystems                                                                                                                                                     | Existing T4 ceiling applies without trimming; overflow returns no usable packet.                                                                                                               |
+| Exactly `limit:packet.changes` records; one more across bases/ecosystems                                                                                                                             | Existing T4 ceiling applies without trimming; overflow returns no usable packet.                                                                                                               |
 
 Preserve a clearly labeled synthetic fixture containing exactly 20 distinct
 unpaired npm additions, each with `from: null`, separate package-path identity,
@@ -363,7 +364,8 @@ roots, scoped gaps, independent comparison availability/counts/source IDs, and
 npm coverage. Inventory results are detached and deeply frozen. Retention exhaustion
 omits snapshots and retains a fitting deterministic change prefix with explicit
 `budget` coverage; if no bounded envelope fits, no usable inventory is returned.
-This is independent of T4's hard 128-record rejection, which never trims a packet.
+This is independent of T4's hard `limit:packet.changes` record rejection, which
+never trims a packet.
 
 Each normalized root side identifies its manifest and lock sources, declaration
 maps, installed-path nodes, and unresolved canonical paths. Nodes preserve exact

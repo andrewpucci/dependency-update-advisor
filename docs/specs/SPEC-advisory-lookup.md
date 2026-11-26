@@ -343,11 +343,11 @@ No inventory member is dropped.
 `tests/parity/advisories.ts` supplies synthetic HTTP and proof fixtures for
 actual D1/N1/N2/X1/U1/U2, T4, T5 and C3. These cover proposed high/critical
 blockers, two-side fixed claims, comparison failures, source/ref attribution,
-grouped-member findings and the combined 128-change boundary. Public identity
-and Actions mappings are explicitly invented test scaffolding. Advisory and
-consumer HTTP responses are mocked. No live proof acquisition, S2/S3,
-workflow, assessment, rendering/publication, packaging, adoption or cutover
-completion is implied.
+grouped-member findings and the combined `limit:packet.changes` change boundary.
+Public identity and Actions mappings are explicitly invented test scaffolding.
+Advisory and consumer HTTP responses are mocked. No live proof acquisition,
+S2/S3, workflow, assessment, rendering/publication, packaging, adoption or
+cutover completion is implied.
 
 ## Commands and Testing Strategy
 
@@ -570,15 +570,15 @@ evaluates the version itself. OSV `v1/query` probes on the same day:
    For `pip`, they list every spelling of the normalized name with each
    separator replaced by `-`, `_`, or `.`, in a fixed order, split across as
    many requests as the discovery URL cap requires. Each request's first URL
-   is filled to at most 256 bytes under the cap, which leaves room for the
+   is filled to at most the cap minus
+   `limit:advisory.discovery.cursorHeadroomBytes`, which leaves room for the
    `after` cursor; a continuation URL over the cap is `budget`. For `actions`,
-   one request lists the mapped `owner/repo` name. The reader follows every
-   page of every request under the existing cursor rules. Every returned
-   record must name at least one package in the query ecosystem whose name,
-   canonicalized, equals the target's canonical name: PEP 503 normalization
-   for `pip`, case folding for `actions`. Otherwise the lookup is incomplete
-   with `malformed`. The stored forms are the distinct such names, as
-   returned.
+   one request lists the mapped `owner/repo` name. The reader follows every page
+   of every request under the existing cursor rules. Every returned record must
+   name at least one package in the query ecosystem whose name, canonicalized,
+   equals the target's canonical name: PEP 503 normalization for `pip`, case
+   folding for `actions`. Otherwise the lookup is incomplete with `malformed`.
+   The stored forms are the distinct such names, as returned.
 7. **GitHub versioned query.** After a complete discovery, the reader always
    sends one query whose `affects` lists `form@version` for every stored
    form, sorted. When discovery found no form, it lists the normalized name
@@ -617,13 +617,13 @@ evaluates the version itself. OSV `v1/query` probes on the same day:
     against the stage's existing request, byte, and time budgets. A target
     over the spelling ceiling is `unsupported` before any request. A versioned
     URL is checked after discovery: one that would exceed the packet's
-    provenance URL bound (`PACKET_LIMITS.identityBytes`, 1,024 bytes) is
-    `unsupported`, and no versioned request is sent. Measured on 2026-11-19
-    and 2026-11-20, one discovery URL is 87–158 bytes for names with up to one
-    separator, 944–998 bytes for three-separator names such as
-    `apache-airflow-providers-amazon` (27 spellings), and 3,077–3,563 bytes
-    for four-separator names such as `opentelemetry-exporter-otlp-proto-http`
-    (81 spellings).
+    provenance URL bound (`PACKET_LIMITS.identityBytes`,
+    `limit:packet.identityBytes`) is `unsupported`, and no versioned request is
+    sent. Measured on 2026-11-19 and 2026-11-20, one discovery URL is 87–158
+    bytes for names with up to one separator, 944–998 bytes for three-separator
+    names such as `apache-airflow-providers-amazon` (27 spellings), and
+    3,077–3,563 bytes for four-separator names such as
+    `opentelemetry-exporter-otlp-proto-http` (81 spellings).
 
 ### S1 text this supersedes
 
@@ -647,9 +647,10 @@ implementation updates them in place:
   lookups; OSV normalizes names for reviewed vulnerabilities. This amendment
   states the limit instead of claiming discovery is exhaustive.
 - **Heavy OSV responses.** OSV returns one response per query with no page
-  size. TensorFlow 2.4.0 was 3,983,856 bytes on 2026-11-20, over the 1 MiB
-  per-response cap, so such a package ends `budget`. A remedy (a larger
-  OSV-only cap with streaming filters, or a GitHub fallback) is a follow-up.
+  size. TensorFlow 2.4.0 was 3,983,856 bytes on 2026-11-20, over the
+  `limit:evidence.envelope.maxResponseBytes` per-response cap, so such a package
+  ends `budget`. A remedy (a larger OSV-only cap with streaming filters, or a
+  GitHub fallback) is a follow-up.
 - **JSON entry use.** The reader's JSON entry budget is shared across its
   responses. OSV's Pillow and Django responses used 19,268 and 17,316
   entries, against 6,060 for GitHub's two Pillow pages, so about 11 heavy
@@ -674,24 +675,26 @@ The malware share (40 requests) was sized at one request per package, so a
 group of only `pip` or `actions` packages, at two or more requests each, now
 completes malware for about 20 packages instead of about 40. Actions reviewed
 lookups take three requests per update instead of two, so the advisory share
-(80 requests) covers about 26 Actions updates instead of about 40. `npm`
-groups and `pip` reviewed request counts are unaffected, but bytes are not:
-Pillow 8.0.0's OSV response is 791,379 bytes per side, so about three heavily
-advised `pip` updates exhaust the advisory share's 5 MiB. GitHub's correct
-two-spelling query costs about the same (746,178 bytes), so the cost comes
-with the fix, not with OSV. Members past a share end
-`budget`, a visible gap. The 944-request envelope is fully allocated, so
-resizing is left to the [evidence coverage](SPEC-evidence-coverage.md)
-budget scaling (#350). The `src/budget.ts` comment is corrected to match.
+(`limit:evidence.allocation.advisory.maxRequests` requests) covers about 26
+Actions updates instead of about 40. `npm` groups and `pip` reviewed request
+counts are unaffected, but bytes are not: Pillow 8.0.0's OSV response is 791,379
+bytes per side, so about three heavily advised `pip` updates exhaust the
+advisory share's `limit:evidence.allocation.advisory.maxTotalBytes`. GitHub's
+correct two-spelling query costs about the same (746,178 bytes), so the cost
+comes with the fix, not with OSV. Members past a share end `budget`, a visible
+gap. The `limit:evidence.envelope.maxRequests` request envelope is fully
+allocated, so resizing is left to the [evidence
+coverage](SPEC-evidence-coverage.md) budget scaling (#350). The `src/budget.ts`
+comment is corrected to match.
 
 Approved values, from probes on 2026-11-20:
 
-| Value                 | Proposed           | Evidence                                                                                            |
-| --------------------- | ------------------ | --------------------------------------------------------------------------------------------------- |
-| Discovery page size   | 50                 | A 100-record `pillow` page was 1,009,662 bytes against the 1 MiB cap; 50 leaves about half.         |
-| Discovery URL cap     | 4,096 bytes        | GitHub accepted discovery URLs of 996, 3,399, and 4,371 bytes and returned 414 at 8,259 and 11,499. |
-| Spelling ceiling      | 243 (5 separators) | Five-separator names need about 3 discovery requests under the cap; six would need about 9.         |
-| OSV per-response size | existing 1 MiB cap | OSV has no page size; the `pillow` response was 791,379 bytes.                                      |
+| Value                 | Proposed                                                  | Evidence                                                                                                                         |
+| --------------------- | --------------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------- |
+| Discovery page size   | 50                                                        | A 100-record `pillow` page was 1,009,662 bytes against the `limit:evidence.envelope.maxResponseBytes` cap; 50 leaves about half. |
+| Discovery URL cap     | `limit:advisory.discovery.urlBytes`                       | GitHub accepted discovery URLs of 996, 3,399, and 4,371 bytes and returned 414 at 8,259 and 11,499.                              |
+| Spelling ceiling      | `limit:advisory.discovery.spellingCeiling` (5 separators) | Five-separator names need about 3 discovery requests under the cap; six would need about 9.                                      |
+| OSV per-response size | existing `limit:evidence.envelope.maxResponseBytes` cap   | OSV has no page size; the `pillow` response was 791,379 bytes.                                                                   |
 
 ### Transport
 
@@ -746,19 +749,19 @@ and in the test that uses it; the recorded Pillow data has no
   its reason.
 - **Malware discovery.** A `pip` malware target sends `type=malware`
   discovery listing every separator spelling, split so that every first URL
-  is at least 256 bytes under the cap, then one versioned query. An empty
-  discovery is followed by a versioned query for the normalized name, which
-  a complete empty result cites. A failed discovery page, including one in a
-  later split request, sends no versioned query. A continuation URL over the
-  cap is `budget`. A discovery record with no canonical match is
-  `malformed`. A synthetic fixture built from the recorded `jupyter-server`
-  and `jupyter_server` discovery records, with one stored name changed to
-  `Jupyter_Server`, has a stored name that differs from the canonical
+  is at least `limit:advisory.discovery.cursorHeadroomBytes` under the cap, then
+  one versioned query. An empty discovery is followed by a versioned query for
+  the normalized name, which a complete empty result cites. A failed discovery
+  page, including one in a later split request, sends no versioned query. A
+  continuation URL over the cap is `budget`. A discovery record with no
+  canonical match is `malformed`. A synthetic fixture built from the recorded
+  `jupyter-server` and `jupyter_server` discovery records, with one stored name
+  changed to `Jupyter_Server`, has a stored name that differs from the canonical
   `jupyter-server` in both case and separator; that record counts, and the
   versioned query lists all three stored forms. A target over the spelling
   ceiling sends no request. Discovered forms whose versioned URL exceeds
-  1,024 bytes are `unsupported` with no versioned request. Malware discovery
-  is never reused for reviewed lookups.
+  `limit:packet.identityBytes` are `unsupported` with no versioned request.
+  Malware discovery is never reused for reviewed lookups.
 - **npm** sends one exact GitHub query, as today.
 - **Named mutations fail those checks:** querying GitHub for `pip` reviewed
   targets; keeping `PYSEC` or unreviewed records; accepting a truthy
@@ -806,7 +809,8 @@ applies the same rule to malware queries.
 
 ### Why
 
-The workflow token gets 1,000 REST requests per hour per repository
+The workflow token gets `limit:github.token.restRequestsPerHour` REST requests
+per hour per repository
 ([GitHub Docs](https://docs.github.com/en/rest/using-the-rest-api/rate-limits-for-the-rest-api),
 checked 2026-11-19), and Dependabot can open several PRs in the same hour.
 Measured on 2026-11-19, one exact query per target per side made 196 of PR

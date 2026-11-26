@@ -51,9 +51,9 @@ count as new; anonymous functions share a name and are matched by rank.
 Show zero-complexity functions in the headline count as well. Inline lint
 suppressions must not hide complexity scores.
 
-Show at most 100 regression rows, ordered by descending score, and state when
-the list is truncated. The comment job must reject reports exceeding 60,000
-characters.
+Show at most `limit:complexity.maxListedFindings` regression rows, ordered by
+descending score, and state when the list is truncated. The comment job must
+reject reports exceeding 60,000 characters.
 
 ## Workflow and boundaries
 

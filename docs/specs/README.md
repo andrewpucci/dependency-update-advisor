@@ -124,7 +124,8 @@ gaps and an introduced vulnerability before parity is claimed.
   [PR #89](https://github.com/andrewpucci/dependency-update-advisor/pull/89).
   [Verification evidence](https://github.com/andrewpucci/dependency-update-advisor/issues/84)
   keeps collector/T5/M2/O1/W2, disclosure, adoption, and cutover gates separate.
-  The 128-change rejection remains an approved intentional parity difference.
+  The `limit:packet.changes` change rejection remains an approved
+  intentional parity difference.
 - [Deterministic decision units](SPEC-decision-units.md) — implemented supporting
   contract for T5 #12 in `shared-review`; initial scope uses proven grouping
   with exactly one direct change per root and complete ecosystem inventory.
@@ -210,7 +211,8 @@ gaps and an introduced vulnerability before parity is claimed.
 - [npm evidence](SPEC-npm-evidence.md) — approved for planning.
 - [npm change inventory](SPEC-npm-inventory.md) — implemented for N1 #14 and
   #124–#131, merged into `main` in [PR #132](https://github.com/andrewpucci/dependency-update-advisor/pull/132).
-  Includes T4/T5 declaration records and combined 128-record accounting;
+  Includes T4/T5 declaration records and combined `limit:packet.changes`
+  record accounting;
   [verification #131](https://github.com/andrewpucci/dependency-update-advisor/issues/131)
   retains separate N2, research, workflow, assessment/rendering, and cutover gates.
 - [Proven npm relationships and lifecycle evidence](SPEC-npm-relationships.md) —
@@ -323,7 +325,7 @@ gaps and an introduced vulnerability before parity is claimed.
   `freshness` stage, [#297](https://github.com/andrewpucci/dependency-update-advisor/issues/297))
   is approved for planning and execution; its code (#299-#303) is merged and
   the R1 re-pin and rehearsal (#304) remain. A third amendment (a fixed
-  60,000 ms pre-startup allowance,
+  `limit:job.preStartupAllowance` pre-startup allowance,
   [#306](https://github.com/andrewpucci/dependency-update-advisor/issues/306))
   is approved for planning and execution 2026-11-11 and implemented on the #306
   branch, pending merge. The approved

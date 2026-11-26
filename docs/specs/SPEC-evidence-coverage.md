@@ -325,9 +325,10 @@ Decisions confirmed on 2026-11-21:
 ### Why the cap follows the reported quota
 
 Every research and consumer read uses the workflow's `GITHUB_TOKEN`. GitHub
-documents its limit as 1,000 requests per hour per repository, or 15,000 for
-resources in a GitHub Enterprise Cloud account, with a secondary limit of 900
-points per minute, where most `GET` requests cost 1 point
+documents its limit as `limit:github.token.restRequestsPerHour` requests per
+hour per repository, or 15,000 for resources in a GitHub Enterprise Cloud
+account, with a secondary limit of 900 points per minute, where most `GET`
+requests cost 1 point
 ([REST API rate limits](https://docs.github.com/en/rest/using-the-rest-api/rate-limits-for-the-rest-api),
 checked 2026-11-21). Reruns and simultaneous Dependabot PRs draw from the
 same hourly quota, which a fixed per-run number cannot see. In R1 at ×10 one

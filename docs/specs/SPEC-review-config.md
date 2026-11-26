@@ -189,7 +189,8 @@ record a justified, reviewed fidelity change.
 For a private consumer, this opt-in authorizes only dependency-relevant,
 bounded excerpts from checked-in default-branch source files under its
 configured roots. The reviewer may send the relative path and at most one
-500-character source line containing the dependency name;
+source line of up to `limit:context.maxSourceExcerptCodeUnits` characters
+containing the dependency name;
 it does not send adjacent lines or whole files.
 
 It excludes tests, fixtures, generated assets, configuration and credential
@@ -215,24 +216,25 @@ used as the protection for payloads; [GitHub does not guarantee that redaction](
 1. Read `.github/dependabot-review.json` only from the checked-out default
    branch in the privileged reviewer. A PR change to this file has no effect
    until merged.
-2. Parse at most 16 KiB of JSON. Require `version: 1` and reject unknown
-   fields, unsupported enum values, invalid types, and excessive entries.
-   Publish the same contract as JSON Schema and exercise it in tests.
+2. Parse at most `limit:config.maxBytes` of JSON. Require `version: 1` and
+   reject unknown fields, unsupported enum values, invalid types, and excessive
+   entries. Publish the same contract as JSON Schema and exercise it in tests.
 3. Default an absent file to the current shared verdict rules,
    `sourceRoots: ["src"]`, `sendSourceExcerptsToModel: false`, and no selected
    LLM provider. Report analysis as unavailable until the repository selects
    one; do not claim complete model-backed coverage. Each adopter may opt in
    to excerpts independently. Only a confirmed missing file uses defaults;
    a read error or invalid present file must not silently fall back.
-4. Allow at most 16 source roots. Roots must be normalized relative paths
-   inside the trusted checkout; reject absolute paths, traversal,
-   hidden or credential-like paths, and symlinks escaping the checkout. Config
-   cannot expand the shared allowlist of source file types or remove excerpt
-   and packet size limits. An optional `context.excerptFiles` array contains at
-   most 128 distinct exact relative paths and is intersected with the roots
-   and shared type and content exclusions. A private repository with
-   `sendSourceExcerptsToModel: true` must provide a nonempty `excerptFiles`
-   list; otherwise it sends no excerpts and fails configuration validation.
+4. Allow at most `limit:context.maxSourceRoots` source roots. Roots must be
+   normalized relative paths inside the trusted checkout; reject absolute paths,
+   traversal, hidden or credential-like paths, and symlinks escaping the
+   checkout. Config cannot expand the shared allowlist of source file types or
+   remove excerpt and packet size limits. An optional `context.excerptFiles`
+   array contains at most `limit:context.maxSourceCandidates` distinct exact
+   relative paths and is intersected with the roots and shared type and content
+   exclusions. A private repository with `sendSourceExcerptsToModel: true` must
+   provide a nonempty `excerptFiles` list; otherwise it sends no excerpts and
+   fails configuration validation.
 5. Allow local overrides of only the ten named advisory verdict rules above.
    Apply an override before combining independent findings. Local policy can
    be more or less restrictive than the default, but cannot delete findings,

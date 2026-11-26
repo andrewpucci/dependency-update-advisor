@@ -240,8 +240,10 @@ records its first rehearsal without these fields.
 
 ### Why
 
-The reasoning-model change raised each call to a 240,000 ms timeout and 16,384
-completion tokens against this spec's unchanged 600,000 ms analysis maximum.
+The reasoning-model change raised each call to a
+`limit:analysis.requestTimeoutMs` timeout and `limit:analysis.completionTokens`
+completion tokens against this spec's unchanged `limit:analysis.maxAnalysisMs`
+analysis maximum.
 Diagnostics report `callsDispatched` and `truncationSplits` as counts only, and
 nothing prints them, so a maintainer cannot tell how close calls run to the
 timeout or whether a batch keeps truncating. Job-log step timing spans the whole
@@ -341,10 +343,12 @@ threshold is approved by this draft.
 ## Execution selections and handoff
 
 The user approved the M2 plan and `as-build auto` on 2026-11-07. Initial
-ceilings are 32 reserved calls, two concurrent calls, 600,000 ms analysis,
-and a 60,000 ms publication reserve. A supplied workflow deadline clips the
-analysis deadline. These are operational limits, not measured provider
-performance; W2 must reconcile them with its own deadline and wiring.
+ceilings are `limit:analysis.maxCalls` reserved calls,
+`limit:analysis.maxConcurrentCalls` concurrent calls,
+`limit:analysis.maxAnalysisMs` analysis, and a
+`limit:analysis.publicationReserveMs` publication reserve. A supplied workflow
+deadline clips the analysis deadline. These are operational limits, not measured
+provider performance; W2 must reconcile them with its own deadline and wiring.
 
 `analyzeDecisionUnits` accepts the inventory, trusted config, evaluation time,
 credential and monotonic deadline. It returns ordered records, T5 coverage,

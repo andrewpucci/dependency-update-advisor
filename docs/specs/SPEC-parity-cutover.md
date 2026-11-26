@@ -72,7 +72,8 @@ resolves at the called workflow's commit; callers do not select a moving tag.
    Before enabling source excerpts, review the exact
    `context.excerptFiles` allowlist and a no-send model-packet sample. Record
    the allowed Python, JavaScript, and
-   Svelte source-line shape, 500-character bound, exclusions, Mistral
+   Svelte source-line shape, `limit:context.maxSourceExcerptCodeUnits`
+   code-unit bound, exclusions, Mistral
    destination, and residual risk that a checked-in line can contain a
    sensitive value despite screening. Do not rely on GitHub log redaction,
    which [GitHub says is not guaranteed](https://docs.github.com/en/actions/concepts/security/secrets).

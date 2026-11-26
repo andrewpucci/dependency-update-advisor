@@ -72,8 +72,11 @@ src/packet.ts or coordinator  → passes roots and configRevision to N1/U2
    fetched. Any limit breach is `budget`. Invalid UTF-8 or YAML is
    `malformed`.
 
-   Limits approved 2026-11-08: 65,536 bytes, 20,000 YAML nodes, depth 16, 0
-   alias expansions, 256 update entries, and 256 roots per ecosystem.
+   Limits approved 2026-11-08: `limit:dependabot.maxFileBytes` bytes,
+   `limit:dependabot.maxYamlNodes` YAML nodes, depth
+   `limit:dependabot.maxYamlDepth`, `limit:dependabot.maxAliasExpansions` alias
+   expansions, `limit:dependabot.maxUpdates` update entries, and
+   `limit:dependabot.maxRoots` roots per ecosystem.
 
    The node cap counts structure (collections, scalars, aliases), not
    formatting; see the
@@ -96,7 +99,7 @@ src/packet.ts or coordinator  → passes roots and configRevision to N1/U2
    - Convert each Dependabot directory to a repository-relative path: strip
      one leading `/`, and map the repository root to `.`.
    - Reject `..`, `.` segments, empty segments, backslashes, control
-     characters, and paths over 1,024 UTF-8 bytes.
+     characters, and paths over `limit:dependabot.maxPathBytes` UTF-8 bytes.
    - Sort and deduplicate per ecosystem.
    - Any glob character (`*`, `?`, `[`, `{`) makes that ecosystem
      `unsupported`, because exact roots can't be established without

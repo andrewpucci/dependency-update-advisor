@@ -15,8 +15,8 @@ The implemented initial T5 scope does not depend on this draft.
 
 The 2026-11-09 interview settled four choices, recorded under
 [Decisions](#decisions): per-pair verdict evidence, an in-place v1 amendment,
-candidate accounting on every side a candidate exists, and a 1,024-verdict cap
-with explicit truncation.
+candidate accounting on every side a candidate exists, and a
+`limit:packet.reachability` verdict cap with explicit truncation.
 
 ## Objective
 
@@ -149,7 +149,8 @@ with no instance makes the verdict `unknown` or `unsupported`. The uv closure
 T4 stays structural, matching the existing proof checks:
 
 - Closed fields at every level; `reachability` is required, may be empty, and
-  holds at most 1,024 records; reasons obey the 32-entry list bound.
+  holds at most `limit:packet.reachability` records; reasons obey the 32-entry
+  list bound.
 - `anchorId` and `memberId` name known resolved changes in one ecosystem and one
   root on that side. The anchor has role `direct` and an instance on `side`; the
   member has role `transitive` and an instance on `side`. Unknown-role and
@@ -172,11 +173,11 @@ T4 stays structural, matching the existing proof checks:
   through the anchor proves reachability. This is defense in depth: it does not
   detect a path composed from two separate proofs. A non-proving record beside
   a proof is accepted; the proof wins.
-- Overflow rejects the packet; it never trims. The existing 1 MiB packet byte
-  ceiling still applies, and it can bind before the count: a record holds three
-  IDs of up to 1,024 bytes each, so a worst-case record is above 3 KB, and
-  roughly 330 bytes is only a typical figure. The assembler drops optional
-  evidence first as described under Bounds.
+- Overflow rejects the packet; it never trims. The existing `limit:packet.bytes`
+  packet byte ceiling still applies, and it can bind before the count: a record
+  holds three IDs of up to `limit:packet.identityBytes` each, so a worst-case
+  record is above 3 KB, and roughly 330 bytes is only a typical figure. The
+  assembler drops optional evidence first as described under Bounds.
 
 T4 does not claim the traversal was exhaustive. That remains the authenticated
 collector's assertion, stated plainly in the packet spec.
@@ -271,30 +272,31 @@ together and never assign one member to several units.
 
 ## Bounds, Compatibility, and Migration
 
-- Cap: 1,024 verdicts per packet, one new T4 limit beside 128 changes, 256
-  proofs, and 32-instance paths. With at most 128 changes, one scope-level
-  `truncated` record per anchor and side (at most 256) fits the cap, so an
-  unfinished anchor can always be reported instead of overflowing. Pair counts
-  can pass the cap quickly (19 anchors by 100 members by 2 sides is 3,800), so
-  collectors emit pair records only for members with one reachable candidate
-  and fall back to scope records for the rest.
+- Cap: `limit:packet.reachability` verdicts per packet, one new T4 limit beside
+  `limit:packet.changes` changes, `limit:packet.relationships` proofs, and
+  32-instance paths. With at most `limit:packet.changes` changes, one
+  scope-level `truncated` record per anchor and side (at most twice that) fits
+  the cap, so an unfinished anchor can always be reported instead of
+  overflowing. Pair counts can pass the cap quickly (19 anchors by 100 members
+  by 2 sides is 3,800), so collectors emit pair records only for members with
+  one reachable candidate and fall back to scope records for the rest.
 - Proofs: at most two per member (the claimed anchor and one more to evidence
-  ambiguity), and at most 127 members, so at most 254, within the 256 cap.
-  Today N2 and U2 emit proofs only for a root with one changed direct
-  dependency; under this draft they emit them for every member with a reachable
-  candidate.
-- Packet-wide budgets: the 1,024 cap and the 1 MiB ceiling are per packet, but
-  N2 and U2 run separately and a packet can mix npm and uv. Each collector
-  returns its optional evidence (verdicts and second proofs) tagged as optional.
-  The packet assembler, not a collector, owns the drop step: in a fixed order
-  (uv before npm, then largest canonical key first) it replaces an anchor/side's
-  pair records with one scope `truncated` record, then drops second proofs,
-  until the packet fits, and keeps an attributable limit for each. It never
-  drops changes, sources, findings, or the claimed anchor's proof. A valid large
-  mixed packet is therefore never rejected for optional evidence, and every drop
-  degrades toward standalone. Today npm's `packetBounds` returns
-  `unavailable`/`budget` for the whole result on overflow; the npm amendment
-  must narrow that to non-optional evidence.
+  ambiguity), and at most 127 members, so at most 254, within the
+  `limit:packet.relationships` cap. Today N2 and U2 emit proofs only for a root
+  with one changed direct dependency; under this draft they emit them for every
+  member with a reachable candidate.
+- Packet-wide budgets: the `limit:packet.reachability` cap and the
+  `limit:packet.bytes` ceiling are per packet, but N2 and U2 run separately and
+  a packet can mix npm and uv. Each collector returns its optional evidence
+  (verdicts and second proofs) tagged as optional. The packet assembler, not a
+  collector, owns the drop step: in a fixed order (uv before npm, then largest
+  canonical key first) it replaces an anchor/side's pair records with one scope
+  `truncated` record, then drops second proofs, until the packet fits, and keeps
+  an attributable limit for each. It never drops changes, sources, findings, or
+  the claimed anchor's proof. A valid large mixed packet is therefore never
+  rejected for optional evidence, and every drop degrades toward standalone.
+  Today npm's `packetBounds` returns `unavailable`/`budget` for the whole result
+  on overflow; the npm amendment must narrow that to non-optional evidence.
 - T5 builds one map keyed by side, anchor, and member, so its added work is
   linear in verdicts plus candidates and needs no graph traversal.
 - Every missing or dropped record degrades to a standalone unit, never to a
@@ -324,7 +326,7 @@ PR can land first and no spec text disagrees with `main`.
 
 | Spec                                                                     | Amendment                                                                                                                                                                                                                              |
 | ------------------------------------------------------------------------ | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| [T4 packet](SPEC-review-packet.md)                                       | Add `reachability` to the envelope, validation rules, 1,024 cap, and fixtures; state that T4 still does not certify traversal exhaustiveness.                                                                                          |
+| [T4 packet](SPEC-review-packet.md)                                       | Add `reachability` to the envelope, validation rules, `limit:packet.reachability` cap, and fixtures; state that T4 still does not certify traversal exhaustiveness.                                                                    |
 | [T5 units](SPEC-decision-units.md)                                       | Replace the exactly-one-direct restriction with the grouping rule and precedence above, add the two reasons, the unit citation and limit fields, keep the legacy empty-array path.                                                     |
 | [npm inventory](SPEC-npm-inventory.md)                                   | Make an update's conflicting base/head roles `unknown`, matching uv, so a dropped direct dependency stays a base-side candidate blocker.                                                                                               |
 | [npm relationships](SPEC-npm-relationships.md)                           | Collector emits verdicts per anchor and side under the traversal conditions above; eligibility items 1 and 4 reference the new rule; `packetBounds` returns optional evidence for the assembler to drop instead of failing the result. |
@@ -389,8 +391,8 @@ records. Contract fixtures must distinguish:
 | `unreachable` beside a proof for the same pair, citing a different source record of the same lock file      | T4 rejects. Rejects comparing source IDs literally.                                                                                                               |
 | `unreachable(C, M)` with a proof path A to C to M; second case with C appearing after M                     | First rejected; second accepted. Rejects dropping any proof containing C.                                                                                         |
 | Empty `reachability` with 0, 1, and 2 proofs in a multi-anchor root                                         | Deep-equals current T5 output (`multiple_direct_changes`). Rejects reordering the checks.                                                                         |
-| Verdict cap at 1,024 and one beyond, including a mixed npm+uv packet                                        | Cap accepted; overflow rejected by T4; the assembler stays under the cap. Rejects per-collector caps.                                                             |
-| Near-1 MiB mixed packet with optional evidence                                                              | Assembler drops optional evidence in the stated order, records limits, accepts the packet; no change dropped and no group forms from a partial drop.              |
+| Verdict cap at `limit:packet.reachability` and one beyond, including a mixed npm+uv packet                  | Cap accepted; overflow rejected by T4; the assembler stays under the cap. Rejects per-collector caps.                                                             |
+| Mixed packet near `limit:packet.bytes` with optional evidence                                               | Assembler drops optional evidence in the stated order, records limits, accepts the packet; no change dropped and no group forms from a partial drop.              |
 | Permuted changes, proofs, and verdicts                                                                      | Same membership, unit IDs, and cited keys. Rejects array-position keys.                                                                                           |
 | Several groups in one root, plus a member reachable from two candidates                                     | Each member in one unit; the shared member stays standalone; no directs grouped together.                                                                         |
 | npm direct dropped on head but still installed; and the reverse                                             | Role `unknown`, root groups nothing until proven. Rejects keeping `transitive`.                                                                                   |
@@ -427,7 +429,8 @@ Confirmed with the user on 2026-11-09:
    no absence evidence.
 3. Candidate accounting needs a proven verdict on every side a candidate
    exists; a direct removal beside an update can group only with that proof.
-4. The cap is 1,024 verdicts; truncation is explicit evidence, not a rejection.
+4. The cap is `limit:packet.reachability` verdicts; truncation is explicit
+   evidence, not a rejection.
 5. For an update member, the claimed anchor's base-side reachability is not
    required; only other candidates need verdicts on each side M uses.
 6. T4's ten-entry `EvidenceReason` vocabulary is reused, with a required subset
@@ -469,7 +472,8 @@ Implemented on `issue-93` (commits for #267-#273; this refresh is #274). Names
 and behavior the spec left to planning:
 
 - **T4** (`src/schema.ts`): `ReviewPacket.reachability: ReachabilityVerdict[]`,
-  `PACKET_LIMITS.reachability` (1,024), and the structural rules above.
+  `PACKET_LIMITS.reachability` (`limit:packet.reachability`), and the structural
+  rules above.
 - **T5** (`src/units.ts`): `DecisionUnit.verdictKeys` and
   `DecisionUnit.relationshipLimits`; reasons `ambiguous_anchors` and
   `reachability_unproven`. Legacy is decided per root: more than one candidate

@@ -1,1267 +1,19 @@
 [
   {
-    "file": "docs/specs/README.md",
-    "line": "The 128-change rejection remains an approved intentional parity difference.",
-    "values": [128],
-    "reason": "pending amendment (L10): approved spec states the value"
-  },
-  {
-    "file": "docs/specs/README.md",
-    "line": "Includes T4/T5 declaration records and combined 128-record accounting;",
-    "values": [128],
-    "reason": "pending amendment (L10): approved spec states the value"
-  },
-  {
-    "file": "docs/specs/README.md",
-    "line": "60,000 ms pre-startup allowance,",
-    "values": [60000],
-    "reason": "pending amendment (L10): approved spec states the value"
-  },
-  {
-    "file": "docs/specs/SPEC-actions-evidence.md",
-    "line": "has a 3,000-file cap; hitting it or losing a page is incomplete coverage.",
-    "values": [3000],
-    "reason": "pending amendment (L10): approved spec states the value"
-  },
-  {
     "file": "docs/specs/SPEC-actions-inventory.md",
-    "line": "complete inventory. D1's network budgets and T4's combined 128-change ceiling",
-    "values": [128],
-    "reason": "pending amendment (L10): approved spec states the value"
-  },
-  {
-    "file": "docs/specs/SPEC-actions-inventory.md",
-    "line": "| More than 128 combined packet changes; mutated returned data                                              | Existing packet rejection preserved; no silent trimming or shared mutation.                                            |",
-    "values": [128],
-    "reason": "pending amendment (L10): approved spec states the value"
-  },
-  {
-    "file": "docs/specs/SPEC-actions-inventory.md",
-    "line": "under its approved 20,000-node cap with no later effective-graph walk.",
+    "line": "empty sequence item costs nothing. Measured on yaml@2.9.1, about 20,000 list",
     "values": [20000],
-    "reason": "pending amendment (L10): approved spec states the value"
+    "reason": "measurement: about 20,000 list elements fitting under the node cap, measured on yaml@2.9.1 on 2026-11-11, not a register value"
   },
   {
     "file": "docs/specs/SPEC-actions-inventory.md",
-    "line": "5. Numeric limits are unchanged, including C4's 20,000-node cap. Under C4 the",
-    "values": [20000],
-    "reason": "pending amendment (L10): approved spec states the value"
-  },
-  {
-    "file": "docs/specs/SPEC-actions-inventory.md",
-    "line": "costs nothing. Measured on yaml@2.9.1, about 20,000 list elements now fit",
-    "values": [20000],
-    "reason": "pending amendment (L10): approved spec states the value"
-  },
-  {
-    "file": "docs/specs/SPEC-actions-inventory.md",
-    "line": "the 20,000 cap. The 65,536-byte cap still bounds the work, so this is",
-    "values": [20000, 65536],
-    "reason": "pending amendment (L10): approved spec states the value"
-  },
-  {
-    "file": "docs/specs/SPEC-actions-inventory.md",
-    "line": "20,000 on 2026-11-11, and again after this effect was stated. Free entries",
-    "values": [20000],
-    "reason": "pending amendment (L10): approved spec states the value"
-  },
-  {
-    "file": "docs/specs/SPEC-actions-inventory.md",
-    "line": "60,000 commas measured 35 ms `budget` before and 190 ms `malformed` after.",
+    "line": "composition: C4 `x: {` with 60,000 commas measured 35 ms `budget` before and",
     "values": [60000],
-    "reason": "pending amendment (L10): approved spec states the value"
-  },
-  {
-    "file": "docs/specs/SPEC-actions-inventory.md",
-    "line": "(`src/collection.ts` sets 100,000 for Actions, `src/startup.ts` a startup",
-    "values": [100000],
-    "reason": "pending amendment (L10): approved spec states the value"
-  },
-  {
-    "file": "docs/specs/SPEC-actions-inventory.md",
-    "line": "probe, and C4 20,000). The user confirmed on 2026-11-11 that these numbers",
-    "values": [20000],
-    "reason": "pending amendment (L10): approved spec states the value"
-  },
-  {
-    "file": "docs/specs/SPEC-advisory-lookup.md",
-    "line": "grouped-member findings and the combined 128-change boundary. Public identity",
-    "values": [128],
-    "reason": "pending amendment (L10): approved spec states the value"
-  },
-  {
-    "file": "docs/specs/SPEC-analysis-batches.md",
-    "line": "The reasoning-model change raised each call to a 240,000 ms timeout and 16,384",
-    "values": [240000, 16384],
-    "reason": "pending amendment (L10): approved spec states the value"
-  },
-  {
-    "file": "docs/specs/SPEC-analysis-batches.md",
-    "line": "completion tokens against this spec's unchanged 600,000 ms analysis maximum.",
-    "values": [600000],
-    "reason": "pending amendment (L10): approved spec states the value"
-  },
-  {
-    "file": "docs/specs/SPEC-analysis-batches.md",
-    "line": "ceilings are 32 reserved calls, two concurrent calls, 600,000 ms analysis,",
-    "values": [600000],
-    "reason": "pending amendment (L10): approved spec states the value"
-  },
-  {
-    "file": "docs/specs/SPEC-analysis-batches.md",
-    "line": "and a 60,000 ms publication reserve. A supplied workflow deadline clips the",
-    "values": [60000],
-    "reason": "pending amendment (L10): approved spec states the value"
-  },
-  {
-    "file": "docs/specs/SPEC-complexity-review.md",
-    "line": "Show at most 100 regression rows, ordered by descending score, and state when",
-    "values": [100],
-    "reason": "pending amendment (L10): approved spec states the value"
-  },
-  {
-    "file": "docs/specs/SPEC-complexity-review.md",
-    "line": "the list is truncated. The comment job must reject reports exceeding 60,000",
-    "values": [60000],
-    "reason": "pending amendment (L10): approved spec states the value"
-  },
-  {
-    "file": "docs/specs/SPEC-config-parser.md",
-    "line": "2. Read at most 16,384 bytes plus one overflow-detection byte. Reject a file",
-    "values": [16384],
-    "reason": "pending amendment (L10): approved spec states the value"
-  },
-  {
-    "file": "docs/specs/SPEC-config-parser.md",
-    "line": "exceeding 16,384 bytes before parsing, including whitespace. Test exact",
-    "values": [16384],
-    "reason": "pending amendment (L10): approved spec states the value"
-  },
-  {
-    "file": "docs/specs/SPEC-config-parser.md",
-    "line": "| `context.excerptFiles`              | Array of at most 128 distinct exact relative path strings              | Empty allowlist                                                                 |",
-    "values": [128],
-    "reason": "pending amendment (L10): approved spec states the value"
-  },
-  {
-    "file": "docs/specs/SPEC-config-parser.md",
-    "line": "A model ID contains 1\u2013128 ASCII characters matching",
-    "values": [128],
-    "reason": "pending amendment (L10): approved spec states the value"
-  },
-  {
-    "file": "docs/specs/SPEC-config-parser.md",
-    "line": "- File sizes at and beyond 16,384 bytes, including multibyte text; roots at",
-    "values": [16384],
-    "reason": "pending amendment (L10): approved spec states the value"
-  },
-  {
-    "file": "docs/specs/SPEC-config-parser.md",
-    "line": "16 and 17 entries; excerpt files at 128 and 129 entries and duplicates.",
-    "values": [128],
-    "reason": "pending amendment (L10): approved spec states the value"
-  },
-  {
-    "file": "docs/specs/SPEC-dependabot-roots.md",
-    "line": "Limits approved 2026-11-08: 65,536 bytes, 20,000 YAML nodes, depth 16, 0",
-    "values": [65536, 20000],
-    "reason": "pending amendment (L10): approved spec states the value"
-  },
-  {
-    "file": "docs/specs/SPEC-dependabot-roots.md",
-    "line": "alias expansions, 256 update entries, and 256 roots per ecosystem.",
-    "values": [256],
-    "reason": "pending amendment (L10): approved spec states the value"
-  },
-  {
-    "file": "docs/specs/SPEC-dependabot-roots.md",
-    "line": "characters, and paths over 1,024 UTF-8 bytes.",
-    "values": [1024],
-    "reason": "pending amendment (L10): approved spec states the value"
-  },
-  {
-    "file": "docs/specs/SPEC-event-verification.md",
-    "line": "- 3 of 92 open `nodejs/node` PRs and 5 of 100 open `home-assistant/core` PRs",
-    "values": [100],
-    "reason": "pending amendment (L10): approved spec states the value"
-  },
-  {
-    "file": "docs/specs/SPEC-evidence-coverage.md",
-    "line": "| Upstream   | Stage `budget` after 240 requests; nothing retained      | Completed: 456 requests (244 were 404), 88 s    | Upstream share, 240 requests     |",
-    "values": [240],
-    "reason": "pending amendment (L10): approved spec states the value"
-  },
-  {
-    "file": "docs/specs/SPEC-evidence-coverage.md",
-    "line": "| Signals    | Stage `budget` in 57 ms, before any request              | 101 requests, then stage `budget`               | 512 attempts, then not isolated  |",
-    "values": [512],
-    "reason": "pending amendment (L10): approved spec states the value"
-  },
-  {
-    "file": "docs/specs/SPEC-evidence-coverage.md",
-    "line": "| Total      | 348 requests                                             | 967 requests, 592 to `api.github.com`, 172 s    | 944-request envelope             |",
-    "values": [944],
-    "reason": "pending amendment (L10): approved spec states the value"
-  },
-  {
-    "file": "docs/specs/SPEC-evidence-coverage.md",
-    "line": "- Upstream spent its 240-request share; 129 of its 142 GitHub requests were",
-    "values": [240],
-    "reason": "pending amendment (L10): approved spec states the value"
-  },
-  {
-    "file": "docs/specs/SPEC-evidence-coverage.md",
-    "line": "512-attempt ceiling before any read. Raised, its 92 malware lookups ran and",
-    "values": [512],
-    "reason": "pending amendment (L10): approved spec states the value"
-  },
-  {
-    "file": "docs/specs/SPEC-github-read.md",
-    "line": "`per_page=100` and consecutive pages starting at 1. GitHub documents the",
-    "values": [100],
-    "reason": "pending amendment (L10): approved spec states the value"
-  },
-  {
-    "file": "docs/specs/SPEC-github-read.md",
-    "line": "[100-entry page maximum and 3,000-file endpoint cap](https://docs.github.com/en/rest/pulls/pulls#list-pull-requests-files).",
-    "values": [100, 3000],
-    "reason": "pending amendment (L10): approved spec states the value"
-  },
-  {
-    "file": "docs/specs/SPEC-github-read.md",
-    "line": "2. Reaching 3,000 files is incomplete even if no next page is advertised.",
-    "values": [3000],
-    "reason": "pending amendment (L10): approved spec states the value"
-  },
-  {
-    "file": "docs/specs/SPEC-github-read.md",
-    "line": "control characters, and paths exceeding T4's 1,024 UTF-8-byte identity bound.",
-    "values": [1024],
-    "reason": "pending amendment (L10): approved spec states the value"
-  },
-  {
-    "file": "docs/specs/SPEC-github-read.md",
-    "line": "| Multiple pages; exactly 100 rows; zero files                           | Fetch terminal page as needed; reconcile counts; empty success requires completed discovery. |",
-    "values": [100],
-    "reason": "pending amendment (L10): approved spec states the value"
-  },
-  {
-    "file": "docs/specs/SPEC-github-read.md",
-    "line": "| Exactly 3,000 files; missing/duplicate page; loop; count mismatch      | Explicit incomplete discovery; no absent-ecosystem proof.                                    |",
-    "values": [3000],
-    "reason": "pending amendment (L10): approved spec states the value"
-  },
-  {
-    "file": "docs/specs/SPEC-managed-comments.md",
-    "line": "| `result.reviewDigest` | Optional 64-character lowercase hexadecimal SHA-256. When present, the body's digest line must carry this value; when absent, the body must have no digest line.                 |",
-    "values": [256],
-    "reason": "pending amendment (L10): approved spec states the value"
-  },
-  {
-    "file": "docs/specs/SPEC-managed-comments.md",
-    "line": "<!-- review-digest: <64-character lowercase hexadecimal SHA-256, when present> -->",
-    "values": [256],
-    "reason": "pending amendment (L10): approved spec states the value"
-  },
-  {
-    "file": "docs/specs/SPEC-managed-comments.md",
-    "line": "Confirm the documented `201` create or `200` update response and validate its",
-    "values": [200],
-    "reason": "pending amendment (L10): approved spec states the value"
-  },
-  {
-    "file": "docs/specs/SPEC-managed-comments.md",
-    "line": "| `listComments`  | Frozen `{ repository, pullNumber }`; unknown `{ status: 200, complete: true, data: [...] }` for the complete collection.                    |",
-    "values": [200],
-    "reason": "pending amendment (L10): approved spec states the value"
-  },
-  {
-    "file": "docs/specs/SPEC-managed-comments.md",
-    "line": "| `readComment`   | Frozen `{ repository, commentId }`; unknown `{ status: 200, data: comment }` for the selected ID.                                           |",
-    "values": [200],
-    "reason": "pending amendment (L10): approved spec states the value"
-  },
-  {
-    "file": "docs/specs/SPEC-managed-comments.md",
-    "line": "| `updateComment` | Frozen `{ repository, commentId, body }`; unknown `{ status: 200, data: comment }`.                                                         |",
-    "values": [200],
-    "reason": "pending amendment (L10): approved spec states the value"
-  },
-  {
-    "file": "docs/specs/SPEC-mistral-transport.md",
-    "line": "`http-rate-limit` (429), `http-server` (500-599), and `http-other` (any other",
-    "values": [500],
-    "reason": "pending amendment (L10): approved spec states the value"
-  },
-  {
-    "file": "docs/specs/SPEC-mistral-transport.md",
-    "line": "requests, each capped at 4 MiB, 4,096 completion tokens, and 120 seconds,",
-    "values": [4096, 4194304],
-    "reason": "pending amendment (L10): approved spec states the value"
-  },
-  {
-    "file": "docs/specs/SPEC-mistral-transport.md",
-    "line": "bounded separately to 64 levels, 1,048,576 entries, and 8 MiB of string values",
-    "values": [1048576, 8388608],
-    "reason": "pending amendment (L10): approved spec states the value"
-  },
-  {
-    "file": "docs/specs/SPEC-mistral-transport.md",
-    "line": "The full-response boundary fixture admits exactly 12,648,448 bytes, including",
-    "values": [12648448],
-    "reason": "pending amendment (L10): approved spec states the value"
-  },
-  {
-    "file": "docs/specs/SPEC-mistral-transport.md",
-    "line": "trusted configuration. Its model syntax is 1\u2013128 ASCII characters matching",
-    "values": [128],
-    "reason": "pending amendment (L10): approved spec states the value"
-  },
-  {
-    "file": "docs/specs/SPEC-mistral-transport.md",
-    "line": "6. Accept only a non-streaming HTTP 200 response with `application/json`",
-    "values": [200],
-    "reason": "pending amendment (L10): approved spec states the value"
-  },
-  {
-    "file": "docs/specs/SPEC-mistral-transport.md",
-    "line": "rehearsal (#329) remain.** The user reviewed the open questions (240,000 ms",
-    "values": [240000],
-    "reason": "pending amendment (L10): approved spec states the value"
-  },
-  {
-    "file": "docs/specs/SPEC-mistral-transport.md",
-    "line": "`max_tokens: 4096`, six of six fixture batches (2 to 8 units) used 4,095",
-    "values": [4096],
-    "reason": "pending amendment (L10): approved spec states the value"
-  },
-  {
-    "file": "docs/specs/SPEC-mistral-transport.md",
-    "line": "`finish_reason: length`. At 16,384, seven of seven complete replies stopped",
-    "values": [16384],
-    "reason": "pending amendment (L10): approved spec states the value"
-  },
-  {
-    "file": "docs/specs/SPEC-mistral-transport.md",
-    "line": "4. **Budgets.** The completion-token budget rises from 4,096 to **16,384**,",
-    "values": [4096, 16384],
-    "reason": "pending amendment (L10): approved spec states the value"
-  },
-  {
-    "file": "docs/specs/SPEC-mistral-transport.md",
-    "line": "rises from 120,000 ms to **240,000 ms**: at the observed 70 to 75 tokens per",
-    "values": [240000],
-    "reason": "pending amendment (L10): approved spec states the value"
-  },
-  {
-    "file": "docs/specs/SPEC-mistral-transport.md",
-    "line": "ceiling follows the stated formula: `16,384 * 128 * 6 + 65,536 =",
-    "values": [16384, 128, 65536],
-    "reason": "pending amendment (L10): approved spec states the value"
-  },
-  {
-    "file": "docs/specs/SPEC-mistral-transport.md",
-    "line": "12,648,448`. Each remains clipped to the caller's remaining analysis time,",
-    "values": [12648448],
-    "reason": "pending amendment (L10): approved spec states the value"
-  },
-  {
-    "file": "docs/specs/SPEC-mistral-transport.md",
-    "line": "and M2's 600,000 ms analysis maximum, 32-call cap, and concurrency of 2 do",
-    "values": [600000],
-    "reason": "pending amendment (L10): approved spec states the value"
-  },
-  {
-    "file": "docs/specs/SPEC-mistral-transport.md",
-    "line": "including `top_p: 1`, `temperature: 0`, and `max_tokens: 16384`, and has no",
-    "values": [16384],
-    "reason": "pending amendment (L10): approved spec states the value"
-  },
-  {
-    "file": "docs/specs/SPEC-mistral-transport.md",
-    "line": "- **Timeout.** 240,000 ms covers a full-cap reply on the observed throughput.",
-    "values": [240000],
-    "reason": "pending amendment (L10): approved spec states the value"
-  },
-  {
-    "file": "docs/specs/SPEC-mistral-transport.md",
-    "line": "failures on slow replies. Best guess: 240,000 ms.",
-    "values": [240000],
-    "reason": "pending amendment (L10): approved spec states the value"
-  },
-  {
-    "file": "docs/specs/SPEC-mistral-transport.md",
-    "line": "shared deadline/publication reserve. The baseline's 4,096-token completion",
-    "values": [4096],
-    "reason": "pending amendment (L10): approved spec states the value"
-  },
-  {
-    "file": "docs/specs/SPEC-mistral-transport.md",
-    "line": "| Members/sources/findings retained locally          | T4's 128/1,024/512                   | Preserve the accepted inventory and required findings; no new larger input allowance.       |",
-    "values": [128, 1024, 512],
-    "reason": "pending amendment (L10): approved spec states the value"
-  },
-  {
-    "file": "docs/specs/SPEC-mistral-transport.md",
-    "line": "| Upstream excerpt UTF-8 bytes                       | 2,048 per source                     | No larger than T4 text; retain truncation metadata.                                         |",
-    "values": [2048],
-    "reason": "pending amendment (L10): approved spec states the value"
-  },
-  {
-    "file": "docs/specs/SPEC-mistral-transport.md",
-    "line": "| Repository source excerpt                          | C2's existing 500 code units         | Only already eligible C2 text; its 65,536-byte total context cap still applies.             |",
-    "values": [500, 65536],
-    "reason": "pending amendment (L10): approved spec states the value"
-  },
-  {
-    "file": "docs/specs/SPEC-mistral-transport.md",
-    "line": "| Serialized projected unit bytes                    | 65,536                               | Reject a unit whose required structure cannot fit; never remove members/findings.           |",
-    "values": [65536],
-    "reason": "pending amendment (L10): approved spec states the value"
-  },
-  {
-    "file": "docs/specs/SPEC-mistral-transport.md",
-    "line": "| Final serialized HTTP request bytes                | 262,144                              | Includes fixed prompts, model/options, JSON string escaping, and envelope.                  |",
-    "values": [262144],
-    "reason": "pending amendment (L10): approved spec states the value"
-  },
-  {
-    "file": "docs/specs/SPEC-mistral-transport.md",
-    "line": "| Completion tokens                                  | 16,384                               | Reasoning tokens count against it; live replies used 4.1k-8.0k (2026-11-12).                |",
-    "values": [16384],
-    "reason": "pending amendment (L10): approved spec states the value"
-  },
-  {
-    "file": "docs/specs/SPEC-mistral-transport.md",
-    "line": "| Per-request timeout                                | 240,000 ms maximum                   | Live replies took 58-101 s; clipped to the caller's remaining analysis time.                |",
-    "values": [240000],
-    "reason": "pending amendment (L10): approved spec states the value"
-  },
-  {
-    "file": "docs/specs/SPEC-mistral-transport.md",
-    "line": "| Inner content allowance                            | 128 UTF-8 bytes per completion token | Conservative planning allowance, not a documented guarantee for every model/tokenizer.      |",
-    "values": [128],
-    "reason": "pending amendment (L10): approved spec states the value"
-  },
-  {
-    "file": "docs/specs/SPEC-mistral-transport.md",
-    "line": "| Provider envelope allowance                        | 65,536 bytes                         | Bounded metadata overhead beyond generated content.                                         |",
-    "values": [65536],
-    "reason": "pending amendment (L10): approved spec states the value"
-  },
-  {
-    "file": "docs/specs/SPEC-mistral-transport.md",
-    "line": "| Observed response bytes                            | 12,648,448                           | `16,384 * 128 * 6 + 65,536`; input C2/T4 limits remain unchanged.                           |",
-    "values": [12648448, 16384, 128, 65536],
-    "reason": "pending amendment (L10): approved spec states the value"
-  },
-  {
-    "file": "docs/specs/SPEC-mistral-transport.md",
-    "line": "| Model reason/rationale/action/impact text          | 1,024 UTF-8 bytes each               | Concise per-unit advice; nonempty when required.                                            |",
-    "values": [1024],
-    "reason": "pending amendment (L10): approved spec states the value"
-  },
-  {
-    "file": "docs/specs/SPEC-mistral-transport.md",
-    "line": "| Feature text                                       | 512 UTF-8 bytes                      | At most one capability per unit.                                                            |",
-    "values": [512],
-    "reason": "pending amendment (L10): approved spec states the value"
-  },
-  {
-    "file": "docs/specs/SPEC-mistral-transport.md",
-    "line": "| Follow-up description                              | 280 UTF-8 bytes                      | Does not expand the baseline's 280-character bound.                                         |",
-    "values": [280],
-    "reason": "pending amendment (L10): approved spec states the value"
-  },
-  {
-    "file": "docs/specs/SPEC-mistral-transport.md",
-    "line": "universal tokenizer maximum or that all eight rich assessments fit 16,384 tokens.",
-    "values": [16384],
-    "reason": "pending amendment (L10): approved spec states the value"
-  },
-  {
-    "file": "docs/specs/SPEC-mistral-transport.md",
-    "line": "and array order preserved. Hash with Node's SHA-256 over original review and",
-    "values": [256],
-    "reason": "pending amendment (L10): approved spec states the value"
-  },
-  {
-    "file": "docs/specs/SPEC-npm-evidence.md",
-    "line": "has a 3,000-file cap; reaching a cap or missing a page is incomplete",
-    "values": [3000],
-    "reason": "pending amendment (L10): approved spec states the value"
-  },
-  {
-    "file": "docs/specs/SPEC-npm-inventory.md",
-    "line": "including the declaration variant, combined 128-record accounting, and minimal",
-    "values": [128],
-    "reason": "pending amendment (L10): approved spec states the value"
-  },
-  {
-    "file": "docs/specs/SPEC-npm-inventory.md",
-    "line": "The existing 128-change packet limit counts **all** records across both bases",
-    "values": [128],
-    "reason": "pending amendment (L10): approved spec states the value"
-  },
-  {
-    "file": "docs/specs/SPEC-npm-inventory.md",
-    "line": "| Exactly 128 records; 129 across bases/ecosystems                                                                                                                                                     | Existing T4 ceiling applies without trimming; overflow returns no usable packet.                                                                                                               |",
-    "values": [128],
-    "reason": "pending amendment (L10): approved spec states the value"
-  },
-  {
-    "file": "docs/specs/SPEC-npm-inventory.md",
-    "line": "This is independent of T4's hard 128-record rejection, which never trims a packet.",
-    "values": [128],
-    "reason": "pending amendment (L10): approved spec states the value"
-  },
-  {
-    "file": "docs/specs/SPEC-npm-relationships.md",
-    "line": "Respect existing T4 limits, including 128 combined changes, 256 relationships,",
-    "values": [128, 256],
-    "reason": "pending amendment (L10): approved spec states the value"
-  },
-  {
-    "file": "docs/specs/SPEC-parity-cutover.md",
-    "line": "Svelte source-line shape, 500-character bound, exclusions, Mistral",
-    "values": [500],
-    "reason": "pending amendment (L10): approved spec states the value"
-  },
-  {
-    "file": "docs/specs/SPEC-policy-signals.md",
-    "line": "the 128-change limit; rejection remains explicit and fail secure. Live",
-    "values": [128],
-    "reason": "pending amendment (L10): approved spec states the value"
-  },
-  {
-    "file": "docs/specs/SPEC-reachability-evidence.md",
-    "line": "candidate accounting on every side a candidate exists, and a 1,024-verdict cap",
-    "values": [1024],
-    "reason": "pending amendment (L10): approved spec states the value"
-  },
-  {
-    "file": "docs/specs/SPEC-reachability-evidence.md",
-    "line": "holds at most 1,024 records; reasons obey the 32-entry list bound.",
-    "values": [1024],
-    "reason": "pending amendment (L10): approved spec states the value"
-  },
-  {
-    "file": "docs/specs/SPEC-reachability-evidence.md",
-    "line": "IDs of up to 1,024 bytes each, so a worst-case record is above 3 KB, and",
-    "values": [1024],
-    "reason": "pending amendment (L10): approved spec states the value"
-  },
-  {
-    "file": "docs/specs/SPEC-reachability-evidence.md",
-    "line": "- Cap: 1,024 verdicts per packet, one new T4 limit beside 128 changes, 256",
-    "values": [1024, 128, 256],
-    "reason": "pending amendment (L10): approved spec states the value"
-  },
-  {
-    "file": "docs/specs/SPEC-reachability-evidence.md",
-    "line": "proofs, and 32-instance paths. With at most 128 changes, one scope-level",
-    "values": [128],
-    "reason": "pending amendment (L10): approved spec states the value"
-  },
-  {
-    "file": "docs/specs/SPEC-reachability-evidence.md",
-    "line": "`truncated` record per anchor and side (at most 256) fits the cap, so an",
-    "values": [256],
-    "reason": "pending amendment (L10): approved spec states the value"
-  },
-  {
-    "file": "docs/specs/SPEC-reachability-evidence.md",
-    "line": "can pass the cap quickly (19 anchors by 100 members by 2 sides is 3,800), so",
-    "values": [100],
-    "reason": "pending amendment (L10): approved spec states the value"
-  },
-  {
-    "file": "docs/specs/SPEC-reachability-evidence.md",
-    "line": "ambiguity), and at most 127 members, so at most 254, within the 256 cap.",
-    "values": [256],
-    "reason": "pending amendment (L10): approved spec states the value"
-  },
-  {
-    "file": "docs/specs/SPEC-reachability-evidence.md",
-    "line": "- Packet-wide budgets: the 1,024 cap and the 1 MiB ceiling are per packet, but",
-    "values": [1024, 1048576],
-    "reason": "pending amendment (L10): approved spec states the value"
-  },
-  {
-    "file": "docs/specs/SPEC-reachability-evidence.md",
-    "line": "| [T4 packet](SPEC-review-packet.md)                                       | Add `reachability` to the envelope, validation rules, 1,024 cap, and fixtures; state that T4 still does not certify traversal exhaustiveness.                                                                                          |",
-    "values": [1024],
-    "reason": "pending amendment (L10): approved spec states the value"
-  },
-  {
-    "file": "docs/specs/SPEC-reachability-evidence.md",
-    "line": "| Verdict cap at 1,024 and one beyond, including a mixed npm+uv packet                                        | Cap accepted; overflow rejected by T4; the assembler stays under the cap. Rejects per-collector caps.                                                             |",
-    "values": [1024],
-    "reason": "pending amendment (L10): approved spec states the value"
-  },
-  {
-    "file": "docs/specs/SPEC-reachability-evidence.md",
-    "line": "4. The cap is 1,024 verdicts; truncation is explicit evidence, not a rejection.",
-    "values": [1024],
-    "reason": "pending amendment (L10): approved spec states the value"
-  },
-  {
-    "file": "docs/specs/SPEC-reachability-evidence.md",
-    "line": "`PACKET_LIMITS.reachability` (1,024), and the structural rules above.",
-    "values": [1024],
-    "reason": "pending amendment (L10): approved spec states the value"
-  },
-  {
-    "file": "docs/specs/SPEC-review-config.md",
-    "line": "500-character source line containing the dependency name;",
-    "values": [500],
-    "reason": "pending amendment (L10): approved spec states the value"
-  },
-  {
-    "file": "docs/specs/SPEC-review-config.md",
-    "line": "most 128 distinct exact relative paths and is intersected with the roots",
-    "values": [128],
-    "reason": "pending amendment (L10): approved spec states the value"
-  },
-  {
-    "file": "docs/specs/SPEC-review-orchestration.md",
-    "line": "Approved execution envelope, amended 2026-11-09: 944 total requests, 1 MiB",
-    "values": [944, 1048576],
-    "reason": "pending amendment (L10): approved spec states the value"
-  },
-  {
-    "file": "docs/specs/SPEC-review-orchestration.md",
-    "line": "per response, 54 MiB total response bytes, a 15,000 ms request timeout, and",
-    "values": [15000, 56623104],
-    "reason": "pending amendment (L10): approved spec states the value"
-  },
-  {
-    "file": "docs/specs/SPEC-review-orchestration.md",
-    "line": "a 240,000 ms total deadline. Exceeding any bound is a fail-closed",
-    "values": [240000],
-    "reason": "pending amendment (L10): approved spec states the value"
-  },
-  {
-    "file": "docs/specs/SPEC-review-orchestration.md",
-    "line": "| Snapshot reads (repository, commit, tree) | 200      | 9 MiB   |",
-    "values": [200, 9437184],
-    "reason": "pending amendment (L10): approved spec states the value"
-  },
-  {
-    "file": "docs/specs/SPEC-review-orchestration.md",
-    "line": "| GitHub evidence session                   | 160      | 12 MiB  |",
-    "values": [160, 12582912],
-    "reason": "pending amendment (L10): approved spec states the value"
-  },
-  {
-    "file": "docs/specs/SPEC-review-orchestration.md",
-    "line": "| Upstream evidence                         | 240      | 15 MiB  |",
-    "values": [240, 15728640],
-    "reason": "pending amendment (L10): approved spec states the value"
-  },
-  {
-    "file": "docs/specs/SPEC-review-orchestration.md",
-    "line": "| Advisory lookup                           | 80       | 5 MiB   |",
-    "values": [80, 5242880],
-    "reason": "pending amendment (L10): approved spec states the value"
-  },
-  {
-    "file": "docs/specs/SPEC-review-orchestration.md",
-    "line": "exhausts a share and ends incomplete with a `budget` reason; the 240,000 ms",
-    "values": [240000],
-    "reason": "pending amendment (L10): approved spec states the value"
-  },
-  {
-    "file": "docs/specs/SPEC-review-orchestration.md",
-    "line": "The snapshot share covers C1's 128 excerpt files with their directories.",
-    "values": [128],
-    "reason": "pending amendment (L10): approved spec states the value"
-  },
-  {
-    "file": "docs/specs/SPEC-review-orchestration.md",
-    "line": "not the shared 240,000 ms deadline (Diagnostic Amendments 2 and 3).",
-    "values": [240000],
-    "reason": "pending amendment (L10): approved spec states the value"
-  },
-  {
-    "file": "docs/specs/SPEC-review-orchestration.md",
-    "line": "The user approved this amendment and its `freshnessAllowanceMs` of 45,000 ms",
-    "values": [45000],
-    "reason": "pending amendment (L10): approved spec states the value"
-  },
-  {
-    "file": "docs/specs/SPEC-review-orchestration.md",
-    "line": "A rehearsal whose model step ends after the GitHub transport's 240-second",
-    "values": [240],
-    "reason": "pending amendment (L10): approved spec states the value"
-  },
-  {
-    "file": "docs/specs/SPEC-review-orchestration.md",
-    "line": "the shared 240,000 ms evidence deadline and are bounded instead by their own",
-    "values": [240000],
-    "reason": "pending amendment (L10): approved spec states the value"
-  },
-  {
-    "file": "docs/specs/SPEC-review-orchestration.md",
-    "line": "request and byte shares, the 15,000 ms request timeout, and the end of the",
-    "values": [15000],
-    "reason": "pending amendment (L10): approved spec states the value"
-  },
-  {
-    "file": "docs/specs/SPEC-review-orchestration.md",
-    "line": "job window (job start plus the 900,000 ms job budget). Each freshness",
-    "values": [900000],
-    "reason": "pending amendment (L10): approved spec states the value"
-  },
-  {
-    "file": "docs/specs/SPEC-review-orchestration.md",
-    "line": "the job window, so a read after 240,000 ms is neither refused nor clamped to",
-    "values": [240000],
-    "reason": "pending amendment (L10): approved spec states the value"
-  },
-  {
-    "file": "docs/specs/SPEC-review-orchestration.md",
-    "line": "already stops at the smaller of that deadline minus its 60,000 ms",
-    "values": [60000],
-    "reason": "pending amendment (L10): approved spec states the value"
-  },
-  {
-    "file": "docs/specs/SPEC-review-orchestration.md",
-    "line": "publication reserve and 600,000 ms after its own start; the allowance stacks",
-    "values": [600000],
-    "reason": "pending amendment (L10): approved spec states the value"
-  },
-  {
-    "file": "docs/specs/SPEC-review-orchestration.md",
-    "line": "final check by about 840,000 ms.",
-    "values": [840000],
-    "reason": "pending amendment (L10): approved spec states the value"
-  },
-  {
-    "file": "docs/specs/SPEC-review-orchestration.md",
-    "line": "3. **Value: `freshnessAllowanceMs` = 45,000.** It is the derived minimum:",
-    "values": [45000],
-    "reason": "pending amendment (L10): approved spec states the value"
-  },
-  {
-    "file": "docs/specs/SPEC-review-orchestration.md",
-    "line": "three sequential reads (run, PR, comparison) at the 15,000 ms request",
-    "values": [15000],
-    "reason": "pending amendment (L10): approved spec states the value"
-  },
-  {
-    "file": "docs/specs/SPEC-review-orchestration.md",
-    "line": "- the motivating case: a model step that finishes after the 240,000 ms",
-    "values": [240000],
-    "reason": "pending amendment (L10): approved spec states the value"
-  },
-  {
-    "file": "docs/specs/SPEC-review-orchestration.md",
-    "line": "240,000 ms stays pending for the 15,000 ms request timeout and then times",
-    "values": [240000, 15000],
-    "reason": "pending amendment (L10): approved spec states the value"
-  },
-  {
-    "file": "docs/specs/SPEC-review-orchestration.md",
-    "line": "(asserted directly on the deadline, because the existing 60,000 ms reserve",
-    "values": [60000],
-    "reason": "pending amendment (L10): approved spec states the value"
-  },
-  {
-    "file": "docs/specs/SPEC-review-orchestration.md",
-    "line": "job start; computing a freshness request timer from the 240,000 ms window;",
-    "values": [240000],
-    "reason": "pending amendment (L10): approved spec states the value"
-  },
-  {
-    "file": "docs/specs/SPEC-review-orchestration.md",
-    "line": "approach and a `preStartupAllowanceMs` of 60,000, then invoked `as-plan` on this",
-    "values": [60000],
-    "reason": "pending amendment (L10): approved spec states the value"
-  },
-  {
-    "file": "docs/specs/SPEC-review-orchestration.md",
-    "line": "`JOB_BUDGET_MS` (900,000 ms) equals the review workflow's `timeout-minutes: 15`,",
-    "values": [900000],
-    "reason": "pending amendment (L10): approved spec states the value"
-  },
-  {
-    "file": "docs/specs/SPEC-review-orchestration.md",
-    "line": "the runner's. By code reading, the final freshness check ends at about 840,000",
-    "values": [840000],
-    "reason": "pending amendment (L10): approved spec states the value"
-  },
-  {
-    "file": "docs/specs/SPEC-review-orchestration.md",
-    "line": "ms on the startup clock today and the 60,000 ms publication reserve absorbs",
-    "values": [60000],
-    "reason": "pending amendment (L10): approved spec states the value"
-  },
-  {
-    "file": "docs/specs/SPEC-review-orchestration.md",
-    "line": "2. **Value: `preStartupAllowanceMs` = 60,000.** The user chose it on 2026-11-11.",
-    "values": [60000],
-    "reason": "pending amendment (L10): approved spec states the value"
-  },
-  {
-    "file": "docs/specs/SPEC-review-orchestration.md",
-    "line": "plus `jobWindowMs` minus `freshnessAllowanceMs`. With the unchanged 60,000",
-    "values": [60000],
-    "reason": "pending amendment (L10): approved spec states the value"
-  },
-  {
-    "file": "docs/specs/SPEC-review-orchestration.md",
-    "line": "the final freshness check by about 780,000 ms. With the full 60,000 ms",
-    "values": [60000],
-    "reason": "pending amendment (L10): approved spec states the value"
-  },
-  {
-    "file": "docs/specs/SPEC-review-orchestration.md",
-    "line": "allowance spent, that is 840,000 ms on the runner clock, leaving 60,000 ms",
-    "values": [840000, 60000],
-    "reason": "pending amendment (L10): approved spec states the value"
-  },
-  {
-    "file": "docs/specs/SPEC-review-orchestration.md",
-    "line": "for publication. The shared 240,000 ms evidence deadline and",
-    "values": [240000],
-    "reason": "pending amendment (L10): approved spec states the value"
-  },
-  {
-    "file": "docs/specs/SPEC-review-orchestration.md",
-    "line": "60,000 when startup takes the job start (the full allowance spent before",
-    "values": [60000],
-    "reason": "pending amendment (L10): approved spec states the value"
-  },
-  {
-    "file": "docs/specs/SPEC-review-orchestration.md",
-    "line": "so the publication reserve, not the 600,000 ms analysis cap, sets that",
-    "values": [600000],
-    "reason": "pending amendment (L10): approved spec states the value"
-  },
-  {
-    "file": "docs/specs/SPEC-review-orchestration.md",
-    "line": "840,000 on the injected clock, which leaves the 60,000 ms publication",
-    "values": [840000, 60000],
-    "reason": "pending amendment (L10): approved spec states the value"
-  },
-  {
-    "file": "docs/specs/SPEC-review-orchestration.md",
-    "line": "subtracts its own 60,000 ms reserve from it, which hides it end to end);",
-    "values": [60000],
-    "reason": "pending amendment (L10): approved spec states the value"
-  },
-  {
-    "file": "docs/specs/SPEC-review-orchestration.md",
-    "line": "- evidence readers still stop at the shared 240,000 ms deadline;",
-    "values": [240000],
-    "reason": "pending amendment (L10): approved spec states the value"
-  },
-  {
-    "file": "docs/specs/SPEC-review-orchestration.md",
-    "line": "- `src/budget.test.ts` pins `preStartupAllowanceMs` to 60,000 and",
-    "values": [60000],
-    "reason": "pending amendment (L10): approved spec states the value"
-  },
-  {
-    "file": "docs/specs/SPEC-review-orchestration.md",
-    "line": "`jobWindowMs` to 840,000 as literals, so an allowance of zero or one",
-    "values": [840000],
-    "reason": "pending amendment (L10): approved spec states the value"
-  },
-  {
-    "file": "docs/specs/SPEC-review-orchestration.md",
-    "line": "7. **Supersedes when implemented.** Amendment 2's references to \"the 900,000 ms",
-    "values": [900000],
-    "reason": "pending amendment (L10): approved spec states the value"
-  },
-  {
-    "file": "docs/specs/SPEC-review-orchestration.md",
-    "line": "job budget\" and to a final check at about 840,000 ms are narrowed by items 1",
-    "values": [840000],
-    "reason": "pending amendment (L10): approved spec states the value"
-  },
-  {
-    "file": "docs/specs/SPEC-review-orchestration.md",
-    "line": "expectations of an analysis deadline of 755,000 ms (job start -100,000) and",
-    "values": [100000],
-    "reason": "pending amendment (L10): approved spec states the value"
-  },
-  {
-    "file": "docs/specs/SPEC-review-orchestration.md",
-    "line": "covers any non-200 or redirected response, is replaced in the M1 category",
-    "values": [200],
-    "reason": "pending amendment (L10): approved spec states the value"
-  },
-  {
-    "file": "docs/specs/SPEC-review-orchestration.md",
-    "line": "- `http-server` \u2014 status 500 through 599; and",
-    "values": [500],
-    "reason": "pending amendment (L10): approved spec states the value"
-  },
-  {
-    "file": "docs/specs/SPEC-review-orchestration.md",
-    "line": "`http-rate-limit`, 500, 503, and 599 to `http-server`, and 302, 400, 404,",
-    "values": [500],
-    "reason": "pending amendment (L10): approved spec states the value"
-  },
-  {
-    "file": "docs/specs/SPEC-review-orchestration.md",
-    "line": "remaining analysis time, at most 600,000 ms, and the transport timeout is",
-    "values": [600000],
-    "reason": "pending amendment (L10): approved spec states the value"
-  },
-  {
-    "file": "docs/specs/SPEC-review-orchestration.md",
-    "line": "240,000 ms, so a production value has at most six digits. The printer clamps",
-    "values": [240000],
-    "reason": "pending amendment (L10): approved spec states the value"
-  },
-  {
-    "file": "docs/specs/SPEC-review-orchestration.md",
-    "line": "any value above 999,999 to 999,999, so an injected clock cannot lengthen the",
-    "values": [999999],
-    "reason": "pending amendment (L10): approved spec states the value"
-  },
-  {
-    "file": "docs/specs/SPEC-review-orchestration.md",
-    "line": "of 999,999 and of 1,000,000 both print as 999999.",
-    "values": [999999, 1000000],
-    "reason": "pending amendment (L10): approved spec states the value"
-  },
-  {
-    "file": "docs/specs/SPEC-review-packet.md",
-    "line": "at 128 changes; reject overflow without exposing a usable partial packet.",
-    "values": [128],
-    "reason": "pending amendment (L10): approved spec states the value"
-  },
-  {
-    "file": "docs/specs/SPEC-review-packet.md",
-    "line": "declaration variant, matching validation rules, and combined 128-record",
-    "values": [128],
-    "reason": "pending amendment (L10): approved spec states the value"
-  },
-  {
-    "file": "docs/specs/SPEC-review-packet.md",
-    "line": "| Complete serialized packet                                      | 1,048,576 UTF-8 bytes                                                              |",
-    "values": [1048576],
-    "reason": "pending amendment (L10): approved spec states the value"
-  },
-  {
-    "file": "docs/specs/SPEC-review-packet.md",
-    "line": "| Changes                                                         | 128 total across all ecosystems; approved                                          |",
-    "values": [128],
-    "reason": "pending amendment (L10): approved spec states the value"
-  },
-  {
-    "file": "docs/specs/SPEC-review-packet.md",
-    "line": "| Source records / findings / relationship proofs                 | 1,024 / 512 / 256 per packet                                                       |",
-    "values": [1024, 512, 256],
-    "reason": "pending amendment (L10): approved spec states the value"
-  },
-  {
-    "file": "docs/specs/SPEC-review-packet.md",
-    "line": "| Reachability verdicts                                           | 1,024 per packet (see the reachability amendment)                                  |",
-    "values": [1024],
-    "reason": "pending amendment (L10): approved spec states the value"
-  },
-  {
-    "file": "docs/specs/SPEC-review-packet.md",
-    "line": "| IDs and package names                                           | 1\u2013256 UTF-16 code units, matching C2's existing bound                              |",
-    "values": [256],
-    "reason": "pending amendment (L10): approved spec states the value"
-  },
-  {
-    "file": "docs/specs/SPEC-review-packet.md",
-    "line": "| Other identity strings, versions, refs, markers, paths, URLs    | 1,024 UTF-8 bytes each; shorter C2 limits still apply                              |",
-    "values": [1024],
-    "reason": "pending amendment (L10): approved spec states the value"
-  },
-  {
-    "file": "docs/specs/SPEC-review-packet.md",
-    "line": "| Rationale, reason detail, title, or upstream excerpt            | 2,048 UTF-8 bytes each                                                             |",
-    "values": [2048],
-    "reason": "pending amendment (L10): approved spec states the value"
-  },
-  {
-    "file": "docs/specs/SPEC-review-packet.md",
-    "line": "| Source context                                                  | Existing C2 caps, including 65,536 serialized bytes and 500 code units per excerpt |",
-    "values": [65536, 500],
-    "reason": "pending amendment (L10): approved spec states the value"
-  },
-  {
-    "file": "docs/specs/SPEC-review-packet.md",
-    "line": "The cap deliberately rejects PRs containing more than 128 detected changes.",
-    "values": [128],
-    "reason": "pending amendment (L10): approved spec states the value"
-  },
-  {
-    "file": "docs/specs/SPEC-review-packet.md",
-    "line": "over 128. The shared reviewer will therefore reject a PR like #307 with a",
-    "values": [128],
-    "reason": "pending amendment (L10): approved spec states the value"
-  },
-  {
-    "file": "docs/specs/SPEC-review-packet.md",
-    "line": "- Limit: 1,024 verdicts per packet. Overflow rejects the packet; collectors and",
-    "values": [1024],
-    "reason": "pending amendment (L10): approved spec states the value"
-  },
-  {
-    "file": "docs/specs/SPEC-review-packet.md",
-    "line": "findings, or a claimed anchor's proof. The 128-change, 256-proof, 32-instance,",
-    "values": [128, 256],
-    "reason": "pending amendment (L10): approved spec states the value"
-  },
-  {
-    "file": "docs/specs/SPEC-shared-release-observations.md",
-    "line": "the approved 944-request/54-MiB envelope.",
-    "values": [944],
-    "reason": "pending amendment (L10): approved spec states the value"
-  },
-  {
-    "file": "docs/specs/SPEC-source-context.md",
-    "line": "source suffix family, 500-character excerpt cap, and 20-fact cap per",
-    "values": [500],
-    "reason": "pending amendment (L10): approved spec states the value"
-  },
-  {
-    "file": "docs/specs/SPEC-source-context.md",
-    "line": "name. Emit its canonical relative path and at most 500 UTF-16",
-    "values": [500],
-    "reason": "pending amendment (L10): approved spec states the value"
-  },
-  {
-    "file": "docs/specs/SPEC-source-context.md",
-    "line": "character 500 still disqualifies the line. Do not redact the value and",
-    "values": [500],
-    "reason": "pending amendment (L10): approved spec states the value"
-  },
-  {
-    "file": "docs/specs/SPEC-source-context.md",
-    "line": "Validate dependency IDs/names as nonempty strings of at most 256 UTF-16 code",
-    "values": [256],
-    "reason": "pending amendment (L10): approved spec states the value"
-  },
-  {
-    "file": "docs/specs/SPEC-source-context.md",
-    "line": "| `MAX_CONTEXT_DEPENDENCIES`        | 128            | Reject excess input before enumeration or content reads                    |",
-    "values": [128],
-    "reason": "pending amendment (L10): approved spec states the value"
-  },
-  {
-    "file": "docs/specs/SPEC-source-context.md",
-    "line": "| `MAX_CONTEXT_ID_CODE_UNITS`       | 256            | Bound each dependency ID and name; reject invalid input                    |",
-    "values": [256],
-    "reason": "pending amendment (L10): approved spec states the value"
-  },
-  {
-    "file": "docs/specs/SPEC-source-context.md",
-    "line": "| `MAX_CONTEXT_PATH_BYTES`          | 1,024          | Reject oversized configured/inventory paths before filesystem operations   |",
-    "values": [1024],
-    "reason": "pending amendment (L10): approved spec states the value"
-  },
-  {
-    "file": "docs/specs/SPEC-source-context.md",
-    "line": "| `MAX_TRACKED_PATH_ENTRIES`        | 10,000         | Count duplicates too; stop with partial status on one overflow record      |",
-    "values": [10000],
-    "reason": "pending amendment (L10): approved spec states the value"
-  },
-  {
-    "file": "docs/specs/SPEC-source-context.md",
-    "line": "| `MAX_SOURCE_CANDIDATES`           | 128            | Deduplicate eligible paths; stop with partial status on overflow           |",
-    "values": [128],
-    "reason": "pending amendment (L10): approved spec states the value"
-  },
-  {
-    "file": "docs/specs/SPEC-source-context.md",
-    "line": "| `MAX_SOURCE_FILE_BYTES`           | 65,536         | Read at most cap plus one probe byte; omit an incomplete or oversized file |",
-    "values": [65536],
-    "reason": "pending amendment (L10): approved spec states the value"
-  },
-  {
-    "file": "docs/specs/SPEC-source-context.md",
-    "line": "| `MAX_TOTAL_SOURCE_READ_BYTES`     | 1,048,576      | Count all returned bytes including probes; stop content reads at the cap   |",
-    "values": [1048576],
-    "reason": "pending amendment (L10): approved spec states the value"
-  },
-  {
-    "file": "docs/specs/SPEC-source-context.md",
-    "line": "| `MAX_SOURCE_EXCERPT_CODE_UNITS`   | 500            | Existing cap; preserve complete characters and the dependency name         |",
-    "values": [500],
-    "reason": "pending amendment (L10): approved spec states the value"
-  },
-  {
-    "file": "docs/specs/SPEC-source-context.md",
-    "line": "| `MAX_SOURCE_CONTEXT_BYTES`        | 65,536         | UTF-8 bytes of the complete serialized public result, including metadata   |",
-    "values": [65536],
-    "reason": "pending amendment (L10): approved spec states the value"
-  },
-  {
-    "file": "docs/specs/SPEC-source-context.md",
-    "line": "and cap its excerpt at 500 code units without splitting a surrogate pair.",
-    "values": [500],
-    "reason": "pending amendment (L10): approved spec states the value"
-  },
-  {
-    "file": "docs/specs/SPEC-source-context.md",
-    "line": "character 500, multiline private-key material, ordinary safe imports,",
-    "values": [500],
-    "reason": "pending amendment (L10): approved spec states the value"
-  },
-  {
-    "file": "docs/specs/SPEC-source-context.md",
-    "line": "- Exact 500-character and 20-fact boundaries, multibyte text, duplicate matches,",
-    "values": [500],
-    "reason": "pending amendment (L10): approved spec states the value"
-  },
-  {
-    "file": "docs/specs/SPEC-source-context.md",
-    "line": "at most 500 UTF-16 code units. Excluded and suspicious content never reaches",
-    "values": [500],
-    "reason": "pending amendment (L10): approved spec states the value"
-  },
-  {
-    "file": "docs/specs/SPEC-upstream-evidence.md",
-    "line": "Obey existing T4 ceilings, including 128 combined changes, 1,024 sources,",
-    "values": [128, 1024],
-    "reason": "pending amendment (L10): approved spec states the value"
-  },
-  {
-    "file": "docs/specs/SPEC-upstream-evidence.md",
-    "line": "2,048-byte source text, 32-entry lists, and the complete packet byte cap.",
-    "values": [2048],
-    "reason": "pending amendment (L10): approved spec states the value"
-  },
-  {
-    "file": "docs/specs/SPEC-uv-relationships.md",
-    "line": "semantic sides. Like U1 and N2, use a prefixed SHA-256 digest of that",
-    "values": [256],
-    "reason": "pending amendment (L10): approved spec states the value"
-  },
-  {
-    "file": "docs/specs/SPEC-uv-relationships.md",
-    "line": "Enforce existing T4 ceilings, including 128 combined ecosystem changes, 256",
-    "values": [128, 256],
-    "reason": "pending amendment (L10): approved spec states the value"
-  },
-  {
-    "file": "docs/specs/SPEC-uv-relationships.md",
-    "line": "Uv cannot reserve all 128 slots when orchestration assembles a mixed packet.",
-    "values": [128],
-    "reason": "pending amendment (L10): approved spec states the value"
-  },
-  {
-    "file": "docs/specs/SPEC-uv-relationships.md",
-    "line": "`-_.`; versions remain exact opaque strings. Lines over 4,096 characters and",
-    "values": [4096],
-    "reason": "pending amendment (L10): approved spec states the value"
-  },
-  {
-    "file": "docs/specs/SPEC-uv-relationships.md",
-    "line": "authoritative, including the combined 128-change ceiling across ecosystems.",
-    "values": [128],
-    "reason": "pending amendment (L10): approved spec states the value"
-  },
-  {
-    "file": "docs/specs/SPEC-evidence-coverage.md",
-    "line": "404s from tag candidates. Two releases-list responses exceeded the 1 MiB",
-    "values": [1048576],
-    "reason": "pending amendment (L10): approved spec states the value"
-  },
-  {
-    "file": "docs/specs/SPEC-reachability-evidence.md",
-    "line": "- Overflow rejects the packet; it never trims. The existing 1 MiB packet byte",
-    "values": [1048576],
-    "reason": "pending amendment (L10): approved spec states the value"
-  },
-  {
-    "file": "docs/specs/SPEC-reachability-evidence.md",
-    "line": "| Near-1 MiB mixed packet with optional evidence                                                              | Assembler drops optional evidence in the stated order, records limits, accepts the packet; no change dropped and no group forms from a partial drop.              |",
-    "values": [1048576],
-    "reason": "pending amendment (L10): approved spec states the value"
-  },
-  {
-    "file": "docs/specs/SPEC-review-config.md",
-    "line": "2. Parse at most 16 KiB of JSON. Require `version: 1` and reject unknown",
-    "values": [16384],
-    "reason": "pending amendment (L10): approved spec states the value"
-  },
-  {
-    "file": "docs/specs/SPEC-review-orchestration.md",
-    "line": "| Freshness (workflow, run, PR, compare)    | 24       | 3 MiB   |",
-    "values": [3145728],
-    "reason": "pending amendment (L10): approved spec states the value"
-  },
-  {
-    "file": "docs/specs/SPEC-review-orchestration.md",
-    "line": "| npm registry details                      | 64       | 4 MiB   |",
-    "values": [4194304],
-    "reason": "pending amendment (L10): approved spec states the value"
-  },
-  {
-    "file": "docs/specs/SPEC-review-orchestration.md",
-    "line": "| Signals: malware                          | 40       | 1.5 MiB |",
-    "values": [1572864],
-    "reason": "pending amendment (L10): approved spec states the value"
-  },
-  {
-    "file": "docs/specs/SPEC-review-orchestration.md",
-    "line": "| Signals: npm publish times                | 40       | 1.5 MiB |",
-    "values": [1572864],
-    "reason": "pending amendment (L10): approved spec states the value"
-  },
-  {
-    "file": "docs/specs/SPEC-review-orchestration.md",
-    "line": "| Signals: npm registry policy              | 64       | 2 MiB   |",
-    "values": [2097152],
-    "reason": "pending amendment (L10): approved spec states the value"
-  },
-  {
-    "file": "docs/specs/SPEC-review-orchestration.md",
-    "line": "| Signals: PyPI metadata                    | 16       | 0.5 MiB |",
-    "values": [524288],
-    "reason": "pending amendment (L10): approved spec states the value"
-  },
-  {
-    "file": "docs/specs/SPEC-review-orchestration.md",
-    "line": "| Signals: Actions upstream                 | 16       | 0.5 MiB |",
-    "values": [524288],
-    "reason": "pending amendment (L10): approved spec states the value"
-  },
-  {
-    "file": "docs/specs/SPEC-review-packet.md",
-    "line": "and 1 MiB ceilings are unchanged.",
-    "values": [1048576],
-    "reason": "pending amendment (L10): approved spec states the value"
-  },
-  {
-    "file": "docs/specs/SPEC-shared-release-observations.md",
-    "line": "requests and 0.5 MiB). S2 consumes the validated result without spending the",
-    "values": [524288],
-    "reason": "pending amendment (L10): approved spec states the value"
-  },
-  {
-    "file": "docs/specs/SPEC-advisory-lookup.md",
-    "line": "The workflow token gets 1,000 REST requests per hour per repository",
-    "values": [1000],
-    "reason": "pending amendment (L10): quotes GitHub's documented GITHUB_TOKEN limit, now recorded as limit:github.token.restRequestsPerHour"
+    "reason": "measurement: the 60,000-comma test document from the 2026-11-11 timing, an input size, not a register value"
   },
   {
     "file": "docs/specs/SPEC-advisory-lookup.md",
     "line": "any of package or package@version\", up to 1,000 packages, as long as the",
-    "values": [1000],
-    "reason": "external: quotes GitHub's documented limit (GitHub Docs, checked 2026-11-19), not a register value"
-  },
-  {
-    "file": "docs/specs/SPEC-upstream-evidence.md",
-    "line": "budget is 1,000 requests per hour per repository; GraphQL has its own budget",
-    "values": [1000],
-    "reason": "pending amendment (L10): quotes GitHub's documented GITHUB_TOKEN limit, now recorded as limit:github.token.restRequestsPerHour"
-  },
-  {
-    "file": "docs/specs/SPEC-upstream-evidence.md",
-    "line": "of 1,000 points per hour per repository",
     "values": [1000],
     "reason": "external: quotes GitHub's documented limit (GitHub Docs, checked 2026-11-19), not a register value"
   },
@@ -1275,85 +27,199 @@
     "file": "docs/specs/SPEC-advisory-lookup.md",
     "line": "GitHub probes on 2026-11-19 (`type=reviewed`, `per_page=100`):",
     "values": [100],
-    "reason": "pending amendment (L10): approved spec states the value"
+    "reason": "request parameter: per_page=100 in the recorded 2026-11-19 probe, not a register value"
   },
   {
     "file": "docs/specs/SPEC-advisory-lookup.md",
-    "line": "is filled to at most 256 bytes under the cap, which leaves room for the",
-    "values": [256],
-    "reason": "pending amendment (L10): approved spec states the value"
-  },
-  {
-    "file": "docs/specs/SPEC-advisory-lookup.md",
-    "line": "provenance URL bound (`PACKET_LIMITS.identityBytes`, 1,024 bytes) is",
-    "values": [1024],
-    "reason": "pending amendment (L10): approved spec states the value"
-  },
-  {
-    "file": "docs/specs/SPEC-advisory-lookup.md",
-    "line": "separator, 944\u2013998 bytes for three-separator names such as",
+    "line": "bytes for names with up to one separator, 944\u2013998 bytes for three-separator",
     "values": [944],
-    "reason": "pending amendment (L10): approved spec states the value"
+    "reason": "measurement: discovery URL lengths of 944-998 bytes measured on 2026-11-19 and 2026-11-20, not a register value"
   },
   {
     "file": "docs/specs/SPEC-advisory-lookup.md",
-    "line": "size. TensorFlow 2.4.0 was 3,983,856 bytes on 2026-11-20, over the 1 MiB",
+    "line": "| Discovery page size   | 50                                                        | A 100-record `pillow` page was 1,009,662 bytes against the `limit:evidence.envelope.maxResponseBytes` cap; 50 leaves about half. |",
+    "values": [100],
+    "reason": "measurement: the 100-record pillow page from the 2026-11-20 probe, an observed page, not a register value"
+  },
+  {
+    "file": "docs/specs/SPEC-complexity-review.md",
+    "line": "reject reports exceeding 60,000 characters.",
+    "values": [60000],
+    "reason": "pending amendment (L10): approved spec states the value"
+  },
+  {
+    "file": "docs/specs/SPEC-event-verification.md",
+    "line": "- 3 of 92 open `nodejs/node` PRs and 5 of 100 open `home-assistant/core` PRs",
+    "values": [100],
+    "reason": "measurement: the number of open home-assistant/core PRs sampled in the 2026-10-24 survey, not a register value"
+  },
+  {
+    "file": "docs/specs/SPEC-evidence-coverage.md",
+    "line": "hour per repository, or 15,000 for resources in a GitHub Enterprise Cloud",
+    "values": [15000],
+    "reason": "external: quotes GitHub's documented or observed limit, not a register value"
+  },
+  {
+    "file": "docs/specs/SPEC-evidence-coverage.md",
+    "line": "| Upstream   | Stage `budget` after 240 requests; nothing retained      | Completed: 456 requests (244 were 404), 88 s    | Upstream share, 240 requests     |",
+    "values": [240],
+    "reason": "historical measurement: the R1 demand run (PR #276) records the limits in force when it ran, not the current register value"
+  },
+  {
+    "file": "docs/specs/SPEC-evidence-coverage.md",
+    "line": "| Signals    | Stage `budget` in 57 ms, before any request              | 101 requests, then stage `budget`               | 512 attempts, then not isolated  |",
+    "values": [512],
+    "reason": "historical measurement: the R1 demand run (PR #276) records the limits in force when it ran, not the current register value"
+  },
+  {
+    "file": "docs/specs/SPEC-evidence-coverage.md",
+    "line": "| Total      | 348 requests                                             | 967 requests, 592 to `api.github.com`, 172 s    | 944-request envelope             |",
+    "values": [944],
+    "reason": "historical measurement: the R1 demand run (PR #276) records the limits in force when it ran, not the current register value"
+  },
+  {
+    "file": "docs/specs/SPEC-evidence-coverage.md",
+    "line": "- Upstream spent its 240-request share; 129 of its 142 GitHub requests were",
+    "values": [240],
+    "reason": "historical measurement: the R1 demand run (PR #276) records the limits in force when it ran, not the current register value"
+  },
+  {
+    "file": "docs/specs/SPEC-evidence-coverage.md",
+    "line": "404s from tag candidates. Two releases-list responses exceeded the 1 MiB",
     "values": [1048576],
-    "reason": "pending amendment (L10): approved spec states the value"
+    "reason": "historical measurement: the R1 demand run (PR #276) records the limits in force when it ran, not the current register value"
   },
   {
-    "file": "docs/specs/SPEC-advisory-lookup.md",
-    "line": "(80 requests) covers about 26 Actions updates instead of about 40. `npm`",
-    "values": [80],
-    "reason": "pending amendment (L10): approved spec states the value"
+    "file": "docs/specs/SPEC-evidence-coverage.md",
+    "line": "512-attempt ceiling before any read. Raised, its 92 malware lookups ran and",
+    "values": [512],
+    "reason": "historical measurement: the R1 demand run (PR #276) records the limits in force when it ran, not the current register value"
   },
   {
-    "file": "docs/specs/SPEC-advisory-lookup.md",
-    "line": "advised `pip` updates exhaust the advisory share's 5 MiB. GitHub's correct",
-    "values": [5242880],
-    "reason": "pending amendment (L10): approved spec states the value"
+    "file": "docs/specs/SPEC-managed-comments.md",
+    "line": "| `result.reviewDigest` | Optional 64-character lowercase hexadecimal SHA-256. When present, the body's digest line must carry this value; when absent, the body must have no digest line.                 |",
+    "values": [256],
+    "reason": "not a limit: 256 is part of the algorithm name SHA-256, not a register value"
   },
   {
-    "file": "docs/specs/SPEC-advisory-lookup.md",
-    "line": "`budget`, a visible gap. The 944-request envelope is fully allocated, so",
-    "values": [944],
-    "reason": "pending amendment (L10): approved spec states the value"
+    "file": "docs/specs/SPEC-managed-comments.md",
+    "line": "<!-- review-digest: <64-character lowercase hexadecimal SHA-256, when present> -->",
+    "values": [256],
+    "reason": "not a limit: 256 is part of the algorithm name SHA-256, not a register value"
   },
   {
-    "file": "docs/specs/SPEC-advisory-lookup.md",
-    "line": "| Discovery page size   | 50                 | A 100-record `pillow` page was 1,009,662 bytes against the 1 MiB cap; 50 leaves about half.         |",
-    "values": [100, 1048576],
-    "reason": "pending amendment (L10): approved spec states the value"
+    "file": "docs/specs/SPEC-managed-comments.md",
+    "line": "Confirm the documented `201` create or `200` update response and validate its",
+    "values": [200],
+    "reason": "not a limit: HTTP status codes 201 and 200, not a register value"
   },
   {
-    "file": "docs/specs/SPEC-advisory-lookup.md",
-    "line": "| Discovery URL cap     | 4,096 bytes        | GitHub accepted discovery URLs of 996, 3,399, and 4,371 bytes and returned 414 at 8,259 and 11,499. |",
+    "file": "docs/specs/SPEC-managed-comments.md",
+    "line": "| `listComments`  | Frozen `{ repository, pullNumber }`; unknown `{ status: 200, complete: true, data: [...] }` for the complete collection.                    |",
+    "values": [200],
+    "reason": "not a limit: HTTP status code 200, not a register value"
+  },
+  {
+    "file": "docs/specs/SPEC-managed-comments.md",
+    "line": "| `readComment`   | Frozen `{ repository, commentId }`; unknown `{ status: 200, data: comment }` for the selected ID.                                           |",
+    "values": [200],
+    "reason": "not a limit: HTTP status code 200, not a register value"
+  },
+  {
+    "file": "docs/specs/SPEC-managed-comments.md",
+    "line": "| `updateComment` | Frozen `{ repository, commentId, body }`; unknown `{ status: 200, data: comment }`.                                                         |",
+    "values": [200],
+    "reason": "not a limit: HTTP status code 200, not a register value"
+  },
+  {
+    "file": "docs/specs/SPEC-mistral-transport.md",
+    "line": "`http-rate-limit` (429), `http-server` (500-599), and `http-other` (any other",
+    "values": [500],
+    "reason": "not a limit: HTTP status code range 500-599, not a register value"
+  },
+  {
+    "file": "docs/specs/SPEC-mistral-transport.md",
+    "line": "requests, each capped at 4 MiB, 4,096 completion tokens, and 120 seconds,",
+    "values": [4096, 4194304],
+    "reason": "historical: the 2026-11-07 paid-spike approval envelope (4 MiB, 4,096 tokens), not a current register value"
+  },
+  {
+    "file": "docs/specs/SPEC-mistral-transport.md",
+    "line": "6. Accept only a non-streaming HTTP 200 response with `application/json`",
+    "values": [200],
+    "reason": "not a limit: HTTP status code 200, not a register value"
+  },
+  {
+    "file": "docs/specs/SPEC-mistral-transport.md",
+    "line": "`max_tokens: 4096`, six of six fixture batches (2 to 8 units) used 4,095",
     "values": [4096],
-    "reason": "pending amendment (L10): approved spec states the value"
+    "reason": "measurement: the max_tokens request parameter of the recorded 2026-11-12 live probe, not a register value"
   },
   {
-    "file": "docs/specs/SPEC-advisory-lookup.md",
-    "line": "| Spelling ceiling      | 243 (5 separators) | Five-separator names need about 3 discovery requests under the cap; six would need about 9.         |",
-    "values": [243],
-    "reason": "pending amendment (L10): approved spec states the value"
+    "file": "docs/specs/SPEC-mistral-transport.md",
+    "line": "`finish_reason: length`. At 16,384, seven of seven complete replies stopped",
+    "values": [16384],
+    "reason": "measurement: the max_tokens request parameter of the recorded 2026-11-12 live probe, not a register value"
   },
   {
-    "file": "docs/specs/SPEC-advisory-lookup.md",
-    "line": "| OSV per-response size | existing 1 MiB cap | OSV has no page size; the `pillow` response was 791,379 bytes.                                      |",
-    "values": [1048576],
-    "reason": "pending amendment (L10): approved spec states the value"
+    "file": "docs/specs/SPEC-mistral-transport.md",
+    "line": "shared deadline/publication reserve. The baseline's 4,096-token completion",
+    "values": [4096],
+    "reason": "historical: the baseline reviewer's completion-token limit, a comparison input, not a register value"
   },
   {
-    "file": "docs/specs/SPEC-advisory-lookup.md",
-    "line": "is at least 256 bytes under the cap, then one versioned query. An empty",
+    "file": "docs/specs/SPEC-mistral-transport.md",
+    "line": "and array order preserved. Hash with Node's SHA-256 over original review and",
     "values": [256],
-    "reason": "pending amendment (L10): approved spec states the value"
+    "reason": "not a limit: 256 is part of the algorithm name SHA-256, not a register value"
   },
   {
-    "file": "docs/specs/SPEC-advisory-lookup.md",
-    "line": "1,024 bytes are `unsupported` with no versioned request. Malware discovery",
-    "values": [1024],
-    "reason": "pending amendment (L10): approved spec states the value"
+    "file": "docs/specs/SPEC-mistral-transport.md",
+    "line": "4. **Budgets.** The completion-token budget rises from 4,096 to",
+    "values": [4096],
+    "reason": "historical: the prior completion-token budget this amendment replaced, not a register value"
+  },
+  {
+    "file": "docs/specs/SPEC-reachability-evidence.md",
+    "line": "overflowing. Pair counts can pass the cap quickly (19 anchors by 100 members",
+    "values": [100],
+    "reason": "example: 100 members in an illustrative pair count (19 x 100 x 2), not a register value"
+  },
+  {
+    "file": "docs/specs/SPEC-review-orchestration.md",
+    "line": "expectations of an analysis deadline of 755,000 ms (job start -100,000) and",
+    "values": [100000],
+    "reason": "test fixture: the injected job-start clock offset in a recorded src/pipeline.test.ts expectation, not a register value"
+  },
+  {
+    "file": "docs/specs/SPEC-review-orchestration.md",
+    "line": "covers any non-200 or redirected response, is replaced in the M1 category",
+    "values": [200],
+    "reason": "HTTP status code: the 200 OK status, not a register value"
+  },
+  {
+    "file": "docs/specs/SPEC-review-orchestration.md",
+    "line": "- `http-server` \u2014 status 500 through 599; and",
+    "values": [500],
+    "reason": "HTTP status code: the 5xx range start for the http-server category, not a register value"
+  },
+  {
+    "file": "docs/specs/SPEC-review-orchestration.md",
+    "line": "`http-rate-limit`, 500, 503, and 599 to `http-server`, and 302, 400, 404,",
+    "values": [500],
+    "reason": "HTTP status code: a 5xx status in the http-server mapping test, not a register value"
+  },
+  {
+    "file": "docs/specs/SPEC-upstream-evidence.md",
+    "line": "of 1,000 points per hour per repository",
+    "values": [1000],
+    "reason": "external: quotes GitHub's documented limit (GitHub Docs, checked 2026-11-19), not a register value"
+  },
+  {
+    "file": "docs/specs/SPEC-uv-relationships.md",
+    "line": "semantic sides. Like U1 and N2, use a prefixed SHA-256 digest of that",
+    "values": [256],
+    "reason": "algorithm name: SHA-256 names the hash function, not a register value"
   },
   {
     "file": "docs/specs/SPEC-limit-register.md",
@@ -1381,18 +247,6 @@
   },
   {
     "file": "docs/specs/SPEC-limit-register.md",
-    "line": "reviewer's 15 minutes is the shared workflow's own `timeout-minutes`.",
-    "values": [900000],
-    "reason": "limit register spec: names a registered value as an example or test; pending amendment (L10)"
-  },
-  {
-    "file": "docs/specs/SPEC-limit-register.md",
-    "line": "- **REST rate limit.** `GITHUB_TOKEN` gets 1,000 REST requests per hour per",
-    "values": [1000],
-    "reason": "pending amendment (L10): quotes GitHub's documented GITHUB_TOKEN limit, now recorded as limit:github.token.restRequestsPerHour"
-  },
-  {
-    "file": "docs/specs/SPEC-limit-register.md",
     "line": "repository, or 15,000 for Enterprise Cloud resources",
     "values": [15000],
     "reason": "external: quotes GitHub's documented or observed limit, not a register value"
@@ -1402,59 +256,5 @@
     "line": "errors report 65,536 characters, and third-party sources disagree on whether",
     "values": [65536],
     "reason": "external: quotes GitHub's documented or observed limit, not a register value"
-  },
-  {
-    "file": "docs/specs/SPEC-limit-register.md",
-    "line": "untrusted data, multiplied by the 128-change packet limit. A structural",
-    "values": [128],
-    "reason": "limit register spec: names a registered value as an example or test; pending amendment (L10)"
-  },
-  {
-    "file": "docs/specs/SPEC-limit-register.md",
-    "line": "token. Hard maximum: the documented `GITHUB_TOKEN` rate limit (1,000",
-    "values": [1000],
-    "reason": "pending amendment (L10): quotes GitHub's documented GITHUB_TOKEN limit, now recorded as limit:github.token.restRequestsPerHour"
-  },
-  {
-    "file": "docs/specs/SPEC-limit-register.md",
-    "line": "(600,000 ms). Hard maximum: the provider's documented limits and the job",
-    "values": [600000],
-    "reason": "limit register spec: names a registered value as an example or test; pending amendment (L10)"
-  },
-  {
-    "file": "docs/specs/SPEC-limit-register.md",
-    "line": "- **Completion tokens:** 16,384. Hard maximum: the provider's maximum output",
-    "values": [16384],
-    "reason": "limit register spec: names a registered value as an example or test; pending amendment (L10)"
-  },
-  {
-    "file": "docs/specs/SPEC-limit-register.md",
-    "line": "- **Job budget and evidence deadline:** 15 minutes and 240,000 ms. Hard",
-    "values": [240000, 900000],
-    "reason": "limit register spec: names a registered value as an example or test; pending amendment (L10)"
-  },
-  {
-    "file": "docs/specs/SPEC-limit-register.md",
-    "line": "the existing boundary tests (exact comment-limit body, 128/129 changes, 16,384-byte",
-    "values": [128, 16384],
-    "reason": "limit register spec: names a registered value as an example or test; pending amendment (L10)"
-  },
-  {
-    "file": "docs/specs/SPEC-limit-register.md",
-    "line": "config, 3,000-file listing).",
-    "values": [3000],
-    "reason": "limit register spec: names a registered value as an example or test; pending amendment (L10)"
-  },
-  {
-    "file": "docs/specs/SPEC-limit-register.md",
-    "line": "lines. File loading, the 16,384-byte read, strict UTF-8 decoding,",
-    "values": [16384],
-    "reason": "limit register spec: names a registered value as an example or test; pending amendment (L10)"
-  },
-  {
-    "file": "docs/specs/SPEC-evidence-coverage.md",
-    "line": "documents its limit as 1,000 requests per hour per repository, or 15,000 for",
-    "values": [1000, 15000],
-    "reason": "pending amendment (L10): quotes GitHub's documented GITHUB_TOKEN limit, now recorded as limit:github.token.restRequestsPerHour"
   }
 ]

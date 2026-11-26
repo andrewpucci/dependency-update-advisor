@@ -71,8 +71,11 @@ Platform figures checked on 2026-11-17:
 
 - **Job length.** A job on a GitHub-hosted runner may run for up to 6 hours
   ([Actions limits](https://docs.github.com/en/actions/reference/limits)). The
-  reviewer's 15 minutes is the shared workflow's own `timeout-minutes`.
-- **REST rate limit.** `GITHUB_TOKEN` gets 1,000 REST requests per hour per
+  reviewer's job timeout,
+  `limit:workflow.dependabotReview.review.timeoutMinutes`, is the shared
+  workflow's own `timeout-minutes`.
+- **REST rate limit.** `GITHUB_TOKEN` gets
+  `limit:github.token.restRequestsPerHour` REST requests per hour per
   repository, or 15,000 for Enterprise Cloud resources
   ([REST rate limits](https://docs.github.com/en/rest/using-the-rest-api/rate-limits-for-the-rest-api)).
 - **Comment size.** GitHub's REST docs don't state a comment-body limit. API
@@ -99,8 +102,8 @@ One module, `src/limits.ts`, defines every limit. Each entry has:
     A derived entry may be **structural**: the code's shape bounds the value,
     so no runtime check is needed. One example is signals attempts: at most
     15 per member, because they come from fixed call sites with no loop over
-    untrusted data, multiplied by the 128-change packet limit. A structural
-    entry names the test that pins it;
+    untrusted data, multiplied by the `limit:packet.changes` packet limit. A
+    structural entry names the test that pins it;
   - `measured`: the measurement command, the corpus, the statistic (such as
     p95 or max), the headroom, and the date measured;
   - `safety`: why this number protects the named resource. For a guard on
@@ -248,15 +251,17 @@ today's value as its default, and each needs a cited hard maximum before
 phase 3:
 
 - **GitHub request cap:** the total research requests on the adopter's
-  token. Hard maximum: the documented `GITHUB_TOKEN` rate limit (1,000
-  requests per hour per repository) less headroom.
+  token. Hard maximum: the documented `GITHUB_TOKEN` rate limit
+  (`limit:github.token.restRequestsPerHour` requests per hour per repository)
+  less headroom.
 - **Model analysis:** calls (32), concurrency (2), and analysis time
-  (600,000 ms). Hard maximum: the provider's documented limits and the job
-  window.
-- **Completion tokens:** 16,384. Hard maximum: the provider's maximum output
-  tokens.
-- **Job budget and evidence deadline:** 15 minutes and 240,000 ms. Hard
-  maximum: the 6-hour hosted-job limit. This needs a new reusable-workflow
+  (`limit:analysis.maxAnalysisMs`). Hard maximum: the provider's documented
+  limits and the job window.
+- **Completion tokens:** `limit:analysis.completionTokens`. Hard maximum: the
+  provider's maximum output tokens.
+- **Job budget and evidence deadline:** `limit:job.budget` and
+  `limit:evidence.envelope.totalTimeoutMs`. Hard maximum: the 6-hour hosted-job
+  limit. This needs a new reusable-workflow
   input, because `timeout-minutes` lives in the shared workflow. The pipeline
   must derive its job window from that input.
 
@@ -308,8 +313,9 @@ cite the id, so no spec changes with the value.
   - an entry that names a missing test;
   - after phase 2, an `unjustified` entry.
 - Phase 1 changes no outcome. The full check set passes unchanged, including
-  the existing boundary tests (exact comment-limit body, 128/129 changes, 16,384-byte
-  config, 3,000-file listing).
+  the existing boundary tests (exact comment-limit body, `limit:packet.changes`
+  changes and one more, `limit:config.maxBytes` config,
+  `limit:github.treeMaxFiles` file listing).
 - Every register entry names an existing test, or says `none` with a reason.
 - For each configurable limit:
   - a run with a setting below the default stops at the setting and reports
@@ -381,8 +387,8 @@ cite the id, so no spec changes with the value.
   limit's default, maximum, and basis in one place. It was rejected for these
   reasons:
   - **Small gain.** It would replace only the field validators, about 90
-    lines. File loading, the 16,384-byte read, strict UTF-8 decoding,
-    checkout containment, defaults, and override provenance stay
+    lines. File loading, the `limit:config.maxBytes` read, strict UTF-8
+    decoding, checkout containment, defaults, and override provenance stay
     hand-written either way.
   - **A runtime dependency in the privileged action.** The approved
     [config parser spec](SPEC-config-parser.md) makes a parser dependency

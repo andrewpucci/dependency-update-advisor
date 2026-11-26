@@ -92,10 +92,11 @@ authoritative PR decision and independently retain deterministic findings.
 
 The alias/projection and validation details live in `projection.ts` and
 `validation.ts`; neither depends on Mistral SDK types. Input-copy work is
-bounded separately to 64 levels, 1,048,576 entries, and 8 MiB of string values
-for the accepted packet plus T5 expansion. Reply-copy entries/string bytes
-are bounded by the selected response ceiling. These are work/retention limits,
-not expanded T4/C2 wire allowances or measured performance thresholds.
+bounded separately to `limit:analysis.maxProjectionDepth` levels,
+`limit:packet.bytes` entries, and `limit:analysis.projectionBytes` of string
+values for the accepted packet plus T5 expansion. Reply-copy entries/string
+bytes are bounded by the selected response ceiling. These are work/retention
+limits, not expanded T4/C2 wire allowances or measured performance thresholds.
 
 `analyzeMistralBatch` in `mistral.ts` accepts that authentic prepared handle,
 separate `{ apiKey, deadlineMs, signal? }`, and optional native-compatible
@@ -147,8 +148,9 @@ npm test -- --run src/analysis
 The four repository implementation checks and advisory complexity report
 remain the final verification commands. Default tests use only invented
 files/HTTP data and mocked Mistral; no credential or paid request is needed.
-The full-response boundary fixture admits exactly 12,648,448 bytes, including
-the recorded completion-byte allowance, worst-case JSON escaping and metadata.
+The full-response boundary fixture admits exactly
+`limit:analysis.responseBytes`, including the recorded completion-byte
+allowance, worst-case JSON escaping and metadata.
 That synthetic allowance is not a universal tokenizer guarantee.
 
 M2 must separately prove packing, concurrency, request counts, recursive length
@@ -178,8 +180,9 @@ active until adoption, parity, and cutover gates pass.
 ## Inputs and Existing Contracts
 
 - [C1](SPEC-config-parser.md) selects `mistral` and a model explicitly from
-  trusted configuration. Its model syntax is 1–128 ASCII characters matching
-  `[A-Za-z0-9][A-Za-z0-9._-]*`; this is not a model-availability guarantee.
+  trusted configuration. Its model syntax is 1–`limit:config.maxModelCodeUnits`
+  ASCII characters matching `[A-Za-z0-9][A-Za-z0-9._-]*`; this is not a
+  model-availability guarantee.
   There is no default provider, model, endpoint override, or credential field.
 - [T4](SPEC-review-packet.md) supplies a validated immutable packet;
   [T5](SPEC-decision-units.md) supplies its stable ordered `UnitInventory`.
@@ -444,8 +447,9 @@ anchor's sources. Unknown or unavailable evidence cannot satisfy these checks.
 
 **Status: approved for planning and automatic execution, 2026-11-12;
 implemented for #324-#328 and merged in PR #330; the R1 re-pin and live
-rehearsal (#329) remain.** The user reviewed the open questions (240,000 ms
-timeout; no model change) and approved the amendment, then invoked `as-plan`.
+rehearsal (#329) remain.** The user reviewed the open questions
+(`limit:analysis.requestTimeoutMs` timeout; no model change) and approved the
+amendment, then invoked `as-plan`.
 Scoped to
 [#309](https://github.com/andrewpucci/dependency-update-advisor/issues/309).
 It changes the approved M1 request, envelope, and budget contract, which is
@@ -501,15 +505,19 @@ so these facts were observed on 2026-11-12 and may change:
    including a reply with only a `thinking` chunk. A `stop` reply needs a
    nonempty concatenated `text`; an array with no usable `text` is `envelope`.
    Item 8's string rules otherwise stand. `tool_calls` stays null or empty.
-4. **Budgets.** The completion-token budget rises from 4,096 to **16,384**,
-   about twice the largest observed completion (8.0k). The per-request timeout
-   rises from 120,000 ms to **240,000 ms**: at the observed 70 to 75 tokens per
+4. **Budgets.** The completion-token budget rises from 4,096 to
+   **`limit:analysis.completionTokens`**, about twice the largest observed
+   completion (8.0k). The per-request timeout rises from 120,000 ms to
+   **`limit:analysis.requestTimeoutMs`**: at the observed 70 to 75 tokens per
    second, a reply that uses the full cap takes about 230 s. The observed-bytes
-   ceiling follows the stated formula: `16,384 * 128 * 6 + 65,536 =
-   12,648,448`. Each remains clipped to the caller's remaining analysis time,
-   and M2's 600,000 ms analysis maximum, 32-call cap, and concurrency of 2 do
-   not change. Request bytes, units per batch, and every input bound stay as
-   they are. Output cost per call roughly doubles to triples; that is accepted.
+   ceiling `limit:analysis.responseBytes` follows the stated formula:
+   `limit:analysis.completionTokens` times `limit:analysis.maxTokenCodeUnits`
+   times 6, plus `limit:analysis.responseEnvelopeBytes`. Each remains clipped
+   to the caller's remaining analysis time, and M2's
+   `limit:analysis.maxAnalysisMs` analysis maximum, `limit:analysis.maxCalls`
+   call cap, and `limit:analysis.maxConcurrentCalls` concurrency do not change.
+   Request bytes, units per batch, and every input bound stay as they are.
+   Output cost per call roughly doubles to triples; that is accepted.
 5. **No other change.** Outcomes, categories, diagnostics, redirect and
    credential rules, the single-request rule, and the inner-document validator
    are unchanged. This amendment adds no failure category and no diagnostic
@@ -533,8 +541,8 @@ so these facts were observed on 2026-11-12 and may change:
 Write each check first and show it failing on the prior code.
 
 - **Request.** The projected request equals the exact expected object,
-  including `top_p: 1`, `temperature: 0`, and `max_tokens: 16384`, and has no
-  `reasoning_effort` key.
+  including `top_p: 1`, `temperature: 0`, and `max_tokens` set to
+  `limit:analysis.completionTokens`, and has no `reasoning_effort` key.
 - **Content table.** Through the real transport with an injected fetch:
   a nonempty string; `[text]`; `[thinking, text]`; `[text, thinking]`; several
   `text` chunks concatenated in order; `[thinking]` with `stop`; `[]`;
@@ -571,9 +579,10 @@ formula.
 
 ### Open Questions
 
-- **Timeout.** 240,000 ms covers a full-cap reply on the observed throughput.
-  A lower value (for example 180,000 ms) saves little and risks `deadline`
-  failures on slow replies. Best guess: 240,000 ms.
+- **Timeout.** `limit:analysis.requestTimeoutMs` covers a full-cap reply on the
+  observed throughput. A lower value (for example 180,000 ms) saves little and
+  risks `deadline` failures on slow replies. Best guess:
+  `limit:analysis.requestTimeoutMs`.
 - **Cost.** Per-call output rises to about 4k to 8k tokens. A non-reasoning
   pinned model in the R1 consumer config would avoid both the cost and the
   chunk handling, but it was not tested, and `top_p: 1` is still required. Best
@@ -727,25 +736,25 @@ are proposed. M2/W2 still choose their cumulative budgets and publication reserv
 
 ### Initial resource ceilings
 
-| Limit                                              | Proposed value                       | Reason                                                                                      |
-| -------------------------------------------------- | ------------------------------------ | ------------------------------------------------------------------------------------------- |
-| Units per prepared batch                           | 8                                    | Small ordered batches; a proven group remains one unit with all its members.                |
-| Members/sources/findings retained locally          | T4's 128/1,024/512                   | Preserve the accepted inventory and required findings; no new larger input allowance.       |
-| Upstream excerpt UTF-8 bytes                       | 2,048 per source                     | No larger than T4 text; retain truncation metadata.                                         |
-| Repository source excerpt                          | C2's existing 500 code units         | Only already eligible C2 text; its 65,536-byte total context cap still applies.             |
-| Serialized projected unit bytes                    | 65,536                               | Reject a unit whose required structure cannot fit; never remove members/findings.           |
-| Final serialized HTTP request bytes                | 262,144                              | Includes fixed prompts, model/options, JSON string escaping, and envelope.                  |
-| Completion tokens                                  | 16,384                               | Reasoning tokens count against it; live replies used 4.1k-8.0k (2026-11-12).                |
-| Per-request timeout                                | 240,000 ms maximum                   | Live replies took 58-101 s; clipped to the caller's remaining analysis time.                |
-| Inner content allowance                            | 128 UTF-8 bytes per completion token | Conservative planning allowance, not a documented guarantee for every model/tokenizer.      |
-| Outer JSON escaping multiplier                     | 6                                    | Allows byte-to-`\uXXXX` expansion when content is encoded inside the response envelope.     |
-| Provider envelope allowance                        | 65,536 bytes                         | Bounded metadata overhead beyond generated content.                                         |
-| Observed response bytes                            | 12,648,448                           | `16,384 * 128 * 6 + 65,536`; input C2/T4 limits remain unchanged.                           |
-| Model reason/rationale/action/impact text          | 1,024 UTF-8 bytes each               | Concise per-unit advice; nonempty when required.                                            |
-| Feature text                                       | 512 UTF-8 bytes                      | At most one capability per unit.                                                            |
-| Follow-up description                              | 280 UTF-8 bytes                      | Does not expand the baseline's 280-character bound.                                         |
-| Follow-ups, remediation steps, validation steps    | 8 each                               | Concrete bounded lists; mandatory nonempty lists where required.                            |
-| Blockers, finding references, references per claim | 32 each                              | Model explains a bounded subset; all deterministic findings remain outside model ownership. |
+| Limit                                              | Proposed value                                                             | Reason                                                                                                                 |
+| -------------------------------------------------- | -------------------------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------- |
+| Units per prepared batch                           | `limit:analysis.maxUnits`                                                  | Small ordered batches; a proven group remains one unit with all its members.                                           |
+| Members/sources/findings retained locally          | T4's `limit:packet.changes`/`limit:packet.sources`/`limit:packet.findings` | Preserve the accepted inventory and required findings; no new larger input allowance.                                  |
+| Upstream excerpt UTF-8 bytes                       | `limit:analysis.sourceBytes` per source                                    | No larger than T4 text; retain truncation metadata.                                                                    |
+| Repository source excerpt                          | C2's existing `limit:context.maxSourceExcerptCodeUnits`                    | Only already eligible C2 text; its `limit:context.maxSourceContextBytes` total context cap still applies.              |
+| Serialized projected unit bytes                    | `limit:analysis.unitBytes`                                                 | Reject a unit whose required structure cannot fit; never remove members/findings.                                      |
+| Final serialized HTTP request bytes                | `limit:analysis.requestBytes`                                              | Includes fixed prompts, model/options, JSON string escaping, and envelope.                                             |
+| Completion tokens                                  | `limit:analysis.completionTokens`                                          | Reasoning tokens count against it; live replies used 4.1k-8.0k (2026-11-12).                                           |
+| Per-request timeout                                | `limit:analysis.requestTimeoutMs` maximum                                  | Live replies took 58-101 s; clipped to the caller's remaining analysis time.                                           |
+| Inner content allowance                            | `limit:analysis.maxTokenCodeUnits` UTF-8 bytes per completion token        | Conservative planning allowance, not a documented guarantee for every model/tokenizer.                                 |
+| Outer JSON escaping multiplier                     | 6                                                                          | Allows byte-to-`\uXXXX` expansion when content is encoded inside the response envelope.                                |
+| Provider envelope allowance                        | `limit:analysis.responseEnvelopeBytes`                                     | Bounded metadata overhead beyond generated content.                                                                    |
+| Observed response bytes                            | `limit:analysis.responseBytes`                                             | Completion tokens × content allowance × escaping multiplier + envelope allowance; input C2/T4 limits remain unchanged. |
+| Model reason/rationale/action/impact text          | `limit:analysis.textBytes` each                                            | Concise per-unit advice; nonempty when required.                                                                       |
+| Feature text                                       | `limit:analysis.featureBytes`                                              | At most one capability per unit.                                                                                       |
+| Follow-up description                              | `limit:analysis.followupBytes`                                             | Does not expand the baseline's character bound of the same length.                                                     |
+| Follow-ups, remediation steps, validation steps    | `limit:analysis.steps` each                                                | Concrete bounded lists; mandatory nonempty lists where required.                                                       |
+| Blockers, finding references, references per claim | `limit:analysis.references` each                                           | Model explains a bounded subset; all deterministic findings remain outside model ownership.                            |
 
 Apply lower caller-supplied limits when valid; reject larger, non-finite,
 fractional, unsafe, or incompatible values before I/O. The response cap must
@@ -760,7 +769,8 @@ the provider nests a JSON document as an escaped string and adds metadata.
 It does not enlarge any T4 or C2 input. The spike must record whether its
 observed outputs challenge the allowance; a different allowance needs review.
 Boundary fixtures prove acceptance within this recorded allowance, not a
-universal tokenizer maximum or that all eight rich assessments fit 16,384 tokens.
+universal tokenizer maximum or that all eight rich assessments fit
+`limit:analysis.completionTokens` tokens.
 
 ### Local identity and aliases
 

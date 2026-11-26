@@ -80,9 +80,10 @@ identity. It must preserve npm coverage separately in mixed npm/Actions PRs.
 
 1. Read the full PR file list with pagination. GitHub's
    [list-files endpoint](https://docs.github.com/en/rest/pulls/pulls#list-pull-requests-files)
-   has a 3,000-file cap; reaching a cap or missing a page is incomplete
-   coverage. Use the verified base and head full SHAs to retrieve relevant
-   manifests and locks. Do not rely on possibly truncated PR patch text.
+   has a `limit:github.treeMaxFiles` file cap; reaching a cap or missing a
+   page is incomplete coverage. Use the verified base and head full SHAs to
+   retrieve relevant manifests and locks. Do not rely on possibly truncated PR
+   patch text.
 2. Determine candidate npm roots from changed file paths and the trusted
    Dependabot configuration, including nested roots. Reconcile both sources;
    a conflict, unsupported layout, or unexplained changed npm file is a

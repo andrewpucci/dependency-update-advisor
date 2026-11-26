@@ -328,9 +328,11 @@ candidate checks, traversal states/edges, and output construction against work;
 no per-root, side, or anchor reset. U1's parse/read limits remain independent.
 Avoid an unbounded cross-product of variants, conditions, or extras.
 
-Enforce existing T4 ceilings, including 128 combined ecosystem changes, 256
-proofs, 32 instances per proof, source/list limits, and serialized packet bytes.
-Uv cannot reserve all 128 slots when orchestration assembles a mixed packet.
+Enforce existing T4 ceilings, including `limit:packet.changes` combined
+ecosystem changes, `limit:packet.relationships` proofs,
+`limit:packet.pathInstances` instances per proof, source/list limits, and
+serialized packet bytes. Uv cannot reserve all `limit:packet.changes` slots
+when orchestration assembles a mixed packet.
 Do not slice changes to make T4 accept a packet; its overflow rejection remains
 authoritative. If a bounded collector result cannot retain all known changes,
 return fixed `unavailable: budget` rather than an apparently usable prefix.
@@ -538,8 +540,9 @@ The tested prose grammar recognizes whole trimmed lines `Bumps NAME from OLD to
 NEW.` and `Resolved uv changes: N.` (the final period is optional). The latter
 counts all resolved uv change records. Backticks and bounded HTTPS Markdown link
 labels can wrap tokens; links are never followed. Names normalize case and
-`-_.`; versions remain exact opaque strings. Lines over 4,096 characters and
-unrecognized text are inconclusive. Generic grouped-update counts and names
+`-_.`; versions remain exact opaque strings. Lines longer than
+`limit:uv.maxCorroborationCodeUnits` and unrecognized text are inconclusive.
+Generic grouped-update counts and names
 outside the recorded uv inventory cannot establish a contradiction. A version
 claim must match both sides of the same change; it cannot pair separate variants.
 Only normalized bounded assertions are retained, with explicit truncation flags.
@@ -553,7 +556,8 @@ are reserved before optional corroboration and relationship work. Optional work
 exhaustion retains the full inventory with a visible budget status; if the full
 known inventory itself cannot fit, the result is `unavailable: budget`. Changes
 are never trimmed to fit. Serialized retained bytes and existing T4 bounds remain
-authoritative, including the combined 128-change ceiling across ecosystems.
+authoritative, including the combined `limit:packet.changes` change ceiling
+across ecosystems.
 
 Orchestration combines these fragments with npm/Actions and C2 context, validates
 the assembled packet through T4, then passes only that accepted packet to T5.

@@ -319,8 +319,9 @@ unsupported, and budget outcomes explicit. No retries or alternate credentials
 are implied. Logs contain bounded categories/counts and reviewed identities,
 never raw payloads, credentials, PR prose, or excerpts.
 
-Obey existing T4 ceilings, including 128 combined changes, 1,024 sources,
-2,048-byte source text, 32-entry lists, and the complete packet byte cap.
+Obey existing T4 ceilings, including `limit:packet.changes` combined changes,
+`limit:packet.sources` sources, `limit:packet.textBytes` bytes of source text,
+`limit:packet.listEntries` entries per list, and the complete packet byte cap.
 No new numeric quality threshold or workflow deadline is proposed. When
 retention cannot preserve a valid handoff, return a bounded explicit failure;
 never trim changes/findings, leave dangling references, or claim completeness.
@@ -446,7 +447,8 @@ probe only `<name>@<version>`, so each platform binary in a monorepo (for
 example the `@oxlint/binding-*` packages) probes its own tag, on both sides of
 a comparison. The discovery rule requires each candidate, so the fix is to ask
 about many candidates at once, not to probe fewer. The workflow token's REST
-budget is 1,000 requests per hour per repository; GraphQL has its own budget
+budget is `limit:github.token.restRequestsPerHour` requests per hour per
+repository; GraphQL has its own budget
 of 1,000 points per hour per repository
 ([GraphQL rate limits](https://docs.github.com/en/graphql/overview/rate-limits-and-query-limits-for-the-graphql-api),
 checked 2026-11-19).
