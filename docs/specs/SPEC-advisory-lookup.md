@@ -1075,3 +1075,36 @@ own discovery, so the batch rules cannot apply to it unchanged.
 - **Never:** batch `pip` reviewed lookups through OSV without a new decision,
   attribute a record from discovery, or clear a target from an incomplete
   discovery batch.
+
+## Approved Batch Values
+
+**Status: approved, 2026-11-26.** The user approved these values from the C3
+probe run
+([#390](https://github.com/andrewpucci/dependency-update-advisor/issues/390))
+on 2026-11-26. They settle the values the
+[Batched Lookup Amendment](#batched-lookup-amendment) and the
+[Batching Reconciliation Amendment](#batching-reconciliation-amendment) leave
+Ask first. Neither amendment's text is edited.
+
+| Value                      | Register id                                                                      | Basis                                                                                                                                                                           |
+| -------------------------- | -------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Targets per advisory batch | `limit:advisory.batch.maxTargets`                                                | GitHub's documented `affects` maximum. On real targets the URL cap binds long before this count.                                                                                |
+| Batch URL length           | `limit:advisory.batch.urlBytes`, less `limit:advisory.batch.cursorHeadroomBytes` | Reuses the discovery cap and headroom. GitHub accepted npm batch URLs up to 5,694 bytes and answered 414 from 8,893; discovery was accepted at 4,371 and answered 414 at 8,259. |
+| Batch `per_page`           | `limit:advisory.batch.pageSize`                                                  | Reuses the discovery page size. The largest npm batch page was 121,579 bytes at GitHub's largest page size. The size is discovery's, set from the `pillow` discovery page.      |
+
+- **Proposed maximum.** The batch size the Batched Lookup Amendment's
+  Verification checks is the largest positive-last batch whose first URL fits
+  the batch URL cap less the headroom, at most
+  `limit:advisory.batch.maxTargets`. `npm run probe:batching` sends that
+  batch and requires it to complete.
+- **Fitting.** Targets fill a batch in order until the next one would put its
+  first URL over the cap less the headroom, or the batch is full; that target
+  starts the next batch. A target too long to fit alone gets its singleton
+  query.
+- **Measured equivalence.** The C3 run found no batch missing a singleton
+  match, with every sweep batch complete. Its discovery batches included the
+  Actions reviewed positive `tj-actions/changed-files@45.0.7`. Its only open
+  item was Actions malware discovery, which had no known positive to check;
+  the
+  [policy signals spec](SPEC-policy-signals.md#approved-batch-values) keeps
+  those lookups per target.

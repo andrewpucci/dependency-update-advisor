@@ -600,3 +600,23 @@ edited; where they conflict, this section decides.
 - A `pip` malware discovery hit, then a failed versioned query: the check is
   incomplete, and no `malware` finding is emitted.
 - The attributed-record survival fixture uses an npm target.
+
+## Approved Batch Values
+
+**Status: approved, 2026-11-26.** The user approved S1's
+[batch values](SPEC-advisory-lookup.md#approved-batch-values) and the
+decision below from the C3 probe run
+([#390](https://github.com/andrewpucci/dependency-update-advisor/issues/390))
+on 2026-11-26. npm malware batches use those values.
+
+This section narrows the
+[Batching Reconciliation Amendment](#batching-reconciliation-amendment)'s
+`pip` and Actions bullet: Actions malware discovery is not batched. Neither
+amendment's text is edited; where they conflict, this section decides.
+
+Each Actions malware target keeps its per-target discovery and versioned
+malware query. The C3 corpus had no known Actions malware positive, so no
+batch could be checked against a singleton match, and it held one Actions
+malware target, so batching would have saved almost no requests. Batching
+them needs a recorded equivalence check with a known positive. `pip` malware
+discovery is batched as the reconciliation decides.

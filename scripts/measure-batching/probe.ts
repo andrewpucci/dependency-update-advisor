@@ -48,12 +48,11 @@ const PAGE_SIZE = limit('github.pageSize');
 const MAX_BATCH = limit('probe.batching.maxBatchTargets');
 const MAX_TAGS = limit('probe.batching.maxTagsPerQuery');
 /**
- * The reader's discovery URL cap, a stand-in for the npm batch URL bound S1 leaves Ask first: the
- * longest URL GitHub is known to accept (S1 Package Name Form). A batch's first URL leaves the
- * cursor headroom under it, as discovery's does, so every continuation URL stays within it.
+ * The approved npm batch URL cap (C3, 2026-11-26), which reuses the discovery cap. A batch's first
+ * URL leaves the cursor headroom under it, so every continuation URL stays within it.
  */
-const URL_CAP = limit('advisory.discovery.urlBytes');
-const FIRST_URL_CAP = URL_CAP - limit('advisory.discovery.cursorHeadroomBytes');
+const URL_CAP = limit('advisory.batch.urlBytes');
+const FIRST_URL_CAP = URL_CAP - limit('advisory.batch.cursorHeadroomBytes');
 
 /** The fixed seeds (#389 as reconciled by D4): known positives and a three-separator name. */
 export const SEEDS: readonly Target[] = [
