@@ -97,7 +97,7 @@ gaps and an introduced vulnerability before parity is claimed.
   retains live proof acquisition, downstream workflow and cutover gates.
   A [package name form amendment](SPEC-advisory-lookup.md#package-name-form-amendment),
   with its [S3 malware counterpart](SPEC-policy-signals.md#package-name-form-amendment),
-  is approved and implemented, pending review and merge, 2026-11-20: OSV for
+  is approved, 2026-11-20, and merged in PR #407: OSV for
   PyPI reviewed lookups and
   stored-name discovery for GitHub Actions and malware queries, tracked in
   [#398](https://github.com/andrewpucci/dependency-update-advisor/issues/398).
@@ -344,8 +344,8 @@ gaps and an introduced vulnerability before parity is claimed.
   printing M2 timing on the no-write rehearsal line and trace.
   A sixth amendment ([OSV query in the no-write guard](SPEC-review-orchestration.md#amendment-6-osv-query-in-the-no-write-guard),
   [#398](https://github.com/andrewpucci/dependency-update-advisor/issues/398))
-  is approved for execution, 2026-11-20, and implemented with the S1 package
-  name form amendment, pending review and merge.
+  is approved for execution, 2026-11-20, and merged with the S1 package
+  name form amendment in PR #407.
 - [Advisory complexity review](SPEC-complexity-review.md) — user-requested
   supporting repository tooling contract; implemented and merged into `main`
   in [PR #65](https://github.com/andrewpucci/dependency-update-advisor/pull/65).
