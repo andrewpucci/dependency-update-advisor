@@ -793,26 +793,22 @@ test('accepts exactly advisories.maxLookups public identities and refuses one mo
     publicIdentities: identities,
   };
   expect(identities).toHaveLength(limit('advisories.maxLookups'));
-  // The register limits validation reads, in order: an accepted input reads the lookup cap for the
-  // public identity length check, then again for the action versions, and more limits after that.
-  const limitsRead = (candidate: typeof atLimit) => {
-    vi.mocked(limitsModule.limit).mockClear();
-    const ok = prepareAdvisoryInput({ ...candidate, actionVersions: [] }).ok;
-    return { ok, read: vi.mocked(limitsModule.limit).mock.calls.map(([id]) => id) };
-  };
-  const accepted = limitsRead(atLimit);
-  expect(accepted.ok).toBe(true);
-  const lengthCheck = accepted.read.indexOf('advisories.maxLookups');
-  expect(accepted.read[lengthCheck + 1]).toBe('advisories.maxLookups');
-  expect(accepted.read.length).toBeGreaterThan(lengthCheck + 2);
-  // A lookup past the cap must repeat a (member, side) pair, since packet.changes caps the changes,
-  // so the later uniqueness check would refuse it too. Validation stopping right after it reads the
-  // cap for the length check shows that the length check refused it, before any later check ran.
-  const onePast = { ...atLimit, publicIdentities: [...identities, identities[0]] };
-  expect(limitsRead(onePast)).toEqual({
-    ok: false,
-    read: accepted.read.slice(0, lengthCheck + 1),
-  });
+  expect(prepareAdvisoryInput(atLimit).ok).toBe(true);
+  // At the real cap, a lookup past it must repeat a (member, side) pair, since packet.changes caps
+  // the changes, so the uniqueness check would refuse it too. With the cap one below these unique
+  // pairs, only the length check can refuse them.
+  const actual = await vi.importActual<typeof import('../limits.js')>('../limits.js');
+  const lowered = identities.length - 1;
+  vi.mocked(limitsModule.limit).mockImplementation((id) =>
+    id === 'advisories.maxLookups' ? lowered : actual.limit(id),
+  );
+  try {
+    expect(prepareAdvisoryInput(atLimit).ok).toBe(false);
+    const atLowered = { ...atLimit, publicIdentities: identities.slice(0, lowered) };
+    expect(prepareAdvisoryInput(atLowered).ok).toBe(true);
+  } finally {
+    vi.mocked(limitsModule.limit).mockImplementation(actual.limit);
+  }
 });
 
 /** The packet fields of an enrichment, with batched source text read as the singleton's. */
