@@ -232,30 +232,28 @@ test.each([false, true])(
   async (mapped) => {
     const f = await collectAdvisoryActions(mapped);
     let calls = 0;
+    const actionAdvisory = (name: string) => ({
+      ...syntheticAdvisory,
+      vulnerabilities: [
+        { package: { ecosystem: 'actions', name }, vulnerable_version_range: '>=2.0.0' },
+      ],
+    });
     const reader = createAdvisoryReader(advisoryTestLimits, {
       now: () => 0,
-      fetch: viaAdvisoryHttp(async (url) => {
-        calls++;
-        const query = new URL(url),
-          name = query.searchParams.get('affects')!.split('@')[0];
-        expect(query.searchParams.get('ecosystem')).toBe('actions');
-        expect(query.searchParams.get('affects')).toMatch(/@[12]\.0\.0$/);
-        return Response.json(
-          query.searchParams.get('affects')!.endsWith('@2.0.0')
-            ? [
-                {
-                  ...syntheticAdvisory,
-                  vulnerabilities: [
-                    {
-                      package: { ecosystem: 'actions', name },
-                      vulnerable_version_range: '>=2.0.0',
-                    },
-                  ],
-                },
-              ]
-            : [],
-        );
-      }),
+      // Discovery finds the advisory's stored form, so each target gets its versioned query.
+      fetch: viaAdvisoryHttp(
+        async (url) => {
+          calls++;
+          const query = new URL(url),
+            name = query.searchParams.get('affects')!.split('@')[0];
+          expect(query.searchParams.get('ecosystem')).toBe('actions');
+          expect(query.searchParams.get('affects')).toMatch(/@[12]\.0\.0$/);
+          return Response.json(
+            query.searchParams.get('affects')!.endsWith('@2.0.0') ? [actionAdvisory(name)] : [],
+          );
+        },
+        (_ecosystem, _type, spelling) => [actionAdvisory(spelling)],
+      ),
     });
     if (reader.kind !== 'ready') throw new Error('reader');
     const out = await enrichAdvisories(f.input, { reader });

@@ -598,6 +598,40 @@ async function enrichMember(
   failureGap(output, change, 'budget');
   advisoryCheck(fits(output, input), 'budget');
 }
+/** The side's target, or null when it has none; a resolver fault is left to the member's read. */
+function prePassTarget(input: AdvisoryInput, change: PacketChange, side: 'head' | 'base') {
+  if (!(side === 'head' ? change.to : change.from)) return null;
+  try {
+    return resolveAdvisoryTarget(input, change, side);
+  } catch {
+    // The member's own read reports this target's failure, inside its rollback.
+    return null;
+  }
+}
+/**
+ * The pre-pass (S1 Batched Lookup item 1): settles every eligible target of both sides in batches
+ * before the per-member loop, so its requests and bytes count against the stage's reader share
+ * rather than any member. `pip` reviewed targets are left to their per-member OSV reads (D1), and
+ * a target no batch settles is read alone as before.
+ */
+async function settleTargets(
+  input: AdvisoryInput,
+  output: AdvisoryEnrichment,
+  reader: AdvisoryReader,
+) {
+  if (!reader.settle) return;
+  const targets = output.changes
+    .filter((change) => !('basis' in change))
+    .flatMap((change) =>
+      (['head', 'base'] as const).map((side) => prePassTarget(input, change, side)),
+    )
+    .filter((target) => target !== null && target.ecosystem !== 'pip');
+  try {
+    if (targets.length) await reader.settle(targets);
+  } catch {
+    // A failed pre-pass settles nothing; every target is then read alone, as before.
+  }
+}
 /** A stopped reader refuses every later read, so members after `last` are unresearched. */
 function markUnresearched(
   input: AdvisoryInput,
@@ -628,6 +662,7 @@ export async function enrichAdvisories(
   const cache = new Map<string, AdvisoryLookup>();
   try {
     advisoryCheck(fits(output, input), 'budget');
+    await settleTargets(input, output, dependencies.reader);
     for (const change of output.changes) {
       if ('basis' in change) continue;
       await enrichMember(input, output, change, dependencies.reader, cache);

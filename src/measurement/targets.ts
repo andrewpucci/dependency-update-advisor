@@ -155,6 +155,8 @@ export type ReaderRead = Readonly<{
   url: string;
   target: ReaderTarget;
   complete: boolean;
+  /** Settled from a batch: `url` is the unfetched query that would reproduce it. */
+  batched?: true;
 }>;
 /** The sides each target was looked up for, keyed by `sideKey`. */
 export type TargetSides = Map<string, Set<Side>>;
@@ -176,7 +178,13 @@ export function recordReads<R extends AdvisoryReader>(
     read: async (value: unknown): Promise<AdvisoryLookup> => {
       const lookup = await reader.read(value);
       if (lookup.url)
-        reads.push({ type, url: lookup.url, target: lookup.target, complete: lookup.complete });
+        reads.push({
+          type,
+          url: lookup.url,
+          target: lookup.target,
+          complete: lookup.complete,
+          ...(lookup.batched ? { batched: true as const } : {}),
+        });
       return lookup;
     },
   };
@@ -221,8 +229,8 @@ function addSide(sides: TargetSides, key: string, side: Side): void {
 }
 
 /**
- * One settled target per side for each read whose versioned URL this run requested, complete only
- * when every read of it completed. Advisory reads are shared across sides, so one request can
+ * One settled target per side for each read whose versioned URL this run requested, or that a
+ * batch this run sent settled, complete only when every read of it completed. Advisory reads are shared across sides, so one request can
  * settle a target on both.
  */
 export function settledTargets(
@@ -231,8 +239,8 @@ export function settledTargets(
   requested: ReadonlySet<string>,
 ): SettledTarget[] {
   const targets = new Map<string, SettledTarget>();
-  for (const { type, url, target, complete } of reads) {
-    if (!requested.has(url)) continue;
+  for (const { type, url, target, complete, batched } of reads) {
+    if (!requested.has(url) && !batched) continue;
     for (const side of sides.get(sideKey(type, target)) ?? []) {
       const settled = settledTarget(url, target, side, complete);
       if (!settled || settled.type !== type) continue;

@@ -163,8 +163,17 @@ test('feeds upstream proofs to advisory lookup and signals, and returns a revali
     .map((url) => decodeURIComponent(new URL(url).search));
   // The npm target needs a public-identity proof and the Actions target an Actions mapping.
   expect(reviewed.some((query) => query.includes('ecosystem=npm&affects=orbit@2.0.0'))).toBe(true);
+  // A discovery batch clears the Actions target, which cites its unfetched versioned query.
+  expect(reviewed.some((query) => query.includes('affects=fixture/action@2.0.0'))).toBe(false);
   expect(
-    reviewed.some((query) => query.includes('ecosystem=actions&affects=fixture/action@2.0.0')),
+    result.packet.sources.some(
+      (s) =>
+        s.provenance.kind === 'upstream' &&
+        decodeURIComponent(s.provenance.url).includes(
+          'ecosystem=actions&affects=fixture/action@2.0.0',
+        ) &&
+        s.provenance.excerpt.includes('batched'),
+    ),
   ).toBe(true);
   const malware = fixture.requests
     .filter((url) => url.includes('/advisories') && url.includes('type=malware'))
@@ -745,8 +754,11 @@ test('researches a group of 32 changed packages without exhausting any reader', 
   const { readers } = EVIDENCE_READ_ALLOCATION.signals;
   expect(counts.malware).toBeGreaterThan(25);
   expect(counts.malware).toBeLessThanOrEqual(readers.malware.maxRequests);
-  expect(counts.advisory).toBeGreaterThan(50);
-  expect(counts.advisory).toBeLessThanOrEqual(EVIDENCE_READ_ALLOCATION.advisory.maxRequests);
+  // Batches check the 31 GitHub-backed packages' both sides in a few requests.
+  expect(counts.advisory).toBeGreaterThan(0);
+  expect(counts.advisory).toBeLessThan(10);
+  for (const change of result.packet.changes)
+    if (!('basis' in change)) expect(change.evidence.vulnerability.status).toBe('available');
   // No stage of research ran out of any share, in the packet or in its own attempt records.
   expect(JSON.stringify(result.packet)).not.toContain('budget');
   expect(JSON.stringify(result.upstreamAttempts)).not.toContain('budget');
@@ -797,6 +809,76 @@ test('runs advisory lookups for members with retained identities after an upstre
     .filter((url) => url.includes('/advisories') && url.includes('type=reviewed'))
     .map((url) => decodeURIComponent(new URL(url).search));
   expect(reviewed.some((query) => query.includes('ecosystem=npm&affects=orbit@2.0.0'))).toBe(true);
+});
+
+const BATCHED_EXCERPT = 'A complete batched query checked reviewed advisories for this target.';
+const SINGLETON_EXCERPT =
+  'The complete exact-version query checked reviewed advisories for this target.';
+
+/** Runs research once, with or without the advisory pre-pass, counting reviewed GitHub queries. */
+async function advisoryRun(batched: boolean) {
+  const { fixture, packet } = await scenario({ vulnerableNpm: true, children: 3 } as never);
+  if (!batched) {
+    const actual = await vi.importActual<typeof import('./evidence/advisory-read.js')>(
+      './evidence/advisory-read.js',
+    );
+    vi.mocked(advisoryReadModule.createAdvisoryReader).mockImplementationOnce((...args) => {
+      const reader = actual.createAdvisoryReader(...args);
+      return reader.kind === 'ready' ? { ...reader, settle: undefined } : reader;
+    });
+  }
+  const sent: string[] = [];
+  const result = await runResearch({
+    ...base(fixture, packet),
+    fetch: async (url, init) => {
+      const target = new URL(url);
+      if (target.pathname === '/advisories' && target.searchParams.get('type') === 'reviewed')
+        sent.push(url);
+      return fixture.fetch(url, init);
+    },
+  });
+  if (result.kind !== 'ready') throw new Error(result.kind);
+  return { packet: result.packet, sent };
+}
+
+test('the advisory pre-pass changes only cleared source text and sends fewer requests', async () => {
+  const unbatched = await advisoryRun(false);
+  const batched = await advisoryRun(true);
+  expect(batched.sent.length).toBeLessThan(unbatched.sent.length);
+  const settled = batched.packet.sources.filter(
+    (s) => s.provenance.kind === 'upstream' && s.provenance.excerpt === BATCHED_EXCERPT,
+  );
+  // Every GitHub-backed lookup of both sides was settled, the vulnerable npm head among them.
+  const github = batched.packet.sources.filter(
+    (s) =>
+      s.kind === 'advisory' &&
+      s.provenance.kind === 'upstream' &&
+      !s.provenance.advisoryId &&
+      new URL(s.provenance.url).origin === 'https://api.github.com',
+  );
+  expect(settled).toEqual(github);
+  const sides = settled.flatMap((s) =>
+    s.provenance.kind === 'upstream' ? s.provenance.subjects.map((subject) => subject.side) : [],
+  );
+  expect(new Set(sides)).toEqual(new Set(['base', 'head']));
+  expect(new Set(settled.flatMap((s) => s.ecosystems))).toEqual(new Set(['npm', 'actions']));
+  for (const source of settled) {
+    if (source.provenance.kind !== 'upstream') continue;
+    // Each cites the exact-version query the unbatched run fetched, which the batched run did not.
+    const cited = new URL(source.provenance.url);
+    expect(cited.searchParams.get('affects')).toMatch(/^[^,]+@[^,]+$/u);
+    expect(cited.searchParams.get('per_page')).toBe('100');
+    expect(unbatched.sent).toContain(source.provenance.url);
+    expect(batched.sent).not.toContain(source.provenance.url);
+  }
+  expect(batched.packet.findings.some((f) => f.kind === 'vulnerability')).toBe(true);
+  const restored = structuredClone(batched.packet) as unknown as {
+    sources: { provenance: { excerpt?: string } }[];
+  };
+  for (const source of restored.sources)
+    if (source.provenance.excerpt === BATCHED_EXCERPT)
+      source.provenance.excerpt = SINGLETON_EXCERPT;
+  expect(restored).toEqual(unbatched.packet);
 });
 
 const ownedByStage = {

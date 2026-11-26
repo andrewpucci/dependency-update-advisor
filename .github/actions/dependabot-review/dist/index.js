@@ -16392,7 +16392,7 @@ function provenance(change, side, lookup, record) {
 		kind: "upstream",
 		url: record?.url ?? lookup.url,
 		title: record?.title ?? (osv ? "Exact-version OSV reviewed advisory lookup" : "Exact-version reviewed advisory lookup"),
-		excerpt: record ? "Attributable advisory evidence identifies this exact target." : osv ? "The complete exact-version OSV query checked OSV's mirror of GitHub-reviewed advisories for this target." : "The complete exact-version query checked reviewed advisories for this target.",
+		excerpt: record ? "Attributable advisory evidence identifies this exact target." : lookup.batched ? "A complete batched query checked reviewed advisories for this target." : osv ? "The complete exact-version OSV query checked OSV's mirror of GitHub-reviewed advisories for this target." : "The complete exact-version query checked reviewed advisories for this target.",
 		excerptTruncated: false,
 		subjects: [{
 			memberId: change.id,
@@ -16819,6 +16819,28 @@ async function enrichMember(input, output, change, reader, cache) {
 	failureGap(output, change, "budget");
 	advisoryCheck(fits(output, input), "budget");
 }
+/** The side's target, or null when it has none; a resolver fault is left to the member's read. */
+function prePassTarget(input, change, side) {
+	if (!(side === "head" ? change.to : change.from)) return null;
+	try {
+		return resolveAdvisoryTarget(input, change, side);
+	} catch {
+		return null;
+	}
+}
+/**
+* The pre-pass (S1 Batched Lookup item 1): settles every eligible target of both sides in batches
+* before the per-member loop, so its requests and bytes count against the stage's reader share
+* rather than any member. `pip` reviewed targets are left to their per-member OSV reads (D1), and
+* a target no batch settles is read alone as before.
+*/
+async function settleTargets(input, output, reader) {
+	if (!reader.settle) return;
+	const targets = output.changes.filter((change) => !("basis" in change)).flatMap((change) => ["head", "base"].map((side) => prePassTarget(input, change, side))).filter((target) => target !== null && target.ecosystem !== "pip");
+	try {
+		if (targets.length) await reader.settle(targets);
+	} catch {}
+}
 /** A stopped reader refuses every later read, so members after `last` are unresearched. */
 function markUnresearched$1(input, output, last, stopped) {
 	output.stopped = stopped;
@@ -16840,6 +16862,7 @@ async function enrichAdvisories(value, dependencies) {
 	const cache = /* @__PURE__ */ new Map();
 	try {
 		advisoryCheck(fits(output, input), "budget");
+		await settleTargets(input, output, dependencies.reader);
 		for (const change of output.changes) {
 			if ("basis" in change) continue;
 			await enrichMember(input, output, change, dependencies.reader, cache);

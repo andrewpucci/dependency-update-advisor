@@ -11,6 +11,7 @@ import { createGithubReadSession } from '../github-read.js';
 import { collectNpmInventory } from './npm.js';
 import { validateReviewPacket, type PacketChange, type PacketSource } from '../schema.js';
 import { npmScenario } from '../../tests/parity/npm-inventory.js';
+import { collectAdvisoryActions } from '../../tests/parity/advisories.js';
 
 export const advisoryLimits = {
   maxRequests: 20,
@@ -35,6 +36,13 @@ const advisory = {
     { package: { ecosystem: 'npm', name: 'fixture-anchor' }, vulnerable_version_range: '>=1.1.0' },
   ],
 };
+/** The `affects` targets of a query; a batch returns the records that affect any of them. */
+function affects(url: string): string[];
+function affects(url: string, target: string): boolean;
+function affects(url: string, target?: string) {
+  const targets = new URL(url).searchParams.get('affects')!.split(',');
+  return target === undefined ? targets : targets.includes(target);
+}
 async function fixture(both = false, additions = 1) {
   const f = npmScenario(additions);
   const opened = await createGithubReadSession(
@@ -128,8 +136,7 @@ test.each([true, false])(
       now: () => 0,
       fetch: async (url, init) => {
         requests.push({ url, init });
-        const name = new URL(url).searchParams.get('affects');
-        return Response.json(positive && name === 'fixture-anchor@1.1.0' ? [advisory] : []);
+        return Response.json(positive && affects(url, 'fixture-anchor@1.1.0') ? [advisory] : []);
       },
     });
     if (reader.kind !== 'ready') throw new Error('expected reader');
@@ -168,7 +175,8 @@ test.each([true, false])(
     );
     expect(accepted.ok, JSON.stringify(accepted)).toBe(true);
     expect(Object.isFrozen(output.changes)).toBe(true);
-    expect(requests).toHaveLength(2);
+    // Both head targets are settled by one batch; a record naming one package is attributed.
+    expect(requests).toHaveLength(1);
     expect(requests[0].init).toMatchObject({ redirect: 'manual', credentials: 'omit' });
     expect(new URL(requests[0].url).origin).toBe('https://api.github.com');
   },
@@ -210,8 +218,8 @@ test.each([
     const reader = createAdvisoryReader(advisoryLimits, {
       now: () => 0,
       fetch: async (url) => {
-        const query = new URL(url).searchParams.get('affects')!;
-        if (!query.startsWith('fixture-anchor@')) return Response.json([]);
+        const query = affects(url).find((a) => a.startsWith('fixture-anchor@'));
+        if (!query) return Response.json([]);
         const mode = query.endsWith('@1.0.0') ? base : head;
         return mode === 'fail'
           ? Response.json({}, { status: 500 })
@@ -309,7 +317,7 @@ test.each([false, true])(
       now: () => 0,
       fetch: async (url) =>
         Response.json(
-          new URL(url).searchParams.get('affects') === 'fixture-anchor@1.1.0'
+          affects(url, 'fixture-anchor@1.1.0')
             ? [advisory, { ...advisory, severity: conflict ? 'low' : 'high' }, independent]
             : [],
         ),
@@ -455,10 +463,7 @@ test('duplicate semantic instances and dangling references fail before I/O', asy
 function realReader(): AdvisoryReader {
   const reader = createAdvisoryReader(advisoryLimits, {
     now: () => 0,
-    fetch: async (url) =>
-      Response.json(
-        new URL(url).searchParams.get('affects') === 'fixture-anchor@1.1.0' ? [advisory] : [],
-      ),
+    fetch: async (url) => Response.json(affects(url, 'fixture-anchor@1.1.0') ? [advisory] : []),
   });
   if (reader.kind !== 'ready') throw new Error('reader');
   return reader;
@@ -475,6 +480,7 @@ function scriptedReader(
       if (options.fail?.(target as AdvisoryTarget)) throw new AdvisoryFailure('malformed');
       return real.read(target);
     },
+    settle: (targets) => real.settle!(targets),
     close: () => real.close(),
     stopped: () =>
       options.stopAfter !== undefined && reads >= options.stopAfter ? 'rate_limit' : null,
@@ -532,6 +538,152 @@ test("a failed member's partial additions are removed", async () => {
   });
   expect(appended(result)).toEqual(failed.sourceIds);
   expect(result.lookups.filter((l) => l.memberId === anchor.id && l.lookup !== null)).toEqual([]);
+});
+
+const BATCHED = 'A complete batched query checked reviewed advisories for this target.';
+const lookupSources = (output: { sources: readonly PacketSource[] }) =>
+  output.sources.filter(
+    (s) => s.kind === 'advisory' && s.provenance.kind === 'upstream' && !s.provenance.advisoryId,
+  );
+/** A reader over `answer`, recording every URL it sends; `batched: false` drops the pre-pass. */
+function recordingReader(
+  answer: (url: URL) => Response,
+  options: { batched?: boolean; limits?: typeof advisoryLimits } = {},
+) {
+  const sent: string[] = [];
+  const reader = createAdvisoryReader(options.limits ?? advisoryLimits, {
+    now: () => 0,
+    fetch: async (url) => (sent.push(url), answer(new URL(url))),
+  });
+  if (reader.kind !== 'ready') throw new Error('reader');
+  return { sent, reader: options.batched === false ? { ...reader, settle: undefined } : reader };
+}
+
+test('the pre-pass settles both sides, cites each singleton URL, and sends fewer requests', async () => {
+  const { input } = await fixture(true, 3);
+  const empty = () => Response.json([]);
+  const plain = recordingReader(empty, { batched: false });
+  const batched = recordingReader(empty);
+  const before = await enrichAdvisories(input, { reader: plain.reader });
+  const after = await enrichAdvisories(input, { reader: batched.reader });
+  if (before.kind !== 'enriched' || after.kind !== 'enriched') throw new Error('evidence');
+  expect(batched.sent.length).toBeLessThan(plain.sent.length);
+  const cleared = lookupSources(after);
+  // Every lookup of both sides was cleared by a batch, so none was read alone.
+  expect(cleared.length).toBe(plain.sent.length);
+  const sides = new Set<string>();
+  for (const source of cleared) {
+    if (source.provenance.kind !== 'upstream') throw new Error('provenance');
+    expect(source.provenance.excerpt).toBe(BATCHED);
+    for (const subject of source.provenance.subjects) sides.add(subject.side);
+    // The cited URL is the singleton the unbatched run fetched, never the batch it was checked in.
+    expect(plain.sent).toContain(source.provenance.url);
+    expect(batched.sent).not.toContain(source.provenance.url);
+  }
+  expect(sides).toEqual(new Set(['base', 'head']));
+  // Apart from that text, the packet fields are the same; `lookups` are diagnostics.
+  const packet = ({ changes, sources, findings }: typeof after) => ({ changes, sources, findings });
+  const restored = JSON.parse(
+    JSON.stringify(packet(after)).replaceAll(
+      BATCHED,
+      'The complete exact-version query checked reviewed advisories for this target.',
+    ),
+  );
+  expect(restored).toEqual(JSON.parse(JSON.stringify(packet(before))));
+});
+
+test("the pre-pass's requests are charged to the stage's reader share, not to members", async () => {
+  const { input } = await fixture(false, 3);
+  const members = input.changes.filter((c) => !('basis' in c));
+  expect(members.length).toBeGreaterThan(1);
+  const limits = { ...advisoryLimits, maxRequests: 1, maxPages: 1 };
+  const empty = () => Response.json([]);
+  const batched = recordingReader(empty, { limits });
+  const plain = recordingReader(empty, { limits, batched: false });
+  const settled = await enrichAdvisories(input, { reader: batched.reader });
+  const alone = await enrichAdvisories(input, { reader: plain.reader });
+  if (settled.kind !== 'enriched' || alone.kind !== 'enriched') throw new Error('evidence');
+  // One batch request, within the share, settles every member; read alone, the share runs out.
+  expect(batched.sent).toHaveLength(1);
+  for (const member of members) expect(vulnerability(settled, member.id).status).toBe('available');
+  expect(members.some((m) => vulnerability(alone, m.id).reasons.includes('budget'))).toBe(true);
+});
+
+test('a failed singleton for a record naming two batched packages fails only its member', async () => {
+  const { input } = await fixture(false, 3);
+  const members = input.changes.filter((c) => !('basis' in c) && c.to);
+  const [failing, partner] = members.map((c) => c.to as { name: string; version: string });
+  const failed = members[0];
+  const shared = {
+    ...advisory,
+    vulnerabilities: [failing, partner].map((t) => ({
+      package: { ecosystem: 'npm', name: t.name },
+      vulnerable_version_range: '>=99.0.0',
+    })),
+  };
+  const answer = (fail: boolean) => (url: URL) => {
+    const targets = url.searchParams.get('affects')!.split(',');
+    if (url.searchParams.get('per_page') !== '100')
+      return Response.json(targets.includes(`${failing.name}@${failing.version}`) ? [shared] : []);
+    return fail && targets[0] === `${failing.name}@${failing.version}`
+      ? Response.json({}, { status: 500 })
+      : Response.json([]);
+  };
+  const baseline = recordingReader(answer(false));
+  const run = recordingReader(answer(true));
+  const expected = await enrichAdvisories(input, { reader: baseline.reader });
+  const result = await enrichAdvisories(input, { reader: run.reader });
+  if (expected.kind !== 'enriched' || result.kind !== 'enriched') throw new Error('evidence');
+  // Both named packages got their singleton; only the failed one lost its coverage.
+  expect(run.sent.filter((u) => new URL(u).searchParams.get('per_page') === '100')).toHaveLength(2);
+  expect(vulnerability(result, failed.id)).toMatchObject({ status: 'unavailable' });
+  for (const member of input.changes.filter((c) => !('basis' in c) && c.id !== failed.id))
+    expect(vulnerability(result, member.id)).toEqual(vulnerability(expected, member.id));
+  expect(vulnerability(expected, failed.id).status).toBe('available');
+});
+
+test('a failed versioned query after a discovery batch hit fails only its member', async () => {
+  const f = await collectAdvisoryActions(true);
+  const record = (name: string) => ({
+    ...advisory,
+    vulnerabilities: [
+      { package: { ecosystem: 'actions', name }, vulnerable_version_range: '>=2.0.0' },
+    ],
+  });
+  const hit = 'chromaui/action';
+  const answer = (fail: boolean) => (url: URL) => {
+    const targets = url.searchParams.get('affects')!.split(',');
+    if (url.searchParams.get('per_page') === '50')
+      return Response.json(targets.includes(hit) ? [record(hit)] : []);
+    return fail && targets[0].startsWith(hit + '@')
+      ? Response.json({}, { status: 500 })
+      : Response.json([]);
+  };
+  const baseline = recordingReader(answer(false));
+  const run = recordingReader(answer(true));
+  const expected = await enrichAdvisories(f.input, { reader: baseline.reader });
+  const result = await enrichAdvisories(f.input, { reader: run.reader });
+  if (expected.kind !== 'enriched' || result.kind !== 'enriched') throw new Error('evidence');
+  const failed = f.input.changes.filter(
+    (c) => c.to && 'action' in c.to && c.to.action.startsWith(hit),
+  );
+  expect(failed.length).toBeGreaterThan(0);
+  for (const change of f.input.changes) {
+    if (failed.includes(change)) {
+      expect(vulnerability(result, change.id)).toMatchObject({ status: 'unavailable' });
+      expect(vulnerability(expected, change.id).status).toBe('available');
+    } else expect(vulnerability(result, change.id)).toEqual(vulnerability(expected, change.id));
+  }
+  // The cleared members cite their unfetched versioned URL, never the discovery URL.
+  const cleared = lookupSources(result).filter(
+    (s) => s.provenance.kind === 'upstream' && s.provenance.excerpt === BATCHED,
+  );
+  expect(cleared.length).toBeGreaterThan(0);
+  for (const source of cleared) {
+    if (source.provenance.kind !== 'upstream') continue;
+    expect(new URL(source.provenance.url).searchParams.get('per_page')).toBe('100');
+    expect(run.sent).not.toContain(source.provenance.url);
+  }
 });
 
 test('a stopped reader keeps completed members and marks the rest', async () => {
