@@ -145,7 +145,7 @@ test('keeps the latest retry time a stop records', () => {
   expect(guard.latestRetryAt()).toBe(WALL + 3 * MINUTE);
 });
 
-test('takes a retry time from retry-after, a spent reset, or its own window', () => {
+test('takes a retry time from retry-after, a spent reset, or the counters that refused it', () => {
   const guard = guardAt({ now: WALL });
   const limited = (headers: Record<string, string>) => new Response('{}', { status: 429, headers });
   expect(guard.retryAt(limited({ 'retry-after': '30' }))).toBe(WALL + 30 * SECOND);
@@ -265,7 +265,7 @@ test('a non-monotonic header sequence never raises the estimate within a counter
   const second = first + HOUR;
   // Four requests in flight, served by GitHub as 99, 98, 97, 96 but completing out of order,
   // with headers for other resources and another host's quota interleaved.
-  const window: QuotaEvent[] = [
+  const readings: QuotaEvent[] = [
     { kind: 'start' },
     { kind: 'start' },
     { kind: 'start' },
@@ -282,7 +282,7 @@ test('a non-monotonic header sequence never raises the estimate within a counter
     { kind: 'response', url: 'https://codeload.github.com/o/r', remaining: '4999', reset: first },
     { kind: 'response', remaining: '95', reset: first },
   ];
-  const estimates = window.map((_, index) => estimateAfter(window.slice(0, index + 1)));
+  const estimates = readings.map((_, index) => estimateAfter(readings.slice(0, index + 1)));
   // With no estimate yet the guard admits everything; from the first reading on it only falls.
   const read = estimates.slice(4);
   expect(read[0]).toBe(97);
@@ -293,7 +293,7 @@ test('a non-monotonic header sequence never raises the estimate within a counter
   // After the reset passes, a late response from the old counter is invalid and changes nothing;
   // the next counter's first reading sets the estimate.
   const afterReset: QuotaEvent[] = [
-    ...window,
+    ...readings,
     { kind: 'wall', now: first + SECOND },
     { kind: 'response', remaining: '3', reset: first },
     { kind: 'response', remaining: '999', reset: second },
@@ -301,7 +301,7 @@ test('a non-monotonic header sequence never raises the estimate within a counter
   expect(estimateAfter(afterReset)).toBe(999);
   // A later reset adds a counter; it never raises the estimate before the first counter clears.
   const later = { kind: 'response', remaining: '990', reset: first + 10 * MINUTE } as const;
-  expect(estimateAfter([...window, later])).toBe(95);
+  expect(estimateAfter([...readings, later])).toBe(95);
 });
 
 // Two `core` counters on one token, as the #447 trace found: one for some reads, the other, with

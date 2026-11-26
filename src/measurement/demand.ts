@@ -293,7 +293,13 @@ export function createDemandRecorder(
     let lowest: QuotaReading | null = null;
     for (const [reset, remaining] of quotaCounters) {
       if (reset <= now) continue;
-      if (!lowest || remaining < lowest.remaining) lowest = { remaining, reset };
+      // A tie keeps the earlier reset, so the report doesn't depend on arrival order.
+      if (
+        !lowest ||
+        remaining < lowest.remaining ||
+        (remaining === lowest.remaining && reset < lowest.reset)
+      )
+        lowest = { remaining, reset };
     }
     return lowest;
   };
