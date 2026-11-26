@@ -285,7 +285,11 @@ gaps and an introduced vulnerability before parity is claimed.
   scaled shares, a research GitHub
   quota guard that follows GitHub's reported quota, a bounded wait and
   retry, and the retry time in the comment, with the retry time as a
-  required packet field. B12 (#370) fits its values.
+  required packet field. B12 (#370) fits its values. A
+  [quota counter amendment](SPEC-evidence-coverage.md#quota-counter-amendment)
+  ([#447](https://github.com/andrewpucci/dependency-update-advisor/issues/447)),
+  approved for execution 2026-11-26, keeps one guard estimate per GitHub
+  quota counter.
 - [Limit register](SPEC-limit-register.md) — approved for planning,
   2026-11-17; its plan was approved for execution the same day. One
   register for every limit (maxima, minima, defaults, timeouts, thresholds),

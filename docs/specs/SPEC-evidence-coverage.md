@@ -686,8 +686,9 @@ orders them before B12.
 
 ## Quota Counter Amendment
 
-**Status: draft, awaiting approval
-([#447](https://github.com/andrewpucci/dependency-update-advisor/issues/447)).**
+**Status: approved for execution by the user, 2026-11-26
+([#447](https://github.com/andrewpucci/dependency-update-advisor/issues/447)),
+after a fresh-context review whose blocking finding was resolved.**
 It replaces A2.2's window rule, A3.1's retry time for a guard refusal, and the
 demand recorder's single-window report (A2.8). Conforming edits elsewhere are
 listed under "Text this supersedes".
