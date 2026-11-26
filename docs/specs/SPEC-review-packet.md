@@ -321,6 +321,20 @@ as an intentional difference from the current reviewer; the synthetic
 20-addition fixture still covers requirement 5. Never trim inventory to claim
 coverage; supporting larger packets requires a reviewed contract change.
 
+Dependabot PRs
+[#115](https://github.com/andrewpucci/dependency-update-advisor/pull/115)–[#118](https://github.com/andrewpucci/dependency-update-advisor/pull/118)
+and [#120](https://github.com/andrewpucci/dependency-update-advisor/pull/120)
+in this repository are further deliberate rejections, recorded as out of scope
+like #307. Their `vite-plus` and `@vitest` bumps churn platform-specific
+optional binaries, so each inventory holds 143–157 detected changes, over
+`limit:packet.changes`. N2 rejects such an inventory before any registry read.
+The reason stays `budget`; the collector gap also names `packet.changes` as the
+stopping limit, with the measured count, so the rejection is identifiable
+without a new evidence reason. See the
+[scenario record](../../tests/parity/scenarios.md#over-cap-dependabot-bumps-prs-115-to-118-and-120)
+and [issue #458](https://github.com/andrewpucci/dependency-update-advisor/issues/458).
+Status: approved by the maintainer on 2026-11-26.
+
 Paths are canonical repository-relative slash-separated strings. Root is
 represented explicitly as `.`; other paths reject absolute/drive paths,
 backslashes, empty segments, traversal, and control characters. Hidden segments

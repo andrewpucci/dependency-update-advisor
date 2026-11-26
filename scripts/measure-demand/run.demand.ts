@@ -2,7 +2,9 @@
  * Measures research read demand for one Dependabot PR, open or closed, with no model call and no
  * write. A closed PR is measured as if open (see `reopenPullRequest`); the report counts the
  * reads that shim changed in `reopenedPullReads`. The run fails, after writing its report, when
- * research does not complete. Usage: MEASURE_PR=276 GITHUB_TOKEN=... npm run measure:demand
+ * research does not complete; when a collector stopped at a packet cap, such as `packet.changes`,
+ * its gap in `result` and the error name the cap and the count it measured.
+ * Usage: MEASURE_PR=276 GITHUB_TOKEN=... npm run measure:demand
  * Optional: MEASURE_REPO (default andrewpucci/dependency-update-advisor), MEASURE_CI_WORKFLOW
  * (default .github/workflows/ci.yml), MEASURE_OUT (write the JSON report to this path),
  * MEASURE_SCALE (a positive integer; multiplies the read budget, see `isReadBudget`, so the run
@@ -40,6 +42,7 @@ import { limit } from '../../src/limits.js';
 import {
   coverageCounts,
   createDemandRecorder,
+  incompleteRunMessage,
   labelShare,
   newestDependabotRun,
   type DemandCoverage,
@@ -394,6 +397,5 @@ test('measure research read demand', async () => {
     mkdirSync(dirname(targetsOut), { recursive: true });
     writeFileSync(targetsOut, JSON.stringify(targets, null, 2) + '\n');
   }
-  if (Object.keys(measured).length === 0)
-    throw new Error(`research did not complete: ${JSON.stringify(snapshot)}`);
+  if (Object.keys(measured).length === 0) throw new Error(incompleteRunMessage(snapshot));
 });

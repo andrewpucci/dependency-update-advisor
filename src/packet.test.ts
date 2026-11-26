@@ -116,6 +116,29 @@ test.each([
   expect(result).toEqual({ kind: 'incomplete', gaps: [{ source: 'uv', reason }] });
 });
 
+test.each([
+  [
+    'a register cap',
+    { limit: 'packet.changes', count: 143 },
+    { limit: 'packet.changes', count: 143 },
+  ],
+  ['an id outside the register', { limit: 'secret-text', count: 143 }, {}],
+  ['a cap with no count', { limit: 'packet.changes', count: 'many' }, {}],
+])('a budget gap keeps the stopping cap only for %s', async (_label, stop, kept) => {
+  const npm = async () => ({ kind: 'unavailable', reason: 'budget', ...stop });
+  const result = await assembleReviewPacket({
+    trusted,
+    isCurrent: () => true,
+    openSession: async () => ({ close: () => undefined }),
+    collectors: { npm, actions: collector('actions'), uv: collector('uv') },
+    inventorySource: null,
+  });
+  expect(result).toEqual({
+    kind: 'incomplete',
+    gaps: [{ source: 'npm', reason: 'budget', ...kept }],
+  });
+});
+
 test('names the packet as the gap when validation rejects the assembled evidence', async () => {
   const result = await assembleReviewPacket({
     trusted,

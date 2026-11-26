@@ -105,7 +105,13 @@ type Fragment = Readonly<{
   reachability?: readonly unknown[];
   optionalRelationships?: readonly unknown[];
 }>;
-type Unavailable = Readonly<{ kind: 'unavailable'; reason: EvidenceReason }>;
+/** `limit` and `count` name the register cap that stopped the collector and what it measured. */
+type Unavailable = Readonly<{
+  kind: 'unavailable';
+  reason: EvidenceReason;
+  limit?: string;
+  count?: number;
+}>;
 type Collector = (session: GithubReadSession) => Promise<Fragment | Unavailable>;
 
 /** A request may not be allowed longer than the whole read, so near the deadline both shrink. */
@@ -114,10 +120,22 @@ function timeouts(requestTimeoutMs: number, left: number) {
   return { totalTimeoutMs, requestTimeoutMs: Math.min(requestTimeoutMs, totalTimeoutMs) };
 }
 
-/** Why a reader produced no inventory: its own reason, malformed input, or evidence that moved. */
-function noInventory(result: { kind: string; reason?: EvidenceReason }): Unavailable {
-  if (result.kind === 'unavailable' && result.reason)
-    return { kind: 'unavailable', reason: result.reason };
+/**
+ * Why a reader produced no inventory: its own reason, with the cap that stopped it when it names one,
+ * malformed input, or evidence that moved.
+ */
+function noInventory(result: {
+  kind: string;
+  reason?: EvidenceReason;
+  limit?: string;
+  count?: number;
+}): Unavailable {
+  if (result.kind === 'unavailable' && result.reason) {
+    const { reason, limit, count } = result;
+    return limit === undefined
+      ? { kind: 'unavailable', reason }
+      : { kind: 'unavailable', reason, limit, count };
+  }
   return { kind: 'unavailable', reason: result.kind === 'obsolete' ? 'conflict' : 'malformed' };
 }
 

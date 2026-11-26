@@ -402,6 +402,10 @@ test('reports an unusable N2 result as unavailable, not as the unenriched invent
     kind: 'unavailable',
     reason: 'budget',
   });
+  // A packet cap that stopped N2 stays named beside the reason, with the count it measured.
+  const capped = { kind: 'unavailable', reason: 'budget', limit: 'packet.changes', count: 143 };
+  vi.mocked(npmGraphModule.enrichNpmEvidence).mockResolvedValueOnce(capped as never);
+  await expect(collectors.npm(opened.session)).resolves.toEqual(capped);
 });
 
 test.each([
