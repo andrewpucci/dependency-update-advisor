@@ -358,6 +358,10 @@ gaps and an introduced vulnerability before parity is claimed.
   [#398](https://github.com/andrewpucci/dependency-update-advisor/issues/398))
   is approved for execution, 2026-11-20, and merged with the S1 package
   name form amendment in PR #407.
+  A seventh amendment ([tag existence query in the no-write guard](SPEC-review-orchestration.md#amendment-7-tag-existence-query-in-the-no-write-guard),
+  [#396](https://github.com/andrewpucci/dependency-update-advisor/issues/396))
+  is approved for execution, 2026-11-26, with the C9 tag existence pre-pass
+  in PR #454.
 - [Advisory complexity review](SPEC-complexity-review.md) — user-requested
   supporting repository tooling contract; implemented and merged into `main`
   in [PR #65](https://github.com/andrewpucci/dependency-update-advisor/pull/65).
