@@ -12,6 +12,7 @@ import type { Finding } from '../policy.js';
 import type { NpmInventoryResult, NpmNode } from './npm.js';
 import type { PublicPackageIdentity, ActionVersionMapping } from './advisories.js';
 import { freeze, isPlainObject, isEvidencePath } from './common.js';
+import { publicRegistry } from './advisory-evidence.js';
 import { collectActionResearch, type ActionMappingDraft } from './upstream-actions.js';
 import { collectRangeFallback, collectChangelog } from './upstream-range.js';
 import {
@@ -905,4 +906,90 @@ export async function enrichUpstream(
       reason: error instanceof UpstreamFailure ? error.reason : 'unknown',
     };
   }
+}
+/**
+ * The reasons a lost identity proof carries onto the lookups that needed it: the limit, time, rate
+ * and access stops that SPEC-evidence-coverage §1.2 says a member keeps, each with its own next
+ * action in §4. Any other upstream reason leaves those lookups `unsupported`.
+ */
+export const IDENTITY_LOSS_REASONS: readonly EvidenceReason[] = Object.freeze([
+  'budget',
+  'timeout',
+  'rate_limit',
+  'permission',
+]);
+/** A side upstream tried to prove an identity for but did not, with why. */
+export type IdentityGap = Readonly<{
+  memberId: string;
+  side: 'base' | 'head';
+  reasons: readonly EvidenceReason[];
+}>;
+export type IdentityGapInput = Pick<UpstreamInput, 'npmInventory' | 'sources'> & {
+  changes: readonly ReadonlyData<PacketChange>[];
+  publicIdentities: readonly PublicPackageIdentity[];
+  actionVersions: readonly ActionVersionMapping[];
+  attempts: readonly UpstreamAttempt[];
+};
+/** Whether upstream tries an identity for this side: an Action, or a public registry package it can read. */
+function identityTried(
+  input: IdentityGapInput,
+  change: ReadonlyData<PacketChange>,
+  side: 'base' | 'head',
+): boolean {
+  const instance = side === 'base' ? change.from : change.to;
+  if (!instance) return false;
+  if ('action' in instance) return true;
+  if (
+    !('source' in instance) ||
+    instance.source.kind !== 'registry' ||
+    !URL.canParse(instance.source.identity) ||
+    !publicRegistry(change.ecosystem, new URL(instance.source.identity))
+  )
+    return false;
+  try {
+    // An npm side without lock integrity has no metadata target, so upstream never tries it.
+    return metadataTarget(input, change, side) !== null;
+  } catch {
+    // The lock node check throws when the node or its lockfile source disagrees with the change,
+    // which upstream treats as invalid input and never researches.
+    return false;
+  }
+}
+/**
+ * The side's own identity attempt reasons. When a rollback removed them, the member's upstream
+ * evidence stands in, but only if upstream retained nothing for the member.
+ */
+function lostReasons(
+  input: IdentityGapInput,
+  change: ReadonlyData<PacketChange>,
+  side: 'base' | 'head',
+): EvidenceReason[] {
+  const attempts = input.attempts.filter(
+    (a) =>
+      a.memberId === change.id &&
+      a.side === side &&
+      (a.stage === 'metadata' || a.stage === 'mapping'),
+  );
+  const upstream = change.evidence.upstream;
+  const reasons = attempts.length
+    ? attempts.flatMap((a) => a.reasons)
+    : upstream.status === 'unavailable' && !upstream.sourceIds.length
+      ? upstream.reasons
+      : [];
+  return [...new Set(reasons.filter((reason) => IDENTITY_LOSS_REASONS.includes(reason)))];
+}
+/** Every side whose identity proof upstream tried and lost to an allowlisted reason. */
+export function identityGaps(input: IdentityGapInput): IdentityGap[] {
+  const proven = new Set(
+    [...input.publicIdentities, ...input.actionVersions].map((p) => p.memberId + ':' + p.side),
+  );
+  return input.changes.flatMap((change) =>
+    'basis' in change
+      ? []
+      : (['base', 'head'] as const).flatMap((side) => {
+          if (proven.has(change.id + ':' + side) || !identityTried(input, change, side)) return [];
+          const reasons = lostReasons(input, change, side);
+          return reasons.length ? [{ memberId: change.id, side, reasons }] : [];
+        }),
+  );
 }

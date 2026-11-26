@@ -3,6 +3,7 @@ import type { PacketChange, PacketSource, EvidenceReason } from '../schema.js';
 import type { NpmMetadataResult } from './npm-registry.js';
 import { metadataTarget } from './upstream.js';
 import { resolveAdvisoryTarget } from './advisories.js';
+import { unresolvedReasons } from './advisory-evidence.js';
 import { advisoryCheck, advisoryText } from './advisory-read.js';
 import { isPlainObject, byCodeUnit } from './common.js';
 import { limit } from '../limits.js';
@@ -219,8 +220,11 @@ async function npmSide(
 ): Promise<Side> {
   const eligible = resolveAdvisoryTarget(input, change, side),
     target = eligible ? metadataTarget(input, change, side) : null;
-  const result =
-    reader && target
+  // A side with no lookup target carries why its identity proof is absent, as vulnerability does.
+  // These records carry one reason; a gap usually holds just one, and its first is kept.
+  const result = !eligible
+    ? { kind: 'unavailable' as const, reason: unresolvedReasons(input, change, side)[0]! }
+    : reader && target
       ? await reader.read(target)
       : { kind: 'unavailable' as const, reason: 'unsupported' as const };
   const url = result.kind === 'metadata' ? result.document.url : null;

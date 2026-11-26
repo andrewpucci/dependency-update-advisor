@@ -11,6 +11,7 @@ import {
 import { supplyChainFinding, type Publisher } from './policy-signals-npm.js';
 import { publishTimestamp } from './npm-publish-times.js';
 import { resolveAdvisoryTarget } from './advisories.js';
+import { unresolvedReasons } from './advisory-evidence.js';
 import type { PolicyMetadataReader } from './policy-signals-read.js';
 import {
   observe,
@@ -124,8 +125,11 @@ async function pypiReleaseSide(
   reader?: PolicyMetadataReader,
 ) {
   const target = resolveAdvisoryTarget(input, change, side);
-  const result =
-    target && reader
+  // A side with no lookup target carries why its identity proof is absent, as vulnerability does.
+  // These records carry one reason; a gap usually holds just one, and its first is kept.
+  const result = !target
+    ? { kind: 'unavailable' as const, reason: unresolvedReasons(input, change, side)[0]! }
+    : reader
       ? await reader.read({
           kind: 'pypi',
           name: target.name,

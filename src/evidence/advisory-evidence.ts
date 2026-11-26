@@ -9,7 +9,7 @@ import {
   type AdvisoryLookup,
   type AdvisoryRecord,
 } from './advisory-read.js';
-import type { AdvisoryEnrichment } from './advisories.js';
+import type { AdvisoryEnrichment, AdvisoryInput } from './advisories.js';
 export function reconcileRecords(values: readonly AdvisoryRecord[]) {
   const records = new Map<string, AdvisoryRecord>(),
     conflicts = new Set<string>();
@@ -105,11 +105,39 @@ function provenance(
       : {}),
   };
 }
+/** Whether a registry source origin is the public registry S1 can look the member up in. */
+export function publicRegistry(ecosystem: PacketChange['ecosystem'], origin: URL): boolean {
+  return (
+    (ecosystem === 'npm'
+      ? origin.origin === 'https://registry.npmjs.org'
+      : origin.origin === 'https://pypi.org' &&
+        ['/simple', '/simple/'].includes(origin.pathname)) &&
+    !origin.username &&
+    !origin.password &&
+    !origin.hash &&
+    !origin.search
+  );
+}
+/**
+ * Why a side has no lookup target. A side whose identity proof upstream tried and lost to a stop
+ * carries that stop's reason (`budget`, `timeout`, `rate_limit` or `permission`), as
+ * SPEC-evidence-coverage §1.2 requires and §4 gives a next action for. Every other side, where
+ * upstream found no identity or none can exist, is `unsupported`.
+ */
+export function unresolvedReasons(
+  input: Pick<AdvisoryInput, 'identityGaps'>,
+  change: PacketChange,
+  side: 'head' | 'base',
+): EvidenceReason[] {
+  const gap = input.identityGaps?.find((g) => g.memberId === change.id && g.side === side);
+  return gap ? [...gap.reasons] : ['unsupported'];
+}
 export function source(
   change: PacketChange,
   side: 'head' | 'base',
   lookup: AdvisoryLookup | null,
   record?: AdvisoryRecord,
+  missing: readonly EvidenceReason[] = ['unsupported'],
 ): PacketSource {
   const success = !!lookup && (record || lookup.complete);
   return {
@@ -118,7 +146,7 @@ export function source(
     ecosystems: [change.ecosystem],
     memberIds: [change.id],
     status: success ? 'available' : 'unavailable',
-    reasons: success ? [] : [...(lookup?.reasons ?? ['unsupported'])],
+    reasons: success ? [] : [...(lookup?.reasons ?? missing)],
     provenance: success ? provenance(change, side, lookup!, record) : { kind: 'unavailable' },
   };
 }

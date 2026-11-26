@@ -16433,7 +16433,21 @@ function provenance(change, side, lookup, record) {
 		} : {}
 	};
 }
-function source$1(change, side, lookup, record) {
+/** Whether a registry source origin is the public registry S1 can look the member up in. */
+function publicRegistry(ecosystem, origin) {
+	return (ecosystem === "npm" ? origin.origin === "https://registry.npmjs.org" : origin.origin === "https://pypi.org" && ["/simple", "/simple/"].includes(origin.pathname)) && !origin.username && !origin.password && !origin.hash && !origin.search;
+}
+/**
+* Why a side has no lookup target. A side whose identity proof upstream tried and lost to a stop
+* carries that stop's reason (`budget`, `timeout`, `rate_limit` or `permission`), as
+* SPEC-evidence-coverage §1.2 requires and §4 gives a next action for. Every other side, where
+* upstream found no identity or none can exist, is `unsupported`.
+*/
+function unresolvedReasons(input, change, side) {
+	const gap = input.identityGaps?.find((g) => g.memberId === change.id && g.side === side);
+	return gap ? [...gap.reasons] : ["unsupported"];
+}
+function source$1(change, side, lookup, record, missing = ["unsupported"]) {
 	const success = !!lookup && (record || lookup.complete);
 	return {
 		id: id([
@@ -16445,7 +16459,7 @@ function source$1(change, side, lookup, record) {
 		ecosystems: [change.ecosystem],
 		memberIds: [change.id],
 		status: success ? "available" : "unavailable",
-		reasons: success ? [] : [...lookup?.reasons ?? ["unsupported"]],
+		reasons: success ? [] : [...lookup?.reasons ?? missing],
 		provenance: success ? provenance(change, side, lookup, record) : { kind: "unavailable" }
 	};
 }
@@ -16505,578 +16519,6 @@ function attachFindings(change, output, base, head) {
 			rationale: "The complete proposed-version check excludes this current-version advisory."
 		});
 	}
-}
-
-// src/evidence/advisories.ts
-function actionTarget(input, change, side) {
-	const instance = side === "head" ? change.to : change.from;
-	if (!instance || !("action" in instance)) return null;
-	const proof = input.actionVersions?.find((p) => p.memberId === change.id && p.side === side);
-	if (!proof || proof.action !== instance.action || proof.ref !== instance.ref || !advisoryText(proof.name) || !advisoryText(proof.version) || !proof.sourceIds.length) return null;
-	const repository = instance.action.split("/").slice(0, 2).join("/");
-	if (proof.name.toLowerCase() !== repository.toLowerCase()) return null;
-	return proof.sourceIds.every((ref) => {
-		const source = input.sources.find((s) => s.id === ref), p = source?.provenance;
-		if (source?.status !== "available" || ![
-			"release",
-			"compare",
-			"metadata"
-		].includes(source.kind) || !source.memberIds.includes(change.id) || !source.ecosystems.includes("actions") || p?.kind !== "upstream") return false;
-		const url = new URL(p.url);
-		return url.origin === "https://github.com" && !url.username && !url.password && !url.search && !url.hash && url.pathname.toLowerCase().startsWith("/" + repository.toLowerCase() + "/") && p.subjects.some((s) => s.memberId === change.id && s.side === side && s.value === instance.ref);
-	}) ? {
-		ecosystem: "actions",
-		name: proof.name,
-		version: proof.version
-	} : null;
-}
-function resolveAdvisoryTarget(input, change, side) {
-	if (change.ecosystem === "actions") return actionTarget(input, change, side);
-	const instance = side === "head" ? change.to : change.from;
-	if (!instance || !("source" in instance) || instance.source.kind !== "registry") return null;
-	const origin = new URL(instance.source.identity);
-	if ((change.ecosystem === "npm" ? origin.origin !== "https://registry.npmjs.org" : origin.origin !== "https://pypi.org" || !["/simple", "/simple/"].includes(origin.pathname)) || origin.username || origin.password || origin.hash || origin.search) return null;
-	const proof = input.publicIdentities.find((p) => p.memberId === change.id && p.side === side);
-	if (!proof || proof.ecosystem !== change.ecosystem || proof.name !== instance.name || proof.version !== instance.version || proof.sourceIdentity !== instance.source.identity || !proof.sourceIds.length) return null;
-	return proof.sourceIds.every((ref) => {
-		const source = input.sources.find((s) => s.id === ref), p = source?.provenance;
-		if (source?.status !== "available" || !["metadata", "install-script"].includes(source.kind) || !source.memberIds.includes(change.id) || !source.ecosystems.includes(change.ecosystem) || p?.kind !== "upstream") return false;
-		const url = new URL(p.url);
-		return url.origin === origin.origin && !url.username && !url.password && !url.hash && !url.search && p.subjects.some((s) => s.memberId === change.id && s.side === side && s.value === instance.version);
-	}) && advisoryText(proof.name) && advisoryText(proof.version) ? {
-		ecosystem: change.ecosystem === "uv" ? "pip" : "npm",
-		name: proof.name,
-		version: proof.version
-	} : null;
-}
-function comparisonManifest(change, side, path) {
-	const instance = side === "head" ? change.to : change.from;
-	if (!instance || !advisoryText(path)) return false;
-	if ("workflow" in instance) return path === instance.workflow;
-	const root = instance.root === "." ? "" : instance.root + "/";
-	return (change.ecosystem === "npm" ? ["package.json", "package-lock.json"] : ["pyproject.toml", "uv.lock"]).some((p) => path === root + p);
-}
-function rowApplies(row, change, side, target) {
-	return row.name === target.name && row.version === target.version && row.ecosystem === target.ecosystem && row.change_type === (side === "head" ? "added" : "removed") && comparisonManifest(change, side, row.manifest);
-}
-function matchingChanges(input, change, side, target, manifest) {
-	return input.changes.filter((c) => {
-		const s = side === "head" ? c.to : c.from;
-		return c.ecosystem === change.ecosystem && s && ("name" in s ? s.name : s.action) === target.name && ("version" in s ? s.version : "ref" in s ? s.ref : "") === target.version && comparisonManifest(c, side, manifest);
-	});
-}
-function appendComparisonRecords(row, target, records) {
-	if (row.package_url !== void 0) {
-		advisoryCheck(advisoryText(row.package_url), "conflict");
-		const ecosystem = {
-			npm: "npm",
-			pip: "pypi",
-			actions: "github"
-		}[target.ecosystem];
-		advisoryCheck(decodeURIComponent(row.package_url) === `pkg:${ecosystem}/${target.name}@${target.version}`, "conflict");
-	}
-	advisoryCheck(Array.isArray(row.vulnerabilities));
-	for (const value of row.vulnerabilities) records.push(comparisonAdvisory(value));
-}
-function comparisonRecords(input, change, side, target) {
-	const records = [], reasons = [];
-	const rows = (input.comparisons ?? []).flatMap((c) => c.records);
-	for (const row of rows) {
-		if (!rowApplies(row, change, side, target)) continue;
-		if (matchingChanges(input, change, side, target, row.manifest).length !== 1) {
-			reasons.push("conflict");
-			continue;
-		}
-		try {
-			appendComparisonRecords(row, target, records);
-		} catch (error) {
-			reasons.push(error instanceof AdvisoryFailure ? error.reason : "malformed");
-		}
-	}
-	return {
-		records,
-		reasons
-	};
-}
-function withComparison(input, change, side, target, lookup) {
-	const compared = comparisonRecords(input, change, side, target);
-	if (lookup.complete && compared.records.some((r) => !r.withdrawn && !lookup.records.some((other) => other.id === r.id && !other.withdrawn))) compared.reasons.push("conflict");
-	const reconciled = reconcileRecords([...lookup.records, ...compared.records]);
-	const records = reconciled.records;
-	const reasons = [.../* @__PURE__ */ new Set([
-		...lookup.reasons,
-		...compared.reasons,
-		...reconciled.reasons
-	])];
-	return {
-		...lookup,
-		records,
-		reasons,
-		complete: lookup.complete && compared.reasons.length === 0 && reconciled.reasons.length === 0,
-		status: reasons.length ? records.length ? "partial" : "unavailable" : lookup.status
-	};
-}
-async function collectSide(input, change, side, output, reader, cache) {
-	const target = resolveAdvisoryTarget(input, change, side);
-	let lookup = null;
-	if (target) {
-		const key = JSON.stringify(target);
-		let checked = cache.get(key);
-		if (!checked) {
-			checked = await reader.read(target);
-			cache.set(key, checked);
-		}
-		lookup = withComparison(input, change, side, target, checked);
-	}
-	const evidence = source$1(change, side, lookup);
-	addSource(output, evidence);
-	if (side === "head" || !change.to) change.evidence.vulnerability = {
-		status: lookup?.complete ? "available" : lookup?.records.length ? "partial" : "unavailable",
-		reasons: lookup?.complete ? [] : [...lookup?.reasons ?? ["unsupported"]],
-		sourceIds: [evidence.id]
-	};
-	output.lookups.push({
-		memberId: change.id,
-		side,
-		lookup,
-		reasons: lookup?.reasons ?? ["unsupported"]
-	});
-	const records = /* @__PURE__ */ new Map();
-	for (const record of lookup?.records ?? []) {
-		const positive = source$1(change, side, lookup, record);
-		addSource(output, positive);
-		records.set(record.id, positive);
-	}
-	return {
-		target,
-		lookup,
-		records
-	};
-}
-function instanceKey(instance) {
-	if ("action" in instance) return JSON.stringify([
-		instance.workflow,
-		instance.jobId,
-		instance.stepIndex,
-		instance.action,
-		instance.ref,
-		instance.refKind
-	]);
-	if ("specifiers" in instance) return JSON.stringify([
-		instance.root,
-		instance.name,
-		Object.entries(instance.specifiers).sort()
-	]);
-	if ("lockPath" in instance) return JSON.stringify([
-		instance.root,
-		instance.lockPath,
-		instance.name,
-		instance.version,
-		instance.source.kind,
-		instance.source.identity
-	]);
-	return JSON.stringify([
-		instance.root,
-		instance.name,
-		instance.version,
-		instance.source.kind,
-		instance.source.identity,
-		instance.marker,
-		instance.extras,
-		instance.groups
-	]);
-}
-function validateChangeShape(c) {
-	advisoryCheck(advisoryText(c.id) && c.id.length <= PACKET_LIMITS.idCodeUnits && [
-		"npm",
-		"uv",
-		"actions"
-	].includes(c.ecosystem));
-	advisoryCheck([
-		"direct",
-		"transitive",
-		"unknown"
-	].includes(c.role) && isPlainObject(c.evidence));
-	advisoryCheck((c.from === null || isPlainObject(c.from)) && (c.to === null || isPlainObject(c.to)));
-	advisoryCheck(c.kind === "update" ? c.from && c.to : c.kind === "addition" ? c.from === null && c.to : c.kind === "removal" && c.from && c.to === null);
-}
-function validateInstance(input, c, side, instance) {
-	const source = input.sources.find((s) => s.id === instance.sourceId), p = source?.provenance;
-	advisoryCheck(source?.kind === "file" && source.status === "available" && source.memberIds.includes(c.id) && source.ecosystems.includes(c.ecosystem));
-	advisoryCheck(p?.kind === "file" && p.revision === side && p.sha === (side === "base" ? input.binding.baseSha : input.binding.headSha) && isEvidencePath(p.path));
-	advisoryCheck(isDeepStrictEqual(p.repository, side === "base" ? input.binding.repository : input.binding.headRepository));
-}
-function validateChanges(input) {
-	const instances = /* @__PURE__ */ new Set();
-	for (const c of input.changes) {
-		validateChangeShape(c);
-		for (const [side, instance] of [["base", c.from], ["head", c.to]]) {
-			if (!instance) continue;
-			validateInstance(input, c, side, instance);
-			const key = JSON.stringify([
-				c.ecosystem,
-				side,
-				instanceKey(instance)
-			]);
-			advisoryCheck(!instances.has(key));
-			instances.add(key);
-		}
-	}
-}
-function validateSources(input) {
-	for (const s of input.sources) {
-		advisoryCheck(advisoryText(s.id) && s.id.length <= PACKET_LIMITS.idCodeUnits);
-		advisoryCheck(Array.isArray(s.ecosystems) && Array.isArray(s.memberIds) && s.memberIds.length <= PACKET_LIMITS.listEntries);
-		advisoryCheck(s.memberIds.every((id) => input.changes.some((c) => c.id === id)));
-		const p = s.provenance;
-		advisoryCheck(isPlainObject(p));
-		if (p.kind !== "upstream") continue;
-		const url = new URL(p.url);
-		advisoryCheck(url.protocol === "https:" && url.hostname && !url.username && !url.password && !/[\p{Cc}\p{Cs}]/u.test(p.url));
-		advisoryCheck(Array.isArray(p.subjects) && p.subjects.length <= PACKET_LIMITS.listEntries);
-	}
-	for (const f of input.findings) {
-		advisoryCheck(input.changes.some((c) => c.id === f.memberId));
-		advisoryCheck(Array.isArray(f.references) && f.references.length > 0 && f.references.length <= PACKET_LIMITS.listEntries);
-		advisoryCheck(f.references.every((id) => input.sources.some((s) => s.id === id && s.memberIds.includes(f.memberId))));
-	}
-}
-function validateProofs(input) {
-	const proofs = [...input.publicIdentities, ...input.actionVersions ?? []];
-	advisoryCheck(new Set(proofs.map((p) => JSON.stringify([p.memberId, p.side]))).size === proofs.length);
-	for (const p of proofs) {
-		const change = input.changes.find((c) => c.id === p.memberId);
-		advisoryCheck(change && (p.side === "base" || p.side === "head"));
-		advisoryCheck(p.side === "base" ? change.from : change.to);
-		advisoryCheck(advisoryText(p.name) && advisoryText(p.version));
-		advisoryCheck(Array.isArray(p.sourceIds) && p.sourceIds.length > 0 && p.sourceIds.length <= PACKET_LIMITS.listEntries);
-		advisoryCheck(new Set(p.sourceIds).size === p.sourceIds.length && p.sourceIds.every((id) => input.sources.some((s) => s.id === id)));
-	}
-}
-function validate(input) {
-	advisoryCheck(parseReviewBinding(input.binding));
-	advisoryCheck(Array.isArray(input.changes) && input.changes.length <= PACKET_LIMITS.changes);
-	advisoryCheck(Array.isArray(input.sources) && input.sources.length <= PACKET_LIMITS.sources);
-	advisoryCheck(Array.isArray(input.findings) && input.findings.length <= PACKET_LIMITS.findings);
-	advisoryCheck(Array.isArray(input.publicIdentities) && input.publicIdentities.length <= limit("advisories.maxLookups"));
-	advisoryCheck(new Set(input.changes.map((c) => c.id)).size === input.changes.length);
-	advisoryCheck(new Set(input.sources.map((s) => s.id)).size === input.sources.length);
-	advisoryCheck(input.actionVersions === void 0 || Array.isArray(input.actionVersions) && input.actionVersions.length <= limit("advisories.maxLookups"));
-	advisoryCheck(input.comparisons === void 0 || Array.isArray(input.comparisons) && input.comparisons.length <= PACKET_LIMITS.listEntries);
-	for (const c of input.comparisons ?? []) {
-		const b = input.binding;
-		advisoryCheck(isDeepStrictEqual(c.repository, b.repository) && isDeepStrictEqual(c.headRepository, b.headRepository) && c.baseSha === b.baseSha && c.headSha === b.headSha && c.mergeBaseSha === b.mergeBaseSha);
-		advisoryCheck(Array.isArray(c.records) && c.records.every(isPlainObject));
-	}
-	validateSources(input);
-	validateChanges(input);
-	validateProofs(input);
-}
-function prepareAdvisoryInput(value) {
-	let input;
-	try {
-		advisoryCheck(isPlainObject(value));
-		const limits = advisoryLimits(value.limits);
-		input = copyAdvisoryData(value, limits);
-		validate(input);
-		return {
-			ok: true,
-			input
-		};
-	} catch (error) {
-		return {
-			ok: false,
-			result: error instanceof AdvisoryFailure && error.reason === "budget" ? {
-				kind: "unavailable",
-				reason: "budget"
-			} : { kind: "invalid" }
-		};
-	}
-}
-function failureGap(output, change, reason) {
-	const side = change.to ? "head" : "base", gap = source$1(change, side, null);
-	gap.id += ":" + reason;
-	gap.reasons = [reason];
-	addSource(output, gap);
-	change.evidence.vulnerability = {
-		status: "unavailable",
-		reasons: [reason],
-		sourceIds: [gap.id]
-	};
-	output.lookups.push({
-		memberId: change.id,
-		side,
-		lookup: null,
-		reasons: [reason]
-	});
-	if (change.to && change.from) output.lookups.push({
-		memberId: change.id,
-		side: "base",
-		lookup: null,
-		reasons: [reason]
-	});
-}
-async function enrichMember(input, output, change, reader, cache) {
-	const original = structuredClone(change);
-	const checkpoint = {
-		sources: output.sources.length,
-		findings: output.findings.length,
-		lookups: output.lookups.length
-	};
-	try {
-		const head = change.to ? await collectSide(input, change, "head", output, reader, cache) : null;
-		const base = change.from ? await collectSide(input, change, "base", output, reader, cache) : null;
-		attachFindings(change, output, base, head);
-	} catch (error) {
-		output.sources.length = checkpoint.sources;
-		output.findings.length = checkpoint.findings;
-		output.lookups.length = checkpoint.lookups;
-		Object.assign(change, structuredClone(original));
-		failureGap(output, change, error instanceof AdvisoryFailure ? error.reason : "unknown");
-		advisoryCheck(fits(output, input), "budget");
-		return;
-	}
-	if (fits(output, input)) return;
-	output.sources.length = checkpoint.sources;
-	output.findings.length = checkpoint.findings;
-	output.lookups.length = checkpoint.lookups;
-	failureGap(output, change, "budget");
-	advisoryCheck(fits(output, input), "budget");
-}
-/** The side's target, or null when it has none; a resolver fault is left to the member's read. */
-function prePassTarget(input, change, side) {
-	if (!(side === "head" ? change.to : change.from)) return null;
-	try {
-		return resolveAdvisoryTarget(input, change, side);
-	} catch {
-		return null;
-	}
-}
-/**
-* The pre-pass (S1 Batched Lookup item 1): settles every eligible target of both sides in batches
-* before the per-member loop, so its requests and bytes count against the stage's reader share
-* rather than any member. `pip` reviewed targets are left to their per-member OSV reads (D1), and
-* a target no batch settles is read alone as before.
-*/
-async function settleTargets(input, output, reader) {
-	if (!reader.settle) return;
-	const targets = output.changes.filter((change) => !("basis" in change)).flatMap((change) => ["head", "base"].map((side) => prePassTarget(input, change, side))).filter((target) => target !== null && target.ecosystem !== "pip");
-	try {
-		if (targets.length) await reader.settle(targets);
-	} catch {}
-}
-/** Whether the pre-pass settled any of the member's targets, which `read` answers unsent. */
-function settledMember(input, change, reader) {
-	return ["head", "base"].some((side) => {
-		const target = prePassTarget(input, change, side);
-		return target !== null && reader.isSettled?.(target) === true;
-	});
-}
-/**
-* A stopped reader refuses every later request (S1 Batched Lookup item 3, per target). A member
-* after `last` with a settled target is still researched: its settled sides take their lookups,
-* and the stopped reader answers each unsettled side with the stop reason without a request. A
-* member with no settled target is unresearched with the stop reason.
-*/
-async function finishStopped(input, output, last, stopped, reader, cache) {
-	output.stopped = stopped;
-	for (const rest of output.changes.slice(output.changes.indexOf(last) + 1)) {
-		if ("basis" in rest) continue;
-		if (settledMember(input, rest, reader)) await enrichMember(input, output, rest, reader, cache);
-		else failureGap(output, rest, stopped);
-	}
-	advisoryCheck(fits(output, input), "budget");
-}
-async function enrichAdvisories(value, dependencies) {
-	const prepared = prepareAdvisoryInput(value);
-	if (!prepared.ok) return prepared.result;
-	const input = prepared.input;
-	const output = {
-		kind: "enriched",
-		binding: input.binding,
-		changes: structuredClone(input.changes),
-		sources: structuredClone(input.sources),
-		findings: [...input.findings],
-		lookups: []
-	};
-	const cache = /* @__PURE__ */ new Map();
-	try {
-		advisoryCheck(fits(output, input), "budget");
-		await settleTargets(input, output, dependencies.reader);
-		for (const change of output.changes) {
-			if ("basis" in change) continue;
-			await enrichMember(input, output, change, dependencies.reader, cache);
-			const stopped = dependencies.reader.stopped?.() ?? null;
-			if (stopped) {
-				await finishStopped(input, output, change, stopped, dependencies.reader, cache);
-				break;
-			}
-		}
-		return freeze$3(output);
-	} catch (error) {
-		return {
-			kind: "unavailable",
-			reason: error instanceof AdvisoryFailure ? error.reason : "unknown"
-		};
-	}
-}
-function fits(output, input) {
-	return output.sources.length <= PACKET_LIMITS.sources && output.findings.length <= Math.min(PACKET_LIMITS.findings, input.findings.length + input.limits.maxFindings) && Buffer.byteLength(JSON.stringify(output)) <= Math.min(input.limits.maxRetainedBytes, PACKET_LIMITS.bytes);
-}
-
-// src/evidence/policy-signals-malware.ts
-function malwareValue(change, side) {
-	const instance = side === "head" ? change.to : change.from;
-	return instance && ("version" in instance ? instance.version : "ref" in instance ? instance.ref : "");
-}
-function malwareProvenance(change, side, lookup, record) {
-	const value = malwareValue(change, side);
-	return {
-		kind: "upstream",
-		url: record?.url ?? lookup.url,
-		title: record?.title ?? "Exact target malware query",
-		excerpt: change.ecosystem === "actions" ? "GitHub malware advisory result for this exact mapped action; this is not a scan of action code." : lookup.batched && !record ? "GitHub malware advisory result for this exact target, checked in a complete batched query." : "GitHub malware advisory result for this exact target.",
-		excerptTruncated: false,
-		subjects: [{
-			memberId: change.id,
-			side,
-			value
-		}],
-		range: {
-			from: side === "base" ? value : null,
-			to: side === "head" ? value : null
-		},
-		...record ? {
-			advisoryId: record.id,
-			...record.range ? { affectedRange: record.range } : {}
-		} : {}
-	};
-}
-function malwareSource(input, change, side, lookup, record) {
-	const success = !!lookup && (!!record || lookup.complete);
-	return {
-		id: signalId(input.binding.identity, change.id, side, "malware", record ?? {
-			complete: lookup?.complete,
-			reasons: lookup?.reasons
-		}),
-		kind: "malware",
-		ecosystems: [change.ecosystem],
-		memberIds: [change.id],
-		status: success ? "available" : "unavailable",
-		reasons: success ? [] : [...lookup?.reasons ?? ["unsupported"]],
-		provenance: success ? malwareProvenance(change, side, lookup, record) : { kind: "unavailable" }
-	};
-}
-function reconcileMalware(lookup) {
-	const observations = /* @__PURE__ */ new Map();
-	for (const record of lookup.records) {
-		const group = observations.get(record.id) ?? {
-			severities: /* @__PURE__ */ new Set(),
-			ranges: /* @__PURE__ */ new Set()
-		};
-		group.severities.add(record.severity);
-		group.ranges.add(record.range);
-		observations.set(record.id, group);
-	}
-	const reconciled = reconcileRecords(lookup.records.map(({ severity: _severity, range, ...record }) => ({
-		...record,
-		...observations.get(record.id).ranges.size === 1 && range !== void 0 ? { range } : {}
-	})));
-	if ([...observations.values()].some((g) => g.severities.size > 1 || g.ranges.size > 1)) reconciled.reasons.push("conflict");
-	return {
-		...lookup,
-		records: reconciled.records,
-		reasons: [.../* @__PURE__ */ new Set([...lookup.reasons, ...reconciled.reasons])],
-		complete: lookup.complete && !reconciled.reasons.length
-	};
-}
-function priorMalwareClaims(output, change) {
-	return output.findings.filter((f) => f.kind === "malware" && f.memberId === change.id).map((f) => ({
-		finding: f,
-		advisoryId: output.sources.find((s) => f.references.includes(s.id) && s.provenance.kind === "upstream")?.provenance
-	}));
-}
-function checkPriorMalware(lookup, priorClaims) {
-	if (lookup?.complete && priorClaims.some(({ finding, advisoryId: p }) => p?.kind === "upstream" && finding.kind === "malware" && finding.applicability === "affects_proposed" !== lookup.records.some((r) => r.id === p.advisoryId && !r.withdrawn))) return {
-		...lookup,
-		complete: false,
-		reasons: [.../* @__PURE__ */ new Set([...lookup.reasons, "conflict"])]
-	};
-	return lookup;
-}
-function malwareFinding(input, output, change, record, source) {
-	retainSignalFinding(output, {
-		id: signalId(input.binding.identity, change.id, "malware", record.id),
-		memberId: change.id,
-		kind: "malware",
-		applicability: "affects_proposed",
-		...record.range ? { affectedRange: record.range } : {},
-		references: [source.id],
-		rationale: "The cited active malware advisory affects this exact proposed target.",
-		remediation: ["Do not merge this version; select an unaffected version."],
-		validation: ["Re-run the exact malware lookup before reconsidering."]
-	});
-}
-/**
-* The malware pre-pass, run before the per-member loop: the reader settles what complete
-* `type=malware` batches can decide, npm versioned batches and `pip` discovery batches, so `read`
-* returns those lookups without a request. Its requests count against the malware reader's
-* share, not any member's. Actions malware keeps per-target lookups (Approved Batch Values), so
-* its targets are not sent. A reader without `settle`, or one that fails, leaves every target to
-* its own `read`.
-*/
-async function settleMalware(input, changes, reader) {
-	const targets = changes.flatMap((change) => {
-		if ("basis" in change) return [];
-		const target = resolveAdvisoryTarget(input, change, change.to ? "head" : "base");
-		return target && target.ecosystem !== "actions" ? [target] : [];
-	});
-	if (!reader.settle || !targets.length) return;
-	try {
-		await reader.settle(targets);
-	} catch {}
-}
-async function collectMemberMalware(input, output, change, reader, cache) {
-	const side = change.to ? "head" : "base";
-	const target = resolveAdvisoryTarget(input, change, side);
-	let lookup = null;
-	if (target) {
-		const key = JSON.stringify(target);
-		lookup = cache.get(key) ?? await reader.read(target);
-		cache.set(key, lookup);
-		lookup = reconcileMalware(lookup);
-	}
-	recordMemberMalware(input, output, change, side, target, lookup);
-}
-function recordMemberMalware(input, output, change, side, target, lookup) {
-	const priorClaims = priorMalwareClaims(output, change);
-	lookup = checkPriorMalware(lookup, priorClaims);
-	const query = malwareSource(input, change, side, lookup);
-	retainSignalSource(output, query);
-	const ids = [query.id];
-	for (const record of lookup?.records ?? []) {
-		const source = malwareSource(input, change, side, lookup, record);
-		retainSignalSource(output, source);
-		ids.push(source.id);
-		if (!change.to || record.withdrawn) continue;
-		if (priorClaims.some(({ advisoryId: p }) => p?.kind === "upstream" && p.advisoryId === record.id)) continue;
-		malwareFinding(input, output, change, record, source);
-	}
-	change.evidence.malware = {
-		status: lookup?.complete ? "available" : ids.length > 1 ? "partial" : "unavailable",
-		sourceIds: ids,
-		reasons: lookup?.complete ? [] : [...lookup?.reasons ?? ["unsupported"]]
-	};
-	output.attempts.push({
-		memberId: change.id,
-		side,
-		category: "malware",
-		url: lookup?.url ?? null,
-		outcome: lookup?.complete ? "available" : target ? "unavailable" : "skipped",
-		reasons: change.evidence.malware.reasons,
-		sourceIds: ids,
-		truncated: false
-	});
 }
 
 // node_modules/smol-toml/dist/error.js
@@ -21542,6 +20984,636 @@ async function enrichUpstream(value, dependencies) {
 		};
 	}
 }
+/**
+* The reasons a lost identity proof carries onto the lookups that needed it: the limit, time, rate
+* and access stops that SPEC-evidence-coverage §1.2 says a member keeps, each with its own next
+* action in §4. Any other upstream reason leaves those lookups `unsupported`.
+*/
+const IDENTITY_LOSS_REASONS = Object.freeze([
+	"budget",
+	"timeout",
+	"rate_limit",
+	"permission"
+]);
+/** Whether upstream tries an identity for this side: an Action, or a public registry package it can read. */
+function identityTried(input, change, side) {
+	const instance = side === "base" ? change.from : change.to;
+	if (!instance) return false;
+	if ("action" in instance) return true;
+	if (!("source" in instance) || instance.source.kind !== "registry" || !URL.canParse(instance.source.identity) || !publicRegistry(change.ecosystem, new URL(instance.source.identity))) return false;
+	try {
+		return metadataTarget(input, change, side) !== null;
+	} catch {
+		return false;
+	}
+}
+/**
+* The side's own identity attempt reasons. When a rollback removed them, the member's upstream
+* evidence stands in, but only if upstream retained nothing for the member.
+*/
+function lostReasons(input, change, side) {
+	const attempts = input.attempts.filter((a) => a.memberId === change.id && a.side === side && (a.stage === "metadata" || a.stage === "mapping"));
+	const upstream = change.evidence.upstream;
+	const reasons = attempts.length ? attempts.flatMap((a) => a.reasons) : upstream.status === "unavailable" && !upstream.sourceIds.length ? upstream.reasons : [];
+	return [...new Set(reasons.filter((reason) => IDENTITY_LOSS_REASONS.includes(reason)))];
+}
+/** Every side whose identity proof upstream tried and lost to an allowlisted reason. */
+function identityGaps(input) {
+	const proven = new Set([...input.publicIdentities, ...input.actionVersions].map((p) => p.memberId + ":" + p.side));
+	return input.changes.flatMap((change) => "basis" in change ? [] : ["base", "head"].flatMap((side) => {
+		if (proven.has(change.id + ":" + side) || !identityTried(input, change, side)) return [];
+		const reasons = lostReasons(input, change, side);
+		return reasons.length ? [{
+			memberId: change.id,
+			side,
+			reasons
+		}] : [];
+	}));
+}
+
+// src/evidence/advisories.ts
+function actionTarget(input, change, side) {
+	const instance = side === "head" ? change.to : change.from;
+	if (!instance || !("action" in instance)) return null;
+	const proof = input.actionVersions?.find((p) => p.memberId === change.id && p.side === side);
+	if (!proof || proof.action !== instance.action || proof.ref !== instance.ref || !advisoryText(proof.name) || !advisoryText(proof.version) || !proof.sourceIds.length) return null;
+	const repository = instance.action.split("/").slice(0, 2).join("/");
+	if (proof.name.toLowerCase() !== repository.toLowerCase()) return null;
+	return proof.sourceIds.every((ref) => {
+		const source = input.sources.find((s) => s.id === ref), p = source?.provenance;
+		if (source?.status !== "available" || ![
+			"release",
+			"compare",
+			"metadata"
+		].includes(source.kind) || !source.memberIds.includes(change.id) || !source.ecosystems.includes("actions") || p?.kind !== "upstream") return false;
+		const url = new URL(p.url);
+		return url.origin === "https://github.com" && !url.username && !url.password && !url.search && !url.hash && url.pathname.toLowerCase().startsWith("/" + repository.toLowerCase() + "/") && p.subjects.some((s) => s.memberId === change.id && s.side === side && s.value === instance.ref);
+	}) ? {
+		ecosystem: "actions",
+		name: proof.name,
+		version: proof.version
+	} : null;
+}
+function resolveAdvisoryTarget(input, change, side) {
+	if (change.ecosystem === "actions") return actionTarget(input, change, side);
+	const instance = side === "head" ? change.to : change.from;
+	if (!instance || !("source" in instance) || instance.source.kind !== "registry") return null;
+	const origin = new URL(instance.source.identity);
+	if (!publicRegistry(change.ecosystem, origin)) return null;
+	const proof = input.publicIdentities.find((p) => p.memberId === change.id && p.side === side);
+	if (!proof || proof.ecosystem !== change.ecosystem || proof.name !== instance.name || proof.version !== instance.version || proof.sourceIdentity !== instance.source.identity || !proof.sourceIds.length) return null;
+	return proof.sourceIds.every((ref) => {
+		const source = input.sources.find((s) => s.id === ref), p = source?.provenance;
+		if (source?.status !== "available" || !["metadata", "install-script"].includes(source.kind) || !source.memberIds.includes(change.id) || !source.ecosystems.includes(change.ecosystem) || p?.kind !== "upstream") return false;
+		const url = new URL(p.url);
+		return url.origin === origin.origin && !url.username && !url.password && !url.hash && !url.search && p.subjects.some((s) => s.memberId === change.id && s.side === side && s.value === instance.version);
+	}) && advisoryText(proof.name) && advisoryText(proof.version) ? {
+		ecosystem: change.ecosystem === "uv" ? "pip" : "npm",
+		name: proof.name,
+		version: proof.version
+	} : null;
+}
+function comparisonManifest(change, side, path) {
+	const instance = side === "head" ? change.to : change.from;
+	if (!instance || !advisoryText(path)) return false;
+	if ("workflow" in instance) return path === instance.workflow;
+	const root = instance.root === "." ? "" : instance.root + "/";
+	return (change.ecosystem === "npm" ? ["package.json", "package-lock.json"] : ["pyproject.toml", "uv.lock"]).some((p) => path === root + p);
+}
+function rowApplies(row, change, side, target) {
+	return row.name === target.name && row.version === target.version && row.ecosystem === target.ecosystem && row.change_type === (side === "head" ? "added" : "removed") && comparisonManifest(change, side, row.manifest);
+}
+function matchingChanges(input, change, side, target, manifest) {
+	return input.changes.filter((c) => {
+		const s = side === "head" ? c.to : c.from;
+		return c.ecosystem === change.ecosystem && s && ("name" in s ? s.name : s.action) === target.name && ("version" in s ? s.version : "ref" in s ? s.ref : "") === target.version && comparisonManifest(c, side, manifest);
+	});
+}
+function appendComparisonRecords(row, target, records) {
+	if (row.package_url !== void 0) {
+		advisoryCheck(advisoryText(row.package_url), "conflict");
+		const ecosystem = {
+			npm: "npm",
+			pip: "pypi",
+			actions: "github"
+		}[target.ecosystem];
+		advisoryCheck(decodeURIComponent(row.package_url) === `pkg:${ecosystem}/${target.name}@${target.version}`, "conflict");
+	}
+	advisoryCheck(Array.isArray(row.vulnerabilities));
+	for (const value of row.vulnerabilities) records.push(comparisonAdvisory(value));
+}
+function comparisonRecords(input, change, side, target) {
+	const records = [], reasons = [];
+	const rows = (input.comparisons ?? []).flatMap((c) => c.records);
+	for (const row of rows) {
+		if (!rowApplies(row, change, side, target)) continue;
+		if (matchingChanges(input, change, side, target, row.manifest).length !== 1) {
+			reasons.push("conflict");
+			continue;
+		}
+		try {
+			appendComparisonRecords(row, target, records);
+		} catch (error) {
+			reasons.push(error instanceof AdvisoryFailure ? error.reason : "malformed");
+		}
+	}
+	return {
+		records,
+		reasons
+	};
+}
+function withComparison(input, change, side, target, lookup) {
+	const compared = comparisonRecords(input, change, side, target);
+	if (lookup.complete && compared.records.some((r) => !r.withdrawn && !lookup.records.some((other) => other.id === r.id && !other.withdrawn))) compared.reasons.push("conflict");
+	const reconciled = reconcileRecords([...lookup.records, ...compared.records]);
+	const records = reconciled.records;
+	const reasons = [.../* @__PURE__ */ new Set([
+		...lookup.reasons,
+		...compared.reasons,
+		...reconciled.reasons
+	])];
+	return {
+		...lookup,
+		records,
+		reasons,
+		complete: lookup.complete && compared.reasons.length === 0 && reconciled.reasons.length === 0,
+		status: reasons.length ? records.length ? "partial" : "unavailable" : lookup.status
+	};
+}
+async function collectSide(input, change, side, output, reader, cache) {
+	const target = resolveAdvisoryTarget(input, change, side);
+	let lookup = null;
+	if (target) {
+		const key = JSON.stringify(target);
+		let checked = cache.get(key);
+		if (!checked) {
+			checked = await reader.read(target);
+			cache.set(key, checked);
+		}
+		lookup = withComparison(input, change, side, target, checked);
+	}
+	const missing = unresolvedReasons(input, change, side);
+	const evidence = source$1(change, side, lookup, void 0, missing);
+	addSource(output, evidence);
+	if (side === "head" || !change.to) change.evidence.vulnerability = {
+		status: lookup?.complete ? "available" : lookup?.records.length ? "partial" : "unavailable",
+		reasons: lookup?.complete ? [] : [...lookup?.reasons ?? missing],
+		sourceIds: [evidence.id]
+	};
+	output.lookups.push({
+		memberId: change.id,
+		side,
+		lookup,
+		reasons: lookup?.reasons ?? missing
+	});
+	const records = /* @__PURE__ */ new Map();
+	for (const record of lookup?.records ?? []) {
+		const positive = source$1(change, side, lookup, record);
+		addSource(output, positive);
+		records.set(record.id, positive);
+	}
+	return {
+		target,
+		lookup,
+		records
+	};
+}
+function instanceKey(instance) {
+	if ("action" in instance) return JSON.stringify([
+		instance.workflow,
+		instance.jobId,
+		instance.stepIndex,
+		instance.action,
+		instance.ref,
+		instance.refKind
+	]);
+	if ("specifiers" in instance) return JSON.stringify([
+		instance.root,
+		instance.name,
+		Object.entries(instance.specifiers).sort()
+	]);
+	if ("lockPath" in instance) return JSON.stringify([
+		instance.root,
+		instance.lockPath,
+		instance.name,
+		instance.version,
+		instance.source.kind,
+		instance.source.identity
+	]);
+	return JSON.stringify([
+		instance.root,
+		instance.name,
+		instance.version,
+		instance.source.kind,
+		instance.source.identity,
+		instance.marker,
+		instance.extras,
+		instance.groups
+	]);
+}
+function validateChangeShape(c) {
+	advisoryCheck(advisoryText(c.id) && c.id.length <= PACKET_LIMITS.idCodeUnits && [
+		"npm",
+		"uv",
+		"actions"
+	].includes(c.ecosystem));
+	advisoryCheck([
+		"direct",
+		"transitive",
+		"unknown"
+	].includes(c.role) && isPlainObject(c.evidence));
+	advisoryCheck((c.from === null || isPlainObject(c.from)) && (c.to === null || isPlainObject(c.to)));
+	advisoryCheck(c.kind === "update" ? c.from && c.to : c.kind === "addition" ? c.from === null && c.to : c.kind === "removal" && c.from && c.to === null);
+}
+function validateInstance(input, c, side, instance) {
+	const source = input.sources.find((s) => s.id === instance.sourceId), p = source?.provenance;
+	advisoryCheck(source?.kind === "file" && source.status === "available" && source.memberIds.includes(c.id) && source.ecosystems.includes(c.ecosystem));
+	advisoryCheck(p?.kind === "file" && p.revision === side && p.sha === (side === "base" ? input.binding.baseSha : input.binding.headSha) && isEvidencePath(p.path));
+	advisoryCheck(isDeepStrictEqual(p.repository, side === "base" ? input.binding.repository : input.binding.headRepository));
+}
+function validateChanges(input) {
+	const instances = /* @__PURE__ */ new Set();
+	for (const c of input.changes) {
+		validateChangeShape(c);
+		for (const [side, instance] of [["base", c.from], ["head", c.to]]) {
+			if (!instance) continue;
+			validateInstance(input, c, side, instance);
+			const key = JSON.stringify([
+				c.ecosystem,
+				side,
+				instanceKey(instance)
+			]);
+			advisoryCheck(!instances.has(key));
+			instances.add(key);
+		}
+	}
+}
+function validateSources(input) {
+	for (const s of input.sources) {
+		advisoryCheck(advisoryText(s.id) && s.id.length <= PACKET_LIMITS.idCodeUnits);
+		advisoryCheck(Array.isArray(s.ecosystems) && Array.isArray(s.memberIds) && s.memberIds.length <= PACKET_LIMITS.listEntries);
+		advisoryCheck(s.memberIds.every((id) => input.changes.some((c) => c.id === id)));
+		const p = s.provenance;
+		advisoryCheck(isPlainObject(p));
+		if (p.kind !== "upstream") continue;
+		const url = new URL(p.url);
+		advisoryCheck(url.protocol === "https:" && url.hostname && !url.username && !url.password && !/[\p{Cc}\p{Cs}]/u.test(p.url));
+		advisoryCheck(Array.isArray(p.subjects) && p.subjects.length <= PACKET_LIMITS.listEntries);
+	}
+	for (const f of input.findings) {
+		advisoryCheck(input.changes.some((c) => c.id === f.memberId));
+		advisoryCheck(Array.isArray(f.references) && f.references.length > 0 && f.references.length <= PACKET_LIMITS.listEntries);
+		advisoryCheck(f.references.every((id) => input.sources.some((s) => s.id === id && s.memberIds.includes(f.memberId))));
+	}
+}
+function validateProofs(input) {
+	const proofs = [...input.publicIdentities, ...input.actionVersions ?? []];
+	advisoryCheck(new Set(proofs.map((p) => JSON.stringify([p.memberId, p.side]))).size === proofs.length);
+	for (const p of proofs) {
+		const change = input.changes.find((c) => c.id === p.memberId);
+		advisoryCheck(change && (p.side === "base" || p.side === "head"));
+		advisoryCheck(p.side === "base" ? change.from : change.to);
+		advisoryCheck(advisoryText(p.name) && advisoryText(p.version));
+		advisoryCheck(Array.isArray(p.sourceIds) && p.sourceIds.length > 0 && p.sourceIds.length <= PACKET_LIMITS.listEntries);
+		advisoryCheck(new Set(p.sourceIds).size === p.sourceIds.length && p.sourceIds.every((id) => input.sources.some((s) => s.id === id)));
+	}
+}
+function validateGaps(input) {
+	if (input.identityGaps === void 0) return;
+	advisoryCheck(Array.isArray(input.identityGaps) && input.identityGaps.length <= 2 * PACKET_LIMITS.changes);
+	const sides = /* @__PURE__ */ new Set();
+	for (const g of input.identityGaps) {
+		const change = input.changes.find((c) => c.id === g.memberId);
+		advisoryCheck(change && !("basis" in change) && (g.side === "base" || g.side === "head") && (g.side === "base" ? change.from : change.to) && !sides.has(g.memberId + ":" + g.side) && Array.isArray(g.reasons) && g.reasons.length > 0 && g.reasons.every((r) => IDENTITY_LOSS_REASONS.includes(r)));
+		sides.add(g.memberId + ":" + g.side);
+	}
+}
+function validate(input) {
+	advisoryCheck(parseReviewBinding(input.binding));
+	advisoryCheck(Array.isArray(input.changes) && input.changes.length <= PACKET_LIMITS.changes);
+	advisoryCheck(Array.isArray(input.sources) && input.sources.length <= PACKET_LIMITS.sources);
+	advisoryCheck(Array.isArray(input.findings) && input.findings.length <= PACKET_LIMITS.findings);
+	advisoryCheck(Array.isArray(input.publicIdentities) && input.publicIdentities.length <= limit("advisories.maxLookups"));
+	advisoryCheck(new Set(input.changes.map((c) => c.id)).size === input.changes.length);
+	advisoryCheck(new Set(input.sources.map((s) => s.id)).size === input.sources.length);
+	advisoryCheck(input.actionVersions === void 0 || Array.isArray(input.actionVersions) && input.actionVersions.length <= limit("advisories.maxLookups"));
+	advisoryCheck(input.comparisons === void 0 || Array.isArray(input.comparisons) && input.comparisons.length <= PACKET_LIMITS.listEntries);
+	for (const c of input.comparisons ?? []) {
+		const b = input.binding;
+		advisoryCheck(isDeepStrictEqual(c.repository, b.repository) && isDeepStrictEqual(c.headRepository, b.headRepository) && c.baseSha === b.baseSha && c.headSha === b.headSha && c.mergeBaseSha === b.mergeBaseSha);
+		advisoryCheck(Array.isArray(c.records) && c.records.every(isPlainObject));
+	}
+	validateSources(input);
+	validateChanges(input);
+	validateProofs(input);
+	validateGaps(input);
+}
+function prepareAdvisoryInput(value) {
+	let input;
+	try {
+		advisoryCheck(isPlainObject(value));
+		const limits = advisoryLimits(value.limits);
+		input = copyAdvisoryData(value, limits);
+		validate(input);
+		return {
+			ok: true,
+			input
+		};
+	} catch (error) {
+		return {
+			ok: false,
+			result: error instanceof AdvisoryFailure && error.reason === "budget" ? {
+				kind: "unavailable",
+				reason: "budget"
+			} : { kind: "invalid" }
+		};
+	}
+}
+function failureGap(output, change, reason) {
+	const side = change.to ? "head" : "base", gap = source$1(change, side, null);
+	gap.id += ":" + reason;
+	gap.reasons = [reason];
+	addSource(output, gap);
+	change.evidence.vulnerability = {
+		status: "unavailable",
+		reasons: [reason],
+		sourceIds: [gap.id]
+	};
+	output.lookups.push({
+		memberId: change.id,
+		side,
+		lookup: null,
+		reasons: [reason]
+	});
+	if (change.to && change.from) output.lookups.push({
+		memberId: change.id,
+		side: "base",
+		lookup: null,
+		reasons: [reason]
+	});
+}
+async function enrichMember(input, output, change, reader, cache) {
+	const original = structuredClone(change);
+	const checkpoint = {
+		sources: output.sources.length,
+		findings: output.findings.length,
+		lookups: output.lookups.length
+	};
+	try {
+		const head = change.to ? await collectSide(input, change, "head", output, reader, cache) : null;
+		const base = change.from ? await collectSide(input, change, "base", output, reader, cache) : null;
+		attachFindings(change, output, base, head);
+	} catch (error) {
+		output.sources.length = checkpoint.sources;
+		output.findings.length = checkpoint.findings;
+		output.lookups.length = checkpoint.lookups;
+		Object.assign(change, structuredClone(original));
+		failureGap(output, change, error instanceof AdvisoryFailure ? error.reason : "unknown");
+		advisoryCheck(fits(output, input), "budget");
+		return;
+	}
+	if (fits(output, input)) return;
+	output.sources.length = checkpoint.sources;
+	output.findings.length = checkpoint.findings;
+	output.lookups.length = checkpoint.lookups;
+	failureGap(output, change, "budget");
+	advisoryCheck(fits(output, input), "budget");
+}
+/** The side's target, or null when it has none; a resolver fault is left to the member's read. */
+function prePassTarget(input, change, side) {
+	if (!(side === "head" ? change.to : change.from)) return null;
+	try {
+		return resolveAdvisoryTarget(input, change, side);
+	} catch {
+		return null;
+	}
+}
+/**
+* The pre-pass (S1 Batched Lookup item 1): settles every eligible target of both sides in batches
+* before the per-member loop, so its requests and bytes count against the stage's reader share
+* rather than any member. `pip` reviewed targets are left to their per-member OSV reads (D1), and
+* a target no batch settles is read alone as before.
+*/
+async function settleTargets(input, output, reader) {
+	if (!reader.settle) return;
+	const targets = output.changes.filter((change) => !("basis" in change)).flatMap((change) => ["head", "base"].map((side) => prePassTarget(input, change, side))).filter((target) => target !== null && target.ecosystem !== "pip");
+	try {
+		if (targets.length) await reader.settle(targets);
+	} catch {}
+}
+/** Whether the pre-pass settled any of the member's targets, which `read` answers unsent. */
+function settledMember(input, change, reader) {
+	return ["head", "base"].some((side) => {
+		const target = prePassTarget(input, change, side);
+		return target !== null && reader.isSettled?.(target) === true;
+	});
+}
+/**
+* A stopped reader refuses every later request (S1 Batched Lookup item 3, per target). A member
+* after `last` with a settled target is still researched: its settled sides take their lookups,
+* and the stopped reader answers each unsettled side with the stop reason without a request. A
+* member with no settled target is unresearched with the stop reason.
+*/
+async function finishStopped(input, output, last, stopped, reader, cache) {
+	output.stopped = stopped;
+	for (const rest of output.changes.slice(output.changes.indexOf(last) + 1)) {
+		if ("basis" in rest) continue;
+		if (settledMember(input, rest, reader)) await enrichMember(input, output, rest, reader, cache);
+		else failureGap(output, rest, stopped);
+	}
+	advisoryCheck(fits(output, input), "budget");
+}
+async function enrichAdvisories(value, dependencies) {
+	const prepared = prepareAdvisoryInput(value);
+	if (!prepared.ok) return prepared.result;
+	const input = prepared.input;
+	const output = {
+		kind: "enriched",
+		binding: input.binding,
+		changes: structuredClone(input.changes),
+		sources: structuredClone(input.sources),
+		findings: [...input.findings],
+		lookups: []
+	};
+	const cache = /* @__PURE__ */ new Map();
+	try {
+		advisoryCheck(fits(output, input), "budget");
+		await settleTargets(input, output, dependencies.reader);
+		for (const change of output.changes) {
+			if ("basis" in change) continue;
+			await enrichMember(input, output, change, dependencies.reader, cache);
+			const stopped = dependencies.reader.stopped?.() ?? null;
+			if (stopped) {
+				await finishStopped(input, output, change, stopped, dependencies.reader, cache);
+				break;
+			}
+		}
+		return freeze$3(output);
+	} catch (error) {
+		return {
+			kind: "unavailable",
+			reason: error instanceof AdvisoryFailure ? error.reason : "unknown"
+		};
+	}
+}
+function fits(output, input) {
+	return output.sources.length <= PACKET_LIMITS.sources && output.findings.length <= Math.min(PACKET_LIMITS.findings, input.findings.length + input.limits.maxFindings) && Buffer.byteLength(JSON.stringify(output)) <= Math.min(input.limits.maxRetainedBytes, PACKET_LIMITS.bytes);
+}
+
+// src/evidence/policy-signals-malware.ts
+function malwareValue(change, side) {
+	const instance = side === "head" ? change.to : change.from;
+	return instance && ("version" in instance ? instance.version : "ref" in instance ? instance.ref : "");
+}
+function malwareProvenance(change, side, lookup, record) {
+	const value = malwareValue(change, side);
+	return {
+		kind: "upstream",
+		url: record?.url ?? lookup.url,
+		title: record?.title ?? "Exact target malware query",
+		excerpt: change.ecosystem === "actions" ? "GitHub malware advisory result for this exact mapped action; this is not a scan of action code." : lookup.batched && !record ? "GitHub malware advisory result for this exact target, checked in a complete batched query." : "GitHub malware advisory result for this exact target.",
+		excerptTruncated: false,
+		subjects: [{
+			memberId: change.id,
+			side,
+			value
+		}],
+		range: {
+			from: side === "base" ? value : null,
+			to: side === "head" ? value : null
+		},
+		...record ? {
+			advisoryId: record.id,
+			...record.range ? { affectedRange: record.range } : {}
+		} : {}
+	};
+}
+function malwareSource(input, change, side, lookup, record) {
+	const success = !!lookup && (!!record || lookup.complete);
+	return {
+		id: signalId(input.binding.identity, change.id, side, "malware", record ?? {
+			complete: lookup?.complete,
+			reasons: lookup?.reasons
+		}),
+		kind: "malware",
+		ecosystems: [change.ecosystem],
+		memberIds: [change.id],
+		status: success ? "available" : "unavailable",
+		reasons: success ? [] : [...lookup?.reasons ?? unresolvedReasons(input, change, side)],
+		provenance: success ? malwareProvenance(change, side, lookup, record) : { kind: "unavailable" }
+	};
+}
+function reconcileMalware(lookup) {
+	const observations = /* @__PURE__ */ new Map();
+	for (const record of lookup.records) {
+		const group = observations.get(record.id) ?? {
+			severities: /* @__PURE__ */ new Set(),
+			ranges: /* @__PURE__ */ new Set()
+		};
+		group.severities.add(record.severity);
+		group.ranges.add(record.range);
+		observations.set(record.id, group);
+	}
+	const reconciled = reconcileRecords(lookup.records.map(({ severity: _severity, range, ...record }) => ({
+		...record,
+		...observations.get(record.id).ranges.size === 1 && range !== void 0 ? { range } : {}
+	})));
+	if ([...observations.values()].some((g) => g.severities.size > 1 || g.ranges.size > 1)) reconciled.reasons.push("conflict");
+	return {
+		...lookup,
+		records: reconciled.records,
+		reasons: [.../* @__PURE__ */ new Set([...lookup.reasons, ...reconciled.reasons])],
+		complete: lookup.complete && !reconciled.reasons.length
+	};
+}
+function priorMalwareClaims(output, change) {
+	return output.findings.filter((f) => f.kind === "malware" && f.memberId === change.id).map((f) => ({
+		finding: f,
+		advisoryId: output.sources.find((s) => f.references.includes(s.id) && s.provenance.kind === "upstream")?.provenance
+	}));
+}
+function checkPriorMalware(lookup, priorClaims) {
+	if (lookup?.complete && priorClaims.some(({ finding, advisoryId: p }) => p?.kind === "upstream" && finding.kind === "malware" && finding.applicability === "affects_proposed" !== lookup.records.some((r) => r.id === p.advisoryId && !r.withdrawn))) return {
+		...lookup,
+		complete: false,
+		reasons: [.../* @__PURE__ */ new Set([...lookup.reasons, "conflict"])]
+	};
+	return lookup;
+}
+function malwareFinding(input, output, change, record, source) {
+	retainSignalFinding(output, {
+		id: signalId(input.binding.identity, change.id, "malware", record.id),
+		memberId: change.id,
+		kind: "malware",
+		applicability: "affects_proposed",
+		...record.range ? { affectedRange: record.range } : {},
+		references: [source.id],
+		rationale: "The cited active malware advisory affects this exact proposed target.",
+		remediation: ["Do not merge this version; select an unaffected version."],
+		validation: ["Re-run the exact malware lookup before reconsidering."]
+	});
+}
+/**
+* The malware pre-pass, run before the per-member loop: the reader settles what complete
+* `type=malware` batches can decide, npm versioned batches and `pip` discovery batches, so `read`
+* returns those lookups without a request. Its requests count against the malware reader's
+* share, not any member's. Actions malware keeps per-target lookups (Approved Batch Values), so
+* its targets are not sent. A reader without `settle`, or one that fails, leaves every target to
+* its own `read`.
+*/
+async function settleMalware(input, changes, reader) {
+	const targets = changes.flatMap((change) => {
+		if ("basis" in change) return [];
+		const target = resolveAdvisoryTarget(input, change, change.to ? "head" : "base");
+		return target && target.ecosystem !== "actions" ? [target] : [];
+	});
+	if (!reader.settle || !targets.length) return;
+	try {
+		await reader.settle(targets);
+	} catch {}
+}
+async function collectMemberMalware(input, output, change, reader, cache) {
+	const side = change.to ? "head" : "base";
+	const target = resolveAdvisoryTarget(input, change, side);
+	let lookup = null;
+	if (target) {
+		const key = JSON.stringify(target);
+		lookup = cache.get(key) ?? await reader.read(target);
+		cache.set(key, lookup);
+		lookup = reconcileMalware(lookup);
+	}
+	recordMemberMalware(input, output, change, side, target, lookup);
+}
+function recordMemberMalware(input, output, change, side, target, lookup) {
+	const priorClaims = priorMalwareClaims(output, change);
+	lookup = checkPriorMalware(lookup, priorClaims);
+	const query = malwareSource(input, change, side, lookup);
+	retainSignalSource(output, query);
+	const ids = [query.id];
+	for (const record of lookup?.records ?? []) {
+		const source = malwareSource(input, change, side, lookup, record);
+		retainSignalSource(output, source);
+		ids.push(source.id);
+		if (!change.to || record.withdrawn) continue;
+		if (priorClaims.some(({ advisoryId: p }) => p?.kind === "upstream" && p.advisoryId === record.id)) continue;
+		malwareFinding(input, output, change, record, source);
+	}
+	change.evidence.malware = {
+		status: lookup?.complete ? "available" : ids.length > 1 ? "partial" : "unavailable",
+		sourceIds: ids,
+		reasons: lookup?.complete ? [] : [...lookup?.reasons ?? unresolvedReasons(input, change, side)]
+	};
+	output.attempts.push({
+		memberId: change.id,
+		side,
+		category: "malware",
+		url: lookup?.url ?? null,
+		outcome: lookup?.complete ? "available" : target ? "unavailable" : "skipped",
+		reasons: change.evidence.malware.reasons,
+		sourceIds: ids,
+		truncated: false
+	});
+}
 
 // src/evidence/policy-signals-npm.ts
 function account(data) {
@@ -21686,8 +21758,11 @@ function comparePublishing(input, output, change, sides, times) {
 	}
 }
 async function npmSide(input, output, change, side, reader) {
-	const target = resolveAdvisoryTarget(input, change, side) ? metadataTarget(input, change, side) : null;
-	const result = reader && target ? await reader.read(target) : {
+	const eligible = resolveAdvisoryTarget(input, change, side), target = eligible ? metadataTarget(input, change, side) : null;
+	const result = !eligible ? {
+		kind: "unavailable",
+		reason: unresolvedReasons(input, change, side)[0]
+	} : reader && target ? await reader.read(target) : {
 		kind: "unavailable",
 		reason: "unsupported"
 	};
@@ -21906,7 +21981,10 @@ function unknownReleaseFacts(reason) {
 }
 async function pypiReleaseSide(input, change, side, instance, reader) {
 	const target = resolveAdvisoryTarget(input, change, side);
-	const result = target && reader ? await reader.read({
+	const result = !target ? {
+		kind: "unavailable",
+		reason: unresolvedReasons(input, change, side)[0]
+	} : reader ? await reader.read({
 		kind: "pypi",
 		name: target.name,
 		version: target.version,
@@ -22293,7 +22371,10 @@ async function collectNpmTimes(input, output, change, reader) {
 		const target = resolveAdvisoryTarget(input, change, side);
 		const versions = target ? npmTimeVersions(change, target.name) : [];
 		const key = JSON.stringify([target?.name, versions]);
-		const result = cache.get(key) ?? (target && reader ? await reader.read({
+		const result = !target ? {
+			kind: "unavailable",
+			reason: unresolvedReasons(input, change, side)[0]
+		} : cache.get(key) ?? (reader ? await reader.read({
 			name: target.name,
 			versions,
 			source: instance.source,
@@ -32963,6 +33044,7 @@ async function enrichAdvisoryStage(input, dependencies, readers, progress, fail,
 		findings: progress.findings,
 		publicIdentities: progress.publicIdentities,
 		actionVersions: progress.actionVersions,
+		identityGaps: progress.identityGaps,
 		limits: limitsForStage,
 		...input.comparison?.kind === "available" ? { comparisons: [input.comparison] } : {}
 	}, { reader: opened });
@@ -32987,6 +33069,7 @@ async function enrichSignalsStage(input, dependencies, readers, progress, fail, 
 		findings: progress.findings,
 		publicIdentities: progress.publicIdentities,
 		actionVersions: progress.actionVersions,
+		identityGaps: progress.identityGaps,
 		evaluationTime: input.evaluationTime,
 		limits: limitsForStage
 	}, {
@@ -33056,6 +33139,7 @@ async function runResearch(input) {
 			findings: packet.findings,
 			publicIdentities: [],
 			actionVersions: [],
+			identityGaps: [],
 			upstreamAttempts: [],
 			signalAttempts: []
 		};
@@ -33072,6 +33156,15 @@ async function runResearch(input) {
 		const sharedMetadata = metadata.kind === "ready" ? metadata : null;
 		if (sharedMetadata) readers.push(sharedMetadata);
 		await runStage("upstream", () => enrichUpstreamStage(input, dependencies, readers, progress, fail, shares, sharedMetadata ?? void 0));
+		const gapInput = {
+			changes: progress.changes,
+			sources: progress.sources,
+			...input.npmInventory ? { npmInventory: input.npmInventory } : {},
+			publicIdentities: progress.publicIdentities,
+			actionVersions: progress.actionVersions,
+			attempts: progress.upstreamAttempts
+		};
+		progress.identityGaps = identityGaps(gapInput);
 		await runStage("advisories", () => enrichAdvisoryStage(input, dependencies, readers, progress, fail, shares));
 		await runStage("signals", () => enrichSignalsStage(input, dependencies, readers, progress, fail, sharedMetadata, shares));
 		restorePacketOrder(progress, packet);

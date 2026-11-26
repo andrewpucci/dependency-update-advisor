@@ -24,6 +24,7 @@ import type { ReviewBinding } from '../event.js';
 import type { Finding } from '../policy.js';
 import { freeze } from './common.js';
 import { prepareAdvisoryInput, resolveAdvisoryTarget, type AdvisoryInput } from './advisories.js';
+import { unresolvedReasons } from './advisory-evidence.js';
 import {
   advisoryCheck,
   AdvisoryFailure,
@@ -150,16 +151,19 @@ async function collectNpmTimes(
     const target = resolveAdvisoryTarget(input, change, side);
     const versions = target ? npmTimeVersions(change, target.name) : [];
     const key = JSON.stringify([target?.name, versions]);
-    const result =
-      cache.get(key) ??
-      (target && reader
-        ? await reader.read({
-            name: target.name,
-            versions,
-            source: instance.source,
-            evaluationTime: input.evaluationTime,
-          })
-        : { kind: 'unavailable' as const, reason: 'unsupported' as const });
+    // A side with no lookup target carries why its identity proof is absent, as vulnerability does.
+    // These records carry one reason; a gap usually holds just one, and its first is kept.
+    const result = !target
+      ? { kind: 'unavailable' as const, reason: unresolvedReasons(input, change, side)[0]! }
+      : (cache.get(key) ??
+        (reader
+          ? await reader.read({
+              name: target.name,
+              versions,
+              source: instance.source,
+              evaluationTime: input.evaluationTime,
+            })
+          : { kind: 'unavailable' as const, reason: 'unsupported' as const }));
     cache.set(key, result);
     sides[side] = npmTimeSide(input, output, change, side, result, instance.version);
   }

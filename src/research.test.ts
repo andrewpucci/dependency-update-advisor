@@ -11,6 +11,7 @@ import * as policySignalsModule from './evidence/policy-signals.js';
 import {
   EVIDENCE_READ_ALLOCATION,
   EVIDENCE_READ_ENVELOPE,
+  RESEARCH_SHARE_PARAMETERS,
   researchShareUnits,
   researchShares,
 } from './budget.js';
@@ -811,6 +812,364 @@ test('runs advisory lookups for members with retained identities after an upstre
     .filter((url) => url.includes('/advisories') && url.includes('type=reviewed'))
     .map((url) => decodeURIComponent(new URL(url).search));
   expect(reviewed.some((query) => query.includes('ecosystem=npm&affects=orbit@2.0.0'))).toBe(true);
+});
+
+type ReadyResearch = Extract<Awaited<ReturnType<typeof runResearch>>, { kind: 'ready' }>;
+type ResearchedChange = ReadyResearch['packet']['changes'][number];
+
+/** The members upstream left with nothing retained, with the reasons it recorded for them. */
+function cutMembers(packet: ReadyResearch['packet'], reason: string) {
+  return packet.changes.filter(
+    (change) =>
+      !('basis' in change) &&
+      change.evidence.upstream.status === 'unavailable' &&
+      change.evidence.upstream.sourceIds.length === 0 &&
+      change.evidence.upstream.reasons.includes(reason as never),
+  );
+}
+
+/** Each cut member reports the upstream stop's reason, never `unsupported`, in every lookup category. */
+function expectStopReason(
+  result: ReadyResearch,
+  cut: readonly ResearchedChange[],
+  reason: string,
+  registryCategories: Readonly<Partial<Record<'npm' | 'uv', readonly string[]>>> = {},
+) {
+  for (const change of cut) {
+    const categories = ['vulnerability', 'malware'];
+    if (change.ecosystem === 'npm') categories.push('publishTime');
+    if (change.ecosystem !== 'actions')
+      categories.push(...(registryCategories[change.ecosystem] ?? []));
+    for (const category of categories) {
+      const evidence = (
+        change.evidence as Readonly<Record<string, ResearchedChange['evidence']['upstream']>>
+      )[category];
+      expect(evidence, `${change.id} ${category}`).toMatchObject({
+        status: 'unavailable',
+        reasons: [reason],
+      });
+      expect(evidence?.sourceIds.length, `${change.id} ${category} sources`).toBeGreaterThan(0);
+      for (const id of evidence?.sourceIds ?? []) {
+        const reasons = result.packet.sources.find((s) => s.id === id)?.reasons;
+        expect(reasons, `${change.id} ${category} source ${id}`).toEqual([reason]);
+      }
+    }
+  }
+}
+
+// The #439 reproduction cuts the upstream share, the stage that establishes identity proofs.
+test('a member whose identity proof an exhausted upstream share cut reports budget, not unsupported (#439)', async () => {
+  const { fixture, packet } = await scenario({ children: 4 });
+  // A three-request upstream share runs out after the first member's identity proof.
+  const shareParameters = {
+    ...RESEARCH_SHARE_PARAMETERS,
+    upstream: {
+      ...RESEARCH_SHARE_PARAMETERS.upstream,
+      requests: { base: 3, ceiling: 3, rates: {} },
+    },
+  };
+  const result = await runResearch({ ...base(fixture, packet), shareParameters });
+  if (result.kind !== 'ready') throw new Error('research');
+  expect(result.unavailable).toContainEqual({ stage: 'upstream', reason: 'budget' });
+  const cut = cutMembers(result.packet, 'budget');
+  // The Action lost its ref mapping to the same stop.
+  expect(cut.map((change) => change.ecosystem).sort()).toEqual([
+    'actions',
+    'npm',
+    'npm',
+    'npm',
+    'npm',
+    'uv',
+  ]);
+  // The npm and PyPI metadata categories share the vulnerability rule.
+  expectStopReason(result, cut, 'budget', {
+    npm: ['trust', 'publisher', 'deprecation'],
+    uv: ['publishTime', 'deprecation'],
+  });
+  // The member that kept its proof was looked up.
+  const kept = result.packet.changes.filter(
+    (change) => change.ecosystem === 'npm' && change.evidence.vulnerability.status === 'available',
+  );
+  expect(kept).toHaveLength(1);
+});
+
+test('a member whose identity proof a rate-limited upstream read cut reports rate_limit (#439)', async () => {
+  const { fixture, packet } = await scenario({ children: 4 });
+  // The registry and GitHub repository reads are throttled, so upstream blocks both origins: the
+  // npm members and the Action lose their identity reads, while uv metadata still arrives.
+  const throttled = (url: URL) =>
+    url.origin === 'https://registry.npmjs.org' ||
+    (url.origin === 'https://api.github.com' && url.pathname.startsWith('/repos/'));
+  const result = await runResearch({
+    ...base(fixture, packet),
+    fetch: async (url, init) =>
+      throttled(new URL(url))
+        ? new Response('{}', { status: 429, headers: { 'content-type': 'application/json' } })
+        : fixture.fetch(url, init),
+  });
+  if (result.kind !== 'ready') throw new Error('research');
+  const cut = cutMembers(result.packet, 'rate_limit');
+  expect(cut.filter((change) => change.ecosystem === 'npm')).toHaveLength(5);
+  expect(cut.filter((change) => change.ecosystem === 'actions')).toHaveLength(1);
+  expectStopReason(result, cut, 'rate_limit');
+});
+
+test('a public registry member whose identity is missing upstream stays unsupported', async () => {
+  const { fixture, packet } = await scenario({ missingPyPI: true });
+  const result = await runResearch(base(fixture, packet));
+  if (result.kind !== 'ready') throw new Error('research');
+  const uv = result.packet.changes.find((change) => change.ecosystem === 'uv');
+  expect(uv?.evidence.upstream.reasons).not.toContain('budget');
+  expect(uv?.evidence.vulnerability.reasons).toEqual(['unsupported']);
+  expect(uv?.evidence.malware.reasons).toEqual(['unsupported']);
+});
+
+test('a side whose own identity read failed carries its reason while the other side keeps its proof (#439)', async () => {
+  const { fixture, packet } = await scenario();
+  // Only orbit's base registry read is refused, so its head proof stands.
+  const result = await runResearch({
+    ...base(fixture, packet),
+    fetch: async (url, init) =>
+      url === 'https://registry.npmjs.org/orbit/1.0.0'
+        ? new Response('{}', { status: 401, headers: { 'content-type': 'application/json' } })
+        : fixture.fetch(url, init),
+  });
+  if (result.kind !== 'ready') throw new Error('research');
+  const orbit = result.packet.changes.find(
+    (change) =>
+      change.ecosystem === 'npm' && change.to && 'name' in change.to && change.to.name === 'orbit',
+  );
+  if (!orbit) throw new Error('orbit');
+  expect(orbit.evidence.vulnerability.status).toBe('available');
+  // Malware reads only the reviewed side; the base advisory lookup is the one the base read cut.
+  const failed = result.packet.sources.filter(
+    (s) => s.kind === 'advisory' && s.memberIds.includes(orbit.id) && s.status === 'unavailable',
+  );
+  expect(failed.map((s) => s.reasons)).toEqual([['permission']]);
+});
+
+/** Collected changes as upstream would leave them after a budget stop, with no proof or attempt. */
+async function budgetCut() {
+  const { fixture, packet } = await scenario();
+  const changes = structuredClone(packet.changes) as PacketChange[];
+  for (const change of changes)
+    change.evidence.upstream = { status: 'unavailable', reasons: ['budget'], sourceIds: [] };
+  const orbit = changes.find(
+    (c) => c.ecosystem === 'npm' && c.to && 'name' in c.to && c.to.name === 'orbit',
+  )!;
+  const input = {
+    changes,
+    sources: packet.sources as never,
+    npmInventory: structuredClone(fixture.npm) as never,
+    publicIdentities: [],
+    actionVersions: [],
+    attempts: [],
+  };
+  const gapsFor = (id: string) =>
+    upstreamModule
+      .identityGaps(input)
+      .filter((g) => g.memberId === id)
+      .map((g) => [g.side, g.reasons]);
+  return { input, orbit, gapsFor };
+}
+
+test('a budget stop gives a public npm member with lock integrity a gap on both sides', async () => {
+  const { orbit, gapsFor } = await budgetCut();
+  expect(gapsFor(orbit.id)).toEqual([
+    ['base', ['budget']],
+    ['head', ['budget']],
+  ]);
+});
+
+test('a private-registry npm member cut by a budget stop stays unsupported', async () => {
+  const { input, orbit, gapsFor } = await budgetCut();
+  // The lockfile node agrees with the change, so only the registry origin rules the member out.
+  const identity = 'https://npm.example.com/';
+  for (const side of ['from', 'to'] as const) {
+    const instance = orbit[side] as {
+      source: { identity: string };
+      root: string;
+      lockPath: string;
+    };
+    instance.source.identity = identity;
+    const root = (
+      input.npmInventory as { roots: { root: string; base: never; head: never }[] }
+    ).roots.find((r) => r.root === instance.root)!;
+    const node = (
+      root[side === 'from' ? 'base' : 'head'] as {
+        packages: Record<string, { instance: { source: { identity: string } } }>;
+      }
+    ).packages[instance.lockPath]!;
+    node.instance.source.identity = identity;
+  }
+  expect(gapsFor(orbit.id)).toEqual([]);
+});
+
+test('an npm member without lock integrity cut by a budget stop stays unsupported', async () => {
+  const { input, orbit, gapsFor } = await budgetCut();
+  const instance = orbit.to as { root: string; lockPath: string };
+  const root = (
+    input.npmInventory as {
+      roots: { root: string; head: { packages: Record<string, { integrity: string | null }> } }[];
+    }
+  ).roots.find((r) => r.root === instance.root)!;
+  root.head.packages[instance.lockPath]!.integrity = null;
+  // Upstream never tries the head identity without integrity; the base side still has a gap.
+  expect(gapsFor(orbit.id)).toEqual([['base', ['budget']]]);
+});
+
+test.each([
+  ['partial with retained sources', 'partial', true],
+  ['unavailable with retained sources', 'unavailable', true],
+  ['partial with nothing retained', 'partial', false],
+] as const)(
+  'a budget-cut member whose upstream is %s and has no proof stays unsupported',
+  async (_name, status, retained) => {
+    const { orbit, gapsFor } = await budgetCut();
+    orbit.evidence.upstream = {
+      status,
+      reasons: ['budget'],
+      sourceIds: retained ? [orbit.to!.sourceId] : [],
+    };
+    expect(gapsFor(orbit.id)).toEqual([]);
+  },
+);
+
+test('only budget, timeout, rate_limit and permission pass from upstream to lookups', async () => {
+  const { orbit, gapsFor } = await budgetCut();
+  orbit.evidence.upstream = {
+    status: 'unavailable',
+    reasons: ['malformed', 'conflict', 'missing', 'unknown', 'timeout'],
+    sourceIds: [],
+  };
+  expect(gapsFor(orbit.id)).toEqual([
+    ['base', ['timeout']],
+    ['head', ['timeout']],
+  ]);
+  orbit.evidence.upstream = {
+    status: 'unavailable',
+    reasons: ['malformed', 'conflict'],
+    sourceIds: [],
+  };
+  expect(gapsFor(orbit.id)).toEqual([]);
+});
+
+/** The advisory and signals stage inputs research built, with members to aim identity gaps at. */
+async function stageInputs() {
+  const { fixture, packet } = await scenario({ declaration: true, extras: true });
+  vi.mocked(advisoryModule.enrichAdvisories).mockClear();
+  vi.mocked(policySignalsModule.enrichPolicySignals).mockClear();
+  await runResearch(base(fixture, packet));
+  const [advisory, advisoryDeps] = vi.mocked(advisoryModule.enrichAdvisories).mock.calls[0]!;
+  const [signals, signalDeps] = vi.mocked(policySignalsModule.enrichPolicySignals).mock.calls[0]!;
+  const find = (match: (change: ResearchedChange) => boolean) => {
+    const change = packet.changes.find(match);
+    if (!change) throw new Error('fixture member');
+    return change.id;
+  };
+  return {
+    advisory: (gaps: unknown) =>
+      advisoryModule.enrichAdvisories(
+        { ...(advisory as object), identityGaps: gaps } as never,
+        advisoryDeps,
+      ),
+    signals: (gaps: unknown) =>
+      policySignalsModule.enrichPolicySignals(
+        { ...(signals as object), identityGaps: gaps } as never,
+        signalDeps,
+      ),
+    updated: find((c) => !('basis' in c) && c.ecosystem === 'npm' && !!c.from && !!c.to),
+    added: find((c) => !('basis' in c) && !c.from && !!c.to),
+    declaration: find((c) => 'basis' in c),
+  };
+}
+type Members = Awaited<ReturnType<typeof stageInputs>>;
+
+test.each([
+  [
+    'an unknown member',
+    (_m: Members) => [{ memberId: 'npm:none', side: 'head', reasons: ['budget'] }],
+  ],
+  ['side x', (m: Members) => [{ memberId: m.updated, side: 'x', reasons: ['budget'] }]],
+  ['empty reasons', (m: Members) => [{ memberId: m.updated, side: 'head', reasons: [] }]],
+  [
+    'a reason outside the allowlist',
+    (m: Members) => [{ memberId: m.updated, side: 'head', reasons: ['malformed'] }],
+  ],
+  [
+    'a non-array input',
+    (m: Members) => ({ memberId: m.updated, side: 'head', reasons: ['budget'] }),
+  ],
+  [
+    'more entries than the length bound',
+    (m: Members) =>
+      Array.from({ length: 2 * schemaModule.PACKET_LIMITS.changes + 1 }, () => ({
+        memberId: m.updated,
+        side: 'head',
+        reasons: ['budget'],
+      })),
+  ],
+  [
+    'a duplicate member and side',
+    (m: Members) => [
+      { memberId: m.updated, side: 'head', reasons: ['budget'] },
+      { memberId: m.updated, side: 'head', reasons: ['timeout'] },
+    ],
+  ],
+  [
+    'a side with no instance',
+    (m: Members) => [{ memberId: m.added, side: 'base', reasons: ['budget'] }],
+  ],
+  [
+    'a declaration-basis change',
+    (m: Members) => [{ memberId: m.declaration, side: 'head', reasons: ['budget'] }],
+  ],
+] as const)('advisory and signals inputs reject identity gaps with %s', async (_name, gaps) => {
+  const inputs = await stageInputs();
+  expect((await inputs.advisory(gaps(inputs))).kind).toBe('invalid');
+  expect((await inputs.signals(gaps(inputs))).kind).toBe('invalid');
+});
+
+test('advisory and signals inputs accept a well-formed identity gap', async () => {
+  const inputs = await stageInputs();
+  const gaps = [
+    { memberId: inputs.updated, side: 'base', reasons: ['budget'] },
+    { memberId: inputs.updated, side: 'head', reasons: ['rate_limit', 'permission'] },
+  ];
+  expect((await inputs.advisory(gaps)).kind).toBe('enriched');
+  expect((await inputs.signals(gaps)).kind).toBe('enriched');
+});
+
+test('a whole-stage upstream failure gives every identity lookup the stage reason (#439)', async () => {
+  const { fixture, packet } = await scenario();
+  vi.mocked(upstreamModule.enrichUpstream).mockResolvedValueOnce({
+    kind: 'unavailable',
+    reason: 'budget',
+  });
+  const result = await runResearch(base(fixture, packet));
+  if (result.kind !== 'ready') throw new Error('research');
+  expect(result.unavailable).toContainEqual({ stage: 'upstream', reason: 'budget' });
+  const lookups = result.packet.changes.filter((change) => !('basis' in change));
+  expect(lookups.map((change) => change.ecosystem).sort()).toEqual(['actions', 'npm', 'npm', 'uv']);
+  for (const change of lookups)
+    for (const category of ['vulnerability', 'malware'] as const)
+      expect(change.evidence[category].reasons, `${change.id} ${category}`).toEqual(['budget']);
+});
+
+test('a lock node that disagrees with its change gives no identity gap', async () => {
+  const { input, orbit, gapsFor } = await budgetCut();
+  const instance = orbit.to as { root: string; lockPath: string };
+  const root = (
+    input.npmInventory as {
+      roots: {
+        root: string;
+        head: { packages: Record<string, { instance: { version: string } }> };
+      }[];
+    }
+  ).roots.find((r) => r.root === instance.root)!;
+  // The node check throws on the disagreement; upstream never researches such a side.
+  root.head.packages[instance.lockPath]!.instance.version = '9.9.9';
+  expect(gapsFor(orbit.id)).toEqual([['base', ['budget']]]);
 });
 
 const BATCHED_EXCERPT = 'A complete batched query checked reviewed advisories for this target.';

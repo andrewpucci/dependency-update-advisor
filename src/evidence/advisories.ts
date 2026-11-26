@@ -1,5 +1,7 @@
 import {
   source,
+  publicRegistry,
+  unresolvedReasons,
   attachFindings,
   reconcileRecords,
   addSource,
@@ -30,6 +32,7 @@ import {
   type AdvisoryLookup,
   type AdvisoryRecord,
 } from './advisory-read.js';
+import { IDENTITY_LOSS_REASONS, type IdentityGap } from './upstream.js';
 
 export type PublicPackageIdentity = Readonly<{
   memberId: string;
@@ -59,6 +62,8 @@ export type AdvisoryInput = Readonly<{
   limits: AdvisoryLimits;
   comparisons?: readonly GithubComparison[];
   actionVersions?: readonly ActionVersionMapping[];
+  /** Sides whose identity proof upstream tried and lost, with the stop reason their lookups carry. */
+  identityGaps?: readonly IdentityGap[];
 }>;
 export type MemberAdvisoryLookup = Readonly<{
   memberId: string;
@@ -134,17 +139,7 @@ export function resolveAdvisoryTarget(
   const instance = side === 'head' ? change.to : change.from;
   if (!instance || !('source' in instance) || instance.source.kind !== 'registry') return null;
   const origin = new URL(instance.source.identity);
-  if (
-    (change.ecosystem === 'npm'
-      ? origin.origin !== 'https://registry.npmjs.org'
-      : origin.origin !== 'https://pypi.org' ||
-        !['/simple', '/simple/'].includes(origin.pathname)) ||
-    origin.username ||
-    origin.password ||
-    origin.hash ||
-    origin.search
-  )
-    return null;
+  if (!publicRegistry(change.ecosystem, origin)) return null;
   const proof = input.publicIdentities.find((p) => p.memberId === change.id && p.side === side);
   if (
     !proof ||
@@ -317,19 +312,20 @@ async function collectSide(
     }
     lookup = withComparison(input, change, side, target, checked);
   }
-  const evidence = source(change, side, lookup);
+  const missing = unresolvedReasons(input, change, side);
+  const evidence = source(change, side, lookup, undefined, missing);
   addSource(output, evidence);
   if (side === 'head' || !change.to)
     change.evidence.vulnerability = {
       status: lookup?.complete ? 'available' : lookup?.records.length ? 'partial' : 'unavailable',
-      reasons: lookup?.complete ? [] : [...(lookup?.reasons ?? ['unsupported'])],
+      reasons: lookup?.complete ? [] : [...(lookup?.reasons ?? missing)],
       sourceIds: [evidence.id],
     };
   output.lookups.push({
     memberId: change.id,
     side,
     lookup,
-    reasons: lookup?.reasons ?? ['unsupported'],
+    reasons: lookup?.reasons ?? missing,
   });
   const records = new Map<string, PacketSource>();
   for (const record of lookup?.records ?? []) {
@@ -493,6 +489,28 @@ function validateProofs(input: AdvisoryInput) {
     );
   }
 }
+function validateGaps(input: AdvisoryInput) {
+  if (input.identityGaps === undefined) return;
+  advisoryCheck(
+    Array.isArray(input.identityGaps) && input.identityGaps.length <= 2 * PACKET_LIMITS.changes,
+  );
+  const sides = new Set<string>();
+  for (const g of input.identityGaps) {
+    const change = input.changes.find((c) => c.id === g.memberId);
+    // A gap names one side of a researched member that has an instance there, once.
+    advisoryCheck(
+      change &&
+        !('basis' in change) &&
+        (g.side === 'base' || g.side === 'head') &&
+        (g.side === 'base' ? change.from : change.to) &&
+        !sides.has(g.memberId + ':' + g.side) &&
+        Array.isArray(g.reasons) &&
+        g.reasons.length > 0 &&
+        g.reasons.every((r: EvidenceReason) => IDENTITY_LOSS_REASONS.includes(r)),
+    );
+    sides.add(g.memberId + ':' + g.side);
+  }
+}
 function validate(input: AdvisoryInput) {
   advisoryCheck(parseReviewBinding(input.binding));
   advisoryCheck(Array.isArray(input.changes) && input.changes.length <= PACKET_LIMITS.changes);
@@ -527,6 +545,7 @@ function validate(input: AdvisoryInput) {
   validateSources(input);
   validateChanges(input);
   validateProofs(input);
+  validateGaps(input);
 }
 export function prepareAdvisoryInput(
   value: AdvisoryInput,
