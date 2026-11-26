@@ -28489,14 +28489,45 @@ async function lifecycleInput(graph, change, reader) {
 	}
 	return result;
 }
+/** The first packet cap the npm contribution exceeds, or null when it fits every cap. */
 function packetBounds(graph) {
-	const contribution = {
-		changes: graph.changes,
-		sources: graph.sources,
-		relationships: graph.relationships,
-		findings: graph.findings
-	};
-	return graph.changes.length <= PACKET_LIMITS.changes && graph.sources.length <= PACKET_LIMITS.sources && graph.relationships.length <= PACKET_LIMITS.relationships && graph.findings.length <= PACKET_LIMITS.findings && Buffer.byteLength(JSON.stringify(contribution)) <= PACKET_LIMITS.bytes;
+	const stop = (limit, count) => ({
+		kind: "unavailable",
+		reason: "budget",
+		limit,
+		count
+	});
+	const over = [
+		[
+			"packet.changes",
+			graph.changes.length,
+			PACKET_LIMITS.changes
+		],
+		[
+			"packet.sources",
+			graph.sources.length,
+			PACKET_LIMITS.sources
+		],
+		[
+			"packet.relationships",
+			graph.relationships.length,
+			PACKET_LIMITS.relationships
+		],
+		[
+			"packet.findings",
+			graph.findings.length,
+			PACKET_LIMITS.findings
+		]
+	].find(([, count, cap]) => count > cap);
+	if (over) return stop(over[0], over[1]);
+	const { changes, sources, relationships, findings } = graph;
+	const bytes = Buffer.byteLength(JSON.stringify({
+		changes,
+		sources,
+		relationships,
+		findings
+	}));
+	return bytes > PACKET_LIMITS.bytes ? stop("packet.bytes", bytes) : null;
 }
 /** Enriches authentic N1 evidence through one bounded attempt, retaining exact inventory/source identities.
 * Dependencies are trusted transport/clock injection. Invalid or overflowing results expose no partial packet.
@@ -28510,10 +28541,8 @@ async function enrichNpmEvidence(value, deps) {
 		if (reader.kind !== "ready") return { kind: "invalid" };
 		const graph = graphResult(parsed);
 		if (graph.kind !== "inventory") return graph;
-		if (!packetBounds(graph)) return {
-			kind: "unavailable",
-			reason: "budget"
-		};
+		const overCap = packetBounds(graph);
+		if (overCap) return overCap;
 		const changes = [], sources = [...graph.sources], findings = [...graph.findings];
 		for (const change of graph.changes) {
 			if (!resolved(change)) {
@@ -28533,10 +28562,8 @@ async function enrichNpmEvidence(value, deps) {
 			findings: findings.sort(byId)
 		};
 		need$1(new Set(sources.map((s) => s.id)).size === sources.length && new Set(findings.map((f) => f.id)).size === findings.length);
-		if (!packetBounds(result)) return {
-			kind: "unavailable",
-			reason: "budget"
-		};
+		const enrichedOverCap = packetBounds(result);
+		if (enrichedOverCap) return enrichedOverCap;
 		return freeze(structuredClone(fitRetained(result, parsed.limits.maxRetainedBytes, failBudget)));
 	} catch (error) {
 		return failure$3(error);
@@ -32306,12 +32333,23 @@ function timeouts(requestTimeoutMs, left) {
 		requestTimeoutMs: Math.min(requestTimeoutMs, totalTimeoutMs)
 	};
 }
-/** Why a reader produced no inventory: its own reason, malformed input, or evidence that moved. */
+/**
+* Why a reader produced no inventory: its own reason, with the cap that stopped it when it names one,
+* malformed input, or evidence that moved.
+*/
 function noInventory(result) {
-	if (result.kind === "unavailable" && result.reason) return {
-		kind: "unavailable",
-		reason: result.reason
-	};
+	if (result.kind === "unavailable" && result.reason) {
+		const { reason, limit, count } = result;
+		return limit === void 0 || count === void 0 ? {
+			kind: "unavailable",
+			reason
+		} : {
+			kind: "unavailable",
+			reason,
+			limit,
+			count
+		};
+	}
 	return {
 		kind: "unavailable",
 		reason: result.kind === "obsolete" ? "conflict" : "malformed"
@@ -32592,6 +32630,20 @@ function gapReason(value) {
 	if (value.kind !== "unavailable") return "malformed";
 	return EVIDENCE_REASONS.find((reason) => reason === value.reason) ?? "unknown";
 }
+/** A collector's gap, keeping its stopping cap only when it is a register id with a count. */
+function collectorGap(value, source) {
+	const reason = gapReason(value);
+	if (reason !== "budget" || !record(value, ["limit", "count"]) || typeof value.limit !== "string" || !REGISTER.has(value.limit) || !Number.isSafeInteger(value.count) || value.count < 0) return {
+		source,
+		reason
+	};
+	return {
+		source,
+		reason,
+		limit: value.limit,
+		count: value.count
+	};
+}
 function fragment(value, ecosystem) {
 	if (!record(value, [
 		"kind",
@@ -32616,10 +32668,7 @@ async function collectFragments(input, session) {
 		const value = fragment(result, ecosystem);
 		if (!value || !input.isCurrent()) return input.isCurrent() ? {
 			kind: "incomplete",
-			gaps: [{
-				source: ecosystem,
-				reason: gapReason(result)
-			}]
+			gaps: [collectorGap(result, ecosystem)]
 		} : { kind: "stale" };
 		fragments.push(value);
 	}

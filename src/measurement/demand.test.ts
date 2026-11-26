@@ -2,6 +2,7 @@ import { expect, test } from 'vite-plus/test';
 import {
   coverageCounts,
   createDemandRecorder,
+  incompleteRunMessage,
   labelReader,
   labelShare,
   newestDependabotRun,
@@ -616,4 +617,22 @@ test('the newest run Dependabot started is bound, skipping people and runs with 
   expect(newestDependabotRun(runs)?.id).toBe(1);
   expect(newestDependabotRun(runs.slice(0, 4))).toBeNull();
   expect(newestDependabotRun([])).toBeNull();
+});
+
+test('an incomplete run names the packet cap a collector stopped at, with its count', () => {
+  const cap = limit('packet.changes');
+  const result = {
+    packet: 'incomplete',
+    gaps: [{ source: 'npm', reason: 'budget', limit: 'packet.changes', count: cap + 15 }],
+  };
+  expect(incompleteRunMessage(result)).toBe(
+    `npm collection stopped at packet.changes: measured ${cap + 15}, over the cap of ${cap} (count)`,
+  );
+  const unnamed = { packet: 'incomplete', gaps: [{ source: 'npm', reason: 'budget' }] };
+  expect(incompleteRunMessage(unnamed)).toBe(
+    `research did not complete: ${JSON.stringify(unnamed)}`,
+  );
+  expect(incompleteRunMessage({ research: 'stale' })).toBe(
+    'research did not complete: {"research":"stale"}',
+  );
 });

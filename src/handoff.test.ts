@@ -1,6 +1,7 @@
 import { expect, test } from 'vite-plus/test';
 import { createRehearsalSink, createReviewHandoff } from './handoff.js';
 import { createTestClaimStore } from './review.js';
+import { limit } from './limits.js';
 
 test('keeps a fresh failure status-only and refuses a usable app token', async () => {
   const claims = createTestClaimStore();
@@ -26,7 +27,10 @@ test('keeps a fixed internal-failure stage in the bounded rehearsal trace', asyn
   const sink = createRehearsalSink(null);
   if (!sink) throw new Error('expected sink');
   expect(sink.record(result.handoff)).toBe(true);
-  expect(sink.traces()[0]).toMatchObject({ kind: 'internal-failure', stage: 'handoff' });
+  expect(sink.traces()[0]).toMatchObject({
+    kind: 'internal-failure',
+    stage: 'handoff',
+  });
 });
 
 test('maps an invalid internal-failure stage to the fixed catch-all', async () => {
@@ -39,7 +43,10 @@ test('maps an invalid internal-failure stage to the fixed catch-all', async () =
     stage: 'sentinel-invalid-stage' as never,
   });
   if (result.kind !== 'ready') throw new Error('expected handoff');
-  expect(result.handoff).toMatchObject({ kind: 'internal-failure', stage: 'unclassified' });
+  expect(result.handoff).toMatchObject({
+    kind: 'internal-failure',
+    stage: 'unclassified',
+  });
 });
 
 test('records only bounded redacted intent and rejects a lost claim', async () => {
@@ -109,6 +116,30 @@ test('records whether a body exists and which sources gave no usable evidence', 
   expect(Object.isFrozen(sink.traces()[0].gaps)).toBe(true);
 });
 
+test('keeps a named packet cap out of the handoff and the rehearsal trace', async () => {
+  const claims = createTestClaimStore();
+  const claimed = await claims.claim([101, 301, 401, 1, 42, 'b'.repeat(40)]);
+  if (claimed.kind !== 'owned') throw new Error('fixture must own');
+  const gaps = [
+    {
+      source: 'npm',
+      reason: 'budget',
+      limit: 'packet.changes',
+      count: limit('packet.changes') + 1,
+    },
+  ] as const;
+  const result = await createReviewHandoff(claims, claimed, 'incomplete-evidence', {
+    body: false,
+    gaps,
+  });
+  if (result.kind !== 'ready') throw new Error('expected handoff');
+  expect(result.handoff.gaps).toStrictEqual([{ source: 'npm', reason: 'budget' }]);
+  const sink = createRehearsalSink(null);
+  if (!sink) throw new Error('expected sink');
+  sink.record(result.handoff);
+  expect(sink.traces()[0].gaps).toStrictEqual([{ source: 'npm', reason: 'budget' }]);
+});
+
 test('records bounded counts when packet fitting drops optional evidence', async () => {
   const claims = createTestClaimStore();
   const claimed = await claims.claim([101, 301, 401, 1, 42, 'a'.repeat(40)]);
@@ -127,7 +158,10 @@ test('records bounded counts when packet fitting drops optional evidence', async
   const sink = createRehearsalSink(null);
   if (!sink) throw new Error('expected sink');
   sink.record(result.handoff);
-  expect(sink.traces()[0].droppedOptional).toEqual({ reachability: 2, proof: 1 });
+  expect(sink.traces()[0].droppedOptional).toEqual({
+    reachability: 2,
+    proof: 1,
+  });
 });
 
 test('defaults to no body and no gaps, and keeps every gap it is given', async () => {
@@ -143,7 +177,10 @@ test('defaults to no body and no gaps, and keeps every gap it is given', async (
   });
   const many = await createReviewHandoff(claims, claimed, 'incomplete-evidence', {
     body: false,
-    gaps: Array.from({ length: 9 }, () => ({ source: 'uv' as const, reason: 'unknown' as const })),
+    gaps: Array.from({ length: 9 }, () => ({
+      source: 'uv' as const,
+      reason: 'unknown' as const,
+    })),
   });
   if (many.kind !== 'ready') throw new Error('expected handoff');
   // Gaps come from five sources (each ecosystem, the packet, the brief); none may be hidden.
@@ -202,7 +239,11 @@ test('copies only the fixed field and reason into the trace', async () => {
   const handoff = await internalFailureHandoff('freshness');
   const sink = createRehearsalSink(null);
   if (!sink) throw new Error('expected sink');
-  const detail = { field: 'run', reason: 'budget', extra: 'sentinel-extra' } as never;
+  const detail = {
+    field: 'run',
+    reason: 'budget',
+    extra: 'sentinel-extra',
+  } as never;
   sink.record(handoff, detail);
   expect(sink.traces()[0]?.detail).toEqual({ field: 'run', reason: 'budget' });
 });
@@ -218,9 +259,11 @@ test('records only a closed assessment failure reason in the trace', async () =>
     assessmentFailureReason: 'render-rejected',
   });
   expect(handoff).not.toHaveProperty('assessmentFailureReason');
-  expect(sink.record(handoff, { assessmentFailureReason: 'RAW_PROVIDER_TEXT' } as never)).toBe(
-    false,
-  );
+  expect(
+    sink.record(handoff, {
+      assessmentFailureReason: 'RAW_PROVIDER_TEXT',
+    } as never),
+  ).toBe(false);
   expect(sink.traces()).toHaveLength(1);
 });
 
@@ -228,11 +271,15 @@ test('refuses an assessment reason on any other stage or outcome', async () => {
   const sink = createRehearsalSink(null);
   if (!sink) throw new Error('expected sink');
   expect(
-    sink.record(await internalFailureHandoff('snapshot'), { assessmentFailureReason: 'config' }),
+    sink.record(await internalFailureHandoff('snapshot'), {
+      assessmentFailureReason: 'config',
+    }),
   ).toBe(false);
-  expect(sink.record(await handoffOf('complete', 'g'), { assessmentFailureReason: 'config' })).toBe(
-    false,
-  );
+  expect(
+    sink.record(await handoffOf('complete', 'g'), {
+      assessmentFailureReason: 'config',
+    }),
+  ).toBe(false);
   expect(sink.traces()).toEqual([]);
 });
 
@@ -240,7 +287,10 @@ async function handoffOf(kind: 'model-unavailable' | 'complete', head: string) {
   const claims = createTestClaimStore();
   const claimed = await claims.claim([101, 301, 401, 1, 44, head.repeat(40)]);
   if (claimed.kind !== 'owned') throw new Error('fixture must own');
-  const result = await createReviewHandoff(claims, claimed, kind, { body: false, gaps: [] });
+  const result = await createReviewHandoff(claims, claimed, kind, {
+    body: false,
+    gaps: [],
+  });
   if (result.kind !== 'ready') throw new Error('expected handoff');
   return result.handoff;
 }
@@ -276,11 +326,19 @@ test('copies valid analysis timing into the rehearsal trace but never the handof
   const handoff = await handoffOf('complete', 'h');
   const sink = createRehearsalSink(null);
   if (!sink) throw new Error('expected sink');
-  const timing = { callsDispatched: 2, callDurationsMs: [12, 34], maxSplitDepth: 1 };
+  const timing = {
+    callsDispatched: 2,
+    callDurationsMs: [12, 34],
+    maxSplitDepth: 1,
+  };
   expect(sink.record(handoff, undefined, timing)).toBe(true);
   timing.callDurationsMs[0] = 99;
   expect(sink.traces()[0]).toMatchObject({
-    analysisTiming: { callsDispatched: 2, callDurationsMs: [12, 34], maxSplitDepth: 1 },
+    analysisTiming: {
+      callsDispatched: 2,
+      callDurationsMs: [12, 34],
+      maxSplitDepth: 1,
+    },
   });
   expect(Object.isFrozen(sink.traces()[0]?.analysisTiming)).toBe(true);
   expect(Object.isFrozen(sink.traces()[0]?.analysisTiming?.callDurationsMs)).toBe(true);
@@ -303,11 +361,18 @@ test('omits malformed analysis timing from the rehearsal trace', async () => {
 test('records the model-unavailable reason only for a model-unavailable outcome', async () => {
   const sink = createRehearsalSink(null);
   if (!sink) throw new Error('expected sink');
-  sink.record(await handoffOf('complete', 'e'), { modelUnavailableReason: 'transport' });
-  sink.record(await internalFailureHandoff('freshness'), { modelUnavailableReason: 'transport' });
+  sink.record(await handoffOf('complete', 'e'), {
+    modelUnavailableReason: 'transport',
+  });
+  sink.record(await internalFailureHandoff('freshness'), {
+    modelUnavailableReason: 'transport',
+  });
   // A freshness detail is not a reason, so a model-unavailable result with only it is refused.
   expect(
-    sink.record(await handoffOf('model-unavailable', 'f'), { field: 'run', reason: 'budget' }),
+    sink.record(await handoffOf('model-unavailable', 'f'), {
+      field: 'run',
+      reason: 'budget',
+    }),
   ).toBe(false);
   expect(sink.traces()).toHaveLength(2);
   for (const trace of sink.traces()) {

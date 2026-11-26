@@ -5,6 +5,7 @@ import { formDecisionUnits } from '../units.js';
 import type { GithubReadSession } from '../github-read.js';
 import { npmScenario } from '../../tests/parity/npm-inventory.js';
 import { proveNpmRelationships, enrichNpmEvidence } from './npm-graph.js';
+import { limit } from '../limits.js';
 
 const limits = { maxGraphWork: 100_000, maxRetainedBytes: 2_000_000 };
 const pkg = (version: string, extra = {}) => ({
@@ -512,19 +513,58 @@ test('an overlong path is never truncated into a packet proof', async () => {
   );
 });
 
-test('packet overflow fails explicitly before registry reads, without exposing a trimmed inventory', async () => {
+/** An npm inventory of exactly `changes` changes: the anchor, its child, and unpaired additions. */
+async function inventoryOf(changes: number) {
+  const base = (await graphFixture()).inventory.changes.length;
   const extra = Object.fromEntries(
-    Array.from({ length: 129 }, (_, i) => ['node_modules/extra-' + i, pkg('1.0.0')]),
+    Array.from({ length: changes - base }, (_, i) => ['node_modules/extra-' + i, pkg('1.0.0')]),
   );
   const input = await graphFixture(extra);
-  expect(input.inventory.changes.length).toBeGreaterThan(128);
+  expect(input.inventory.changes).toHaveLength(changes);
+  return input;
+}
+
+test('an inventory over packet.changes names the cap and its count, with no registry read', async () => {
+  const cap = limit('packet.changes');
+  const input = await inventoryOf(cap + 3);
   const calls: string[] = [];
   const result = await enrichNpmEvidence(
     { ...input, limits: { ...input.limits, ...registryLimits } },
     { now: () => 0, fetch: registryFetch(calls) },
   );
-  expect(result).toEqual({ kind: 'unavailable', reason: 'budget' });
+  // The reason stays `budget`; the cap is named beside it, never by trimming the inventory.
+  expect(result).toEqual({
+    kind: 'unavailable',
+    reason: 'budget',
+    limit: 'packet.changes',
+    count: cap + 3,
+  });
   expect(calls).toHaveLength(0);
+});
+
+test('exactly packet.changes npm changes are enriched; one more is rejected at the cap', async () => {
+  const cap = limit('packet.changes');
+  const enrich = async (changes: number, calls: string[]) => {
+    const input = await inventoryOf(changes);
+    return enrichNpmEvidence(
+      { ...input, limits: { ...input.limits, ...registryLimits } },
+      { now: () => 0, fetch: registryFetch(calls) },
+    );
+  };
+  const atCap: string[] = [];
+  const accepted = await enrich(cap, atCap);
+  expect(accepted.kind).toBe('inventory');
+  if (accepted.kind !== 'inventory') throw new Error('expected inventory');
+  expect(accepted.changes).toHaveLength(cap);
+  expect(atCap.length).toBeGreaterThan(0);
+  const overCap: string[] = [];
+  expect(await enrich(cap + 1, overCap)).toEqual({
+    kind: 'unavailable',
+    reason: 'budget',
+    limit: 'packet.changes',
+    count: cap + 1,
+  });
+  expect(overCap).toHaveLength(0);
 });
 
 test('late retention overflow returns no partial enriched result', async () => {

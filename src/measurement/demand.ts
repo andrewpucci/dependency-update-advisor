@@ -1,7 +1,7 @@
 import { AsyncLocalStorage } from 'node:async_hooks';
-import { isDependabot } from '../event.js';
+import { isDependabot, record } from '../event.js';
 import { isGithubApi, quotaReading, type QuotaReading } from '../evidence/github-quota.js';
-import { limit } from '../limits.js';
+import { limit, REGISTER } from '../limits.js';
 import type { ResearchObservation, ResearchStage } from '../research.js';
 import type { DeepReadonly, PacketChange } from '../schema.js';
 
@@ -18,6 +18,20 @@ export function newestDependabotRun<T extends { actor?: unknown }>(runs: readonl
   const byDependabot = (actor: unknown) =>
     !!actor && typeof actor === 'object' && isDependabot(actor as RunActor);
   return runs.find((run) => byDependabot(run.actor)) ?? null;
+}
+/**
+ * Why a measured run produced no research units. When a collector stopped at a register cap, this
+ * names the cap, the count it measured, and the cap's value; otherwise it reports the run's result.
+ */
+export function incompleteRunMessage(result: unknown): string {
+  const gaps: unknown[] = record(result, ['gaps']) && Array.isArray(result.gaps) ? result.gaps : [];
+  for (const gap of gaps) {
+    if (!record(gap, ['source', 'limit', 'count']) || typeof gap.limit !== 'string') continue;
+    const cap = REGISTER.get(gap.limit);
+    if (cap)
+      return `${String(gap.source)} collection stopped at ${gap.limit}: measured ${String(gap.count)}, over the cap of ${cap.value} (${cap.unit})`;
+  }
+  return `research did not complete: ${JSON.stringify(result)}`;
 }
 export type DemandUnits = Readonly<Record<string, number>>;
 export type DemandRow = {

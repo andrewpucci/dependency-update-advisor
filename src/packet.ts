@@ -1,4 +1,5 @@
 import { record } from './event.js';
+import { REGISTER } from './limits.js';
 import { fitOptionalEvidence, type DroppedOptional } from './optional-evidence.js';
 import {
   EVIDENCE_REASONS,
@@ -9,16 +10,35 @@ import {
 
 type Ecosystem = 'npm' | 'actions' | 'uv';
 type Session = Readonly<{ close: () => void }>;
-/** Which source gave no usable evidence, and a fixed reason; never error text. */
+/**
+ * Which source gave no usable evidence, and a fixed reason; never error text. A collector that a
+ * register cap stopped also names the cap's id as `limit` and the count it measured.
+ */
 export type PacketGap = Readonly<{
   source: Ecosystem | 'packet' | 'brief';
   reason: EvidenceReason;
+  limit?: string;
+  count?: number;
 }>;
 
 function gapReason(value: unknown): EvidenceReason {
   if (!record(value, ['kind'])) return 'malformed';
   if (value.kind !== 'unavailable') return 'malformed';
   return EVIDENCE_REASONS.find((reason) => reason === value.reason) ?? 'unknown';
+}
+/** A collector's gap, keeping its stopping cap only when it is a register id with a count. */
+function collectorGap(value: unknown, source: Ecosystem): PacketGap {
+  const reason = gapReason(value);
+  if (
+    reason !== 'budget' ||
+    !record(value, ['limit', 'count']) ||
+    typeof value.limit !== 'string' ||
+    !REGISTER.has(value.limit) ||
+    !Number.isSafeInteger(value.count) ||
+    (value.count as number) < 0
+  )
+    return { source, reason };
+  return { source, reason, limit: value.limit, count: value.count as number };
 }
 export type PacketAssemblyResult =
   | Readonly<{
@@ -100,7 +120,7 @@ async function collectFragments<S extends Session>(
     const value = fragment(result, ecosystem);
     if (!value || !input.isCurrent())
       return input.isCurrent()
-        ? { kind: 'incomplete', gaps: [{ source: ecosystem, reason: gapReason(result) }] }
+        ? { kind: 'incomplete', gaps: [collectorGap(result, ecosystem)] }
         : { kind: 'stale' };
     fragments.push(value);
   }
@@ -181,11 +201,18 @@ export async function assembleReviewPacket<S extends Session>(
       context.trusted,
     );
     if (packet.ok)
-      return { kind: 'ready', packet: packet.packet, droppedOptional: current.dropped };
+      return {
+        kind: 'ready',
+        packet: packet.packet,
+        droppedOptional: current.dropped,
+      };
     return {
       kind: 'incomplete',
       gaps: [
-        { source: 'packet', reason: packet.error.category === 'budget' ? 'budget' : 'malformed' },
+        {
+          source: 'packet',
+          reason: packet.error.category === 'budget' ? 'budget' : 'malformed',
+        },
       ],
     };
   } catch {

@@ -26,8 +26,21 @@ type Inventory = Extract<NpmInventoryResult, { kind: 'inventory' }>;
 type NpmProof = Extract<RelationshipProof, { ecosystem: 'npm' }>;
 type Resolved = Exclude<Extract<PacketChange, { ecosystem: 'npm' }>, { basis: 'declaration' }>;
 export type NpmGraphLimits = Readonly<{ maxGraphWork: number; maxRetainedBytes: number }>;
+/** A packet cap the npm contribution alone exceeds: the register id and the measured count. */
+export type PacketCapStop = Readonly<{
+  kind: 'unavailable';
+  reason: 'budget';
+  limit:
+    | 'packet.changes'
+    | 'packet.sources'
+    | 'packet.relationships'
+    | 'packet.findings'
+    | 'packet.bytes';
+  count: number;
+}>;
 export type NpmGraphResult =
   | Exclude<NpmInventoryResult, Inventory>
+  | PacketCapStop
   | (Inventory & {
       readonly relationships: readonly NpmProof[];
       /** Proofs beyond the one a group needs; the packet assembler may drop them to fit budgets. */
@@ -572,20 +585,26 @@ async function lifecycleInput(
   }
   return result;
 }
-function packetBounds(graph: Extract<NpmGraphResult, { kind: 'inventory' }>) {
-  const contribution = {
-    changes: graph.changes,
-    sources: graph.sources,
-    relationships: graph.relationships,
-    findings: graph.findings,
-  };
-  return (
-    graph.changes.length <= PACKET_LIMITS.changes &&
-    graph.sources.length <= PACKET_LIMITS.sources &&
-    graph.relationships.length <= PACKET_LIMITS.relationships &&
-    graph.findings.length <= PACKET_LIMITS.findings &&
-    Buffer.byteLength(JSON.stringify(contribution)) <= PACKET_LIMITS.bytes
-  );
+/** The first packet cap the npm contribution exceeds, or null when it fits every cap. */
+function packetBounds(graph: Extract<NpmGraphResult, { kind: 'inventory' }>): PacketCapStop | null {
+  const stop = (limit: PacketCapStop['limit'], count: number): PacketCapStop => ({
+    kind: 'unavailable',
+    reason: 'budget',
+    limit,
+    count,
+  });
+  const counted = [
+    ['packet.changes', graph.changes.length, PACKET_LIMITS.changes],
+    ['packet.sources', graph.sources.length, PACKET_LIMITS.sources],
+    ['packet.relationships', graph.relationships.length, PACKET_LIMITS.relationships],
+    ['packet.findings', graph.findings.length, PACKET_LIMITS.findings],
+  ] as const;
+  const over = counted.find(([, count, cap]) => count > cap);
+  if (over) return stop(over[0], over[1]);
+  const { changes, sources, relationships, findings } = graph;
+  // Serialized only once every count fits, so an oversized inventory is never stringified.
+  const bytes = Buffer.byteLength(JSON.stringify({ changes, sources, relationships, findings }));
+  return bytes > PACKET_LIMITS.bytes ? stop('packet.bytes', bytes) : null;
 }
 /** Enriches authentic N1 evidence through one bounded attempt, retaining exact inventory/source identities.
  * Dependencies are trusted transport/clock injection. Invalid or overflowing results expose no partial packet.
@@ -602,7 +621,8 @@ export async function enrichNpmEvidence(
     if (reader.kind !== 'ready') return { kind: 'invalid' };
     const graph = graphResult(parsed);
     if (graph.kind !== 'inventory') return graph;
-    if (!packetBounds(graph)) return { kind: 'unavailable', reason: 'budget' };
+    const overCap = packetBounds(graph);
+    if (overCap) return overCap;
     const changes: PacketChange[] = [],
       sources = [...graph.sources],
       findings = [...graph.findings];
@@ -627,7 +647,8 @@ export async function enrichNpmEvidence(
       new Set(sources.map((s) => s.id)).size === sources.length &&
         new Set(findings.map((f) => f.id)).size === findings.length,
     );
-    if (!packetBounds(result)) return { kind: 'unavailable', reason: 'budget' };
+    const enrichedOverCap = packetBounds(result);
+    if (enrichedOverCap) return enrichedOverCap;
     return freeze(structuredClone(fitRetained(result, parsed.limits.maxRetainedBytes, failBudget)));
   } catch (error) {
     return failure(error);

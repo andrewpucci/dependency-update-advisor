@@ -139,6 +139,25 @@ additions within the limit. They do not verify W2 writes or certify the full
 historical #307 inventory. Supporting larger packets requires a reviewed
 contract change; adoption and cutover gates remain in force.
 
+### Over-Cap Dependabot Bumps: PRs #115 to #118 and #120
+
+Provenance: [issue #458](https://github.com/andrewpucci/dependency-update-advisor/issues/458)
+measured this repository's Dependabot PRs
+[#115](https://github.com/andrewpucci/dependency-update-advisor/pull/115)–[#118](https://github.com/andrewpucci/dependency-update-advisor/pull/118)
+and [#120](https://github.com/andrewpucci/dependency-update-advisor/pull/120)
+offline from their lockfiles. Their `vite-plus` and `@vitest` bumps churn
+platform-specific optional binaries, giving 143 changes for #116–#118, 144 for
+#115, and 157 for #120: each over `limit:packet.changes`. No W2 npm, snapshot,
+or session limit binds first.
+
+Like #307, these are deliberate rejections and are out of scope. N2 returns
+`unavailable` with reason `budget` before any registry read, and the npm
+collector gap names `packet.changes` and the measured count. The demand
+measurement reports that cap instead of a generic incomplete run.
+[The N2 tests](../../src/evidence/npm-graph.test.ts) cover exact
+`limit:packet.changes` acceptance and rejection one change over it. Status:
+approved by the maintainer on 2026-11-26.
+
 ## T5 Conservative Grouping and Standalone Resolution
 
 The [T5 contract](../../docs/specs/SPEC-decision-units.md) consumes T4's positive
