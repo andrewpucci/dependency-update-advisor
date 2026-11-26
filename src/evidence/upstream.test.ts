@@ -356,8 +356,8 @@ test('an enrichment whose attempts exactly fill its cap keeps every member resea
   r.reader.close();
   expect(result).toEqual(normal);
 });
-test('a member over its bounds while reading ahead is rolled back, so later members still read', async () => {
-  // The smallest share that still fits the input.
+/** The smallest retained-bytes share that still fits one-addition fixture input. */
+async function smallestFittingShare() {
   const fits = async (bytes: number) => {
     const opened = createUpstreamReader(
       { ...limits, maxRetainedBytes: bytes },
@@ -375,24 +375,30 @@ test('a member over its bounds while reading ahead is rolled back, so later memb
     if (await fits(mid)) maxRetainedBytes = mid;
     else low = mid;
   }
-  const input = await fixture(1, { maxRetainedBytes });
-  const update = input.changes[0] as {
-    from: { name: string; version: string };
-    to: { name: string; version: string };
-  };
-  const added = input.changes[1] as { to: { name: string; version: string } };
-  // The proposed side's metadata is large, so retaining both sides overflows the first member.
-  const r = registryReader({ maxRetainedBytes }, (url) =>
-    url === registryUrl(update.to)
+  return maxRetainedBytes;
+}
+type Instance = { name: string; version: string };
+/** A registry reader at `maxRetainedBytes` whose metadata for `large` has a long description. */
+function largeMetadataReader(maxRetainedBytes: number, large: Instance, description: string) {
+  return registryReader({ maxRetainedBytes }, (url) =>
+    url === registryUrl(large)
       ? Response.json({
-          _id: update.to.name + '@' + update.to.version,
-          name: update.to.name,
-          version: update.to.version,
+          _id: large.name + '@' + large.version,
+          name: large.name,
+          version: large.version,
           dist: { integrity },
-          description: 'x'.repeat(5000),
+          description,
         })
       : null,
   );
+}
+test('a member over its bounds while reading ahead is rolled back, so later members still read', async () => {
+  const maxRetainedBytes = await smallestFittingShare();
+  const input = await fixture(1, { maxRetainedBytes });
+  const update = input.changes[0] as { from: Instance; to: Instance };
+  const added = input.changes[1] as { to: Instance };
+  // The proposed side's metadata is large, so retaining both sides overflows the first member.
+  const r = largeMetadataReader(maxRetainedBytes, update.to, 'x'.repeat(5000));
   const result = await enrichUpstream(input, { reader: r.reader });
   r.reader.close();
   if (result.kind !== 'enriched') throw new Error('enrichment');
@@ -409,6 +415,29 @@ test('a member over its bounds while reading ahead is rolled back, so later memb
   });
   expect(result.attempts.map((a) => a.memberId)).not.toContain(input.changes[0].id);
   expect(result.attempts.map((a) => a.memberId)).toContain(input.changes[1].id);
+});
+test('a member over its bounds after its base side does not read its proposed side', async () => {
+  const maxRetainedBytes = await smallestFittingShare();
+  const input = await fixture(1, { maxRetainedBytes });
+  const update = input.changes[0] as { from: Instance; to: Instance };
+  const added = input.changes[1] as { to: Instance };
+  // Quotes double when serialized, so the base side's excerpt alone overflows the share, while
+  // the response stays small enough that the reader itself never stops.
+  const r = largeMetadataReader(
+    maxRetainedBytes,
+    update.from,
+    '"'.repeat(limit('packet.textBytes')),
+  );
+  const result = await enrichUpstream(input, { reader: r.reader });
+  r.reader.close();
+  if (result.kind !== 'enriched') throw new Error('enrichment');
+  expect(r.calls).not.toContain(registryUrl(update.to));
+  expect(r.calls).toEqual([registryUrl(update.from), registryUrl(added.to)]);
+  expect(result.changes[0].evidence.upstream).toEqual({
+    status: 'unavailable',
+    reasons: ['budget'],
+    sourceIds: [],
+  });
 });
 test('share exhaustion keeps completed members and their identities', async () => {
   const input = await fixture(3);

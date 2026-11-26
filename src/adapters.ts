@@ -64,16 +64,24 @@ export function researchFetch(token: string, fetchImpl: Fetch): Fetch {
     httpsUrl(url).origin === 'https://api.github.com' ? authenticated(url, init) : open(url, init);
 }
 
+/** A fetch that may say it adds the read token to every api.github.com request. */
+export type TokenFetch = Fetch & { readonly githubToken?: true };
+
 /**
- * The research fetch with the flag research needs alongside it: `researchFetch` adds the read
- * token to every api.github.com request, so research may send the batched tag existence query.
- * Callers take both from here, so the flag cannot drift from the fetch that attaches the token.
+ * The research fetch carrying the flag research needs: `researchFetch` adds the read token to
+ * every api.github.com request, so research may send the batched tag existence query. The flag is
+ * a property of the fetch itself, so it cannot travel without the fetch that attaches the token.
  */
 export function researchFetchWithToken(
   token: string,
   fetchImpl: Fetch,
-): Readonly<{ fetch: Fetch; githubToken: true }> {
-  return { fetch: researchFetch(token, fetchImpl), githubToken: true };
+): Fetch & { readonly githubToken: true } {
+  return Object.assign(researchFetch(token, fetchImpl), { githubToken: true as const });
+}
+
+/** `wrapped`, carrying `original`'s token flag, for a wrapper that still sends through it. */
+export function withTokenFlag(wrapped: Fetch, original: TokenFetch): TokenFetch {
+  return original.githubToken ? Object.assign(wrapped, { githubToken: true as const }) : wrapped;
 }
 
 /**

@@ -834,9 +834,13 @@ type MemberLookups = Map<'base' | 'head', Prefetched>;
  * Reads every package member's metadata before any member's tags are probed, so the pre-pass sees
  * every candidate (amendment item 1). A side that throws ends its member, as it does in the member
  * loop. Each side's metadata is also retained in a scratch copy and bounded there, so a member
- * over its bounds stops reading as it did in the member loop. The scratch holds the same metadata
- * as the real output but no research, so it is never larger at the same point. Reading stops at a
- * reader stop; `stop` names the member whose read it was and the reason.
+ * over its bounds stops reading about where it did in the member loop. The scratch is only
+ * approximately the real output's size at the same point. It can be smaller, since it holds no
+ * research from earlier members; then a side is read that the member loop would not have read,
+ * though the loop still refuses it at the same point. It can be larger, where an earlier member's
+ * research rewrote its upstream evidence to something shorter than its metadata coverage; then a
+ * side the member loop would have read is left unread and its member ends with `budget`. Reading
+ * stops at a reader stop; `stop` names the member whose read it was and the reason.
  */
 async function prefetchMetadata(
   input: UpstreamInput,

@@ -1241,15 +1241,18 @@ test('hands research the injected wall clock', async () => {
 test.each([
   [true, true],
   [false, undefined],
-  [undefined, undefined],
 ])(
-  'tells research the public fetch carries a token only when it does (%s)',
-  async (publicFetchToken, githubToken) => {
+  'tells research the public fetch carries a token only when the fetch says so (%s)',
+  async (flagged, githubToken) => {
     vi.mocked(researchModule.runResearch).mockClear();
     const { input } = await setup({ evidence: 'changes' });
+    const base = input.publicFetch;
+    const publicFetch: typeof base = (url, init) => base(url, init);
     await runReview({
       ...input,
-      ...(publicFetchToken === undefined ? {} : { publicFetchToken }),
+      publicFetch: flagged
+        ? Object.assign(publicFetch, { githubToken: true as const })
+        : publicFetch,
     });
     const [call] = vi.mocked(researchModule.runResearch).mock.calls;
     expect(call[0].githubToken).toBe(githubToken);

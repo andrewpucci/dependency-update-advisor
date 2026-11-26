@@ -21383,9 +21383,13 @@ function markUnresearched(output, from, reason) {
 * Reads every package member's metadata before any member's tags are probed, so the pre-pass sees
 * every candidate (amendment item 1). A side that throws ends its member, as it does in the member
 * loop. Each side's metadata is also retained in a scratch copy and bounded there, so a member
-* over its bounds stops reading as it did in the member loop. The scratch holds the same metadata
-* as the real output but no research, so it is never larger at the same point. Reading stops at a
-* reader stop; `stop` names the member whose read it was and the reason.
+* over its bounds stops reading about where it did in the member loop. The scratch is only
+* approximately the real output's size at the same point. It can be smaller, since it holds no
+* research from earlier members; then a side is read that the member loop would not have read,
+* though the loop still refuses it at the same point. It can be larger, where an earlier member's
+* research rewrote its upstream evidence to something shorter than its metadata coverage; then a
+* side the member loop would have read is left unread and its member ends with `budget`. Reading
+* stops at a reader stop; `stop` names the member whose read it was and the reason.
 */
 async function prefetchMetadata(input, output, reader, pypiReader) {
 	const members = /* @__PURE__ */ new Map();
@@ -22579,15 +22583,16 @@ function researchFetch(token, fetchImpl) {
 	return async (url, init) => httpsUrl(url).origin === "https://api.github.com" ? authenticated(url, init) : open(url, init);
 }
 /**
-* The research fetch with the flag research needs alongside it: `researchFetch` adds the read
-* token to every api.github.com request, so research may send the batched tag existence query.
-* Callers take both from here, so the flag cannot drift from the fetch that attaches the token.
+* The research fetch carrying the flag research needs: `researchFetch` adds the read token to
+* every api.github.com request, so research may send the batched tag existence query. The flag is
+* a property of the fetch itself, so it cannot travel without the fetch that attaches the token.
 */
 function researchFetchWithToken(token, fetchImpl) {
-	return {
-		fetch: researchFetch(token, fetchImpl),
-		githubToken: true
-	};
+	return Object.assign(researchFetch(token, fetchImpl), { githubToken: true });
+}
+/** `wrapped`, carrying `original`'s token flag, for a wrapper that still sends through it. */
+function withTokenFlag(wrapped, original) {
+	return original.githubToken ? Object.assign(wrapped, { githubToken: true }) : wrapped;
 }
 /**
 * Binds every request to one attempt: nothing starts once the attempt has ended or ownership is
@@ -34240,7 +34245,7 @@ async function runReview(input) {
 		return evaluateEvidence({
 			...input,
 			githubFetch: guard(input.githubFetch),
-			publicFetch: guard(input.publicFetch)
+			publicFetch: withTokenFlag(guard(input.publicFetch), input.publicFetch)
 		}, binding, started, attempt.signal, () => state, stillCurrent, halted);
 	};
 	let outcome;
@@ -34421,7 +34426,7 @@ async function evaluateEvidence(input, binding, started, signal, state, recheck,
 				npmInventory,
 				comparison: null,
 				fetch: input.publicFetch,
-				...input.publicFetchToken ? { githubToken: true } : {},
+				...input.publicFetch.githubToken ? { githubToken: true } : {},
 				cache: researchCache,
 				now: input.now,
 				deadline: evidenceDeadline,
@@ -34804,7 +34809,6 @@ async function runStartup(writeError, environment = process.env, dependencies = 
 		const sink = dependencies.sink ?? createRehearsalSink(null);
 		if (!sink) throw new Error("sink");
 		const claims = dependencies.claims ?? createTestClaimStore();
-		const research = researchFetchWithToken(runtime.githubToken, dependencies.fetch);
 		writeError(rehearsalLine(await runReview({
 			event: {
 				eventName,
@@ -34821,8 +34825,7 @@ async function runStartup(writeError, environment = process.env, dependencies = 
 			claims,
 			sink,
 			githubFetch: authenticatedFetch(runtime.githubToken, dependencies.fetch),
-			publicFetch: research.fetch,
-			publicFetchToken: research.githubToken,
+			publicFetch: researchFetchWithToken(runtime.githubToken, dependencies.fetch),
 			model: dependencies.model,
 			now: dependencies.now,
 			jobStartedAt,

@@ -127,12 +127,12 @@ test('the research fetch with its flag adds the read token, and says so', async 
   const fetch = vi.fn(async (_url: string, _init: RequestInit) => new Response('{}'));
   const research = researchFetchWithToken('read-token', fetch);
   expect(research.githubToken).toBe(true);
-  await research.fetch('https://api.github.com/graphql', { method: 'POST' });
+  await research('https://api.github.com/graphql', { method: 'POST' });
   expect(new Headers(fetch.mock.calls[0][1].headers).get('authorization')).toBe(
     'Bearer read-token',
   );
   fetch.mockClear();
-  await research.fetch('https://registry.npmjs.org/x', {});
+  await research('https://registry.npmjs.org/x', {});
   expect(new Headers(fetch.mock.calls[0][1].headers).has('authorization')).toBe(false);
 });
 

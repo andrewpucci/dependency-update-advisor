@@ -200,7 +200,6 @@ export async function runStartup(
     const sink = dependencies.sink ?? createRehearsalSink(null);
     if (!sink) throw new Error('sink');
     const claims = dependencies.claims ?? createTestClaimStore();
-    const research = researchFetchWithToken(runtime.githubToken, dependencies.fetch);
     const result = await runReview({
       event: { eventName, payload, expected: { repository: runtime.repository, workflow } },
       repository: runtime.repository,
@@ -210,8 +209,7 @@ export async function runStartup(
       claims,
       sink,
       githubFetch: authenticatedFetch(runtime.githubToken, dependencies.fetch),
-      publicFetch: research.fetch,
-      publicFetchToken: research.githubToken,
+      publicFetch: researchFetchWithToken(runtime.githubToken, dependencies.fetch),
       model: dependencies.model,
       now: dependencies.now,
       jobStartedAt,
