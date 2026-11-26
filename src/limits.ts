@@ -2006,11 +2006,17 @@ const DEFINITIONS = [
     value: 4_096,
     unit: 'bytes',
     protects:
-      "Makes a source-text change that eats the 93-member large-inventory packet's margin under `limit:packet.bytes` fail its own test, before a real review of that size exceeds the cap.",
+      'Real packets this close to `limit:packet.bytes` would lose members to `budget` gaps; this fails the large-inventory parity test when a source-text change leaves its packet less than this far under the cap.',
     basis: {
-      kind: 'safety',
-      reason:
-        'With the C6 and C7 batched source text, that packet is 1,042,761 of 1,048,576 bytes, 5,815 bytes under the cap; 4 KiB keeps most of that margin as the alarm threshold while allowing a short wording change.',
+      kind: 'measured',
+      command:
+        'npx vp test --run tests/parity/large-inventory.test.ts -t "builds 93", reading Buffer.byteLength(JSON.stringify(packet)) of the scenario packet',
+      corpus:
+        'the synthetic large inventory: 93 npm members plus 2 same-named nested copies, with C6 and C7 batched source text',
+      statistic: 'exact packet bytes: 1,043,616 of the 1,048,576-byte cap, 4,960 bytes under it',
+      headroom:
+        '864 bytes between the measured 4,960-byte margin and this 4,096-byte floor, room for a short wording change',
+      measured: '2026-11-26',
     },
     effect:
       'The large-inventory parity test fails when that packet comes within this many bytes of the packet cap.',

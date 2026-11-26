@@ -328,9 +328,10 @@ sides; the signals stage passes its non-Actions malware targets. A lookup a
 batch settled says in its source text that it was checked in a batched query:
 an advisory lookup source, or a malware query source for a cleared or an
 attributed target. `isSettled(target)` says whether `read` would answer a
-target from `settle` without a request: after the advisory reader stops, a
-later member whose targets were all settled keeps those lookups, and only the
-rest get the stop reason.
+target from `settle` without a request. After the advisory reader stops, the
+stop applies per target, as Batched Lookup item 3 says: a later member with a
+settled target keeps each settled lookup, each of its unsettled targets gets
+the stop reason, and a member with no settled target gets it for the member.
 
 `enrichAdvisories(input, { reader })` consumes an `AdvisoryInput`: binding,
 normalized changes/sources/findings, limits, required `publicIdentities`, and

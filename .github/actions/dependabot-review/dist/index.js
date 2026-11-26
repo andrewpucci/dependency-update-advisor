@@ -10037,10 +10037,14 @@ const DEFINITIONS = [
 		id: "tests.largeInventoryPacketHeadroomBytes",
 		value: 4096,
 		unit: "bytes",
-		protects: "Makes a source-text change that eats the 93-member large-inventory packet's margin under `limit:packet.bytes` fail its own test, before a real review of that size exceeds the cap.",
+		protects: "Real packets this close to `limit:packet.bytes` would lose members to `budget` gaps; this fails the large-inventory parity test when a source-text change leaves its packet less than this far under the cap.",
 		basis: {
-			kind: "safety",
-			reason: "With the C6 and C7 batched source text, that packet is 1,042,761 of 1,048,576 bytes, 5,815 bytes under the cap; 4 KiB keeps most of that margin as the alarm threshold while allowing a short wording change."
+			kind: "measured",
+			command: "npx vp test --run tests/parity/large-inventory.test.ts -t \"builds 93\", reading Buffer.byteLength(JSON.stringify(packet)) of the scenario packet",
+			corpus: "the synthetic large inventory: 93 npm members plus 2 same-named nested copies, with C6 and C7 batched source text",
+			statistic: "exact packet bytes: 1,043,616 of the 1,048,576-byte cap, 4,960 bytes under it",
+			headroom: "864 bytes between the measured 4,960-byte margin and this 4,096-byte floor, room for a short wording change",
+			measured: "2026-11-26"
 		},
 		effect: "The large-inventory parity test fails when that packet comes within this many bytes of the packet cap.",
 		test: "tests/parity/large-inventory.test.ts > builds 93 members plus two same-named nested copies as standalone npm units"
@@ -16861,14 +16865,18 @@ async function settleTargets(input, output, reader) {
 		if (targets.length) await reader.settle(targets);
 	} catch {}
 }
-/** Whether every target the member has was settled by the pre-pass, so its reads send nothing. */
+/** Whether the pre-pass settled any of the member's targets, which `read` answers unsent. */
 function settledMember(input, change, reader) {
-	const targets = ["head", "base"].map((side) => prePassTarget(input, change, side)).filter((target) => target !== null);
-	return targets.length > 0 && targets.every((target) => reader.isSettled?.(target) === true);
+	return ["head", "base"].some((side) => {
+		const target = prePassTarget(input, change, side);
+		return target !== null && reader.isSettled?.(target) === true;
+	});
 }
 /**
-* A stopped reader refuses every later request. Members after `last` whose targets the pre-pass
-* settled still take those lookups; every other member is unresearched with the stop reason.
+* A stopped reader refuses every later request (S1 Batched Lookup item 3, per target). A member
+* after `last` with a settled target is still researched: its settled sides take their lookups,
+* and the stopped reader answers each unsettled side with the stop reason without a request. A
+* member with no settled target is unresearched with the stop reason.
 */
 async function finishStopped(input, output, last, stopped, reader, cache) {
 	output.stopped = stopped;
@@ -16927,7 +16935,7 @@ function malwareProvenance(change, side, lookup, record) {
 		kind: "upstream",
 		url: record?.url ?? lookup.url,
 		title: record?.title ?? "Exact target malware query",
-		excerpt: change.ecosystem === "actions" ? "GitHub malware advisory result for this exact mapped action; this is not a scan of action code." : lookup.batched && !record ? "GitHub malware advisory result for this exact target, checked in a batched query." : "GitHub malware advisory result for this exact target.",
+		excerpt: change.ecosystem === "actions" ? "GitHub malware advisory result for this exact mapped action; this is not a scan of action code." : lookup.batched && !record ? "GitHub malware advisory result for this exact target, checked in a complete batched query." : "GitHub malware advisory result for this exact target.",
 		excerptTruncated: false,
 		subjects: [{
 			memberId: change.id,

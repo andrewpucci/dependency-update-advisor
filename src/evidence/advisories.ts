@@ -632,16 +632,18 @@ async function settleTargets(
     // A failed pre-pass settles nothing; every target is then read alone, as before.
   }
 }
-/** Whether every target the member has was settled by the pre-pass, so its reads send nothing. */
+/** Whether the pre-pass settled any of the member's targets, which `read` answers unsent. */
 function settledMember(input: AdvisoryInput, change: PacketChange, reader: AdvisoryReader) {
-  const targets = (['head', 'base'] as const)
-    .map((side) => prePassTarget(input, change, side))
-    .filter((target) => target !== null);
-  return targets.length > 0 && targets.every((target) => reader.isSettled?.(target) === true);
+  return (['head', 'base'] as const).some((side) => {
+    const target = prePassTarget(input, change, side);
+    return target !== null && reader.isSettled?.(target) === true;
+  });
 }
 /**
- * A stopped reader refuses every later request. Members after `last` whose targets the pre-pass
- * settled still take those lookups; every other member is unresearched with the stop reason.
+ * A stopped reader refuses every later request (S1 Batched Lookup item 3, per target). A member
+ * after `last` with a settled target is still researched: its settled sides take their lookups,
+ * and the stopped reader answers each unsettled side with the stop reason without a request. A
+ * member with no settled target is unresearched with the stop reason.
  */
 async function finishStopped(
   input: AdvisoryInput,

@@ -39,6 +39,8 @@ type Options = {
   actionChange?: 'owner' | 'mutable';
   anchorUnchanged?: boolean;
   duplicateNames?: number;
+  /** Discovery records for one spelling; the harness default stores each target as itself. */
+  stored?: Parameters<typeof viaAdvisoryHttp>[1];
 };
 function packageNode(name: string, version: string) {
   return {
@@ -188,7 +190,7 @@ function researchFetch(options: Options, requests: string[]) {
     }
     if (url.origin === 'https://api.github.com') return githubResponse(url);
     throw new Error('Unexpected research host');
-  });
+  }, options.stored);
 }
 /** Invented HTTP/file snapshots through authentic collectors; no public-identity proof is pre-filled. */
 export async function upstreamScenario(options: Options = {}) {

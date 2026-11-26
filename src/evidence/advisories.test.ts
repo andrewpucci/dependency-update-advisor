@@ -805,34 +805,55 @@ function asUnbatched(output: Awaited<ReturnType<typeof enrichAdvisories>>) {
   );
 }
 
-test.each([false, true])(
-  'a reader stopping after the pre-pass keeps settled members; failed head batch=%s',
-  async (failHeads) => {
-    const { input } = await fixture(true, 3);
+test.each(['none', 'head', 'base'] as const)(
+  'a reader stopping after the pre-pass keeps each settled side; failed %s batch',
+  async (failed) => {
+    const { input: collected } = await fixture(true, 3);
+    // The two-sided anchor goes last, so it is researched after the stop.
+    const anchor = collected.changes.find((c) => !('basis' in c) && c.from && c.to)!;
+    const input = {
+      ...collected,
+      changes: [...collected.changes.filter((c) => c !== anchor), anchor],
+    };
     const members = input.changes.filter((c) => !('basis' in c));
-    const heads = new Set(
-      members.flatMap((c) => {
-        const to = c.to as { name: string; version: string } | null;
-        return to ? [`${to.name}@${to.version}`] : [];
-      }),
-    );
+    const sideOf = (c: (typeof members)[number], side: 'head' | 'base') => {
+      const s = (side === 'head' ? c.to : c.from) as { name: string; version: string } | null;
+      return s ? [`${s.name}@${s.version}`] : [];
+    };
+    const failing = new Set(failed === 'none' ? [] : members.flatMap((c) => sideOf(c, failed)));
     const answer = (url: URL) =>
-      failHeads &&
       url.searchParams.get('per_page') !== '100' &&
       url.searchParams
         .get('affects')!
         .split(',')
-        .some((a) => heads.has(a))
+        .some((a) => failing.has(a))
         ? Response.json({}, { status: 500 })
         : Response.json([]);
     const baseline = await enrichAdvisories(input, { reader: recordingReader(answer).reader });
     const real = recordingReader(answer).reader;
-    let reads = 0;
-    // The stop comes after the first member's reads, once the pre-pass has settled what it can.
+    let reads = 0,
+      stop = false;
+    // Stops after the first member, as a rate limit would; like the real reader, a stopped
+    // reader still answers a settled target and refuses every other one with the stop reason.
     const reader: AdvisoryReader = {
       ...real,
-      read: (target) => (reads++, real.read(target)),
-      stopped: () => (reads > 0 ? 'rate_limit' : null),
+      read: async (target) => {
+        reads++;
+        if (stop && !real.isSettled!(target))
+          return {
+            target: target as AdvisoryTarget,
+            url: '',
+            status: 'unavailable',
+            complete: false,
+            records: [],
+            reasons: ['rate_limit'],
+          };
+        return real.read(target);
+      },
+      stopped: () => {
+        stop = reads > 0;
+        return stop ? 'rate_limit' : null;
+      },
     };
     const result = await enrichAdvisories(input, { reader });
     if (baseline.kind !== 'enriched' || result.kind !== 'enriched') throw new Error('evidence');
@@ -840,13 +861,22 @@ test.each([false, true])(
     const [first, ...later] = members;
     expect(later.length).toBeGreaterThanOrEqual(2);
     expect(vulnerability(result, first.id)).toEqual(vulnerability(baseline, first.id));
-    for (const member of later)
-      if (failHeads)
+    const lookup = (output: typeof result, side: 'head' | 'base') =>
+      output.lookups.find((l) => l.memberId === anchor.id && l.side === side);
+    for (const member of later.filter((c) => c !== anchor))
+      if (failed === 'head')
         expect(vulnerability(result, member.id)).toMatchObject({
           status: 'unavailable',
           reasons: ['rate_limit'],
         });
       else expect(vulnerability(result, member.id)).toEqual(vulnerability(baseline, member.id));
+    // The anchor keeps its settled side and loses only the unsettled one to the stop.
+    for (const side of ['head', 'base'] as const)
+      if (side === failed) expect(lookup(result, side)?.reasons).toEqual(['rate_limit']);
+      else expect(lookup(result, side)).toEqual(lookup(baseline, side));
+    if (failed === 'head')
+      expect(vulnerability(result, anchor.id)).toMatchObject({ reasons: ['rate_limit'] });
+    else expect(vulnerability(result, anchor.id)).toEqual(vulnerability(baseline, anchor.id));
   },
 );
 

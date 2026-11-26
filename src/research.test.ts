@@ -888,6 +888,45 @@ test('the advisory pre-pass changes only cleared source text and sends fewer req
   expect(restored).toEqual(unbatched.packet);
 });
 
+test('a discovery batch that names nothing clears the Action without its versioned query', async () => {
+  const { fixture, packet } = await scenario({ stored: () => [] });
+  const sent: string[] = [];
+  const result = await runResearch({
+    ...base(fixture, packet),
+    fetch: async (url, init) => (sent.push(url), fixture.fetch(url, init)),
+  });
+  if (result.kind !== 'ready') throw new Error(result.kind);
+  const actions = sent
+    .map((url) => new URL(url))
+    .filter(
+      (u) =>
+        u.pathname === '/advisories' &&
+        u.searchParams.get('type') === 'reviewed' &&
+        u.searchParams.get('ecosystem') === 'actions',
+    );
+  // Only the package-only discovery query was sent for the Action.
+  expect(actions.length).toBeGreaterThan(0);
+  expect(actions.every((u) => u.searchParams.get('affects') === 'fixture/action')).toBe(true);
+  const cited = result.packet.sources.filter(
+    (s) =>
+      s.kind === 'advisory' &&
+      s.ecosystems.includes('actions') &&
+      s.provenance.kind === 'upstream' &&
+      !s.provenance.advisoryId,
+  );
+  expect(cited.map((s) => (s.provenance.kind === 'upstream' ? s.provenance.excerpt : ''))).toEqual(
+    cited.map(() => BATCHED_EXCERPT),
+  );
+  const urls = cited.map((s) =>
+    s.provenance.kind === 'upstream' ? decodeURIComponent(s.provenance.url) : '',
+  );
+  for (const version of ['1.0.0', '2.0.0'])
+    expect(
+      urls.some((u) => u.includes(`ecosystem=actions&affects=fixture/action@${version}&`)),
+    ).toBe(true);
+  for (const url of urls) expect(sent.map(decodeURIComponent)).not.toContain(url);
+});
+
 const ownedByStage = {
   upstream: ['upstream', 'installScript'],
   advisories: ['vulnerability'],
