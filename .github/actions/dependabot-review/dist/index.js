@@ -16872,7 +16872,7 @@ function malwareProvenance(change, side, lookup, record) {
 		kind: "upstream",
 		url: record?.url ?? lookup.url,
 		title: record?.title ?? "Exact target malware query",
-		excerpt: change.ecosystem === "actions" ? "GitHub malware advisory result for this exact mapped action; this is not a scan of action code." : "GitHub malware advisory result for this exact target.",
+		excerpt: change.ecosystem === "actions" ? "GitHub malware advisory result for this exact mapped action; this is not a scan of action code." : lookup.batched && !record ? "GitHub malware advisory result for this exact target, checked in a batched query." : "GitHub malware advisory result for this exact target.",
 		excerptTruncated: false,
 		subjects: [{
 			memberId: change.id,
@@ -16953,6 +16953,25 @@ function malwareFinding(input, output, change, record, source) {
 		remediation: ["Do not merge this version; select an unaffected version."],
 		validation: ["Re-run the exact malware lookup before reconsidering."]
 	});
+}
+/**
+* The malware pre-pass, run before the per-member loop: the reader settles what complete
+* `type=malware` batches can decide, npm versioned batches and `pip` discovery batches, so `read`
+* returns those lookups without a request. Its requests count against the malware reader's
+* share, not any member's. Actions malware keeps per-target lookups (Approved Batch Values), so
+* its targets are not sent. A reader without `settle`, or one that fails, leaves every target to
+* its own `read`.
+*/
+async function settleMalware(input, changes, reader) {
+	const targets = changes.flatMap((change) => {
+		if ("basis" in change) return [];
+		const target = resolveAdvisoryTarget(input, change, change.to ? "head" : "base");
+		return target && target.ecosystem !== "actions" ? [target] : [];
+	});
+	if (!reader.settle || !targets.length) return;
+	try {
+		await reader.settle(targets);
+	} catch {}
 }
 async function collectMemberMalware(input, output, change, reader, cache) {
 	const side = change.to ? "head" : "base";
@@ -22349,6 +22368,7 @@ async function enrichPolicySignals(value, dependencies) {
 		signalBounds(input, output);
 		reserveSignals(input, output);
 		const cache = /* @__PURE__ */ new Map();
+		await settleMalware(input, output.changes, dependencies.malwareReader);
 		await inPriorityOrder(output.changes, (change) => runMemberMalware(input, output, change, dependencies.malwareReader, cache));
 		const lockfiles = dependencies.artifactSession && cacheLockfileReads(dependencies.artifactSession);
 		await inPriorityOrder(output.changes, (change) => runOptionalSignals(input, output, change, async () => {

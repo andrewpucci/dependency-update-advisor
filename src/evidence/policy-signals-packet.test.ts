@@ -122,7 +122,7 @@ test('attempts count toward retained bytes, not the packet byte limit', async ()
   }
 });
 
-/** Malware records for every query whose package is `name`, and none for any other package. */
+/** Malware records for every query that lists package `name`, and none for any other query. */
 const malwareFor = (
   limits: Parameters<typeof createMalwareReader>[0],
   name: string,
@@ -133,7 +133,8 @@ const malwareFor = (
     fetch: async (url) => {
       const affects = new URL(url).searchParams.get('affects') ?? '';
       const ecosystem = new URL(url).searchParams.get('ecosystem');
-      if (!affects.startsWith(name + '@')) return Response.json([]);
+      // A batch returns the records of any target it lists, as GitHub does.
+      if (!affects.split(',').some((a) => a.startsWith(name + '@'))) return Response.json([]);
       return Response.json(
         ['aaaa-bbbb-cccc', 'dddd-eeee-ffff', 'gggg-hhhh-jjjj', ...'kmnpqrstuvwx']
           .slice(0, records)

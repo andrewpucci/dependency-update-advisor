@@ -30,7 +30,11 @@ import {
   type AdvisoryLookup,
   type AdvisoryReader,
 } from './advisory-read.js';
-import { collectMemberMalware, recordMemberMalware } from './policy-signals-malware.js';
+import {
+  collectMemberMalware,
+  recordMemberMalware,
+  settleMalware,
+} from './policy-signals-malware.js';
 import type { NpmPublishTimeReader, NpmTimesResult } from './npm-publish-times.js';
 import type { UpstreamInput } from './upstream.js';
 import { metadataTarget } from './upstream.js';
@@ -337,6 +341,7 @@ export async function enrichPolicySignals(
     signalBounds(input, output);
     reserveSignals(input, output);
     const cache = new Map();
+    await settleMalware(input, output.changes, dependencies.malwareReader);
     await inPriorityOrder(output.changes, (change) =>
       runMemberMalware(input, output, change, dependencies.malwareReader, cache),
     );

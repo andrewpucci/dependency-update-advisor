@@ -321,8 +321,9 @@ resolves to the number of targets it decided, complete or not, so `read` sends
 nothing for them, or null while another read is running. `read` returns a
 settled lookup without a request. A target cleared or attributed from a batch
 carries `batched: true` and cites the unfetched query that would reproduce it.
-A target a batch could not settle is read as before. The stages do not call
-`settle` yet.
+A target a batch could not settle is read as before. The signals stage calls
+`settle` with its non-Actions malware targets before its per-member loop; the
+advisory stage does not call it yet.
 
 `enrichAdvisories(input, { reader })` consumes an `AdvisoryInput`: binding,
 normalized changes/sources/findings, limits, required `publicIdentities`, and

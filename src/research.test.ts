@@ -741,9 +741,14 @@ test('researches a group of 32 changed packages without exhausting any reader', 
   expect(result.kind).toBe('ready');
   if (result.kind !== 'ready') return;
   expect(result.unavailable).toEqual([]);
-  // Every package was looked up, and none was cut short by a share running out.
+  // Every package was looked up, and none was cut short by a share running out. Malware batches
+  // settle the npm packages in far fewer requests than one per package.
   const { readers } = EVIDENCE_READ_ALLOCATION.signals;
-  expect(counts.malware).toBeGreaterThan(25);
+  expect(counts.malware).toBeGreaterThan(0);
+  expect(counts.malware).toBeLessThan(packet.changes.length);
+  expect(
+    result.packet.changes.every((c) => 'basis' in c || c.evidence.malware.status === 'available'),
+  ).toBe(true);
   expect(counts.malware).toBeLessThanOrEqual(readers.malware.maxRequests);
   expect(counts.advisory).toBeGreaterThan(50);
   expect(counts.advisory).toBeLessThanOrEqual(EVIDENCE_READ_ALLOCATION.advisory.maxRequests);
