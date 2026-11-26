@@ -191,8 +191,9 @@ receives `process.env` or a general fetch function.
 
    Research reads scale with the group. Measured per extra npm package, the
    upstream reader needs about 7 requests (5 GitHub plus 2 registry), advisory
-   lookup 2, and the malware and publish-time readers 1 each, so these shares
-   cover a group of 32 changed packages, as a test confirms. A larger group
+   lookup 2, and the malware and publish-time readers 1 each, so at the
+   current share values these shares cover a group of 32 changed packages,
+   the size a test pins. A larger group
    exhausts a share and ends incomplete with a `budget` reason; the
    `limit:evidence.envelope.totalTimeoutMs` deadline, not the request count,
    bounds a very large group.
@@ -376,8 +377,9 @@ does not do that.
    already stops at the smaller of that deadline minus its
    `limit:analysis.publicationReserveMs` publication reserve and
    `limit:analysis.maxAnalysisMs` after its own start; the allowance stacks on
-   that reserve, so the model ends by 795,000 ms after the job start and the
-   final check by about `limit:job.budget` minus
+   that reserve, so the model ends by `limit:job.budget` minus
+   `limit:job.freshnessAllowance` and `limit:analysis.publicationReserveMs`
+   after the job start and the final check by about `limit:job.budget` minus
    `limit:analysis.publicationReserveMs`.
 3. **Value: `freshnessAllowanceMs` = `limit:job.freshnessAllowance`.** It
    is the derived minimum: three sequential reads (run, PR, comparison) at the
@@ -434,7 +436,7 @@ does not do that.
      moves the evidence, research, and analysis deadlines, and a clock that
      advances during workflow resolution does not shift the job window;
    - the request timer: with fake timers, a freshness read made after
-     `limit:evidence.envelope.totalTimeoutMs` stays pending for the
+     `limit:github.totalTimeoutMs` stays pending for the
      `limit:github.requestTimeoutMs` request timeout and then times out, and
      one made near the job end times out at the time left;
    - a head that moved during that late window is still `stale`, and a
@@ -501,7 +503,8 @@ Evidence is in
 found in the fresh-context review of PR #305.
 
 `JOB_BUDGET_MS` (`limit:job.budget`) equals the review workflow's
-`timeout-minutes: 15`, but every deadline measures it from the job-start
+`timeout-minutes` (`limit:workflow.dependabotReview.review.timeoutMinutes`),
+but every deadline measures it from the job-start
 timestamp `runStartup` takes after the app-token step, action setup, Node load,
 and self-check. Time spent before that timestamp is not counted, so the
 pipeline's window can end after the runner's. By code reading, the final
@@ -528,12 +531,15 @@ publication spends that reserve.
    `jobWindowMs` after the job start. The analysis deadline is the job start
    plus `jobWindowMs` minus `freshnessAllowanceMs`. With the unchanged
    `limit:analysis.publicationReserveMs` analysis reserve, the model ends by
-   735,000 ms after the job start and the final freshness check by about
-   780,000 ms. With the full `limit:job.preStartupAllowance` allowance spent,
-   that is `limit:job.budget` minus `limit:analysis.publicationReserveMs` on
-   the runner clock, leaving `limit:analysis.publicationReserveMs` for
-   publication. The shared `limit:evidence.envelope.totalTimeoutMs` evidence
-   deadline and every other deadline are unchanged.
+   `limit:job.window` minus `limit:job.freshnessAllowance` and
+   `limit:analysis.publicationReserveMs` after the job start and the final
+   freshness check by about `limit:job.window` minus
+   `limit:analysis.publicationReserveMs`. With the full
+   `limit:job.preStartupAllowance` allowance spent, that is `limit:job.budget`
+   minus `limit:analysis.publicationReserveMs` on the runner clock, leaving
+   `limit:analysis.publicationReserveMs` for publication. The shared
+   `limit:evidence.envelope.totalTimeoutMs` evidence deadline and every other
+   deadline are unchanged.
 4. **One definition.** `jobWindowMs` is derived in `src/budget.ts` and is the
    only value the transport and the pipeline read; neither subtracts the
    allowance itself.
@@ -553,10 +559,10 @@ publication spends that reserve.
      read of the final freshness check ends no later than `limit:job.budget`
      minus `limit:analysis.publicationReserveMs` on the injected clock, which
      leaves the `limit:analysis.publicationReserveMs` publication reserve
-     intact. The limit is stated as a literal, not derived from the
-     constants under test, and a control with the same evidence advance and no
-     model delay is compared. The check fails on the code before this
-     amendment (the final reads end at about 855,000);
+     intact. The test hard-codes the literal value of that formula, not one
+     derived from the constants under test, and a control with the same
+     evidence advance and no model delay is compared. The check fails on the
+     code before this amendment (the final reads end at about 855,000);
    - the analysis deadline passed to `reviewPacket` equals job start plus
      `jobWindowMs` minus `freshnessAllowanceMs`, asserted against the literal
      value, not a recomputation from the constants (the analysis layer
@@ -925,7 +931,8 @@ them.
    literal from item 1 or Amendments 2 and 4. M2 clips each call to the
    remaining analysis time, at most `limit:analysis.maxAnalysisMs`, and the
    transport timeout is `limit:analysis.requestTimeoutMs`, so a production
-   value has at most six digits. The printer clamps any value above
+   value is at most the larger of the two, which has six digits at current
+   values. The printer clamps any value above
    `limit:startup.maxReportedDurationMs` to that cap, so an injected clock
    cannot lengthen the line; the carried data is not clamped.
 6. **Fail-closed preservation.** Neither value changes an outcome, status,

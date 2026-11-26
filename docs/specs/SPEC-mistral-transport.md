@@ -506,10 +506,11 @@ so these facts were observed on 2026-11-12 and may change:
    nonempty concatenated `text`; an array with no usable `text` is `envelope`.
    Item 8's string rules otherwise stand. `tool_calls` stays null or empty.
 4. **Budgets.** The completion-token budget rises from 4,096 to
-   **`limit:analysis.completionTokens`**, about twice the largest observed
-   completion (8.0k). The per-request timeout rises from 120,000 ms to
-   **`limit:analysis.requestTimeoutMs`**: at the observed 70 to 75 tokens per
-   second, a reply that uses the full cap takes about 230 s. The observed-bytes
+   **`limit:analysis.completionTokens`**, at its 2026-11-12 value about twice
+   the largest observed completion (8.0k). The per-request timeout rises from
+   120,000 ms to **`limit:analysis.requestTimeoutMs`**: at the observed 70 to
+   75 tokens per second, a reply that uses the full cap at its 2026-11-12
+   value takes about 230 s. The observed-bytes
    ceiling `limit:analysis.responseBytes` follows the stated formula:
    `limit:analysis.completionTokens` times `limit:analysis.maxTokenCodeUnits`
    times 6, plus `limit:analysis.responseEnvelopeBytes`. Each remains clipped
@@ -746,13 +747,13 @@ are proposed. M2/W2 still choose their cumulative budgets and publication reserv
 | Final serialized HTTP request bytes                | `limit:analysis.requestBytes`                                              | Includes fixed prompts, model/options, JSON string escaping, and envelope.                                             |
 | Completion tokens                                  | `limit:analysis.completionTokens`                                          | Reasoning tokens count against it; live replies used 4.1k-8.0k (2026-11-12).                                           |
 | Per-request timeout                                | `limit:analysis.requestTimeoutMs` maximum                                  | Live replies took 58-101 s; clipped to the caller's remaining analysis time.                                           |
-| Inner content allowance                            | `limit:analysis.maxTokenCodeUnits` UTF-8 bytes per completion token        | Conservative planning allowance, not a documented guarantee for every model/tokenizer.                                 |
+| Inner content allowance                            | `limit:analysis.maxTokenCodeUnits` code units per completion token         | Conservative planning allowance, not a documented guarantee for every model/tokenizer.                                 |
 | Outer JSON escaping multiplier                     | 6                                                                          | Allows byte-to-`\uXXXX` expansion when content is encoded inside the response envelope.                                |
 | Provider envelope allowance                        | `limit:analysis.responseEnvelopeBytes`                                     | Bounded metadata overhead beyond generated content.                                                                    |
 | Observed response bytes                            | `limit:analysis.responseBytes`                                             | Completion tokens × content allowance × escaping multiplier + envelope allowance; input C2/T4 limits remain unchanged. |
 | Model reason/rationale/action/impact text          | `limit:analysis.textBytes` each                                            | Concise per-unit advice; nonempty when required.                                                                       |
 | Feature text                                       | `limit:analysis.featureBytes`                                              | At most one capability per unit.                                                                                       |
-| Follow-up description                              | `limit:analysis.followupBytes`                                             | Does not expand the baseline's character bound of the same length.                                                     |
+| Follow-up description                              | `limit:analysis.followupBytes`                                             | Does not expand the baseline's 280-character bound.                                                                    |
 | Follow-ups, remediation steps, validation steps    | `limit:analysis.steps` each                                                | Concrete bounded lists; mandatory nonempty lists where required.                                                       |
 | Blockers, finding references, references per claim | `limit:analysis.references` each                                           | Model explains a bounded subset; all deterministic findings remain outside model ownership.                            |
 

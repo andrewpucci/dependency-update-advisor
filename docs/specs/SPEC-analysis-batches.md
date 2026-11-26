@@ -254,7 +254,8 @@ action and cannot supply either value.
 1. Diagnostics add `callDurationsMs`: one integer per call counted in
    `callsDispatched`, in wave order (the order batches enter a wave, which is
    queue order and independent of completion order). Its length always equals
-   `callsDispatched`, so it is bounded by the 32-call cap.
+   `callsDispatched`, so it is bounded by the `limit:analysis.maxCalls` call
+   cap.
 2. A duration is measured inside the scheduler's per-call wrapper, from just
    before M1 is invoked to the call's settlement, on the injected monotonic
    deadline clock (never `evaluatedAt`), as a non-negative integer (fractions
@@ -273,8 +274,9 @@ action and cannot supply either value.
    a truncation split of a batch at depth _d_ yields two children at depth
    _d_ + 1 and records depth _d_ + 1. A preparation-budget re-pack yields
    children at its parent's depth and does not change `maxSplitDepth`. The
-   midpoint split and the 8-unit batch limit bound it at 3. A value of 2 or
-   more means a half-batch was truncated and split again.
+   midpoint split and the `limit:analysis.maxUnits` batch limit bound it at
+   the base-2 logarithm of that limit, rounded up. A value of 2 or more means
+   a half-batch was truncated and split again.
    `truncationSplits` keeps its meaning.
 4. Both fields are integers only: no payloads, reasoning text, provider
    bodies, or error text. They change no scheduling, retry, split, state

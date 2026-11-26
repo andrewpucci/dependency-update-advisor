@@ -14,8 +14,8 @@ Amendment approved 2026-10-11:
 - Accept the overridable `compatibilityUncertainty`, `supplyChainChange`,
   `licenseChange`, `recentRelease`, and `deprecatedRelease` rules, each
   defaulting to `merge_with_followups`.
-- Accept `policy.minimumReleaseAgeDays`, an integer from 1 through 30 that
-  defaults to 1.
+- Accept `policy.minimumReleaseAgeDays`, an integer from 1 through
+  `limit:config.maxReleaseAgeDays` that defaults to 1.
 - Treat `maliciousPackage` as a fixed hold, not a configurable rule.
 
 The [C3 policy contract](SPEC-advisory-policy.md) defines applicability.
@@ -168,8 +168,9 @@ identifies when a local override changed the default recommendation and still
 displays the underlying evidence and coverage status.
 
 `policy.minimumReleaseAgeDays` sets the `recentRelease` window as an integer
-from 1 through 30 days and defaults to 1. A verified malware advisory always
-holds the update with `do_not_merge`; no configuration can relax it.
+from 1 through `limit:config.maxReleaseAgeDays` days and defaults to 1. A
+verified malware advisory always holds the update with `do_not_merge`; no
+configuration can relax it.
 
 `incompleteEvidence` applies to an assessed decision unit with a visible
 evidence gap. It cannot turn an unassessed unit's `decision_incomplete` state
@@ -189,7 +190,7 @@ record a justified, reviewed fidelity change.
 For a private consumer, this opt-in authorizes only dependency-relevant,
 bounded excerpts from checked-in default-branch source files under its
 configured roots. The reviewer may send the relative path and at most one
-source line of up to `limit:context.maxSourceExcerptCodeUnits` characters
+source line of up to `limit:context.maxSourceExcerptCodeUnits` code units
 containing the dependency name;
 it does not send adjacent lines or whole files.
 

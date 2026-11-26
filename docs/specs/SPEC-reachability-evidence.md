@@ -149,8 +149,8 @@ with no instance makes the verdict `unknown` or `unsupported`. The uv closure
 T4 stays structural, matching the existing proof checks:
 
 - Closed fields at every level; `reachability` is required, may be empty, and
-  holds at most `limit:packet.reachability` records; reasons obey the 32-entry
-  list bound.
+  holds at most `limit:packet.reachability` records; reasons obey the
+  `limit:packet.listEntries` list bound.
 - `anchorId` and `memberId` name known resolved changes in one ecosystem and one
   root on that side. The anchor has role `direct` and an instance on `side`; the
   member has role `transitive` and an instance on `side`. Unknown-role and
@@ -176,8 +176,9 @@ T4 stays structural, matching the existing proof checks:
 - Overflow rejects the packet; it never trims. The existing `limit:packet.bytes`
   packet byte ceiling still applies, and it can bind before the count: a record
   holds three IDs of up to `limit:packet.identityBytes` each, so a worst-case
-  record is above 3 KB, and roughly 330 bytes is only a typical figure. The
-  assembler drops optional evidence first as described under Bounds.
+  record is above three times that, and roughly 330 bytes is only a typical
+  figure. The assembler drops optional evidence first as described under
+  Bounds.
 
 T4 does not claim the traversal was exhaustive. That remains the authenticated
 collector's assertion, stated plainly in the packet spec.
@@ -274,17 +275,18 @@ together and never assign one member to several units.
 
 - Cap: `limit:packet.reachability` verdicts per packet, one new T4 limit beside
   `limit:packet.changes` changes, `limit:packet.relationships` proofs, and
-  32-instance paths. With at most `limit:packet.changes` changes, one
+  paths of `limit:packet.pathInstances` instances. With at most
+  `limit:packet.changes` changes, one
   scope-level `truncated` record per anchor and side (at most twice that) fits
   the cap, so an unfinished anchor can always be reported instead of
   overflowing. Pair counts can pass the cap quickly (19 anchors by 100 members
   by 2 sides is 3,800), so collectors emit pair records only for members with
   one reachable candidate and fall back to scope records for the rest.
 - Proofs: at most two per member (the claimed anchor and one more to evidence
-  ambiguity), and at most 127 members, so at most 254, within the
-  `limit:packet.relationships` cap. Today N2 and U2 emit proofs only for a root
-  with one changed direct dependency; under this draft they emit them for every
-  member with a reachable candidate.
+  ambiguity), and fewer than `limit:packet.changes` members, so at most twice
+  that, within the `limit:packet.relationships` cap. Today N2 and U2 emit
+  proofs only for a root with one changed direct dependency; under this draft
+  they emit them for every member with a reachable candidate.
 - Packet-wide budgets: the `limit:packet.reachability` cap and the
   `limit:packet.bytes` ceiling are per packet, but N2 and U2 run separately and
   a packet can mix npm and uv. Each collector returns its optional evidence

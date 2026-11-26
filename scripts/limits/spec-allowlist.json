@@ -37,7 +37,7 @@
   },
   {
     "file": "docs/specs/SPEC-advisory-lookup.md",
-    "line": "| Discovery page size   | 50                                                        | A 100-record `pillow` page was 1,009,662 bytes against the `limit:evidence.envelope.maxResponseBytes` cap; 50 leaves about half. |",
+    "line": "| Discovery page size   | `limit:advisory.discovery.pageSize`                       | A 100-record `pillow` page was 1,009,662 bytes against the `limit:evidence.envelope.maxResponseBytes` cap; the cited size leaves about half. |",
     "values": [100],
     "reason": "measurement: the 100-record pillow page from the 2026-11-20 probe, an observed page, not a register value"
   },
@@ -178,6 +178,12 @@
     "line": "4. **Budgets.** The completion-token budget rises from 4,096 to",
     "values": [4096],
     "reason": "historical: the prior completion-token budget this amendment replaced, not a register value"
+  },
+  {
+    "file": "docs/specs/SPEC-mistral-transport.md",
+    "line": "| Follow-up description                              | `limit:analysis.followupBytes`                                             | Does not expand the baseline's 280-character bound.                                                                    |",
+    "values": [280],
+    "reason": "historical: the baseline reviewer's bound, not a register value"
   },
   {
     "file": "docs/specs/SPEC-reachability-evidence.md",

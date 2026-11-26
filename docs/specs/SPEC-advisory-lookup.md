@@ -671,12 +671,14 @@ must fit the per-response cap, as evidence coverage §1.6 requires. Approving
 this amendment does not approve the values.
 
 **Group capacity (stated limit, 2026-11-20).** Stage shares are unchanged.
-The malware share (40 requests) was sized at one request per package, so a
-group of only `pip` or `actions` packages, at two or more requests each, now
-completes malware for about 20 packages instead of about 40. Actions reviewed
-lookups take three requests per update instead of two, so the advisory share
-(`limit:evidence.allocation.advisory.maxRequests` requests) covers about 26
-Actions updates instead of about 40. `npm` groups and `pip` reviewed request
+The malware share
+(`limit:evidence.allocation.signals.readers.malware.maxRequests` requests) was
+sized at one request per package, so a group of only `pip` or `actions`
+packages, at two or more requests each, now completes malware for about half
+as many packages. Actions reviewed lookups take three requests per update
+instead of two, so the advisory share
+(`limit:evidence.allocation.advisory.maxRequests` requests) covers about two
+thirds as many Actions updates. `npm` groups and `pip` reviewed request
 counts are unaffected, but bytes are not: Pillow 8.0.0's OSV response is 791,379
 bytes per side, so about three heavily advised `pip` updates exhaust the
 advisory share's `limit:evidence.allocation.advisory.maxTotalBytes`. GitHub's
@@ -689,12 +691,12 @@ comment is corrected to match.
 
 Approved values, from probes on 2026-11-20:
 
-| Value                 | Proposed                                                  | Evidence                                                                                                                         |
-| --------------------- | --------------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------- |
-| Discovery page size   | 50                                                        | A 100-record `pillow` page was 1,009,662 bytes against the `limit:evidence.envelope.maxResponseBytes` cap; 50 leaves about half. |
-| Discovery URL cap     | `limit:advisory.discovery.urlBytes`                       | GitHub accepted discovery URLs of 996, 3,399, and 4,371 bytes and returned 414 at 8,259 and 11,499.                              |
-| Spelling ceiling      | `limit:advisory.discovery.spellingCeiling` (5 separators) | Five-separator names need about 3 discovery requests under the cap; six would need about 9.                                      |
-| OSV per-response size | existing `limit:evidence.envelope.maxResponseBytes` cap   | OSV has no page size; the `pillow` response was 791,379 bytes.                                                                   |
+| Value                 | Proposed                                                  | Evidence                                                                                                                                     |
+| --------------------- | --------------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------- |
+| Discovery page size   | `limit:advisory.discovery.pageSize`                       | A 100-record `pillow` page was 1,009,662 bytes against the `limit:evidence.envelope.maxResponseBytes` cap; the cited size leaves about half. |
+| Discovery URL cap     | `limit:advisory.discovery.urlBytes`                       | GitHub accepted discovery URLs of 996, 3,399, and 4,371 bytes and returned 414 at 8,259 and 11,499.                                          |
+| Spelling ceiling      | `limit:advisory.discovery.spellingCeiling` (5 separators) | Five-separator names need about 3 discovery requests under the cap; six would need about 9.                                                  |
+| OSV per-response size | existing `limit:evidence.envelope.maxResponseBytes` cap   | OSV has no page size; the `pillow` response was 791,379 bytes.                                                                               |
 
 ### Transport
 

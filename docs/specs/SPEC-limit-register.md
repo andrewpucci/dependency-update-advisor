@@ -101,9 +101,10 @@ One module, `src/limits.ts`, defines every limit. Each entry has:
   - `derived`: a formula over other entry ids, evaluated in code, never copied.
     A derived entry may be **structural**: the code's shape bounds the value,
     so no runtime check is needed. One example is signals attempts: at most
-    15 per member, because they come from fixed call sites with no loop over
-    untrusted data, multiplied by the `limit:packet.changes` packet limit. A
-    structural entry names the test that pins it;
+    `limit:signals.attemptsPerMember` per member, because they come from
+    fixed call sites with no loop over untrusted data, multiplied by the
+    `limit:packet.changes` packet limit. A structural entry names the test
+    that pins it;
   - `measured`: the measurement command, the corpus, the statistic (such as
     p95 or max), the headroom, and the date measured;
   - `safety`: why this number protects the named resource. For a guard on
@@ -232,9 +233,9 @@ These are never configurable:
   invalid config. It never clamps the value.
 
 One limit is already adopter configuration: `policy.minimumReleaseAgeDays`,
-an integer from 1 through 30 that defaults to 1. It becomes the first entry
-with `configurable` set. Its bounds, 1 and 30, need a stated basis like any
-other limit.
+an integer from 1 through `limit:config.maxReleaseAgeDays` that defaults
+to 1. It becomes the first entry with `configurable` set. Its bounds, 1 and
+`limit:config.maxReleaseAgeDays`, need a stated basis like any other limit.
 
 Configuration is read only from the trusted default-branch file, as today. The
 v1 parser rejects unknown keys, so a new `limits` section needs a parser
@@ -254,14 +255,16 @@ phase 3:
   token. Hard maximum: the documented `GITHUB_TOKEN` rate limit
   (`limit:github.token.restRequestsPerHour` requests per hour per repository)
   less headroom.
-- **Model analysis:** calls (32), concurrency (2), and analysis time
+- **Model analysis:** calls (`limit:analysis.maxCalls`), concurrency
+  (`limit:analysis.maxConcurrentCalls`), and analysis time
   (`limit:analysis.maxAnalysisMs`). Hard maximum: the provider's documented
   limits and the job window.
 - **Completion tokens:** `limit:analysis.completionTokens`. Hard maximum: the
   provider's maximum output tokens.
 - **Job budget and evidence deadline:** `limit:job.budget` and
-  `limit:evidence.envelope.totalTimeoutMs`. Hard maximum: the 6-hour hosted-job
-  limit. This needs a new reusable-workflow
+  `limit:evidence.envelope.totalTimeoutMs`. Hard maximum: the
+  `limit:github.hostedJobMaxMinutes` hosted-job limit. This needs a new
+  reusable-workflow
   input, because `timeout-minutes` lives in the shared workflow. The pipeline
   must derive its job window from that input.
 

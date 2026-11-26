@@ -47,9 +47,9 @@ An empty context result is not evidence that a dependency has no usages.
   stays unchanged.
 - The [selected B1 baseline](../../tests/parity/README.md) supplies the existing
   source suffix family, `limit:context.maxSourceExcerptCodeUnits` excerpt
-  cap, and 20-fact cap per dependency. Its manifest and workflow context are
-  not source-file opt-in; evidence collectors retain ownership of those data
-  under their own specs.
+  cap, and `limit:context.maxSourceFactsPerDependency` fact cap per
+  dependency. Its manifest and workflow context are not source-file opt-in;
+  evidence collectors retain ownership of those data under their own specs.
 - C2 retains that source suffix family rather than adding Python or
   another file class. A uv dependency can have no eligible source context;
   that limit must remain visible rather than inventing usage evidence.
@@ -307,18 +307,18 @@ These are approved bounded-work ceilings, not measured performance targets.
 Existing C1 and baseline bounds remain unchanged. Raising a ceiling requires
 review; no consumer can configure it.
 
-| Constant                          | Approved value                            | Behavior at the boundary                                                   |
-| --------------------------------- | ----------------------------------------- | -------------------------------------------------------------------------- |
-| `MAX_CONTEXT_DEPENDENCIES`        | `limit:context.maxDependencies`           | Reject excess input before enumeration or content reads                    |
-| `MAX_CONTEXT_ID_CODE_UNITS`       | `limit:context.maxIdCodeUnits`            | Bound each dependency ID and name; reject invalid input                    |
-| `MAX_CONTEXT_PATH_BYTES`          | `limit:context.maxPathBytes`              | Reject oversized configured/inventory paths before filesystem operations   |
-| `MAX_TRACKED_PATH_ENTRIES`        | `limit:context.maxTrackedPathEntries`     | Count duplicates too; stop with partial status on one overflow record      |
-| `MAX_SOURCE_CANDIDATES`           | `limit:context.maxSourceCandidates`       | Deduplicate eligible paths; stop with partial status on overflow           |
-| `MAX_SOURCE_FILE_BYTES`           | `limit:context.maxSourceFileBytes`        | Read at most cap plus one probe byte; omit an incomplete or oversized file |
-| `MAX_TOTAL_SOURCE_READ_BYTES`     | `limit:context.maxTotalSourceReadBytes`   | Count all returned bytes including probes; stop content reads at the cap   |
-| `MAX_SOURCE_EXCERPT_CODE_UNITS`   | `limit:context.maxSourceExcerptCodeUnits` | Existing cap; preserve complete characters and the dependency name         |
-| `MAX_SOURCE_FACTS_PER_DEPENDENCY` | 20                                        | Existing cap; expose partial status if further safe matches exist          |
-| `MAX_SOURCE_CONTEXT_BYTES`        | `limit:context.maxSourceContextBytes`     | UTF-8 bytes of the complete serialized public result, including metadata   |
+| Constant                          | Approved value                              | Behavior at the boundary                                                   |
+| --------------------------------- | ------------------------------------------- | -------------------------------------------------------------------------- |
+| `MAX_CONTEXT_DEPENDENCIES`        | `limit:context.maxDependencies`             | Reject excess input before enumeration or content reads                    |
+| `MAX_CONTEXT_ID_CODE_UNITS`       | `limit:context.maxIdCodeUnits`              | Bound each dependency ID and name; reject invalid input                    |
+| `MAX_CONTEXT_PATH_BYTES`          | `limit:context.maxPathBytes`                | Reject oversized configured/inventory paths before filesystem operations   |
+| `MAX_TRACKED_PATH_ENTRIES`        | `limit:context.maxTrackedPathEntries`       | Count duplicates too; stop with partial status on one overflow record      |
+| `MAX_SOURCE_CANDIDATES`           | `limit:context.maxSourceCandidates`         | Deduplicate eligible paths; stop with partial status on overflow           |
+| `MAX_SOURCE_FILE_BYTES`           | `limit:context.maxSourceFileBytes`          | Read at most cap plus one probe byte; omit an incomplete or oversized file |
+| `MAX_TOTAL_SOURCE_READ_BYTES`     | `limit:context.maxTotalSourceReadBytes`     | Count all returned bytes including probes; stop content reads at the cap   |
+| `MAX_SOURCE_EXCERPT_CODE_UNITS`   | `limit:context.maxSourceExcerptCodeUnits`   | Existing cap; preserve complete characters and the dependency name         |
+| `MAX_SOURCE_FACTS_PER_DEPENDENCY` | `limit:context.maxSourceFactsPerDependency` | Existing cap; expose partial status if further safe matches exist          |
+| `MAX_SOURCE_CONTEXT_BYTES`        | `limit:context.maxSourceContextBytes`       | UTF-8 bytes of the complete serialized public result, including metadata   |
 
 Check string length before computing UTF-8 path size so a hostile oversized
 path cannot cause unbounded inspection. Do not read an overflowing inventory
@@ -452,9 +452,10 @@ Required fixture groups:
   the `limit:context.maxSourceExcerptCodeUnits` excerpt cap, multiline
   private-key material, ordinary safe imports, matches beyond the retained
   prefix, and a safe match after a rejected line.
-- Exact excerpt-cap (`limit:context.maxSourceExcerptCodeUnits`) and 20-fact
-  boundaries, multibyte text, duplicate matches, deterministic ordering, and
-  each selected read/count/serialized-byte budget at and beyond its limit.
+- Exact excerpt-cap (`limit:context.maxSourceExcerptCodeUnits`) and fact-cap
+  (`limit:context.maxSourceFactsPerDependency`) boundaries, multibyte text,
+  duplicate matches, deterministic ordering, and each selected
+  read/count/serialized-byte budget at and beyond its limit.
   Prove limits stop work instead of slicing an unbounded read after
   collection.
 - Failure with no partial excerpts, safe diagnostics, and correct disabled,
