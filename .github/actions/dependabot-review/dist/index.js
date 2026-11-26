@@ -21709,8 +21709,11 @@ function comparePublishing(input, output, change, sides, times) {
 	}
 }
 async function npmSide(input, output, change, side, reader) {
-	const target = resolveAdvisoryTarget(input, change, side) ? metadataTarget(input, change, side) : null;
-	const result = reader && target ? await reader.read(target) : {
+	const eligible = resolveAdvisoryTarget(input, change, side), target = eligible ? metadataTarget(input, change, side) : null;
+	const result = !eligible ? {
+		kind: "unavailable",
+		reason: unresolvedReasons(change, side)[0]
+	} : reader && target ? await reader.read(target) : {
 		kind: "unavailable",
 		reason: "unsupported"
 	};
@@ -21929,7 +21932,10 @@ function unknownReleaseFacts(reason) {
 }
 async function pypiReleaseSide(input, change, side, instance, reader) {
 	const target = resolveAdvisoryTarget(input, change, side);
-	const result = target && reader ? await reader.read({
+	const result = !target ? {
+		kind: "unavailable",
+		reason: unresolvedReasons(change, side)[0]
+	} : reader ? await reader.read({
 		kind: "pypi",
 		name: target.name,
 		version: target.version,

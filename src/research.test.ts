@@ -829,10 +829,17 @@ function cutMembers(packet: ReadyResearch['packet'], reason: string) {
 }
 
 /** Each cut member reports the upstream stop's reason, never `unsupported`, in every lookup category. */
-function expectStopReason(result: ReadyResearch, cut: readonly ResearchedChange[], reason: string) {
+function expectStopReason(
+  result: ReadyResearch,
+  cut: readonly ResearchedChange[],
+  reason: string,
+  registryCategories: Readonly<Partial<Record<'npm' | 'uv', readonly string[]>>> = {},
+) {
   for (const change of cut) {
     const categories = ['vulnerability', 'malware'];
     if (change.ecosystem === 'npm') categories.push('publishTime');
+    if (change.ecosystem !== 'actions')
+      categories.push(...(registryCategories[change.ecosystem] ?? []));
     for (const category of categories) {
       const evidence = (
         change.evidence as Readonly<Record<string, ResearchedChange['evidence']['upstream']>>
@@ -841,9 +848,11 @@ function expectStopReason(result: ReadyResearch, cut: readonly ResearchedChange[
         status: 'unavailable',
         reasons: [reason],
       });
-      const query = evidence?.sourceIds[0];
-      const reasons = result.packet.sources.find((s) => s.id === query)?.reasons;
-      expect(reasons, `${change.id} ${category} source`).toEqual([reason]);
+      expect(evidence?.sourceIds.length, `${change.id} ${category} sources`).toBeGreaterThan(0);
+      for (const id of evidence?.sourceIds ?? []) {
+        const reasons = result.packet.sources.find((s) => s.id === id)?.reasons;
+        expect(reasons, `${change.id} ${category} source ${id}`).toEqual([reason]);
+      }
     }
   }
 }
@@ -872,7 +881,11 @@ test('a member whose identity proof an exhausted upstream share cut reports budg
     'npm',
     'uv',
   ]);
-  expectStopReason(result, cut, 'budget');
+  // The npm and PyPI metadata categories share the vulnerability rule.
+  expectStopReason(result, cut, 'budget', {
+    npm: ['trust', 'publisher', 'deprecation'],
+    uv: ['publishTime', 'deprecation'],
+  });
   // The member that kept its proof was looked up.
   const kept = result.packet.changes.filter(
     (change) => change.ecosystem === 'npm' && change.evidence.vulnerability.status === 'available',
