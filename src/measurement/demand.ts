@@ -54,29 +54,36 @@ export type DemandReport = {
     ceiling: number;
     refusals: number;
     /**
-     * The lowest valid core `x-ratelimit-remaining` in the latest quota window seen this run, by
-     * the guard's validity and window rules (`quotaReading`), applied to every live GitHub API
-     * response the run made: snapshot, session, and research alike. It is not the guard's
-     * estimate, which sees only research responses and subtracts requests started since. Within a
-     * window it never rises. Null before any valid reading.
+     * The lowest valid core `x-ratelimit-remaining` among the quota counters whose reset is still
+     * in the future at the end of the run, by the guard's validity rules (`quotaReading`) and its
+     * one estimate per counter (Q1), applied to every live GitHub API response the run made:
+     * snapshot, session, and research alike. It is not the guard's estimate, which sees only
+     * research responses and subtracts requests started since. Null with no live counter.
      */
     lastRemaining: number | null;
-    /** That window's reset as an ISO time, or null before any valid reading. */
+    /** That counter's reset as an ISO time, or null with no live counter. */
     lastReset: string | null;
-    /** How many quota windows the run saw: more than one means a reset fell inside the run. */
-    windows: number;
-    /** Valid readings above their window's lowest so far: the raw headers' non-monotonic steps. */
-    risesWithinWindow: number;
+    /**
+     * Each quota counter seen this run, by reset, with its lowest reading, in order of reset. Two
+     * counters whose resets differ by more than a few seconds, interleaving in the trace and
+     * differing in `used`, are separate GitHub counters; resets a second apart are jitter.
+     */
+    counters: QuotaCounterReport[];
+    /** Valid readings above an earlier reading with the same reset: non-monotonic steps. */
+    risesWithinCounter: number;
     /**
      * GitHub API responses carrying `x-ratelimit-remaining` whose reading is not used: another
-     * resource, an invalid remaining or reset, a reset that is past or beyond the quota window, or
-     * a reset earlier than the current window's. A response without the header is not counted.
+     * resource, an invalid remaining or reset, or a reset that is past or beyond the quota window.
+     * A response without the header is not counted.
      */
     ignoredReadings: number;
     /** Present only when the recorder was built with `trace`; see `QuotaTraceEntry`. */
     trace?: QuotaTraceEntry[];
   };
 };
+
+/** One quota counter the run saw: its reset as an ISO time and the lowest remaining it reported. */
+export type QuotaCounterReport = { reset: string; lowestRemaining: number };
 
 /**
  * One GitHub API response's rate-limit headers, in the order responses completed. No URL, token,
@@ -244,15 +251,15 @@ export function createDemandRecorder(
     wallNow: options.wallNow ?? Date.now,
     windowMs: limit('research.githubQuota.windowMs'),
   };
-  let quotaWindow: QuotaReading | null = null;
-  let windows = 0;
-  let risesWithinWindow = 0;
+  /** Lowest reading per counter, keyed by reset; counters are kept after they reset. */
+  const quotaCounters = new Map<number, number>();
+  let risesWithinCounter = 0;
   let ignoredReadings = 0;
   let githubStarted = 0;
   const trace: QuotaTraceEntry[] = [];
 
-  // The guard's window rule, without its count of requests started: a later reset starts a new
-  // window, an earlier one is ignored, and within a window only a lower remaining is kept.
+  // The guard's counter rule, without its count of requests started, since the recorder only
+  // observes: each reset is its own counter, and within a counter only a lower remaining is kept.
   const readQuota = (
     url: string,
     response: Response,
@@ -275,17 +282,26 @@ export function createDemandRecorder(
       if (response.headers.has('x-ratelimit-remaining')) ignoredReadings += 1;
       return;
     }
-    if (!quotaWindow || reading.reset > quotaWindow.reset) {
-      quotaWindow = reading;
-      windows += 1;
-    } else if (reading.reset < quotaWindow.reset) {
-      // Still in the future, so the local clock runs behind GitHub's; the guard ignores it too.
-      ignoredReadings += 1;
-    } else if (reading.remaining > quotaWindow.remaining) {
-      risesWithinWindow += 1;
-    } else {
-      quotaWindow = reading;
+    const lowest = quotaCounters.get(reading.reset);
+    if (lowest !== undefined && reading.remaining > lowest) risesWithinCounter += 1;
+    else quotaCounters.set(reading.reset, reading.remaining);
+  };
+
+  /** The lowest reading among counters whose reset is still in the future, with its reset. */
+  const lowestLive = (): QuotaReading | null => {
+    const now = quotaOptions.wallNow();
+    let lowest: QuotaReading | null = null;
+    for (const [reset, remaining] of quotaCounters) {
+      if (reset <= now) continue;
+      // A tie keeps the earlier reset, so the report doesn't depend on arrival order.
+      if (
+        !lowest ||
+        remaining < lowest.remaining ||
+        (remaining === lowest.remaining && reset < lowest.reset)
+      )
+        lowest = { remaining, reset };
     }
+    return lowest;
   };
 
   const observe = (observation: ResearchObservation) => {
@@ -345,6 +361,7 @@ export function createDemandRecorder(
 
     for (const row of [...Object.values(byPhaseHost), ...Object.values(byShare)])
       row.maxMs = Math.round(row.maxMs);
+    const live = lowestLive();
 
     return {
       totalRequests: samples.length,
@@ -363,10 +380,15 @@ export function createDemandRecorder(
         ).length,
         ceiling: limit('research.githubQuota.researchCeiling'),
         refusals: quota?.refusals() ?? 0,
-        lastRemaining: quotaWindow?.remaining ?? null,
-        lastReset: quotaWindow ? new Date(quotaWindow.reset).toISOString() : null,
-        windows,
-        risesWithinWindow,
+        lastRemaining: live?.remaining ?? null,
+        lastReset: live ? new Date(live.reset).toISOString() : null,
+        counters: [...quotaCounters]
+          .sort(([a], [b]) => a - b)
+          .map(([reset, lowestRemaining]) => ({
+            reset: new Date(reset).toISOString(),
+            lowestRemaining,
+          })),
+        risesWithinCounter,
         ignoredReadings,
         ...(options.trace ? { trace: trace.map((entry) => ({ ...entry })) } : {}),
       },

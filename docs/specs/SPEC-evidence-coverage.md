@@ -683,3 +683,148 @@ orders them before B12.
 
 - Resolved 2026-11-21: release subjects cannot be counted at the start of the
   upstream stage, so B11 counts members only (A1.2).
+
+## Quota Counter Amendment
+
+**Status: approved for execution by the user, 2026-11-26
+([#447](https://github.com/andrewpucci/dependency-update-advisor/issues/447)),
+after a fresh-context review whose blocking finding was resolved.**
+It replaces A2.2's window rule, A3.1's retry time for a guard refusal, and the
+demand recorder's single-window report (A2.8). Conforming edits elsewhere are
+listed under "Text this supersedes".
+
+### Why
+
+The #438 live trace on 2026-11-26 (personal token, PR #276 corpus, recorded
+in [PR #445](https://github.com/andrewpucci/dependency-update-advisor/pull/445))
+found two `core` counters on one token. Advisory and signals reads reported
+one counter; every other read reported the other, whose reset was about
+770 s later. Both named limit 5000 and resource `core`, and their `used`
+counts differed. `gh api rate_limit` showed only the second counter.
+
+A2.2 tracks one window: a later reset replaces the estimate, and an earlier
+reset is ignored. The guard therefore follows whichever counter has the later
+reset. When that counter has more remaining than the other, the estimate is
+too high, and research can spend quota that isn't there.
+
+### Q1. One estimate per counter
+
+1. **Counters.** The guard identifies a counter by the reset time a valid
+   response names (A2.3). Each distinct reset still in the future is a live
+   counter. A counter is cleared when the wall clock reaches its reset.
+2. **Per-counter estimate.** Each counter keeps its own estimate and its own
+   count of research requests started since its last accepted reading. A
+   reading naming that counter's reset is accepted only when its remaining
+   is at or below the counter's current estimate; the estimate becomes that
+   remaining and the counter's started count returns to zero. A counter's
+   estimate is its last accepted remaining less its started count. A reading
+   for one counter never changes another counter's estimate or count.
+3. **Charging.** A response cannot say in advance which counter it will draw
+   from, so every GitHub research request started is added to every live
+   counter's started count. This is conservative: a counter that receives no
+   readings is charged for requests that drew on another counter, so research
+   can be refused while the counter it would draw on still has quota. No
+   charge is refunded by the counter a response names, because a reset that
+   varies by a second between responses (item 5) would refund the wrong
+   counter.
+4. **Estimate and refusal.** The guard's estimate is the lowest per-counter
+   estimate. It refuses a request when any live counter's estimate, less
+   one, would fall below the reserve (A2.5). A reading that adds a counter
+   never raises the estimate. Only a counter clearing can raise it.
+5. **Reset jitter.** If one counter's reported reset differs by a second
+   between responses, the guard holds two live counters for it. Each is
+   conservative, so this lowers the estimate or leaves it unchanged, and
+   never raises it.
+6. **Bound.** Resets are whole seconds within the quota window (A2.3), so at
+   most `limit:research.githubQuota.windowMs` divided by one second live
+   counters exist at once, and expired counters are dropped. This is
+   structural, not a chosen limit, so no register entry is needed.
+7. **Unchanged.** A2.2's other rules stand: cached responses are never read,
+   a missing or invalid header leaves the estimate unchanged, and with no
+   live counter only the per-stage shares bound the run.
+
+Clock skew: a late response from a counter that has already reset, whose old
+reset still looks future on a runner clock behind GitHub's, adds a counter
+with a low reading. That lowers the estimate until its reset passes, which
+errs on the side of refusing. A runner clock ahead of GitHub's clears a
+counter early, and readings naming its reset are invalid until GitHub resets
+it. That is the unguarded gap A2.5 already accepts, limited by ordinary skew.
+
+### Q2. Retry time
+
+For a guard refusal, the retry time is the latest reset among the live
+counters that would refuse the request (Q1.4). A counter that would admit the
+request does not set it. When those counters have all cleared, the remaining
+counters admit the request unless requests started during the wait have
+spent them, and A3.2's limit on waits per reader then ends it `rate_limit`.
+That time is the one A4 renders.
+
+### Q3. Measurement
+
+The demand recorder applies Q1's counters to every GitHub API response it
+sees, without started counts, since it only observes. At the end of the run:
+
+- `counters` lists each counter seen, as its reset and its lowest reading.
+  It is bounded by the run's responses, like `trace`, and replaces
+  `windows`.
+- `lastRemaining` is the lowest reading among counters whose reset is still
+  in the future at the end of the run, and `lastReset` is that counter's
+  reset.
+- `risesWithinWindow` becomes `risesWithinCounter`: readings above an
+  earlier reading with the same reset.
+- `ignoredReadings` no longer counts readings that name an earlier reset.
+
+Two counters whose resets differ by more than a few seconds, which interleave
+in the trace and differ in `used`, are separate GitHub counters. Resets a
+second apart are jitter.
+
+### Text this supersedes
+
+- A2.2: "A valid response naming a later reset starts a new window and
+  replaces both" and "A response naming an earlier reset than the current
+  window's is ignored", replaced by Q1.
+- A2.4: "window expiry" means counter expiry (Q1.1).
+- A2.5: "the first after each reset is sent unguarded" holds only while no
+  counter is live. Until a new counter's first response arrives, requests are
+  unguarded with respect to that counter.
+- A2.7: "once the window's reset passes and the estimate is cleared" means
+  once every counter that would refuse the request has cleared.
+- A3.1: "the reset time of the estimate's window", replaced by Q2.
+- Amendment verification: "once the reported reset passes" and "keeping the
+  estimate across a reset" apply per counter.
+
+### Quota counter verification
+
+- Two counters reporting interleaved readings with different resets, in
+  both arrival orders and with either counter having the later reset: the
+  estimate never exceeds the lower counter's.
+- A new counter with higher remaining leaves the estimate unchanged.
+- When the lower counter clears, the estimate moves to the other counter's,
+  less the requests started since that counter's accepted reading.
+- A late reading from an already-reset counter, with the runner clock behind,
+  lowers the estimate until its reset passes.
+- Resets T and T + 1 s from one counter: the refusal's retry time is T + 1 s.
+- Two refusing counters: the retry time is the later reset, and it reaches
+  the packet's `retryAfter`. A refusing and an admitting counter: the retry
+  time is the refusing counter's reset.
+- The demand recorder's `lastRemaining` is the lower live counter's reading,
+  and `counters` lists both.
+- Named mutations fail those checks:
+  - letting a later reset replace an earlier live counter;
+  - ignoring a reading that names an earlier, still-future reset;
+  - charging a started request only to the newest counter;
+  - sharing one started count across counters, or resetting every counter's
+    count on any reading;
+  - a same-reset reading replacing the estimate instead of being accepted
+    only at or below it;
+  - keeping a counter after its reset passes, or clearing every counter when
+    one expires;
+  - taking the retry time from the lowest counter when another live counter
+    would also refuse;
+  - the recorder keeping the single-window rule.
+
+### Quota counter open questions
+
+- Does the workflow `GITHUB_TOKEN` show the same split? The trace used a
+  personal token. A no-write R1 run with `MEASURE_QUOTA_TRACE=1` would show
+  it, using the criterion in Q3. The rule above is safe either way.

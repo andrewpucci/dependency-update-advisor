@@ -269,8 +269,8 @@ test('reports research GitHub requests against the R1 ceiling, with refusals and
     refusals: 3,
     lastRemaining: 98,
     lastReset: '2026-11-25T00:30:00.000Z',
-    windows: 1,
-    risesWithinWindow: 0,
+    counters: [{ reset: '2026-11-25T00:30:00.000Z', lowestRemaining: 98 }],
+    risesWithinCounter: 0,
     ignoredReadings: 0,
   });
   // No body, token, or URL reaches the report.
@@ -285,8 +285,8 @@ test('without a guard, the report shows no refusals and no quota until GitHub re
     refusals: 0,
     lastRemaining: null,
     lastReset: null,
-    windows: 0,
-    risesWithinWindow: 0,
+    counters: [],
+    risesWithinCounter: 0,
     ignoredReadings: 0,
   });
 });
@@ -303,7 +303,7 @@ test('the R1 ceiling is the sum of the research request ceilings and scales with
   expect(scaled.get('research.githubQuota.researchCeiling')?.value).toBe(10 * sum(REGISTER));
 });
 
-test('counts only research-stage GitHub requests and keeps the lowest quota in the window', async () => {
+test('counts only research-stage GitHub requests and keeps the lowest quota in the counter', async () => {
   const recorder = createDemandRecorder(() => 0, { wallNow: () => WALL });
   const remaining = ['40', '30', '35', '50'];
   let call = 0;
@@ -321,11 +321,12 @@ test('counts only research-stage GitHub requests and keeps the lowest quota in t
   await fetch('https://api.github.com/repos/o/r/pulls/1', {});
   const report = recorder.report({});
   expect(report.github.researchRequests).toBe(2);
-  // Within one window the report never rises: 35 and 50 arrived after 30 for the same reset.
-  expect(report.github).toMatchObject({ lastRemaining: 30, windows: 1, risesWithinWindow: 2 });
+  // Within one counter the report never rises: 35 and 50 arrived after 30 for the same reset.
+  expect(report.github).toMatchObject({ lastRemaining: 30, risesWithinCounter: 2 });
+  expect(report.github.counters).toHaveLength(1);
 });
 
-test('reports the quota as the guard reads it: core only, lowest per window, raised by a reset (#438)', async () => {
+test('reports the quota as the guard reads it: core only, lowest per counter, one counter per reset (#438)', async () => {
   const wall = { now: WALL };
   const later = String(Number(RESET) + 60 * 60);
   // Out of completion order, with other resources, another host, and invalid resets mixed in.
@@ -353,12 +354,13 @@ test('reports the quota as the guard reads it: core only, lowest per window, rai
   expect(seen).toEqual([97, 97, 97, 97, 97, 97, 96, 96]);
   expect(recorder.report({}).github).toMatchObject({
     lastReset: '2026-11-25T00:30:00.000Z',
-    windows: 1,
-    risesWithinWindow: 2,
+    counters: [{ reset: '2026-11-25T00:30:00.000Z', lowestRemaining: 96 }],
+    risesWithinCounter: 2,
     ignoredReadings: 3,
   });
 
-  // The next window's reading raises it; a late reading from the old window does not.
+  // Once the first counter resets, its late reading is invalid and the next counter's reading
+  // is the live one; the counter that reset is still listed.
   wall.now = WALL + 31 * 60 * 1000;
   responses.set('https://api.github.com/h', quotaHeaders('3'));
   responses.set('https://api.github.com/i', quotaHeaders('999', later));
@@ -367,26 +369,88 @@ test('reports the quota as the guard reads it: core only, lowest per window, rai
   expect(recorder.report({}).github).toMatchObject({
     lastRemaining: 999,
     lastReset: '2026-11-25T01:30:00.000Z',
-    windows: 2,
+    counters: [
+      { reset: '2026-11-25T00:30:00.000Z', lowestRemaining: 96 },
+      { reset: '2026-11-25T01:30:00.000Z', lowestRemaining: 999 },
+    ],
     ignoredReadings: 4,
   });
 
-  // A reset earlier than the current window's but still ahead of the wall clock (the local clock
-  // behind GitHub's) changes nothing and is counted as ignored; a response without rate-limit
-  // headers is not counted at all.
+  // A reset earlier than the latest one but still ahead of the wall clock is another live counter,
+  // not an ignored reading, and its lower reading is the one reported; a response without
+  // rate-limit headers is not counted at all.
   const earlier = String(Number(RESET) + 10 * 60);
   responses.set('https://api.github.com/j', quotaHeaders('5', earlier));
   responses.set('https://api.github.com/k', {});
   await fetch('https://api.github.com/j', {});
   await fetch('https://api.github.com/k', {});
   expect(recorder.report({}).github).toMatchObject({
-    lastRemaining: 999,
-    lastReset: '2026-11-25T01:30:00.000Z',
-    windows: 2,
-    risesWithinWindow: 2,
-    ignoredReadings: 5,
+    lastRemaining: 5,
+    lastReset: '2026-11-25T00:40:00.000Z',
+    risesWithinCounter: 2,
+    ignoredReadings: 4,
   });
+  expect(recorder.report({}).github.counters).toHaveLength(3);
   expect(recorder.report({}).github.trace).toBeUndefined();
+});
+
+/** A recorder that has seen one GitHub API response per `[remaining, reset]` reading, in order. */
+async function recorded(readings: readonly [string, string][], wall: { now: number }) {
+  const recorder = createDemandRecorder(() => 0, { wallNow: () => wall.now });
+  let call = 0;
+  const fetch = recorder.wrap(async () => {
+    const [remaining, reset] = readings[call++]!;
+    return new Response('{}', quotaHeaders(remaining, reset));
+  });
+  for (let i = 0; i < readings.length; i++) await fetch('https://api.github.com/rate', {});
+  return recorder;
+}
+
+test('reports the lower of two interleaved live counters and lists both (#447)', async () => {
+  const wall = { now: WALL };
+  // Two core counters on one token, one resetting about 770 s before the other. Here the
+  // later-reset counter is the lower one, and each counter's readings arrive between the other's.
+  const early = String(Number(RESET) - 770);
+  const recorder = await recorded(
+    [
+      ['4000', early],
+      ['60', RESET],
+      ['3998', early],
+      ['58', RESET],
+      ['3997', early],
+    ],
+    wall,
+  );
+  expect(recorder.report({}).github).toMatchObject({
+    lastRemaining: 58,
+    lastReset: '2026-11-25T00:30:00.000Z',
+    counters: [
+      { reset: '2026-11-25T00:17:10.000Z', lowestRemaining: 3997 },
+      { reset: '2026-11-25T00:30:00.000Z', lowestRemaining: 58 },
+    ],
+    risesWithinCounter: 0,
+    ignoredReadings: 0,
+  });
+
+  // With the earlier-reset counter the lower one, the other is reported once it resets.
+  const flipped = await recorded(
+    [
+      ['4000', RESET],
+      ['40', early],
+      ['3999', RESET],
+    ],
+    wall,
+  );
+  expect(flipped.report({}).github).toMatchObject({
+    lastRemaining: 40,
+    lastReset: '2026-11-25T00:17:10.000Z',
+  });
+  wall.now = Number(early) * 1000;
+  expect(flipped.report({}).github).toMatchObject({
+    lastRemaining: 3999,
+    lastReset: '2026-11-25T00:30:00.000Z',
+  });
+  expect(flipped.report({}).github.counters).toHaveLength(2);
 });
 
 test('a quota trace reports an unexpected header value as invalid', async () => {

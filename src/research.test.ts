@@ -592,6 +592,39 @@ test('stops research GitHub requests at the quota reserve, keeping other hosts a
     );
 });
 
+test('a refusal by two quota counters records the later reset as the packet retry time (#447)', async () => {
+  const { fixture, packet } = await scenario();
+  const wall = Date.parse('2026-11-21T00:00:00Z');
+  const reserve = limit('research.githubQuota.reserve');
+  // One token, two core counters, both past research's deadline. The first response names the
+  // later reset with one request to spare; the second names the earlier reset, already below the
+  // reserve. Both counters then refuse, and the lower one does not set the retry time.
+  const early = Math.floor(wall / 1000) + 20 * 60;
+  const late = early + 20 * 60;
+  const readings = [
+    { remaining: reserve + 1, reset: late },
+    { remaining: reserve - 1, reset: early },
+  ];
+  let github = 0;
+  const fetch = async (url: string, init: RequestInit) => {
+    const response = await (fixture.fetch as (u: string, i: RequestInit) => Promise<Response>)(
+      url,
+      init,
+    );
+    if (new URL(url).host !== 'api.github.com') return response;
+    const reading = readings[github++];
+    if (!reading) throw new Error('the guard sent a request both counters refuse');
+    const headers = new Headers(response.headers);
+    headers.set('x-ratelimit-remaining', String(reading.remaining));
+    headers.set('x-ratelimit-reset', String(reading.reset));
+    return new Response(response.body, { status: response.status, headers });
+  };
+  const result = await runResearch({ ...base(fixture, packet), fetch, wallNow: () => wall });
+  if (result.kind !== 'ready') throw new Error(result.kind);
+  expect(github).toBe(2);
+  expect(result.packet.retryAfter).toBe('2026-11-21T00:40:00Z');
+});
+
 test('uses an injected quota guard for every research GitHub request', async () => {
   const { fixture, packet } = await scenario();
   const hosts: string[] = [];
