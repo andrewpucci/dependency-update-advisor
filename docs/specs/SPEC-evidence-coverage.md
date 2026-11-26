@@ -103,7 +103,20 @@ retained bytes. Package count overstates the first and ignores the second.
    having run.
 5. Retained evidence stays within the review packet limits. When retention
    would exceed them, members are kept in the priority order of section 3.5,
-   and members beyond the limit become `unavailable` with `budget`.
+   and members beyond the limit become `unavailable` with `budget`. Each
+   stage measures its changes, sources, and findings against the packet byte
+   limit less what the packet holds outside them. Diagnostics that never
+   enter the packet, such as attempt and lookup records, count only toward
+   the research retained-byte limit. If the enriched packet still exceeds a
+   packet limit at revalidation, optional evidence gives way before required
+   research. The lowest-priority members' `publishTime`, `deprecation`,
+   `trust`, and `publisher` become `unavailable` with `budget` first, and
+   their optional signal sources and findings, license included, leave the
+   packet. Required research (`upstream`, `installScript`,
+   `vulnerability`, `malware`) reverts, lowest priority first, only if the
+   packet does not fit with every member's optional signals stripped; the
+   members that keep their research then keep no optional signals. Status:
+   approved by the maintainer on 2026-11-26.
 6. A reader requests list pages small enough to fit the per-response cap.
    Raising the cap is not the fix.
 
@@ -234,7 +247,10 @@ owns how these states and actions are rendered.
 - **Packet limits.** A fixture whose retained evidence would exceed the review
   packet limits keeps the highest-priority members' evidence and marks the
   rest `unavailable` with `budget`. The mutation "mark every member
-  `malformed` when the packet overflows" fails.
+  `malformed` when the packet overflows" fails. At revalidation, a packet
+  that fits once the lowest-priority members' optional signals are stripped
+  keeps every member's required research; the mutations "revert before
+  stripping" and "strip the highest-priority members first" fail.
 - **Identity survival.** With upstream stopped early, S1 still looks up every
   member with a registry identity proof.
 - **Cache.** Identical research requests are read once and charged once.

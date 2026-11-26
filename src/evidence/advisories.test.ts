@@ -968,3 +968,48 @@ test('the pre-pass never hands pip targets to settle', async () => {
   expect(settled.length).toBeGreaterThan(0);
   expect(settled.some((t) => t.ecosystem === 'pip')).toBe(false);
 });
+
+const packetPart = ({ changes, sources, findings }: Record<string, unknown>) =>
+  Buffer.byteLength(JSON.stringify({ changes, sources, findings }));
+
+test('advisories keep every member at a research byte bound equal to their packet bytes and cut one byte under it', async () => {
+  const { input } = await fixture(true, 3);
+  const run = async (packetBytes?: number) => {
+    const reader = realReader();
+    try {
+      return await enrichAdvisories(
+        { ...input, ...(packetBytes === undefined ? {} : { packetBytes }) },
+        { reader },
+      );
+    } finally {
+      reader.close();
+    }
+  };
+  const full = await run();
+  if (full.kind !== 'enriched') throw new Error(JSON.stringify(full));
+  const bound = packetPart(full);
+  // The lookups never enter the packet, so the whole output is larger than the bound.
+  // Mutation "count lookups against the bound": the at-bound run would cut a member.
+  expect(Buffer.byteLength(JSON.stringify(full))).toBeGreaterThan(bound);
+  expect(await run(bound)).toEqual(full);
+  const under = await run(bound - 1);
+  if (under.kind !== 'enriched') throw new Error(JSON.stringify(under));
+  expect(packetPart(under)).toBeLessThanOrEqual(bound - 1);
+  const members = under.changes.filter((c) => !('basis' in c));
+  expect(members.some((m) => vulnerability(under, m.id).reasons.includes('budget'))).toBe(true);
+});
+
+test.each([0, -1, 1.5, '1', limit('packet.bytes') + 1])(
+  'advisories refuse a research byte bound of %s',
+  async (bound) => {
+    const { input } = await fixture();
+    const reader = realReader();
+    try {
+      expect(
+        await enrichAdvisories({ ...input, packetBytes: bound as number }, { reader }),
+      ).toEqual({ kind: 'invalid' });
+    } finally {
+      reader.close();
+    }
+  },
+);

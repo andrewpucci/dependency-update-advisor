@@ -424,12 +424,56 @@ test('upstream bounds keep exactly research.maxAttempts attempts and refuse one 
     ...normal,
     attempts: Array.from({ length: count }, (_, i) => normal.attempts[i % normal.attempts.length]),
   });
-  expect(() => upstreamBounds(padded(cap), limits)).not.toThrow();
+  expect(() => upstreamBounds(padded(cap), { limits })).not.toThrow();
   let reason: unknown;
   try {
-    upstreamBounds(padded(cap + 1), limits);
+    upstreamBounds(padded(cap + 1), { limits });
   } catch (error) {
     reason = (error as { reason?: unknown }).reason;
   }
   expect(reason).toBe('budget');
 });
+
+const packetPart = ({ changes, sources, findings }: Record<string, unknown>) =>
+  Buffer.byteLength(JSON.stringify({ changes, sources, findings }));
+
+test('upstream keeps every member at a research byte bound equal to its packet bytes and cuts one byte under it', async () => {
+  const input = await fixture(3);
+  const run = async (packetBytes?: number) => {
+    const r = registryReader({});
+    try {
+      return await enrichUpstream(
+        { ...input, ...(packetBytes === undefined ? {} : { packetBytes }) },
+        { reader: r.reader },
+      );
+    } finally {
+      r.reader.close();
+    }
+  };
+  const full = await run();
+  if (full.kind !== 'enriched') throw new Error(JSON.stringify(full));
+  const bound = packetPart(full);
+  // Attempts, identities, and mappings never enter the packet, so the whole output is larger.
+  // Mutation "count them against the bound": the at-bound run would cut a member.
+  expect(Buffer.byteLength(JSON.stringify(full))).toBeGreaterThan(bound);
+  expect(await run(bound)).toEqual(full);
+  const under = await run(bound - 1);
+  if (under.kind !== 'enriched') throw new Error(JSON.stringify(under));
+  expect(packetPart(under)).toBeLessThanOrEqual(bound - 1);
+  expect(under.changes.some((c) => c.evidence.upstream?.reasons.includes('budget'))).toBe(true);
+});
+
+test.each([0, -1, 1.5, '1', limit('packet.bytes') + 1])(
+  'upstream refuses a research byte bound of %s',
+  async (bound) => {
+    const input = await fixture(3);
+    const r = registryReader({});
+    try {
+      expect(
+        await enrichUpstream({ ...input, packetBytes: bound as number }, { reader: r.reader }),
+      ).toEqual({ kind: 'invalid' });
+    } finally {
+      r.reader.close();
+    }
+  },
+);

@@ -11,7 +11,13 @@ import {
 import type { Finding } from '../policy.js';
 import type { NpmInventoryResult, NpmNode } from './npm.js';
 import type { PublicPackageIdentity, ActionVersionMapping } from './advisories.js';
-import { freeze, isPlainObject, isEvidencePath } from './common.js';
+import {
+  freeze,
+  isPlainObject,
+  isEvidencePath,
+  packetBytesOf,
+  validPacketBytes,
+} from './common.js';
 import { publicRegistry } from './advisory-evidence.js';
 import { collectActionResearch, type ActionMappingDraft } from './upstream-actions.js';
 import { collectRangeFallback, collectChangelog } from './upstream-range.js';
@@ -45,6 +51,11 @@ export type UpstreamInput = Readonly<{
   findings: readonly ReadonlyData<Finding>[];
   limits: UpstreamLimits;
   npmInventory?: ReadonlyData<Inventory>;
+  /**
+   * The bytes changes, sources, and findings may take in the review packet: the packet limit less
+   * what the packet carries outside them. Absent, the whole packet limit.
+   */
+  packetBytes?: number;
 }>;
 export type UpstreamAttempt = Readonly<{
   memberId: string;
@@ -158,6 +169,7 @@ function prepare(value: unknown, limits: UpstreamLimits): UpstreamInput {
   requireUpstream(isPlainObject(cloned));
   const input = cloned as unknown as UpstreamInput;
   requireUpstream(isDeepStrictEqual(parseReviewBinding(input.binding), input.binding));
+  requireUpstream(validPacketBytes(input.packetBytes));
   requireUpstream(Array.isArray(input.changes) && input.changes.length <= PACKET_LIMITS.changes);
   requireUpstream(Array.isArray(input.sources) && input.sources.length <= PACKET_LIMITS.sources);
   requireUpstream(Array.isArray(input.findings) && input.findings.length <= PACKET_LIMITS.findings);
@@ -334,13 +346,36 @@ function outputBytes(output: UpstreamEnrichment, current?: PacketChange) {
     lists.reduce((total, list) => total + arrayBytes(list), 0)
   );
 }
-function bounds(output: UpstreamEnrichment, limits: UpstreamLimits, current?: PacketChange) {
+const PACKET_PART_SHELL = Buffer.byteLength(
+  JSON.stringify({ changes: [], sources: [], findings: [] }),
+);
+/** Exactly `Buffer.byteLength(JSON.stringify({ changes, sources, findings }))`, the packet part. */
+function packetPartBytes(output: UpstreamEnrichment, current?: PacketChange) {
+  const lists = [output.sources, output.findings];
+  return (
+    PACKET_PART_SHELL -
+    2 * (lists.length + 1) +
+    arrayBytes(output.changes, current) +
+    lists.reduce((total, list) => total + arrayBytes(list), 0)
+  );
+}
+/**
+ * The packet part fits the research byte bound, and the whole output, with the attempts,
+ * identities, and mappings that never enter the packet, fits the retained-byte limit.
+ */
+function bounds(
+  output: UpstreamEnrichment,
+  input: Pick<UpstreamInput, 'limits' | 'packetBytes'>,
+  current?: PacketChange,
+) {
+  const { limits } = input;
   requireUpstream(
     output.sources.length <= PACKET_LIMITS.sources && output.attempts.length <= limits.maxAttempts,
     'budget',
   );
   requireUpstream(
-    outputBytes(output, current) <= Math.min(limits.maxRetainedBytes, PACKET_LIMITS.bytes),
+    packetPartBytes(output, current) <= packetBytesOf(input) &&
+      outputBytes(output, current) <= limits.maxRetainedBytes,
     'budget',
   );
 }
@@ -831,7 +866,7 @@ async function enrichChange(
     const result = await collectActionResearch(change, reader);
     attachActionMappings(input, output, change, result.mappings);
     attachUpstreamResearch(input, output, change, result.research);
-    bounds(output, input.limits, change);
+    bounds(output, input, change);
     return;
   }
   mark(checkpoint(output, index));
@@ -839,11 +874,11 @@ async function enrichChange(
   for (const side of ['base', 'head'] as const) {
     const lookup = await metadata(input, output, change, side, reader, pypiReader);
     if (lookup) lookups.set(side, lookup);
-    bounds(output, input.limits, change);
+    bounds(output, input, change);
   }
   mark(checkpoint(output, index));
   await packageResearch(input, output, change, lookups, reader);
-  bounds(output, input.limits, change);
+  bounds(output, input, change);
 }
 /** Enrich exact inventory identities; caller retains inventory coverage and relationships separately. */
 export async function enrichUpstream(
@@ -874,7 +909,7 @@ export async function enrichUpstream(
     actionVersions: [],
   };
   try {
-    bounds(output, input.limits);
+    bounds(output, input);
     for (let index = 0; index < output.changes.length; index++) {
       const marks: Checkpoint[] = [];
       try {

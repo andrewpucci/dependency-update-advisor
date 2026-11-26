@@ -21,6 +21,7 @@ import { limit } from './limits.js';
 import type { PacketChange } from './schema.js';
 import * as schemaModule from './schema.js';
 import { validateReviewPacket } from './schema.js';
+import { researchPacketBytes } from './revalidation.js';
 
 vi.mock('./evidence/advisories.js', async (original) => {
   const actual = await original<typeof import('./evidence/advisories.js')>();
@@ -178,6 +179,24 @@ test('feeds upstream proofs to advisory lookup and signals, and returns a revali
     expect(kinds.has(kind as never)).toBe(true);
   expect(result.upstreamAttempts.length).toBeGreaterThan(0);
   expect(result.signalAttempts.length).toBeGreaterThan(0);
+});
+
+test('hands every stage the research byte bound of the collected packet', async () => {
+  const { fixture, packet } = await scenario();
+  const stages = [
+    upstreamModule.enrichUpstream,
+    advisoryModule.enrichAdvisories,
+    policySignalsModule.enrichPolicySignals,
+  ].map((stage) => vi.mocked(stage));
+  for (const stage of stages) stage.mockClear();
+  const result = await runResearch(base(fixture, packet));
+  expect(result.kind).toBe('ready');
+  const bound = researchPacketBytes(packet);
+  expect(bound).toBeLessThan(limit('packet.bytes'));
+  for (const stage of stages) {
+    expect(stage).toHaveBeenCalledTimes(1);
+    expect(stage.mock.calls[0][0]).toMatchObject({ packetBytes: bound });
+  }
 });
 
 test('shares exact PyPI release reads between upstream evidence and policy signals', async () => {
@@ -1650,3 +1669,93 @@ test('the upstream reader spends exactly research.maxWork units and refuses the 
   expect(reader.stopped?.()).toBe('budget');
   expect(reader.stopLimit?.()).toBe('maxWork');
 });
+
+/** Members that still carry optional signal sources (signal records other than malware). */
+function optionalMembers(candidate: unknown): number {
+  const { sources } = candidate as { sources: { id: string; kind: string; memberIds: string[] }[] };
+  return new Set(
+    sources
+      .filter((source) => source.id.startsWith('signal:') && source.kind !== 'malware')
+      .flatMap((source) => source.memberIds),
+  ).size;
+}
+
+/** Every source an attempt cites is in the packet and belongs to the attempt's member. */
+function expectAttemptsCited(
+  result: Extract<Awaited<ReturnType<typeof runResearch>>, { kind: 'ready' }>,
+) {
+  for (const attempt of result.signalAttempts)
+    for (const id of attempt.sourceIds)
+      expect(
+        result.packet.sources.some(
+          (source) => source.id === id && source.memberIds.includes(attempt.memberId),
+        ),
+        `${attempt.memberId} ${attempt.category} ${id}`,
+      ).toBe(true);
+}
+
+/** Renders the research packet as the pipeline does, with analysis unavailable. */
+async function renderResearched(
+  result: Extract<Awaited<ReturnType<typeof runResearch>>, { kind: 'ready' }>,
+) {
+  const { parseReviewConfig } = await import('./config.js');
+  const { formDecisionUnits } = await import('./units.js');
+  const { analyzeDecisionUnits } = await import('./analysis/batches.js');
+  const { renderDecisionBrief } = await import('./reporting.js');
+  const inventory = formDecisionUnits(result.packet);
+  const config = parseReviewConfig(
+    JSON.stringify({ version: 1, analysis: { provider: 'mistral', model: 'synthetic-model' } }),
+  );
+  const analysis = await analyzeDecisionUnits(
+    { inventory, config, evaluatedAt: evaluationTime },
+    { deadlineMs: 700_000 },
+    { now: () => 0 },
+  );
+  if (!analysis.ok) throw new Error('analysis');
+  return renderDecisionBrief({
+    binding: result.packet.binding,
+    generatedAt: '2026-11-08T00:00:00.000Z',
+    coverage: analysis.coverage,
+    records: analysis.records,
+    analysisUnavailable: analysis.analysisUnavailable,
+    signalAttempts: result.signalAttempts,
+    signalBinding: result.packet.binding,
+  });
+}
+
+test.each(['strip', 'revert'] as const)(
+  'after revalidation must %s members over a packet limit, their attempts cite only kept sources and the brief renders',
+  async (mode) => {
+    const { fixture, packet } = await scenario({ vulnerableNpm: true });
+    // Room for one member's optional signals (strip), or one member's research (revert).
+    vi.mocked(schemaModule.validateReviewPacket).mockImplementation((candidate, trusted) =>
+      (mode === 'strip' ? optionalMembers(candidate) : enrichedMembers(candidate, packet)) > 1
+        ? { ok: false, error: { category: 'budget', field: 'packet' } }
+        : actualSchema.validateReviewPacket(candidate, trusted),
+    );
+    const result = await runResearch(base(fixture, packet));
+    vi.mocked(schemaModule.validateReviewPacket).mockImplementation(
+      actualSchema.validateReviewPacket,
+    );
+    if (result.kind !== 'ready') throw new Error('research');
+    expect(result.unavailable).toContainEqual({ stage: 'revalidation', reason: 'budget' });
+    if (mode === 'strip') {
+      // Every member keeps its required research; only one keeps optional signals.
+      expect(enrichedMembers(result.packet, packet)).toBe(
+        packet.changes.filter((c) => !('basis' in c)).length,
+      );
+      expect(optionalMembers(result.packet)).toBe(1);
+    } else expect(enrichedMembers(result.packet, packet)).toBe(1);
+    // Mutation "keep the attempts research recorded": an attempt cites a source that left.
+    expectAttemptsCited(result);
+    // The brief checks the same references; it rendered nothing before attempts were rewritten.
+    const rendered = await renderResearched(result);
+    expect(rendered.ok, JSON.stringify(rendered)).toBe(true);
+    const rewritten = result.signalAttempts.filter(
+      (a) => a.outcome === 'skipped' && a.reasons.join() === 'budget',
+    );
+    expect(rewritten.length).toBeGreaterThan(0);
+    if (mode === 'revert') expect(rewritten.some((a) => a.category === 'malware')).toBe(true);
+    else expect(rewritten.every((a) => a.category !== 'malware')).toBe(true);
+  },
+);
