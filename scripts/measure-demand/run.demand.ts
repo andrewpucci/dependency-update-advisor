@@ -352,6 +352,7 @@ test('measure research read demand', async () => {
         npmInventory: npmInventory as never,
         comparison: null,
         fetch: publicFetch,
+        githubToken: true,
         cache: researchCache,
         quota,
         now,

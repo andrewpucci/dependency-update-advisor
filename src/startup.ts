@@ -210,6 +210,8 @@ export async function runStartup(
       sink,
       githubFetch: authenticatedFetch(runtime.githubToken, dependencies.fetch),
       publicFetch: researchFetch(runtime.githubToken, dependencies.fetch),
+      // researchFetch adds the read token to every api.github.com request.
+      publicFetchToken: true,
       model: dependencies.model,
       now: dependencies.now,
       jobStartedAt,

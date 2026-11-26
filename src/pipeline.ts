@@ -55,6 +55,8 @@ export type PipelineInput = Readonly<{
   githubFetch: (url: string, init: RequestInit) => Promise<Response>;
   /** Fetch for public registries and advisory sources; only api.github.com carries a credential. */
   publicFetch: (url: string, init: RequestInit) => Promise<Response>;
+  /** Whether `publicFetch` adds the read token to api.github.com requests, as `researchFetch` does. */
+  publicFetchToken?: boolean;
   model?: AssessmentInput['model'];
   /** Monotonic milliseconds. */
   now: () => number;
@@ -479,6 +481,7 @@ async function evaluateEvidence(
             npmInventory: npmInventory as never,
             comparison: null,
             fetch: input.publicFetch,
+            ...(input.publicFetchToken ? { githubToken: true } : {}),
             cache: researchCache,
             now: input.now,
             deadline: evidenceDeadline,

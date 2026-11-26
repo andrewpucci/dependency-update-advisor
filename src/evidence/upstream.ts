@@ -17,6 +17,8 @@ import { collectRangeFallback, collectChangelog } from './upstream-range.js';
 import {
   collectTargetRelease,
   collectPackageComparison,
+  packageTagCandidates,
+  settleTagExistence,
   type UpstreamResearch,
   type UpstreamDocument,
 } from './upstream-github.js';
@@ -32,6 +34,7 @@ import {
   type UpstreamReader,
   type UpstreamTarget,
   type MetadataTarget,
+  type TagCandidate,
 } from './upstream-read.js';
 import type { PolicyMetadataReader } from './policy-signals-read.js';
 
@@ -415,22 +418,31 @@ function metadataCoverage(
     }
   }
 }
-async function metadata(
+async function metadataLookup(
   input: UpstreamInput,
-  output: UpstreamEnrichment,
   change: PacketChange,
   side: 'base' | 'head',
   reader: UpstreamReader,
   pypiReader?: PolicyMetadataReader,
-) {
+): Promise<UpstreamLookup | undefined> {
   const instance = side === 'base' ? change.from : change.to;
   if (!instance) return;
   const target = metadataTarget(input, change, side);
-  const lookup: UpstreamLookup = target
+  return target
     ? target.kind === 'pypi' && pypiReader
       ? await sharedPyPILookup(target, pypiReader)
       : await reader.read(target)
     : { status: 'unavailable', fetched: false, url: null, data: null, reasons: ['unsupported'] };
+}
+function metadata(
+  input: UpstreamInput,
+  output: UpstreamEnrichment,
+  change: PacketChange,
+  side: 'base' | 'head',
+  lookup: UpstreamLookup | undefined,
+) {
+  const instance = side === 'base' ? change.from : change.to;
+  if (!instance || !lookup) return;
   const sourceIds: string[] = [];
   if (lookup.status === 'available') {
     const source = metadataSource(input, change, side, lookup);
@@ -815,12 +827,81 @@ function markUnresearched(output: UpstreamEnrichment, from: number, reason: Evid
   for (let index = from; index < output.changes.length; index++)
     if (!('basis' in output.changes[index])) rollback(output, checkpoint(output, index), reason);
 }
+/** A member side's metadata lookup as read ahead, or what it threw. */
+type Prefetched = Readonly<{ lookup?: UpstreamLookup; error?: unknown }>;
+type MemberLookups = Map<'base' | 'head', Prefetched>;
+/**
+ * Reads every package member's metadata before any member's tags are probed, so the pre-pass sees
+ * every candidate (amendment item 1). A side that throws ends its member, as it does in the member
+ * loop. Reading stops at a reader stop; `stopAt` names the member whose read it was.
+ */
+async function prefetchMetadata(
+  input: UpstreamInput,
+  changes: readonly PacketChange[],
+  reader: UpstreamReader,
+  pypiReader: PolicyMetadataReader | undefined,
+) {
+  const members = new Map<number, MemberLookups>();
+  for (const [index, change] of changes.entries()) {
+    if ('basis' in change || change.ecosystem === 'actions') continue;
+    const sides: MemberLookups = new Map();
+    members.set(index, sides);
+    for (const side of ['base', 'head'] as const) {
+      try {
+        sides.set(side, { lookup: await metadataLookup(input, change, side, reader, pypiReader) });
+      } catch (error) {
+        sides.set(side, { error });
+        break;
+      }
+    }
+    if (reader.stopped?.()) return { members, stopAt: index };
+  }
+  return { members, stopAt: null };
+}
+/** The exact tags the upstream stage may probe for one member: its target and comparison base. */
+function memberTagCandidates(
+  change: PacketChange,
+  sides: MemberLookups,
+  reader: UpstreamReader,
+): TagCandidate[] {
+  if (change.ecosystem === 'actions' || 'basis' in change) return [];
+  const instance = change.to ?? change.from,
+    lookup = sides.get(change.to ? 'head' : 'base')?.lookup,
+    base = sides.get('base')?.lookup;
+  const candidates: TagCandidate[] = [];
+  const side = (name: string, version: string, data: Readonly<Record<string, unknown>>) =>
+    candidates.push(
+      ...packageTagCandidates(
+        { ecosystem: change.ecosystem, name, version, metadata: data },
+        reader,
+      ),
+    );
+  if (instance && lookup?.data) side(instance.name, instance.version, lookup.data);
+  if (change.from && change.to && base?.data)
+    side(change.from.name, change.from.version, base.data);
+  return candidates;
+}
+/** One existence query pass over every member's candidates; a failure leaves them to REST. */
+async function tagPrepass(
+  changes: readonly PacketChange[],
+  members: Map<number, MemberLookups>,
+  reader: UpstreamReader,
+) {
+  try {
+    const candidates = [...members].flatMap(([index, sides]) =>
+      memberTagCandidates(changes[index], sides, reader),
+    );
+    await settleTagExistence(reader, candidates);
+  } catch {
+    // Unanswered candidates are probed over REST as today.
+  }
+}
 async function enrichChange(
   input: UpstreamInput,
   output: UpstreamEnrichment,
   change: PacketChange,
   reader: UpstreamReader,
-  pypiReader: PolicyMetadataReader | undefined,
+  prefetched: MemberLookups | undefined,
   index: number,
   mark: (point: Checkpoint) => unknown,
 ) {
@@ -836,7 +917,10 @@ async function enrichChange(
   mark(checkpoint(output, index));
   const lookups = new Map<string, UpstreamLookup>();
   for (const side of ['base', 'head'] as const) {
-    const lookup = await metadata(input, output, change, side, reader, pypiReader);
+    const read = prefetched?.get(side);
+    if (read && 'error' in read) throw read.error;
+    const lookup = read?.lookup;
+    metadata(input, output, change, side, lookup);
     if (lookup) lookups.set(side, lookup);
     bounds(output, input.limits, change);
   }
@@ -874,6 +958,9 @@ export async function enrichUpstream(
   };
   try {
     bounds(output, input.limits);
+    const { reader, pypiReader } = dependencies;
+    const { members, stopAt } = await prefetchMetadata(input, output.changes, reader, pypiReader);
+    if (stopAt === null) await tagPrepass(output.changes, members, reader);
     for (let index = 0; index < output.changes.length; index++) {
       const marks: Checkpoint[] = [];
       try {
@@ -881,8 +968,8 @@ export async function enrichUpstream(
           input,
           output,
           output.changes[index],
-          dependencies.reader,
-          dependencies.pypiReader,
+          reader,
+          members.get(index),
           index,
           (p) => marks.push(p),
         );
@@ -890,8 +977,9 @@ export async function enrichUpstream(
         const point = marks.at(-1);
         if (point) rollback(output, point, upstreamFailureReason(error));
       }
-      // A stopped reader refuses every later read, so the rest are unresearched, not failed.
-      const stopped = dependencies.reader.stopped?.() ?? null;
+      // A stopped reader refuses every later read, so the rest are unresearched, not failed. A stop
+      // while reading ahead counts from the member whose read it was.
+      const stopped = stopAt === null || index >= stopAt ? (reader.stopped?.() ?? null) : null;
       if (stopped) {
         output.stopped = stopped;
         markUnresearched(output, index + 1, stopped);

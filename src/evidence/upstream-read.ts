@@ -82,6 +82,11 @@ export type TagCandidate = Readonly<{ repository: string; tag: string }>;
  * and `unknown` both leave it to the REST probe, which alone proves a tag.
  */
 export type TagExistence = 'absent' | 'present' | 'unknown';
+/**
+ * One research run's existence answers, keyed by repository and exact tag (amendment item 7). The
+ * run creates it, its upstream readers share it, and it is discarded when the run ends.
+ */
+export type TagExistenceMap = Map<string, TagExistence>;
 export type UpstreamReader = Readonly<{
   limits: UpstreamLimits;
   read: (target: unknown) => Promise<UpstreamLookup>;
@@ -91,6 +96,8 @@ export type UpstreamReader = Readonly<{
    * in flight answers every candidate `unknown`.
    */
   tagExistence?: (candidates: readonly TagCandidate[]) => Promise<readonly TagExistence[]>;
+  /** The run's existence map, when research gave this reader one. */
+  existence?: TagExistenceMap;
   close: () => void;
   spend: (amount: number) => void;
   /** The reason this reader refuses all further reads, or null while it can still read. */
@@ -113,6 +120,8 @@ export type UpstreamDependencies = {
    * without it every tag existence answer is `unknown` and nothing is sent.
    */
   githubToken?: boolean;
+  /** The run's existence map, exposed on the reader for the pre-pass and the ref probe. */
+  existence?: TagExistenceMap;
 };
 export class UpstreamFailure extends Error {
   constructor(readonly reason: EvidenceReason) {
@@ -912,6 +921,7 @@ export function createUpstreamReader(
         spend: (amount: number) => reader.spend(amount),
         stopped: () => reader.stopReason(),
         stopLimit: () => reader.stopLimit(),
+        ...(deps.existence ? { existence: deps.existence } : {}),
       }),
     };
   } catch {

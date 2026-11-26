@@ -15,6 +15,7 @@ import { fileURLToPath } from 'node:url';
 import { afterAll, beforeAll, expect, test } from 'vite-plus/test';
 import { eventFile, mockGithub } from './parity/startup-github.js';
 import { upstreamScenario } from './parity/upstream.js';
+import { GITHUB_GRAPHQL_URL, tagExistenceQuery } from '../src/evidence/upstream-read.js';
 
 const repo = fileURLToPath(new URL('..', import.meta.url));
 const entry = '.github/actions/dependabot-review/dist/index.js';
@@ -205,19 +206,38 @@ test('shipped action reports the no-key reason without any evidence request', ()
 });
 
 const MODEL_ENDPOINT = 'https://api.mistral.ai/v1/chat/completions';
-type Request = { method: string; url: string; authorization: string | null };
+type Request = { method: string; url: string; authorization: string | null; body?: unknown };
 
 const OSV_QUERY = 'https://api.osv.dev/v1/query';
+/** Whether a body is exactly the fixed tag existence query for its own candidate count. */
+function isTagExistenceQuery(body: unknown): boolean {
+  try {
+    const sent = JSON.parse(String(body)) as { query?: unknown; variables?: object };
+    const count = Object.keys(sent.variables ?? {}).filter((key) => /^q\d+$/.test(key)).length;
+    return count > 0 && sent.query === tagExistenceQuery(count);
+  } catch {
+    return false;
+  }
+}
 /**
- * True for any request a no-write rehearsal must never make. Two requests are exempt: the one
- * model call, a POST to the Mistral endpoint carrying the model key, and the OSV query, a POST
- * that only reads and carries no credential (W2 Amendment 6). Every other write, status or comment
- * path, or credential other than the read token is a defect.
+ * True for any request a no-write rehearsal must never make. Three requests are exempt: the one
+ * model call, a POST to the Mistral endpoint carrying the model key; the OSV query, a POST that
+ * only reads and carries no credential (W2 Amendment 6); and the fixed GraphQL tag existence
+ * query, a POST that only reads and carries the read token (S2 Batched Tag Existence Amendment
+ * item 8). Every other write, status or comment path, or credential other than the read token is
+ * a defect.
  */
-function isLiveWrite({ method, url, authorization }: Request, modelKey: string): boolean {
+function isLiveWrite({ method, url, authorization, body }: Request, modelKey: string): boolean {
   if (method === 'POST' && url === MODEL_ENDPOINT && authorization === `Bearer ${modelKey}`)
     return false;
   if (method === 'POST' && url === OSV_QUERY && authorization === null) return false;
+  if (
+    method === 'POST' &&
+    url === GITHUB_GRAPHQL_URL &&
+    authorization === 'Bearer read-token' &&
+    isTagExistenceQuery(body)
+  )
+    return false;
   return (
     method !== 'GET' ||
     /\/(statuses|comments)(\/|$)/.test(new URL(url).pathname) ||
@@ -234,6 +254,36 @@ test('the no-write guard exempts the credential-free OSV query and nothing else 
   expect(isLiveWrite({ ...query, method: 'PUT' }, key)).toBe(true);
   expect(isLiveWrite({ ...query, url: 'https://api.osv.dev/v1/querybatch' }, key)).toBe(true);
   expect(isLiveWrite({ ...query, url: 'https://api.osv.dev/v1/vulns/GHSA-x' }, key)).toBe(true);
+});
+test('the no-write guard exempts the read-token tag existence query and no other GraphQL', () => {
+  const key = 'model-key';
+  const body = JSON.stringify({
+    query: tagExistenceQuery(1),
+    variables: { o0: 'o', n0: 'r', q0: 'refs/tags/v1.0.0' },
+  });
+  const query = {
+    method: 'POST',
+    url: GITHUB_GRAPHQL_URL,
+    authorization: 'Bearer read-token',
+    body,
+  };
+  expect(isLiveWrite(query, key)).toBe(false);
+  expect(isLiveWrite({ ...query, authorization: null }, key)).toBe(true);
+  expect(isLiveWrite({ ...query, authorization: `Bearer ${key}` }, key)).toBe(true);
+  expect(isLiveWrite({ ...query, method: 'PUT' }, key)).toBe(true);
+  expect(isLiveWrite({ ...query, body: undefined }, key)).toBe(true);
+  expect(
+    isLiveWrite(
+      { ...query, body: JSON.stringify({ query: 'mutation { x }', variables: {} }) },
+      key,
+    ),
+  ).toBe(true);
+  expect(
+    isLiveWrite(
+      { ...query, body: JSON.stringify({ query: tagExistenceQuery(2), variables: { q0: 'x' } }) },
+      key,
+    ),
+  ).toBe(true);
 });
 test('the no-write guard exempts exactly the one model call', () => {
   const key = 'model-key';
@@ -393,6 +443,7 @@ async function startWithModelReply(modelReply: ModelReply) {
           method: message.method,
           url: message.url,
           authorization: message.authorization,
+          body: message.body,
         };
         if (isLiveWrite(request, sentinel)) violations.push(`${message.method} ${message.url}`);
         if (message.url === MODEL_ENDPOINT) {

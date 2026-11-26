@@ -1238,6 +1238,24 @@ test('hands research the injected wall clock', async () => {
   expect(researchModule.runResearch).toHaveBeenCalledWith(expect.objectContaining({ wallNow }));
 });
 
+test.each([
+  [true, true],
+  [false, undefined],
+  [undefined, undefined],
+])(
+  'tells research the public fetch carries a token only when it does (%s)',
+  async (publicFetchToken, githubToken) => {
+    vi.mocked(researchModule.runResearch).mockClear();
+    const { input } = await setup({ evidence: 'changes' });
+    await runReview({
+      ...input,
+      ...(publicFetchToken === undefined ? {} : { publicFetchToken }),
+    });
+    const [call] = vi.mocked(researchModule.runResearch).mock.calls;
+    expect(call[0].githubToken).toBe(githubToken);
+  },
+);
+
 test('builds the collectors and context from the default-branch revision, never a PR SHA', async () => {
   vi.mocked(npmModule.collectNpmInventory).mockClear();
   vi.mocked(researchModule.runResearch).mockClear();
