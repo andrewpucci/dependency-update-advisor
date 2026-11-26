@@ -8906,14 +8906,15 @@ const B12_FIT = {
 };
 const FIT_NOTE = "the B12 fit approved 2026-11-26 (#370) keeps this dimension at its ceiling with every rate at 0";
 const FIT_BASE_STATISTIC = "1.25 × the highest measured demand among the one-to-three-member PRs (#123 and #172), rounded up";
-const FIT_RATE_STATISTIC = "the smallest rate giving every uncensored PR 1.25 × its measured demand, rounded up to the next 0.1; the fit gives direct and transitive the same rate unless a direct cost replaces it";
+const FIT_RATE_STATISTIC = "the smallest rate giving every uncensored PR 1.25 × its measured demand, rounded up to the next 0.1; upstream gives direct and transitive the same rate";
 const FIT_ZERO_STATISTIC = {
 	role: "the fit sets this rate to 0: every member is direct or transitive, so those rates carry the scaling and added and removed add nothing",
 	signals: "the fit sets this rate to 0: a signals reader scales with its own eligible members, and malware also with its direct members"
 };
 /**
 * The B12 fit's request bases and non-zero rates. A fitted share's other rates are 0. Every share
-* and dimension not listed keeps its base at its ceiling with every rate at 0.
+* and dimension not listed keeps its base at its ceiling with every rate at 0. The advisory and
+* malware rates are sized from request costs instead (`COST_SIZED`).
 */
 const FITTED_REQUESTS = {
 	upstream: {
@@ -8927,14 +8928,14 @@ const FITTED_REQUESTS = {
 		base: 3,
 		rates: {
 			direct: 3,
-			transitive: .2
+			transitive: 2
 		}
 	},
 	"signals.malware": {
 		base: 2,
 		rates: {
 			direct: 2,
-			eligible: .1
+			eligible: 1
 		}
 	},
 	"signals.publishTimes": {
@@ -8942,23 +8943,43 @@ const FITTED_REQUESTS = {
 		rates: { eligible: 1.2 }
 	}
 };
+const COSTS_TEST = "npx vp test run src/evidence/advisory-read.costs.test.ts";
+const PER_TARGET = "per-target lookup in src/evidence/advisory-read.ts (`query`: OSV for pip reviewed, else `discover` for non-npm targets, then `versioned`)";
 /**
-* Direct-member rates sized from the unbatched per-target request cost rather than fitted from the
-* corpus, approved by the user on 2026-11-26 with the fit (#370). Actions and pip members are
-* direct, and their lookups are not settled by an npm batch.
+* Advisory and malware rates sized from the unbatched per-target request cost rather than fitted
+* from the corpus, so a change whose batches fail, or are not used, still fits its share. Approved
+* by the user on 2026-11-26 in the B12 thread (#370). An incomplete batch settles nothing, so its
+* targets fall back to these per-target lookups (`settle`, `discoveryBatch`); pip reviewed lookups
+* always go to OSV one target at a time. Actions and pip members are direct.
 */
-const DIRECT_COST = {
+const COST_SIZED = {
 	advisory: {
-		command: "npx vp test run src/evidence/advisory-read.costs.test.ts",
-		corpus: "one Actions update (base and head) in the costs test, read through the per-target reviewed lookup in src/evidence/advisory-read.ts (`query`, then `discover` and `versioned`), whose discovery reads base and head share; S1's Group capacity statement",
-		statistic: "an Actions reviewed lookup takes 3 requests per update: one stored-name discovery, then a versioned query for each of base and head",
-		headroom: "none beyond the per-update cost; transitive npm members keep the fitted rate"
+		direct: {
+			command: COSTS_TEST,
+			corpus: `one Actions update (base and head) in the costs test, read through the ${PER_TARGET}, whose discovery reads base and head share; S1's Group capacity statement`,
+			statistic: "an Actions reviewed lookup takes 3 requests per update: one stored-name discovery, then a versioned query for each of base and head",
+			headroom: "none beyond the per-update cost"
+		},
+		transitive: {
+			command: COSTS_TEST,
+			corpus: `one npm and one pip update (base and head) in the costs test, read through the ${PER_TARGET}`,
+			statistic: "an unbatched npm or pip reviewed lookup takes 2 requests per member: one versioned GitHub query or one OSV query for each of base and head",
+			headroom: "none beyond the per-member cost; a paged response takes more"
+		}
 	},
 	"signals.malware": {
-		command: "npx vp test run src/evidence/advisory-read.costs.test.ts",
-		corpus: "one Actions update in the costs test, read through the per-target malware lookup in src/evidence/advisory-read.ts (`query`, then `discover` and `versioned`), which reads the proposed side only; Actions malware is never batched",
-		statistic: "an Actions or pip malware lookup takes 2 requests: one stored-name discovery, then the versioned query",
-		headroom: "none beyond the per-member cost; the eligible rate still adds to it"
+		direct: {
+			command: COSTS_TEST,
+			corpus: `one Actions update in the costs test, read through the ${PER_TARGET}, which reads the proposed side only; Actions malware is never batched`,
+			statistic: "an Actions or pip malware lookup takes 2 requests: one stored-name discovery, then the versioned query",
+			headroom: "none beyond the per-member cost; the eligible rate adds to it"
+		},
+		eligible: {
+			command: COSTS_TEST,
+			corpus: `one npm update in the costs test, read through the ${PER_TARGET}, which reads the proposed side only`,
+			statistic: "an unbatched npm malware lookup takes 1 request per member: the versioned query for the proposed side; the direct rate covers the second request of an Actions or pip lookup",
+			headroom: "none beyond the per-member cost; a paged response takes more"
+		}
 	}
 };
 /** A value fitted to the B12 demand corpus, or sized with it; `basis` says how this one was. */
@@ -8980,11 +9001,11 @@ function fitted(id, value, unit, basis, audit) {
 		test: audit.test
 	};
 }
-/** Why a fitted share's rate has its value: the measured rate, its direct cost, or why it is 0. */
+/** Why a fitted share's rate has its value: its request cost, the measured rate, or why it is 0. */
 function rateBasis(share, unit, rate) {
-	const direct = unit === "direct" ? DIRECT_COST[share] : void 0;
-	if (direct) return {
-		...direct,
+	const cost = COST_SIZED[share]?.[unit];
+	if (cost) return {
+		...cost,
 		measured: B12_FIT.measured
 	};
 	if (rate > 0) return FIT_RATE_STATISTIC;

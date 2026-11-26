@@ -1,34 +1,5 @@
-import { RESEARCH_SHARE_PARAMETERS, type ResearchShareParameters } from '../../src/budget.js';
+import type { ResearchShareParameters } from '../../src/budget.js';
 import { REGISTER } from '../../src/limits.js';
-
-type ShareParameters = ResearchShareParameters['upstream'];
-type ShareDimension = ShareParameters['requests'];
-
-const atCeiling = (dimension: ShareDimension): ShareDimension => ({
-  base: dimension.ceiling,
-  ceiling: dimension.ceiling,
-  rates: Object.fromEntries(Object.keys(dimension.rates).map((unit) => [unit, 0])),
-});
-const shareAtCeiling = (share: ShareParameters): ShareParameters => ({
-  requests: atCeiling(share.requests),
-  bytes: atCeiling(share.bytes),
-});
-
-/**
- * Every research share at its ceiling, as before the B12 fit. For runs the fit does not size,
- * such as an unbatched advisory baseline over a large npm group, whose per-target lookups take
- * more requests per transitive member than the fitted rate allows.
- */
-export const CEILING_SHARES: ResearchShareParameters = {
-  upstream: shareAtCeiling(RESEARCH_SHARE_PARAMETERS.upstream),
-  advisory: shareAtCeiling(RESEARCH_SHARE_PARAMETERS.advisory),
-  signals: Object.fromEntries(
-    Object.entries(RESEARCH_SHARE_PARAMETERS.signals).map(([reader, share]) => [
-      reader,
-      shareAtCeiling(share),
-    ]),
-  ) as ResearchShareParameters['signals'],
-};
 
 /** The register's value for an id, read from the register rather than a production constant. */
 export function registered(id: string): number {
