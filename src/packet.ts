@@ -163,6 +163,8 @@ export async function assembleReviewPacket<S extends Session>(
       findings: fragments.flatMap((item) => item.findings),
       relationships,
       reachability,
+      // Collection knows no rate-limit stop; research sets the retry time.
+      retryAfter: null,
     });
     const required = list((item) => item.relationships),
       optionalProofs = list((item) => item.optionalRelationships),

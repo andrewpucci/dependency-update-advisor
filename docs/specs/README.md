@@ -87,12 +87,25 @@ gaps and an introduced vulnerability before parity is claimed.
   the specification, plan, dependency pins, and automatic execution on
   2026-11-07, with one closing PR. [Verification #192](https://github.com/andrewpucci/dependency-update-advisor/issues/192)
   retains live transport, workflow diagnostics/budgets, downstream analysis,
-  publication, packaging, adoption, parity, and cutover gates.
+  publication, packaging, adoption, parity, and cutover gates. A
+  [batched tag existence amendment](SPEC-upstream-evidence.md#batched-tag-existence-amendment)
+  is approved for planning (#380, 2026-11-19).
 - [Applicable vulnerability advisories](SPEC-advisory-lookup.md) — S1 #19 and
   #173–#181 implemented; #19 tracks review and merge. Exact public-identity
   proofs, Actions mappings and separate lookup outcomes preserve T4/T5/C3
   attribution; [verification #181](https://github.com/andrewpucci/dependency-update-advisor/issues/181)
   retains live proof acquisition, downstream workflow and cutover gates.
+  A [package name form amendment](SPEC-advisory-lookup.md#package-name-form-amendment),
+  with its [S3 malware counterpart](SPEC-policy-signals.md#package-name-form-amendment),
+  is approved and implemented, pending review and merge, 2026-11-20: OSV for
+  PyPI reviewed lookups and
+  stored-name discovery for GitHub Actions and malware queries, tracked in
+  [#398](https://github.com/andrewpucci/dependency-update-advisor/issues/398).
+  A [batched lookup amendment](SPEC-advisory-lookup.md#batched-lookup-amendment)
+  is approved for planning (#380, 2026-11-19).
+  A [batching reconciliation amendment](SPEC-advisory-lookup.md#batching-reconciliation-amendment)
+  that reconciles the two is approved for planning, 2026-11-20
+  ([#408](https://github.com/andrewpucci/dependency-update-advisor/issues/408)).
 - [Advisory policy signals](SPEC-policy-signals.md) — implemented, pending
   review and merge, supporting S3 #53
   contract in `shared-review`; explicit malware queries and exact-version
@@ -104,6 +117,8 @@ gaps and an introduced vulnerability before parity is claimed.
   [#53](https://github.com/andrewpucci/dependency-update-advisor/issues/53)
   on the implementation project. Live transport, workflow, downstream
   assessment/publication, adoption, and cutover remain separate gates.
+  A [batched malware lookup amendment](SPEC-policy-signals.md#batched-malware-lookup-amendment)
+  is approved for planning (#380, 2026-11-19).
 - [Common review packet validation](SPEC-review-packet.md) — implemented for
   T4 #11 and #77–#84 in `shared-review`, merged in
   [PR #89](https://github.com/andrewpucci/dependency-update-advisor/pull/89).
@@ -246,13 +261,38 @@ gaps and an introduced vulnerability before parity is claimed.
 - [Comment experience](SPEC-comment-experience.md) — approved supporting contract.
   A [comment capacity amendment](SPEC-comment-experience.md#comment-capacity-amendment)
   ([#348](https://github.com/andrewpucci/dependency-update-advisor/issues/348)),
-  which also amends O1 requirements 3, 4, and 7, is a draft for review.
+  which also amends O1 requirements 3, 4, and 7, is approved for planning,
+  2026-11-16.
 - [Evidence coverage and scaled read budgets](SPEC-evidence-coverage.md)
   ([#350](https://github.com/andrewpucci/dependency-update-advisor/issues/350))
-  — draft for review. Per-item instead of stage-wide research failures, one
-  read per request per run, budgets scaled to the change, and reader-facing
-  evidence states; amends the W2 envelope, S1's cache scope, and S3 and
-  research-orchestration stage failures.
+  — approved for planning, 2026-11-16. Per-item instead of stage-wide
+  research failures, one read per request per run, budgets scaled to the
+  change, and reader-facing evidence states; amends the W2 envelope, S1's
+  cache scope, and S3 and research-orchestration stage failures. A
+  [scaled-share function amendment](SPEC-evidence-coverage.md#scaled-share-function-amendment)
+  for B11 ([#369](https://github.com/andrewpucci/dependency-update-advisor/issues/369))
+  is approved for planning, 2026-11-21, and implemented for #369 and
+  #414–#422, merged into `main` in
+  [PR #423](https://github.com/andrewpucci/dependency-update-advisor/pull/423):
+  scaled shares, a research GitHub
+  quota guard that follows GitHub's reported quota, a bounded wait and
+  retry, and the retry time in the comment, with the retry time as a
+  required packet field. B12 (#370) fits its values.
+- [Limit register](SPEC-limit-register.md) — approved for planning,
+  2026-11-17; its plan was approved for execution the same day. One
+  register for every limit (maxima, minima, defaults, timeouts, thresholds),
+  with what it protects, its basis, effect, and boundary test; specs cite
+  register ids instead of values; an enforcement check over code, workflows,
+  and specs; adopter configuration whose settings override defaults, with an
+  adopter guide. An
+  [external citations amendment](SPEC-limit-register.md#external-citations-amendment)
+  for L9 ([#381](https://github.com/andrewpucci/dependency-update-advisor/issues/381))
+  is approved for planning, 2026-11-22, and merged into `main` in
+  [PR #425](https://github.com/andrewpucci/dependency-update-advisor/pull/425):
+  dated platform citations, a committed comment-limit probe that
+  measured GitHub's comment limit in bytes
+  (`limit:github.comment.maxBodyBytes`), and a comment cap derived from
+  it.
 - [Decision brief rendering](SPEC-decision-brief.md) — approved for execution
   for O1 #23; renderer implementation is pending overall review and merge.
   No desktop or narrow preview yet includes the policy guide link.
@@ -302,6 +342,10 @@ gaps and an introduced vulnerability before parity is claimed.
   [#334](https://github.com/andrewpucci/dependency-update-advisor/issues/334))
   is implemented and merged in PR #345, naming that failure's cause and
   printing M2 timing on the no-write rehearsal line and trace.
+  A sixth amendment ([OSV query in the no-write guard](SPEC-review-orchestration.md#amendment-6-osv-query-in-the-no-write-guard),
+  [#398](https://github.com/andrewpucci/dependency-update-advisor/issues/398))
+  is approved for execution, 2026-11-20, and implemented with the S1 package
+  name form amendment, pending review and merge.
 - [Advisory complexity review](SPEC-complexity-review.md) — user-requested
   supporting repository tooling contract; implemented and merged into `main`
   in [PR #65](https://github.com/andrewpucci/dependency-update-advisor/pull/65).

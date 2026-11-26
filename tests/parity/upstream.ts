@@ -10,6 +10,7 @@ import type { AdvisoryEnrichment } from '../../src/evidence/advisories.js';
 import type { PacketSource } from '../../src/schema.js';
 import { uvMetadataScenario } from './uv-metadata.js';
 import { uvManifest, uvLock, uvPackage } from './uv-graph.js';
+import { viaAdvisoryHttp } from './advisory-http.js';
 import { advisoryTestLimits, syntheticAdvisory } from './advisories.js';
 
 export const upstreamTestLimits = {
@@ -36,6 +37,8 @@ type Options = {
   uvArtifacts?: boolean;
   partialActionsInventory?: boolean;
   actionChange?: 'owner' | 'mutable';
+  anchorUnchanged?: boolean;
+  duplicateNames?: number;
 };
 function packageNode(name: string, version: string) {
   return {
@@ -55,12 +58,19 @@ function npmFiles(head: boolean, options: Options) {
   const packages = {
     '': manifest,
     'node_modules/orbit': {
-      ...packageNode('orbit', version),
+      ...packageNode('orbit', options.anchorUnchanged ? '1.0.0' : version),
       dependencies: Object.fromEntries(names.map((n) => [n, '*'])),
     },
     ...(options.declaration ? { 'node_modules/steady': packageNode('steady', '1.0.0') } : {}),
     ...Object.fromEntries(
       names.map((name) => ['node_modules/' + name, packageNode(name, version)]),
+    ),
+    // Same-named nested additions at a different version than the hoisted copy, as in R1.
+    ...Object.fromEntries(
+      Array.from({ length: head ? (options.duplicateNames ?? 0) : 0 }, (_, i) => [
+        'node_modules/orbit/node_modules/child-' + i,
+        packageNode('child-' + i, '1.0.0'),
+      ]),
     ),
   };
   return {
@@ -122,7 +132,7 @@ function githubResponse(url: URL) {
   return Response.json({}, { status: 404 });
 }
 function researchFetch(options: Options, requests: string[]) {
-  return async (value: string, init: RequestInit) => {
+  return viaAdvisoryHttp(async (value: string, init: RequestInit) => {
     requests.push(value);
     if (init.redirect !== 'manual' || init.credentials !== 'omit')
       throw new Error('Unexpected research transport policy');
@@ -178,7 +188,7 @@ function researchFetch(options: Options, requests: string[]) {
     }
     if (url.origin === 'https://api.github.com') return githubResponse(url);
     throw new Error('Unexpected research host');
-  };
+  });
 }
 /** Invented HTTP/file snapshots through authentic collectors; no public-identity proof is pre-filled. */
 export async function upstreamScenario(options: Options = {}) {

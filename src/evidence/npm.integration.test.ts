@@ -60,6 +60,7 @@ async function collect(
       findings: [],
       relationships: [],
       reachability: [],
+      retryAfter: null,
       coverage: {
         npm: result.coverage,
         actions: { status: 'not_applicable', reasons: [], sourceIds: ['other'] },

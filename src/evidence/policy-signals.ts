@@ -4,7 +4,7 @@ import {
   retainSignalFinding,
   signalId,
   signalBounds,
-  reserveOptionalSignals,
+  reserveSignals,
   runOptionalSignals,
 } from './policy-signals-evidence.js';
 export {
@@ -24,8 +24,13 @@ import type { ReviewBinding } from '../event.js';
 import type { Finding } from '../policy.js';
 import { freeze } from './common.js';
 import { prepareAdvisoryInput, resolveAdvisoryTarget, type AdvisoryInput } from './advisories.js';
-import { advisoryCheck, AdvisoryFailure, type AdvisoryReader } from './advisory-read.js';
-import { collectMemberMalware } from './policy-signals-malware.js';
+import {
+  advisoryCheck,
+  AdvisoryFailure,
+  type AdvisoryLookup,
+  type AdvisoryReader,
+} from './advisory-read.js';
+import { collectMemberMalware, recordMemberMalware } from './policy-signals-malware.js';
 import type { NpmPublishTimeReader, NpmTimesResult } from './npm-publish-times.js';
 import type { UpstreamInput } from './upstream.js';
 import { metadataTarget } from './upstream.js';
@@ -225,6 +230,91 @@ async function collectOptionalMember(
     collectLicenseSignals(input, output, change, {});
   }
 }
+/**
+ * One member's malware check, run over its reservation. A failure rolls back only this member and
+ * records its malware as unavailable with the real reason. If the member's results, or that
+ * failure record, cross a packet limit, the member returns to its reserved `budget` outcome and
+ * this returns false, so the caller leaves every lower-priority member at its reservation too.
+ */
+export async function runMemberMalware(
+  input: PolicySignalInput,
+  output: SignalEnrichment,
+  change: PacketChange,
+  reader: AdvisoryReader,
+  cache: Map<string, AdvisoryLookup>,
+): Promise<boolean> {
+  const slot = output.attempts.findIndex(
+    (a) => a.memberId === change.id && a.category === 'malware',
+  );
+  advisoryCheck(slot !== -1);
+  const reserved = {
+    sources: output.sources.length,
+    findings: output.findings.length,
+    attempts: output.attempts.length,
+    attempt: output.attempts[slot],
+    malware: structuredClone(change.evidence.malware),
+  };
+  // Recording only appends to these lists, so truncating them undoes this member exactly.
+  const restore = () => {
+    output.sources.length = reserved.sources;
+    output.findings.length = reserved.findings;
+    output.attempts.length = reserved.attempts;
+    output.attempts[slot] = reserved.attempt;
+    change.evidence.malware = structuredClone(reserved.malware);
+  };
+  /**
+   * Moves the one attempt the record appended into the member's reserved slot, then checks the
+   * limits. Results that cross one leave the reservation, which was already counted.
+   */
+  const settle = (): boolean => {
+    advisoryCheck(output.attempts.length === reserved.attempts + 1);
+    const attempt = output.attempts.pop()!;
+    advisoryCheck(attempt.memberId === change.id && attempt.category === 'malware');
+    output.attempts[slot] = attempt;
+    try {
+      signalBounds(input, output);
+      return true;
+    } catch {
+      restore();
+      return false;
+    }
+  };
+  try {
+    await collectMemberMalware(input, output, change, reader, cache);
+  } catch (error) {
+    restore();
+    const reason = error instanceof AdvisoryFailure ? error.reason : 'unknown';
+    const side = change.to ? 'head' : 'base';
+    const target = resolveAdvisoryTarget(input, change, side);
+    const failed = target
+      ? {
+          target,
+          url: '',
+          status: 'unavailable' as const,
+          complete: false,
+          records: [],
+          reasons: [reason],
+        }
+      : null;
+    recordMemberMalware(input, output, change, side, target, failed);
+  }
+  return settle();
+}
+/**
+ * Runs one signals pass over the members, which arrive in research order (coverage §3.5). Once a
+ * member crosses a packet limit (`run` returns false), every lower-priority member keeps its
+ * `budget` reservation, so the cut is strictly by priority (§1.5) and no read is spent on a
+ * result that could not be kept.
+ */
+export async function inPriorityOrder(
+  changes: readonly PacketChange[],
+  run: (change: PacketChange) => Promise<boolean>,
+): Promise<void> {
+  for (const change of changes) {
+    if ('basis' in change) continue;
+    if (!(await run(change))) return;
+  }
+}
 /** Required malware runs before optional adapters; input/outputs never share mutable records. */
 export async function enrichPolicySignals(
   value: unknown,
@@ -245,21 +335,19 @@ export async function enrichPolicySignals(
   };
   try {
     signalBounds(input, output);
+    reserveSignals(input, output);
     const cache = new Map();
-    for (const change of output.changes) {
-      if ('basis' in change) continue;
-      await collectMemberMalware(input, output, change, dependencies.malwareReader, cache);
-      signalBounds(input, output);
-    }
-    reserveOptionalSignals(input, output);
+    await inPriorityOrder(output.changes, (change) =>
+      runMemberMalware(input, output, change, dependencies.malwareReader, cache),
+    );
     const lockfiles =
       dependencies.artifactSession && cacheLockfileReads(dependencies.artifactSession);
-    for (const change of output.changes) {
-      if ('basis' in change) continue;
-      await runOptionalSignals(input, output, change, async () => {
+    // A separate pass: the malware cut does not take optional signals from members above it.
+    await inPriorityOrder(output.changes, (change) =>
+      runOptionalSignals(input, output, change, async () => {
         await collectOptionalMember(input, output, change, dependencies, lockfiles);
-      });
-    }
+      }),
+    );
     return freeze(output);
   } catch (error) {
     return {

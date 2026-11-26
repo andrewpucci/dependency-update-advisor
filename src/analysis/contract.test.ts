@@ -286,39 +286,56 @@ test('permits exact immutable inventory-file references without requiring an ups
   ).toBe('validated');
 });
 
+test('the retry time never reaches the model request', async () => {
+  const { input } = await analysisScenario();
+  const retried = {
+    ...input,
+    inventory: {
+      ...input.inventory,
+      packet: { ...input.inventory.packet, retryAfter: '2026-11-21T00:01:00Z' },
+    },
+  };
+  const plain = prepareAnalysisBatch({ ...input, limits: ANALYSIS_LIMITS });
+  const timed = prepareAnalysisBatch({ ...retried, limits: ANALYSIS_LIMITS });
+  if (plain.kind !== 'prepared' || timed.kind !== 'prepared') throw new Error('fixture failed');
+  expect(JSON.stringify(timed.batch.request)).not.toContain('retryAfter');
+  expect(JSON.stringify(timed.batch.request)).not.toContain('2026-11-21T00:01:00Z');
+  expect(timed.batch.request).toEqual(plain.batch.request);
+});
+
 test('batch identity and request bytes stay pinned for fixed selections', async () => {
   const { input } = await analysisScenario();
   const [a, b, c] = input.unitIds;
   const pinned = [
     [
       [a, b, c],
-      '575424c89a67ab582cec0d10a26e091047c0b2a1850ba68f81d9d20dcd821755',
-      54_824,
-      'a9da2838619f3f52da64639941be0ac3df40106468593f77b2b73b935b8585a3',
+      'dc3d1bf2a167cc8885c8f0ca8e20c408b198356d3785b85aaf10ad47d5da6b90',
+      54_750,
+      '99370ff42197a29bc6876111b35a9f01c910c53e0fb681e2442f37fe1370c390',
     ],
     [
       [a],
-      'd5432719644b96dd332f400b94e8466c91c3839dc318d733bdf7be5dfc1d45e7',
+      'a650eab98823ef46485064023bb72ed104ecc24fb8d2760640dca0d5a00e14c0',
       15_799,
       '570a5bca169fcfe3d732962a20b2c6ccdeb695007720c0ae037174e29cb5b00c',
     ],
     [
       [b],
-      'a38e4f37b542702b00cbc374763c77628e0fa034ce4c9cead98f115729b12b8d',
+      '550f367e6f4d6c0a2a1e2b9a680d4ed9951e7ed6225ebd6f1803aa9a0044b9f2',
       34_699,
       '262db507ae6eeed32e53c65cf2bad64d9ef084b014c31c7c836460a7d0637664',
     ],
     [
       [c],
-      '01c8afdc539f9e3b7c143c3b10496ae589b31d1b14d419e6a5c4f7c0f9629614',
-      15_590,
-      'a36112000f627fb8d357213d40d55f43a3909069b4d5a4369f5574c5c9c5cff6',
+      '6fe775335c39b8fd72302446509236d601e082f22e517ead308da114e714f72d',
+      15_516,
+      '703578ac60cb36b4722ff05927cd5df080cacfdf24fef44ae39328f75c63f9fb',
     ],
     [
       [a, c],
-      '82ad8e0c6299825e50040a30f0e54b6d467d8361d157a3f206063ceadb70acc5',
-      25_710,
-      '2e4f57a7b2a099b947d49962973f9a6c3b36a1532f1dd888e0b5f3086b6e4218',
+      '24737098c1a8ca6da74b7ed0661fea6b5728e41ae22c9210045ee478b7d3ebf4',
+      25_636,
+      '0c271e16f7909e7e1ba430c2a20cd2a0b7f102519a997b2aea6f9fd3b333927d',
     ],
   ] as const;
   expect(input.unitIds).toHaveLength(3);

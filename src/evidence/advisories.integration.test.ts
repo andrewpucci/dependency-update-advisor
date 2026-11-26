@@ -12,6 +12,7 @@ import {
   collectAdvisoryActions,
   collectMixedAdvisoryInventories,
 } from '../../tests/parity/advisories.js';
+import { viaAdvisoryHttp } from '../../tests/parity/advisory-http.js';
 
 test.each(['permission', 'empty', 'omission'])(
   'actual D1/N1 retains inventory through %s comparison and independent advisories',
@@ -19,12 +20,13 @@ test.each(['permission', 'empty', 'omission'])(
     const { fixture, inventory, input } = await collectAdvisoryNpm(mode);
     const r = createAdvisoryReader(advisoryTestLimits, {
       now: () => 0,
-      fetch: async (url) =>
+      fetch: viaAdvisoryHttp(async (url) =>
         Response.json(
           new URL(url).searchParams.get('affects') === 'fixture-anchor@1.1.0'
             ? [syntheticAdvisory]
             : [],
         ),
+      ),
     });
     if (r.kind !== 'ready') throw new Error('reader');
     const result = await enrichAdvisories(input, { reader: r });
@@ -39,6 +41,7 @@ test.each(['permission', 'empty', 'omission'])(
         findings: result.findings,
         relationships: [],
         reachability: [],
+        retryAfter: null,
         coverage: {
           npm: inventory.coverage,
           actions: { status: 'not_applicable', reasons: [], sourceIds: ['other'] },
@@ -74,7 +77,7 @@ test('real bounded D1 comparison supplies a positive when global lookup fails', 
   ]);
   const reader = createAdvisoryReader(advisoryTestLimits, {
     now: () => 0,
-    fetch: async () => Response.json({}, { status: 500 }),
+    fetch: viaAdvisoryHttp(async () => Response.json({}, { status: 500 })),
   });
   if (reader.kind !== 'ready') throw new Error('reader');
   const out = await enrichAdvisories(input, { reader });
@@ -89,6 +92,7 @@ test('real bounded D1 comparison supplies a positive when global lookup fails', 
       findings: out.findings,
       relationships: [],
       reachability: [],
+      retryAfter: null,
       coverage: {
         npm: inventory.coverage,
         actions: { status: 'not_applicable', reasons: [], sourceIds: ['other'] },
@@ -102,6 +106,57 @@ test('real bounded D1 comparison supplies a positive when global lookup fails', 
   expect(out.changes[0].evidence.vulnerability.status).toBe('partial');
 });
 
+test('a pip advisory the update resolves cites the OSV query that excludes it', async () => {
+  const f = await collectAdvisoryUv('https://pypi.org/simple');
+  const reader = createAdvisoryReader(advisoryTestLimits, {
+    now: () => 0,
+    fetch: viaAdvisoryHttp(async (url) =>
+      Response.json(
+        new URL(url).searchParams.get('affects') === 'orbit@1.0'
+          ? [
+              {
+                ...syntheticAdvisory,
+                vulnerabilities: [
+                  {
+                    package: { ecosystem: 'pip', name: 'orbit' },
+                    vulnerable_version_range: '<2.0rc1',
+                  },
+                ],
+              },
+            ]
+          : [],
+      ),
+    ),
+  });
+  if (reader.kind !== 'ready') throw new Error('reader');
+  const out = await enrichAdvisories(f.input, { reader });
+  reader.close();
+  if (out.kind !== 'enriched') throw new Error('enrichment');
+  const fixed = out.findings.find(
+    (x) => x.kind === 'vulnerability' && x.applicability === 'resolved_by_proposed',
+  );
+  if (!fixed) throw new Error('no resolved finding');
+  const absent = out.sources.find((s) => s.id === fixed.references[1]);
+  expect(absent?.provenance).toMatchObject({
+    url: 'https://api.osv.dev/v1/query',
+    advisoryId: syntheticAdvisory.ghsa_id,
+    excerpt: expect.stringContaining("OSV's mirror of GitHub-reviewed advisories"),
+  });
+  const packet = validateReviewPacket(
+    {
+      ...f.packet,
+      changes: out.changes,
+      sources: [
+        ...out.sources,
+        ...f.packet.sources.filter((s) => !f.input.sources.some((x) => x.id === s.id)),
+      ],
+      findings: out.findings,
+    },
+    f.expected,
+  );
+  expect(packet.ok, JSON.stringify(packet)).toBe(true);
+});
+
 test.each(['https://pypi.org/simple', 'https://private.example/simple'])(
   'actual U1/U2 maps exact %s uv targets without guessing versions',
   async (registry) => {
@@ -109,10 +164,9 @@ test.each(['https://pypi.org/simple', 'https://private.example/simple'])(
     const requests: URL[] = [];
     const reader = createAdvisoryReader(advisoryTestLimits, {
       now: () => 0,
-      fetch: async (url) => {
+      fetch: viaAdvisoryHttp(async (url) => {
         const query = new URL(url);
         requests.push(query);
-        expect(query.searchParams.get('ecosystem')).toBe('pip');
         expect(['orbit@1.0', 'orbit@2.0rc1']).toContain(query.searchParams.get('affects'));
         return Response.json(
           query.searchParams.get('affects') === 'orbit@2.0rc1'
@@ -129,13 +183,28 @@ test.each(['https://pypi.org/simple', 'https://private.example/simple'])(
               ]
             : [],
         );
-      },
+      }),
     });
     if (reader.kind !== 'ready') throw new Error('reader');
     const out = await enrichAdvisories(f.input, { reader });
     reader.close();
     if (out.kind !== 'enriched') throw new Error('enrichment');
     expect(requests).toHaveLength(registry.includes('private') ? 0 : 2);
+    if (!registry.includes('private')) {
+      // An empty pip reviewed lookup cites the OSV query it made and names OSV as the provider.
+      const empty = out.sources.find(
+        (s) =>
+          s.kind === 'advisory' &&
+          s.status === 'available' &&
+          s.provenance.kind === 'upstream' &&
+          !s.provenance.advisoryId,
+      );
+      expect(empty?.provenance).toMatchObject({
+        url: 'https://api.osv.dev/v1/query',
+        title: 'Exact-version OSV reviewed advisory lookup',
+        excerpt: expect.stringContaining("OSV's mirror of GitHub-reviewed advisories"),
+      });
+    }
     expect(out.changes[0].evidence.vulnerability.status).toBe(
       registry.includes('private') ? 'unavailable' : 'available',
     );
@@ -165,7 +234,7 @@ test.each([false, true])(
     let calls = 0;
     const reader = createAdvisoryReader(advisoryTestLimits, {
       now: () => 0,
-      fetch: async (url) => {
+      fetch: viaAdvisoryHttp(async (url) => {
         calls++;
         const query = new URL(url),
           name = query.searchParams.get('affects')!.split('@')[0];
@@ -186,13 +255,27 @@ test.each([false, true])(
               ]
             : [],
         );
-      },
+      }),
     });
     if (reader.kind !== 'ready') throw new Error('reader');
     const out = await enrichAdvisories(f.input, { reader });
     reader.close();
     if (out.kind !== 'enriched') throw new Error('enrichment');
     expect(calls > 0).toBe(mapped);
+    // An empty Actions lookup cites the fetched versioned query, never a discovery URL.
+    const lookups = out.sources.filter(
+      (s) =>
+        s.kind === 'advisory' &&
+        s.status === 'available' &&
+        s.provenance.kind === 'upstream' &&
+        !s.provenance.advisoryId,
+    );
+    expect(lookups.length > 0).toBe(mapped);
+    for (const source of lookups) {
+      const cited = new URL(source.provenance.kind === 'upstream' ? source.provenance.url : '');
+      expect(cited.searchParams.get('per_page')).toBe('100');
+      expect(cited.searchParams.get('affects')).toMatch(/@[12]\.0\.0$/u);
+    }
     expect(out.findings).toHaveLength(mapped ? f.inventory.changes.length : 0);
     expect(
       out.changes.every(
@@ -208,6 +291,7 @@ test.each([false, true])(
         findings: out.findings,
         relationships: [],
         reachability: [],
+        retryAfter: null,
         coverage: {
           actions: f.inventory.coverage,
           npm: { status: 'not_applicable', reasons: [], sourceIds: [f.absent.id] },
@@ -226,7 +310,7 @@ test.each(['high', 'critical'])(
     const f = await collectMixedAdvisoryInventories();
     const reader = createAdvisoryReader(advisoryTestLimits, {
       now: () => 0,
-      fetch: async (url) => {
+      fetch: viaAdvisoryHttp(async (url) => {
         const query = new URL(url),
           affects = query.searchParams.get('affects')!;
         return Response.json(
@@ -245,7 +329,7 @@ test.each(['high', 'critical'])(
               ]
             : [],
         );
-      },
+      }),
     });
     if (reader.kind !== 'ready') throw new Error('reader');
     const out = await enrichAdvisories(f.input, { reader });
@@ -261,6 +345,7 @@ test.each(['high', 'critical'])(
         coverage: f.coverage,
         relationships: f.relationships,
         reachability: [],
+        retryAfter: null,
       },
       f.expected,
     );
@@ -300,7 +385,7 @@ test.each([125, 126])(
     expect(f.input.changes).toHaveLength(count + 3);
     const reader = createAdvisoryReader(advisoryTestLimits, {
       now: () => 0,
-      fetch: async () => Response.json([]),
+      fetch: viaAdvisoryHttp(async () => Response.json([])),
     });
     if (reader.kind !== 'ready') throw new Error('reader');
     const result = await enrichAdvisories(f.input, { reader });
@@ -317,6 +402,7 @@ test.each([125, 126])(
         coverage: f.coverage,
         relationships: f.relationships,
         reachability: [],
+        retryAfter: null,
       },
       f.expected,
     );
@@ -347,7 +433,7 @@ test.each([false, true])(
     ]);
     const reader = createAdvisoryReader(advisoryTestLimits, {
       now: () => 0,
-      fetch: async () => Response.json([]),
+      fetch: viaAdvisoryHttp(async () => Response.json([])),
     });
     if (reader.kind !== 'ready') throw new Error('reader');
     const out = await enrichAdvisories(f.input, { reader });
@@ -364,10 +450,10 @@ test('actual N1 removals, declarations, and unchanged versions never create a mi
     const requests: string[] = [];
     const reader = createAdvisoryReader(advisoryTestLimits, {
       now: () => 0,
-      fetch: async (url) => {
+      fetch: viaAdvisoryHttp(async (url) => {
         requests.push(url);
         return Response.json([]);
-      },
+      }),
     });
     if (reader.kind !== 'ready') throw new Error('reader');
     const out = await enrichAdvisories(f.input, { reader });
@@ -401,10 +487,10 @@ test.each([
   let calls = 0;
   const reader = createAdvisoryReader(advisoryTestLimits, {
     now: () => 0,
-    fetch: async () => {
+    fetch: viaAdvisoryHttp(async () => {
       calls++;
       return Response.json([]);
-    },
+    }),
   });
   if (reader.kind !== 'ready') throw new Error('reader');
   const result = await enrichAdvisories({ ...f.input, changes }, { reader });
@@ -423,10 +509,10 @@ test('real uv marker variants keep exact separate subjects through shared adviso
   const queries: string[] = [];
   const reader = createAdvisoryReader(advisoryTestLimits, {
     now: () => 0,
-    fetch: async (url) => {
+    fetch: viaAdvisoryHttp(async (url) => {
       queries.push(new URL(url).searchParams.get('affects')!);
       return Response.json([]);
-    },
+    }),
   });
   if (reader.kind !== 'ready') throw new Error('reader');
   const result = await enrichAdvisories(f.input, { reader });

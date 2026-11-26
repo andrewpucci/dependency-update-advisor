@@ -1,5 +1,11 @@
 import { reviewPacket, type AssessmentInput } from './assessment.js';
-import { EVIDENCE_READ_ENVELOPE, FRESHNESS_ALLOWANCE_MS, JOB_WINDOW_MS } from './budget.js';
+import {
+  EVIDENCE_READ_ENVELOPE,
+  FRESHNESS_ALLOWANCE_MS,
+  JOB_WINDOW_MS,
+  RESEARCH_CACHE_LIMITS,
+} from './budget.js';
+import { createResearchCache } from './evidence/research-cache.js';
 import {
   createEvidenceCollectors,
   openEvidenceSession,
@@ -29,9 +35,10 @@ import {
   type ReviewOutcomeKind,
 } from './review.js';
 import { withTrustedSnapshot, type SnapshotReads } from './snapshot.js';
+import { limit } from './limits.js';
 
 /** How often a pending request is checked against ownership; shorter than any request timeout. */
-const OWNERSHIP_WATCH_MS = 2_000;
+const OWNERSHIP_WATCH_MS = limit('pipeline.ownershipWatchMs');
 
 export type PipelineInput = Readonly<{
   /** The trusted workflow_run event with its expected repository and workflow. */
@@ -58,6 +65,8 @@ export type PipelineInput = Readonly<{
   jobStartedAt?: number;
   /** Epoch milliseconds used for policy evaluation and the review timestamp. */
   evaluationTime: number;
+  /** Wall time in Unix milliseconds, read live for GitHub's quota reset headers; `Date.now` when absent. */
+  wallNow?: () => number;
   temporaryRoot?: () => Promise<string>;
   /** How often a pending request is checked against ownership; defaults to two seconds. */
   ownershipWatchMs?: number;
@@ -175,7 +184,7 @@ type Freshness = 'current' | 'stale' | Readonly<{ kind: 'unverified'; detail: Fr
 type Halt = Exclude<Freshness, 'current'>;
 
 /** T4 requires exactly one context entry per change, so every change is named, Actions included. */
-function dependencyIdentities(changes: readonly unknown[]): { id: string; name: string }[] {
+export function dependencyIdentities(changes: readonly unknown[]): { id: string; name: string }[] {
   const identities: { id: string; name: string }[] = [];
   for (const change of changes) {
     const value = change as {
@@ -405,10 +414,13 @@ async function evaluateEvidence(
         temporaryRoot: input.temporaryRoot,
       },
       async (trusted): Promise<Outcome> => {
+        // Public registry and research reads share one cache for this run; GitHub reads never do.
+        const researchCache = createResearchCache(RESEARCH_CACHE_LIMITS);
         const collectors = createEvidenceCollectors({
           binding,
           dependabot: await trusted.dependabotRoots(),
           registryFetch: input.publicFetch,
+          researchCache,
           onNpmInventory: (inventory) => (npmInventory = inventory),
           signal,
           now: input.now,
@@ -467,9 +479,11 @@ async function evaluateEvidence(
             npmInventory: npmInventory as never,
             comparison: null,
             fetch: input.publicFetch,
+            cache: researchCache,
             now: input.now,
             deadline: evidenceDeadline,
             evaluationTime: input.evaluationTime,
+            ...(input.wallNow ? { wallNow: input.wallNow } : {}),
             signal,
           }),
         );

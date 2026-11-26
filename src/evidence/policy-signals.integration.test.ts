@@ -1,5 +1,7 @@
 import { expect, test } from 'vite-plus/test';
 import { policySignalScenario } from '../../tests/parity/policy-signals.js';
+import { PACKET_LIMITS } from '../schema.js';
+import { limit } from '../limits.js';
 
 test.each([
   'clean',
@@ -147,11 +149,25 @@ test('mixed unsupported Actions and uv variants preserve separate per-member evi
   ).toBe(true);
 });
 test.each([124, 125])(
-  'rich mixed %s-child research fails closed at independent source/output caps',
+  'rich mixed %s-child research stays within source/output caps by dropping members, not the stage',
   async (children) => {
-    await expect(
-      policySignalScenario({ inventory: { children, lifecycle: false } }),
-    ).rejects.toThrow('{"kind":"unavailable","reason":"budget"}');
+    const r = await policySignalScenario({ inventory: { children, lifecycle: false } });
+    expect(r.result.sources.length).toBeLessThanOrEqual(PACKET_LIMITS.sources);
+    const { changes, sources, findings } = r.result;
+    expect(Buffer.byteLength(JSON.stringify({ changes, sources, findings }))).toBeLessThanOrEqual(
+      PACKET_LIMITS.bytes,
+    );
+    expect(Buffer.byteLength(JSON.stringify(r.result))).toBeLessThanOrEqual(
+      limit('research.maxRetainedBytes'),
+    );
+    const members = r.result.changes.filter((c) => !('basis' in c));
+    // The members that no longer fit carry `budget`; the others keep their signals.
+    const budgeted = members.filter((c) => c.evidence.trust?.reasons.includes('budget'));
+    expect(budgeted.length).toBeGreaterThan(0);
+    expect(budgeted.length).toBeLessThan(members.length);
+    // The cut is strictly by input (research) order: the budgeted members are a suffix.
+    expect(members.slice(members.length - budgeted.length)).toEqual(budgeted);
+    expect(members.every((c) => c.evidence.malware.status !== undefined)).toBe(true);
   },
 );
 test('uv members sharing one lockfile read it once per side', async () => {

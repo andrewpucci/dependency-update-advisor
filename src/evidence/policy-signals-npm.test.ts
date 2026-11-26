@@ -8,6 +8,7 @@ import { createUpstreamReader } from './upstream-read.js';
 import { enrichUpstream } from './upstream.js';
 import { upstreamScenario, upstreamTestLimits } from '../../tests/parity/upstream.js';
 import { validateReviewPacket } from '../schema.js';
+import { limit } from '../limits.js';
 
 test('npm exact-version publishing facts exclude email and retain independent mechanisms', () => {
   const f = npmPublishingFacts({
@@ -64,6 +65,18 @@ test.each([
   expect(f.provenance).toMatchObject({ kind: 'unchecked' });
   expect(f.account.kind).toBe('known');
 });
+test('a maintainer list at the registered cap is kept and one more is unchecked for budget', () => {
+  const cap = limit('signals.npmMaxMaintainers');
+  const maintainers = (count: number) =>
+    Array.from({ length: count }, (_, i) => ({ name: `maintainer-${i}` }));
+  const atCap = npmPublishingFacts({ maintainers: maintainers(cap), dist: {} });
+  if (atCap.maintainers.kind !== 'known') throw new Error('maintainers');
+  expect(atCap.maintainers.value).toHaveLength(cap);
+  expect(
+    npmPublishingFacts({ maintainers: maintainers(cap + 1), dist: {} }).maintainers,
+  ).toMatchObject({ kind: 'unchecked', reason: 'budget' });
+});
+
 test('an unexposed publishing user leaves trusted publishing unknown, not absent', () => {
   const f = npmPublishingFacts({ dist: {} });
   expect(f.trustedPublishing).toEqual({ kind: 'unchecked', reason: 'missing' });
@@ -185,6 +198,7 @@ test.each([
       coverage: f.coverage,
       relationships: f.relationships,
       reachability: [],
+      retryAfter: null,
     },
     f.expected,
   );

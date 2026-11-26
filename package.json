@@ -5,8 +5,12 @@
   "scripts": {
     "build": "vp pack && node scripts/license-notices.mjs .github/actions/dependabot-review/dist",
     "complexity": "node scripts/complexity/report.mjs",
+    "measure:demand": "vp test run --config scripts/measure-demand/vitest.config.mjs",
+    "probe:batching": "vp test run --config scripts/measure-batching/vitest.config.mjs",
+    "probe:comment-limit": "node scripts/probe-comment-limit/run.ts",
     "test:complexity": "node --test scripts/complexity/report.test.mjs",
     "check": "tsc --project tsconfig.json --noEmit",
+    "check:limits": "node scripts/limits/check.ts",
     "test": "vp test",
     "lint": "npm run lint:code && npm run lint:md",
     "lint:code": "vp lint",
@@ -23,7 +27,7 @@
     "yaml": "2.9.1"
   },
   "devDependencies": {
-    "@types/node": "24.19.1",
+    "@types/node": "26.6.6",
     "@types/semver": "7.8.0",
     "@types/spdx-expression-parse": "4.0.0",
     "ajv": "8.20.0",

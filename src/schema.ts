@@ -1,3 +1,4 @@
+import { CHAR_CODE, GIT_SHA_HEX_LENGTH, REVIEW_IDENTITY } from './format.js';
 import { isDeepStrictEqual, types } from 'node:util';
 import type { Finding } from './policy.js';
 import type { SourceContextResult } from './context.js';
@@ -7,24 +8,26 @@ import {
   type RepositoryIdentity,
   type ReviewBinding,
 } from './event.js';
+import { limit } from './limits.js';
 
 export const PACKET_LIMITS = Object.freeze({
-  bytes: 1_048_576,
-  changes: 128,
-  sources: 1_024,
-  findings: 512,
-  relationships: 256,
-  reachability: 1_024,
-  pathInstances: 32,
-  idCodeUnits: 256,
-  identityBytes: 1_024,
-  textBytes: 2_048,
-  listEntries: 32,
-  contextBytes: 65_536,
-  excerptCodeUnits: 500,
-  facts: 20,
+  bytes: limit('packet.bytes'),
+  changes: limit('packet.changes'),
+  sources: limit('packet.sources'),
+  findings: limit('packet.findings'),
+  relationships: limit('packet.relationships'),
+  reachability: limit('packet.reachability'),
+  pathInstances: limit('packet.pathInstances'),
+  idCodeUnits: limit('packet.idCodeUnits'),
+  identityBytes: limit('packet.identityBytes'),
+  textBytes: limit('packet.textBytes'),
+  listEntries: limit('packet.listEntries'),
+  contextBytes: limit('packet.contextBytes'),
+  excerptCodeUnits: limit('packet.excerptCodeUnits'),
+  facts: limit('packet.facts'),
 });
 const ECOSYSTEMS = ['npm', 'actions', 'uv'] as const;
+const DIRECT_ROLES = ['production', 'development', 'peer', 'optional'] as const;
 const REASONS = [
   'permission',
   'rate_limit',
@@ -42,7 +45,9 @@ export const EVIDENCE_REASONS: readonly EvidenceReason[] = REASONS;
 export type Ecosystem = (typeof ECOSYSTEMS)[number];
 export type EvidenceReason = (typeof REASONS)[number];
 export type EvidenceStatus = 'available' | 'partial' | 'unavailable';
-type DeepReadonly<T> = T extends object ? { readonly [K in keyof T]: DeepReadonly<T[K]> } : T;
+export type DeepReadonly<T> = T extends object
+  ? { readonly [K in keyof T]: DeepReadonly<T[K]> }
+  : T;
 export type PacketRevision = { repository: RepositoryIdentity; sha: string };
 export type InventoryCoverage = {
   status: 'complete' | 'partial' | 'unavailable' | 'not_applicable';
@@ -206,6 +211,8 @@ export type ReviewPacket = {
   findings: Finding[];
   relationships: RelationshipProof[];
   reachability: ReachabilityVerdict[];
+  /** When a GitHub rate-limit stop can be retried (RFC 3339 UTC, whole seconds), or null. */
+  retryAfter: string | null;
   context: PacketContext;
 };
 export type PacketExpected = {
@@ -226,6 +233,7 @@ type Field =
   | 'findings'
   | 'relationships'
   | 'reachability'
+  | 'retryAfter'
   | 'context';
 type Category = 'input' | 'identity' | 'duplicate' | 'reference' | 'coverage' | 'budget';
 export type PacketResult =
@@ -319,9 +327,23 @@ function text(
   requireValue(value.length <= units && Buffer.byteLength(value) <= bytes, field, 'budget');
   for (const character of value) {
     const code = character.charCodeAt(0);
-    requireValue(!(code >= 0xd800 && code <= 0xdfff && character.length === 1), field);
-    const lineBreak = (multiline && (code === 10 || code === 13)) || (tabs && code === 9);
-    requireValue(lineBreak || (code >= 32 && (code < 127 || code > 159)), field);
+    requireValue(
+      !(
+        code >= CHAR_CODE.surrogateFirst &&
+        code <= CHAR_CODE.surrogateLast &&
+        character.length === 1
+      ),
+      field,
+    );
+    const lineBreak =
+      (multiline && (code === CHAR_CODE.lineFeed || code === CHAR_CODE.carriageReturn)) ||
+      (tabs && code === CHAR_CODE.tab);
+    requireValue(
+      lineBreak ||
+        (code >= CHAR_CODE.firstPrintable &&
+          (code < CHAR_CODE.delete || code > CHAR_CODE.lastC1Control)),
+      field,
+    );
   }
   return value;
 }
@@ -358,7 +380,9 @@ function positive(value: unknown, field: Field): number {
 }
 function sha(value: unknown, field: Field) {
   requireValue(
-    typeof value === 'string' && value.length === 40 && /^[a-f\d]{40}$/iu.test(value),
+    typeof value === 'string' &&
+      value.length === GIT_SHA_HEX_LENGTH &&
+      /^[a-f\d]{40}$/iu.test(value),
     field,
     'identity',
   );
@@ -403,8 +427,8 @@ function binding(value: unknown): ReviewBinding {
     'binding',
   );
   const workflow = object(r.workflow, ['id', 'path'], [], 'binding');
-  const tuple = array(r.identity, 6, 'binding');
-  requireValue(tuple.length === 6, 'binding', 'identity');
+  const tuple = array(r.identity, REVIEW_IDENTITY.length, 'binding');
+  requireValue(tuple.length === REVIEW_IDENTITY.length, 'binding', 'identity');
   const copy = {
     repository: repository(r.repository, 'binding'),
     workflow: { id: positive(workflow.id, 'binding'), path: path(workflow.path, 'binding') },
@@ -418,7 +442,10 @@ function binding(value: unknown): ReviewBinding {
     baseSha: sha(r.baseSha, 'binding'),
     mergeBaseSha: sha(r.mergeBaseSha, 'binding'),
     conclusion: text(r.conclusion, 'binding'),
-    identity: [...tuple.slice(0, 5).map((v) => positive(v, 'binding')), sha(tuple[5], 'binding')],
+    identity: [
+      ...tuple.slice(0, REVIEW_IDENTITY.shaIndex).map((v) => positive(v, 'binding')),
+      sha(tuple[REVIEW_IDENTITY.shaIndex], 'binding'),
+    ],
   };
   const parsed = parseReviewBinding(copy);
   requireValue(parsed, 'binding', 'identity');
@@ -564,7 +591,7 @@ function nullableText(value: unknown, field: Field) {
 }
 function ecosystemList(value: unknown) {
   const result = distinct(
-    array(value, 3, 'sources').map((v) => choice(v, ECOSYSTEMS, 'sources')),
+    array(value, ECOSYSTEMS.length, 'sources').map((v) => choice(v, ECOSYSTEMS, 'sources')),
     'sources',
   );
   requireValue(result.length > 0, 'sources');
@@ -613,7 +640,9 @@ function provenance(value: unknown, e: PacketExpected): SourceProvenance {
       'identity',
     );
     const absent = distinct(
-      array(r.absentEcosystems, 3, 'sources').map((v) => choice(v, ECOSYSTEMS, 'sources')),
+      array(r.absentEcosystems, ECOSYSTEMS.length, 'sources').map((v) =>
+        choice(v, ECOSYSTEMS, 'sources'),
+      ),
       'sources',
     );
     return {
@@ -938,8 +967,8 @@ function change(value: unknown): PacketChange {
   if (r.directRoles !== undefined) {
     requireValue(facts.role === 'direct', 'changes');
     result.directRoles = distinct(
-      array(r.directRoles, 4, 'changes').map((v) =>
-        choice(v, ['production', 'development', 'peer', 'optional'], 'changes'),
+      array(r.directRoles, DIRECT_ROLES.length, 'changes').map((v) =>
+        choice(v, DIRECT_ROLES, 'changes'),
       ),
       'changes',
     );
@@ -1751,6 +1780,20 @@ function freeze<T>(value: T): DeepReadonly<T> {
   return value as DeepReadonly<T>;
 }
 
+const WHOLE_SECOND_UTC = /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}Z$/u;
+
+/** Null, or a real UTC instant written to the whole second; T4 does not check how far ahead it is. */
+function retryTime(value: unknown): string | null {
+  if (value === null) return null;
+  requireValue(typeof value === 'string' && WHOLE_SECOND_UTC.test(value), 'retryAfter');
+  const parsed = new Date(value);
+  requireValue(
+    !Number.isNaN(parsed.getTime()) && parsed.toISOString() === value.replace('Z', '.000Z'),
+    'retryAfter',
+  );
+  return value;
+}
+
 /** Pure validation; expected snapshots come from trusted T1/C2 orchestration, never the packet. */
 export function validateReviewPacket(candidate: unknown, trusted: unknown): PacketResult {
   try {
@@ -1768,6 +1811,7 @@ export function validateReviewPacket(candidate: unknown, trusted: unknown): Pack
         'findings',
         'relationships',
         'reachability',
+        'retryAfter',
         'context',
       ],
       [],
@@ -1813,6 +1857,7 @@ export function validateReviewPacket(candidate: unknown, trusted: unknown): Pack
       findings,
       relationships,
       reachability,
+      retryAfter: retryTime(r.retryAfter),
       context: ctx,
     };
     requireValue(

@@ -9,6 +9,7 @@ import {
   type SnapshotTreeEntry,
 } from './snapshot.js';
 import { createGithubTransport } from './runtime.js';
+import { limit } from './limits.js';
 
 const repository = { id: 101, owner: 'example', name: 'consumer' };
 const revision = 'a'.repeat(40);
@@ -893,4 +894,61 @@ test('reads Dependabot roots only from the pinned default-branch tree', async ()
     `tree:${'e'.repeat(40)}`,
   ]);
   expect(reader.calls).toContain('commit:main');
+});
+
+test('a listing at snapshot.maxTreeEntries is read and one more entry is refused', async () => {
+  const maxTreeEntries = limit('snapshot.maxTreeEntries');
+  const rootListing = (count: number) => {
+    const reader = reads([], {});
+    const value = Array.from({ length: count }, (_, index) => ({
+      path: `file-${index}.txt`,
+      mode: '100644',
+      type: 'blob',
+      sha: sourceBlob,
+      size: 0,
+    }));
+    reader.readTree = async (_repository, sha) =>
+      sha === treeRevision ? { kind: 'available', value } : { kind: 'unavailable' };
+    return reader;
+  };
+  const withRoot = (reader: SnapshotReads) =>
+    withTrustedSnapshot({ repository, reads: reader, temporaryRoot: tempRoot() }, async () => 'ok');
+
+  await expect(withRoot(rootListing(maxTreeEntries))).resolves.toEqual({
+    kind: 'ready',
+    value: 'ok',
+  });
+  await expect(withRoot(rootListing(maxTreeEntries + 1))).resolves.toEqual({
+    kind: 'unavailable',
+  });
+});
+
+test('a link target at snapshot.maxBlobBytes is read and one byte more is refused unfetched', async () => {
+  const maxBlobBytes = limit('snapshot.maxBlobBytes');
+  const linked = (size: number, content: string) => {
+    const reader = reads(
+      [
+        entry('.github', '040000', 'f'.repeat(40), 'tree'),
+        { ...entry('.github/dependabot-review.json', '120000', linkBlob), size },
+      ],
+      { [linkBlob]: content },
+    );
+    return reader;
+  };
+  const atLimit = linked(maxBlobBytes, ' '.repeat(maxBlobBytes));
+  const atResult = await withTrustedSnapshot(
+    { repository, reads: atLimit, temporaryRoot: tempRoot() },
+    async () => 'ok',
+  );
+  // Whatever the blank target resolves to, the at-limit read is fetched, not refused for budget.
+  expect(atLimit.calls).toContain(`blob:${linkBlob}`);
+  expect(atResult.kind).toBe('unavailable');
+
+  const pastLimit = linked(maxBlobBytes + 1, ' '.repeat(maxBlobBytes + 1));
+  const pastResult = await withTrustedSnapshot(
+    { repository, reads: pastLimit, temporaryRoot: tempRoot() },
+    async () => 'ok',
+  );
+  expect(pastLimit.calls).not.toContain(`blob:${linkBlob}`);
+  expect(pastResult).toEqual({ kind: 'unavailable' });
 });

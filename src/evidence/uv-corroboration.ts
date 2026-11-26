@@ -8,6 +8,7 @@ import {
 import type { UvInventory, UvChange, UvObservation } from './uv-graph.js';
 import type { UvMetadata } from './uv.js';
 import { isPlainObject, byCodeUnit } from './common.js';
+import { limit } from '../limits.js';
 import { UvGraphFailure, uvReasons, type GraphWork } from './uv-input.js';
 
 type Claim =
@@ -20,6 +21,8 @@ type Description = {
   headSha: string;
   text: string;
 };
+const DESCRIPTION_KEYS = ['status', 'repository', 'pullNumber', 'headSha', 'text'] as const;
+const REPOSITORY_KEYS = ['id', 'owner', 'name'] as const;
 function failedSource(result: UvInventory, work: GraphWork): PacketSource {
   return {
     id: work.id('dependabot', [result.binding.identity, result.binding.baseSha, 'unavailable']),
@@ -67,12 +70,16 @@ function description(
   maxBytes: number,
   work: GraphWork,
 ): Description {
-  if (!shape(value) || value.status !== 'available' || Object.keys(value).length !== 5)
+  if (
+    !shape(value) ||
+    value.status !== 'available' ||
+    Object.keys(value).length !== DESCRIPTION_KEYS.length
+  )
     throw new UvGraphFailure('malformed');
   const b = result.binding;
   if (
     !shape(value.repository) ||
-    Object.keys(value.repository).length !== 3 ||
+    Object.keys(value.repository).length !== REPOSITORY_KEYS.length ||
     typeof value.repository.id !== 'number' ||
     typeof value.repository.owner !== 'string' ||
     typeof value.repository.name !== 'string' ||
@@ -96,7 +103,7 @@ function description(
 function claims(text: string): Claim[] {
   const found = new Map<string, Claim>();
   for (const raw of text.split(/\r?\n/u)) {
-    if (raw.length > 4096) continue;
+    if (raw.length > limit('uv.maxCorroborationCodeUnits')) continue;
     const line = raw
       .trim()
       .replace(/\[([A-Za-z0-9.!+_-]{1,1024})\]\(https:\/\/[^\s)]{1,1024}\)/gu, '$1')
@@ -316,7 +323,8 @@ export function corroborateUv(
     }
     // Reserve comparison and source-construction work before learning a contradiction.
     work.spend(
-      64 * (all.length + result.changes.length + result.sources.length + 1) +
+      limit('uv.corroborationWorkPerEntry') *
+        (all.length + result.changes.length + result.sources.length + 1) +
         all.length * result.changes.length,
     );
     const capacity = candidate(result, source, all, result.changes, true, work);

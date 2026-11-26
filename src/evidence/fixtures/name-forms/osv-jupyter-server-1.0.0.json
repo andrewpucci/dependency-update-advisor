@@ -1,0 +1,67 @@
+{
+  "recorded": "2026-11-20",
+  "note": "Live OSV response, subset of records, trimmed to validated fields. GitHub lists GHSA-q874-g24w-4q9g as `>= 0, < 1.17.1` and `= 2.0.0a0`; OSV gives the exact version as its own range.",
+  "request": {
+    "url": "https://api.osv.dev/v1/query",
+    "body": {
+      "package": {
+        "ecosystem": "PyPI",
+        "name": "jupyter-server"
+      },
+      "version": "1.0.0"
+    }
+  },
+  "status": 200,
+  "body": {
+    "vulns": [
+      {
+        "id": "GHSA-q874-g24w-4q9g",
+        "summary": "Jupyter server Token bruteforcing",
+        "database_specific": {
+          "github_reviewed": true,
+          "severity": "HIGH"
+        },
+        "affected": [
+          {
+            "package": {
+              "ecosystem": "PyPI",
+              "name": "jupyter-server"
+            },
+            "ranges": [
+              {
+                "type": "ECOSYSTEM",
+                "events": [
+                  {
+                    "introduced": "0"
+                  },
+                  {
+                    "fixed": "1.17.1"
+                  }
+                ]
+              }
+            ]
+          },
+          {
+            "package": {
+              "ecosystem": "PyPI",
+              "name": "jupyter-server"
+            },
+            "ranges": [
+              {
+                "type": "ECOSYSTEM",
+                "events": [
+                  {
+                    "introduced": "2.0.0a0"
+                  },
+                  {
+                    "fixed": "2.0.0a1"
+                  }
+                ]
+              }
+            ]
+          }
+        ]
+      }
+    ]
+  }
+}

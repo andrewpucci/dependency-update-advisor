@@ -1,7 +1,9 @@
 import { expect, test, vi } from 'vite-plus/test';
 import { createPolicySignalReader } from './policy-signals-read.js';
+import { createResearchCache } from './research-cache.js';
 import { PACKET_LIMITS } from '../schema.js';
 import { isPlainObject } from './common.js';
+import { EVIDENCE_READ_ALLOCATION } from '../budget.js';
 const limits = {
   maxRequests: 10,
   maxResponseBytes: 20000,
@@ -283,3 +285,160 @@ test.each(['bytes', 'json', 'identity', 'redirect'] as const)(
     r.close();
   },
 );
+
+const cachedPolicyBody = (version: string) =>
+  JSON.stringify({ info: { name: 'fixture', version }, urls: [] });
+const cachedPolicyBytes = Buffer.byteLength(cachedPolicyBody('2.0rc1'));
+const otherPolicyQuery = { ...query, version: '2.0rc2' };
+function cachedPolicyFetch(calls: string[]) {
+  return async (url: string) => {
+    calls.push(url);
+    const version = new URL(url).pathname.split('/')[3];
+    return new Response(cachedPolicyBody(version), {
+      headers: { 'content-type': 'application/json' },
+    });
+  };
+}
+test('a cache hit costs no request', async () => {
+  const cache = createResearchCache({ maxEntryBytes: 1 << 20, maxTotalBytes: 1 << 22 });
+  const calls: string[] = [];
+  const deps = { now: () => 0, fetch: cachedPolicyFetch(calls), cache };
+  const a = createPolicySignalReader(limits, deps);
+  if (a.kind !== 'ready') throw new Error('reader');
+  const expected = await a.read(query);
+  a.close();
+  const b = createPolicySignalReader({ ...limits, maxRequests: 1 }, deps);
+  if (b.kind !== 'ready') throw new Error('reader');
+  await b.read(otherPolicyQuery);
+  const hit = await b.read(query);
+  b.close();
+  expect(expected.kind).toBe('data');
+  expect(hit).toEqual(expected);
+  expect(calls).toHaveLength(2);
+});
+test('a cache hit debits no total bytes', async () => {
+  const cache = createResearchCache({ maxEntryBytes: 1 << 20, maxTotalBytes: 1 << 22 });
+  const calls: string[] = [];
+  const deps = { now: () => 0, fetch: cachedPolicyFetch(calls), cache };
+  const a = createPolicySignalReader(limits, deps);
+  if (a.kind !== 'ready') throw new Error('reader');
+  const expected = await a.read(query);
+  a.close();
+  const fits = cachedPolicyBytes + 1;
+  const b = createPolicySignalReader(
+    { ...limits, maxResponseBytes: fits, maxTotalBytes: fits },
+    deps,
+  );
+  if (b.kind !== 'ready') throw new Error('reader');
+  const live = await b.read(otherPolicyQuery);
+  const hit = await b.read(query);
+  b.close();
+  expect(live.kind).toBe('data');
+  expect(hit).toEqual(expected);
+  expect(calls).toHaveLength(2);
+});
+test('a cached response still respects the per-response cap', async () => {
+  const cache = createResearchCache({ maxEntryBytes: 1 << 20, maxTotalBytes: 1 << 22 });
+  const calls: string[] = [];
+  const deps = { now: () => 0, fetch: cachedPolicyFetch(calls), cache };
+  const a = createPolicySignalReader(limits, deps);
+  if (a.kind !== 'ready') throw new Error('reader');
+  await a.read(query);
+  a.close();
+  const small = cachedPolicyBytes - 1;
+  const c = createPolicySignalReader(
+    { ...limits, maxResponseBytes: small, maxTotalBytes: small },
+    deps,
+  );
+  if (c.kind !== 'ready') throw new Error('reader');
+  const result = await c.read(query);
+  c.close();
+  expect(result).toEqual({ kind: 'unavailable', reason: 'budget' });
+  expect(calls).toHaveLength(1);
+});
+test('a cache hit leaves the total-byte share for later live reads', async () => {
+  const cache = createResearchCache({ maxEntryBytes: 1 << 20, maxTotalBytes: 1 << 22 });
+  const calls: string[] = [];
+  const deps = { now: () => 0, fetch: cachedPolicyFetch(calls), cache };
+  const a = createPolicySignalReader(limits, deps);
+  if (a.kind !== 'ready') throw new Error('reader');
+  await a.read(query);
+  a.close();
+  const fits = Buffer.byteLength(cachedPolicyBody('2.0rc2')) + 1;
+  const b = createPolicySignalReader(
+    { ...limits, maxResponseBytes: fits, maxTotalBytes: fits },
+    deps,
+  );
+  if (b.kind !== 'ready') throw new Error('reader');
+  const hit = await b.read(query);
+  const live = await b.read(otherPolicyQuery);
+  b.close();
+  expect(hit.kind).toBe('data');
+  expect(live.kind).toBe('data');
+  expect(calls).toHaveLength(2);
+});
+/** A PyPI release document for the version named in the request path, padded to `size` bytes. */
+function releaseVersionQuery(version: string) {
+  return { ...query, version };
+}
+function releaseDocument(url: string, size?: number) {
+  const version = new URL(url).pathname.split('/')[3];
+  const json = JSON.stringify({ info: { name: query.name, version }, urls: [] });
+  if (size === undefined) return json;
+  // Whitespace after the opening brace keeps the document valid JSON at the exact size.
+  return `{${' '.repeat(size - json.length)}${json.slice(1)}`;
+}
+test('metadata reader spends exactly its request share and refuses the request past it', async () => {
+  const share = EVIDENCE_READ_ALLOCATION.signals.readers.metadata.maxRequests;
+  let requests = 0;
+  const r = createPolicySignalReader(
+    { ...limits, maxRequests: share },
+    {
+      now: () => 0,
+      fetch: async (url) => {
+        requests++;
+        return Response.json(JSON.parse(releaseDocument(url)));
+      },
+    },
+  );
+  if (r.kind !== 'ready') throw new Error('reader');
+  for (let i = 0; i < share; i++)
+    expect(await r.read(releaseVersionQuery(`1.${i}`))).toMatchObject({ kind: 'data' });
+  expect(await r.read(releaseVersionQuery(`1.${share}`))).toEqual({
+    kind: 'unavailable',
+    reason: 'budget',
+  });
+  r.close();
+  expect(requests).toBe(share);
+});
+test('metadata reader accepts a byte share exactly and refuses the byte past it', async () => {
+  const total = EVIDENCE_READ_ALLOCATION.signals.readers.metadata.maxTotalBytes;
+  const first = Math.floor(total / 2);
+  const readWithSecondSize = async (secondOverflow: number) => {
+    const sizes = [first, total - first + secondOverflow];
+    let calls = 0;
+    const r = createPolicySignalReader(
+      { ...limits, maxResponseBytes: total, maxTotalBytes: total },
+      {
+        now: () => 0,
+        fetch: async (url) => {
+          const size = sizes[calls++];
+          return new Response(releaseDocument(url, size), {
+            headers: { 'content-type': 'application/json' },
+          });
+        },
+      },
+    );
+    if (r.kind !== 'ready') throw new Error('reader');
+    const results = [
+      await r.read(releaseVersionQuery('1.0')),
+      await r.read(releaseVersionQuery('1.1')),
+    ];
+    r.close();
+    return results;
+  };
+  const [, atLimit] = await readWithSecondSize(0);
+  expect(atLimit).toMatchObject({ kind: 'data' });
+  const [, pastLimit] = await readWithSecondSize(1);
+  expect(pastLimit).toEqual({ kind: 'unavailable', reason: 'budget' });
+});

@@ -1,6 +1,9 @@
 import { expect, test } from 'vite-plus/test';
 import { createHash } from 'node:crypto';
-import { createUpstreamReader } from './upstream-read.js';
+import { createUpstreamReader, type UpstreamDependencies } from './upstream-read.js';
+import { createResearchCache } from './research-cache.js';
+import { RESEARCH_CACHE_LIMITS } from '../budget.js';
+import { limit } from '../limits.js';
 import {
   collectTargetRelease,
   resolveUpstreamRef,
@@ -43,33 +46,41 @@ function file(value: unknown) {
       .digest('hex'),
   };
 }
-function setup(overrides: Record<string, unknown> = {}) {
+function setup(
+  overrides: Record<string, unknown> = {},
+  readerLimits: Record<string, unknown> = {},
+  deps: Partial<UpstreamDependencies> = {},
+) {
   const calls: string[] = [];
-  const opened = createUpstreamReader(limits, {
-    now: () => 0,
-    fetch: async (url) => {
-      calls.push(url);
-      const path = new URL(url).pathname.replace('/repos/fixture/orbit', '');
-      const data: Record<string, unknown> = {
-        '': { full_name: 'fixture/orbit', private: false },
-        '/git/ref/tags/v2.0.0': { ref: 'refs/tags/v2.0.0', object: { type: 'commit', sha } },
-        '/contents/package.json': file({ name: 'orbit', version: '2.0.0' }),
-        '/releases/tags/v2.0.0': {
-          id: 1,
-          tag_name: 'v2.0.0',
-          draft: false,
-          published_at: '2026-10-01T00:00:00Z',
-          html_url: 'https://github.com/fixture/orbit/releases/tag/v2.0.0',
-          name: 'Orbit 2.0.0',
-          body: 'Exact target notes.',
-        },
-        ...overrides,
-      };
-      const value = typeof data[path] === 'function' ? data[path](url) : data[path];
-      if (value instanceof Response) return value;
-      return path in data ? Response.json(value) : Response.json({}, { status: 404 });
+  const opened = createUpstreamReader(
+    { ...limits, ...readerLimits },
+    {
+      ...deps,
+      now: () => 0,
+      fetch: async (url) => {
+        calls.push(url);
+        const path = new URL(url).pathname.replace('/repos/fixture/orbit', '');
+        const data: Record<string, unknown> = {
+          '': { full_name: 'fixture/orbit', private: false },
+          '/git/ref/tags/v2.0.0': { ref: 'refs/tags/v2.0.0', object: { type: 'commit', sha } },
+          '/contents/package.json': file({ name: 'orbit', version: '2.0.0' }),
+          '/releases/tags/v2.0.0': {
+            id: 1,
+            tag_name: 'v2.0.0',
+            draft: false,
+            published_at: '2026-10-01T00:00:00Z',
+            html_url: 'https://github.com/fixture/orbit/releases/tag/v2.0.0',
+            name: 'Orbit 2.0.0',
+            body: 'Exact target notes.',
+          },
+          ...overrides,
+        };
+        const value = typeof data[path] === 'function' ? data[path](url) : data[path];
+        if (value instanceof Response) return value;
+        return path in data ? Response.json(value) : Response.json({}, { status: 404 });
+      },
     },
-  });
+  );
   if (opened.kind !== 'ready') throw new Error('reader');
   return { ...opened, calls };
 }
@@ -322,4 +333,91 @@ test('package comparison tags are rechecked after comparison collection', async 
   expect(result.status).not.toBe('available');
   expect(result.reasons).toContain('conflict');
   f.reader.close();
+});
+test('a missing proposed tag ends the package comparison before any base tag is probed', async () => {
+  // Research shares one run cache, so the target-release stage's 404s answer the comparison.
+  const missing = () => Response.json({}, { status: 404 });
+  const f = setup(
+    {
+      '/git/ref/tags/v2.0.0': missing,
+      '/git/ref/tags/v1.0.0': { ref: 'refs/tags/v1.0.0', object: { type: 'commit', sha } },
+    },
+    {},
+    { cache: createResearchCache(RESEARCH_CACHE_LIMITS) },
+  );
+  const release = await collectTargetRelease(target, f.reader);
+  expect(release.status).toBe('unavailable');
+  const probed = f.calls.length;
+  const result = await collectPackageComparison({ ...target, version: '1.0.0' }, target, f.reader);
+  expect(result).toMatchObject({ status: 'unavailable', reasons: ['missing'] });
+  // Every proposed candidate was already answered; no request reaches the network.
+  expect(f.calls.slice(probed)).toEqual([]);
+  expect(f.calls.some((url) => url.includes('/git/ref/tags/v1.0.0'))).toBe(false);
+  f.reader.close();
+});
+/** A ref whose annotated-tag chain has `tags` tag objects before the commit `sha`. */
+function tagChain(tags: number) {
+  const hop = (i: number) => String(i + 1).padStart(40, '0');
+  const chain: Record<string, unknown> = {
+    '/git/ref/tags/v2.0.0': { ref: 'refs/tags/v2.0.0', object: { type: 'tag', sha: hop(0) } },
+  };
+  for (let i = 0; i < tags; i++) {
+    const next = i + 1 < tags ? { type: 'tag', sha: hop(i + 1) } : { type: 'commit', sha };
+    chain['/git/tags/' + hop(i)] = { sha: hop(i), object: next };
+  }
+  return chain;
+}
+test('annotated tag chains resolve up to the register depth and fail one tag deeper', async () => {
+  const maxTagDepth = limit('research.maxTagDepth');
+  const exact = setup(tagChain(maxTagDepth), { maxTagDepth });
+  expect(await resolveUpstreamRef('fixture/orbit', 'tags/v2.0.0', exact.reader)).toEqual({
+    status: 'available',
+    sha,
+    ref: 'tags/v2.0.0',
+  });
+  exact.reader.close();
+
+  const deeper = setup(tagChain(maxTagDepth + 1), { maxTagDepth });
+  expect(await resolveUpstreamRef('fixture/orbit', 'tags/v2.0.0', deeper.reader)).toEqual({
+    status: 'unavailable',
+    reason: 'budget',
+  });
+  // Only the tags within the depth are fetched; the tag one past the depth is refused unread.
+  expect(deeper.calls.filter((url) => url.includes('/git/tags/'))).toHaveLength(maxTagDepth);
+  deeper.reader.close();
+});
+test('a comparison keeps its file list complete below the register file cap and truncates at it', async () => {
+  const base = 'c'.repeat(40);
+  const cap = limit('github.compareMaxFiles');
+  const compareWithFiles = (count: number) =>
+    setup({
+      ['/compare/' + base + '...' + sha]: {
+        base_commit: { sha: base },
+        merge_base_commit: { sha: base },
+        status: 'ahead',
+        ahead_by: 1,
+        behind_by: 0,
+        total_commits: 1,
+        commits: [{ sha, commit: { message: 'Target change' } }],
+        files: Array.from({ length: count }, (_, i) => ({
+          filename: `file-${i}.js`,
+          patch: '@@\n+change',
+        })),
+      },
+    });
+  const compare = (f: ReturnType<typeof setup>) =>
+    collectExactComparison(
+      'fixture/orbit',
+      { sha: base, value: '1.0.0' },
+      { sha, value: '2.0.0' },
+      f.reader,
+    );
+
+  const below = compareWithFiles(cap - 1);
+  expect(await compare(below)).toMatchObject({ status: 'available', reasons: [] });
+  below.reader.close();
+
+  const atCap = compareWithFiles(cap);
+  expect(await compare(atCap)).toMatchObject({ reasons: ['truncated'] });
+  atCap.reader.close();
 });

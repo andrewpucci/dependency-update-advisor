@@ -1,4 +1,3 @@
-import { EVIDENCE_READ_ALLOCATION, EVIDENCE_READ_ENVELOPE } from './budget.js';
 import { collectorRoots, type DependabotRootsOutcome } from './dependabot-roots.js';
 import type { ReviewBinding } from './event.js';
 import { collectActionsInventory } from './evidence/actions.js';
@@ -6,7 +5,9 @@ import { collectNpmInventory } from './evidence/npm.js';
 import { enrichNpmEvidence } from './evidence/npm-graph.js';
 import { collectUvMetadata } from './evidence/uv.js';
 import { reconcileUvGraph } from './evidence/uv-graph.js';
+import type { ResearchCache } from './evidence/research-cache.js';
 import { createGithubReadSession, type GithubReadSession } from './github-read.js';
+import { limit } from './limits.js';
 import type { Ecosystem, EvidenceReason } from './schema.js';
 
 /**
@@ -16,55 +17,58 @@ import type { Ecosystem, EvidenceReason } from './schema.js';
  */
 export const W2_EVIDENCE_LIMITS = Object.freeze({
   session: Object.freeze({
-    maxRequests: EVIDENCE_READ_ALLOCATION.session.maxRequests,
-    maxPages: 10,
-    maxFiles: 1_000,
-    maxJsonEntries: 200_000,
-    maxResponseBytes: EVIDENCE_READ_ENVELOPE.maxResponseBytes,
-    maxFileBytes: 500_000,
-    maxTotalBytes: EVIDENCE_READ_ALLOCATION.session.maxTotalBytes,
-    maxRetainedBytes: 2_000_000,
-    requestTimeoutMs: EVIDENCE_READ_ENVELOPE.requestTimeoutMs,
+    maxRequests: limit('w2.session.maxRequests'),
+    maxPages: limit('w2.session.maxPages'),
+    maxFiles: limit('w2.session.maxFiles'),
+    maxJsonEntries: limit('w2.session.maxJsonEntries'),
+    maxResponseBytes: limit('w2.session.maxResponseBytes'),
+    maxFileBytes: limit('w2.session.maxFileBytes'),
+    maxTotalBytes: limit('w2.session.maxTotalBytes'),
+    maxRetainedBytes: limit('w2.session.maxRetainedBytes'),
+    requestTimeoutMs: limit('w2.session.requestTimeoutMs'),
   }),
   npm: Object.freeze({
-    maxFileBytes: 500_000,
-    maxJsonDepth: 32,
-    maxJsonEntries: 100_000,
-    maxRoots: 10,
-    maxRetainedBytes: 2_000_000,
+    maxFileBytes: limit('w2.npm.maxFileBytes'),
+    maxJsonDepth: limit('w2.npm.maxJsonDepth'),
+    maxJsonEntries: limit('w2.npm.maxJsonEntries'),
+    maxRoots: limit('w2.npm.maxRoots'),
+    maxRetainedBytes: limit('w2.npm.maxRetainedBytes'),
   }),
   actions: Object.freeze({
-    maxFileBytes: 100_000,
-    maxWorkflows: 20,
-    maxYamlNodes: 100_000,
-    maxYamlDepth: 32,
-    maxAliasExpansions: 100,
-    maxOccurrences: 1_000,
-    maxRetainedBytes: 2_000_000,
+    maxFileBytes: limit('w2.actions.maxFileBytes'),
+    maxWorkflows: limit('w2.actions.maxWorkflows'),
+    maxYamlNodes: limit('w2.actions.maxYamlNodes'),
+    maxYamlDepth: limit('w2.actions.maxYamlDepth'),
+    maxAliasExpansions: limit('w2.actions.maxAliasExpansions'),
+    maxOccurrences: limit('w2.actions.maxOccurrences'),
+    maxRetainedBytes: limit('w2.actions.maxRetainedBytes'),
   }),
   uv: Object.freeze({
-    maxFileBytes: 100_000,
-    maxTomlDepth: 32,
-    maxTomlEntries: 100_000,
-    maxPackages: 1_000,
-    maxDeclarations: 1_000,
-    maxEdges: 1_000,
-    maxStringBytes: 4_096,
-    maxRequirementTokens: 200,
-    maxMarkerDepth: 16,
-    maxRoots: 20,
-    maxRetainedBytes: 1_000_000,
+    maxFileBytes: limit('w2.uv.maxFileBytes'),
+    maxTomlDepth: limit('w2.uv.maxTomlDepth'),
+    maxTomlEntries: limit('w2.uv.maxTomlEntries'),
+    maxPackages: limit('w2.uv.maxPackages'),
+    maxDeclarations: limit('w2.uv.maxDeclarations'),
+    maxEdges: limit('w2.uv.maxEdges'),
+    maxStringBytes: limit('w2.uv.maxStringBytes'),
+    maxRequirementTokens: limit('w2.uv.maxRequirementTokens'),
+    maxMarkerDepth: limit('w2.uv.maxMarkerDepth'),
+    maxRoots: limit('w2.uv.maxRoots'),
+    maxRetainedBytes: limit('w2.uv.maxRetainedBytes'),
   }),
-  graph: Object.freeze({ maxGraphWork: 500_000, maxRetainedBytes: 2_000_000 }),
+  graph: Object.freeze({
+    maxGraphWork: limit('w2.graph.maxGraphWork'),
+    maxRetainedBytes: limit('w2.graph.maxRetainedBytes'),
+  }),
   registry: Object.freeze({
-    maxRequests: EVIDENCE_READ_ALLOCATION.registry.maxRequests,
-    maxResponseBytes: EVIDENCE_READ_ENVELOPE.maxResponseBytes,
-    maxTotalBytes: EVIDENCE_READ_ALLOCATION.registry.maxTotalBytes,
-    maxJsonEntries: 100_000,
-    maxJsonDepth: 32,
-    requestTimeoutMs: EVIDENCE_READ_ENVELOPE.requestTimeoutMs,
+    maxRequests: limit('w2.registry.maxRequests'),
+    maxResponseBytes: limit('w2.registry.maxResponseBytes'),
+    maxTotalBytes: limit('w2.registry.maxTotalBytes'),
+    maxJsonEntries: limit('w2.registry.maxJsonEntries'),
+    maxJsonDepth: limit('w2.registry.maxJsonDepth'),
+    requestTimeoutMs: limit('w2.registry.requestTimeoutMs'),
   }),
-  totalTimeoutMs: EVIDENCE_READ_ENVELOPE.totalTimeoutMs,
+  totalTimeoutMs: limit('w2.totalTimeoutMs'),
 });
 
 type Clock = () => number;
@@ -78,6 +82,8 @@ export type CollectionInput = Readonly<{
   dependabot: DependabotRootsOutcome;
   /** Credential-free registry fetch; never receives the GitHub token. */
   registryFetch: (url: string, init: RequestInit) => Promise<Response>;
+  /** The run's research cache, so research rereads none of the registry documents read here. */
+  researchCache?: ResearchCache;
   now: Clock;
   /** Receives the authentic npm inventory, which upstream research needs for npm identity proofs. */
   onNpmInventory?: (inventory: unknown) => void;
@@ -204,7 +210,12 @@ export function createEvidenceCollectors(
           ...timeouts(W2_EVIDENCE_LIMITS.registry.requestTimeoutMs, total),
         },
       },
-      { fetch: input.registryFetch, now: input.now, signal: input.signal },
+      {
+        fetch: input.registryFetch,
+        now: input.now,
+        signal: input.signal,
+        cache: input.researchCache,
+      },
     );
     if (enriched.kind !== 'inventory') return noInventory(enriched);
     return {

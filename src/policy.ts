@@ -1,5 +1,7 @@
+import { MS_PER_DAY } from './format.js';
 import {
   DEFAULT_VERDICTS,
+  VERDICTS,
   type ConfigResult,
   type PolicyOverrides,
   type PolicyRule,
@@ -150,14 +152,10 @@ type PolicyConfig =
     }>;
 export type PolicyResult = PolicyEvaluation | ConfigFailure;
 
-const precedence: Readonly<Record<Verdict, number>> = {
-  merge: 0,
-  merge_with_followups: 1,
-  do_not_merge: 2,
-};
 function strictest(verdicts: readonly Verdict[]): Verdict {
   return verdicts.reduce(
-    (ceiling, verdict) => (precedence[verdict] > precedence[ceiling] ? verdict : ceiling),
+    (ceiling, verdict) =>
+      VERDICTS.indexOf(verdict) > VERDICTS.indexOf(ceiling) ? verdict : ceiling,
     'merge',
   );
 }
@@ -239,7 +237,7 @@ function evaluateUnit(
     const recheckAt =
       finding.publishedAt === undefined
         ? undefined
-        : finding.publishedAt + policy.minimumReleaseAgeDays * 86_400_000;
+        : finding.publishedAt + policy.minimumReleaseAgeDays * MS_PER_DAY;
     // Only a release inside the window can be exempted from recentRelease.
     if (recheckAt !== undefined && evaluatedAt < recheckAt) {
       if (fixes.length)

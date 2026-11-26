@@ -3,6 +3,7 @@ import { collectNpmInventory } from './npm.js';
 import type { GithubReadSession, GithubDiscovery } from '../github-read.js';
 import type { ReviewBinding } from '../event.js';
 import { validateReviewPacket } from '../schema.js';
+import { limit } from '../limits.js';
 
 const repository = { id: 101, owner: 'example', name: 'consumer' };
 const BASE = 'b'.repeat(40),
@@ -137,6 +138,7 @@ function accepted(result: Inventory) {
     findings: [],
     relationships: [],
     reachability: [],
+    retryAfter: null,
   };
   const validated = validateReviewPacket(candidate, expected);
   expect(validated.ok, JSON.stringify(validated)).toBe(true);
@@ -746,4 +748,109 @@ test('ambiguous comparison rows stay unattributed without an inventory gap', asy
   });
   expect(result.sources.filter((s) => s.kind === 'comparison')).toEqual([]);
   accepted(result);
+});
+
+function jsonEntries(value: unknown): number {
+  if (!value || typeof value !== 'object') return 0;
+  const children = Object.values(value);
+  return children.length + children.reduce<number>((n, child) => n + jsonEntries(child), 0);
+}
+function withBudget(maxFileBytes: number) {
+  const f = fixture();
+  f.input.limits.maxFileBytes = maxFileBytes;
+  return f;
+}
+test('the file byte cap admits a lockfile of exactly the registered size and refuses one byte more', async () => {
+  const cap = limit('w2.npm.maxFileBytes');
+  const sized = (bytes: number) => {
+    const f = withBudget(cap);
+    const text = JSON.stringify(lock(f, 'head'));
+    f.files['head:package-lock.json'] = new TextEncoder().encode(
+      text + ' '.repeat(bytes - text.length),
+    );
+    return f;
+  };
+  const atLimit = sized(cap);
+  const kept = inventory(await collectNpmInventory(atLimit.input, { session: atLimit.session }));
+  expect(kept.coverage.status).toBe('complete');
+  const over = sized(cap + 1);
+  const refused = await collectNpmInventory(over.input, { session: over.session });
+  expect(refused).toMatchObject({ coverage: { reasons: expect.arrayContaining(['budget']) } });
+  expect(refused).not.toMatchObject({ coverage: { status: 'complete' } });
+});
+
+test('the cumulative JSON entry cap admits exactly the registered count and refuses one more', async () => {
+  const cap = limit('w2.npm.maxJsonEntries');
+  const padded = (extra: number) => {
+    const f = fixture();
+    f.input.limits.maxFileBytes = 500_000;
+    f.input.limits.maxJsonEntries = cap;
+    const others = ['base:package.json', 'head:package.json', 'base:package-lock.json'].reduce(
+      (n, key) => n + jsonEntries(f.files[key]),
+      0,
+    );
+    const head = lock(f, 'head');
+    // The padding key adds one entry to the root object, then each array element adds one.
+    const used = others + jsonEntries(head) + 1;
+    (head as Record<string, unknown>).padding = Array.from({ length: cap - used + extra }, () => 0);
+    return f;
+  };
+  const atLimit = padded(0);
+  const kept = inventory(await collectNpmInventory(atLimit.input, { session: atLimit.session }));
+  expect(kept.coverage.status).toBe('complete');
+  const over = padded(1);
+  const refused = inventory(await collectNpmInventory(over.input, { session: over.session }));
+  expect(refused.coverage.status).not.toBe('complete');
+  expect(refused.coverage.reasons).toContain('budget');
+});
+
+test('the changed npm root cap reads exactly the registered number of roots and records a budget gap for the rest', async () => {
+  const cap = limit('w2.npm.maxRoots');
+  const withRoots = (count: number) => {
+    const f = fixture();
+    const roots = Array.from({ length: count }, (_, i) => `r${String(i).padStart(2, '0')}`);
+    f.discovery.files = roots.map((root) => ({
+      path: `${root}/package-lock.json`,
+      previousPath: null,
+      status: 'modified',
+      blobSha: null,
+    }));
+    return { f, roots };
+  };
+  const atLimit = withRoots(cap);
+  const kept = inventory(
+    await collectNpmInventory(atLimit.f.input, { session: atLimit.f.session }),
+  );
+  expect(atLimit.f.calls).toContain(`head:${atLimit.roots[cap - 1]}/package-lock.json`);
+  expect(kept.gaps.some((g) => g.root === '.' && g.reason === 'budget')).toBe(false);
+  const over = withRoots(cap + 1);
+  const trimmed = inventory(await collectNpmInventory(over.f.input, { session: over.f.session }));
+  expect(over.f.calls).toContain(`head:${over.roots[cap - 1]}/package-lock.json`);
+  expect(over.f.calls).not.toContain(`head:${over.roots[cap]}/package-lock.json`);
+  expect(trimmed.gaps).toContainEqual({ root: '.', side: null, path: null, reason: 'budget' });
+});
+
+test('the retained inventory cap keeps a whole inventory at its exact serialized size and trims one byte under it', async () => {
+  const withChildren = () => {
+    const f = fixture();
+    for (let i = 0; i < 25; i++)
+      lock(f, 'head').packages[`node_modules/child-${i}`] = pkg('1.0.0', `child-${i}`);
+    return f;
+  };
+  const whole = withChildren();
+  const full = inventory(await collectNpmInventory(whole.input, { session: whole.session }));
+  const size = Buffer.byteLength(JSON.stringify(full));
+  expect(size).toBeLessThanOrEqual(limit('w2.npm.maxRetainedBytes'));
+  const exact = withChildren();
+  exact.input.limits.maxRetainedBytes = size;
+  const kept = inventory(await collectNpmInventory(exact.input, { session: exact.session }));
+  expect(kept.changes).toHaveLength(full.changes.length);
+  expect(kept.coverage.reasons).not.toContain('budget');
+  const tight = withChildren();
+  tight.input.limits.maxRetainedBytes = size - 1;
+  const trimmed = inventory(await collectNpmInventory(tight.input, { session: tight.session }));
+  expect(trimmed.changes.length).toBeLessThanOrEqual(full.changes.length);
+  expect(trimmed.coverage.status).not.toBe('complete');
+  expect(trimmed.coverage.reasons).toContain('budget');
+  expect(Buffer.byteLength(JSON.stringify(trimmed))).toBeLessThanOrEqual(size - 1);
 });

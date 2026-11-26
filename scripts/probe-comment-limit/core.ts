@@ -1,0 +1,342 @@
+/**
+ * The pure part of the comment-limit probe (docs/specs/SPEC-limit-register.md, External
+ * Citations Amendment A2): the bodies it sends, how one write's answer is classified, which
+ * counting unit a set of outcomes fits, and the bounded search for the limit. The runner in
+ * run.ts does the network calls; everything here takes an injected writer.
+ */
+import { join } from 'node:path';
+import { fileURLToPath, pathToFileURL } from 'node:url';
+import type * as Format from '../../src/format.js';
+
+const ROOT = fileURLToPath(new URL('../../', import.meta.url));
+// Loaded by path, not by a static import, so Node can run this file directly (see check.ts).
+const { HTTP_STATUS } = (await import(
+  pathToFileURL(join(ROOT, 'src/format.ts')).href
+)) as typeof Format;
+
+export const UNITS = ['code points', 'code units', 'bytes'] as const;
+export type Unit = (typeof UNITS)[number];
+
+export type WriteKind = 'create' | 'update';
+
+/** One write as the runner saw it: an HTTP answer, or a failure with no answer. */
+export type WriteAnswer = { status: number; data: unknown } | { error: string };
+
+export type WriteResult =
+  | { outcome: 'accepted'; status: number }
+  | { outcome: 'rejected'; status: number; message: string }
+  | {
+      outcome: 'inconclusive';
+      status?: number;
+      reason: string;
+      /** GitHub's validation messages for a 422 the probe cannot classify. */
+      detail?: string[];
+    };
+
+export type BodyName =
+  | 'ascii'
+  | 'astral'
+  | 'astralPlusOne'
+  | 'twoByte'
+  | 'threeByte'
+  | 'lineBreaks';
+
+export type WriteRecord = {
+  kind: WriteKind;
+  body: BodyName;
+  codeUnits: number;
+  status: number | null;
+  outcome: WriteResult['outcome'];
+  detail?: string[];
+};
+
+export type ProbeOutcome = {
+  unit: Unit | 'inconclusive';
+  reason?: string;
+  /** L: the longest ASCII body create accepted, with L + 1 rejected. */
+  limit?: number;
+  update: 'agrees' | 'differs' | 'inconclusive' | 'not run';
+  lineBreaks: 'accepted' | 'rejected' | 'inconclusive' | 'not run';
+  writes: WriteRecord[];
+};
+
+/** A non-BMP character: one code point, two UTF-16 code units, four UTF-8 bytes. */
+const ASTRAL = '\u{1F600}';
+/** One code point and one code unit, two UTF-8 bytes. */
+const TWO_BYTE = 'é';
+/** One code point and one code unit, three UTF-8 bytes. */
+const THREE_BYTE = 'あ';
+
+export function counts(text: string): Record<Unit, number> {
+  return {
+    'code points': [...text].length,
+    'code units': text.length,
+    bytes: Buffer.byteLength(text, 'utf8'),
+  };
+}
+
+export const asciiBody = (length: number): string => 'a'.repeat(length);
+
+/** L ASCII code units in which every other one is a line feed. */
+export const lineBreakBody = (length: number): string =>
+  'a\n'.repeat(Math.floor(length / 2)) + 'a'.repeat(length % 2);
+
+/** The bodies that tell the units apart once L is known (A2 table, after the ASCII pair). */
+export function unitBodies(limit: number): { name: BodyName; text: string }[] {
+  const half = Math.floor(limit / 2);
+  return [
+    { name: 'astral', text: ASTRAL.repeat(half) },
+    { name: 'astralPlusOne', text: ASTRAL.repeat(half + 1) },
+    { name: 'twoByte', text: TWO_BYTE.repeat(limit) },
+    { name: 'threeByte', text: THREE_BYTE.repeat(limit) },
+  ];
+}
+
+const isRecord = (value: unknown): value is Record<string, unknown> =>
+  typeof value === 'object' && value !== null;
+
+/** One error's too-long text: a `body` field's "too long", or a bare "body is too long". */
+function tooLongText(error: unknown): string | undefined {
+  if (typeof error === 'string') return /\bbody is too long\b/i.test(error) ? error : undefined;
+  if (!isRecord(error) || typeof error.message !== 'string') return undefined;
+  if (error.field === 'body') return /too long/i.test(error.message) ? error.message : undefined;
+  // GitHub's live answer (2026-11-22) does not name the body as its field, so the text must.
+  return /\bbody is too long\b/i.test(error.message) ? error.message : undefined;
+}
+
+/** The too-long message of a 422 whose errors list says the body is too long, if it has one. */
+function tooLongMessage(data: unknown): string | undefined {
+  const errors = isRecord(data) && Array.isArray(data.errors) ? data.errors : [];
+  for (const error of errors) {
+    const text = tooLongText(error);
+    if (text !== undefined) return text;
+  }
+  return undefined;
+}
+
+/**
+ * Accepted only on the status the reviewer expects with the body returned unchanged, as
+ * src/comments.ts checks its own writes; rejected only on a 422 with a too-long body error.
+ * Anything else is inconclusive and never counts as a rejection.
+ */
+/** An error object as `field=…, code=…: message`, so the record shows its shape; else as is. */
+function describe(item: unknown): unknown {
+  if (!isRecord(item)) return item;
+  const shape = (['field', 'code'] as const)
+    .filter((key) => key in item && item[key] !== undefined)
+    .map((key) => `${key}=${String(item[key])}`)
+    .join(', ');
+  const message = typeof item.message === 'string' ? item.message : '';
+  return [shape, message].filter((part) => part !== '').join(': ');
+}
+
+/**
+ * The top-level message and each error's text of a 422, each cut to `detailCodeUnits`. An
+ * error may be a string or an object with a message or code; links are never kept.
+ */
+export function validationMessages(data: unknown, detailCodeUnits: number): string[] {
+  if (!isRecord(data)) return [];
+  const errors = Array.isArray(data.errors) ? data.errors : [];
+  const texts = [data.message, ...errors].map(describe);
+  return texts
+    .filter((text): text is string => typeof text === 'string' && text !== '')
+    .map((text) => text.slice(0, detailCodeUnits));
+}
+
+export function classifyWrite(
+  kind: WriteKind,
+  sent: string,
+  answer: WriteAnswer,
+  options: { detailCodeUnits?: number } = {},
+): WriteResult {
+  if ('error' in answer) return { outcome: 'inconclusive', reason: `no answer: ${answer.error}` };
+  const { status, data } = answer;
+  const expected = kind === 'create' ? HTTP_STATUS.created : HTTP_STATUS.ok;
+  if (status === expected) {
+    return isRecord(data) && data.body === sent
+      ? { outcome: 'accepted', status }
+      : { outcome: 'inconclusive', status, reason: 'the returned body differs from the one sent' };
+  }
+  if (status === HTTP_STATUS.unprocessableContent) {
+    const message = tooLongMessage(data);
+    if (message !== undefined) return { outcome: 'rejected', status, message };
+    const reason = 'a 422 that is not a too-long body error';
+    return options.detailCodeUnits === undefined
+      ? { outcome: 'inconclusive', status, reason }
+      : {
+          outcome: 'inconclusive',
+          status,
+          reason,
+          detail: validationMessages(data, options.detailCodeUnits),
+        };
+  }
+  return { outcome: 'inconclusive', status, reason: `unexpected status ${status}` };
+}
+
+/** The maximum a too-long message states, such as "maximum is N characters". */
+export function statedMaximum(message: string | undefined): number | undefined {
+  const digits = message === undefined ? undefined : /maximum is (\d+)/i.exec(message)?.[1];
+  return digits === undefined ? undefined : Number(digits);
+}
+
+type Outcome = 'accepted' | 'rejected';
+
+/** The one unit whose count, compared with L, predicts every outcome; else inconclusive. */
+export function classifyUnit(
+  limit: number,
+  outcomes: readonly { text: string; outcome: Outcome }[],
+): Unit | 'inconclusive' {
+  const fits = UNITS.filter((unit) =>
+    outcomes.every(
+      ({ text, outcome }) => (counts(text)[unit] > limit ? 'rejected' : 'accepted') === outcome,
+    ),
+  );
+  return fits.length === 1 ? (fits[0] ?? 'inconclusive') : 'inconclusive';
+}
+
+export type Writer = (kind: WriteKind, text: string) => Promise<WriteResult>;
+
+/** The search range: the longest body accepted so far, and the shortest rejected. */
+type Bracket = { accepted: number; rejected: number };
+type Searched = { bracket: Bracket } | { reason: string };
+
+/** Sends one ASCII body and moves the matching end of the bracket to its length. */
+async function narrow(
+  bracket: Bracket,
+  length: number,
+  write: Writer,
+): Promise<{ bracket: Bracket; outcome: Outcome } | { reason: string }> {
+  const result = await write('create', asciiBody(length));
+  if (result.outcome === 'inconclusive') return { reason: result.reason };
+  return result.outcome === 'accepted'
+    ? { bracket: { ...bracket, accepted: Math.max(bracket.accepted, length) }, outcome: 'accepted' }
+    : {
+        bracket: { ...bracket, rejected: Math.min(bracket.rejected, length) },
+        outcome: 'rejected',
+      };
+}
+
+/** When the rejection states a maximum M inside the bracket, tests M, then M + 1 unless M failed. */
+async function tryStated(
+  stated: number | undefined,
+  bracket: Bracket,
+  write: Writer,
+): Promise<Searched> {
+  if (stated === undefined || stated <= 0 || stated >= bracket.rejected) return { bracket };
+  let current = bracket;
+  for (const length of [stated, stated + 1]) {
+    const step = await narrow(current, length, write);
+    if ('reason' in step) return step;
+    current = step.bracket;
+    if (step.outcome === 'rejected') break;
+  }
+  return { bracket: current };
+}
+
+/** Halves the bracket until the accepted and rejected lengths are one apart. */
+async function halve(bracket: Bracket, write: Writer): Promise<Searched> {
+  let current = bracket;
+  while (current.rejected - current.accepted > 1) {
+    const middle = current.accepted + Math.floor((current.rejected - current.accepted) / 2);
+    const step = await narrow(current, middle, write);
+    if ('reason' in step) return step;
+    current = step.bracket;
+  }
+  return { bracket: current };
+}
+
+/**
+ * L by the bounded search: one body expected to be rejected, then M and M + 1 when the
+ * rejection states M, else halving between an empty body (never sent) and the first body.
+ */
+export async function findLimit(
+  firstLength: number,
+  write: Writer,
+): Promise<{ limit?: number; reason?: string }> {
+  const first = await write('create', asciiBody(firstLength));
+  if (first.outcome === 'inconclusive') return { reason: first.reason };
+  if (first.outcome === 'accepted') return { reason: 'the first body was accepted' };
+  const stated = await tryStated(
+    statedMaximum(first.message),
+    { accepted: 0, rejected: firstLength },
+    write,
+  );
+  if ('reason' in stated) return stated;
+  const found = await halve(stated.bracket, write);
+  if ('reason' in found) return found;
+  const { accepted } = found.bracket;
+  return accepted > 0 ? { limit: accepted } : { reason: 'no body was accepted' };
+}
+
+/** Runs the whole probe against one writer: L, the unit bodies, the update pair, line breaks. */
+export async function runProbe(io: { firstLength: number; write: Writer }): Promise<ProbeOutcome> {
+  const writes: WriteRecord[] = [];
+  const write =
+    (body: BodyName): Writer =>
+    async (kind, text) => {
+      const result = await io.write(kind, text);
+      writes.push({
+        kind,
+        body,
+        codeUnits: text.length,
+        status: result.status ?? null,
+        outcome: result.outcome,
+        ...('detail' in result && result.detail ? { detail: result.detail } : {}),
+      });
+      return result;
+    };
+  const stop = (reason: string, partial: Partial<ProbeOutcome> = {}): ProbeOutcome => ({
+    unit: 'inconclusive',
+    reason,
+    update: 'not run',
+    lineBreaks: 'not run',
+    ...partial,
+    writes,
+  });
+
+  const found = await findLimit(io.firstLength, write('ascii'));
+  if (found.limit === undefined) return stop(found.reason ?? 'no limit found');
+  const limit = found.limit;
+
+  const seen: { text: string; outcome: Outcome }[] = [
+    { text: asciiBody(limit), outcome: 'accepted' },
+    { text: asciiBody(limit + 1), outcome: 'rejected' },
+  ];
+  for (const { name, text } of unitBodies(limit)) {
+    const result = await write(name)('create', text);
+    if (result.outcome === 'inconclusive') return stop(result.reason, { limit });
+    seen.push({ text, outcome: result.outcome });
+  }
+  const unit = classifyUnit(limit, seen);
+
+  const atLimit = await write('ascii')('update', asciiBody(limit));
+  if (atLimit.outcome === 'inconclusive')
+    return stop(atLimit.reason, { limit, update: 'inconclusive' });
+  const pastLimit = await write('ascii')('update', asciiBody(limit + 1));
+  if (pastLimit.outcome === 'inconclusive')
+    return stop(pastLimit.reason, { limit, update: 'inconclusive' });
+  const update =
+    atLimit.outcome === 'accepted' && pastLimit.outcome === 'rejected' ? 'agrees' : 'differs';
+
+  const breaks = await write('lineBreaks')('create', lineBreakBody(limit));
+  if (breaks.outcome === 'inconclusive')
+    return stop(breaks.reason, { limit, update, lineBreaks: 'inconclusive' });
+
+  return {
+    unit,
+    ...(unit === 'inconclusive' ? { reason: 'the outcomes fit no single unit' } : {}),
+    limit,
+    update,
+    lineBreaks: breaks.outcome,
+    writes,
+  };
+}
+
+/** Spec A3: the comment limit may be raised only in this case; every other result stops. */
+export function raiseAllowed(outcome: ProbeOutcome): boolean {
+  return (
+    (outcome.unit === 'code units' || outcome.unit === 'code points') &&
+    outcome.update === 'agrees' &&
+    outcome.lineBreaks === 'accepted'
+  );
+}

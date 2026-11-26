@@ -47,6 +47,7 @@ async function review(options: Parameters<typeof upstreamScenario>[0] = {}) {
       coverage: fixture.coverage,
       relationships: fixture.relationships,
       reachability: [],
+      retryAfter: null,
     },
     fixture.expected,
   );
@@ -188,7 +189,7 @@ test('clipped target notes beside an unavailable comparison keep the whole enric
   expect(npm?.evidence.upstream.status).toBe('partial');
   expect(npm?.evidence.upstream.reasons).toContain('truncated');
 });
-test('the retained-output budget admits the exact enriched size and rejects one byte less', async () => {
+test('the retained-output budget admits the exact enriched size and rolls back one member at one byte less', async () => {
   const run = async (maxRetainedBytes: number) => {
     const f = await upstreamScenario();
     const scoped = { ...upstreamTestLimits, maxRetainedBytes };
@@ -202,5 +203,13 @@ test('the retained-output budget admits the exact enriched size and rejects one 
   if (full.kind !== 'enriched') throw new Error('upstream');
   const exact = Buffer.byteLength(JSON.stringify(full));
   expect(await run(exact)).toEqual(full);
-  expect(await run(exact - 1)).toEqual({ kind: 'unavailable', reason: 'budget' });
+  // One byte less rolls back only the member that crossed the limit, never the whole stage.
+  const short = await run(exact - 1);
+  if (short.kind !== 'enriched') throw new Error('upstream');
+  expect(short).not.toHaveProperty('stopped');
+  expect(Buffer.byteLength(JSON.stringify(short))).toBeLessThan(exact);
+  const budgeted = short.changes.filter((c) => c.evidence.upstream.reasons.includes('budget'));
+  expect(budgeted).toHaveLength(1);
+  const others = short.changes.filter((c) => !budgeted.includes(c));
+  expect(others).toEqual(full.changes.filter((c) => c.id !== budgeted[0].id));
 });

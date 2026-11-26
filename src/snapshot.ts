@@ -1,3 +1,4 @@
+import { CHAR_CODE, FILE_MODE } from './format.js';
 import fs from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { dirname, join, relative, sep } from 'node:path';
@@ -18,9 +19,10 @@ import {
 } from './dependabot-roots.js';
 import type { GithubRead, GithubTransport } from './runtime.js';
 import type { EvidenceReason } from './schema.js';
+import { limit } from './limits.js';
 
-const MAX_BLOB_BYTES = 1024 * 1024;
-const MAX_TREE_ENTRIES = 10_000;
+const MAX_BLOB_BYTES = limit('snapshot.maxBlobBytes');
+const MAX_TREE_ENTRIES = limit('snapshot.maxTreeEntries');
 const CONFIG_PATH = '.github/dependabot-review.json';
 
 type SnapshotRead<T> =
@@ -197,7 +199,7 @@ function validPath(path: unknown): path is string {
   return (
     typeof path === 'string' &&
     path.length > 0 &&
-    Buffer.byteLength(path, 'utf8') <= 1024 &&
+    Buffer.byteLength(path, 'utf8') <= limit('packet.identityBytes') &&
     !path.includes('\\') &&
     !path.startsWith('/') &&
     path.split('/').every((part) => part && part !== '.' && part !== '..')
@@ -208,7 +210,9 @@ function validRef(value: unknown): value is string {
   return (
     typeof value === 'string' &&
     value.length > 0 &&
-    !Array.from(value).some((character) => character.charCodeAt(0) < 32 || character === '\x7f')
+    !Array.from(value).some(
+      (character) => character.charCodeAt(0) < CHAR_CODE.firstPrintable || character === '\x7f',
+    )
   );
 }
 
@@ -362,7 +366,7 @@ class Materializer {
     for (let parent = dirname(path); parent !== '.'; parent = dirname(parent)) {
       const entry = this.tree.entries.get(parent);
       if (!entry || entry.kind !== 'tree') throw new Unavailable();
-      await fs.mkdir(this.path(parent), { recursive: true, mode: 0o700 });
+      await fs.mkdir(this.path(parent), { recursive: true, mode: FILE_MODE.privateDirectory });
     }
   }
 
@@ -376,7 +380,7 @@ class Materializer {
     await this.parents(path);
     const destination = this.path(path);
     if (entry.kind === 'tree') {
-      await fs.mkdir(destination, { recursive: true, mode: 0o700 });
+      await fs.mkdir(destination, { recursive: true, mode: FILE_MODE.privateDirectory });
       return true;
     }
     if (!(await missing(destination)) && content === 'placeholder') return true;
@@ -392,7 +396,9 @@ class Materializer {
         : content === 'limit-placeholder'
           ? new Uint8Array((options.limit ?? 0) + 1)
           : new Uint8Array();
-    await fs.writeFile(destination, bytes, { mode: entry.mode === '100755' ? 0o700 : 0o600 });
+    await fs.writeFile(destination, bytes, {
+      mode: entry.mode === '100755' ? FILE_MODE.privateExecutable : FILE_MODE.privateFile,
+    });
     return true;
   }
 

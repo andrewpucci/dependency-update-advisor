@@ -8,6 +8,7 @@ import {
 } from '../schema.js';
 import type { Finding } from '../policy.js';
 import { advisoryCheck, AdvisoryFailure } from './advisory-read.js';
+import { limit } from '../limits.js';
 import { UpstreamFailure } from './upstream-read.js';
 import type { Observation, PolicySignalInput, SignalEnrichment } from './policy-signals.js';
 
@@ -22,7 +23,7 @@ export function observe<T>(read: () => T): Observation<T> {
   }
 }
 export type OptionalCategory = 'publishTime' | 'deprecation' | 'trust' | 'publisher' | 'license';
-const REASON_CODE_UNITS = 350;
+const REASON_CODE_UNITS = limit('signals.reasonCodeUnits');
 /** Bounds a registry reason by UTF-16 units without splitting a surrogate pair. */
 export function boundedReason(value: string): string {
   const clean = value.replace(/[\p{Cc}\p{Cs}]/gu, ' ');
@@ -165,6 +166,43 @@ export function retainSignalFinding(output: SignalEnrichment, finding: Finding) 
   advisoryCheck(!previous || isDeepStrictEqual(previous, finding), 'conflict');
   if (!previous) output.findings.push(finding);
 }
+const OPTIONAL_CATEGORIES = [
+  'publishTime',
+  'deprecation',
+  'trust',
+  'publisher',
+  'license',
+] as const;
+/**
+ * Attempts need no runtime cap: each member's come from fixed call sites over its sides and the
+ * categories (at most 15 by reading the collectors; tests pin it), with no loop over untrusted
+ * data, and members are bounded by `PACKET_LIMITS.changes`.
+ */
+export const SIGNAL_ATTEMPTS_PER_MEMBER = limit('signals.attemptsPerMember');
+const PACKET_FIELDS = new Set(['changes', 'sources', 'findings']);
+/**
+ * Serialized sizes of the enrichment, each part serialized once: `packet` is what it adds to the
+ * review packet (changes, sources, findings), and `retained` is the whole output. Attempts are
+ * diagnostics outside the packet, so they count only toward retained bytes. Both equal
+ * `Buffer.byteLength(JSON.stringify(...))` of the corresponding object.
+ */
+export function enrichmentBytes(output: SignalEnrichment): { packet: number; retained: number } {
+  const object = (sizes: number[]) =>
+    2 + sizes.reduce((total, size) => total + size, 0) + Math.max(sizes.length - 1, 0);
+  const members = Object.entries(output).flatMap(([key, value]) => {
+    const json = JSON.stringify(value);
+    return json === undefined
+      ? []
+      : [{ key, size: Buffer.byteLength(JSON.stringify(key)) + 1 + Buffer.byteLength(json) }];
+  });
+  return {
+    packet: object(members.filter((m) => PACKET_FIELDS.has(m.key)).map((m) => m.size)),
+    retained: object(members.map((m) => m.size)),
+  };
+}
+function fitsBytes(input: PolicySignalInput, bytes: { packet: number; retained: number }) {
+  return bytes.packet <= PACKET_LIMITS.bytes && bytes.retained <= input.limits.maxRetainedBytes;
+}
 export function signalBounds(input: PolicySignalInput, output: SignalEnrichment) {
   advisoryCheck(
     output.changes.every((c) =>
@@ -173,27 +211,25 @@ export function signalBounds(input: PolicySignalInput, output: SignalEnrichment)
     'budget',
   );
   advisoryCheck(
-    output.attempts.length <= input.limits.maxAttempts &&
-      output.sources.length <= PACKET_LIMITS.sources &&
+    output.sources.length <= PACKET_LIMITS.sources &&
       output.findings.length <=
         Math.min(PACKET_LIMITS.findings, input.findings.length + input.limits.maxFindings) &&
-      Buffer.byteLength(JSON.stringify(output)) <=
-        Math.min(PACKET_LIMITS.bytes, input.limits.maxRetainedBytes),
+      fitsBytes(input, enrichmentBytes(output)),
     'budget',
   );
 }
-const OPTIONAL_CATEGORIES = [
-  'publishTime',
-  'deprecation',
-  'trust',
-  'publisher',
-  'license',
-] as const;
-/** Reserve explained terminal outcomes before optional reads can spend retention space. */
-export function reserveOptionalSignals(input: PolicySignalInput, output: SignalEnrichment) {
+const SIGNAL_CATEGORIES = ['malware', ...OPTIONAL_CATEGORIES] as const;
+/**
+ * Reserves every member's explained terminal outcome, malware included, before any read can spend
+ * retention space. A member whose results then cross a limit returns to its reservation, which
+ * was already counted, so one member's overflow never fails the stage (coverage §1.5). Members
+ * run in research order (§3.5), and the first member that does not fit ends that pass, so the
+ * members left at `budget` are exactly the lowest-priority ones.
+ */
+export function reserveSignals(input: PolicySignalInput, output: SignalEnrichment) {
   for (const change of output.changes) {
     if ('basis' in change) continue;
-    for (const category of OPTIONAL_CATEGORIES) {
+    for (const category of SIGNAL_CATEGORIES) {
       if (category !== 'license')
         change.evidence[category] = { status: 'unavailable', reasons: ['budget'], sourceIds: [] };
       output.attempts.push({
@@ -232,12 +268,53 @@ function explainUnattempted(output: SignalEnrichment, change: PacketChange) {
     });
   }
 }
+/**
+ * Checks packet limits after a member's rollback. If the discoveries kept from that member no
+ * longer fit, they are dropped too, so only this member loses its optional signals. Returns
+ * whether it had to drop them.
+ */
+function boundOrRelease(
+  input: PolicySignalInput,
+  output: SignalEnrichment,
+  change: PacketChange,
+  snapshot: { sources: PacketSource[]; findings: Finding[] },
+): boolean {
+  try {
+    signalBounds(input, output);
+    return false;
+  } catch {
+    output.sources = [...snapshot.sources];
+    output.findings = [...snapshot.findings];
+    for (const category of OPTIONAL_CATEGORIES) {
+      if (category !== 'license')
+        change.evidence[category] = { status: 'unavailable', reasons: ['budget'], sourceIds: [] };
+      const terminal = output.attempts.find(
+        (a) => a.memberId === change.id && a.category === category,
+      )!;
+      // Exactly the reservation's placeholder, so the state is no larger than before this member.
+      Object.assign(terminal, {
+        url: null,
+        outcome: 'skipped',
+        reasons: ['budget'],
+        sourceIds: [],
+        truncated: false,
+      });
+    }
+    signalBounds(input, output);
+    return true;
+  }
+}
+/**
+ * One member's optional signals. Returns false when the member's results crossed a packet limit,
+ * so the caller leaves every lower-priority member at its reservation (coverage §1.5).
+ */
 export async function runOptionalSignals(
   input: PolicySignalInput,
   output: SignalEnrichment,
   change: PacketChange,
   collect: () => Promise<void>,
-) {
+): Promise<boolean> {
+  let overflowed = false;
   const snapshot = {
     sources: [...output.sources],
     findings: [...output.findings],
@@ -250,8 +327,13 @@ export async function runOptionalSignals(
   try {
     await collect();
     explainUnattempted(output, change);
-    signalBounds(input, output);
-    return;
+    try {
+      signalBounds(input, output);
+      return true;
+    } catch (error) {
+      overflowed = true;
+      throw error;
+    }
   } catch (error) {
     const reason =
       error instanceof AdvisoryFailure || error instanceof UpstreamFailure
@@ -284,6 +366,6 @@ export async function runOptionalSignals(
       ];
       terminal.truncated = actual.length > 0;
     }
-    signalBounds(input, output);
+    return !boundOrRelease(input, output, change, snapshot) && !overflowed;
   }
 }

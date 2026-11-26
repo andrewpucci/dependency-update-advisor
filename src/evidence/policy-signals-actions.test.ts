@@ -107,6 +107,7 @@ test.each(['earliest', 'future', 'failed-page', 'moved', 'unmapped'])(
         coverage: f.coverage,
         relationships: f.relationships,
         reachability: [],
+        retryAfter: null,
       },
       f.expected,
     );

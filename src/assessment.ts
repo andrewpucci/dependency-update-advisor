@@ -137,6 +137,7 @@ export async function reviewPacket(input: ReviewInput): Promise<ReviewResult> {
       records: assessed.records,
       analysisUnavailable: false,
       signalAttempts: input.signalAttempts,
+      retryAfter: input.packet.retryAfter,
     } as never);
     if (!rendered.ok)
       return rendered.category === 'size'

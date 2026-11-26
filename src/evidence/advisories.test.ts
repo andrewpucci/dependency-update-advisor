@@ -1,9 +1,15 @@
 import { expect, test } from 'vite-plus/test';
-import { createAdvisoryReader } from './advisory-read.js';
-import { enrichAdvisories } from './advisories.js';
+import {
+  AdvisoryFailure,
+  createAdvisoryReader,
+  type AdvisoryReader,
+  type AdvisoryTarget,
+} from './advisory-read.js';
+import { enrichAdvisories, prepareAdvisoryInput } from './advisories.js';
+import { limit } from '../limits.js';
 import { createGithubReadSession } from '../github-read.js';
 import { collectNpmInventory } from './npm.js';
-import { validateReviewPacket, type PacketSource } from '../schema.js';
+import { validateReviewPacket, type PacketChange, type PacketSource } from '../schema.js';
 import { npmScenario } from '../../tests/parity/npm-inventory.js';
 
 export const advisoryLimits = {
@@ -29,8 +35,8 @@ const advisory = {
     { package: { ecosystem: 'npm', name: 'fixture-anchor' }, vulnerable_version_range: '>=1.1.0' },
   ],
 };
-async function fixture(both = false) {
-  const f = npmScenario(1);
+async function fixture(both = false, additions = 1) {
+  const f = npmScenario(additions);
   const opened = await createGithubReadSession(
     {
       binding: f.binding,
@@ -150,6 +156,7 @@ test.each([true, false])(
         ...fields,
         relationships: [],
         reachability: [],
+        retryAfter: null,
         sources: [...output.sources, f.absent],
         coverage: {
           npm: inventory.coverage,
@@ -233,6 +240,7 @@ test.each([
         findings: output.findings,
         relationships: [],
         reachability: [],
+        retryAfter: null,
         coverage: {
           npm: inventory.coverage,
           actions: { status: 'not_applicable', reasons: [], sourceIds: ['other'] },
@@ -323,6 +331,7 @@ test.each([false, true])(
         findings: output.findings,
         relationships: [],
         reachability: [],
+        retryAfter: null,
         coverage: {
           npm: inventory.coverage,
           actions: { status: 'not_applicable', reasons: [], sourceIds: ['other'] },
@@ -441,4 +450,189 @@ test('duplicate semantic instances and dangling references fail before I/O', asy
   ).toEqual({ kind: 'invalid' });
   expect(calls).toBe(0);
   reader.close();
+});
+
+function realReader(): AdvisoryReader {
+  const reader = createAdvisoryReader(advisoryLimits, {
+    now: () => 0,
+    fetch: async (url) =>
+      Response.json(
+        new URL(url).searchParams.get('affects') === 'fixture-anchor@1.1.0' ? [advisory] : [],
+      ),
+  });
+  if (reader.kind !== 'ready') throw new Error('reader');
+  return reader;
+}
+/** Delegates to the real reader; `fail` throws a malformed read, `stopAfter` stops after N reads. */
+function scriptedReader(
+  options: { fail?: (target: AdvisoryTarget) => boolean; stopAfter?: number } = {},
+): AdvisoryReader {
+  const real = realReader();
+  let reads = 0;
+  return {
+    read: async (target) => {
+      reads++;
+      if (options.fail?.(target as AdvisoryTarget)) throw new AdvisoryFailure('malformed');
+      return real.read(target);
+    },
+    close: () => real.close(),
+    stopped: () =>
+      options.stopAfter !== undefined && reads >= options.stopAfter ? 'rate_limit' : null,
+  };
+}
+function vulnerability(output: { changes: readonly PacketChange[] }, id: string) {
+  return output.changes.find((c) => c.id === id)!.evidence.vulnerability;
+}
+
+test("one member's read failure leaves the others intact", async () => {
+  const { input } = await fixture(false, 3);
+  const members = input.changes.filter((c) => !('basis' in c));
+  const second = members[1];
+  const failName = ((second.to ?? second.from) as { name: string }).name;
+  const baseline = await enrichAdvisories(input, { reader: scriptedReader() });
+  const result = await enrichAdvisories(input, {
+    reader: scriptedReader({ fail: (t) => t.name === failName }),
+  });
+  if (baseline.kind !== 'enriched' || result.kind !== 'enriched') throw new Error('evidence');
+  expect(result.stopped).toBeUndefined();
+  const failed = vulnerability(result, second.id);
+  expect(failed).toEqual({
+    status: 'unavailable',
+    reasons: ['malformed'],
+    sourceIds: [expect.any(String)],
+  });
+  expect(result.sources.map((s) => s.id)).toContain(failed.sourceIds[0]);
+  for (const member of members.filter((c) => c.id !== second.id))
+    expect(vulnerability(result, member.id)).toEqual(vulnerability(baseline, member.id));
+});
+
+test("a failed member's partial additions are removed", async () => {
+  const { input } = await fixture(true, 3);
+  const anchor = input.changes.find((c) => !('basis' in c) && c.from && c.to)!;
+  const fromSide = anchor.from as { name: string; version: string };
+  const baseline = await enrichAdvisories(input, { reader: scriptedReader() });
+  const result = await enrichAdvisories(input, {
+    reader: scriptedReader({
+      fail: (t) => t.name === fromSide.name && t.version === fromSide.version,
+    }),
+  });
+  if (baseline.kind !== 'enriched' || result.kind !== 'enriched') throw new Error('evidence');
+  const inputSourceIds = new Set(input.sources.map((s) => s.id));
+  const appended = (output: { sources: readonly PacketSource[] }) =>
+    output.sources
+      .filter((s) => !inputSourceIds.has(s.id) && s.memberIds.includes(anchor.id))
+      .map((s) => s.id);
+  // The all-success run appends several sources for this member, so the rollback is observable.
+  expect(appended(baseline).length).toBeGreaterThan(1);
+  const failed = vulnerability(result, anchor.id);
+  expect(failed).toEqual({
+    status: 'unavailable',
+    reasons: ['malformed'],
+    sourceIds: [expect.any(String)],
+  });
+  expect(appended(result)).toEqual(failed.sourceIds);
+  expect(result.lookups.filter((l) => l.memberId === anchor.id && l.lookup !== null)).toEqual([]);
+});
+
+test('a stopped reader keeps completed members and marks the rest', async () => {
+  const { input } = await fixture(false, 3);
+  const members = input.changes.filter((c) => !('basis' in c));
+  const baseline = await enrichAdvisories(input, { reader: scriptedReader() });
+  const result = await enrichAdvisories(input, { reader: scriptedReader({ stopAfter: 1 }) });
+  if (baseline.kind !== 'enriched' || result.kind !== 'enriched') throw new Error('evidence');
+  expect(result.stopped).toBe('rate_limit');
+  const [first, ...later] = members;
+  expect(later.length).toBeGreaterThanOrEqual(2);
+  expect(vulnerability(result, first.id)).toEqual(vulnerability(baseline, first.id));
+  for (const member of later)
+    expect(vulnerability(result, member.id)).toMatchObject({
+      status: 'unavailable',
+      reasons: ['rate_limit'],
+    });
+});
+
+test('accepts exactly advisories.maxLookups public identities and refuses one more', async () => {
+  const { input } = await fixture(true);
+  const anchor = input.changes.find(
+    (c) =>
+      c.ecosystem === 'npm' &&
+      c.from &&
+      c.to &&
+      input.publicIdentities.some((p) => p.memberId === c.id && p.side === 'base'),
+  )!;
+  // Two lookups per change, one per side: packet.changes two-sided changes reach the cap. Each copy
+  // is a distinct package with its own copy of the anchor's lock file sources (copy 0 is the anchor).
+  const copies = limit('advisories.maxLookups') / 2;
+  const sides = ['base', 'head'] as const;
+  const fileSources = input.sources.filter(
+    (s) => !s.id.startsWith('public:') && s.memberIds.includes(anchor.id),
+  );
+  const copy = (i: number) => ({
+    id: i === 0 ? anchor.id : `${anchor.id}#${i}`,
+    suffix: i === 0 ? '' : `#${i}`,
+    name: (name: string) => (i === 0 ? name : `${name}-copy-${i}`),
+  });
+  const plan = Array.from({ length: copies }, (_, i) => copy(i));
+  const changes = plan.map(({ id, suffix, name }) => ({
+    ...anchor,
+    id,
+    from: {
+      ...anchor.from!,
+      name: name((anchor.from as { name: string }).name),
+      sourceId: anchor.from!.sourceId + suffix,
+    },
+    to: {
+      ...anchor.to!,
+      name: name((anchor.to as { name: string }).name),
+      sourceId: anchor.to!.sourceId + suffix,
+    },
+  })) as PacketChange[];
+  const inventorySources = plan.flatMap(({ id, suffix }) =>
+    fileSources.map((s) => ({ ...s, id: s.id + suffix, memberIds: [id] })),
+  );
+  const identities = plan.flatMap(({ id, name }) =>
+    sides.map((side) => {
+      const original = input.publicIdentities.find(
+        (p) => p.memberId === anchor.id && p.side === side,
+      )!;
+      return {
+        ...original,
+        memberId: id,
+        name: name(original.name),
+        sourceIds: [`public:${id}:${side}`],
+      };
+    }),
+  );
+  const proofs = plan.flatMap(({ id }) =>
+    sides.map((side) => {
+      const original = input.sources.find((s) => s.id === `public:${anchor.id}:${side}`)!;
+      const provenance = original.provenance as Extract<
+        PacketSource['provenance'],
+        { kind: 'upstream' }
+      >;
+      return {
+        ...original,
+        id: `public:${id}:${side}`,
+        memberIds: [id],
+        provenance: {
+          ...provenance,
+          subjects: provenance.subjects.map((subject) => ({ ...subject, memberId: id })),
+        },
+      };
+    }),
+  );
+  const atLimit = {
+    ...input,
+    // Room to copy the larger input, so the copy budget is not what stops it.
+    limits: { ...input.limits, maxJsonEntries: 200_000, maxRetainedBytes: 5_000_000 },
+    changes,
+    sources: [...inventorySources, ...proofs],
+    publicIdentities: identities,
+  };
+  expect(identities).toHaveLength(limit('advisories.maxLookups'));
+  expect(prepareAdvisoryInput(atLimit).ok).toBe(true);
+  // A 257th lookup must repeat a (member, side) pair, since packet.changes caps the changes at 128;
+  // the length check refuses it before the pair check does.
+  const onePast = { ...atLimit, publicIdentities: [...identities, identities[0]] };
+  expect(prepareAdvisoryInput(onePast).ok).toBe(false);
 });

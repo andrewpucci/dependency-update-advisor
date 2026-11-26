@@ -1,5 +1,22 @@
-import { expect, test, vi } from 'vite-plus/test';
+import { describe, expect, test, vi } from 'vite-plus/test';
+import { createNpmRegistryReader } from './npm-registry.js';
+import { createResearchCache, type ResearchCache } from './research-cache.js';
 import { createUpstreamReader } from './upstream-read.js';
+import { EVIDENCE_READ_ALLOCATION } from '../budget.js';
+import { createGithubQuotaGuard } from './github-quota.js';
+import { limit } from '../limits.js';
+
+/** Runs a read under fake timers, firing every timer it sets, so a retry wait costs no real time. */
+async function settled<T>(read: () => Promise<T>): Promise<T> {
+  vi.useFakeTimers();
+  try {
+    const pending = read();
+    await vi.runAllTimersAsync();
+    return await pending;
+  } finally {
+    vi.useRealTimers();
+  }
+}
 
 const integrity = 'sha512-' + Buffer.alloc(64, 7).toString('base64');
 const limits = {
@@ -248,4 +265,500 @@ test.each([
   const f = setup(async () => Response.json(data, { status: 403, headers }));
   expect((await f.reader.read(target)).reasons).toEqual([reason]);
   f.reader.close();
+});
+
+describe('run-scoped research cache', () => {
+  const shared = () => createResearchCache({ maxEntryBytes: 1 << 20, maxTotalBytes: 1 << 22 });
+  const other = { ...target, name: '@fixture/other', version: '2.0.0' };
+  const otherDocument = {
+    ...document,
+    _id: '@fixture/other@2.0.0',
+    name: other.name,
+    version: other.version,
+  };
+  const live = (status = 200) =>
+    vi.fn(async (url: string) =>
+      url.includes('other')
+        ? Response.json(otherDocument)
+        : status === 200
+          ? Response.json(document)
+          : new Response('{}', { status, headers: { 'content-type': 'application/json' } }),
+    );
+  const registryRead = async (cache: ResearchCache, fetch: ReturnType<typeof live>) => {
+    const registry = createNpmRegistryReader(
+      { ...limits, maxRequests: 10 },
+      { fetch, now: () => 0, cache },
+    );
+    if (registry.kind !== 'ready') throw new Error('registry');
+    const { name, version, integrity: sri, source } = target;
+    return registry.read({ name, version, integrity: sri, source });
+  };
+  const upstream = (cache: ResearchCache, fetch: ReturnType<typeof live>, overrides = {}) => {
+    const opened = createUpstreamReader(
+      { ...limits, ...overrides },
+      { fetch, now: () => 0, cache },
+    );
+    if (opened.kind !== 'ready') throw new Error('reader');
+    return opened.reader;
+  };
+
+  test('an npm document another reader cached costs upstream no request', async () => {
+    const cache = shared();
+    const fetch = live();
+    expect((await registryRead(cache, fetch)).kind).toBe('metadata');
+    const reader = upstream(cache, fetch, { maxRequests: 1 });
+    expect(await reader.read(other)).toMatchObject({ status: 'available', fetched: true });
+    expect(await reader.read(target)).toMatchObject({
+      status: 'available',
+      fetched: true,
+      data: document,
+    });
+    expect(fetch).toHaveBeenCalledTimes(2);
+  });
+
+  test('a cached npm failure is still reported as fetched', async () => {
+    const cache = shared();
+    const fetch = live(404);
+    expect(await registryRead(cache, fetch)).toEqual({ kind: 'unavailable', reason: 'missing' });
+    expect(await upstream(cache, fetch).read(target)).toMatchObject({
+      status: 'unavailable',
+      fetched: true,
+      reasons: ['missing'],
+    });
+    expect(fetch).toHaveBeenCalledTimes(1);
+  });
+
+  test('a cached response debits no total bytes', async () => {
+    const cache = shared();
+    const fetch = live();
+    await registryRead(cache, fetch);
+    const sizes = [document, otherDocument].map((d) => Buffer.byteLength(JSON.stringify(d)));
+    const reader = upstream(cache, fetch, {
+      maxResponseBytes: Math.max(...sizes),
+      maxTotalBytes: sizes[0] + sizes[1] - 1,
+    });
+    expect(await reader.read(other)).toMatchObject({ status: 'available' });
+    expect(await reader.read(target)).toMatchObject({ status: 'available', data: document });
+  });
+
+  test('a direct upstream hit costs no request or total bytes', async () => {
+    const cache = shared();
+    const info = (version: string) => ({ info: { name: 'fixture-widget', version } });
+    const fetch = vi.fn(async (url: string) => Response.json(info(url.split('/')[5])));
+    const py = (version: string) => ({
+      kind: 'pypi',
+      name: 'fixture-widget',
+      version,
+      source: { kind: 'registry', identity: 'https://pypi.org/simple' },
+    });
+    expect(await upstream(cache, fetch).read(py('1.0'))).toMatchObject({ status: 'available' });
+    const size = Buffer.byteLength(JSON.stringify(info('1.0')));
+    const reader = upstream(cache, fetch, {
+      maxRequests: 1,
+      maxResponseBytes: size,
+      maxTotalBytes: 2 * size - 1,
+    });
+    expect(await reader.read(py('2.0'))).toMatchObject({ status: 'available' });
+    expect(await reader.read(py('1.0'))).toMatchObject({ status: 'available', fetched: true });
+    expect(fetch).toHaveBeenCalledTimes(2);
+  });
+
+  test('a cached response still respects the per-response cap', async () => {
+    const cache = shared();
+    const fetch = live();
+    await registryRead(cache, fetch);
+    const size = Buffer.byteLength(JSON.stringify(document));
+    const reader = upstream(cache, fetch, { maxResponseBytes: size - 1 });
+    expect(await reader.read(target)).toMatchObject({ status: 'unavailable', reasons: ['budget'] });
+    expect(fetch).toHaveBeenCalledTimes(1);
+  });
+});
+
+test('an npm lookup past the request share reports budget', async () => {
+  const other = { ...target, name: '@fixture/other', version: '2.0.0' };
+  const f = setup(
+    async (url) =>
+      Response.json(
+        url.includes('other')
+          ? { ...document, _id: '@fixture/other@2.0.0', name: other.name, version: other.version }
+          : document,
+      ),
+    { maxRequests: 1 },
+  );
+  expect(await f.reader.read(target)).toMatchObject({ status: 'available' });
+  expect(await f.reader.read(other)).toMatchObject({ status: 'unavailable', reasons: ['budget'] });
+  expect(f.fetch).toHaveBeenCalledTimes(1);
+});
+/** An npm document for the version named in the request path, padded to `size` bytes when given. */
+function versionBody(url: string, size?: number) {
+  const version = decodeURIComponent(url.split('/').pop() ?? '');
+  const json = JSON.stringify({ ...document, _id: `@fixture/widget@${version}`, version });
+  if (size === undefined) return json;
+  // Whitespace after the opening brace keeps the document valid JSON at the exact size.
+  return `{${' '.repeat(size - json.length)}${json.slice(1)}`;
+}
+const versionTarget = (version: string) => ({ ...target, version });
+function requestShareBudget(share: number) {
+  const f = setup(async (url) => Response.json(JSON.parse(versionBody(url))), {
+    maxRequests: share,
+  });
+  return f;
+}
+test('upstream reader spends exactly its request share and refuses the request past it', async () => {
+  const share = EVIDENCE_READ_ALLOCATION.upstream.maxRequests;
+  const f = requestShareBudget(share);
+  for (let i = 0; i < share; i++)
+    expect(await f.reader.read(versionTarget(`1.0.${i}`))).toMatchObject({ status: 'available' });
+  expect(await f.reader.read(versionTarget(`1.0.${share}`))).toMatchObject({
+    status: 'unavailable',
+    reasons: ['budget'],
+  });
+  expect(f.fetch).toHaveBeenCalledTimes(share);
+  f.reader.close();
+});
+test('signals upstream reader spends exactly its request share and refuses the request past it', async () => {
+  const share = EVIDENCE_READ_ALLOCATION.signals.readers.upstream.maxRequests;
+  const f = requestShareBudget(share);
+  for (let i = 0; i < share; i++)
+    expect(await f.reader.read(versionTarget(`1.0.${i}`))).toMatchObject({ status: 'available' });
+  expect(await f.reader.read(versionTarget(`1.0.${share}`))).toMatchObject({
+    status: 'unavailable',
+    reasons: ['budget'],
+  });
+  expect(f.fetch).toHaveBeenCalledTimes(share);
+  f.reader.close();
+});
+/** Two npm reads whose bodies total `total + overflow` bytes; each body alone fits the share. */
+function byteShareReader(total: number, overflow: number) {
+  const first = Math.floor(total / 2);
+  const sizes = [first, total - first + overflow];
+  let calls = 0;
+  return setup(
+    async (url) =>
+      new Response(versionBody(url, sizes[calls++]), {
+        headers: { 'content-type': 'application/json' },
+      }),
+    { maxResponseBytes: total, maxTotalBytes: total },
+  );
+}
+test('upstream reader accepts a byte share exactly and refuses the byte past it', async () => {
+  const total = EVIDENCE_READ_ALLOCATION.upstream.maxTotalBytes;
+  const exact = byteShareReader(total, 0);
+  await exact.reader.read(versionTarget('1.0.0'));
+  expect(await exact.reader.read(versionTarget('1.0.1'))).toMatchObject({ status: 'available' });
+  exact.reader.close();
+
+  const over = byteShareReader(total, 1);
+  await over.reader.read(versionTarget('1.0.0'));
+  expect(await over.reader.read(versionTarget('1.0.1'))).toMatchObject({
+    status: 'unavailable',
+    reasons: ['budget'],
+  });
+  over.reader.close();
+});
+test('signals upstream reader accepts a byte share exactly and refuses the byte past it', async () => {
+  const total = EVIDENCE_READ_ALLOCATION.signals.readers.upstream.maxTotalBytes;
+  const exact = byteShareReader(total, 0);
+  await exact.reader.read(versionTarget('1.0.0'));
+  expect(await exact.reader.read(versionTarget('1.0.1'))).toMatchObject({ status: 'available' });
+  exact.reader.close();
+
+  const over = byteShareReader(total, 1);
+  await over.reader.read(versionTarget('1.0.0'));
+  expect(await over.reader.read(versionTarget('1.0.1'))).toMatchObject({
+    status: 'unavailable',
+    reasons: ['budget'],
+  });
+  over.reader.close();
+});
+
+describe('waiting for a GitHub rate-limit reset', () => {
+  const WALL = Date.parse('2026-11-21T00:00:00Z');
+  const releases = (page: number) => ({
+    kind: 'github',
+    repository: 'fixture/action',
+    resource: 'releases',
+    perPage: 16,
+    page,
+  });
+  const limited = (retryAfter: string) =>
+    new Response('{}', { status: 429, headers: { 'retry-after': retryAfter } });
+  function waiting(responses: (() => Promise<Response> | Response)[], overrides = {}) {
+    const wall = { now: WALL };
+    const quota = createGithubQuotaGuard({
+      reserve: 0,
+      wallNow: () => wall.now,
+      windowMs: limit('research.githubQuota.windowMs'),
+    });
+    const admitted: string[] = [];
+    const spied = { ...quota, admit: (url: string) => (admitted.push(url), quota.admit(url)) };
+    let call = 0;
+    const fetch = vi.fn(async () =>
+      (responses[Math.min(call++, responses.length - 1)] ?? (() => Response.json([])))(),
+    );
+    const opened = createUpstreamReader(
+      { ...limits, ...overrides },
+      { fetch, now: () => 0, quota: spied },
+    );
+    if (opened.kind !== 'ready') throw new Error('reader');
+    return { reader: opened.reader, fetch, quota, admitted, wall };
+  }
+
+  test('waits once for a retry time that fits and resends the request', async () => {
+    vi.useFakeTimers();
+    try {
+      const f = waiting([() => limited('2'), () => Response.json([])]);
+      const read = f.reader.read(releases(1));
+      await vi.advanceTimersByTimeAsync(2000 + limit('research.githubQuota.retryMarginMs'));
+      expect(await read).toMatchObject({ status: 'available' });
+      expect(f.fetch).toHaveBeenCalledTimes(2);
+      // The resent request is checked by the guard like any other.
+      expect(f.admitted).toHaveLength(2);
+      // A stop resolved by a wait records no retry time.
+      expect(f.quota.latestRetryAt()).toBeNull();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  test('a retry time that does not fit ends rate_limit at once and records the time', async () => {
+    const f = waiting([() => limited('20')]);
+    expect(await f.reader.read(releases(1))).toMatchObject({ reasons: ['rate_limit'] });
+    expect(f.fetch).toHaveBeenCalledTimes(1);
+    expect(f.quota.latestRetryAt()).toBe(WALL + 20_000);
+    // A reader that stopped without waiting sends no more GitHub requests.
+    expect(await f.reader.read(releases(2))).toMatchObject({
+      fetched: false,
+      reasons: ['rate_limit'],
+    });
+    expect(f.fetch).toHaveBeenCalledTimes(1);
+  });
+
+  test('a second stop after a wait ends rate_limit without waiting again', async () => {
+    const f = waiting([() => limited('0'), () => limited('0')]);
+    expect(await settled(() => f.reader.read(releases(1)))).toMatchObject({
+      reasons: ['rate_limit'],
+    });
+    expect(f.fetch).toHaveBeenCalledTimes(2);
+    expect(f.quota.latestRetryAt()).toBe(WALL);
+  });
+
+  test('the retried request keeps its own result', async () => {
+    const missing = waiting([() => limited('0'), () => new Response('{}', { status: 404 })]);
+    expect(await settled(() => missing.reader.read(releases(1)))).toMatchObject({
+      reasons: ['missing'],
+    });
+    expect(missing.quota.latestRetryAt()).toBeNull();
+    const hung = waiting([() => limited('0'), () => new Promise<Response>(() => {})], {
+      requestTimeoutMs: 20,
+    });
+    expect(await settled(() => hung.reader.read(releases(1)))).toMatchObject({
+      reasons: ['timeout'],
+    });
+  });
+
+  test('closing the reader ends the wait without resending', async () => {
+    vi.useFakeTimers();
+    try {
+      const f = waiting([() => limited('5'), () => Response.json([])]);
+      const read = f.reader.read(releases(1));
+      await vi.advanceTimersByTimeAsync(100);
+      f.reader.close();
+      await vi.advanceTimersByTimeAsync(5000);
+      expect((await read).status).not.toBe('available');
+      expect(f.fetch).toHaveBeenCalledTimes(1);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+});
+
+test('a GitHub rate limit when no time is left ends rate_limit with its retry time', async () => {
+  const wall = Date.parse('2026-11-21T00:00:00Z');
+  const quota = createGithubQuotaGuard({
+    reserve: 0,
+    wallNow: () => wall,
+    windowMs: limit('research.githubQuota.windowMs'),
+  });
+  let now = 0;
+  const headers = {
+    get: (name: string) => {
+      if (name !== 'retry-after') return null;
+      now = limits.totalTimeoutMs + 1;
+      return '0';
+    },
+    has: (name: string) => name === 'retry-after',
+  };
+  const fetch = vi.fn(
+    async () =>
+      ({ status: 429, headers, redirected: false, url: '', body: null }) as unknown as Response,
+  );
+  const opened = createUpstreamReader(limits, { fetch, now: () => now, quota });
+  if (opened.kind !== 'ready') throw new Error('reader');
+  const releases = {
+    kind: 'github',
+    repository: 'fixture/action',
+    resource: 'releases',
+    perPage: 16,
+    page: 1,
+  };
+  const result = await opened.reader.read(releases);
+  // Out of time at the rate limit is still a reason to rerun, whatever the reader reads first;
+  // a rate limit keeps its retry time. It is never "untrusted" or "over budget".
+  expect([['rate_limit'], ['timeout']]).toContainEqual(result.reasons);
+  if (result.reasons[0] === 'rate_limit') expect(quota.latestRetryAt()).toBe(wall);
+  expect(fetch.mock.calls.length).toBeLessThanOrEqual(2);
+});
+
+describe('waiting is bounded per reader, by time, by abort, and to GitHub', () => {
+  const WALL = Date.parse('2026-11-21T00:00:00Z');
+  const releases = (page: number) => ({
+    kind: 'github',
+    repository: 'fixture/action',
+    resource: 'releases',
+    perPage: 16,
+    page,
+  });
+  const limited = (retryAfter: string) =>
+    new Response('{}', { status: 429, headers: { 'retry-after': retryAfter } });
+  function reader(
+    responses: (() => Response)[],
+    options: { overrides?: object; signal?: AbortSignal } = {},
+  ) {
+    const quota = createGithubQuotaGuard({
+      reserve: 0,
+      wallNow: () => WALL,
+      windowMs: limit('research.githubQuota.windowMs'),
+    });
+    let call = 0;
+    const fetch = vi.fn(async () =>
+      (responses[Math.min(call++, responses.length - 1)] as () => Response)(),
+    );
+    const opened = createUpstreamReader(
+      { ...limits, ...options.overrides },
+      { fetch, now: () => 0, quota, ...(options.signal ? { signal: options.signal } : {}) },
+    );
+    if (opened.kind !== 'ready') throw new Error('reader');
+    return { reader: opened.reader, fetch, quota };
+  }
+
+  test('a later read in the same reader does not wait a second time', async () => {
+    const f = reader([() => limited('0'), () => Response.json([]), () => limited('0')]);
+    expect(await settled(() => f.reader.read(releases(1)))).toMatchObject({ status: 'available' });
+    expect(f.quota.latestRetryAt()).toBeNull();
+    expect(await settled(() => f.reader.read(releases(2)))).toMatchObject({
+      reasons: ['rate_limit'],
+    });
+    expect(f.fetch).toHaveBeenCalledTimes(3);
+    expect(f.quota.latestRetryAt()).toBe(WALL);
+  });
+
+  test.each(['abort', 'close'] as const)(
+    '%s ends a wait at once, without resending',
+    async (how) => {
+      vi.useFakeTimers();
+      try {
+        const run = new AbortController();
+        const f = reader([() => limited('5'), () => Response.json([])], { signal: run.signal });
+        let settled = false;
+        const read = f.reader.read(releases(1)).finally(() => (settled = true));
+        await vi.advanceTimersByTimeAsync(100);
+        if (how === 'abort') run.abort();
+        else f.reader.close();
+        await vi.advanceTimersByTimeAsync(10);
+        expect(settled).toBe(true);
+        expect((await read).status).not.toBe('available');
+        expect(f.fetch).toHaveBeenCalledTimes(1);
+      } finally {
+        vi.useRealTimers();
+      }
+    },
+  );
+
+  test('a wait must leave one request timeout before the deadline', async () => {
+    const overrides = { requestTimeoutMs: 2000, totalTimeoutMs: 10_000 };
+    // 9 s plus a 2 s request is past the 10 s left: no wait.
+    const late = reader([() => limited('9')], { overrides });
+    expect(await late.reader.read(releases(1))).toMatchObject({ reasons: ['rate_limit'] });
+    expect(late.fetch).toHaveBeenCalledTimes(1);
+    expect(late.quota.latestRetryAt()).toBe(WALL + 9000);
+    // 7 s plus 2 s fits.
+    vi.useFakeTimers();
+    try {
+      const fits = reader([() => limited('7'), () => Response.json([])], { overrides });
+      const read = fits.reader.read(releases(1));
+      await vi.advanceTimersByTimeAsync(7000 + limit('research.githubQuota.retryMarginMs'));
+      expect(await read).toMatchObject({ status: 'available' });
+      expect(fits.fetch).toHaveBeenCalledTimes(2);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  test('a registry rate limit never waits or records a retry time', async () => {
+    const f = reader([() => limited('0')]);
+    expect(await f.reader.read(target)).toMatchObject({ reasons: ['rate_limit'] });
+    expect(f.fetch).toHaveBeenCalledTimes(1);
+    expect(f.quota.latestRetryAt()).toBeNull();
+  });
+});
+
+test('a value with too many entries stops the reader on that read; a too-deep one fails alone', async () => {
+  const wide = { full_name: 'fixture/a', items: Array.from({ length: 40 }, (_, i) => i) };
+  let deep: unknown = 0;
+  for (let i = 0; i < 40; i++) deep = { next: deep };
+  const read = (body: unknown, overrides: object) => {
+    const { reader, fetch } = setup(async () => Response.json(body), overrides);
+    return { reader, fetch };
+  };
+  const repository = { kind: 'github', repository: 'fixture/a', resource: 'repository' };
+  const oversized = read(wide, { maxJsonEntries: 30 });
+  expect(await oversized.reader.read(repository)).toMatchObject({ reasons: ['budget'] });
+  expect(oversized.reader.stopped?.()).toBe('budget');
+  expect(oversized.reader.stopLimit?.()).toBe('maxJsonEntries');
+  oversized.reader.close();
+
+  const tooDeep = read({ full_name: 'fixture/a', deep }, {});
+  expect(await tooDeep.reader.read(repository)).toMatchObject({ status: 'unavailable' });
+  expect(tooDeep.reader.stopped?.()).toBeNull();
+  expect(tooDeep.reader.stopLimit?.()).toBeNull();
+  tooDeep.reader.close();
+});
+
+describe('the stop limit names which cumulative limit stopped the reader (#431)', () => {
+  const repository = (name: string) => ({
+    kind: 'github',
+    repository: 'fixture/' + name,
+    resource: 'repository',
+  });
+  const repo = async (url: string) =>
+    Response.json({
+      full_name: new URL(url).pathname.split('/').slice(2, 4).join('/'),
+      pad: 'x'.repeat(300),
+    });
+  const version = (v: string) => ({ ...target, version: v });
+  const doc = async (url: string) => {
+    const v = decodeURIComponent(new URL(url).pathname.split('/').at(-1)!);
+    return Response.json({ ...document, _id: target.name + '@' + v, version: v });
+  };
+  test.each([
+    ['maxRequests', { maxRequests: 1 }, repo, [repository('a'), repository('b')]],
+    ['maxRetainedBytes', { maxRetainedBytes: 500 }, repo, [repository('a'), repository('b')]],
+    [
+      'maxTotalBytes',
+      { maxTotalBytes: 400, maxResponseBytes: 400 },
+      doc,
+      [version('1.2.3'), version('1.2.4')],
+    ],
+    ['npm.maxRequests', { maxRequests: 1 }, doc, [version('1.2.3'), version('1.2.4')]],
+    ['maxJsonEntries', { maxJsonEntries: 24 }, doc, [version('1.2.3'), version('1.2.4')]],
+    ['npm.maxRetainedBytes', { maxRetainedBytes: 200 }, doc, [target]],
+  ] as const)('%s', async (name, overrides, response, reads) => {
+    const { reader } = setup(response, overrides);
+    expect(reader.stopLimit?.()).toBeNull();
+    for (const read of reads) await reader.read(read);
+    expect(reader.stopped?.()).toBe('budget');
+    expect(reader.stopLimit?.()).toBe(name);
+    reader.close();
+  });
 });

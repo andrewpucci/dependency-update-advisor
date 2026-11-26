@@ -106,9 +106,9 @@ differs from the supplied `result.reviewDigest`. Visible head/date, decision
 hierarchy, evidence limits, escaping, and safe links remain O1 obligations;
 marker validation does not certify arbitrary Markdown as a valid review.
 
-Retain the baseline renderer's 50,000 JavaScript string-unit body ceiling,
-including metadata, rather than introducing a larger allowance. T3 rejects
-empty, invalid, or oversized bodies before writes and never truncates them.
+Apply the register's body ceiling, `limit:comment.maxBodyCodeUnits`
+JavaScript string units, including metadata. T3 rejects empty, invalid, or
+oversized bodies before writes and never truncates them.
 O1 must fit all required decision content or fail rendering.
 
 The trusted expected publisher contains positive safe-integer App and bot-user
@@ -375,7 +375,7 @@ comment writes. No live token, model call, or new coverage threshold is needed.
 | Malformed ownership fields, conflicting App attribution on a designated-bot candidate, wrong `issue_url` membership, or multiple owned matches | Reject unsafe discovery; no mutation; ambiguity reports only owned comment IDs. Well-formed other authors remain unrelated. |
 | Missing page, truncated result, invalid data, permission/rate-limit error, or exhausted read budget                                            | Discovery error, never empty inventory or blind create.                                                                     |
 | Selected comment disappears, changes body/marker/owner, or moves outside expected membership on reread                                         | Discovery error; no create fallback.                                                                                        |
-| Invalid input/pending receipt, mismatched result identity/head/digest, duplicate metadata, empty/oversized body                                | Input error; no mutation. Include exact 50,000 boundary and one-unit overflow.                                              |
+| Invalid input/pending receipt, mismatched result identity/head/digest, duplicate metadata, empty/oversized body                                | Input error; no mutation. Include the exact `limit:comment.maxBodyCodeUnits` boundary and one-unit overflow.                |
 | Config/pre-analysis/renderer failure, or failed/uncertain pending                                                                              | W2 never invokes mutation; prior body unchanged; terminal behavior follows T2.                                              |
 | Explicitly incomplete brief and complete `do_not_merge` brief                                                                                  | Both may record; W2 requests failure and success respectively.                                                              |
 | Duplicate delivery or claimed/completed source attempt                                                                                         | W2 skips publication; comment absence is not replay authority.                                                              |

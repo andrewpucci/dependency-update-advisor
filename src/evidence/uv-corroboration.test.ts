@@ -1,4 +1,5 @@
 import { expect, test } from 'vite-plus/test';
+import { limit } from '../limits.js';
 import { reconcileUvGraph } from './uv-graph.js';
 import { uvGraphFixture, uvLock, uvPacket, uvPackage } from '../../tests/parity/uv-graph.js';
 import { validateReviewPacket } from '../schema.js';
@@ -208,4 +209,17 @@ test('corroboration conflict one-byte boundary must retain inventory', async () 
     limits: { ...input.limits, maxRetainedBytes },
   });
   expect(limited.kind).toBe('inventory');
+});
+
+test('a changelog line at the registered code-unit cap is read and one code unit longer is skipped', async () => {
+  const input = await uvGraphFixture();
+  const claim = 'Bumps orbit from 1 to 2.';
+  const line = (length: number) => `${' '.repeat(length - claim.length)}${claim}`;
+  const cap = limit('uv.maxCorroborationCodeUnits');
+  const read = accepted(reconcileUvGraph({ ...input, corroboration: body(input, line(cap)) }));
+  expect(read.corroboration.status).toBe('available');
+  const skipped = accepted(
+    reconcileUvGraph({ ...input, corroboration: body(input, line(cap + 1)) }),
+  );
+  expect(skipped.corroboration).toEqual({ status: 'unavailable', reasons: ['unsupported'] });
 });

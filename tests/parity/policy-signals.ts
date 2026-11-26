@@ -10,6 +10,7 @@ import { enrichPolicySignals } from '../../src/evidence/policy-signals.js';
 import { validateReviewPacket } from '../../src/schema.js';
 import { formDecisionUnits, evaluateUnitPolicy } from '../../src/units.js';
 import { parseReviewConfig } from '../../src/config.js';
+import { viaAdvisoryHttp } from './advisory-http.js';
 import { createGithubReadSession } from '../../src/github-read.js';
 
 export type SignalScenarioOptions = {
@@ -17,6 +18,8 @@ export type SignalScenarioOptions = {
     | 'clean'
     | 'malware'
     | 'malware-failed'
+    /** Like malware-failed, and the same lookup also fails for orbit, child-0's group anchor. */
+    | 'malware-failed-group'
     | 'optional-failed'
     | 'recent'
     | 'boundary'
@@ -61,7 +64,7 @@ export async function policySignalScenario(options: SignalScenarioOptions = {}) 
   const fixture = await upstreamScenario({ ...options.inventory, uvArtifacts: withArtifacts }),
     requests: string[] = [];
   let phase: 'research' | 'signals' = 'research';
-  const fetch = async (url: string, init: RequestInit) => {
+  const fetch = viaAdvisoryHttp(async (url: string, init: RequestInit) => {
     requests.push(url);
     const u = new URL(url),
       parts = u.pathname.split('/').map(decodeURIComponent);
@@ -72,7 +75,11 @@ export async function policySignalScenario(options: SignalScenarioOptions = {}) 
         version = target.slice(split + 1),
         ecosystem = u.searchParams.get('ecosystem')!,
         malware = u.searchParams.get('type') === 'malware';
-      if (malware && mode === 'malware-failed' && name === 'child-0')
+      if (
+        malware &&
+        (mode === 'malware-failed' || mode === 'malware-failed-group') &&
+        (name === 'child-0' || (mode === 'malware-failed-group' && name === 'orbit'))
+      )
         return Response.json({}, { status: 503 });
       return Response.json(
         malware && mode === 'malware' && name === 'child-0' && version === '2.0.0'
@@ -200,7 +207,7 @@ export async function policySignalScenario(options: SignalScenarioOptions = {}) 
       });
     }
     return fixture.fetch(url, init);
-  };
+  });
   const open = createUpstreamReader(upstreamTestLimits, { now: () => 0, fetch });
   if (open.kind !== 'ready') throw new Error('reader');
   const upstream = await enrichUpstream(fixture.input, open);
@@ -281,6 +288,7 @@ export async function policySignalScenario(options: SignalScenarioOptions = {}) 
       coverage: fixture.coverage,
       relationships: fixture.relationships,
       reachability: [],
+      retryAfter: null,
     },
     fixture.expected,
   );

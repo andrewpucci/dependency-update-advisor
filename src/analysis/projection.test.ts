@@ -4,6 +4,8 @@ import { parseReviewConfig } from '../config.js';
 import { validateReviewPacket } from '../schema.js';
 import { formDecisionUnits } from '../units.js';
 import { ANALYSIS_LIMITS, prepareAnalysisBatch, preparedSnapshot } from './contract.js';
+import { snapshotData } from './projection.js';
+import { limit } from '../limits.js';
 
 test('projects actual mixed collector units with short aliases and independent coverage', async () => {
   const { input } = await analysisScenario();
@@ -345,4 +347,21 @@ test('sends the exact fixed request: greedy sampling with top_p 1 and no reasoni
   ]);
   expect(result.batch.request).not.toHaveProperty('reasoning_effort');
   expect(messages).toHaveLength(2);
+});
+
+test('the snapshot byte budget admits exactly eight packet caps of input and refuses one byte more', () => {
+  const cap = limit('analysis.projectionBytes');
+  expect(() => snapshotData('a'.repeat(cap))).not.toThrow();
+  expect(() => snapshotData('a'.repeat(cap + 1))).toThrow('budget');
+});
+
+test('the snapshot depth cap admits a leaf at the registered depth and refuses one level deeper', () => {
+  const cap = limit('analysis.maxProjectionDepth');
+  const nested = (levels: number) => {
+    let value: unknown = 'leaf';
+    for (let i = 0; i < levels; i++) value = [value];
+    return value;
+  };
+  expect(() => snapshotData(nested(cap))).not.toThrow();
+  expect(() => snapshotData(nested(cap + 1))).toThrow('budget');
 });

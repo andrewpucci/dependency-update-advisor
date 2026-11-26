@@ -1,7 +1,10 @@
-import { expect, test, vi } from 'vite-plus/test';
+import { describe, expect, test, vi } from 'vite-plus/test';
+import { AdvisoryFailure } from './advisory-read.js';
 import { boundedGet } from './bounded-request.js';
+import { createGithubQuotaGuard } from './github-quota.js';
 import { createNpmPublishTimeReader } from './npm-publish-times.js';
 import { createPolicySignalReader } from './policy-signals-read.js';
+import { createResearchCache } from './research-cache.js';
 
 const limits = {
   maxRequests: 4,
@@ -131,3 +134,413 @@ test.each(Object.keys(readers) as (keyof typeof readers)[])(
     }
   },
 );
+
+test('sends a fixed JSON body as a credential-free POST and leaves GET unchanged', async () => {
+  const seen: RequestInit[] = [];
+  const fetch = async (_url: string, init: RequestInit) => {
+    seen.push(init);
+    return Response.json({});
+  };
+  for (const json of [{ package: { name: 'pkg' }, version: '1.0.0' }, undefined])
+    await boundedGet(
+      { now: () => 0, fetch },
+      {
+        url: 'https://example.test/q',
+        headers: { accept: 'application/json' },
+        timeoutMs: 100,
+        json,
+      },
+      () => {},
+      async (response) => response.json(),
+    );
+  expect(seen[0]).toMatchObject({
+    method: 'POST',
+    redirect: 'manual',
+    credentials: 'omit',
+    headers: { accept: 'application/json', 'content-type': 'application/json' },
+    body: '{"package":{"name":"pkg"},"version":"1.0.0"}',
+  });
+  expect(seen[1]).toMatchObject({
+    method: 'GET',
+    redirect: 'manual',
+    credentials: 'omit',
+    headers: { accept: 'application/json' },
+  });
+  expect(seen[1]).not.toHaveProperty('body');
+});
+test('a POST keeps the request timeout', async () => {
+  vi.useFakeTimers();
+  try {
+    const task = boundedGet(
+      { now: () => 0, fetch: () => new Promise<Response>(() => {}) },
+      { url: 'https://example.test/q', accept: 'application/json', timeoutMs: 1, json: {} },
+      () => {},
+      async (response) => response.json(),
+    );
+    const timedOut = expect(task).rejects.toMatchObject({ reason: 'timeout' });
+    await vi.advanceTimersByTimeAsync(1);
+    await timedOut;
+  } finally {
+    vi.useRealTimers();
+  }
+});
+
+describe('research cache seam', () => {
+  const url = 'https://example.test/data';
+  const request = { url, accept: 'application/json', timeoutMs: 1000 };
+  const cache = () => createResearchCache({ maxEntryBytes: 1024, maxTotalBytes: 4096 });
+  const body = (response: Response) => response.text();
+  const counting = (make: () => Response = () => new Response('payload')) => {
+    let fetches = 0;
+    return {
+      fetch: async () => (fetches++, make()),
+      get fetches() {
+        return fetches;
+      },
+    };
+  };
+
+  test('a POST is keyed by its exact body', async () => {
+    const shared = cache();
+    const source = counting();
+    const read = (json?: unknown) =>
+      boundedGet(
+        { now: () => 0, fetch: source.fetch, cache: shared },
+        json === undefined ? request : { ...request, json },
+        () => {},
+        body,
+      );
+    await read({ package: { name: 'pyyaml' }, version: '3.13' });
+    await read({ package: { name: 'pyyaml' }, version: '6.0.2' });
+    await read({ package: { name: 'django' }, version: '3.13' });
+    await read({ package: { name: 'pyyaml' }, version: '3.13' });
+    await read();
+    expect(source.fetches).toBe(4);
+  });
+
+  test('a hit is not fetched or charged and is consumed as cached', async () => {
+    const shared = cache();
+    const source = counting();
+    const charges: string[] = [];
+    const seen: boolean[] = [];
+    const read = (who: string) =>
+      boundedGet(
+        { now: () => 0, fetch: source.fetch, cache: shared },
+        { ...request, charge: () => charges.push(who) },
+        () => {},
+        async (response, _aborted, cached) => (seen.push(cached), body(response)),
+      );
+    expect(await read('first')).toBe('payload');
+    expect(await read('second')).toBe('payload');
+    expect(source.fetches).toBe(1);
+    expect(charges).toEqual(['first']);
+    expect(seen).toEqual([false, true]);
+  });
+
+  test('without a cache every request is fetched and charged', async () => {
+    const source = counting();
+    let charges = 0;
+    for (let i = 0; i < 2; i++)
+      await boundedGet(
+        { now: () => 0, fetch: source.fetch },
+        { ...request, charge: () => charges++ },
+        () => {},
+        async (response, _aborted, cached) => (expect(cached).toBe(false), body(response)),
+      );
+    expect(source.fetches).toBe(2);
+    expect(charges).toBe(2);
+  });
+
+  test('a failed charge stops the request before fetching', async () => {
+    const source = counting();
+    const task = boundedGet(
+      { now: () => 0, fetch: source.fetch, cache: cache() },
+      {
+        ...request,
+        charge: () => {
+          throw new AdvisoryFailure('budget');
+        },
+      },
+      () => {},
+      body,
+    );
+    await expect(task).rejects.toMatchObject({ reason: 'budget' });
+    expect(source.fetches).toBe(0);
+  });
+
+  test('a response that reports its own URL is stored, as real fetches do', async () => {
+    const shared = cache();
+    const source = counting(() =>
+      Object.defineProperty(new Response('payload'), 'url', { value: url }),
+    );
+    for (let i = 0; i < 2; i++)
+      expect(
+        await boundedGet(
+          { now: () => 0, fetch: source.fetch, cache: shared },
+          request,
+          () => {},
+          body,
+        ),
+      ).toBe('payload');
+    expect(source.fetches).toBe(1);
+  });
+
+  test('a redirected or relocated response reaches the reader unstored', async () => {
+    for (const relocate of [
+      (r: Response) => Object.defineProperty(r, 'redirected', { value: true }),
+      (r: Response) => Object.defineProperty(r, 'url', { value: 'https://elsewhere.test/data' }),
+    ]) {
+      const shared = cache();
+      const source = counting(() => relocate(new Response('payload')));
+      const observed: { redirected: boolean; url: string }[] = [];
+      for (let i = 0; i < 2; i++)
+        await boundedGet(
+          { now: () => 0, fetch: source.fetch, cache: shared },
+          request,
+          () => {},
+          async (response) => {
+            observed.push({ redirected: response.redirected, url: response.url });
+            return body(response);
+          },
+        );
+      expect(source.fetches).toBe(2);
+      expect(observed.every((o) => o.redirected || o.url === 'https://elsewhere.test/data')).toBe(
+        true,
+      );
+    }
+  });
+
+  test('a stalled body on a miss still times out', async () => {
+    vi.useFakeTimers();
+    try {
+      const stalled = () => new Response(new ReadableStream({ pull: () => new Promise(() => {}) }));
+      const task = boundedGet(
+        { now: () => 0, fetch: async () => stalled(), cache: cache() },
+        { ...request, timeoutMs: 1 },
+        () => {},
+        (response, aborted) => Promise.race([response.text(), aborted]),
+      );
+      const timedOut = expect(task).rejects.toMatchObject({ reason: 'timeout' });
+      await vi.advanceTimersByTimeAsync(1);
+      await timedOut;
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  test('different query strings and headers never share an entry', async () => {
+    const shared = cache();
+    const source = counting();
+    const read = (target: string, headers?: Record<string, string>) =>
+      boundedGet(
+        { now: () => 0, fetch: source.fetch, cache: shared },
+        headers ? { url: target, headers, timeoutMs: 1000 } : { ...request, url: target },
+        () => {},
+        body,
+      );
+    await read(url + '?type=malware');
+    await read(url + '?type=reviewed');
+    await read(url, { accept: 'application/vnd.github+json' });
+    await read(url, { accept: 'application/json' });
+    await read(url);
+    expect(source.fetches).toBe(4);
+  });
+});
+
+describe('research GitHub quota seam', () => {
+  const url = 'https://api.github.com/repos/o/r/releases';
+  const request = { url, accept: 'application/json', timeoutMs: 1000 };
+  const wall = Date.UTC(2026, 10, 21);
+  const reset = String(Math.floor(wall / 1000) + 60);
+  const quotaHeaders = (remaining: string) => ({
+    'x-ratelimit-remaining': remaining,
+    'x-ratelimit-reset': reset,
+  });
+  const recording = (allowed: boolean) => {
+    const observed: Response[] = [];
+    const admitted: string[] = [];
+    return {
+      observed,
+      admitted,
+      quota: {
+        admit: (target: string) => (
+          admitted.push(target),
+          allowed
+            ? { allowed: true as const }
+            : {
+                allowed: false as const,
+                retryAt: null,
+                response: new Response(null, { status: 429 }),
+              }
+        ),
+        observe: (_target: string, response: Response) => void observed.push(response),
+        refusals: () => 0,
+        started: () => {},
+        retryAt: () => null,
+        msUntil: () => 0,
+        recordStop: () => {},
+        latestRetryAt: () => null,
+      },
+    };
+  };
+
+  test('a refused request is neither charged nor sent and reaches the reader as a bare 429', async () => {
+    const guard = recording(false);
+    let fetches = 0;
+    let charges = 0;
+    const seen: Response[] = [];
+    await boundedGet(
+      { now: () => 0, fetch: async () => (fetches++, new Response('{}')), quota: guard.quota },
+      { ...request, charge: () => charges++ },
+      () => {},
+      async (response) => void seen.push(response),
+    );
+    expect(fetches).toBe(0);
+    expect(charges).toBe(0);
+    expect(seen[0]?.status).toBe(429);
+    expect(
+      [...(seen[0]?.headers.keys() ?? [])].filter((name) => name.startsWith('x-ratelimit')),
+    ).toEqual([]);
+    // The guard never reads its own refusal.
+    expect(guard.observed).toEqual([]);
+  });
+
+  test('the guard sees each live response and never a cached one', async () => {
+    const guard = recording(true);
+    const shared = createResearchCache({ maxEntryBytes: 1024, maxTotalBytes: 4096 });
+    let fetches = 0;
+    const read = () =>
+      boundedGet(
+        {
+          now: () => 0,
+          fetch: async () => (fetches++, new Response('{}', { headers: quotaHeaders('9') })),
+          cache: shared,
+          quota: guard.quota,
+        },
+        request,
+        () => {},
+        (response) => response.text(),
+      );
+    await read();
+    await read();
+    expect(fetches).toBe(1);
+    expect(guard.admitted).toEqual([url]);
+    expect(guard.observed).toHaveLength(1);
+    expect(guard.observed[0]?.headers.get('x-ratelimit-remaining')).toBe('9');
+  });
+
+  test('with a real guard, research stops sending at the reserve', async () => {
+    const quota = createGithubQuotaGuard({ reserve: 7, wallNow: () => wall, windowMs: 3_600_000 });
+    let fetches = 0;
+    const statuses: number[] = [];
+    for (let i = 0; i < 4; i++)
+      await boundedGet(
+        {
+          now: () => 0,
+          fetch: async () => (fetches++, new Response('{}', { headers: quotaHeaders('9') })),
+          quota,
+        },
+        { ...request, url: `${url}?page=${i}` },
+        () => {},
+        async (response) => void statuses.push(response.status),
+      );
+    // The first response reports 9 left; two more keep 7, the next is refused.
+    expect(statuses).toEqual([200, 200, 200, 429]);
+    expect(fetches).toBe(3);
+  });
+});
+
+test('the guard reads the quota from an error response too', async () => {
+  const wall = Date.UTC(2026, 10, 21);
+  const quota = createGithubQuotaGuard({ reserve: 5, wallNow: () => wall, windowMs: 3_600_000 });
+  const statuses: number[] = [];
+  let fetches = 0;
+  const reset = String(Math.floor(wall / 1000) + 60);
+  for (let i = 0; i < 2; i++)
+    await boundedGet(
+      {
+        now: () => 0,
+        fetch: async () => (
+          fetches++,
+          Response.json(
+            { message: 'Not Found' },
+            { status: 404, headers: { 'x-ratelimit-remaining': '5', 'x-ratelimit-reset': reset } },
+          )
+        ),
+        quota,
+      },
+      {
+        url: `https://api.github.com/repos/o/r/tags?page=${i}`,
+        accept: 'application/json',
+        timeoutMs: 1000,
+      },
+      () => {},
+      async (response) => void statuses.push(response.status),
+    );
+  // A 404 reporting the quota at the reserve still lowers the estimate: the next request is refused.
+  expect(statuses).toEqual([404, 429]);
+  expect(fetches).toBe(1);
+});
+
+test("a refusal is the guard's own response and carries its retry time without any header", async () => {
+  const wall = Date.UTC(2026, 10, 21);
+  const quota = createGithubQuotaGuard({ reserve: 5, wallNow: () => wall, windowMs: 3_600_000 });
+  quota.observe(
+    'https://api.github.com/x',
+    new Response('{}', {
+      headers: {
+        'x-ratelimit-remaining': '5',
+        'x-ratelimit-reset': String(Math.floor(wall / 1000) + 90),
+      },
+    }),
+  );
+  let refusal: Response | undefined;
+  await boundedGet(
+    { now: () => 0, fetch: async () => new Response('{}'), quota },
+    { url: 'https://api.github.com/repos/o/r/tags', accept: 'application/json', timeoutMs: 1000 },
+    () => {},
+    async (response) => void (refusal = response),
+  );
+  expect(refusal?.status).toBe(429);
+  expect([...(refusal?.headers.keys() ?? [])]).toEqual([]);
+  expect(refusal && quota.retryAt(refusal)).toBe(wall + 90_000);
+});
+
+test('a request its share refuses never lowers the quota estimate', async () => {
+  const wall = Date.UTC(2026, 10, 21);
+  const quota = createGithubQuotaGuard({ reserve: 5, wallNow: () => wall, windowMs: 3_600_000 });
+  quota.observe(
+    'https://api.github.com/x',
+    new Response('{}', {
+      headers: {
+        'x-ratelimit-remaining': '10',
+        'x-ratelimit-reset': String(Math.floor(wall / 1000) + 60),
+      },
+    }),
+  );
+  let fetches = 0;
+  const read = (charge: () => void) =>
+    boundedGet(
+      { now: () => 0, fetch: async () => (fetches++, new Response('{}')), quota },
+      {
+        url: 'https://api.github.com/repos/o/r/tags',
+        accept: 'application/json',
+        timeoutMs: 1000,
+        charge,
+      },
+      () => {},
+      async (response) => response.status,
+    );
+  // Ten requests over an exhausted share: each is refused by its charge and none is sent.
+  for (let i = 0; i < 10; i++)
+    await expect(
+      read(() => {
+        throw new AdvisoryFailure('budget');
+      }),
+    ).rejects.toMatchObject({ reason: 'budget' });
+  expect(fetches).toBe(0);
+  // A reader with share left is still sent: the estimate is still 10, well above the reserve.
+  expect(await read(() => {})).toBe(200);
+  expect(fetches).toBe(1);
+  expect(quota.refusals()).toBe(0);
+});

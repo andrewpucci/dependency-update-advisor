@@ -11,6 +11,7 @@ import {
   type GithubUpstreamTarget,
 } from './upstream-read.js';
 import type { EvidenceReason } from '../schema.js';
+import { limit } from '../limits.js';
 
 export type UpstreamRepository = Readonly<{ repository: string; directory: string }>;
 export type PackageResearchTarget = Readonly<{
@@ -378,7 +379,7 @@ function comparisonCommits(data: Readonly<Record<string, unknown>>, state: Compa
 function comparisonFiles(data: Readonly<Record<string, unknown>>, state: ComparisonState) {
   requireUpstream(Array.isArray(data.files));
   state.filesComplete =
-    data.files.length < 300 &&
+    data.files.length < limit('github.compareMaxFiles') &&
     data.files.every(
       (file) =>
         isPlainObject(file) && upstreamText(file.filename) && typeof file.patch === 'string',
@@ -526,8 +527,11 @@ export async function collectPackageComparison(
       'conflict',
     );
     await publicRepository(before.repository, reader);
-    const from = await resolvePackageVersion(base, before, reader),
-      to = await resolvePackageVersion(head, after, reader);
+    // The proposed endpoint first: the target-release stage has already probed its candidates, so
+    // a missing proposed tag answers from the run cache and the base candidates are never probed
+    // for a comparison that cannot be built (#432).
+    const to = await resolvePackageVersion(head, after, reader),
+      from = await resolvePackageVersion(base, before, reader);
     const compared = await collectExactComparison(before.repository, from, to, reader);
     try {
       for (const endpoint of [from, to]) {

@@ -12,7 +12,10 @@ import {
 import type { NpmNode } from './npm.js';
 import type { Finding } from '../policy.js';
 import { BoundedClock, boundedGet } from './bounded-request.js';
+import type { ResearchCache } from './research-cache.js';
 import { AdvisoryFailure } from './advisory-read.js';
+import { limit } from '../limits.js';
+import { CHAR_CODE, DIGEST_BYTES, HTTP_STATUS } from '../format.js';
 
 export type NpmRegistryLimits = Readonly<{
   maxRequests: number;
@@ -28,6 +31,7 @@ export type NpmRegistryDependencies = Readonly<{
   fetch: (url: string, init: RequestInit) => Promise<Response>;
   now: () => number;
   signal?: AbortSignal;
+  cache?: ResearchCache;
 }>;
 export type NpmMetadataDocument = Readonly<{
   name: string;
@@ -79,7 +83,7 @@ function request(value: unknown): Request {
   requireMetadata(
     typeof r.name === 'string' &&
       /^(?:@[a-z\d][a-z\d._-]*\/)?[a-z\d][a-z\d._-]*$/iu.test(r.name) &&
-      r.name.length <= 256,
+      r.name.length <= limit('packet.idCodeUnits'),
     'unsupported',
   );
   requireMetadata(
@@ -87,7 +91,7 @@ function request(value: unknown): Request {
       /^(?:0|[1-9]\d*)\.(?:0|[1-9]\d*)\.(?:0|[1-9]\d*)(?:-[\da-z-]+(?:\.[\da-z-]+)*)?(?:\+[\da-z-]+(?:\.[\da-z-]+)*)?$/iu.test(
         r.version,
       ) &&
-      r.version.length <= 1024,
+      r.version.length <= limit('packet.identityBytes'),
     'unsupported',
   );
   requireMetadata(source.kind === 'registry' && typeof source.identity === 'string', 'unsupported');
@@ -106,11 +110,14 @@ function request(value: unknown): Request {
     'unsupported',
   );
   requireMetadata(typeof r.integrity === 'string' && r.integrity.length > 0, 'missing');
-  requireMetadata(r.integrity.length <= 1024 && hashes(r.integrity).length > 0, 'malformed');
+  requireMetadata(
+    r.integrity.length <= limit('npm.maxIntegrityCodeUnits') && hashes(r.integrity).length > 0,
+    'malformed',
+  );
   return { name: r.name, version: r.version, integrity: r.integrity, source: source.identity };
 }
 function hashes(value: string) {
-  const lengths: Record<string, number> = { sha1: 20, sha256: 32, sha384: 48, sha512: 64 };
+  const lengths: Record<string, number> = DIGEST_BYTES;
   return value
     .trim()
     .split(/\s+/u)
@@ -145,12 +152,18 @@ function freeze<T>(value: T): T {
   return value;
 }
 function statusReason(status: number): EvidenceReason {
-  if (status >= 300 && status < 400) return 'unsupported';
-  if (status === 401 || status === 403) return 'permission';
-  if (status === 404) return 'missing';
-  if (status === 429) return 'rate_limit';
+  if (status >= HTTP_STATUS.redirectMin && status < HTTP_STATUS.clientErrorMin)
+    return 'unsupported';
+  if (status === HTTP_STATUS.unauthorized || status === HTTP_STATUS.forbidden) return 'permission';
+  if (status === HTTP_STATUS.notFound) return 'missing';
+  if (status === HTTP_STATUS.tooManyRequests) return 'rate_limit';
   return 'unknown';
 }
+const CONSUMED_LIMIT = {
+  bytes: 'maxTotalBytes',
+  entries: 'maxJsonEntries',
+  retained: 'maxRetainedBytes',
+} as const;
 class RegistryReader {
   private readonly cache = new Map<string, NpmMetadataDocument | EvidenceReason>();
   private requests = 0;
@@ -159,6 +172,7 @@ class RegistryReader {
   private retained = 0;
   private busy = false;
   private stopped: EvidenceReason | null = null;
+  private stoppedBy: string | null = null;
   private readonly clock: BoundedClock;
   constructor(
     private readonly limits: NpmRegistryLimits,
@@ -181,6 +195,7 @@ class RegistryReader {
     this[field] += amount;
     if (this[field] > maximum) {
       this.stopped = 'budget';
+      this.stoppedBy = CONSUMED_LIMIT[field];
       throw new RegistryFailure('budget');
     }
   }
@@ -218,7 +233,17 @@ class RegistryReader {
     this.consume(Buffer.byteLength(JSON.stringify(doc)), 'retained', this.limits.maxRetainedBytes);
     return freeze(doc);
   }
-  private async body(response: Response, aborted: Promise<never>): Promise<Buffer> {
+  stopReason() {
+    return this.stopped;
+  }
+  stopLimit() {
+    return this.stopped === 'budget' ? this.stoppedBy : null;
+  }
+  private async body(
+    response: Response,
+    aborted: Promise<never>,
+    cached: boolean,
+  ): Promise<Buffer> {
     requireMetadata(response.body, 'malformed');
     const reader = response.body.getReader(),
       chunks: Uint8Array[] = [];
@@ -228,7 +253,8 @@ class RegistryReader {
         const chunk = await Promise.race([reader.read(), aborted]);
         if (chunk.done) return Buffer.concat(chunks, size);
         size += chunk.value.byteLength;
-        this.consume(chunk.value.byteLength, 'bytes', this.limits.maxTotalBytes);
+        // A cached response was charged to the reader that fetched it.
+        if (!cached) this.consume(chunk.value.byteLength, 'bytes', this.limits.maxTotalBytes);
         // A per-response cap fails only this read; cumulative budgets stop the attempt.
         requireMetadata(size <= this.limits.maxResponseBytes, 'budget');
         this.remaining();
@@ -248,21 +274,29 @@ class RegistryReader {
           url,
           accept: 'application/json',
           timeoutMs: Math.min(this.limits.requestTimeoutMs, this.remaining()),
+          charge: () => {
+            if (this.requests >= this.limits.maxRequests) {
+              this.stopped = 'budget';
+              this.stoppedBy = 'maxRequests';
+              throw new RegistryFailure('budget');
+            }
+            this.requests++;
+          },
         },
         () => {},
-        async (response, aborted) => {
+        async (response, aborted, cached) => {
           requireMetadata(
             !response.redirected && (!response.url || response.url === url),
             'unsupported',
           );
           // A throttling registry will refuse later reads too; stop rather than spend requests.
-          if (response.status === 429) this.stopped = 'rate_limit';
-          requireMetadata(response.status === 200, statusReason(response.status));
+          if (response.status === HTTP_STATUS.tooManyRequests) this.stopped = 'rate_limit';
+          requireMetadata(response.status === HTTP_STATUS.ok, statusReason(response.status));
           requireMetadata(
             /^application\/json(?:\s*;|$)/iu.test(response.headers.get('content-type') ?? ''),
             'unsupported',
           );
-          const bytes = await this.body(response, aborted);
+          const bytes = await this.body(response, aborted, cached);
           this.remaining();
           return this.parse(bytes, r, url);
         },
@@ -286,11 +320,6 @@ class RegistryReader {
         key = JSON.stringify([r.name, r.version, r.source]);
       let document = this.cache.get(key);
       if (!document) {
-        if (this.requests >= this.limits.maxRequests) {
-          this.stopped = 'budget';
-          throw new RegistryFailure('budget');
-        }
-        this.requests++;
         try {
           document = await this.fetchDocument(r);
         } catch (error) {
@@ -317,10 +346,24 @@ class RegistryReader {
 export function createNpmRegistryReader(
   limits: unknown,
   deps: NpmRegistryDependencies,
-): { kind: 'invalid' } | { kind: 'ready'; read: (request: unknown) => Promise<NpmMetadataResult> } {
+):
+  | { kind: 'invalid' }
+  | {
+      kind: 'ready';
+      read: (request: unknown) => Promise<NpmMetadataResult>;
+      /** The reason this reader refuses all further reads, or null while it can still read. */
+      stopped: () => EvidenceReason | null;
+      /** Diagnostics: the cumulative limit that set a `budget` stop, or null. */
+      stopLimit: () => string | null;
+    } {
   try {
     const reader = new RegistryReader(parseLimits(limits), deps);
-    return Object.freeze({ kind: 'ready', read: (value: unknown) => reader.read(value) });
+    return Object.freeze({
+      kind: 'ready',
+      read: (value: unknown) => reader.read(value),
+      stopped: () => reader.stopReason(),
+      stopLimit: () => reader.stopLimit(),
+    });
   } catch {
     return { kind: 'invalid' };
   }
@@ -341,10 +384,12 @@ function commandText(value: string) {
   for (const char of value) {
     const code = char.codePointAt(0)!;
     requireMetadata(
-      code === 9 ||
-        code === 10 ||
-        code === 13 ||
-        (code >= 32 && (code < 127 || code > 159) && (code < 0xd800 || code > 0xdfff)),
+      code === CHAR_CODE.tab ||
+        code === CHAR_CODE.lineFeed ||
+        code === CHAR_CODE.carriageReturn ||
+        (code >= CHAR_CODE.firstPrintable &&
+          (code < CHAR_CODE.delete || code > CHAR_CODE.lastC1Control) &&
+          (code < CHAR_CODE.surrogateFirst || code > CHAR_CODE.surrogateLast)),
     );
   }
 }

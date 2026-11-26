@@ -1,3 +1,4 @@
+import { limit } from './limits.js';
 import type { PacketGap } from './packet.js';
 import type { DroppedOptional } from './optional-evidence.js';
 import {
@@ -40,7 +41,6 @@ export type HandoffDetail = Readonly<{
   /** Required for internal failures; defaults to the safe catch-all for direct callers. */
   stage?: InternalFailureStage;
 }>;
-const MAX_GAPS = 4;
 
 function copyAnalysisTiming(value: AnalysisTiming | undefined): AnalysisTiming | undefined {
   if (
@@ -60,10 +60,9 @@ function copyAnalysisTiming(value: AnalysisTiming | undefined): AnalysisTiming |
   });
 }
 
+/** Every gap is kept: a handoff that hid one would report evidence as more complete than it is. */
 function copyGaps(gaps: readonly PacketGap[]): readonly PacketGap[] {
-  return Object.freeze(
-    gaps.slice(0, MAX_GAPS).map(({ source, reason }) => Object.freeze({ source, reason })),
-  );
+  return Object.freeze(gaps.map(({ source, reason }) => Object.freeze({ source, reason })));
 }
 function countDroppedOptional(dropped: readonly DroppedOptional[]): OptionalEvidenceDropCounts {
   let reachability = 0,
@@ -221,7 +220,7 @@ export function createRehearsalSink(appToken: string | null): RehearsalSink | nu
   const traces: RehearsalTrace[] = [];
   return Object.freeze({
     record: (handoff, detail, analysisTiming) => {
-      if (traces.length >= 32) return false;
+      if (traces.length >= limit('handoff.maxTraces')) return false;
       const keptDetail = traceDetail(handoff, detail);
       if (!keptDetail) return false;
       const timing = copyAnalysisTiming(analysisTiming);

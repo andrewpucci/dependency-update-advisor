@@ -4,6 +4,7 @@ import type { PacketChange, PacketSource, EvidenceReason } from '../schema.js';
 import type { Finding } from '../policy.js';
 import {
   advisoryCheck,
+  OSV_QUERY_URL,
   type AdvisoryTarget,
   type AdvisoryLookup,
   type AdvisoryRecord,
@@ -79,13 +80,20 @@ function provenance(
   record?: AdvisoryRecord,
 ): Extract<PacketSource['provenance'], { kind: 'upstream' }> {
   const value = subjectValue(change, side);
+  const osv = lookup.url === OSV_QUERY_URL;
   return {
     kind: 'upstream',
     url: record?.url ?? lookup.url,
-    title: record?.title ?? 'Exact-version reviewed advisory lookup',
+    title:
+      record?.title ??
+      (osv
+        ? 'Exact-version OSV reviewed advisory lookup'
+        : 'Exact-version reviewed advisory lookup'),
     excerpt: record
       ? 'Attributable advisory evidence identifies this exact target.'
-      : 'The complete exact-version query checked reviewed advisories for this target.',
+      : osv
+        ? "The complete exact-version OSV query checked OSV's mirror of GitHub-reviewed advisories for this target."
+        : 'The complete exact-version query checked reviewed advisories for this target.',
     excerptTruncated: false,
     subjects: [{ memberId: change.id, side, value }],
     range: { from: side === 'base' ? value : null, to: side === 'head' ? value : null },
@@ -194,7 +202,9 @@ export function attachFindings(
     if (absent.provenance.kind === 'upstream') {
       absent.provenance.url = head.lookup.url;
       absent.provenance.excerpt =
-        'The complete proposed-version query excludes this current-version advisory.';
+        head.lookup.url === OSV_QUERY_URL
+          ? "The complete proposed-version OSV query, which checks OSV's mirror of GitHub-reviewed advisories, excludes this current-version advisory."
+          : 'The complete proposed-version query excludes this current-version advisory.';
     }
     addSource(output, absent);
     addFinding(output, {

@@ -1,4 +1,11 @@
-import { EVIDENCE_READ_ALLOCATION, EVIDENCE_READ_ENVELOPE } from './budget.js';
+import {
+  EVIDENCE_READ_ENVELOPE,
+  RESEARCH_CACHE_LIMITS,
+  researchShareUnits,
+  researchShares,
+  type ResearchShareParameters,
+  type ResearchShares,
+} from './budget.js';
 import type { GithubComparison } from './github-read.js';
 import { enrichAdvisories } from './evidence/advisories.js';
 import { createAdvisoryReader, createMalwareReader } from './evidence/advisory-read.js';
@@ -10,11 +17,18 @@ import { createPolicySignalReader } from './evidence/policy-signals-read.js';
 import type { PolicyMetadataReader } from './evidence/policy-signals-read.js';
 import { enrichUpstream, type UpstreamAttempt } from './evidence/upstream.js';
 import { createUpstreamReader } from './evidence/upstream-read.js';
+import { createResearchCache, type ResearchCache } from './evidence/research-cache.js';
+import { createGithubQuotaGuard, type GithubQuotaGuard } from './evidence/github-quota.js';
 import type { NpmInventoryResult } from './evidence/npm.js';
-import type { PacketExpected, PacketResult } from './schema.js';
-import { validateReviewPacket, type EvidenceReason } from './schema.js';
+import type { PacketChange, PacketExpected, PacketResult } from './schema.js';
+import type { ChangeEvidence, EvidenceReason, NpmSide } from './schema.js';
+import { DURATION_MS } from './format.js';
+import { limit } from './limits.js';
+import { isResearchPlaceholder, reconcilePacket } from './revalidation.js';
 
 type Packet = Extract<PacketResult, { ok: true }>['packet'];
+/** A packet change as the packet exposes it, which is readonly all the way down. */
+type PacketChangeView = Packet['changes'][number];
 type NpmInventory = Extract<NpmInventoryResult, { kind: 'inventory' }>;
 type EnrichedEvidence = { changes: unknown; sources: unknown; findings: unknown };
 type ResearchProgress = EnrichedEvidence & {
@@ -24,8 +38,19 @@ type ResearchProgress = EnrichedEvidence & {
   signalAttempts: readonly SignalAttempt[];
 };
 type Reader = { close: () => void };
-type Fail = (stage: ResearchStage, reason: EvidenceReason) => void;
+type Fail = (stage: ResearchStage, reason: EvidenceReason, limit?: string | null) => void;
 export type ResearchStage = 'upstream' | 'advisories' | 'signals' | 'revalidation';
+/** A stage boundary reported to an optional observer; carries no request data. */
+export type ResearchObservation =
+  | Readonly<{ kind: 'stage-start'; stage: ResearchStage }>
+  | Readonly<{
+      kind: 'stage-end';
+      stage: ResearchStage;
+      outcome: 'enriched' | 'unavailable';
+      reason: EvidenceReason | null;
+      /** Diagnostics: the reader limit whose exhaustion stopped the stage, when one is known. */
+      limit?: string;
+    }>;
 export type ResearchInput = Readonly<{
   packet: Packet;
   trusted: PacketExpected;
@@ -35,11 +60,21 @@ export type ResearchInput = Readonly<{
   comparison: GithubComparison | null;
   /** Credential-free fetch for public registries and advisory sources. */
   fetch: (url: string, init: RequestInit) => Promise<Response>;
+  /** The run's research cache, shared with collection's registry reads; created here when absent. */
+  cache?: ResearchCache;
+  /** Scaled-share parameters; the register's when absent. */
+  shareParameters?: ResearchShareParameters;
+  /** Wall time in Unix milliseconds, for GitHub's reset headers; `Date.now` when absent. */
+  wallNow?: () => number;
+  /** The run's research GitHub quota guard; created here when absent, as the cache is. */
+  quota?: GithubQuotaGuard;
   now: () => number;
   /** Absolute time, in `now` units, by which research must be finished. */
   deadline: number;
   evaluationTime: number;
   signal?: AbortSignal;
+  /** Receives stage boundaries in order; its errors are ignored. */
+  observe?: (observation: ResearchObservation) => void;
 }>;
 export type ResearchResult =
   | Readonly<{
@@ -52,9 +87,9 @@ export type ResearchResult =
     }>
   | Readonly<{ kind: 'internal-failure' }>;
 
-const MAX_JSON_ENTRIES = 200_000;
-const MAX_JSON_DEPTH = 32;
-const MAX_RETAINED_BYTES = 2_000_000;
+const MAX_JSON_ENTRIES = limit('research.maxJsonEntries');
+const MAX_JSON_DEPTH = limit('research.maxJsonDepth');
+const MAX_RETAINED_BYTES = limit('research.maxRetainedBytes');
 
 function remaining(input: Pick<ResearchInput, 'now' | 'deadline'>): number {
   return Math.max(
@@ -71,24 +106,89 @@ function limits(
   return {
     maxRequests,
     maxPages: maxRequests,
-    maxTagCandidates: 100,
-    maxTagDepth: 10,
+    maxTagCandidates: limit('research.maxTagCandidates'),
+    maxTagDepth: limit('research.maxTagDepth'),
     maxResponseBytes: Math.min(EVIDENCE_READ_ENVELOPE.maxResponseBytes, maxTotalBytes),
     maxTotalBytes,
     maxJsonEntries: MAX_JSON_ENTRIES,
     maxJsonDepth: MAX_JSON_DEPTH,
-    maxWork: 5_000_000,
+    maxWork: limit('research.maxWork'),
     maxRetainedBytes: MAX_RETAINED_BYTES,
-    maxAttempts: 512,
-    maxFindings: 512,
+    maxAttempts: limit('research.maxAttempts'),
+    maxFindings: limit('research.maxFindings'),
     // A request may not be allowed longer than the whole read, so near the deadline both shrink.
     requestTimeoutMs: Math.min(EVIDENCE_READ_ENVELOPE.requestTimeoutMs, remaining(input)),
     totalTimeoutMs: remaining(input),
   };
 }
 
+/** A Unix-millisecond time as whole-second UTC, rounded up so it is never before the reset. */
+function wholeSecondUtc(ms: number): string {
+  const second = DURATION_MS.second;
+  return new Date(Math.ceil(ms / second) * second).toISOString().replace('.000Z', 'Z');
+}
+
 function failure(result: { kind: string; reason?: EvidenceReason }): EvidenceReason {
   return result.kind === 'unavailable' && result.reason ? result.reason : 'malformed';
+}
+
+/** The categories each stage owns; a stage's failure marks only these placeholders. */
+const STAGE_CATEGORIES: Record<ResearchStage, readonly string[]> = {
+  upstream: ['upstream', 'installScript'],
+  advisories: ['vulnerability'],
+  signals: ['malware'],
+  revalidation: [],
+};
+
+/** Replaces a failed stage's placeholders with the stage's reason; copies, never mutates. */
+function markStage(progress: ResearchProgress, stage: ResearchStage, reason: EvidenceReason): void {
+  progress.changes = (progress.changes as readonly PacketChange[]).map((change) => {
+    if ('basis' in change) return change;
+    const evidence: Record<string, ChangeEvidence> = { ...change.evidence };
+    for (const category of STAGE_CATEGORIES[stage]) {
+      if (isResearchPlaceholder(evidence[category]))
+        evidence[category] = { status: 'unavailable', reasons: [reason], sourceIds: [] };
+    }
+    return { ...change, evidence };
+  });
+}
+
+function installsScript(
+  inventory: NpmInventory,
+  side: NpmSide | null,
+  revision: 'base' | 'head',
+): boolean {
+  if (!side) return false;
+  const root = inventory.roots.find((candidate) => candidate.root === side.root);
+  return root?.[revision].packages[side.lockPath]?.hasInstallScript === true;
+}
+
+/** Research order (§3.5): direct and added, then install scripts, then the rest; stable within each. */
+export function researchOrder<T extends PacketChangeView>(
+  changes: readonly T[],
+  npmInventory: NpmInventory | null,
+): T[] {
+  const rank = (change: T): number => {
+    if (change.role === 'direct' || change.kind === 'addition') return 0;
+    if (
+      npmInventory &&
+      change.ecosystem === 'npm' &&
+      !('basis' in change) &&
+      (installsScript(npmInventory, change.from, 'base') ||
+        installsScript(npmInventory, change.to, 'head'))
+    )
+      return 1;
+    return 2;
+  };
+  return [...changes].sort((a, b) => rank(a) - rank(b));
+}
+
+/** Puts the changes back in the packet's own order, so the returned packet keeps its shape. */
+function restorePacketOrder(progress: ResearchProgress, packet: Packet): void {
+  const position = new Map(packet.changes.map((change, index) => [change.id, index]));
+  progress.changes = [...(progress.changes as readonly PacketChange[])].sort(
+    (a, b) => (position.get(a.id) ?? 0) - (position.get(b.id) ?? 0),
+  );
 }
 
 function replaceEvidence(progress: ResearchProgress, evidence: EnrichedEvidence): void {
@@ -103,9 +203,10 @@ async function enrichUpstreamStage(
   readers: Reader[],
   progress: ResearchProgress,
   fail: Fail,
+  shares: ResearchShares,
   pypiReader?: PolicyMetadataReader,
 ): Promise<void> {
-  const limitsForStage = limits(EVIDENCE_READ_ALLOCATION.upstream, input);
+  const limitsForStage = limits(shares.upstream, input);
   const opened = createUpstreamReader(limitsForStage, dependencies);
   if (opened.kind !== 'ready') return fail('upstream', 'malformed');
   readers.push(opened.reader);
@@ -125,6 +226,7 @@ async function enrichUpstreamStage(
   progress.publicIdentities = upstream.publicIdentities;
   progress.actionVersions = upstream.actionVersions;
   progress.upstreamAttempts = upstream.attempts;
+  if (upstream.stopped) fail('upstream', upstream.stopped, opened.reader.stopLimit?.());
 }
 
 async function enrichAdvisoryStage(
@@ -133,8 +235,9 @@ async function enrichAdvisoryStage(
   readers: Reader[],
   progress: ResearchProgress,
   fail: Fail,
+  shares: ResearchShares,
 ): Promise<void> {
-  const limitsForStage = limits(EVIDENCE_READ_ALLOCATION.advisory, input);
+  const limitsForStage = limits(shares.advisory, input);
   const opened = createAdvisoryReader(limitsForStage, dependencies);
   if (opened.kind !== 'ready') return fail('advisories', 'malformed');
   readers.push(opened);
@@ -153,6 +256,7 @@ async function enrichAdvisoryStage(
   );
   if (advisories.kind !== 'enriched') return fail('advisories', failure(advisories));
   replaceEvidence(progress, advisories);
+  if (advisories.stopped) fail('advisories', advisories.stopped);
 }
 
 async function enrichSignalsStage(
@@ -162,9 +266,10 @@ async function enrichSignalsStage(
   progress: ResearchProgress,
   fail: Fail,
   metadata: PolicyMetadataReader | null,
+  stageShares: ResearchShares,
 ): Promise<void> {
-  const limitsForStage = limits(EVIDENCE_READ_ALLOCATION.signals, input);
-  const { readers: shares } = EVIDENCE_READ_ALLOCATION.signals;
+  const limitsForStage = limits(stageShares.signals, input);
+  const { readers: shares } = stageShares.signals;
   const malware = createMalwareReader(limits(shares.malware, input), dependencies);
   const registry = createNpmRegistryReader(limits(shares.registry, input), dependencies);
   const times = createNpmPublishTimeReader(limits(shares.publishTimes, input), dependencies);
@@ -204,40 +309,59 @@ async function enrichSignalsStage(
   progress.signalAttempts = signals.attempts;
 }
 
-function revalidate(input: ResearchInput, progress: ResearchProgress) {
-  const { packet } = input;
-  return validateReviewPacket(
-    {
-      version: 1,
-      binding: packet.binding,
-      baseSha: packet.baseSha,
-      contextRevision: packet.contextRevision,
-      context: packet.context,
-      coverage: packet.coverage,
-      changes: progress.changes,
-      sources: progress.sources,
-      findings: progress.findings,
-      relationships: packet.relationships,
-      reachability: packet.reachability,
-    },
-    input.trusted,
-  );
-}
-
 /**
  * Runs upstream research, advisory lookup, and policy signals over a validated packet, feeding each
  * stage's proofs and sources to the next. A stage that cannot be established leaves the evidence as
  * collected, so research is never reported as complete without its own result; the enriched packet
- * is revalidated and replaced by the collected one if it fails.
+ * is reconciled per member, and only the members whose research fails validation revert.
  */
 export async function runResearch(input: ResearchInput): Promise<ResearchResult> {
-  const dependencies = { now: input.now, fetch: input.fetch, signal: input.signal };
+  const dependencies = {
+    now: input.now,
+    fetch: input.fetch,
+    signal: input.signal,
+    cache: input.cache ?? createResearchCache(RESEARCH_CACHE_LIMITS),
+    // One guard for every research reader; snapshot, session, and freshness reads never get it.
+    quota:
+      input.quota ??
+      createGithubQuotaGuard({
+        reserve: limit('research.githubQuota.reserve'),
+        wallNow: input.wallNow ?? Date.now,
+        windowMs: limit('research.githubQuota.windowMs'),
+      }),
+  };
   const unavailable: { stage: ResearchStage; reason: EvidenceReason }[] = [];
+  const stopLimits = new Map<ResearchStage, string>();
   const readers: Reader[] = [];
+  const observe = (observation: ResearchObservation) => {
+    try {
+      input.observe?.(observation);
+    } catch {
+      // An observer cannot change the research result.
+    }
+  };
+  const runStage = async (stage: ResearchStage, run: () => Promise<void>) => {
+    observe({ kind: 'stage-start', stage });
+    const before = unavailable.length;
+    await run();
+    const failed = unavailable.slice(before).find((entry) => entry.stage === stage);
+    const limit = stopLimits.get(stage);
+    observe(
+      failed
+        ? {
+            kind: 'stage-end',
+            stage,
+            outcome: 'unavailable',
+            reason: failed.reason,
+            ...(limit ? { limit } : {}),
+          }
+        : { kind: 'stage-end', stage, outcome: 'enriched', reason: null },
+    );
+  };
   try {
     const { packet } = input;
     const progress: ResearchProgress = {
-      changes: packet.changes,
+      changes: researchOrder(packet.changes, input.npmInventory),
       sources: packet.sources,
       findings: packet.findings,
       publicIdentities: [],
@@ -245,42 +369,63 @@ export async function runResearch(input: ResearchInput): Promise<ResearchResult>
       upstreamAttempts: [],
       signalAttempts: [],
     };
-    const fail = (stage: ResearchStage, reason: EvidenceReason) =>
+    const fail: Fail = (stage, reason, limit) => {
       unavailable.push({ stage, reason });
+      if (limit) stopLimits.set(stage, limit);
+      markStage(progress, stage, reason);
+    };
+    // Every unit is known before research starts, so each reader's share is final when it opens.
+    const shares = researchShares(researchShareUnits(packet.changes), input.shareParameters);
     const metadata = createPolicySignalReader(
-      limits(EVIDENCE_READ_ALLOCATION.signals.readers.metadata, input),
+      limits(shares.signals.readers.metadata, input),
       dependencies,
     );
     const sharedMetadata = metadata.kind === 'ready' ? metadata : null;
     if (sharedMetadata) readers.push(sharedMetadata);
-    await enrichUpstreamStage(
-      input,
-      dependencies,
-      readers,
-      progress,
-      fail,
-      sharedMetadata ?? undefined,
+    await runStage('upstream', () =>
+      enrichUpstreamStage(
+        input,
+        dependencies,
+        readers,
+        progress,
+        fail,
+        shares,
+        sharedMetadata ?? undefined,
+      ),
     );
-    await enrichAdvisoryStage(input, dependencies, readers, progress, fail);
-    await enrichSignalsStage(input, dependencies, readers, progress, fail, sharedMetadata);
+    await runStage('advisories', () =>
+      enrichAdvisoryStage(input, dependencies, readers, progress, fail, shares),
+    );
+    await runStage('signals', () =>
+      enrichSignalsStage(input, dependencies, readers, progress, fail, sharedMetadata, shares),
+    );
 
-    const candidate = revalidate(input, progress);
-    if (!candidate.ok) {
-      fail('revalidation', 'malformed');
-      return {
-        kind: 'ready',
-        packet,
-        unavailable,
-        upstreamAttempts: [],
-        signalAttempts: [],
-      };
-    }
+    restorePacketOrder(progress, packet);
+    const retryAt = dependencies.quota.latestRetryAt();
+    observe({ kind: 'stage-start', stage: 'revalidation' });
+    const reconciled = reconcilePacket({
+      collected: packet,
+      enriched: { ...progress, retryAfter: retryAt === null ? null : wholeSecondUtc(retryAt) },
+      trusted: input.trusted,
+      priority: researchOrder(packet.changes, input.npmInventory).map((change) => change.id),
+    });
+    for (const reason of reconciled.reasons) unavailable.push({ stage: 'revalidation', reason });
+    observe(
+      reconciled.reasons.length === 0
+        ? { kind: 'stage-end', stage: 'revalidation', outcome: 'enriched', reason: null }
+        : {
+            kind: 'stage-end',
+            stage: 'revalidation',
+            outcome: 'unavailable',
+            reason: reconciled.reasons[0] ?? null,
+          },
+    );
     return {
       kind: 'ready',
-      packet: candidate.packet,
+      packet: reconciled.packet,
       unavailable,
-      upstreamAttempts: progress.upstreamAttempts,
-      signalAttempts: progress.signalAttempts,
+      upstreamAttempts: reconciled.whole ? [] : progress.upstreamAttempts,
+      signalAttempts: reconciled.whole ? [] : progress.signalAttempts,
     };
   } catch {
     return { kind: 'internal-failure' };

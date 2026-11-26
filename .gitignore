@@ -8,3 +8,7 @@ coverage/
 *.pem
 .local/
 /tasks/plan.md
+/tasks/plan-*.md
+
+# Scratch files the limit-rule lint test writes.
+lint-planted/

@@ -185,6 +185,7 @@ test.each([
         coverage: f.coverage,
         relationships: f.relationships,
         reachability: [],
+        retryAfter: null,
       },
       f.expected,
     );

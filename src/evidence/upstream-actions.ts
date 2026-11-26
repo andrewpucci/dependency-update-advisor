@@ -19,6 +19,7 @@ import {
   type ResearchAttempt,
 } from './upstream-github.js';
 import { compareUpstreamVersions } from './upstream-version.js';
+import { forEachRelease } from './upstream-releases.js';
 
 export type ActionMappingDraft = Readonly<{
   tag: string;
@@ -99,20 +100,13 @@ export async function matchingReleases(
   const matches: { version: string; tag: string; data: Readonly<Record<string, unknown>> }[] = [];
   const seen = new Set<string>();
   let candidates = 0;
-  for (let page = 1; page <= reader.limits.maxPages; page++) {
-    const result = await reader.read({ kind: 'github', repository, resource: 'releases', page });
-    requireUpstream(result.status === 'available' && result.data, result.reasons[0] ?? 'unknown');
-    requireUpstream(Array.isArray(result.data.items));
-    for (const item of result.data.items) {
-      reader.spend(1);
-      requireUpstream(++candidates <= reader.limits.maxTagCandidates, 'budget');
-      const match = await releaseAtCommit(repository, sha, item, seen, tags, reader);
-      if (match) matches.push(match);
-    }
-    if (!result.nextPage) return matches;
-    requireUpstream(page < reader.limits.maxPages, 'budget');
-  }
-  throw new UpstreamFailure('budget');
+  await forEachRelease(reader, repository, async (item) => {
+    reader.spend(1);
+    requireUpstream(++candidates <= reader.limits.maxTagCandidates, 'budget');
+    const match = await releaseAtCommit(repository, sha, item, seen, tags, reader);
+    if (match) matches.push(match);
+  });
+  return matches;
 }
 async function mapping(
   instance: ActionsSide,

@@ -63,12 +63,21 @@ test.each([
   'version=-1\nrevision=3',
   'version=1.5\nrevision=3',
   'version=1\nrevision=-1',
+  // Past the largest exact integer, a value cannot be read faithfully.
+  'version=9007199254740993\nrevision=3',
 ])('invalid schema shapes are malformed: %s', (s) =>
   expect(read(s)).toEqual({ kind: 'unavailable', reason: 'malformed' }),
 );
-test.each(['version=1', 'version=1\nrevision=4', 'version=2\nrevision=3', 'version=1\nrevision=0'])(
-  'untested well-formed headers are unsupported: %s',
-  (s) => expect(read(s)).toEqual({ kind: 'unavailable', reason: 'unsupported' }),
+test.each([
+  'version=1',
+  'version=1\nrevision=4',
+  'version=2\nrevision=3',
+  'version=1\nrevision=0',
+  // A large but exact version or revision is simply one this reader does not support.
+  'version=4294967296\nrevision=3',
+  'version=1\nrevision=4294967296',
+])('untested well-formed headers are unsupported: %s', (s) =>
+  expect(read(s)).toEqual({ kind: 'unavailable', reason: 'unsupported' }),
 );
 test('duplicate exact identities conflict independent of resolution markers; distinct versions survive', () => {
   const r = parsed(

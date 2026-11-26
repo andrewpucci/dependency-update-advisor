@@ -161,7 +161,10 @@ cutover spec to compare content with the current reviewer.
 
 ## Comment Capacity Amendment
 
-**Status: draft for review.** Scoped to
+**Status: approved for planning, 2026-11-16.** The user explicitly approved
+the reviewed draft (merged in PR #351) after a fresh-context review whose
+blocking findings were resolved. Plan and execution approval remain separate
+gates. Scoped to
 [#348](https://github.com/andrewpucci/dependency-update-advisor/issues/348).
 Effort tier: L. It amends this contract and
 [O1 decision brief rendering](SPEC-decision-brief.md) requirements 3, 4, and
@@ -256,9 +259,10 @@ below must confirm the implemented result before any re-pin.
    assessment reasons are not merged, deduplicated across units, shortened,
    or reordered. The renderer adds no model text to merged deterministic
    lines.
-5. **Fallback and `render-size`.** If the merged body exceeds 50,000 code
-   units, the renderer omits optional sections in the existing priority order
-   with the existing notice. If the required body still exceeds the limit, it
+5. **Fallback and `render-size`.** If the merged body exceeds the comment
+   limit, `limit:comment.maxBodyCodeUnits` code units, the renderer omits
+   optional sections in the existing priority order with the existing
+   notice. If the required body still exceeds the limit, it
    returns `size`. W2 reports `render-size`, a fail-closed outcome with the
    existing `brief`/`budget` gap; the trace and stderr stay redacted as W2
    specifies. No required text is shortened or truncated.
@@ -276,7 +280,7 @@ must satisfy the verification below.
   informational findings per unit; three or four shared unavailable gaps per
   unit, with reasons `budget`, `missing`, and `unsupported`; 21 unresolved
   units across at least two distinct gap sets; and 71 model follow-ups of
-  about 150 characters. It renders at or below 50,000 code units. Every
+  about 150 characters. It renders within `limit:comment.maxBodyCodeUnits`. Every
   member, including each same-named member, appears in each merged record
   that applies to it, and every unresolved unit, follow-up, action, and
   required citation is visible. It also includes an assessed `merge` unit
@@ -284,7 +288,7 @@ must satisfy the verification below.
   unit is counted in coverage.
 - **Checked-state fixture:** the same 93 units with every required category
   `available` and no finding, except one `partial` category with a finding,
-  renders at or below 50,000 code units. It shows one "checked, none found"
+  renders within `limit:comment.maxBodyCodeUnits`. It shows one "checked, none found"
   line per category naming each member, and shows both the finding and the
   gap for the partial category. A variant with optional sections large
   enough to force omission still shows every checked line in Decision
@@ -304,11 +308,11 @@ must satisfy the verification below.
   fit after merging still returns `size`, and W2 still reports
   `internal-failure` with reason `render-size` and the `brief`/`budget` gap.
 - **Preserved checks:** existing escaping, autolink, priority-order,
-  exact-50,000 boundary, and optional-omission checks continue to pass. Full
-  repository checks and the reproducible action-bundle check run on the
-  implementation revision.
+  exact-limit (`limit:comment.maxBodyCodeUnits`) boundary, and
+  optional-omission checks continue to pass. Full repository checks and the
+  reproducible action-bundle check run on the implementation revision.
 - **Local R1 replay before re-pin:** replaying the recorded R1 responses
-  against the implementation renders a body at or below 50,000 code units
+  against the implementation renders a body within `limit:comment.maxBodyCodeUnits`
   that names every member with a required record (92 of the 93), all 21
   unresolved units, and all 71 follow-ups. The one assessed `merge` unit has
   no evidence category, gap, finding, or follow-up, so it appears only in the
@@ -316,12 +320,49 @@ must satisfy the verification below.
   sanitized result is recorded on #348. The R1 caller is re-pinned only after
   this passes.
 
+### Compaction revision (#412)
+
+**Status: decided by the user on 2026-11-24 on
+[#412](https://github.com/andrewpucci/dependency-update-advisor/issues/412#issuecomment-7150562565).**
+It keeps `limit:comment.maxBodyCodeUnits` and the set of required records, and
+targets a required body at or below half that limit on the recorded R1 input.
+It revises the wording above as follows; every rule in Amendment boundaries
+still holds.
+
+- **Checked, none found:** instead of one line per category, each package
+  appears on one line, the line for the exact set of required categories
+  that are `available` with no finding for it. The line lists those
+  categories, for example
+  `- upstream, vulnerability, and malware: checked, none found for a, b.`
+  A package never appears on a line for a category it was not checked for.
+  The checked-state fixture asserts this form in place of "one line per
+  category".
+- **Queue gaps:** in a decision-queue item, gaps that share a status and
+  reasons are one sentence that lists their categories once and states each
+  distinct manual step once, for example
+  `upstream and vulnerability evidence is unavailable (budget). Not checked
+  within the review's limits; check manually: read its release notes; search
+  the GitHub Advisory Database for it.` Gaps that differ in status or reasons
+  stay separate sentences. A one-unit item names its unit only in the entry;
+  a one-unit item with several members keeps each gap's member name.
+- **Action text:** the fixed manual-check text is reworded without dropping a
+  step. Each manual reason group has a short cause: `Not checked within the
+  review's limits`, `No supported source found`, or `Source could not be
+  trusted`. A gap's causes are joined with semicolons and followed once by
+  `check manually:` and its steps, so a gap with reasons from several groups
+  still states each step once. Permission and rerun actions stay separate
+  sentences before it. A step refers to the package as "it" or "each package"
+  because the line already names it.
+- **Follow-ups:** a unit with more than one model follow-up names its members
+  once, with each follow-up as its own nested line in record order. Model text
+  is unchanged.
+
 ### Amendment boundaries
 
 - **Always:** account for every required decision-bearing record, name every
   affected member, preserve trusted links and escaped output, keep the
-  50,000-code-unit bound, and leave the no-write and publication boundary
-  unchanged.
+  `limit:comment.maxBodyCodeUnits` bound, and leave the no-write and
+  publication boundary unchanged.
 - **Ask first:** change which records are required, merge or shorten
   model-authored text, change the size limit, the managed-comment identity,
   status semantics, workflow permissions, or M1 validation.
@@ -334,11 +375,26 @@ must satisfy the verification below.
 
 - M1 validation is unchanged. The 21 `reference` rejections, each failing a
   whole batch, need their own issue.
-- Evidence availability and reason-to-action mapping are owned by the draft
+- Evidence availability and reason-to-action mapping are owned by the
   [evidence coverage spec](SPEC-evidence-coverage.md). Upstream, malware, and
   vulnerability evidence was unavailable for 92 of 93 units because research
   stages stopped on their limits and discarded completed work, not because
   checks found nothing.
+
+## Retry Time Amendment
+
+**Status: approved for planning and execution, 2026-11-21, with the
+amendment it comes from; implemented for #421 and merged into `main` in
+[PR #423](https://github.com/andrewpucci/dependency-update-advisor/pull/423),
+2026-11-22.** From A4 of the
+[scaled-share function amendment](SPEC-evidence-coverage.md#a4-retry-time-in-the-review)
+to the evidence coverage spec. When a gap's action is "Rerun CI later" and
+the packet's `retryAfter`, passed to the renderer as
+`DecisionBriefInput.retryAfter`, is set, the action reads "Rerun CI after
+HH:MM UTC.": 24-hour, zero-padded UTC time, rounded up to the next whole
+minute. The text is built from the validated timestamp, not escaped
+untrusted text. Every other action, and the rule that a gap with a
+non-transient reason never says to rerun CI, is unchanged.
 
 ## Boundaries
 

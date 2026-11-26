@@ -1,7 +1,9 @@
-import { expect, test, vi } from 'vite-plus/test';
+import { describe, expect, test, vi } from 'vite-plus/test';
 import { createNpmRegistryReader, interpretNpmLifecycle } from './npm-registry.js';
+import { createResearchCache } from './research-cache.js';
 import type { PacketChange, NpmSide } from '../schema.js';
 import type { NpmNode } from './npm.js';
+import { limit } from '../limits.js';
 
 const integrity = 'sha512-' + Buffer.alloc(64, 7).toString('base64');
 const request = {
@@ -144,6 +146,147 @@ test.each([
   expect(await reader(document(), override).read(request)).toMatchObject({
     kind: 'unavailable',
     reason: 'budget',
+  });
+});
+
+const jsonInit = { headers: { 'content-type': 'application/json' } };
+function versionRequest(version: string) {
+  return { ...request, version };
+}
+function versionDocument(version: string, extra = {}) {
+  return document({ _id: `@fixture/widget@${version}`, version, ...extra });
+}
+// A reader whose fetch answers with `body(version)` for the exact version each request asks for.
+function versionedReader(overrides: Partial<typeof limits>, body: (version: string) => Response) {
+  const calls: string[] = [];
+  const created = createNpmRegistryReader(
+    { ...limits, ...overrides },
+    {
+      now: () => 0,
+      fetch: async (url) => {
+        calls.push(url);
+        return body(decodeURIComponent(url.slice(url.lastIndexOf('/') + 1)));
+      },
+    },
+  );
+  if (created.kind !== 'ready') throw new Error('expected reader');
+  return { ...created, calls };
+}
+// A document whose serialized body is exactly `bytes` long.
+function sizedResponse(version: string, bytes: number) {
+  const body = (pad: number) => JSON.stringify(versionDocument(version, { pad: 'x'.repeat(pad) }));
+  return new Response(body(bytes - Buffer.byteLength(body(0))), jsonInit);
+}
+async function expectRequestShare(cap: number) {
+  const f = versionedReader(
+    { maxRequests: cap },
+    (version) => new Response(JSON.stringify(versionDocument(version)), jsonInit),
+  );
+  for (let i = 0; i < cap; i++)
+    expect(await f.read(versionRequest(`1.0.${i}`))).toMatchObject({ kind: 'metadata' });
+  expect(await f.read(versionRequest(`1.0.${cap}`))).toMatchObject({
+    kind: 'unavailable',
+    reason: 'budget',
+  });
+  expect(f.calls).toHaveLength(cap);
+}
+// The first read spends half the share; the second spends `second` more bytes.
+async function secondReadAfterHalfShare(total: number, second: number) {
+  const half = Math.floor(total / 2);
+  const f = versionedReader(
+    { maxResponseBytes: total, maxTotalBytes: total, maxRetainedBytes: 2 * total },
+    (version) => sizedResponse(version, version === '1.2.3' ? half : second),
+  );
+  expect(await f.read(versionRequest('1.2.3'))).toMatchObject({ kind: 'metadata' });
+  return f.read(versionRequest('1.2.4'));
+}
+async function expectByteShare(total: number) {
+  const half = Math.floor(total / 2);
+  expect(await secondReadAfterHalfShare(total, total - half)).toMatchObject({ kind: 'metadata' });
+  expect(await secondReadAfterHalfShare(total, total - half + 1)).toMatchObject({
+    kind: 'unavailable',
+    reason: 'budget',
+  });
+}
+
+test('a response exactly at the envelope per-response cap reads; one byte more fails only that read', async () => {
+  const cap = limit('evidence.envelope.maxResponseBytes');
+  const f = versionedReader(
+    { maxResponseBytes: cap, maxTotalBytes: cap * 4, maxRetainedBytes: cap * 4 },
+    (version) => sizedResponse(version, version === '1.2.4' ? cap + 1 : cap),
+  );
+  expect(await f.read(versionRequest('1.2.3'))).toMatchObject({ kind: 'metadata' });
+  expect(await f.read(versionRequest('1.2.4'))).toMatchObject({
+    kind: 'unavailable',
+    reason: 'budget',
+  });
+  expect(await f.read(versionRequest('1.2.5'))).toMatchObject({ kind: 'metadata' });
+});
+
+test('the registry request share allows exactly its count and refuses the next read unsent', async () => {
+  await expectRequestShare(limit('evidence.allocation.registry.maxRequests'));
+});
+
+test('the registry byte share allows exactly its total and refuses the read that exceeds it', async () => {
+  await expectByteShare(limit('evidence.allocation.registry.maxTotalBytes'));
+});
+
+test('the signals registry request share allows exactly its count and refuses the next read unsent', async () => {
+  await expectRequestShare(limit('evidence.allocation.signals.readers.registry.maxRequests'));
+});
+
+test('the signals registry byte share allows exactly its total and refuses the read that exceeds it', async () => {
+  await expectByteShare(limit('evidence.allocation.signals.readers.registry.maxTotalBytes'));
+});
+
+test('registry JSON entries at the cap parse and one more entry is a budget failure', async () => {
+  const cap = limit('w2.registry.maxJsonEntries');
+  // Root has six values (_id, name, version, dist, scripts, pad), dist and scripts one each,
+  // and the pad array one per element.
+  const withEntries = (entries: number) => document({ pad: Array(entries - 8).fill(0) });
+  const roomy = {
+    maxJsonEntries: cap,
+    maxResponseBytes: 1 << 20,
+    maxTotalBytes: 1 << 20,
+    maxRetainedBytes: 1 << 20,
+  };
+  expect(await reader(withEntries(cap), roomy).read(request)).toMatchObject({ kind: 'metadata' });
+  expect(await reader(withEntries(cap + 1), roomy).read(request)).toMatchObject({
+    kind: 'unavailable',
+    reason: 'budget',
+  });
+});
+
+test('registry JSON nesting at the depth cap parses and one level deeper is a budget failure', async () => {
+  const cap = limit('w2.registry.maxJsonDepth');
+  // The root is depth 1, so a chain of `levels` empty objects under pad reaches depth 1 + levels.
+  const chain = (levels: number) => {
+    let value: Record<string, unknown> = {};
+    for (let i = 1; i < levels; i++) value = { x: value };
+    return value;
+  };
+  expect(await reader(document({ pad: chain(cap - 1) })).read(request)).toMatchObject({
+    kind: 'metadata',
+  });
+  expect(await reader(document({ pad: chain(cap) })).read(request)).toMatchObject({
+    kind: 'unavailable',
+    reason: 'budget',
+  });
+});
+
+test('an integrity string at the code-unit cap binds and one more code unit is malformed', async () => {
+  const cap = limit('npm.maxIntegrityCodeUnits');
+  // Whitespace-separated hash tokens are trimmed and split, so padding with spaces keeps the hash.
+  const padded = (length: number) => integrity.padEnd(length);
+  expect(
+    await reader(document({ dist: { integrity: padded(cap) } })).read({
+      ...request,
+      integrity: padded(cap),
+    }),
+  ).toMatchObject({ kind: 'metadata' });
+  expect(await reader().read({ ...request, integrity: padded(cap + 1) })).toMatchObject({
+    kind: 'unavailable',
+    reason: 'malformed',
   });
 });
 
@@ -454,4 +597,59 @@ test('declarations retain empty evidence and acquire no lifecycle claims', () =>
     evidence: {},
   };
   expect(interpretNpmLifecycle(change, {})).toEqual({ change, sources: [], findings: [] });
+});
+
+describe('run-scoped research cache', () => {
+  const other = { ...request, name: '@fixture/other', version: '2.0.0' };
+  const otherDocument = document({
+    _id: '@fixture/other@2.0.0',
+    name: other.name,
+    version: other.version,
+  });
+  const json = (value: unknown) =>
+    new Response(JSON.stringify(value), { headers: { 'content-type': 'application/json' } });
+  const setup = () => {
+    const cache = createResearchCache({ maxEntryBytes: 1 << 20, maxTotalBytes: 1 << 22 });
+    const fetch = vi.fn(async (url: string) =>
+      json(url.includes('other') ? otherDocument : document()),
+    );
+    const open = (overrides = {}) => {
+      const created = createNpmRegistryReader(
+        { ...limits, ...overrides },
+        { now: () => 0, fetch, cache },
+      );
+      if (created.kind !== 'ready') throw new Error('expected reader');
+      return created;
+    };
+    return { fetch, open };
+  };
+  const size = Buffer.byteLength(JSON.stringify(document()));
+
+  test('a cache hit costs no request', async () => {
+    const { fetch, open } = setup();
+    expect((await open().read(request)).kind).toBe('metadata');
+    const b = open({ maxRequests: 1 });
+    expect((await b.read(other)).kind).toBe('metadata');
+    expect((await b.read(request)).kind).toBe('metadata');
+    expect(fetch).toHaveBeenCalledTimes(2);
+  });
+
+  test('a cache hit debits no total bytes', async () => {
+    const { open } = setup();
+    await open().read(request);
+    const cap = Math.max(size, Buffer.byteLength(JSON.stringify(otherDocument))) + 1;
+    const b = open({ maxResponseBytes: cap, maxTotalBytes: cap });
+    expect((await b.read(other)).kind).toBe('metadata');
+    expect((await b.read(request)).kind).toBe('metadata');
+  });
+
+  test('a cached response still respects the per-response cap', async () => {
+    const { fetch, open } = setup();
+    await open().read(request);
+    expect(await open({ maxResponseBytes: size - 1 }).read(request)).toEqual({
+      kind: 'unavailable',
+      reason: 'budget',
+    });
+    expect(fetch).toHaveBeenCalledTimes(1);
+  });
 });

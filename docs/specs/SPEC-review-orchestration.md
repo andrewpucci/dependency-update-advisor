@@ -193,10 +193,10 @@ receives `process.env` or a general fetch function.
    exhausts a share and ends incomplete with a `budget` reason; the 240,000 ms
    deadline, not the request count, bounds a very large group.
 
-   The draft [evidence coverage spec](SPEC-evidence-coverage.md) proposes
-   replacing these fixed research shares with shares scaled to the change and
-   capped by measured ceilings. Until it is approved and implemented, the
-   table above applies.
+   The [evidence coverage spec](SPEC-evidence-coverage.md), approved for
+   planning 2026-11-16, replaces these fixed research shares with shares
+   scaled to the change and capped by measured ceilings. Until it is
+   implemented and its fitted values are approved, the table above applies.
 
    The snapshot share covers C1's 128 excerpt files with their directories.
    Freshness reads are reserved separately so a heavy snapshot cannot prevent
@@ -989,18 +989,46 @@ origin/main`, on the exact revision.
   text; derive a reason from untrusted data; weaken fail-closed behavior; or
   start publication or production-claim implementation.
 
-## Comment Capacity Amendment Companion (Draft)
+## Comment Capacity Amendment Companion
 
 [#348](https://github.com/andrewpucci/dependency-update-advisor/issues/348)
-proposes, in the
-[comment contract](SPEC-comment-experience.md#comment-capacity-amendment),
-merging repeated deterministic findings and evidence gaps so that an ordinary
-lockfile fan-out fits the comment limit. Until that amendment is approved and
-implemented, a renderer size rejection remains `render-size`. If implemented,
+specifies, in the
+[comment contract](SPEC-comment-experience.md#comment-capacity-amendment)
+(approved for planning, 2026-11-16), merging repeated deterministic findings
+and evidence gaps so that an ordinary lockfile fan-out fits the comment limit.
+Until that amendment is implemented, a renderer size rejection remains
+`render-size`. If implemented,
 `render-size` remains the fail-closed `internal-failure` reason, with the
 `brief`/`budget` gap, only when the merged required content cannot fit. It
 does not change any W2 outcome, reason, trace, or stderr form, and it does not
 authorize publication.
+
+## Amendment 6: OSV Query in the No-Write Guard
+
+**Status: approved for execution, 2026-11-20.** The user explicitly approved
+this amendment after the shipped bundle's no-write guard flagged the OSV query
+added by the S1
+[Package Name Form Amendment](SPEC-advisory-lookup.md#package-name-form-amendment).
+Tracked in [#398](https://github.com/andrewpucci/dependency-update-advisor/issues/398)
+with that change. Effort tier: L.
+
+It amends Amendment 4's named mutation "loosening the shipped-bundle no-write
+guard beyond the one model endpoint". OSV's query endpoint accepts only POST,
+so a PyPI reviewed-vulnerability lookup is a POST that reads data and writes
+nothing.
+
+1. The guard exempts exactly two requests: the one model call, as before, and
+   a `POST` to `https://api.osv.dev/v1/query` with no `authorization` header.
+2. Any other non-GET request stays a live write, including a different OSV
+   path, an OSV request that carries any credential, a PUT to the OSV URL, and
+   every status or comment write. GET credential and path rules are unchanged.
+3. The named mutation now reads: loosening the guard beyond the model endpoint
+   and the unauthenticated OSV query. Each of these mutations must fail the
+   guard's unit test: exempting every `api.osv.dev` URL, exempting an OSV
+   query that carries a credential, and exempting any method other than POST
+   to the OSV URL.
+
+This changes no W2 outcome, reason, trace, stderr form, or publication rule.
 
 ## Testing Strategy
 

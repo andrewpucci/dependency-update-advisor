@@ -1,3 +1,4 @@
+import { HTTP_STATUS } from './format.js';
 import {
   dispatchFailure,
   positiveId,
@@ -150,7 +151,7 @@ function requestFor(input: Input, binding: ReviewBinding): StatusRequest {
 }
 
 function acknowledged(value: unknown, request: StatusRequest): StatusReceipt | null {
-  if (!record(value) || value.status !== 201 || !record(value.data)) return null;
+  if (!record(value) || value.status !== HTTP_STATUS.created || !record(value.data)) return null;
   const data = value.data;
   if (
     !positiveId(data.id) ||
