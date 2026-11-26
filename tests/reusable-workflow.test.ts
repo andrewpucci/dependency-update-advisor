@@ -119,7 +119,7 @@ test('R5 uses the exact privileged review job shape', () => {
         steps: [
           {
             id: 'app-token',
-            uses: 'actions/create-github-app-token@64ab729a6294000f5aa4a4bc0b73d1f32bc45510',
+            uses: 'actions/create-github-app-token@f418cff399f7aef4c2f0ad47e25ca7a6abbdd6fc',
             with: {
               'client-id': '${{ secrets.review_app_client_id }}',
               'private-key': '${{ secrets.review_app_private_key }}',
