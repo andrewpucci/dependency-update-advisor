@@ -1,7 +1,8 @@
 import { afterEach, expect, test, vi } from 'vite-plus/test';
 import { upstreamScenario } from '../tests/parity/upstream.js';
 import { runResearch } from './research.js';
-import { reconcilePacket } from './revalidation.js';
+import { reconcilePacket, researchPacketBytes } from './revalidation.js';
+import { limit } from './limits.js';
 import type { PacketResult } from './schema.js';
 
 type Fixture = Awaited<ReturnType<typeof upstreamScenario>>;
@@ -271,4 +272,31 @@ test('an unattributable failure reports every member malformed', async () => {
   }
   expect(result.packet.sources).toEqual(packet.sources);
   expect(result.packet.findings).toEqual(packet.findings);
+});
+
+const bytes = (value: unknown) => Buffer.byteLength(JSON.stringify(value));
+const packetPart = ({ changes, sources, findings }: Packet) =>
+  bytes({ changes, sources, findings });
+
+test('the research byte bound leaves exactly the room the packet takes outside changes, sources, and findings', async () => {
+  const { fixture, packet, enriched } = await enrichedResult();
+  const bound = researchPacketBytes(packet);
+  // Mutation "drop the non-change part from the bound": the bound would be the whole limit.
+  expect(bound).toBeLessThan(limit('packet.bytes') - 1000);
+  // Whatever research's lists hold, a part of exactly `bound` bytes makes a packet of exactly
+  // the limit once research records a retry time, and one 18 bytes smaller while it stays null.
+  for (const retryAfter of ['2026-11-21T00:01:00Z', null]) {
+    const reconciled = reconcilePacket({
+      collected: packet,
+      enriched: { ...enrichedInput(enriched), retryAfter },
+      trusted: fixture.expected,
+      priority: [],
+    });
+    expect(reconciled.reasons).toEqual([]);
+    const slack = retryAfter === null ? bytes(retryAfter) - bytes('2026-11-21T00:01:00Z') : 0;
+    expect(packetPart(reconciled.packet)).not.toBe(packetPart(packet));
+    expect(bytes(reconciled.packet) - packetPart(reconciled.packet) + bound).toBe(
+      limit('packet.bytes') + slack,
+    );
+  }
 });

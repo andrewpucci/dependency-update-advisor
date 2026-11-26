@@ -10,6 +10,7 @@ import type { Finding } from '../policy.js';
 import { advisoryCheck, AdvisoryFailure } from './advisory-read.js';
 import { limit } from '../limits.js';
 import { UpstreamFailure } from './upstream-read.js';
+import { enrichmentBytes, packetBytesOf } from './common.js';
 import type { Observation, PolicySignalInput, SignalEnrichment } from './policy-signals.js';
 
 export function observe<T>(read: () => T): Observation<T> {
@@ -179,29 +180,13 @@ const OPTIONAL_CATEGORIES = [
  * data, and members are bounded by `PACKET_LIMITS.changes`.
  */
 export const SIGNAL_ATTEMPTS_PER_MEMBER = limit('signals.attemptsPerMember');
-const PACKET_FIELDS = new Set(['changes', 'sources', 'findings']);
+export { enrichmentBytes };
 /**
- * Serialized sizes of the enrichment, each part serialized once: `packet` is what it adds to the
- * review packet (changes, sources, findings), and `retained` is the whole output. Attempts are
- * diagnostics outside the packet, so they count only toward retained bytes. Both equal
- * `Buffer.byteLength(JSON.stringify(...))` of the corresponding object.
+ * The packet part is checked against the research byte bound, which leaves room for what the
+ * packet carries outside changes, sources, and findings; attempts count only toward retained bytes.
  */
-export function enrichmentBytes(output: SignalEnrichment): { packet: number; retained: number } {
-  const object = (sizes: number[]) =>
-    2 + sizes.reduce((total, size) => total + size, 0) + Math.max(sizes.length - 1, 0);
-  const members = Object.entries(output).flatMap(([key, value]) => {
-    const json = JSON.stringify(value);
-    return json === undefined
-      ? []
-      : [{ key, size: Buffer.byteLength(JSON.stringify(key)) + 1 + Buffer.byteLength(json) }];
-  });
-  return {
-    packet: object(members.filter((m) => PACKET_FIELDS.has(m.key)).map((m) => m.size)),
-    retained: object(members.map((m) => m.size)),
-  };
-}
 function fitsBytes(input: PolicySignalInput, bytes: { packet: number; retained: number }) {
-  return bytes.packet <= PACKET_LIMITS.bytes && bytes.retained <= input.limits.maxRetainedBytes;
+  return bytes.packet <= packetBytesOf(input) && bytes.retained <= input.limits.maxRetainedBytes;
 }
 export function signalBounds(input: PolicySignalInput, output: SignalEnrichment) {
   advisoryCheck(

@@ -103,7 +103,11 @@ retained bytes. Package count overstates the first and ignores the second.
    having run.
 5. Retained evidence stays within the review packet limits. When retention
    would exceed them, members are kept in the priority order of section 3.5,
-   and members beyond the limit become `unavailable` with `budget`.
+   and members beyond the limit become `unavailable` with `budget`. Each
+   stage measures its changes, sources, and findings against the packet byte
+   limit less what the packet holds outside them. Diagnostics that never
+   enter the packet, such as attempt and lookup records, count only toward
+   the research retained-byte limit.
 6. A reader requests list pages small enough to fit the per-response cap.
    Raising the cap is not the fix.
 

@@ -12790,6 +12790,46 @@ function longestFittingPrefix(length, prefix, fits) {
 	}
 	return prefix(low);
 }
+const PACKET_FIELDS = /* @__PURE__ */ new Set([
+	"changes",
+	"sources",
+	"findings"
+]);
+/**
+* Serialized sizes of a stage's output, each part serialized once: `packet` is what it adds to the
+* review packet (changes, sources, findings), and `retained` is the whole output. Everything else
+* (attempts, lookups, identities, binding) is a diagnostic outside the packet, so it counts only
+* toward retained bytes. Both equal `Buffer.byteLength(JSON.stringify(...))` of the corresponding
+* object.
+*/
+function enrichmentBytes(output) {
+	const object = (sizes) => 2 + sizes.reduce((total, size) => total + size, 0) + Math.max(sizes.length - 1, 0);
+	const members = Object.entries(output).flatMap(([key, value]) => {
+		const json = JSON.stringify(value);
+		return json === void 0 ? [] : [{
+			key,
+			size: Buffer.byteLength(JSON.stringify(key)) + 1 + Buffer.byteLength(json)
+		}];
+	});
+	return {
+		packet: object(members.filter((m) => PACKET_FIELDS.has(m.key)).map((m) => m.size)),
+		retained: object(members.map((m) => m.size))
+	};
+}
+/**
+* Whether a stage input's research byte bound is valid: absent, or a positive whole number of
+* bytes no larger than the packet limit.
+*/
+function validPacketBytes(value) {
+	return value === void 0 || Number.isSafeInteger(value) && Number(value) > 0 && Number(value) <= PACKET_LIMITS.bytes;
+}
+/**
+* The bytes a stage's changes, sources, and findings may take: the input's research byte bound,
+* or the whole packet limit for a caller whose packet holds nothing else.
+*/
+function packetBytesOf(input) {
+	return input.packetBytes ?? PACKET_LIMITS.bytes;
+}
 
 // src/evidence/bounded-request.ts
 function boundedLimits(value) {
@@ -16345,33 +16385,12 @@ const OPTIONAL_CATEGORIES = [
 * data, and members are bounded by `PACKET_LIMITS.changes`.
 */
 const SIGNAL_ATTEMPTS_PER_MEMBER = limit("signals.attemptsPerMember");
-const PACKET_FIELDS = /* @__PURE__ */ new Set([
-	"changes",
-	"sources",
-	"findings"
-]);
 /**
-* Serialized sizes of the enrichment, each part serialized once: `packet` is what it adds to the
-* review packet (changes, sources, findings), and `retained` is the whole output. Attempts are
-* diagnostics outside the packet, so they count only toward retained bytes. Both equal
-* `Buffer.byteLength(JSON.stringify(...))` of the corresponding object.
+* The packet part is checked against the research byte bound, which leaves room for what the
+* packet carries outside changes, sources, and findings; attempts count only toward retained bytes.
 */
-function enrichmentBytes(output) {
-	const object = (sizes) => 2 + sizes.reduce((total, size) => total + size, 0) + Math.max(sizes.length - 1, 0);
-	const members = Object.entries(output).flatMap(([key, value]) => {
-		const json = JSON.stringify(value);
-		return json === void 0 ? [] : [{
-			key,
-			size: Buffer.byteLength(JSON.stringify(key)) + 1 + Buffer.byteLength(json)
-		}];
-	});
-	return {
-		packet: object(members.filter((m) => PACKET_FIELDS.has(m.key)).map((m) => m.size)),
-		retained: object(members.map((m) => m.size))
-	};
-}
 function fitsBytes(input, bytes) {
-	return bytes.packet <= PACKET_LIMITS.bytes && bytes.retained <= input.limits.maxRetainedBytes;
+	return bytes.packet <= packetBytesOf(input) && bytes.retained <= input.limits.maxRetainedBytes;
 }
 function signalBounds(input, output) {
 	advisoryCheck(output.changes.every((c) => Object.values(c.evidence).every((e) => e.sourceIds.length <= PACKET_LIMITS.listEntries)), "budget");
@@ -20534,6 +20553,7 @@ function prepare(value, limits) {
 	requireUpstream(isPlainObject(cloned));
 	const input = cloned;
 	requireUpstream(isDeepStrictEqual(parseReviewBinding(input.binding), input.binding));
+	requireUpstream(validPacketBytes(input.packetBytes));
 	requireUpstream(Array.isArray(input.changes) && input.changes.length <= PACKET_LIMITS.changes);
 	requireUpstream(Array.isArray(input.sources) && input.sources.length <= PACKET_LIMITS.sources);
 	requireUpstream(Array.isArray(input.findings) && input.findings.length <= PACKET_LIMITS.findings);
@@ -20692,9 +20712,24 @@ function outputBytes(output, current) {
 		actionVersions: []
 	})) - 2 * (lists.length + 1) + arrayBytes(changes, current) + lists.reduce((total, list) => total + arrayBytes(list), 0);
 }
-function bounds(output, limits, current) {
+const PACKET_PART_SHELL = Buffer.byteLength(JSON.stringify({
+	changes: [],
+	sources: [],
+	findings: []
+}));
+/** Exactly `Buffer.byteLength(JSON.stringify({ changes, sources, findings }))`, the packet part. */
+function packetPartBytes(output, current) {
+	const lists = [output.sources, output.findings];
+	return PACKET_PART_SHELL - 2 * (lists.length + 1) + arrayBytes(output.changes, current) + lists.reduce((total, list) => total + arrayBytes(list), 0);
+}
+/**
+* The packet part fits the research byte bound, and the whole output, with the attempts,
+* identities, and mappings that never enter the packet, fits the retained-byte limit.
+*/
+function bounds(output, input, current) {
+	const { limits } = input;
 	requireUpstream(output.sources.length <= PACKET_LIMITS.sources && output.attempts.length <= limits.maxAttempts, "budget");
-	requireUpstream(outputBytes(output, current) <= Math.min(limits.maxRetainedBytes, PACKET_LIMITS.bytes), "budget");
+	requireUpstream(packetPartBytes(output, current) <= packetBytesOf(input) && outputBytes(output, current) <= limits.maxRetainedBytes, "budget");
 }
 function metadataAttempt(output, change, side, lookup, sourceIds) {
 	const instance = side === "base" ? change.from : change.to;
@@ -21062,7 +21097,7 @@ async function enrichChange(input, output, change, reader, pypiReader, index, ma
 		const result = await collectActionResearch(change, reader);
 		attachActionMappings(input, output, change, result.mappings);
 		attachUpstreamResearch(input, output, change, result.research);
-		bounds(output, input.limits, change);
+		bounds(output, input, change);
 		return;
 	}
 	mark(checkpoint(output, index));
@@ -21070,11 +21105,11 @@ async function enrichChange(input, output, change, reader, pypiReader, index, ma
 	for (const side of ["base", "head"]) {
 		const lookup = await metadata$2(input, output, change, side, reader, pypiReader);
 		if (lookup) lookups.set(side, lookup);
-		bounds(output, input.limits, change);
+		bounds(output, input, change);
 	}
 	mark(checkpoint(output, index));
 	await packageResearch(input, output, change, lookups, reader);
-	bounds(output, input.limits, change);
+	bounds(output, input, change);
 }
 /** Enrich exact inventory identities; caller retains inventory coverage and relationships separately. */
 async function enrichUpstream(value, dependencies) {
@@ -21103,7 +21138,7 @@ async function enrichUpstream(value, dependencies) {
 		actionVersions: []
 	};
 	try {
-		bounds(output, input.limits);
+		bounds(output, input);
 		for (let index = 0; index < output.changes.length; index++) {
 			const marks = [];
 			try {
@@ -21433,6 +21468,7 @@ function validateGaps(input) {
 }
 function validate(input) {
 	advisoryCheck(parseReviewBinding(input.binding));
+	advisoryCheck(validPacketBytes(input.packetBytes));
 	advisoryCheck(Array.isArray(input.changes) && input.changes.length <= PACKET_LIMITS.changes);
 	advisoryCheck(Array.isArray(input.sources) && input.sources.length <= PACKET_LIMITS.sources);
 	advisoryCheck(Array.isArray(input.findings) && input.findings.length <= PACKET_LIMITS.findings);
@@ -21599,8 +21635,14 @@ async function enrichAdvisories(value, dependencies) {
 		};
 	}
 }
+/**
+* The packet part (changes, sources, findings) fits the research byte bound, and the whole output,
+* with the lookups that never enter the packet, fits the retained-byte limit.
+*/
 function fits(output, input) {
-	return output.sources.length <= PACKET_LIMITS.sources && output.findings.length <= Math.min(PACKET_LIMITS.findings, input.findings.length + input.limits.maxFindings) && Buffer.byteLength(JSON.stringify(output)) <= Math.min(input.limits.maxRetainedBytes, PACKET_LIMITS.bytes);
+	if (output.sources.length > PACKET_LIMITS.sources || output.findings.length > Math.min(PACKET_LIMITS.findings, input.findings.length + input.limits.maxFindings)) return false;
+	const bytes = enrichmentBytes(output);
+	return bytes.packet <= packetBytesOf(input) && bytes.retained <= input.limits.maxRetainedBytes;
 }
 
 // src/evidence/policy-signals-malware.ts
@@ -32984,6 +33026,30 @@ function withResearch(change, evidence) {
 		}
 	};
 }
+/** A whole-second UTC retry time; every such value serializes to the same number of bytes. */
+const RETRY_AFTER_SHAPE = "1970-01-01T00:00:00Z";
+/**
+* The research byte bound: the bytes the enriched changes, sources, and findings may take so the
+* packet `reconcilePacket` builds stays within `packet.bytes`. It is the packet limit less the
+* collected packet's serialized members other than those three (binding, coverage, context,
+* relationships, reachability, retryAfter, and the rest), which reconciliation copies unchanged.
+* A JSON object's size is the sum of its members' sizes plus separators, so that difference does
+* not depend on the three lists' contents. `retryAfter` is counted as a retry time, since
+* research may set one where the collected packet had null.
+*/
+function researchPacketBytes(collected) {
+	const { changes, sources, findings } = collected;
+	const whole = Buffer.byteLength(JSON.stringify({
+		...collected,
+		retryAfter: RETRY_AFTER_SHAPE
+	}));
+	const part = Buffer.byteLength(JSON.stringify({
+		changes,
+		sources,
+		findings
+	}));
+	return PACKET_LIMITS.bytes - (whole - part);
+}
 /**
 * Keeps every member's research that validates, in priority order within packet limits (coverage
 * §1.4, §1.5). Members are attributed one at a time; an unattributable failure falls back to the
@@ -33192,6 +33258,7 @@ async function enrichUpstreamStage(input, dependencies, readers, progress, fail,
 		sources: progress.sources,
 		findings: progress.findings,
 		limits: limitsForStage,
+		packetBytes: researchPacketBytes(input.packet),
 		...input.npmInventory ? { npmInventory: input.npmInventory } : {}
 	}, {
 		reader: opened.reader,
@@ -33218,6 +33285,7 @@ async function enrichAdvisoryStage(input, dependencies, readers, progress, fail,
 		actionVersions: progress.actionVersions,
 		identityGaps: progress.identityGaps,
 		limits: limitsForStage,
+		packetBytes: researchPacketBytes(input.packet),
 		...input.comparison?.kind === "available" ? { comparisons: [input.comparison] } : {}
 	}, { reader: opened });
 	if (advisories.kind !== "enriched") return fail("advisories", failure$1(advisories));
@@ -33243,7 +33311,8 @@ async function enrichSignalsStage(input, dependencies, readers, progress, fail, 
 		actionVersions: progress.actionVersions,
 		identityGaps: progress.identityGaps,
 		evaluationTime: input.evaluationTime,
-		limits: limitsForStage
+		limits: limitsForStage,
+		packetBytes: researchPacketBytes(input.packet)
 	}, {
 		malwareReader: malware,
 		npmReader: registry,

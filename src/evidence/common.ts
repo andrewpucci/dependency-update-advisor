@@ -1,5 +1,6 @@
 import { types } from 'node:util';
 import { limit } from '../limits.js';
+import { PACKET_LIMITS } from '../schema.js';
 
 /** Plain data only: no proxy, foreign prototype, accessor, symbol, or prototype-shaped key. */
 export function isPlainObject(value: unknown): value is Record<string, unknown> {
@@ -53,4 +54,43 @@ export function longestFittingPrefix<T>(
     else high = mid - 1;
   }
   return prefix(low);
+}
+const PACKET_FIELDS = new Set(['changes', 'sources', 'findings']);
+/**
+ * Serialized sizes of a stage's output, each part serialized once: `packet` is what it adds to the
+ * review packet (changes, sources, findings), and `retained` is the whole output. Everything else
+ * (attempts, lookups, identities, binding) is a diagnostic outside the packet, so it counts only
+ * toward retained bytes. Both equal `Buffer.byteLength(JSON.stringify(...))` of the corresponding
+ * object.
+ */
+export function enrichmentBytes(output: object): { packet: number; retained: number } {
+  const object = (sizes: number[]) =>
+    2 + sizes.reduce((total, size) => total + size, 0) + Math.max(sizes.length - 1, 0);
+  const members = Object.entries(output).flatMap(([key, value]) => {
+    const json = JSON.stringify(value);
+    return json === undefined
+      ? []
+      : [{ key, size: Buffer.byteLength(JSON.stringify(key)) + 1 + Buffer.byteLength(json) }];
+  });
+  return {
+    packet: object(members.filter((m) => PACKET_FIELDS.has(m.key)).map((m) => m.size)),
+    retained: object(members.map((m) => m.size)),
+  };
+}
+/**
+ * Whether a stage input's research byte bound is valid: absent, or a positive whole number of
+ * bytes no larger than the packet limit.
+ */
+export function validPacketBytes(value: unknown): boolean {
+  return (
+    value === undefined ||
+    (Number.isSafeInteger(value) && Number(value) > 0 && Number(value) <= PACKET_LIMITS.bytes)
+  );
+}
+/**
+ * The bytes a stage's changes, sources, and findings may take: the input's research byte bound,
+ * or the whole packet limit for a caller whose packet holds nothing else.
+ */
+export function packetBytesOf(input: { packetBytes?: number }): number {
+  return input.packetBytes ?? PACKET_LIMITS.bytes;
 }

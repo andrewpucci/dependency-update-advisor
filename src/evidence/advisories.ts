@@ -17,7 +17,14 @@ import {
   type EvidenceReason,
 } from '../schema.js';
 import type { Finding } from '../policy.js';
-import { freeze, isPlainObject, isEvidencePath } from './common.js';
+import {
+  enrichmentBytes,
+  freeze,
+  isPlainObject,
+  isEvidencePath,
+  packetBytesOf,
+  validPacketBytes,
+} from './common.js';
 import { limit } from '../limits.js';
 import {
   advisoryCheck,
@@ -64,6 +71,11 @@ export type AdvisoryInput = Readonly<{
   actionVersions?: readonly ActionVersionMapping[];
   /** Sides whose identity proof upstream tried and lost, with the stop reason their lookups carry. */
   identityGaps?: readonly IdentityGap[];
+  /**
+   * The bytes changes, sources, and findings may take in the review packet: the packet limit less
+   * what the packet carries outside them. Absent, the whole packet limit.
+   */
+  packetBytes?: number;
 }>;
 export type MemberAdvisoryLookup = Readonly<{
   memberId: string;
@@ -513,6 +525,7 @@ function validateGaps(input: AdvisoryInput) {
 }
 function validate(input: AdvisoryInput) {
   advisoryCheck(parseReviewBinding(input.binding));
+  advisoryCheck(validPacketBytes(input.packetBytes));
   advisoryCheck(Array.isArray(input.changes) && input.changes.length <= PACKET_LIMITS.changes);
   advisoryCheck(Array.isArray(input.sources) && input.sources.length <= PACKET_LIMITS.sources);
   advisoryCheck(Array.isArray(input.findings) && input.findings.length <= PACKET_LIMITS.findings);
@@ -716,12 +729,17 @@ export async function enrichAdvisories(
     };
   }
 }
+/**
+ * The packet part (changes, sources, findings) fits the research byte bound, and the whole output,
+ * with the lookups that never enter the packet, fits the retained-byte limit.
+ */
 function fits(output: AdvisoryEnrichment, input: AdvisoryInput) {
-  return (
-    output.sources.length <= PACKET_LIMITS.sources &&
-    output.findings.length <=
-      Math.min(PACKET_LIMITS.findings, input.findings.length + input.limits.maxFindings) &&
-    Buffer.byteLength(JSON.stringify(output)) <=
-      Math.min(input.limits.maxRetainedBytes, PACKET_LIMITS.bytes)
-  );
+  if (
+    output.sources.length > PACKET_LIMITS.sources ||
+    output.findings.length >
+      Math.min(PACKET_LIMITS.findings, input.findings.length + input.limits.maxFindings)
+  )
+    return false;
+  const bytes = enrichmentBytes(output);
+  return bytes.packet <= packetBytesOf(input) && bytes.retained <= input.limits.maxRetainedBytes;
 }

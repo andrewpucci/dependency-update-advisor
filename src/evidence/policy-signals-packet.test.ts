@@ -335,3 +335,55 @@ test('a record a batch attributes to a member below the cut leaves it at budget,
     reader.close();
   }
 });
+
+test('signals keep every member at a research byte bound equal to their packet bytes and cut one byte under it', async () => {
+  const input = await signalInput();
+  const reader = emptyMalware(input.limits);
+  try {
+    const full = await enrichPolicySignals(input, { malwareReader: reader });
+    if (full.kind !== 'enriched') throw new Error(JSON.stringify(full));
+    const bound = packetBytes(full);
+    // The attempts never enter the packet, so the whole output is larger than the bound.
+    // Mutation "count attempts against the bound": the at-bound run would cut a member.
+    expect(Buffer.byteLength(JSON.stringify(full))).toBeGreaterThan(bound);
+    const at = await enrichPolicySignals(
+      { ...input, packetBytes: bound },
+      { malwareReader: reader },
+    );
+    expect(at).toEqual(full);
+    const under = await enrichPolicySignals(
+      { ...input, packetBytes: bound - 1 },
+      { malwareReader: reader },
+    );
+    if (under.kind !== 'enriched') throw new Error(JSON.stringify(under));
+    expect(packetBytes(under)).toBeLessThanOrEqual(bound - 1);
+    const budgeted = under.changes.filter(
+      (c) => !('basis' in c) && c.evidence.trust?.reasons.includes('budget'),
+    );
+    expect(budgeted.length).toBeGreaterThan(0);
+    // The cut takes the lowest-priority member's optional signals, never its malware.
+    const members = under.changes.filter((c) => !('basis' in c));
+    expect(members.at(-1)!.evidence.trust?.reasons).toEqual(['budget']);
+    expect(members.every((c) => !c.evidence.malware.reasons.includes('budget'))).toBe(true);
+  } finally {
+    reader.close();
+  }
+});
+
+test.each([0, -1, 1.5, '1', Infinity])(
+  'signals refuse a research byte bound of %s',
+  async (bound) => {
+    const input = await signalInput();
+    const reader = emptyMalware(input.limits);
+    try {
+      expect(
+        await enrichPolicySignals(
+          { ...input, packetBytes: bound as number },
+          { malwareReader: reader },
+        ),
+      ).toEqual({ kind: 'invalid' });
+    } finally {
+      reader.close();
+    }
+  },
+);

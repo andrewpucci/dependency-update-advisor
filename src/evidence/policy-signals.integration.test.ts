@@ -2,6 +2,7 @@ import { expect, test } from 'vite-plus/test';
 import { policySignalScenario } from '../../tests/parity/policy-signals.js';
 import { PACKET_LIMITS } from '../schema.js';
 import { limit } from '../limits.js';
+import { researchOrder } from '../research.js';
 
 test.each([
   'clean',
@@ -19,8 +20,9 @@ test.each([
   expect(r.packet.ok, JSON.stringify(r.packet)).toBe(true);
   if (!r.packet.ok || !r.policy.ok) throw new Error('policy handoff');
   const npm = r.result.changes.filter((c) => c.ecosystem === 'npm' && !('basis' in c));
+  // Signals keeps the research order it is given (coverage §3.5).
   expect(npm.map((c) => c.id)).toEqual(
-    r.fixture.input.changes
+    researchOrder(r.fixture.input.changes, r.fixture.npm)
       .filter((c) => c.ecosystem === 'npm' && !('basis' in c))
       .map((c) => c.id),
   );

@@ -21,6 +21,7 @@ import { limit } from './limits.js';
 import type { PacketChange } from './schema.js';
 import * as schemaModule from './schema.js';
 import { validateReviewPacket } from './schema.js';
+import { researchPacketBytes } from './revalidation.js';
 
 vi.mock('./evidence/advisories.js', async (original) => {
   const actual = await original<typeof import('./evidence/advisories.js')>();
@@ -178,6 +179,24 @@ test('feeds upstream proofs to advisory lookup and signals, and returns a revali
     expect(kinds.has(kind as never)).toBe(true);
   expect(result.upstreamAttempts.length).toBeGreaterThan(0);
   expect(result.signalAttempts.length).toBeGreaterThan(0);
+});
+
+test('hands every stage the research byte bound of the collected packet', async () => {
+  const { fixture, packet } = await scenario();
+  const stages = [
+    upstreamModule.enrichUpstream,
+    advisoryModule.enrichAdvisories,
+    policySignalsModule.enrichPolicySignals,
+  ].map((stage) => vi.mocked(stage));
+  for (const stage of stages) stage.mockClear();
+  const result = await runResearch(base(fixture, packet));
+  expect(result.kind).toBe('ready');
+  const bound = researchPacketBytes(packet);
+  expect(bound).toBeLessThan(limit('packet.bytes'));
+  for (const stage of stages) {
+    expect(stage).toHaveBeenCalledTimes(1);
+    expect(stage.mock.calls[0][0]).toMatchObject({ packetBytes: bound });
+  }
 });
 
 test('shares exact PyPI release reads between upstream evidence and policy signals', async () => {

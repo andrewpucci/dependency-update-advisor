@@ -30,7 +30,7 @@ import type { PacketChange, PacketExpected, PacketResult } from './schema.js';
 import type { ChangeEvidence, EvidenceReason, NpmSide } from './schema.js';
 import { DURATION_MS } from './format.js';
 import { limit } from './limits.js';
-import { isResearchPlaceholder, reconcilePacket } from './revalidation.js';
+import { isResearchPlaceholder, reconcilePacket, researchPacketBytes } from './revalidation.js';
 
 type Packet = Extract<PacketResult, { ok: true }>['packet'];
 /** A packet change as the packet exposes it, which is readonly all the way down. */
@@ -224,6 +224,7 @@ async function enrichUpstreamStage(
       sources: progress.sources,
       findings: progress.findings,
       limits: limitsForStage,
+      packetBytes: researchPacketBytes(input.packet),
       ...(input.npmInventory ? { npmInventory: input.npmInventory } : {}),
     },
     { reader: opened.reader, ...(pypiReader ? { pypiReader } : {}) },
@@ -258,6 +259,7 @@ async function enrichAdvisoryStage(
       actionVersions: progress.actionVersions,
       identityGaps: progress.identityGaps,
       limits: limitsForStage,
+      packetBytes: researchPacketBytes(input.packet),
       ...(input.comparison?.kind === 'available' ? { comparisons: [input.comparison] } : {}),
     } as never,
     { reader: opened },
@@ -304,6 +306,7 @@ async function enrichSignalsStage(
       identityGaps: progress.identityGaps,
       evaluationTime: input.evaluationTime,
       limits: limitsForStage,
+      packetBytes: researchPacketBytes(input.packet),
     },
     {
       malwareReader: malware,

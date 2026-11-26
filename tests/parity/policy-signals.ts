@@ -8,6 +8,7 @@ import { createNpmPublishTimeReader } from '../../src/evidence/npm-publish-times
 import { createPolicySignalReader } from '../../src/evidence/policy-signals-read.js';
 import { enrichPolicySignals } from '../../src/evidence/policy-signals.js';
 import { validateReviewPacket } from '../../src/schema.js';
+import { researchOrder } from '../../src/research.js';
 import { formDecisionUnits, evaluateUnitPolicy } from '../../src/units.js';
 import { parseReviewConfig } from '../../src/config.js';
 import { viaAdvisoryHttp } from './advisory-http.js';
@@ -256,6 +257,8 @@ export async function policySignalScenario(options: SignalScenarioOptions = {}) 
   const input = {
     ...fixture.input,
     ...advisories,
+    // Research hands signals its members in priority order (coverage §3.5), not packet order.
+    changes: researchOrder(advisories.changes, fixture.npm),
     publicIdentities: upstream.publicIdentities,
     actionVersions: upstream.actionVersions,
     evaluationTime,
@@ -278,11 +281,16 @@ export async function policySignalScenario(options: SignalScenarioOptions = {}) 
   actions.reader.close();
   if (artifacts?.kind === 'ready') artifacts.session.close();
   if (result.kind !== 'enriched') throw new Error(JSON.stringify(result));
+  // The packet keeps the collected order, as research restores it before revalidation.
+  const position = new Map(fixture.input.changes.map((change, index) => [change.id, index]));
+  const packetOrder = [...result.changes].sort(
+    (a, b) => (position.get(a.id) ?? 0) - (position.get(b.id) ?? 0),
+  );
   const packet = validateReviewPacket(
     {
       version: 1,
       ...fixture.expected,
-      changes: result.changes,
+      changes: packetOrder,
       sources: result.sources,
       findings: result.findings,
       coverage: fixture.coverage,

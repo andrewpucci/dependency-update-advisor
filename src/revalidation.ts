@@ -1,5 +1,6 @@
 import type { Finding } from './policy.js';
 import {
+  PACKET_LIMITS,
   validateReviewPacket,
   type ChangeEvidence,
   type EvidenceReason,
@@ -35,6 +36,25 @@ function withResearch(change: PacketChange, evidence: ChangeEvidence): PacketCha
     isResearchPlaceholder(change.evidence[key]),
   ).map((key) => [key, evidence] as const);
   return { ...change, evidence: { ...change.evidence, ...Object.fromEntries(categories) } };
+}
+
+/** A whole-second UTC retry time; every such value serializes to the same number of bytes. */
+const RETRY_AFTER_SHAPE = '1970-01-01T00:00:00Z';
+
+/**
+ * The research byte bound: the bytes the enriched changes, sources, and findings may take so the
+ * packet `reconcilePacket` builds stays within `packet.bytes`. It is the packet limit less the
+ * collected packet's serialized members other than those three (binding, coverage, context,
+ * relationships, reachability, retryAfter, and the rest), which reconciliation copies unchanged.
+ * A JSON object's size is the sum of its members' sizes plus separators, so that difference does
+ * not depend on the three lists' contents. `retryAfter` is counted as a retry time, since
+ * research may set one where the collected packet had null.
+ */
+export function researchPacketBytes(collected: Packet): number {
+  const { changes, sources, findings } = collected;
+  const whole = Buffer.byteLength(JSON.stringify({ ...collected, retryAfter: RETRY_AFTER_SHAPE }));
+  const part = Buffer.byteLength(JSON.stringify({ changes, sources, findings }));
+  return PACKET_LIMITS.bytes - (whole - part);
 }
 
 /**
