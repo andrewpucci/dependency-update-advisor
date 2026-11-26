@@ -214,7 +214,7 @@ to a size whose URL is over the cap is counted in `overUrlCap` as
 `npmBatchRejected` and does not make the run incomplete: `complete` needs
 every batch that fits compared. Any other failure, and a 414 to a URL within
 the cap (`npmBatchUrlTooLong`, `npmSweepBatchRejected`), is counted in
-`incomplete`. A
+`incomplete`; another 4xx to a size within the cap is `npmBatchRefused`. A
 REST status of both 200 and 404 for one tag is reported as `tagRestConflict`,
 which leaves the run incomplete rather than showing a batch gap. A
 run stopped by the request cap or a request error still writes what it

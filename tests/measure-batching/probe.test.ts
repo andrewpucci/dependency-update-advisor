@@ -839,6 +839,8 @@ test('a URL of exactly the cap is inside it and one byte longer is over it', asy
     expect(one?.urlLength, String(length)).toBe(length);
     expect(one?.overUrlCap, String(length)).toBe(overUrlCap);
     expect(report.incomplete.npmBatchUrlTooLong, String(length)).toBe(overUrlCap ? undefined : 1);
+    // A positive too long to fit alone leaves no batch at the maximum, so the run is incomplete.
+    if (overUrlCap) expect(report.incomplete.npmMaxFitIncomplete, String(length)).toBe(1);
   }
 });
 
