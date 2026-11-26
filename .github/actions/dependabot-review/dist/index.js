@@ -10300,23 +10300,53 @@ const DEFINITIONS = [
 		effect: "Each message is cut to this many code units; the run is still inconclusive and nothing else changes.",
 		test: "tests/probe-comment-limit/core.test.ts > an unclassified 422 keeps GitHub validation messages, capped, without links"
 	},
-	unjustified("probe.batching.maxRequests", 1500, "count", {
+	{
+		id: "probe.batching.maxRequests",
+		value: 1500,
+		unit: "count",
 		protects: "Bounds the REST and GraphQL requests one probe run sends with the user's token, so a run cannot spend that token's hourly quota.",
-		effect: "At the cap the next request is not sent; the probe stops, and its output says the budget ran out.",
-		note: "awaiting C2 (#389) review; a C1 targets file from PR #276 plus the seeds needs well under this",
-		test: "src/measurement/batching.test.ts > a request budget refuses the request past its cap"
-	}),
-	unjustified("probe.batching.maxBatchTargets", 1e3, "count", {
+		basis: {
+			kind: "external",
+			url: "https://docs.github.com/en/rest/using-the-rest-api/rate-limits-for-the-rest-api",
+			checked: "2026-11-26",
+			platformValue: 5e3,
+			margin: "3,500 requests, 70% of the hour's quota: the probe runs with the user's personal token, whose 5,000 REST requests per hour every other tool using that token shares. Each GraphQL query is one request here and costs at least one point of the separate 5,000-point GraphQL user quota (https://docs.github.com/en/graphql/overview/rate-limits-and-query-limits-for-the-graphql-api, checked 2026-11-26), so that quota keeps the same margin. A workflow GITHUB_TOKEN (1,000 per hour per repository) is not a supported token for this probe."
+		},
+		effect: "At the cap the next request is not sent; the probe stops, its report says the budget ran out and keeps every section it reached, and the verdict is incomplete.",
+		test: "tests/measure-batching/probe.test.ts > at the register request cap the next request is not sent and the report keeps what was measured"
+	},
+	{
+		id: "probe.batching.maxBatchTargets",
+		value: 1e3,
+		unit: "count",
 		protects: "Sets the largest versioned npm batch the probe sends, at the `affects` maximum GitHub documents, so the probe also tries one more to record what GitHub does above it.",
-		effect: "Batch sizes halve down from this value to one; the probe also sends one batch of this many plus one.",
-		note: "GitHub's global advisories docs allow up to 1,000 packages in `affects` (checked 2026-11-19, S1 Batched Lookup Amendment item 1)",
-		test: "src/measurement/batching.test.ts > batch sizes halve from the maximum down to one"
-	}),
-	unjustified("probe.batching.maxTagsPerQuery", 100, "count", {
+		basis: {
+			kind: "external",
+			url: "https://docs.github.com/en/rest/security-advisories/global-advisories",
+			checked: "2026-11-26",
+			platformValue: 1e3,
+			margin: "none: GitHub's documented `affects` maximum is the size the probe must check (S1 Batched Lookup Amendment, Verification), and the one batch above it records what GitHub does there"
+		},
+		effect: "Batch sizes halve down from this value to one, and the probe also sends one batch of this many plus one, which the verdict ignores. The sweep splits a larger group into batches of at most this many.",
+		test: "tests/measure-batching/probe.test.ts > npm batches reach the register maximum and one more, and the sweep splits a larger group at the maximum"
+	},
+	{
+		id: "probe.batching.maxTagsPerQuery",
+		value: 100,
+		unit: "count",
 		protects: "Bounds the tag candidates in one GraphQL existence query the probe sends, so a query stays far below GraphQL node and size limits.",
-		effect: "Query sizes halve down from this value to one.",
-		note: "awaiting C2 (#389) review; the candidates-per-query value itself is decided at C3, Ask-first",
-		test: "src/measurement/batching.test.ts > batch sizes halve from the maximum down to one"
+		basis: {
+			kind: "safety",
+			reason: "GitHub documents no alias, field, or query-size limit for GraphQL; its documented bounds are 500,000 nodes per call, a 10-second processing timeout, and per-hour and per-minute point limits (https://docs.github.com/en/graphql/overview/rate-limits-and-query-limits-for-the-graphql-api, checked 2026-11-26). Each candidate selects one repository, one ref, and its target, with no connection, so 100 candidates request a few hundred nodes, under a thousandth of the node limit, in one query of a few tens of KB. 100 is the top of the probe's measured sizes, not the production value, which C3 proposes Ask-first from this probe's cost and bytes per size. A size GitHub rejects is recorded as an unanswered query, never as a disagreement."
+		},
+		effect: "Agreement queries carry at most this many candidates each, and the cost sweep halves down from this value to one.",
+		test: "tests/measure-batching/probe.test.ts > tag queries carry at most the register maximum, and one more candidate starts a second query"
+	},
+	unjustified("probe.batching.testTimeoutMs", 9e5, "milliseconds", {
+		protects: "A hung GitHub request inside the batching probe would otherwise run indefinitely, since the probe sets no per-request timeout; the timeout ends that test.",
+		effect: "A run past the timeout fails under vitest's timeout behavior and writes no report; the measured part is lost.",
+		note: "kept at the demand measurement value it reused before #440; awaiting the C3 probe run (#390), whose duration would give a measured basis",
+		test: "none: the timeout of the manual batching probe, which needs a live token and is not part of npm test"
 	}),
 	...allScaledShareEntries()
 ];
@@ -12940,6 +12970,7 @@ const PIP_SEPARATORS = [
 	"_",
 	"."
 ];
+/** One GitHub global advisory query URL, with the reader's fixed filters. */
 function githubUrl(ecosystem, affects, kind, perPage = "100") {
 	const url = new URL("https://api.github.com/advisories");
 	url.search = new URLSearchParams({
@@ -12950,12 +12981,18 @@ function githubUrl(ecosystem, affects, kind, perPage = "100") {
 	}).toString();
 	return url.href;
 }
-/** GitHub stores package names as each advisory spells them; compare them the way the ecosystem does. */
-function canonical$3(ecosystem, name) {
+/**
+* GitHub stores package names as each advisory spells them; compare them the way the ecosystem
+* does (S1 Package Name Form Amendment item 6).
+*/
+function canonicalName(ecosystem, name) {
 	if (ecosystem === "pip") return name.toLowerCase().replace(/[-_.]+/gu, "-");
 	return ecosystem === "actions" ? name.toLowerCase() : name;
 }
-/** Every spelling of a normalized PyPI name with each separator replaced by `-`, `_`, or `.`. */
+/**
+* Every spelling of a normalized PyPI name with each separator replaced by `-`, `_`, or `.`.
+* Throws an `unsupported` AdvisoryFailure past the spelling ceiling.
+*/
 function pipSpellings(name) {
 	const parts = name.split("-");
 	advisoryCheck(PIP_SEPARATORS.length ** (parts.length - 1) <= SPELLING_CEILING, "unsupported");
@@ -12963,22 +13000,29 @@ function pipSpellings(name) {
 	for (const part of parts.slice(1)) spellings = spellings.flatMap((s) => PIP_SEPARATORS.map((sep) => s + sep + part));
 	return spellings;
 }
-/** Package-only discovery URLs, each with room left under the cap for a pagination cursor. */
-function discoveryUrls(t, kind) {
-	const spellings = t.ecosystem === "pip" ? pipSpellings(t.name) : [t.name];
+/** Every spelling discovery sends for a target name: all PyPI separator forms, or the name. */
+function discoverySpellings(ecosystem, name) {
+	return ecosystem === "pip" ? pipSpellings(name) : [name];
+}
+/**
+* Package-only discovery URLs over these spellings, each with room left under the cap for a
+* pagination cursor, and none for no spellings. Throws an `unsupported` AdvisoryFailure when one spelling alone cannot fit.
+*/
+function discoveryUrls(ecosystem, spellings, kind) {
+	if (!spellings.length) return [];
 	const limit = DISCOVERY_URL_CAP - DISCOVERY_CURSOR_HEADROOM;
 	const urls = [];
 	let chunk = [];
 	for (const spelling of spellings) {
-		if (githubUrl(t.ecosystem, [...chunk, spelling], kind, DISCOVERY_PAGE_SIZE).length <= limit) {
+		if (githubUrl(ecosystem, [...chunk, spelling], kind, DISCOVERY_PAGE_SIZE).length <= limit) {
 			chunk.push(spelling);
 			continue;
 		}
 		advisoryCheck(chunk.length > 0, "unsupported");
-		urls.push(githubUrl(t.ecosystem, chunk, kind, DISCOVERY_PAGE_SIZE));
+		urls.push(githubUrl(ecosystem, chunk, kind, DISCOVERY_PAGE_SIZE));
 		chunk = [spelling];
 	}
-	urls.push(githubUrl(t.ecosystem, chunk, kind, DISCOVERY_PAGE_SIZE));
+	urls.push(githubUrl(ecosystem, chunk, kind, DISCOVERY_PAGE_SIZE));
 	return urls;
 }
 /** An advisory may list one package several times; GitHub does not say which range matched. */
@@ -13004,8 +13048,8 @@ function severityOf(value) {
 	].includes(String(severity)) ? severity : void 0;
 }
 function packageEntries(value, t) {
-	const name = canonical$3(t.ecosystem, t.name);
-	return value.filter((v) => isPlainObject(v) && isPlainObject(v.package) && v.package.ecosystem === t.ecosystem && typeof v.package.name === "string" && canonical$3(t.ecosystem, v.package.name) === name);
+	const name = canonicalName(t.ecosystem, t.name);
+	return value.filter((v) => isPlainObject(v) && isPlainObject(v.package) && v.package.ecosystem === t.ecosystem && typeof v.package.name === "string" && canonicalName(t.ecosystem, v.package.name) === name);
 }
 function githubRecordBase(value, kind) {
 	advisoryCheck(isPlainObject(value) && GHSA_ID.test(String(value.ghsa_id)));
@@ -13346,7 +13390,7 @@ var Reader$1 = class {
 	/** The stored spellings of the target's package, from package-only queries. */
 	async discover(t) {
 		const forms = /* @__PURE__ */ new Set();
-		for (const url of discoveryUrls(t, this.kind)) {
+		for (const url of discoveryUrls(t.ecosystem, discoverySpellings(t.ecosystem, t.name), this.kind)) {
 			let found = this.discoveries.get(url);
 			if (!found) {
 				const names = [];
