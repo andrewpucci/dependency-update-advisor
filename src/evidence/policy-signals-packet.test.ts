@@ -262,3 +262,76 @@ test('the malware cut leaves optional signals to their own pass, below the cut t
     reader.close();
   }
 });
+
+test('a record a batch attributes to a member below the cut leaves it at budget, with no finding', async () => {
+  const input = await signalInput();
+  const members = input.changes.filter((c) => !('basis' in c));
+  const nameOf = (c: PacketChange) => ((c.to ?? c.from) as { name: string }).name;
+  // A proposed npm member with a name no other member shares, and a large npm member above it
+  // that is not the top-priority member, so the cut falls between them.
+  const below = members.findLast(
+    (c) =>
+      c.ecosystem === 'npm' && c.to && members.filter((m) => nameOf(m) === nameOf(c)).length === 1,
+  );
+  if (!below) throw new Error('fixture');
+  const index = members.findIndex(
+    (c, i) => i > 0 && i < members.indexOf(below) && c.ecosystem === 'npm',
+  );
+  expect(index).toBeGreaterThan(0);
+  const large = nameOf(members[index]);
+  const requests: URL[] = [];
+  const reader = createMalwareReader(input.limits, {
+    now: () => 0,
+    fetch: async (url) => {
+      const u = new URL(url);
+      requests.push(u);
+      const ecosystem = u.searchParams.get('ecosystem');
+      const listed = (u.searchParams.get('affects') ?? '').split(',');
+      // npm only: the large member's name may also be another ecosystem's package.
+      const has = (name: string) =>
+        ecosystem === 'npm' && listed.some((a) => a.startsWith(name + '@'));
+      const advisory = (id: string, name: string, summaryBytes: number) => ({
+        ghsa_id: id,
+        html_url: 'https://github.com/advisories/' + id,
+        summary: 'Synthetic malware ' + 'x'.repeat(summaryBytes),
+        type: 'malware',
+        severity: 'unknown',
+        withdrawn_at: null,
+        vulnerabilities: [{ package: { ecosystem, name }, vulnerable_version_range: '*' }],
+      });
+      return Response.json([
+        ...(has(large)
+          ? [...'kmnpqrstuvwx'].map((c) => advisory(`GHSA-${c.repeat(4)}-bbbb-cccc`, large, 1000))
+          : []),
+        ...(has(nameOf(below)) ? [advisory('GHSA-aaaa-bbbb-cccc', nameOf(below), 10)] : []),
+      ]);
+    },
+  });
+  if (reader.kind !== 'ready') throw new Error('reader');
+  const empty = emptyMalware(input.limits);
+  try {
+    const baseline = await enrichPolicySignals(input, { malwareReader: empty });
+    if (baseline.kind !== 'enriched') throw new Error(JSON.stringify(baseline));
+    // Room for every member's empty result, so the large member's records cross the limit.
+    cap.bytes = packetBytes(baseline);
+    const result = await enrichPolicySignals(input, { malwareReader: reader });
+    if (result.kind !== 'enriched') throw new Error(JSON.stringify(result));
+    // The batch settled every npm member: no npm singleton query was sent.
+    expect(
+      requests.some(
+        (u) =>
+          u.searchParams.get('ecosystem') === 'npm' && u.searchParams.get('per_page') === '100',
+      ),
+    ).toBe(false);
+    expect(result.changes.find((c) => c.id === below.id)!.evidence.malware).toEqual({
+      status: 'unavailable',
+      reasons: ['budget'],
+      sourceIds: [],
+    });
+    expect(result.findings.some((f) => f.kind === 'malware')).toBe(false);
+  } finally {
+    cap.bytes = Infinity;
+    empty.close();
+    reader.close();
+  }
+});
