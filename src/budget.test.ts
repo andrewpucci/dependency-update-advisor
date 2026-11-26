@@ -181,17 +181,20 @@ const fittedRequests = (shares: ReturnType<typeof researchShares>): FittedReques
 });
 
 test('the fitted values give a one-member change a smaller share than R1 #276', () => {
-  const { upstream, signals } = EVIDENCE_READ_ALLOCATION;
+  const { upstream, advisory, signals } = EVIDENCE_READ_ALLOCATION;
   const small = researchShares(ONE_UNITS);
   const large = researchShares(R276_UNITS);
-  // One direct member: 9 + 5.9 = 14.9, 3 + 3 = 6, 2 + 2 + 0.1 = 4.1, and 2 + 1.2 = 3.2, rounded up.
+  // One direct member: 9 + 5.9 = 14.9, 3 + 3 = 6, 2 + 2 + 1 = 5, and 2 + 1.2 = 3.2, rounded up.
   expect(fittedRequests(small)).toEqual({ upstream: 15, advisory: 6, malware: 5, publishTimes: 4 });
-  // 105 members, 2 direct: 9 + 5.9 × 105 and 2 + 1.2 × 105 pass their ceilings;
-  // 3 + 3 × 2 + 0.2 × 103 = 29.6 and 2 + 2 × 2 + 0.1 × 105 = 16.5 stay under theirs.
+  // One transitive npm member: advisory 3 + 2 = 5 and malware 2 + 1 = 3.
+  const transitive = researchShares({ ...ONE_UNITS, direct: 0, transitive: 1 });
+  expect(fittedRequests(transitive)).toMatchObject({ advisory: 5, malware: 3 });
+  // 105 members, 2 direct: every fitted share passes its ceiling. Advisory is
+  // 3 + 3 × 2 + 2 × 103 = 215 and malware 2 + 2 × 2 + 1 × 105 = 111.
   expect(fittedRequests(large)).toEqual({
     upstream: upstream.maxRequests,
-    advisory: 30,
-    malware: 17,
+    advisory: advisory.maxRequests,
+    malware: signals.readers.malware.maxRequests,
     publishTimes: signals.readers.publishTimes.maxRequests,
   });
   const largeRequests = fittedRequests(large);

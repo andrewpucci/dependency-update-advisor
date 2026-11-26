@@ -15,7 +15,6 @@ import {
   researchShareUnits,
   researchShares,
 } from './budget.js';
-import { CEILING_SHARES } from '../tests/parity/shares.js';
 import { researchOrder, runResearch, type ResearchObservation } from './research.js';
 import { limit } from './limits.js';
 import type { PacketChange } from './schema.js';
@@ -455,7 +454,7 @@ test('caps every reader at its share, so the readers together stay inside the en
     expect(share.maxTotalBytes, name).toBe(ceiling.maxTotalBytes);
   }
   // Three direct members (npm, Action, uv) and one transitive npm member: upstream
-  // 9 + 5.9 × 4 = 32.6, advisory 3 + 3 × 3 + 0.2 = 12.2, malware 2 + 2 × 3 + 0.1 × 4 = 8.4, and
+  // 9 + 5.9 × 4 = 32.6, advisory 3 + 3 × 3 + 2 = 14, malware 2 + 2 × 3 + 1 × 4 = 12, and
   // publish times 2 + 1.2 × 2 = 4.4, each rounded up and under its ceiling.
   expect(researchShareUnits(packet.changes)).toMatchObject({ direct: 3, transitive: 1 });
   expect([
@@ -463,7 +462,7 @@ test('caps every reader at its share, so the readers together stay inside the en
     shares.advisory.maxRequests,
     computed.malware.maxRequests,
     computed.publishTimes.maxRequests,
-  ]).toEqual([33, 13, 9, 5]);
+  ]).toEqual([33, 14, 12, 5]);
   expect(shares.upstream.maxRequests).toBeLessThan(EVIDENCE_READ_ALLOCATION.upstream.maxRequests);
   const used = expected.reduce((sum, [, actual]) => sum + actual.maxRequests, 0);
   const ceilings = expected.reduce((sum, [, , , ceiling]) => sum + ceiling.maxRequests, 0);
@@ -765,11 +764,14 @@ test.each([true, false])(
     if (!batched) await dropAdvisoryPrePass();
     const counts: Record<string, number> = {};
     const bump = (key: string) => (counts[key] = (counts[key] ?? 0) + 1);
-    // Batched, the register's fitted shares cover the group. The fit sized no unbatched run, so
-    // that baseline gets the ceilings, which it must still fit.
+    // The register's shares cover the group batched and unbatched: 3 direct and 29 transitive
+    // members give advisory 3 + 3 × 3 + 2 × 29 = 70 and malware 2 + 2 × 3 + 1 × 32 = 40.
+    expect(researchShares(researchShareUnits(packet.changes))).toMatchObject({
+      advisory: { maxRequests: 70 },
+      signals: { readers: { malware: { maxRequests: 40 } } },
+    });
     const result = await runResearch({
       ...base(fixture, packet),
-      ...(batched ? {} : { shareParameters: CEILING_SHARES }),
       fetch: async (url, init) => {
         const target = new URL(url);
         if (target.pathname.startsWith('/advisories'))
@@ -790,8 +792,7 @@ test.each([true, false])(
     ).toBe(true);
     expect(counts.malware).toBeLessThanOrEqual(readers.malware.maxRequests);
     // Reviewed advisories take one npm batch per side, and the Action's discovery batch, whose
-    // hit sends both versioned queries. Read alone, they exceed the fitted share but still fit
-    // the advisory ceiling, which the unbatched run is given (CEILING_SHARES).
+    // hit sends both versioned queries. Read alone, they still fit the cost-sized share.
     if (batched) expect(counts.advisory).toBe(5);
     else expect(counts.advisory).toBeGreaterThan(50);
     expect(counts.advisory).toBeLessThanOrEqual(EVIDENCE_READ_ALLOCATION.advisory.maxRequests);
@@ -805,6 +806,33 @@ test.each([true, false])(
     expect(result.upstreamAttempts.length).toBeGreaterThan(0);
   },
 );
+
+test('a uv change of one direct and three transitive pip packages keeps every vulnerability check', async () => {
+  const { fixture, packet } = await scenario({ uvChildren: 3 });
+  const uv = packet.changes.filter((c) => c.ecosystem === 'uv' && !('basis' in c));
+  expect(uv.map((c) => c.role).sort()).toEqual([
+    'direct',
+    'transitive',
+    'transitive',
+    'transitive',
+  ]);
+  // pip reviewed lookups go to OSV one target at a time, two per member (base and head); the
+  // transitive rate is sized for that, so none of them is cut by the advisory share.
+  let osv = 0;
+  const result = await runResearch({
+    ...base(fixture, packet),
+    fetch: async (url, init) => {
+      if (new URL(url).host === 'api.osv.dev') osv++;
+      return fixture.fetch(url, init);
+    },
+  });
+  if (result.kind !== 'ready') throw new Error(result.kind);
+  expect(osv).toBe(8);
+  for (const change of result.packet.changes)
+    if (change.ecosystem === 'uv' && !('basis' in change))
+      expect(change.evidence.vulnerability, change.id).toMatchObject({ status: 'available' });
+  expect(JSON.stringify(result.packet)).not.toContain('budget');
+});
 
 const PLACEHOLDER = { status: 'unavailable', reasons: ['missing'], sourceIds: [] };
 const BUDGET = { status: 'unavailable', reasons: ['budget'], sourceIds: [] };

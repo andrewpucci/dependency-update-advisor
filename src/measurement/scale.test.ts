@@ -33,8 +33,8 @@ test('scales the fitted share bases and rates with their ceilings, without binar
     'collection.share.registry.requests.rate.npm',
   ])
     expect(valueAt(10, id), id).toBe(10 * (REGISTER.get(id)?.value ?? 0));
-  // 0.1 × 3 is 0.30000000000000004 in binary floating point; the scaled rate stays 0.3.
-  expect(valueAt(3, 'research.share.signals.malware.requests.rate.eligible')).toBe(0.3);
+  // 1.2 × 3 is 3.5999999999999996 in binary floating point; the scaled rate stays 3.6.
+  expect(valueAt(3, 'research.share.signals.publishTimes.requests.rate.eligible')).toBe(3.6);
   // A base the fit kept at its ceiling is derived, so it follows the scaled ceiling.
   expect(valueAt(10, 'research.share.upstream.bytes.base')).toBe(
     10 * (REGISTER.get('evidence.allocation.upstream.maxTotalBytes')?.value ?? 0),

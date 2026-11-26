@@ -854,9 +854,9 @@ amendment.
    PR, rounded up to the next 0.1. `direct` and `transitive` take the same
    rate, since every member is one or the other; `added` and `removed`
    take 0. Signals readers scale on their own `eligible` members instead,
-   and their role rates are 0. F2's direct-member rates for advisory and
-   malware are the exceptions; they are sized from request costs, not
-   fitted.
+   and their role rates are 0. The advisory and malware rates are the
+   exceptions: F2 sizes them from unbatched request costs instead of
+   fitting them.
 5. **Ceilings.** The allocation entries stay the ceilings, unchanged except
    for the collection registry share (F3).
 
@@ -865,7 +865,7 @@ amendment.
 For these shares this replaces A1.6's starting entries (a `derived` base
 equal to the ceiling and `unjustified` zero rates). Each base and rate,
 including a fitted share's zero rates, is a `measured` register entry. All
-but the two direct-member rates below cite this corpus:
+but the four cost-sized advisory and malware rates below cite this corpus:
 
 | Share                 | Base                                                      | Rate per member                                                                                                                                    | Ceiling                                                              |
 | --------------------- | --------------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------- | -------------------------------------------------------------------- |
@@ -880,28 +880,37 @@ but the two direct-member rates below cite this corpus:
   The byte limit that binds is the packet limit
   ([#457](https://github.com/andrewpucci/dependency-update-advisor/issues/457)),
   which these shares do not control.
-- **Direct-member rates.** The user approved
-  `limit:research.share.advisory.requests.rate.direct` and
-  `limit:research.share.signals.malware.requests.rate.direct` on 2026-11-26,
-  in the same #370 thread as the fit. They are not fitted from the corpus.
-  They are each `measured` entries sized from the unbatched per-target
-  request cost of an Actions or pip member, which is
-  direct and is not settled by an npm batch. An Actions reviewed lookup is
-  one stored-name discovery that base and head share, then a versioned query
-  per side: three requests per update (S1's group capacity statement). A
-  malware lookup reads the proposed side only: one discovery, then the
-  versioned query, two requests. Both paths are the per-target `query`,
-  `discover`, and `versioned` steps of the advisory reader, and the two
-  entries cite `src/evidence/advisory-read.costs.test.ts`, which counts
-  them for one Actions update. Transitive members keep the fitted advisory
-  rate, and malware keeps its fitted `eligible` rate on top.
+- **Cost-sized advisory and malware rates.** The user approved sizing
+  these shares for the unbatched fallback on 2026-11-26, in the same #370
+  thread as the fit. They are not fitted from the corpus. Each of
+  `limit:research.share.advisory.requests.rate.direct`,
+  `limit:research.share.advisory.requests.rate.transitive`,
+  `limit:research.share.signals.malware.requests.rate.direct`, and
+  `limit:research.share.signals.malware.requests.rate.eligible` is a
+  `measured` entry sized from the per-target request cost, which a member
+  pays whenever no batch settles it: an incomplete batch settles nothing,
+  a record naming several batched packages sends their singleton queries,
+  and `pip` reviewed lookups always go to OSV one target at a time.
+  - An Actions reviewed lookup is one stored-name discovery that base and
+    head share, then a versioned query per side: three requests per update
+    (S1's group capacity statement). Actions and `pip` members are direct.
+  - An npm or `pip` reviewed lookup is one versioned GitHub query or one
+    OSV query per side, with no discovery: two requests per member.
+  - A malware lookup reads the proposed side only: one request for npm, and
+    two (discovery, then the versioned query) for Actions or `pip`, whose
+    second request the direct rate covers.
+
+  These paths are the advisory reader's per-target `query`, `discover`,
+  `versioned`, and `osv` steps, and the four entries cite
+  `src/evidence/advisory-read.costs.test.ts`, which counts each cost.
+
 - With these values a one-member change gets a share of 3 to 15 requests
   for each fitted reader (4 to 15 when the member is direct), so a runaway
   reader stops sooner. R1's PR #276 (105 npm members, 2 direct) gets the
-  upstream and publish-time ceilings.
+  upstream, advisory, malware, and publish-time ceilings.
 - `limit:research.githubQuota.researchCeiling` stays the sum of the
   research request ceilings, so it is unchanged. An R1-sized change can
-  spend the upstream ceiling plus its advisory and malware shares, well
+  spend the upstream, advisory, and malware ceilings, which together stay
   inside it.
 
 ### F3. Collection registry share
@@ -945,7 +954,12 @@ shares would cut off.
 - The default four-member research fixture (an npm, an Actions, and a uv
   direct member, plus one transitive npm member) completes advisory and
   malware coverage under the register's values, and its computed shares
-  are pinned.
+  are pinned. So does the 32-member group with the advisory pre-pass
+  removed, and a uv change of one direct and three transitive `pip`
+  packages keeps every vulnerability check.
+- The costs test counts an unbatched Actions update at three reviewed and
+  two malware requests, and an npm or `pip` update at two reviewed
+  requests and, for npm, one malware request.
 - Every unfitted share and every byte share equals its ceiling for no
   members, one member, R1, and #276.
 - The collection registry share grows with npm members, reaches its ceiling
