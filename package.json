@@ -32,9 +32,9 @@
     "@types/spdx-expression-parse": "4.0.0",
     "ajv": "8.20.0",
     "eslint-plugin-sonarjs": "4.2.2",
-    "markdownlint-cli": "0.50.0",
+    "markdownlint-cli": "0.50.1",
     "typescript": "7.0.2",
-    "vite-plus": "1.4.0"
+    "vite-plus": "1.7.0"
   },
   "overrides": {
     "markdownlint-cli": {
