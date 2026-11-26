@@ -1,8 +1,12 @@
+import { BATCH_PAGE_SIZE } from '../../src/evidence/batches.js';
+
 /**
  * Serves S1/S3 advisory requests from a synthetic handler written for one exact GitHub query.
- * Stored-name discovery finds no stored form, so the versioned query names the normalized or
- * mapped package exactly as before. A pip reviewed lookup arrives as an OSV query; the handler
- * answers the equivalent GitHub query and the records are returned in OSV form.
+ * Stored-name discovery finds each target stored under its canonical name unless `stored` says
+ * otherwise, so by default a discovery batch clears nothing and the versioned query names the
+ * normalized or mapped package exactly as before. An npm batch returns what its singleton queries
+ * would. A pip reviewed lookup arrives as an OSV query; the handler answers the equivalent GitHub
+ * query and the records are returned in OSV form.
  */
 type Handler = (url: string, init: RequestInit) => Response | Promise<Response>;
 type GithubRecord = {
@@ -58,8 +62,61 @@ function githubEquivalent(name: string, version: string) {
   }).toString();
   return url.href;
 }
+/** A spelling already in its canonical form: the normalized PyPI name or lowercase action. */
+function canonical(name: string) {
+  return name === name.toLowerCase().replace(/[-_.]+/gu, '-');
+}
+/**
+ * A discovery record that stores a package under its canonical name, so its versioned query names
+ * that name, as it did before discovery could clear a target. It is never a finding.
+ */
+function storedAs(ecosystem: string, type: string, name: string) {
+  return {
+    ghsa_id: 'GHSA-0000-0000-0000',
+    html_url: 'https://github.com/advisories/GHSA-0000-0000-0000',
+    summary: 'Stored name form',
+    type,
+    severity: 'unknown',
+    withdrawn_at: null,
+    vulnerabilities: [{ package: { ecosystem, name }, vulnerable_version_range: '*' }],
+  };
+}
+/** Adds a record as GitHub lists it once: one record per GHSA with every package it names. */
+function merge(records: Map<string, GithubRecord>, record: GithubRecord) {
+  const old = records.get(record.ghsa_id);
+  const entries = [...(old?.vulnerabilities ?? []), ...record.vulnerabilities];
+  records.set(record.ghsa_id, {
+    ...(old ?? record),
+    vulnerabilities: entries.filter(
+      (e, i) => entries.findIndex((o) => JSON.stringify(o) === JSON.stringify(e)) === i,
+    ),
+  });
+}
+/**
+ * An npm batch answered as GitHub does: every record any of its exact singleton queries returns,
+ * once. A failed singleton fails the whole batch.
+ */
+async function npmBatch(github: Handler, u: URL, affects: string[], init: RequestInit) {
+  const records = new Map<string, GithubRecord>();
+  for (const target of affects) {
+    const single = new URL(u.href);
+    single.searchParams.set('affects', target);
+    single.searchParams.set('per_page', '100');
+    const answer = await github(single.href, init);
+    if (answer.status !== 200) return answer;
+    for (const record of (await answer.json()) as GithubRecord[]) merge(records, record);
+  }
+  return Response.json([...records.values()]);
+}
+/**
+ * `stored` lists the records a package-only discovery query returns for one spelling: by default
+ * one storing a canonical spelling as itself, so every target is a hit. A test returns none to
+ * have a complete discovery batch clear its targets without their versioned query.
+ */
 export function viaAdvisoryHttp(
   github: Handler,
+  stored: (ecosystem: string, type: string, spelling: string) => GithubRecord[] = (e, t, name) =>
+    canonical(name) ? [storedAs(e, t, name)] : [],
 ): (url: string, init: RequestInit) => Promise<Response> {
   // Spellings each query type has discovered; a pip or actions versioned query needs one first.
   const discovered = new Set<string>();
@@ -99,9 +156,16 @@ export function viaAdvisoryHttp(
       const ecosystem = u.searchParams.get('ecosystem'),
         type = u.searchParams.get('type'),
         affects = u.searchParams.get('affects')!.split(',');
+      // npm has no discovery, so an npm query at the batch page size is a batch, even of one.
+      if (ecosystem === 'npm' && u.searchParams.get('per_page') === BATCH_PAGE_SIZE)
+        return npmBatch(github, u, affects, init);
       if (u.searchParams.get('per_page') === '50') {
-        for (const name of affects) discovered.add(JSON.stringify([ecosystem, type, name]));
-        return Response.json([]);
+        const records = new Map<string, GithubRecord>();
+        for (const name of affects) {
+          discovered.add(JSON.stringify([ecosystem, type, name]));
+          for (const record of stored(ecosystem!, type!, name)) merge(records, record);
+        }
+        return Response.json([...records.values()]);
       }
       if (ecosystem === 'pip' && type === 'reviewed')
         return unexpected('pip reviewed lookups go to OSV');

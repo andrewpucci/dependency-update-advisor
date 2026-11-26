@@ -91,9 +91,12 @@ function provenance(
         : 'Exact-version reviewed advisory lookup'),
     excerpt: record
       ? 'Attributable advisory evidence identifies this exact target.'
-      : osv
-        ? "The complete exact-version OSV query checked OSV's mirror of GitHub-reviewed advisories for this target."
-        : 'The complete exact-version query checked reviewed advisories for this target.',
+      : lookup.batched
+        ? // S1 Batched Lookup item 7 and Reconciliation D3: the cited query was not itself fetched.
+          'A complete batched query checked reviewed advisories for this target.'
+        : osv
+          ? "The complete exact-version OSV query checked OSV's mirror of GitHub-reviewed advisories for this target."
+          : 'The complete exact-version query checked reviewed advisories for this target.',
     excerptTruncated: false,
     subjects: [{ memberId: change.id, side, value }],
     range: { from: side === 'base' ? value : null, to: side === 'head' ? value : null },

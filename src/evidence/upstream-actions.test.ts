@@ -213,10 +213,19 @@ test.each(['Notes.', ''])(
       { reader: advisory },
     );
     expect(result.kind, JSON.stringify(result)).toBe('enriched');
-    expect(queries.some((q) => new URL(q).searchParams.get('affects')?.endsWith('@2.0.0'))).toBe(
+    // A discovery batch checks both mapped versions; each lookup cites its versioned query.
+    expect(queries.length).toBeGreaterThan(0);
+    // Both versions were cleared from the batch, so neither versioned query was sent.
+    for (const version of ['@1.0.0', '@2.0.0'])
+      expect(queries.some((q) => new URL(q).searchParams.get('affects')?.includes(version))).toBe(
+        false,
+      );
+    const cited =
+      result.kind === 'enriched' ? result.lookups.flatMap((l) => l.lookup?.url || []) : [];
+    expect(cited.some((q) => new URL(q).searchParams.get('affects')?.endsWith('@2.0.0'))).toBe(
       true,
     );
-    expect(queries.some((q) => new URL(q).searchParams.get('affects')?.endsWith('@1.0.0'))).toBe(
+    expect(cited.some((q) => new URL(q).searchParams.get('affects')?.endsWith('@1.0.0'))).toBe(
       true,
     );
     if (result.kind === 'enriched')

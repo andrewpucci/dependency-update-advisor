@@ -723,37 +723,51 @@ test('still runs, with request timeouts no longer than the time left, near the d
   }
 });
 
-test('researches a group of 32 changed packages without exhausting any reader', async () => {
-  // One npm anchor, one Action, one uv package, and 29 npm children.
-  const { fixture, packet } = await scenario({ children: 29 } as never);
-  expect(packet.changes.length).toBe(32);
-  const counts: Record<string, number> = {};
-  const bump = (key: string) => (counts[key] = (counts[key] ?? 0) + 1);
-  const result = await runResearch({
-    ...base(fixture, packet),
-    fetch: async (url, init) => {
-      const target = new URL(url);
-      if (target.pathname.startsWith('/advisories'))
-        bump(target.searchParams.get('type') === 'malware' ? 'malware' : 'advisory');
-      return fixture.fetch(url, init);
-    },
-  });
-  expect(result.kind).toBe('ready');
-  if (result.kind !== 'ready') return;
-  expect(result.unavailable).toEqual([]);
-  // Every package was looked up, and none was cut short by a share running out.
-  const { readers } = EVIDENCE_READ_ALLOCATION.signals;
-  expect(counts.malware).toBeGreaterThan(25);
-  expect(counts.malware).toBeLessThanOrEqual(readers.malware.maxRequests);
-  expect(counts.advisory).toBeGreaterThan(50);
-  expect(counts.advisory).toBeLessThanOrEqual(EVIDENCE_READ_ALLOCATION.advisory.maxRequests);
-  // No stage of research ran out of any share, in the packet or in its own attempt records.
-  expect(JSON.stringify(result.packet)).not.toContain('budget');
-  expect(JSON.stringify(result.upstreamAttempts)).not.toContain('budget');
-  expect(JSON.stringify(result.signalAttempts)).not.toContain('budget');
-  expect(result.signalAttempts.length).toBeGreaterThan(0);
-  expect(result.upstreamAttempts.length).toBeGreaterThan(0);
-});
+test.each([true, false])(
+  'researches a group of 32 changed packages without exhausting any reader; batched=%s',
+  async (batched) => {
+    // One npm anchor, one Action, one uv package, and 29 npm children.
+    const { fixture, packet } = await scenario({ children: 29 } as never);
+    expect(packet.changes.length).toBe(32);
+    if (!batched) await dropAdvisoryPrePass();
+    const counts: Record<string, number> = {};
+    const bump = (key: string) => (counts[key] = (counts[key] ?? 0) + 1);
+    const result = await runResearch({
+      ...base(fixture, packet),
+      fetch: async (url, init) => {
+        const target = new URL(url);
+        if (target.pathname.startsWith('/advisories'))
+          bump(target.searchParams.get('type') === 'malware' ? 'malware' : 'advisory');
+        return fixture.fetch(url, init);
+      },
+    });
+    expect(result.kind).toBe('ready');
+    if (result.kind !== 'ready') return;
+    expect(result.unavailable).toEqual([]);
+    // Every package was looked up, and none was cut short by a share running out. Malware is
+    // settled in batches: one npm batch for all 30 npm packages, one pip discovery batch and the
+    // hit's versioned query, and the Action's own discovery and versioned query.
+    const { readers } = EVIDENCE_READ_ALLOCATION.signals;
+    expect(counts.malware).toBe(5);
+    expect(
+      result.packet.changes.every((c) => 'basis' in c || c.evidence.malware.status === 'available'),
+    ).toBe(true);
+    expect(counts.malware).toBeLessThanOrEqual(readers.malware.maxRequests);
+    // Reviewed advisories take one npm batch per side, and the Action's discovery batch, whose
+    // hit sends both versioned queries. Read alone, they still fit the stage's share.
+    if (batched) expect(counts.advisory).toBe(5);
+    else expect(counts.advisory).toBeGreaterThan(50);
+    expect(counts.advisory).toBeLessThanOrEqual(EVIDENCE_READ_ALLOCATION.advisory.maxRequests);
+    for (const change of result.packet.changes)
+      if (!('basis' in change)) expect(change.evidence.vulnerability.status).toBe('available');
+    // No stage of research ran out of any share, in the packet or in its own attempt records.
+    expect(JSON.stringify(result.packet)).not.toContain('budget');
+    expect(JSON.stringify(result.upstreamAttempts)).not.toContain('budget');
+    expect(JSON.stringify(result.signalAttempts)).not.toContain('budget');
+    expect(result.signalAttempts.length).toBeGreaterThan(0);
+    expect(result.upstreamAttempts.length).toBeGreaterThan(0);
+  },
+);
 
 const PLACEHOLDER = { status: 'unavailable', reasons: ['missing'], sourceIds: [] };
 const BUDGET = { status: 'unavailable', reasons: ['budget'], sourceIds: [] };
@@ -797,6 +811,120 @@ test('runs advisory lookups for members with retained identities after an upstre
     .filter((url) => url.includes('/advisories') && url.includes('type=reviewed'))
     .map((url) => decodeURIComponent(new URL(url).search));
   expect(reviewed.some((query) => query.includes('ecosystem=npm&affects=orbit@2.0.0'))).toBe(true);
+});
+
+const BATCHED_EXCERPT = 'A complete batched query checked reviewed advisories for this target.';
+const SINGLETON_EXCERPT =
+  'The complete exact-version query checked reviewed advisories for this target.';
+
+/** Makes the next advisory reader one without `settle`, so its stage reads every target alone. */
+async function dropAdvisoryPrePass() {
+  const actual = await vi.importActual<typeof import('./evidence/advisory-read.js')>(
+    './evidence/advisory-read.js',
+  );
+  vi.mocked(advisoryReadModule.createAdvisoryReader).mockImplementationOnce((...args) => {
+    const reader = actual.createAdvisoryReader(...args);
+    return reader.kind === 'ready' ? { ...reader, settle: undefined } : reader;
+  });
+}
+
+/** Runs research once, with or without the advisory pre-pass, counting reviewed GitHub queries. */
+async function advisoryRun(batched: boolean) {
+  const { fixture, packet } = await scenario({ vulnerableNpm: true, children: 3 } as never);
+  if (!batched) await dropAdvisoryPrePass();
+  const sent: string[] = [];
+  const result = await runResearch({
+    ...base(fixture, packet),
+    fetch: async (url, init) => {
+      const target = new URL(url);
+      if (target.pathname === '/advisories' && target.searchParams.get('type') === 'reviewed')
+        sent.push(url);
+      return fixture.fetch(url, init);
+    },
+  });
+  if (result.kind !== 'ready') throw new Error(result.kind);
+  return { packet: result.packet, sent };
+}
+
+test('the advisory pre-pass changes only cleared source text and sends fewer requests', async () => {
+  const unbatched = await advisoryRun(false);
+  const batched = await advisoryRun(true);
+  expect(batched.sent.length).toBeLessThan(unbatched.sent.length);
+  const settled = batched.packet.sources.filter(
+    (s) => s.provenance.kind === 'upstream' && s.provenance.excerpt === BATCHED_EXCERPT,
+  );
+  // Every npm lookup of both sides was settled, the vulnerable head among them. The fixture
+  // stores the Action under its own name, so its discovery batch is a hit and it sends its
+  // versioned query as before.
+  const npm = batched.packet.sources.filter(
+    (s) =>
+      s.kind === 'advisory' &&
+      s.ecosystems.includes('npm') &&
+      s.provenance.kind === 'upstream' &&
+      !s.provenance.advisoryId,
+  );
+  expect(settled).toEqual(npm);
+  const sides = settled.flatMap((s) =>
+    s.provenance.kind === 'upstream' ? s.provenance.subjects.map((subject) => subject.side) : [],
+  );
+  expect(new Set(sides)).toEqual(new Set(['base', 'head']));
+  expect(new Set(settled.flatMap((s) => s.ecosystems))).toEqual(new Set(['npm']));
+  for (const source of settled) {
+    if (source.provenance.kind !== 'upstream') continue;
+    // Each cites the exact-version query the unbatched run fetched, which the batched run did not.
+    const cited = new URL(source.provenance.url);
+    expect(cited.searchParams.get('affects')).toMatch(/^[^,]+@[^,]+$/u);
+    expect(cited.searchParams.get('per_page')).toBe('100');
+    expect(unbatched.sent).toContain(source.provenance.url);
+    expect(batched.sent).not.toContain(source.provenance.url);
+  }
+  expect(batched.packet.findings.some((f) => f.kind === 'vulnerability')).toBe(true);
+  const restored = structuredClone(batched.packet) as unknown as {
+    sources: { provenance: { excerpt?: string } }[];
+  };
+  for (const source of restored.sources)
+    if (source.provenance.excerpt === BATCHED_EXCERPT)
+      source.provenance.excerpt = SINGLETON_EXCERPT;
+  expect(restored).toEqual(unbatched.packet);
+});
+
+test('a discovery batch that names nothing clears the Action without its versioned query', async () => {
+  const { fixture, packet } = await scenario({ stored: () => [] });
+  const sent: string[] = [];
+  const result = await runResearch({
+    ...base(fixture, packet),
+    fetch: async (url, init) => (sent.push(url), fixture.fetch(url, init)),
+  });
+  if (result.kind !== 'ready') throw new Error(result.kind);
+  const actions = sent
+    .map((url) => new URL(url))
+    .filter(
+      (u) =>
+        u.pathname === '/advisories' &&
+        u.searchParams.get('type') === 'reviewed' &&
+        u.searchParams.get('ecosystem') === 'actions',
+    );
+  // Only the package-only discovery query was sent for the Action.
+  expect(actions.length).toBeGreaterThan(0);
+  expect(actions.every((u) => u.searchParams.get('affects') === 'fixture/action')).toBe(true);
+  const cited = result.packet.sources.filter(
+    (s) =>
+      s.kind === 'advisory' &&
+      s.ecosystems.includes('actions') &&
+      s.provenance.kind === 'upstream' &&
+      !s.provenance.advisoryId,
+  );
+  expect(cited.map((s) => (s.provenance.kind === 'upstream' ? s.provenance.excerpt : ''))).toEqual(
+    cited.map(() => BATCHED_EXCERPT),
+  );
+  const urls = cited.map((s) =>
+    s.provenance.kind === 'upstream' ? decodeURIComponent(s.provenance.url) : '',
+  );
+  for (const version of ['1.0.0', '2.0.0'])
+    expect(
+      urls.some((u) => u.includes(`ecosystem=actions&affects=fixture/action@${version}&`)),
+    ).toBe(true);
+  for (const url of urls) expect(sent.map(decodeURIComponent)).not.toContain(url);
 });
 
 const ownedByStage = {

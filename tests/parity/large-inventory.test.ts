@@ -19,7 +19,14 @@ function nameOf(change: { to?: unknown; from?: unknown }) {
 }
 
 test('builds 93 members plus two same-named nested copies as standalone npm units', async () => {
-  const { input, render } = await largeInventoryScenario({ members: 93, duplicateNames: 2 });
+  const { input, render, packet } = await largeInventoryScenario({
+    members: 93,
+    duplicateNames: 2,
+  });
+  // Batched source text is the packet's tightest margin; a wording change that eats it fails here.
+  expect(Buffer.byteLength(JSON.stringify(packet))).toBeLessThanOrEqual(
+    limit('packet.bytes') - limit('tests.largeInventoryPacketHeadroomBytes'),
+  );
   const units = input.inventory.units.filter((unit) => unit.ecosystem === 'npm');
   expect(units).toHaveLength(95);
   expect(units.every((unit) => unit.kind === 'standalone')).toBe(true);

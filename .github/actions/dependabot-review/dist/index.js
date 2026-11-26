@@ -10033,6 +10033,22 @@ const DEFINITIONS = [
 		effect: "A reporting or parity test past the allowance fails under vitest's timeout behavior, as any timed-out test does.",
 		test: "none: a test-runner allowance for src/reporting.test.ts and tests/parity/large-inventory.test.ts, which no application code reads"
 	},
+	{
+		id: "tests.largeInventoryPacketHeadroomBytes",
+		value: 4096,
+		unit: "bytes",
+		protects: "Real packets this close to `limit:packet.bytes` would lose members to `budget` gaps; this fails the large-inventory parity test when a source-text change leaves its packet less than this far under the cap.",
+		basis: {
+			kind: "measured",
+			command: "npx vp test --run tests/parity/large-inventory.test.ts -t \"builds 93\", reading Buffer.byteLength(JSON.stringify(packet)) of the scenario packet",
+			corpus: "the synthetic large inventory: 93 npm members plus 2 same-named nested copies, with C6 and C7 batched source text",
+			statistic: "exact packet bytes: 1,043,616 of the 1,048,576-byte cap, 4,960 bytes under it",
+			headroom: "864 bytes between the measured 4,960-byte margin and this 4,096-byte floor, room for a short wording change",
+			measured: "2026-11-26"
+		},
+		effect: "The large-inventory parity test fails when that packet comes within this many bytes of the packet cap.",
+		test: "tests/parity/large-inventory.test.ts > builds 93 members plus two same-named nested copies as standalone npm units"
+	},
 	unjustified("measureDemand.testTimeoutMs", 9e5, "milliseconds", {
 		protects: "A hung review run inside the demand measurement would otherwise run indefinitely; the timeout ends that test. It equals the 15-minute review job limit.",
 		effect: "A test past the timeout fails under vitest's timeout behavior, which is not read in this repo.",
@@ -13637,6 +13653,13 @@ var Reader$1 = class {
 			batched: true
 		}));
 	}
+	isSettled(value) {
+		try {
+			return this.settled.has(targetKey(target$1(value)));
+		} catch {
+			return false;
+		}
+	}
 	async settle(values) {
 		if (this.busy) return null;
 		this.busy = true;
@@ -13795,6 +13818,7 @@ function createReader(limits, dependencies, kind) {
 			kind: "ready",
 			read: (value) => reader.read(value),
 			settle: (targets) => reader.settle(targets),
+			isSettled: (target) => reader.isSettled(target),
 			close: () => reader.close(),
 			stopped: () => reader.stopReason()
 		});
@@ -16392,7 +16416,7 @@ function provenance(change, side, lookup, record) {
 		kind: "upstream",
 		url: record?.url ?? lookup.url,
 		title: record?.title ?? (osv ? "Exact-version OSV reviewed advisory lookup" : "Exact-version reviewed advisory lookup"),
-		excerpt: record ? "Attributable advisory evidence identifies this exact target." : osv ? "The complete exact-version OSV query checked OSV's mirror of GitHub-reviewed advisories for this target." : "The complete exact-version query checked reviewed advisories for this target.",
+		excerpt: record ? "Attributable advisory evidence identifies this exact target." : lookup.batched ? "A complete batched query checked reviewed advisories for this target." : osv ? "The complete exact-version OSV query checked OSV's mirror of GitHub-reviewed advisories for this target." : "The complete exact-version query checked reviewed advisories for this target.",
 		excerptTruncated: false,
 		subjects: [{
 			memberId: change.id,
@@ -16819,10 +16843,48 @@ async function enrichMember(input, output, change, reader, cache) {
 	failureGap(output, change, "budget");
 	advisoryCheck(fits(output, input), "budget");
 }
-/** A stopped reader refuses every later read, so members after `last` are unresearched. */
-function markUnresearched$1(input, output, last, stopped) {
+/** The side's target, or null when it has none; a resolver fault is left to the member's read. */
+function prePassTarget(input, change, side) {
+	if (!(side === "head" ? change.to : change.from)) return null;
+	try {
+		return resolveAdvisoryTarget(input, change, side);
+	} catch {
+		return null;
+	}
+}
+/**
+* The pre-pass (S1 Batched Lookup item 1): settles every eligible target of both sides in batches
+* before the per-member loop, so its requests and bytes count against the stage's reader share
+* rather than any member. `pip` reviewed targets are left to their per-member OSV reads (D1), and
+* a target no batch settles is read alone as before.
+*/
+async function settleTargets(input, output, reader) {
+	if (!reader.settle) return;
+	const targets = output.changes.filter((change) => !("basis" in change)).flatMap((change) => ["head", "base"].map((side) => prePassTarget(input, change, side))).filter((target) => target !== null && target.ecosystem !== "pip");
+	try {
+		if (targets.length) await reader.settle(targets);
+	} catch {}
+}
+/** Whether the pre-pass settled any of the member's targets, which `read` answers unsent. */
+function settledMember(input, change, reader) {
+	return ["head", "base"].some((side) => {
+		const target = prePassTarget(input, change, side);
+		return target !== null && reader.isSettled?.(target) === true;
+	});
+}
+/**
+* A stopped reader refuses every later request (S1 Batched Lookup item 3, per target). A member
+* after `last` with a settled target is still researched: its settled sides take their lookups,
+* and the stopped reader answers each unsettled side with the stop reason without a request. A
+* member with no settled target is unresearched with the stop reason.
+*/
+async function finishStopped(input, output, last, stopped, reader, cache) {
 	output.stopped = stopped;
-	for (const rest of output.changes.slice(output.changes.indexOf(last) + 1)) if (!("basis" in rest)) failureGap(output, rest, stopped);
+	for (const rest of output.changes.slice(output.changes.indexOf(last) + 1)) {
+		if ("basis" in rest) continue;
+		if (settledMember(input, rest, reader)) await enrichMember(input, output, rest, reader, cache);
+		else failureGap(output, rest, stopped);
+	}
 	advisoryCheck(fits(output, input), "budget");
 }
 async function enrichAdvisories(value, dependencies) {
@@ -16840,12 +16902,13 @@ async function enrichAdvisories(value, dependencies) {
 	const cache = /* @__PURE__ */ new Map();
 	try {
 		advisoryCheck(fits(output, input), "budget");
+		await settleTargets(input, output, dependencies.reader);
 		for (const change of output.changes) {
 			if ("basis" in change) continue;
 			await enrichMember(input, output, change, dependencies.reader, cache);
 			const stopped = dependencies.reader.stopped?.() ?? null;
 			if (stopped) {
-				markUnresearched$1(input, output, change, stopped);
+				await finishStopped(input, output, change, stopped, dependencies.reader, cache);
 				break;
 			}
 		}
@@ -16872,7 +16935,7 @@ function malwareProvenance(change, side, lookup, record) {
 		kind: "upstream",
 		url: record?.url ?? lookup.url,
 		title: record?.title ?? "Exact target malware query",
-		excerpt: change.ecosystem === "actions" ? "GitHub malware advisory result for this exact mapped action; this is not a scan of action code." : "GitHub malware advisory result for this exact target.",
+		excerpt: change.ecosystem === "actions" ? "GitHub malware advisory result for this exact mapped action; this is not a scan of action code." : lookup.batched && !record ? "GitHub malware advisory result for this exact target, checked in a complete batched query." : "GitHub malware advisory result for this exact target.",
 		excerptTruncated: false,
 		subjects: [{
 			memberId: change.id,
@@ -16953,6 +17016,25 @@ function malwareFinding(input, output, change, record, source) {
 		remediation: ["Do not merge this version; select an unaffected version."],
 		validation: ["Re-run the exact malware lookup before reconsidering."]
 	});
+}
+/**
+* The malware pre-pass, run before the per-member loop: the reader settles what complete
+* `type=malware` batches can decide, npm versioned batches and `pip` discovery batches, so `read`
+* returns those lookups without a request. Its requests count against the malware reader's
+* share, not any member's. Actions malware keeps per-target lookups (Approved Batch Values), so
+* its targets are not sent. A reader without `settle`, or one that fails, leaves every target to
+* its own `read`.
+*/
+async function settleMalware(input, changes, reader) {
+	const targets = changes.flatMap((change) => {
+		if ("basis" in change) return [];
+		const target = resolveAdvisoryTarget(input, change, change.to ? "head" : "base");
+		return target && target.ecosystem !== "actions" ? [target] : [];
+	});
+	if (!reader.settle || !targets.length) return;
+	try {
+		await reader.settle(targets);
+	} catch {}
 }
 async function collectMemberMalware(input, output, change, reader, cache) {
 	const side = change.to ? "head" : "base";
@@ -22322,8 +22404,10 @@ async function runMemberMalware(input, output, change, reader, cache) {
 /**
 * Runs one signals pass over the members, which arrive in research order (coverage §3.5). Once a
 * member crosses a packet limit (`run` returns false), every lower-priority member keeps its
-* `budget` reservation, so the cut is strictly by priority (§1.5) and no read is spent on a
-* result that could not be kept.
+* `budget` reservation, so the cut is strictly by priority (§1.5) and no member read is spent on
+* a result that could not be kept. The malware pre-pass is the exception: its batch reads are
+* charged to the stage's share, and a member below the cut keeps `budget` even when a batch
+* settled its lookup.
 */
 async function inPriorityOrder(changes, run) {
 	for (const change of changes) {
@@ -22349,6 +22433,7 @@ async function enrichPolicySignals(value, dependencies) {
 		signalBounds(input, output);
 		reserveSignals(input, output);
 		const cache = /* @__PURE__ */ new Map();
+		await settleMalware(input, output.changes, dependencies.malwareReader);
 		await inPriorityOrder(output.changes, (change) => runMemberMalware(input, output, change, dependencies.malwareReader, cache));
 		const lockfiles = dependencies.artifactSession && cacheLockfileReads(dependencies.artifactSession);
 		await inPriorityOrder(output.changes, (change) => runOptionalSignals(input, output, change, async () => {

@@ -598,16 +598,67 @@ async function enrichMember(
   failureGap(output, change, 'budget');
   advisoryCheck(fits(output, input), 'budget');
 }
-/** A stopped reader refuses every later read, so members after `last` are unresearched. */
-function markUnresearched(
+/** The side's target, or null when it has none; a resolver fault is left to the member's read. */
+function prePassTarget(input: AdvisoryInput, change: PacketChange, side: 'head' | 'base') {
+  if (!(side === 'head' ? change.to : change.from)) return null;
+  try {
+    return resolveAdvisoryTarget(input, change, side);
+  } catch {
+    // The member's own read reports this target's failure, inside its rollback.
+    return null;
+  }
+}
+/**
+ * The pre-pass (S1 Batched Lookup item 1): settles every eligible target of both sides in batches
+ * before the per-member loop, so its requests and bytes count against the stage's reader share
+ * rather than any member. `pip` reviewed targets are left to their per-member OSV reads (D1), and
+ * a target no batch settles is read alone as before.
+ */
+async function settleTargets(
+  input: AdvisoryInput,
+  output: AdvisoryEnrichment,
+  reader: AdvisoryReader,
+) {
+  if (!reader.settle) return;
+  const targets = output.changes
+    .filter((change) => !('basis' in change))
+    .flatMap((change) =>
+      (['head', 'base'] as const).map((side) => prePassTarget(input, change, side)),
+    )
+    .filter((target) => target !== null && target.ecosystem !== 'pip');
+  try {
+    if (targets.length) await reader.settle(targets);
+  } catch {
+    // A failed pre-pass settles nothing; every target is then read alone, as before.
+  }
+}
+/** Whether the pre-pass settled any of the member's targets, which `read` answers unsent. */
+function settledMember(input: AdvisoryInput, change: PacketChange, reader: AdvisoryReader) {
+  return (['head', 'base'] as const).some((side) => {
+    const target = prePassTarget(input, change, side);
+    return target !== null && reader.isSettled?.(target) === true;
+  });
+}
+/**
+ * A stopped reader refuses every later request (S1 Batched Lookup item 3, per target). A member
+ * after `last` with a settled target is still researched: its settled sides take their lookups,
+ * and the stopped reader answers each unsettled side with the stop reason without a request. A
+ * member with no settled target is unresearched with the stop reason.
+ */
+async function finishStopped(
   input: AdvisoryInput,
   output: AdvisoryEnrichment,
   last: PacketChange,
   stopped: EvidenceReason,
+  reader: AdvisoryReader,
+  cache: Map<string, AdvisoryLookup>,
 ) {
   output.stopped = stopped;
-  for (const rest of output.changes.slice(output.changes.indexOf(last) + 1))
-    if (!('basis' in rest)) failureGap(output, rest, stopped);
+  for (const rest of output.changes.slice(output.changes.indexOf(last) + 1)) {
+    if ('basis' in rest) continue;
+    if (settledMember(input, rest, reader)) await enrichMember(input, output, rest, reader, cache);
+    else failureGap(output, rest, stopped);
+  }
   advisoryCheck(fits(output, input), 'budget');
 }
 export async function enrichAdvisories(
@@ -628,12 +679,13 @@ export async function enrichAdvisories(
   const cache = new Map<string, AdvisoryLookup>();
   try {
     advisoryCheck(fits(output, input), 'budget');
+    await settleTargets(input, output, dependencies.reader);
     for (const change of output.changes) {
       if ('basis' in change) continue;
       await enrichMember(input, output, change, dependencies.reader, cache);
       const stopped = dependencies.reader.stopped?.() ?? null;
       if (stopped) {
-        markUnresearched(input, output, change, stopped);
+        await finishStopped(input, output, change, stopped, dependencies.reader, cache);
         break;
       }
     }
