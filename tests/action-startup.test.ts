@@ -415,6 +415,7 @@ async function startWithModelReply(modelReply: ModelReply) {
   const github = mockGithub({ changes: await upstreamScenario() });
   const violations: string[] = [];
   const modelCalls: string[] = [];
+  let graphqlPosts = 0;
   const { NODE_OPTIONS: _ignored, ...env } = process.env;
   const child = fork(join(shipped, entry), [], {
     cwd: shipped,
@@ -446,6 +447,7 @@ async function startWithModelReply(modelReply: ModelReply) {
           body: message.body,
         };
         if (isLiveWrite(request, sentinel)) violations.push(`${message.method} ${message.url}`);
+        if (message.method === 'POST' && message.url === GITHUB_GRAPHQL_URL) graphqlPosts += 1;
         if (message.url === MODEL_ENDPOINT) {
           modelCalls.push(message.method);
           reply(modelAnswer(message.id, modelReply));
@@ -480,7 +482,7 @@ async function startWithModelReply(modelReply: ModelReply) {
     child.on('close', resolve);
   });
   clearTimeout(killer);
-  return { stderr, code, violations, modelCalls };
+  return { stderr, code, violations, modelCalls, graphqlPosts };
 }
 
 test.each([
@@ -498,6 +500,8 @@ test.each([
     );
     expect(result.modelCalls).toEqual(['POST']);
     expect(result.violations).toEqual([]);
+    // The shipped run sends the tag existence query, so its guard exemption is exercised.
+    expect(result.graphqlPosts).toBeGreaterThan(0);
     expect(result.code).toBe(78);
     expect(result.stderr).not.toContain(sentinel);
     expect(result.stderr).not.toContain('RAW_PROVIDER_BODY');

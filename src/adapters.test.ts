@@ -5,6 +5,7 @@ import {
   guardedFetch,
   publicFetch,
   researchFetch,
+  researchFetchWithToken,
 } from './adapters.js';
 import { createGithubTransport, W2_GITHUB_LIMITS } from './runtime.js';
 import { createGithubSnapshotReads } from './snapshot.js';
@@ -120,6 +121,19 @@ test('keeps event verification reads available after the snapshot share is exhau
   for (let index = 0; index < W2_GITHUB_LIMITS.freshness.maxRequests; index += 1)
     await expect(reads.readRun(repository, 401)).resolves.toEqual({ ok: true });
   await expect(reads.readRun(repository, 401)).rejects.toThrow();
+});
+
+test('the research fetch with its flag adds the read token, and says so', async () => {
+  const fetch = vi.fn(async (_url: string, _init: RequestInit) => new Response('{}'));
+  const research = researchFetchWithToken('read-token', fetch);
+  expect(research.githubToken).toBe(true);
+  await research.fetch('https://api.github.com/graphql', { method: 'POST' });
+  expect(new Headers(fetch.mock.calls[0][1].headers).get('authorization')).toBe(
+    'Bearer read-token',
+  );
+  fetch.mockClear();
+  await research.fetch('https://registry.npmjs.org/x', {});
+  expect(new Headers(fetch.mock.calls[0][1].headers).has('authorization')).toBe(false);
 });
 
 test('adds the read token to research requests for api.github.com only', async () => {

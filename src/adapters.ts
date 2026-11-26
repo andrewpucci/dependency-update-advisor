@@ -65,6 +65,18 @@ export function researchFetch(token: string, fetchImpl: Fetch): Fetch {
 }
 
 /**
+ * The research fetch with the flag research needs alongside it: `researchFetch` adds the read
+ * token to every api.github.com request, so research may send the batched tag existence query.
+ * Callers take both from here, so the flag cannot drift from the fetch that attaches the token.
+ */
+export function researchFetchWithToken(
+  token: string,
+  fetchImpl: Fetch,
+): Readonly<{ fetch: Fetch; githubToken: true }> {
+  return { fetch: researchFetch(token, fetchImpl), githubToken: true };
+}
+
+/**
  * Binds every request to one attempt: nothing starts once the attempt has ended or ownership is
  * lost (which ends the attempt), and each request ends when either its own signal or the attempt's
  * does.

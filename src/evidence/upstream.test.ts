@@ -356,6 +356,60 @@ test('an enrichment whose attempts exactly fill its cap keeps every member resea
   r.reader.close();
   expect(result).toEqual(normal);
 });
+test('a member over its bounds while reading ahead is rolled back, so later members still read', async () => {
+  // The smallest share that still fits the input.
+  const fits = async (bytes: number) => {
+    const opened = createUpstreamReader(
+      { ...limits, maxRetainedBytes: bytes },
+      { now: () => 0, fetch: async () => Response.json({}, { status: 404 }) },
+    );
+    if (opened.kind !== 'ready') throw new Error('reader');
+    const result = await enrichUpstream(await fixture(1, { maxRetainedBytes: bytes }), opened);
+    opened.reader.close();
+    return result.kind === 'enriched';
+  };
+  let maxRetainedBytes = 1;
+  while (!(await fits(maxRetainedBytes))) maxRetainedBytes *= 2;
+  for (let low = maxRetainedBytes / 2; low + 1 < maxRetainedBytes;) {
+    const mid = Math.floor((low + maxRetainedBytes) / 2);
+    if (await fits(mid)) maxRetainedBytes = mid;
+    else low = mid;
+  }
+  const input = await fixture(1, { maxRetainedBytes });
+  const update = input.changes[0] as {
+    from: { name: string; version: string };
+    to: { name: string; version: string };
+  };
+  const added = input.changes[1] as { to: { name: string; version: string } };
+  // The proposed side's metadata is large, so retaining both sides overflows the first member.
+  const r = registryReader({ maxRetainedBytes }, (url) =>
+    url === registryUrl(update.to)
+      ? Response.json({
+          _id: update.to.name + '@' + update.to.version,
+          name: update.to.name,
+          version: update.to.version,
+          dist: { integrity },
+          description: 'x'.repeat(5000),
+        })
+      : null,
+  );
+  const result = await enrichUpstream(input, { reader: r.reader });
+  r.reader.close();
+  if (result.kind !== 'enriched') throw new Error('enrichment');
+  // As in the member loop: the first member overflows and is rolled back, and the next still reads.
+  expect(r.calls).toEqual([
+    registryUrl(update.from),
+    registryUrl(update.to),
+    registryUrl(added.to),
+  ]);
+  expect(result.changes[0].evidence.upstream).toEqual({
+    status: 'unavailable',
+    reasons: ['budget'],
+    sourceIds: [],
+  });
+  expect(result.attempts.map((a) => a.memberId)).not.toContain(input.changes[0].id);
+  expect(result.attempts.map((a) => a.memberId)).toContain(input.changes[1].id);
+});
 test('share exhaustion keeps completed members and their identities', async () => {
   const input = await fixture(3);
   const probe = registryReader({});
@@ -457,57 +511,89 @@ describe('the batched tag existence pre-pass', () => {
     graphql: (init: RequestInit) => Response = (init) =>
       graphqlTagAnswer(init, (_, tag) => present.has(tag)),
     githubToken = true,
+    readerLimits: Partial<typeof limits> = {},
   ) {
     const calls: string[] = [];
     const sent: { variables: Record<string, string> }[] = [];
     const existence: TagExistenceMap = new Map();
-    const opened = createUpstreamReader(limits, {
-      now: () => 0,
-      githubToken,
-      existence,
-      fetch: async (url, init) => {
-        calls.push(url);
-        const parsed = new URL(url);
-        if (parsed.origin === 'https://registry.npmjs.org') {
-          const [, name, version] = parsed.pathname.split('/').map(decodeURIComponent);
-          return Response.json({
-            _id: name + '@' + version,
-            name,
-            version,
-            dist: { integrity },
-            description: 'Exact version description.',
-            repository: {
-              url: 'https://github.com/fixture/mono.git',
-              directory: 'packages/' + name,
-            },
-          });
-        }
-        if (url === GITHUB_GRAPHQL_URL) {
-          sent.push(JSON.parse(String(init.body)));
-          return graphql(init);
-        }
-        const path = decodeURIComponent(parsed.pathname).replace('/repos/fixture/mono', '');
-        const tag = path.slice('/git/ref/tags/'.length);
-        if (path === '') return Response.json({ full_name: 'fixture/mono', private: false });
-        if (path.startsWith('/git/ref/tags/') && present.has(tag))
-          return Response.json({ ref: 'refs/tags/' + tag, object: { type: 'commit', sha } });
-        if (path === '/contents/packages/fixture-anchor/package.json')
-          return Response.json(blob({ name: 'fixture-anchor', version: '1.1.0' }));
-        if (path === '/releases') return Response.json([]);
-        return Response.json({}, { status: 404 });
+    const opened = createUpstreamReader(
+      { ...limits, ...readerLimits },
+      {
+        now: () => 0,
+        githubToken,
+        existence,
+        fetch: async (url, init) => {
+          calls.push(url);
+          const parsed = new URL(url);
+          if (parsed.origin === 'https://registry.npmjs.org') {
+            const [, name, version] = parsed.pathname.split('/').map(decodeURIComponent);
+            return Response.json({
+              _id: name + '@' + version,
+              name,
+              version,
+              dist: { integrity },
+              description: 'Exact version description.',
+              repository: {
+                url: 'https://github.com/fixture/mono.git',
+                directory: 'packages/' + name,
+              },
+            });
+          }
+          if (url === GITHUB_GRAPHQL_URL) {
+            sent.push(JSON.parse(String(init.body)));
+            return graphql(init);
+          }
+          const path = decodeURIComponent(parsed.pathname).replace('/repos/fixture/mono', '');
+          const tag = path.slice('/git/ref/tags/'.length);
+          if (path === '') return Response.json({ full_name: 'fixture/mono', private: false });
+          if (path.startsWith('/git/ref/tags/') && present.has(tag))
+            return Response.json({ ref: 'refs/tags/' + tag, object: { type: 'commit', sha } });
+          if (path === '/contents/packages/fixture-anchor/package.json')
+            return Response.json(blob({ name: 'fixture-anchor', version: '1.1.0' }));
+          if (path === '/releases') return Response.json([]);
+          return Response.json({}, { status: 404 });
+        },
       },
-    });
+    );
     if (opened.kind !== 'ready') throw new Error('reader');
     return { reader: opened.reader, calls, sent, existence };
   }
   const restTagProbes = (calls: string[]) =>
     calls.filter((url) => url.includes('/git/ref/')).map((url) => decodeURIComponent(url));
-  async function run(r: ReturnType<typeof monorepo>) {
-    const result = await enrichUpstream(await fixture(1), { reader: r.reader });
+  async function run(r: ReturnType<typeof monorepo>, additions = 1) {
+    const input = await fixture(additions, r.reader.limits);
+    const result = await enrichUpstream(input, { reader: r.reader });
     r.reader.close();
     if (result.kind !== 'enriched') throw new Error('enrichment');
     return result;
   }
+
+  test('a share that runs out while reading ahead keeps that metadata and sends no GitHub read', async () => {
+    // Three members; the second member's head read is the first one the share refuses.
+    const r = monorepo(undefined, true, { maxRequests: 2 });
+    const result = await run(r, 2);
+    const [first, stopped, later] = result.changes.map((change) => change.id);
+    expect(result.stopped).toBe('budget');
+    expect(r.calls.filter((url) => url.includes('api.github.com'))).toEqual([]);
+    expect(r.sent).toEqual([]);
+    expect(result.attempts.map((a) => [a.memberId, a.side, a.stage, a.outcome, a.reasons])).toEqual(
+      [
+        [first, 'head', 'metadata', 'available', []],
+        [stopped, 'base', 'metadata', 'available', []],
+        [stopped, 'head', 'metadata', 'skipped', ['budget']],
+      ],
+    );
+    expect(result.publicIdentities.map((p) => [p.memberId, p.side])).toEqual([
+      [first, 'head'],
+      [stopped, 'base'],
+    ]);
+    const [firstUpstream, ...rest] = result.changes.map((change) => change.evidence.upstream);
+    expect(firstUpstream).toMatchObject({ status: 'partial', reasons: ['unsupported', 'budget'] });
+    expect(firstUpstream.sourceIds).toHaveLength(1);
+    for (const upstream of rest)
+      expect(upstream).toEqual({ status: 'unavailable', reasons: ['budget'], sourceIds: [] });
+    expect(later).toBeDefined();
+  });
 
   test('an absent tag is missing with no REST request, and the result is unchanged', async () => {
     const today = monorepo(undefined, false);
@@ -592,6 +678,7 @@ describe('the batched tag existence pre-pass', () => {
     expect(graphqlAt).toBeGreaterThan(-1);
     const github = r.calls.slice(graphqlAt + 1).filter((url) => url.includes('api.github.com'));
     expect(github).toEqual([]);
+    expect(result.changes.length).toBeGreaterThan(0);
     for (const change of result.changes)
       expect(change.evidence.upstream.reasons).toContain('rate_limit');
   });

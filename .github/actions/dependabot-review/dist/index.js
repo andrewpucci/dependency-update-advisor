@@ -21382,29 +21382,76 @@ function markUnresearched(output, from, reason) {
 /**
 * Reads every package member's metadata before any member's tags are probed, so the pre-pass sees
 * every candidate (amendment item 1). A side that throws ends its member, as it does in the member
-* loop. Reading stops at a reader stop; `stopAt` names the member whose read it was.
+* loop. Each side's metadata is also retained in a scratch copy and bounded there, so a member
+* over its bounds stops reading as it did in the member loop. The scratch holds the same metadata
+* as the real output but no research, so it is never larger at the same point. Reading stops at a
+* reader stop; `stop` names the member whose read it was and the reason.
 */
-async function prefetchMetadata(input, changes, reader, pypiReader) {
+async function prefetchMetadata(input, output, reader, pypiReader) {
 	const members = /* @__PURE__ */ new Map();
-	for (const [index, change] of changes.entries()) {
+	const scratch = structuredClone(output);
+	for (const [index, change] of output.changes.entries()) {
 		if ("basis" in change || change.ecosystem === "actions") continue;
 		const sides = /* @__PURE__ */ new Map();
 		members.set(index, sides);
+		const point = checkpoint(scratch, index);
 		for (const side of ["base", "head"]) try {
-			sides.set(side, { lookup: await metadataLookup(input, change, side, reader, pypiReader) });
+			const lookup = await metadataLookup(input, change, side, reader, pypiReader);
+			sides.set(side, { lookup });
+			metadata$2(input, scratch, scratch.changes[index], side, lookup);
+			bounds(scratch, input.limits, scratch.changes[index]);
 		} catch (error) {
-			sides.set(side, { error });
+			if (!sides.has(side)) sides.set(side, { error });
+			else if (side === "base") sides.set("head", { error });
+			rollback(scratch, point, upstreamFailureReason(error));
 			break;
 		}
-		if (reader.stopped?.()) return {
+		const reason = reader.stopped?.();
+		if (reason) return {
 			members,
-			stopAt: index
+			stop: {
+				index,
+				reason
+			}
 		};
 	}
 	return {
 		members,
-		stopAt: null
+		stop: null
 	};
+}
+/** Retains a member's read-ahead metadata as the member loop does; what it throws ends the member. */
+function attachMetadata(input, output, change, prefetched) {
+	const lookups = /* @__PURE__ */ new Map();
+	for (const side of ["base", "head"]) {
+		const read = prefetched?.get(side);
+		if (read && "error" in read) throw read.error;
+		const lookup = read?.lookup;
+		metadata$2(input, output, change, side, lookup);
+		if (lookup) lookups.set(side, lookup);
+		bounds(output, input.limits, change);
+	}
+	return lookups;
+}
+/**
+* A reader stop while reading ahead at member `stopAt`: every member up to it keeps the metadata
+* read for it and is then marked stopped exactly as a later member is marked unresearched, with no
+* GitHub stage read. Members after it are unresearched as before.
+*/
+function stopAfterPrefetch(input, output, members, stopAt, reason) {
+	for (let index = 0; index <= stopAt; index++) {
+		const change = output.changes[index];
+		if ("basis" in change) continue;
+		const point = checkpoint(output, index);
+		try {
+			if (change.ecosystem !== "actions") attachMetadata(input, output, change, members.get(index));
+		} catch (error) {
+			rollback(output, point, upstreamFailureReason(error));
+		}
+		rollback(output, checkpoint(output, index), reason);
+	}
+	output.stopped = reason;
+	markUnresearched(output, stopAt + 1, reason);
 }
 /** The exact tags the upstream stage may probe for one member: its target and comparison base. */
 function memberTagCandidates(change, sides, reader) {
@@ -21439,18 +21486,28 @@ async function enrichChange(input, output, change, reader, prefetched, index, ma
 		return;
 	}
 	mark(checkpoint(output, index));
-	const lookups = /* @__PURE__ */ new Map();
-	for (const side of ["base", "head"]) {
-		const read = prefetched?.get(side);
-		if (read && "error" in read) throw read.error;
-		const lookup = read?.lookup;
-		metadata$2(input, output, change, side, lookup);
-		if (lookup) lookups.set(side, lookup);
-		bounds(output, input.limits, change);
-	}
+	const lookups = attachMetadata(input, output, change, prefetched);
 	mark(checkpoint(output, index));
 	await packageResearch(input, output, change, lookups, reader);
 	bounds(output, input.limits, change);
+}
+/** Researches each member in order, from its read-ahead metadata, until the reader stops. */
+async function researchMembers(input, output, members, reader) {
+	for (let index = 0; index < output.changes.length; index++) {
+		const marks = [];
+		try {
+			await enrichChange(input, output, output.changes[index], reader, members.get(index), index, (p) => marks.push(p));
+		} catch (error) {
+			const point = marks.at(-1);
+			if (point) rollback(output, point, upstreamFailureReason(error));
+		}
+		const stopped = reader.stopped?.() ?? null;
+		if (stopped) {
+			output.stopped = stopped;
+			markUnresearched(output, index + 1, stopped);
+			return;
+		}
+	}
 }
 /** Enrich exact inventory identities; caller retains inventory coverage and relationships separately. */
 async function enrichUpstream(value, dependencies) {
@@ -21481,22 +21538,11 @@ async function enrichUpstream(value, dependencies) {
 	try {
 		bounds(output, input.limits);
 		const { reader, pypiReader } = dependencies;
-		const { members, stopAt } = await prefetchMetadata(input, output.changes, reader, pypiReader);
-		if (stopAt === null) await tagPrepass(output.changes, members, reader);
-		for (let index = 0; index < output.changes.length; index++) {
-			const marks = [];
-			try {
-				await enrichChange(input, output, output.changes[index], reader, members.get(index), index, (p) => marks.push(p));
-			} catch (error) {
-				const point = marks.at(-1);
-				if (point) rollback(output, point, upstreamFailureReason(error));
-			}
-			const stopped = stopAt === null || index >= stopAt ? reader.stopped?.() ?? null : null;
-			if (stopped) {
-				output.stopped = stopped;
-				markUnresearched(output, index + 1, stopped);
-				break;
-			}
+		const { members, stop } = await prefetchMetadata(input, output, reader, pypiReader);
+		if (stop) stopAfterPrefetch(input, output, members, stop.index, stop.reason);
+		else {
+			await tagPrepass(output.changes, members, reader);
+			await researchMembers(input, output, members, reader);
 		}
 		return freeze$3(output);
 	} catch (error) {
@@ -22531,6 +22577,17 @@ function researchFetch(token, fetchImpl) {
 	const authenticated = authenticatedFetch(token, fetchImpl);
 	const open = publicFetch(fetchImpl);
 	return async (url, init) => httpsUrl(url).origin === "https://api.github.com" ? authenticated(url, init) : open(url, init);
+}
+/**
+* The research fetch with the flag research needs alongside it: `researchFetch` adds the read
+* token to every api.github.com request, so research may send the batched tag existence query.
+* Callers take both from here, so the flag cannot drift from the fetch that attaches the token.
+*/
+function researchFetchWithToken(token, fetchImpl) {
+	return {
+		fetch: researchFetch(token, fetchImpl),
+		githubToken: true
+	};
 }
 /**
 * Binds every request to one attempt: nothing starts once the attempt has ended or ownership is
@@ -34747,6 +34804,7 @@ async function runStartup(writeError, environment = process.env, dependencies = 
 		const sink = dependencies.sink ?? createRehearsalSink(null);
 		if (!sink) throw new Error("sink");
 		const claims = dependencies.claims ?? createTestClaimStore();
+		const research = researchFetchWithToken(runtime.githubToken, dependencies.fetch);
 		writeError(rehearsalLine(await runReview({
 			event: {
 				eventName,
@@ -34763,8 +34821,8 @@ async function runStartup(writeError, environment = process.env, dependencies = 
 			claims,
 			sink,
 			githubFetch: authenticatedFetch(runtime.githubToken, dependencies.fetch),
-			publicFetch: researchFetch(runtime.githubToken, dependencies.fetch),
-			publicFetchToken: true,
+			publicFetch: research.fetch,
+			publicFetchToken: research.githubToken,
 			model: dependencies.model,
 			now: dependencies.now,
 			jobStartedAt,

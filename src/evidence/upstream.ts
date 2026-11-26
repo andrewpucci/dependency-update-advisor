@@ -833,30 +833,87 @@ type MemberLookups = Map<'base' | 'head', Prefetched>;
 /**
  * Reads every package member's metadata before any member's tags are probed, so the pre-pass sees
  * every candidate (amendment item 1). A side that throws ends its member, as it does in the member
- * loop. Reading stops at a reader stop; `stopAt` names the member whose read it was.
+ * loop. Each side's metadata is also retained in a scratch copy and bounded there, so a member
+ * over its bounds stops reading as it did in the member loop. The scratch holds the same metadata
+ * as the real output but no research, so it is never larger at the same point. Reading stops at a
+ * reader stop; `stop` names the member whose read it was and the reason.
  */
 async function prefetchMetadata(
   input: UpstreamInput,
-  changes: readonly PacketChange[],
+  output: UpstreamEnrichment,
   reader: UpstreamReader,
   pypiReader: PolicyMetadataReader | undefined,
 ) {
   const members = new Map<number, MemberLookups>();
-  for (const [index, change] of changes.entries()) {
+  const scratch = structuredClone(output);
+  for (const [index, change] of output.changes.entries()) {
     if ('basis' in change || change.ecosystem === 'actions') continue;
     const sides: MemberLookups = new Map();
     members.set(index, sides);
+    const point = checkpoint(scratch, index);
     for (const side of ['base', 'head'] as const) {
       try {
-        sides.set(side, { lookup: await metadataLookup(input, change, side, reader, pypiReader) });
+        const lookup = await metadataLookup(input, change, side, reader, pypiReader);
+        sides.set(side, { lookup });
+        metadata(input, scratch, scratch.changes[index], side, lookup);
+        bounds(scratch, input.limits, scratch.changes[index]);
       } catch (error) {
-        sides.set(side, { error });
+        // A failed read ends the member here; a failed bound ends it at the next side. Either
+        // way the scratch drops the member's metadata, as the member loop's rollback does.
+        if (!sides.has(side)) sides.set(side, { error });
+        else if (side === 'base') sides.set('head', { error });
+        rollback(scratch, point, upstreamFailureReason(error));
         break;
       }
     }
-    if (reader.stopped?.()) return { members, stopAt: index };
+    const reason = reader.stopped?.();
+    if (reason) return { members, stop: { index, reason } };
   }
-  return { members, stopAt: null };
+  return { members, stop: null };
+}
+/** Retains a member's read-ahead metadata as the member loop does; what it throws ends the member. */
+function attachMetadata(
+  input: UpstreamInput,
+  output: UpstreamEnrichment,
+  change: PacketChange,
+  prefetched: MemberLookups | undefined,
+) {
+  const lookups = new Map<string, UpstreamLookup>();
+  for (const side of ['base', 'head'] as const) {
+    const read = prefetched?.get(side);
+    if (read && 'error' in read) throw read.error;
+    const lookup = read?.lookup;
+    metadata(input, output, change, side, lookup);
+    if (lookup) lookups.set(side, lookup);
+    bounds(output, input.limits, change);
+  }
+  return lookups;
+}
+/**
+ * A reader stop while reading ahead at member `stopAt`: every member up to it keeps the metadata
+ * read for it and is then marked stopped exactly as a later member is marked unresearched, with no
+ * GitHub stage read. Members after it are unresearched as before.
+ */
+function stopAfterPrefetch(
+  input: UpstreamInput,
+  output: UpstreamEnrichment,
+  members: Map<number, MemberLookups>,
+  stopAt: number,
+  reason: EvidenceReason,
+) {
+  for (let index = 0; index <= stopAt; index++) {
+    const change = output.changes[index];
+    if ('basis' in change) continue;
+    const point = checkpoint(output, index);
+    try {
+      if (change.ecosystem !== 'actions') attachMetadata(input, output, change, members.get(index));
+    } catch (error) {
+      rollback(output, point, upstreamFailureReason(error));
+    }
+    rollback(output, checkpoint(output, index), reason);
+  }
+  output.stopped = reason;
+  markUnresearched(output, stopAt + 1, reason);
 }
 /** The exact tags the upstream stage may probe for one member: its target and comparison base. */
 function memberTagCandidates(
@@ -887,6 +944,9 @@ async function tagPrepass(
   members: Map<number, MemberLookups>,
   reader: UpstreamReader,
 ) {
+  // Candidates in a repository that later fails the public check are still asked about. They cost
+  // alias slots and share, but an answer is used only by a probe that check allows, so it can
+  // never make a candidate missing that REST would not.
   try {
     const candidates = [...members].flatMap(([index, sides]) =>
       memberTagCandidates(changes[index], sides, reader),
@@ -915,18 +975,42 @@ async function enrichChange(
     return;
   }
   mark(checkpoint(output, index));
-  const lookups = new Map<string, UpstreamLookup>();
-  for (const side of ['base', 'head'] as const) {
-    const read = prefetched?.get(side);
-    if (read && 'error' in read) throw read.error;
-    const lookup = read?.lookup;
-    metadata(input, output, change, side, lookup);
-    if (lookup) lookups.set(side, lookup);
-    bounds(output, input.limits, change);
-  }
+  const lookups = attachMetadata(input, output, change, prefetched);
   mark(checkpoint(output, index));
   await packageResearch(input, output, change, lookups, reader);
   bounds(output, input.limits, change);
+}
+/** Researches each member in order, from its read-ahead metadata, until the reader stops. */
+async function researchMembers(
+  input: UpstreamInput,
+  output: UpstreamEnrichment,
+  members: Map<number, MemberLookups>,
+  reader: UpstreamReader,
+) {
+  for (let index = 0; index < output.changes.length; index++) {
+    const marks: Checkpoint[] = [];
+    try {
+      await enrichChange(
+        input,
+        output,
+        output.changes[index],
+        reader,
+        members.get(index),
+        index,
+        (p) => marks.push(p),
+      );
+    } catch (error) {
+      const point = marks.at(-1);
+      if (point) rollback(output, point, upstreamFailureReason(error));
+    }
+    // A stopped reader refuses every later read, so the rest are unresearched, not failed.
+    const stopped = reader.stopped?.() ?? null;
+    if (stopped) {
+      output.stopped = stopped;
+      markUnresearched(output, index + 1, stopped);
+      return;
+    }
+  }
 }
 /** Enrich exact inventory identities; caller retains inventory coverage and relationships separately. */
 export async function enrichUpstream(
@@ -959,32 +1043,11 @@ export async function enrichUpstream(
   try {
     bounds(output, input.limits);
     const { reader, pypiReader } = dependencies;
-    const { members, stopAt } = await prefetchMetadata(input, output.changes, reader, pypiReader);
-    if (stopAt === null) await tagPrepass(output.changes, members, reader);
-    for (let index = 0; index < output.changes.length; index++) {
-      const marks: Checkpoint[] = [];
-      try {
-        await enrichChange(
-          input,
-          output,
-          output.changes[index],
-          reader,
-          members.get(index),
-          index,
-          (p) => marks.push(p),
-        );
-      } catch (error) {
-        const point = marks.at(-1);
-        if (point) rollback(output, point, upstreamFailureReason(error));
-      }
-      // A stopped reader refuses every later read, so the rest are unresearched, not failed. A stop
-      // while reading ahead counts from the member whose read it was.
-      const stopped = stopAt === null || index >= stopAt ? (reader.stopped?.() ?? null) : null;
-      if (stopped) {
-        output.stopped = stopped;
-        markUnresearched(output, index + 1, stopped);
-        break;
-      }
+    const { members, stop } = await prefetchMetadata(input, output, reader, pypiReader);
+    if (stop) stopAfterPrefetch(input, output, members, stop.index, stop.reason);
+    else {
+      await tagPrepass(output.changes, members, reader);
+      await researchMembers(input, output, members, reader);
     }
     return freeze(output);
   } catch (error) {
