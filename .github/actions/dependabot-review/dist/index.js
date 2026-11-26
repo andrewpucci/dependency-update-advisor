@@ -13741,6 +13741,7 @@ var Reader$1 = class {
 			const fetched = /* @__PURE__ */ new Set();
 			const planned = discoveryUrls(ecosystem, all.flatMap((p) => p.spellings), this.kind);
 			for (const url of this.deps.discoveryPlan?.(planned) ?? planned) {
+				advisoryCheck(planned.includes(url));
 				const values = [];
 				await this.github(url, (value) => values.push(value), DISCOVERY_URL_CAP);
 				for (const value of values) for (const [key, names] of batchNames(value, ecosystem, this.kind, nameKey)) forms.set(key, /* @__PURE__ */ new Set([...forms.get(key) ?? [], ...names]));

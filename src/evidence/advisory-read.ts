@@ -58,7 +58,8 @@ export type AdvisoryReader = Readonly<{
    * Settles what complete batches can for these targets, before they are read: npm versioned
    * batches, and discovery batches for Actions reviewed and `pip` malware targets. A target a
    * batch cannot settle is left to `read`, which then queries it alone. Resolves to the number
-   * of targets it settled, or null when the reader was busy and settled nothing.
+   * of targets it decided, complete or not, so `read` sends nothing for them; or null when the
+   * reader was busy and decided nothing.
    */
   settle?: (targets: readonly unknown[]) => Promise<number | null>;
   close: () => void;
@@ -73,8 +74,9 @@ type Dependencies = {
   /** The run's research GitHub quota guard; absent outside research. */
   quota?: GithubQuotaGuard;
   /**
-   * Replaces the request plan of a discovery batch. Only tests pass it, to show that a batch
-   * whose requests miss a spelling settles nothing.
+   * Drops or reorders the planned requests of a discovery batch; a URL it was not given makes
+   * the batch incomplete. Only tests pass it, to show that a batch whose requests miss a
+   * spelling settles nothing.
    */
   discoveryPlan?: (urls: string[]) => string[];
 };
@@ -991,6 +993,7 @@ class Reader implements AdvisoryReader {
         this.kind,
       );
       for (const url of this.deps.discoveryPlan?.(planned) ?? planned) {
+        advisoryCheck(planned.includes(url));
         const values: unknown[] = [];
         await this.github(url, (value) => values.push(value), DISCOVERY_URL_CAP);
         for (const value of values)

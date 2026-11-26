@@ -581,10 +581,18 @@ test('a failed second request of a discovery batch makes every target in it fall
   );
   const reader = ready('malware', fake.fetch);
   const both = [long, { ...long, version: '2.0.0' }];
+  const small = [pipTargets[0], pip('pillow', '8.0.0')];
   // The long name's spellings need several requests, so it is a batch of its own.
-  expect(await reader.settle([pipTargets[0], ...both])).toBe(1);
+  expect(await reader.settle([...small, ...both])).toBe(small.length);
   expect(fake.requests.filter((u) => carries(u, long)).length).toBeGreaterThan(1);
-  expect(await reader.read(pipTargets[0])).toMatchObject({ batched: true });
+  // The separate small batch, one request for both packages, still settles.
+  expect(fake.requests.filter((u) => small.every((t) => carries(u, t)))).toHaveLength(1);
+  for (const t of small)
+    expect(await reader.read(t)).toMatchObject({
+      batched: true,
+      complete: true,
+      status: 'available',
+    });
   for (const t of both) {
     const before = fake.requests.length;
     expect(await reader.read(t)).not.toHaveProperty('batched');
@@ -643,6 +651,15 @@ test('a continuation URL over the discovery cap is budget, and the batch falls b
   });
   const reader = ready('malware', fake.fetch);
   expect(await reader.settle([long])).toBe(0);
+  reader.close();
+});
+test('a discovery plan that rewrites a request settles nothing', async () => {
+  const fake = server(() => Response.json([]));
+  // Every spelling is still listed, but under another query type.
+  const retype = (urls: string[]) => urls.map((u) => u.replace('type=malware', 'type=reviewed'));
+  const reader = ready('malware', fake.fetch, {}, { discoveryPlan: retype });
+  expect(await reader.settle([pipTargets[0]])).toBe(0);
+  expect(fake.requests).toHaveLength(0);
   reader.close();
 });
 test('a discovery batch whose requests miss a spelling settles nothing', async () => {
