@@ -10774,6 +10774,7 @@ function actor(value) {
 		type: value.type
 	};
 }
+/** Whether an actor is the Dependabot bot account. */
 function isDependabot(value) {
 	return value.login === "dependabot[bot]" && value.type === "Bot";
 }

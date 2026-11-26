@@ -33,7 +33,7 @@ import {
   RESEARCH_CACHE_LIMITS,
 } from '../../src/budget.js';
 import { createEvidenceCollectors, openEvidenceSession } from '../../src/collection.js';
-import { parseReviewBinding } from '../../src/event.js';
+import { isDependabot, parseReviewBinding } from '../../src/event.js';
 import { createGithubQuotaGuard } from '../../src/evidence/github-quota.js';
 import { createResearchCache } from '../../src/evidence/research-cache.js';
 import { limit } from '../../src/limits.js';
@@ -224,6 +224,10 @@ async function binding(token: string, pr: number) {
   );
   const run = runs.workflow_runs[0];
   if (!run) throw new Error('no CI run for the PR head');
+  // The reviewer only binds a Dependabot run; a human push on the head would fail later as a
+  // session conflict and surface only as `internal-failure`.
+  if (!isDependabot(run.actor))
+    throw new Error('the PR head CI run was not started by Dependabot; measure a Dependabot head');
   const value = {
     repository: { id: repo.id, owner, name },
     workflow: { id: workflow.id, path: workflow.path },
