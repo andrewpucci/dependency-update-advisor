@@ -1,15 +1,21 @@
-import { collectionRegistryRequests, researchShareUnits } from './budget.js';
-import { collectorRoots, type DependabotRootsOutcome } from './dependabot-roots.js';
-import type { ReviewBinding } from './event.js';
-import { collectActionsInventory } from './evidence/actions.js';
-import { collectNpmInventory } from './evidence/npm.js';
-import { enrichNpmEvidence } from './evidence/npm-graph.js';
-import { collectUvMetadata } from './evidence/uv.js';
-import { reconcileUvGraph } from './evidence/uv-graph.js';
-import type { ResearchCache } from './evidence/research-cache.js';
-import { createGithubReadSession, type GithubReadSession } from './github-read.js';
-import { limit } from './limits.js';
-import type { Ecosystem, EvidenceReason } from './schema.js';
+import { collectionRegistryRequests, researchShareUnits } from "./budget.js";
+import {
+  collectorRoots,
+  type DependabotRootsOutcome,
+} from "./dependabot-roots.js";
+import type { ReviewBinding } from "./event.js";
+import { collectActionsInventory } from "./evidence/actions.js";
+import { collectNpmInventory } from "./evidence/npm.js";
+import { enrichNpmEvidence } from "./evidence/npm-graph.js";
+import { collectUvMetadata } from "./evidence/uv.js";
+import { reconcileUvGraph } from "./evidence/uv-graph.js";
+import type { ResearchCache } from "./evidence/research-cache.js";
+import {
+  createGithubReadSession,
+  type GithubReadSession,
+} from "./github-read.js";
+import { limit } from "./limits.js";
+import type { Ecosystem, EvidenceReason } from "./schema.js";
 
 /**
  * Reader limits inside the envelope split (see `EVIDENCE_READ_ALLOCATION`); every reader's time is
@@ -18,66 +24,66 @@ import type { Ecosystem, EvidenceReason } from './schema.js';
  */
 export const W2_EVIDENCE_LIMITS = Object.freeze({
   session: Object.freeze({
-    maxRequests: limit('w2.session.maxRequests'),
-    maxPages: limit('w2.session.maxPages'),
-    maxFiles: limit('w2.session.maxFiles'),
-    maxJsonEntries: limit('w2.session.maxJsonEntries'),
-    maxResponseBytes: limit('w2.session.maxResponseBytes'),
-    maxFileBytes: limit('w2.session.maxFileBytes'),
-    maxTotalBytes: limit('w2.session.maxTotalBytes'),
-    maxRetainedBytes: limit('w2.session.maxRetainedBytes'),
-    requestTimeoutMs: limit('w2.session.requestTimeoutMs'),
+    maxRequests: limit("w2.session.maxRequests"),
+    maxPages: limit("w2.session.maxPages"),
+    maxFiles: limit("w2.session.maxFiles"),
+    maxJsonEntries: limit("w2.session.maxJsonEntries"),
+    maxResponseBytes: limit("w2.session.maxResponseBytes"),
+    maxFileBytes: limit("w2.session.maxFileBytes"),
+    maxTotalBytes: limit("w2.session.maxTotalBytes"),
+    maxRetainedBytes: limit("w2.session.maxRetainedBytes"),
+    requestTimeoutMs: limit("w2.session.requestTimeoutMs"),
   }),
   npm: Object.freeze({
-    maxFileBytes: limit('w2.npm.maxFileBytes'),
-    maxJsonDepth: limit('w2.npm.maxJsonDepth'),
-    maxJsonEntries: limit('w2.npm.maxJsonEntries'),
-    maxRoots: limit('w2.npm.maxRoots'),
-    maxRetainedBytes: limit('w2.npm.maxRetainedBytes'),
+    maxFileBytes: limit("w2.npm.maxFileBytes"),
+    maxJsonDepth: limit("w2.npm.maxJsonDepth"),
+    maxJsonEntries: limit("w2.npm.maxJsonEntries"),
+    maxRoots: limit("w2.npm.maxRoots"),
+    maxRetainedBytes: limit("w2.npm.maxRetainedBytes"),
   }),
   actions: Object.freeze({
-    maxFileBytes: limit('w2.actions.maxFileBytes'),
-    maxWorkflows: limit('w2.actions.maxWorkflows'),
-    maxYamlNodes: limit('w2.actions.maxYamlNodes'),
-    maxYamlDepth: limit('w2.actions.maxYamlDepth'),
-    maxAliasExpansions: limit('w2.actions.maxAliasExpansions'),
-    maxOccurrences: limit('w2.actions.maxOccurrences'),
-    maxRetainedBytes: limit('w2.actions.maxRetainedBytes'),
+    maxFileBytes: limit("w2.actions.maxFileBytes"),
+    maxWorkflows: limit("w2.actions.maxWorkflows"),
+    maxYamlNodes: limit("w2.actions.maxYamlNodes"),
+    maxYamlDepth: limit("w2.actions.maxYamlDepth"),
+    maxAliasExpansions: limit("w2.actions.maxAliasExpansions"),
+    maxOccurrences: limit("w2.actions.maxOccurrences"),
+    maxRetainedBytes: limit("w2.actions.maxRetainedBytes"),
   }),
   uv: Object.freeze({
-    maxFileBytes: limit('w2.uv.maxFileBytes'),
-    maxTomlDepth: limit('w2.uv.maxTomlDepth'),
-    maxTomlEntries: limit('w2.uv.maxTomlEntries'),
-    maxPackages: limit('w2.uv.maxPackages'),
-    maxDeclarations: limit('w2.uv.maxDeclarations'),
-    maxEdges: limit('w2.uv.maxEdges'),
-    maxStringBytes: limit('w2.uv.maxStringBytes'),
-    maxRequirementTokens: limit('w2.uv.maxRequirementTokens'),
-    maxMarkerDepth: limit('w2.uv.maxMarkerDepth'),
-    maxRoots: limit('w2.uv.maxRoots'),
-    maxRetainedBytes: limit('w2.uv.maxRetainedBytes'),
+    maxFileBytes: limit("w2.uv.maxFileBytes"),
+    maxTomlDepth: limit("w2.uv.maxTomlDepth"),
+    maxTomlEntries: limit("w2.uv.maxTomlEntries"),
+    maxPackages: limit("w2.uv.maxPackages"),
+    maxDeclarations: limit("w2.uv.maxDeclarations"),
+    maxEdges: limit("w2.uv.maxEdges"),
+    maxStringBytes: limit("w2.uv.maxStringBytes"),
+    maxRequirementTokens: limit("w2.uv.maxRequirementTokens"),
+    maxMarkerDepth: limit("w2.uv.maxMarkerDepth"),
+    maxRoots: limit("w2.uv.maxRoots"),
+    maxRetainedBytes: limit("w2.uv.maxRetainedBytes"),
   }),
   graph: Object.freeze({
-    maxGraphWork: limit('w2.graph.maxGraphWork'),
-    maxRetainedBytes: limit('w2.graph.maxRetainedBytes'),
+    maxGraphWork: limit("w2.graph.maxGraphWork"),
+    maxRetainedBytes: limit("w2.graph.maxRetainedBytes"),
   }),
   registry: Object.freeze({
     // The ceiling; the reader opens with the share scaled from npm members under it.
-    maxRequests: limit('w2.registry.maxRequests'),
-    maxResponseBytes: limit('w2.registry.maxResponseBytes'),
-    maxTotalBytes: limit('w2.registry.maxTotalBytes'),
-    maxJsonEntries: limit('w2.registry.maxJsonEntries'),
-    maxJsonDepth: limit('w2.registry.maxJsonDepth'),
-    requestTimeoutMs: limit('w2.registry.requestTimeoutMs'),
+    maxRequests: limit("w2.registry.maxRequests"),
+    maxResponseBytes: limit("w2.registry.maxResponseBytes"),
+    maxTotalBytes: limit("w2.registry.maxTotalBytes"),
+    maxJsonEntries: limit("w2.registry.maxJsonEntries"),
+    maxJsonDepth: limit("w2.registry.maxJsonDepth"),
+    requestTimeoutMs: limit("w2.registry.requestTimeoutMs"),
   }),
-  totalTimeoutMs: limit('w2.totalTimeoutMs'),
+  totalTimeoutMs: limit("w2.totalTimeoutMs"),
 });
 
 type Clock = () => number;
 export type EvidenceSessionResult =
-  | Readonly<{ kind: 'ready'; session: GithubReadSession }>
-  | Readonly<{ kind: 'obsolete' }>
-  | Readonly<{ kind: 'unavailable' }>;
+  | Readonly<{ kind: "ready"; session: GithubReadSession }>
+  | Readonly<{ kind: "obsolete" }>
+  | Readonly<{ kind: "unavailable" }>;
 export type CollectionInput = Readonly<{
   binding: ReviewBinding;
   /** Carries the trusted snapshot's revision, which becomes the collectors' `configRevision`. */
@@ -94,7 +100,7 @@ export type CollectionInput = Readonly<{
   signal?: AbortSignal;
 }>;
 type Fragment = Readonly<{
-  kind: 'complete';
+  kind: "complete";
   ecosystem: Ecosystem;
   coverage: unknown;
   changes: readonly unknown[];
@@ -107,17 +113,22 @@ type Fragment = Readonly<{
 }>;
 /** `limit` and `count` name the register cap that stopped the collector and what it measured. */
 type Unavailable = Readonly<{
-  kind: 'unavailable';
+  kind: "unavailable";
   reason: EvidenceReason;
   limit?: string;
   count?: number;
 }>;
-type Collector = (session: GithubReadSession) => Promise<Fragment | Unavailable>;
+type Collector = (
+  session: GithubReadSession,
+) => Promise<Fragment | Unavailable>;
 
 /** A request may not be allowed longer than the whole read, so near the deadline both shrink. */
 function timeouts(requestTimeoutMs: number, left: number) {
   const totalTimeoutMs = Math.min(W2_EVIDENCE_LIMITS.totalTimeoutMs, left);
-  return { totalTimeoutMs, requestTimeoutMs: Math.min(requestTimeoutMs, totalTimeoutMs) };
+  return {
+    totalTimeoutMs,
+    requestTimeoutMs: Math.min(requestTimeoutMs, totalTimeoutMs),
+  };
 }
 
 /**
@@ -130,21 +141,24 @@ function noInventory(result: {
   limit?: string;
   count?: number;
 }): Unavailable {
-  if (result.kind === 'unavailable' && result.reason) {
+  if (result.kind === "unavailable" && result.reason) {
     const { reason, limit, count } = result;
-    return limit === undefined
-      ? { kind: 'unavailable', reason }
-      : { kind: 'unavailable', reason, limit, count };
+    return limit === undefined || count === undefined
+      ? { kind: "unavailable", reason }
+      : { kind: "unavailable", reason, limit, count };
   }
-  return { kind: 'unavailable', reason: result.kind === 'obsolete' ? 'conflict' : 'malformed' };
+  return {
+    kind: "unavailable",
+    reason: result.kind === "obsolete" ? "conflict" : "malformed",
+  };
 }
 
-const remaining = (input: Pick<CollectionInput, 'now' | 'deadline'>) =>
+const remaining = (input: Pick<CollectionInput, "now" | "deadline">) =>
   Math.max(1, Math.floor(input.deadline - input.now()));
 
 /** Opens the owner-bound GitHub evidence session inside the envelope. */
 export async function openEvidenceSession(
-  input: Pick<CollectionInput, 'binding' | 'now' | 'deadline'> &
+  input: Pick<CollectionInput, "binding" | "now" | "deadline"> &
     Readonly<{ fetch: (url: string, init: RequestInit) => Promise<Response> }>,
 ): Promise<EvidenceSessionResult> {
   const opened = await createGithubReadSession(
@@ -152,13 +166,19 @@ export async function openEvidenceSession(
       binding: input.binding,
       limits: {
         ...W2_EVIDENCE_LIMITS.session,
-        ...timeouts(W2_EVIDENCE_LIMITS.session.requestTimeoutMs, remaining(input)),
+        ...timeouts(
+          W2_EVIDENCE_LIMITS.session.requestTimeoutMs,
+          remaining(input),
+        ),
       },
     },
     { fetch: input.fetch, now: input.now },
   );
-  if (opened.kind === 'ready') return { kind: 'ready', session: opened.session };
-  return opened.kind === 'obsolete' ? { kind: 'obsolete' } : { kind: 'unavailable' };
+  if (opened.kind === "ready")
+    return { kind: "ready", session: opened.session };
+  return opened.kind === "obsolete"
+    ? { kind: "obsolete" }
+    : { kind: "unavailable" };
 }
 
 /** A configured-roots failure is a visible coverage gap, never an empty or skipped ecosystem. */
@@ -169,20 +189,20 @@ function gapFragment(
 ): Fragment {
   const id = `${ecosystem}-roots-gap`;
   return {
-    kind: 'complete',
+    kind: "complete",
     ecosystem,
-    coverage: { status: 'unavailable', reasons: [reason], sourceIds: [id] },
+    coverage: { status: "unavailable", reasons: [reason], sourceIds: [id] },
     changes: [],
     sources: [
       {
         id,
-        kind: 'file-list',
+        kind: "file-list",
         ecosystems: [ecosystem],
         memberIds: [],
-        status: 'unavailable',
+        status: "unavailable",
         reasons: [reason],
         provenance: {
-          kind: 'inventory',
+          kind: "inventory",
           repository: binding.repository,
           baseSha: binding.baseSha,
           headSha: binding.headSha,
@@ -206,8 +226,9 @@ export function createEvidenceCollectors(
   const { binding } = input;
 
   const npm: Collector = async (session) => {
-    const roots = collectorRoots(input.dependabot, 'npm');
-    if (roots.kind === 'unavailable') return gapFragment(binding, 'npm', roots.reason);
+    const roots = collectorRoots(input.dependabot, "npm");
+    if (roots.kind === "unavailable")
+      return gapFragment(binding, "npm", roots.reason);
     const inventory = await collectNpmInventory(
       {
         binding,
@@ -217,7 +238,7 @@ export function createEvidenceCollectors(
       },
       { session },
     );
-    if (inventory.kind !== 'inventory') return noInventory(inventory);
+    if (inventory.kind !== "inventory") return noInventory(inventory);
     input.onNpmInventory?.(inventory);
     const total = remaining(input);
     // The registry share scales with the npm members of the trusted inventory just read from the
@@ -241,10 +262,10 @@ export function createEvidenceCollectors(
         cache: input.researchCache,
       },
     );
-    if (enriched.kind !== 'inventory') return noInventory(enriched);
+    if (enriched.kind !== "inventory") return noInventory(enriched);
     return {
-      kind: 'complete',
-      ecosystem: 'npm',
+      kind: "complete",
+      ecosystem: "npm",
       coverage: enriched.coverage,
       changes: enriched.changes,
       sources: enriched.sources,
@@ -260,10 +281,10 @@ export function createEvidenceCollectors(
       { binding, limits: { ...W2_EVIDENCE_LIMITS.actions } },
       { session },
     );
-    if (inventory.kind !== 'inventory') return noInventory(inventory);
+    if (inventory.kind !== "inventory") return noInventory(inventory);
     return {
-      kind: 'complete',
-      ecosystem: 'actions',
+      kind: "complete",
+      ecosystem: "actions",
       coverage: inventory.coverage,
       changes: inventory.changes,
       sources: inventory.sources,
@@ -273,8 +294,9 @@ export function createEvidenceCollectors(
   };
 
   const uv: Collector = async (session) => {
-    const roots = collectorRoots(input.dependabot, 'uv');
-    if (roots.kind === 'unavailable') return gapFragment(binding, 'uv', roots.reason);
+    const roots = collectorRoots(input.dependabot, "uv");
+    if (roots.kind === "unavailable")
+      return gapFragment(binding, "uv", roots.reason);
     const metadata = await collectUvMetadata(
       {
         binding,
@@ -284,16 +306,16 @@ export function createEvidenceCollectors(
       },
       { session },
     );
-    if (metadata.kind !== 'metadata') return noInventory(metadata);
+    if (metadata.kind !== "metadata") return noInventory(metadata);
     const graph = reconcileUvGraph({
       binding,
       metadata,
       limits: { ...W2_EVIDENCE_LIMITS.graph },
     });
-    if (graph.kind !== 'inventory') return noInventory(graph);
+    if (graph.kind !== "inventory") return noInventory(graph);
     return {
-      kind: 'complete',
-      ecosystem: 'uv',
+      kind: "complete",
+      ecosystem: "uv",
       coverage: graph.coverage,
       changes: graph.changes,
       sources: graph.sources,

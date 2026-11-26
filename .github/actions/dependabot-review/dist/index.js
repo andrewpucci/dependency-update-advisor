@@ -32340,7 +32340,7 @@ function timeouts(requestTimeoutMs, left) {
 function noInventory(result) {
 	if (result.kind === "unavailable" && result.reason) {
 		const { reason, limit, count } = result;
-		return limit === void 0 ? {
+		return limit === void 0 || count === void 0 ? {
 			kind: "unavailable",
 			reason
 		} : {
@@ -32633,7 +32633,7 @@ function gapReason(value) {
 /** A collector's gap, keeping its stopping cap only when it is a register id with a count. */
 function collectorGap(value, source) {
 	const reason = gapReason(value);
-	if (reason !== "budget" || !record(value, ["limit", "count"]) || typeof value.limit !== "string" || !REGISTER.has(value.limit) || !Number.isSafeInteger(value.count)) return {
+	if (reason !== "budget" || !record(value, ["limit", "count"]) || typeof value.limit !== "string" || !REGISTER.has(value.limit) || !Number.isSafeInteger(value.count) || value.count < 0) return {
 		source,
 		reason
 	};
