@@ -194,8 +194,12 @@ async function malwareSeed(run: Run): Promise<{ target: Target | null; status: S
 }
 
 const affect = (t: Target) => `${t.name}@${t.version}`;
+/** A 4xx other than a rate limit (403, 429): GitHub refused the request itself, such as its size. */
 const isRejected = (status: number) =>
-  status >= HTTP_STATUS.clientErrorMin && status < HTTP_STATUS.serverErrorMin;
+  status >= HTTP_STATUS.clientErrorMin &&
+  status < HTTP_STATUS.serverErrorMin &&
+  status !== HTTP_STATUS.forbidden &&
+  status !== HTTP_STATUS.tooManyRequests;
 const packageOf = (entry: string) => entry.slice(0, entry.lastIndexOf('@'));
 
 /** Each real target's singleton match ids, or null when its singleton did not complete. */
