@@ -203,7 +203,9 @@ cannot discover them either, so there is no per-target answer to compare.
 npm batch URLs are checked against `limit:advisory.batch.urlBytes`, the batch
 URL cap approved on 2026-11-26. A batch fits when its first URL, at the
 longest `per_page` form, is within that cap less
-`limit:advisory.batch.cursorHeadroomBytes`. For each npm type the probe
+`limit:advisory.batch.cursorHeadroomBytes`. The probe fits at `per_page=100`,
+one byte longer than production's page size, so production can fit one more
+target than the probe measures. For each npm type the probe
 reports `maxFitTargets`, the most targets a positive-last batch holds and
 still fits, and sends that batch; if it does not complete, the run is
 incomplete (`npmMaxFitIncomplete`). The sweep splits each group into batches

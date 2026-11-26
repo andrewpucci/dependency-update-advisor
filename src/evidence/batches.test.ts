@@ -11,7 +11,10 @@ import {
 const names = (count: number, from = 0) =>
   Array.from({ length: count }, (_, i) => `p${from + i}@1.0.0`);
 
-/** An `affects` value padded so its batch URL alone is exactly `bytes` long. */
+/**
+ * An `affects` value padded so its batch URL alone is exactly `bytes` long. The padded value keeps
+ * the one `@` of `x@1`, which both encode as `%40`, and `x` is not encoded.
+ */
 function exactly(bytes: number): string {
   const base = batchUrl('npm', ['x@1'], 'reviewed').length;
   return `${'x'.repeat(bytes - base + 1)}@1`;
@@ -19,10 +22,17 @@ function exactly(bytes: number): string {
 
 test('a batch holds exactly the register maximum of targets, and one more starts another batch', () => {
   const max = limit('advisory.batch.maxTargets');
-  const items = Array.from({ length: max + 1 }, (_, i) => i);
+  const affects = names(max + 1);
   const fitsAll = () => true;
-  expect(splitBatches(items.slice(0, max), max, fitsAll).batches).toEqual([items.slice(0, max)]);
-  expect(splitBatches(items, max, fitsAll).batches.map((batch) => batch.length)).toEqual([max, 1]);
+  expect(advisoryBatches('npm', affects.slice(0, max), 'reviewed', fitsAll).batches).toEqual([
+    affects.slice(0, max),
+  ]);
+  const split = advisoryBatches('npm', affects, 'reviewed', fitsAll).batches;
+  expect(split.map((batch) => batch.length)).toEqual([max, 1]);
+});
+
+test('a batch maximum below one is refused', () => {
+  expect(() => splitBatches([1], 0, () => true)).toThrow(RangeError);
 });
 
 test('a batch first URL of exactly the cap less the cursor headroom fits; one byte longer does not', () => {

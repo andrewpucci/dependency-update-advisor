@@ -21,6 +21,7 @@ export function splitBatches<T>(
   max: number,
   fits: (batch: readonly T[]) => boolean,
 ): { batches: T[][]; unbatched: T[] } {
+  if (!Number.isSafeInteger(max) || max < 1) throw new RangeError('batch maximum must be positive');
   const batches: T[][] = [];
   const unbatched: T[] = [];
   let batch: T[] = [];
@@ -52,18 +53,17 @@ export function batchUrl(
 /**
  * Versioned `affects` values (`name@version`) split into advisory batches: each holds at most the
  * approved target count and has a first URL within the URL cap less the cursor headroom. A value
- * too long to fit alone is `unbatched`, left to its singleton query.
+ * too long to fit alone is `unbatched`, left to its singleton query. `fits` replaces the URL check
+ * only in tests, since on real targets the URL cap binds long before the target count.
  */
 export function advisoryBatches(
   ecosystem: AdvisoryTarget['ecosystem'],
   affects: readonly string[],
   kind: QueryKind,
+  fits: (batch: readonly string[]) => boolean = (batch) =>
+    batchUrl(ecosystem, batch, kind).length <= BATCH_FIRST_URL_BYTES,
 ): { batches: string[][]; unbatched: string[] } {
-  return splitBatches(
-    affects,
-    BATCH_MAX_TARGETS,
-    (batch) => batchUrl(ecosystem, batch, kind).length <= BATCH_FIRST_URL_BYTES,
-  );
+  return splitBatches(affects, BATCH_MAX_TARGETS, fits);
 }
 
 /** Tag existence candidates split into GraphQL queries of at most the approved size. */

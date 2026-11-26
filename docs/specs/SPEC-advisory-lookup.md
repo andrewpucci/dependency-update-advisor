@@ -1088,9 +1088,9 @@ Ask first. Neither amendment's text is edited.
 
 | Value                      | Register id                                                                      | Basis                                                                                                                                                                           |
 | -------------------------- | -------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| Targets per advisory batch | `limit:advisory.batch.maxTargets`                                                | GitHub's documented `affects` maximum. The URL cap binds first: about 90 npm targets fit it in the C3 run.                                                                      |
+| Targets per advisory batch | `limit:advisory.batch.maxTargets`                                                | GitHub's documented `affects` maximum. On real targets the URL cap binds long before this count.                                                                                |
 | Batch URL length           | `limit:advisory.batch.urlBytes`, less `limit:advisory.batch.cursorHeadroomBytes` | Reuses the discovery cap and headroom. GitHub accepted npm batch URLs up to 5,694 bytes and answered 414 from 8,893; discovery was accepted at 4,371 and answered 414 at 8,259. |
-| Batch `per_page`           | `limit:advisory.batch.pageSize`                                                  | Reuses the discovery page size. The largest npm batch page was 121,579 bytes at GitHub's largest page size, but a batch can return a record set like the `pillow` page.         |
+| Batch `per_page`           | `limit:advisory.batch.pageSize`                                                  | Reuses the discovery page size. The largest npm batch page was 121,579 bytes at GitHub's largest page size. The size is discovery's, set from the `pillow` discovery page.      |
 
 - **Proposed maximum.** The batch size the Batched Lookup Amendment's
   Verification checks is the largest positive-last batch whose first URL fits
@@ -1102,7 +1102,9 @@ Ask first. Neither amendment's text is edited.
   starts the next batch. A target too long to fit alone gets its singleton
   query.
 - **Measured equivalence.** The C3 run found no batch missing a singleton
-  match, with every sweep batch complete. Its only open item was Actions
-  malware discovery, which had no known positive to check; the
+  match, with every sweep batch complete. Its discovery batches included the
+  Actions reviewed positive `tj-actions/changed-files@45.0.7`. Its only open
+  item was Actions malware discovery, which had no known positive to check;
+  the
   [policy signals spec](SPEC-policy-signals.md#approved-batch-values) keeps
   those lookups per target.

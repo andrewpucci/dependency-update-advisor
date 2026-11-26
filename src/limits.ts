@@ -857,7 +857,7 @@ const DEFINITIONS = [
       checked: '2026-11-26',
       platformValue: 1_000,
       margin:
-        'none: the documented maximum is the ceiling, and the URL cap (limit:advisory.batch.urlBytes) binds first on real targets, at about 90 npm targets in the C3 run',
+        'none: the documented maximum is the ceiling; on real targets the URL cap (limit:advisory.batch.urlBytes) binds long before this count',
     },
     effect:
       'A batch holds at most this many targets; the next target starts another batch, and a batch is never refused for its count.',
@@ -871,9 +871,9 @@ const DEFINITIONS = [
     'Batch URLs reuse the discovery URL cap (user-approved 2026-11-26). The C3 probe (`npm run probe:batching`, L8 corpus targets) saw npm batch URLs answered 200 up to 5,694 bytes and 414 from 8,893 bytes; the discovery probe saw 200 at 4,371 and 414 at 8,259.',
     {
       protects:
-        'Batch URLs stay below the shortest URL GitHub rejected as too long (8,259 bytes), with margin.',
+        'Batch URLs stay below the shortest URL GitHub rejected as too long on any advisory query (8,259 bytes, on discovery; npm batches from 8,893), with margin.',
       effect:
-        "A batch's first URL is filled to at most this cap less limit:advisory.batch.cursorHeadroomBytes, and the next target starts another batch; a target that cannot fit alone is left to its singleton query. In the batching probe, a sweep batch's first URL and the batch at the proposed maximum stay within the same bound, and only a 414 to a batch size whose URL is over this cap leaves the verdict unaffected (tests/measure-batching/probe.test.ts > a URL of exactly the cap is inside it and one byte longer is over it; > the sweep fits each first URL at the longest page size, leaving the cursor headroom; > sizes GitHub rejects as too long are reported as rejected and do not block complete).",
+        "A batch's first URL is filled to at most this cap less limit:advisory.batch.cursorHeadroomBytes, and the next target starts another batch; a target that cannot fit alone is left to its singleton query. In the batching probe, which fits URLs at the longer per_page=100 form and so can measure one target fewer than production fits, a sweep batch's first URL and the batch at the proposed maximum stay within the same bound, and only a 414 to a batch size whose URL is over this cap leaves the verdict unaffected (tests/measure-batching/probe.test.ts > a URL of exactly the cap is inside it and one byte longer is over it; > the sweep fits each first URL at the longest page size, leaving the cursor headroom; > sizes GitHub rejects as too long are reported as rejected and do not block complete).",
       test: 'src/evidence/batches.test.ts > a batch first URL of exactly the cap less the cursor headroom fits; one byte longer does not',
     },
   ),
@@ -895,7 +895,7 @@ const DEFINITIONS = [
     'count',
     ['advisory.discovery.pageSize'],
     copy,
-    "Batches reuse discovery's page size (user-approved 2026-11-26). The C3 probe's largest npm batch page was 121,579 bytes at 100 records, but a batch can return a heavily advised record set like the 100-record pillow page (1,009,662 bytes), so 50 keeps discovery's measured margin under the 1 MiB response cap.",
+    "Batches reuse discovery's page size (user-approved 2026-11-26). The C3 probe's largest npm batch page was 121,579 bytes at per_page=100; the size reuses discovery's, whose 100-record pillow discovery page (1,009,662 bytes) shows how heavily advised record sets approach limit:evidence.envelope.maxResponseBytes.",
     {
       protects: 'A batch page of heavily advised packages fits the per-response byte cap.',
       effect: 'A batch asks for this many records per page and follows every page.',

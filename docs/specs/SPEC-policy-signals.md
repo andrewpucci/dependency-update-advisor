@@ -604,14 +604,19 @@ edited; where they conflict, this section decides.
 ## Approved Batch Values
 
 **Status: approved, 2026-11-26.** The user approved S1's
-[batch values](SPEC-advisory-lookup.md#approved-batch-values) from the C3
-probe run
+[batch values](SPEC-advisory-lookup.md#approved-batch-values) and the
+decision below from the C3 probe run
 ([#390](https://github.com/andrewpucci/dependency-update-advisor/issues/390))
-on 2026-11-26. npm malware batches use them.
+on 2026-11-26. npm malware batches use those values.
 
-Actions malware lookups are not batched yet; each target keeps its per-target
-discovery and versioned malware query. The C3 corpus had no known Actions
-malware positive, so no batch could be checked against a singleton match, and
-its one target per run saves almost no requests. Batching them again needs a
-recorded equivalence check with a known positive. `pip` malware discovery is
-batched as the [reconciliation](#batching-reconciliation-amendment) decides.
+This section narrows the
+[Batching Reconciliation Amendment](#batching-reconciliation-amendment)'s
+`pip` and Actions bullet: Actions malware discovery is not batched. Neither
+amendment's text is edited; where they conflict, this section decides.
+
+Each Actions malware target keeps its per-target discovery and versioned
+malware query. The C3 corpus had no known Actions malware positive, so no
+batch could be checked against a singleton match, and it held one Actions
+malware target, so batching would have saved almost no requests. Batching
+them needs a recorded equivalence check with a known positive. `pip` malware
+discovery is batched as the reconciliation decides.
