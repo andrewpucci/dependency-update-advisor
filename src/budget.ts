@@ -58,11 +58,12 @@ export const EVIDENCE_READ_ALLOCATION = Object.freeze({
   }),
   // Research shares scale with the change (`researchShares`, from the B12 fit), and these entries
   // are their ceilings; the collection registry share above scales the same way on npm members
-  // (`collectionRegistryRequests`). pip and Actions malware lookups take 2 requests (stored-name
-  // discovery, then the versioned query), and the malware ceiling is 2 per packet change; Actions
-  // reviewed lookups take 3 per update, so the advisory ceiling, derived from the evidence
-  // deadline, covers about a third as many Actions updates as it has requests (#467). S1's Package
-  // Name Form Amendment states the per-lookup costs.
+  // (`collectionRegistryRequests`). An unpaginated, single-URL pip or Actions malware lookup takes
+  // 2 requests (stored-name discovery, then the versioned query), and the malware ceiling is 2 per
+  // packet change; long pip spelling sets or paginated lookups take more, and the fitted malware
+  // share binds long before that ceiling. Actions reviewed lookups take 3 per update, so the
+  // advisory ceiling, derived from the evidence deadline, covers about a third as many Actions
+  // updates as it has requests (#467). S1's Package Name Form Amendment states the per-lookup costs.
   upstream: Object.freeze({
     maxRequests: limit('evidence.allocation.upstream.maxRequests'),
     maxTotalBytes: limit('evidence.allocation.upstream.maxTotalBytes'),

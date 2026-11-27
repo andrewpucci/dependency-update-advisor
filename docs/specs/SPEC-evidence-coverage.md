@@ -997,12 +997,16 @@ register entry; this section cites ids only.
    `min(ceiling, base + Σ rate × count)`, rounded up, with A1.5's floor of
    one full response.
 2. **Values.** The base, `limit:research.share.upstream.bytes.base`, is
-   `derived`: the most reads one member's target-release stage can make,
-   each a full `limit:evidence.envelope.maxResponseBytes` response. That is
-   one repository read, then for each of the two candidate tags a ref, up to
-   `limit:research.maxTagDepth` annotated-tag reads, the package manifest,
-   the release, and a recheck ref. So a change of one member can always
-   finish its release stage, whatever its responses weigh.
+   `derived`: the most GitHub reads one member's target-release stage can
+   make, each a full `limit:evidence.envelope.maxResponseBytes` response.
+   That is one repository read, then for each of the two candidate tags a
+   ref, up to `limit:research.maxTagDepth` annotated-tag reads, the package
+   manifest, the release, and a recheck ref. So a change of one member can
+   always finish its release stage, whatever its responses weigh. It covers
+   those GitHub reads only. A member's base and head metadata reads are
+   charged to the shared PyPI metadata reader for uv, but to this share for
+   npm on a collection-cache miss, or for uv when the metadata reader failed
+   to open.
    Direct and transitive members take the same rate,
    `limit:research.share.upstream.bytes.rate.direct` and
    `limit:research.share.upstream.bytes.rate.transitive`, the members the
@@ -1069,13 +1073,17 @@ the ceiling admits fit in half the window. The advisory rates are unchanged.
 
 `limit:evidence.allocation.signals.readers.malware.maxRequests` becomes
 `derived` from `limit:packet.changes`, as the PyPI metadata request ceiling
-is: a malware lookup takes at most two requests per change, a stored-name
-discovery and then the versioned query for Actions and `pip`, and one for
-npm. The fitted malware rates and the malware byte ceiling are unchanged.
+is: an unpaginated, single-URL malware lookup takes two requests per change,
+a stored-name discovery and then the versioned query for Actions and `pip`,
+and one for npm. A long `pip` spelling set that overflows the discovery URL
+cap, or a lookup that paginates, can take more; the fitted malware share
+binds long before this ceiling. The fitted malware rates and the malware
+byte ceiling are unchanged.
 
 Research runs upstream, then advisories, then signals, one after another, on
 the one `limit:evidence.envelope.totalTimeoutMs` deadline. The upstream byte
-ceiling (U1.3) and the advisory ceiling each take half the window, so
+ceiling (U1.3) and the advisory ceiling each take half the window at the
+measured throughput and latency, so
 together they use the whole window at worst, and signals relies on neither
 reaching its ceiling. The upstream byte ceiling is written as a value, so it
 must be re-derived when `limit:evidence.envelope.totalTimeoutMs` changes.
