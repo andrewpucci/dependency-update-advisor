@@ -12,6 +12,7 @@ import type { DependabotRootsOutcome } from './dependabot-roots.js';
 import type { GithubReadSession } from './github-read.js';
 import { REGISTER } from './limits.js';
 import { assembleReviewPacket } from './packet.js';
+import { parseRuntime } from './runtime.js';
 
 vi.mock('./evidence/npm.js', async (original) => {
   const actual = await original<typeof import('./evidence/npm.js')>();
@@ -52,9 +53,14 @@ function configured(
 
 async function uvPipeline(
   dependabot?: (revision: { repository: unknown; sha: string }) => DependabotRootsOutcome,
+  repository?: unknown,
 ) {
   const fixture = uvMetadataScenario('empty');
-  const { binding, configRevision } = fixture.input;
+  const { binding } = fixture.input;
+  // The snapshot's revision carries the runtime's repository, as `withTrustedSnapshot` copies it.
+  const configRevision = repository
+    ? { ...fixture.input.configRevision, repository }
+    : fixture.input.configRevision;
   const registryFetch = vi.fn(async () => {
     throw new Error('unexpected registry request');
   });
@@ -92,6 +98,25 @@ test('runs the real collectors through one owner-bound session into a validated 
   expect(result.packet.coverage.uv.status).not.toBe('unavailable');
   expect(result.packet.coverage.npm.status).toBe('not_applicable');
   expect(registryFetch).not.toHaveBeenCalled();
+});
+test('keeps the npm and uv collector results for a mixed-case GITHUB_REPOSITORY', async () => {
+  // The fixture binds `example/consumer`, lowercased as every parsed binding is; the runner may
+  // report the same repository in any case.
+  const runtime = parseRuntime({
+    INPUT_GITHUB_TOKEN: 'read-token',
+    INPUT_APP_TOKEN: 'app-token',
+    INPUT_CI_WORKFLOW: '.github/workflows/ci.yml',
+    GITHUB_REPOSITORY: 'Example/Consumer',
+    GITHUB_REPOSITORY_ID: '101',
+  });
+  if (!runtime) throw new Error('expected runtime');
+  const { result } = await uvPipeline(undefined, runtime.repository);
+  // Before the runtime lowercased it, both collectors refused the revision as malformed.
+  expect(result.kind, JSON.stringify(result)).toBe('ready');
+  if (result.kind !== 'ready') return;
+  expect(result.packet.coverage.npm.status).toBe('not_applicable');
+  expect(result.packet.coverage.uv.status).not.toBe('unavailable');
+  expect(result.packet.sources.some((source) => source.id.startsWith('uv:source:'))).toBe(true);
 });
 test("carries each collector's own not-applicable proof, with no shared source", async () => {
   const { result } = await uvPipeline();
