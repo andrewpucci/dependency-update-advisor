@@ -1,0 +1,126 @@
+{
+  "absentAndPresent": {
+    "data": {
+      "c0": { "nameWithOwner": "fixture/widget", "ref": null },
+      "c1": {
+        "nameWithOwner": "fixture/widget",
+        "ref": {
+          "target": { "oid": "1111111111111111111111111111111111111111" }
+        }
+      },
+      "rateLimit": { "cost": 1 }
+    }
+  },
+  "aliasError": {
+    "data": {
+      "c0": null,
+      "c1": { "nameWithOwner": "fixture/widget", "ref": null },
+      "c2": {
+        "nameWithOwner": "fixture/widget",
+        "ref": {
+          "target": { "oid": "1111111111111111111111111111111111111111" }
+        }
+      },
+      "rateLimit": { "cost": 1 }
+    },
+    "errors": [
+      {
+        "type": "NOT_FOUND",
+        "path": ["c0"],
+        "locations": [{ "line": 1, "column": 120 }],
+        "message": "Could not resolve to a Repository with the name 'fixture/gone'."
+      }
+    ]
+  },
+  "aliasErrorOnPresentData": {
+    "data": {
+      "c0": { "nameWithOwner": "fixture/widget", "ref": null },
+      "c1": { "nameWithOwner": "fixture/widget", "ref": null },
+      "rateLimit": { "cost": 1 }
+    },
+    "errors": [
+      {
+        "type": "INTERNAL",
+        "path": ["c0", "ref"],
+        "message": "Something went wrong."
+      }
+    ]
+  },
+  "pathlessError": {
+    "data": {
+      "c0": { "nameWithOwner": "fixture/widget", "ref": null },
+      "c1": { "nameWithOwner": "fixture/widget", "ref": null },
+      "rateLimit": { "cost": 1 }
+    },
+    "errors": [{ "message": "Something went wrong while executing your query." }]
+  },
+  "missingData": {
+    "errors": [
+      {
+        "path": ["c0"],
+        "message": "Something went wrong while executing your query."
+      }
+    ]
+  },
+  "nullRepository": {
+    "data": {
+      "c0": null,
+      "c1": { "nameWithOwner": "fixture/widget", "ref": null },
+      "rateLimit": { "cost": 1 }
+    }
+  },
+  "missingRef": {
+    "data": {
+      "c0": { "nameWithOwner": "fixture/widget" },
+      "c1": { "nameWithOwner": "fixture/widget", "ref": null },
+      "rateLimit": { "cost": 1 }
+    }
+  },
+  "errorsObject": {
+    "data": {
+      "c0": { "nameWithOwner": "fixture/widget", "ref": null },
+      "c1": { "nameWithOwner": "fixture/widget", "ref": null }
+    },
+    "errors": {}
+  },
+  "errorsNull": {
+    "data": {
+      "c0": { "nameWithOwner": "fixture/widget", "ref": null },
+      "c1": { "nameWithOwner": "fixture/widget", "ref": null }
+    },
+    "errors": null
+  },
+  "emptyErrorPath": {
+    "data": {
+      "c0": { "nameWithOwner": "fixture/widget", "ref": null },
+      "c1": { "nameWithOwner": "fixture/widget", "ref": null }
+    },
+    "errors": [{ "path": [], "message": "Something went wrong." }]
+  },
+  "numericErrorPath": {
+    "data": {
+      "c0": { "nameWithOwner": "fixture/widget", "ref": null },
+      "c1": { "nameWithOwner": "fixture/widget", "ref": null }
+    },
+    "errors": [{ "path": [0], "message": "Something went wrong." }]
+  },
+  "renames": {
+    "data": {
+      "c0": { "nameWithOwner": "Fixture/Widget", "ref": null },
+      "c1": { "nameWithOwner": "fixture/widget-next", "ref": null },
+      "rateLimit": { "cost": 1 }
+    }
+  },
+  "primaryLimitBody": {
+    "data": null,
+    "errors": [
+      {
+        "type": "RATE_LIMITED",
+        "message": "API rate limit already exceeded for installation ID 1."
+      }
+    ]
+  },
+  "secondaryLimitBody": {
+    "message": "You have exceeded a secondary rate limit. Please wait a few minutes before you try again."
+  }
+}
