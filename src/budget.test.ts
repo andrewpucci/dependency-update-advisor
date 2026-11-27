@@ -28,10 +28,10 @@ test('records the evidence-read envelope', () => {
   expect(EVIDENCE_READ_ENVELOPE).toEqual({
     // The advisory, upstream byte, and PyPI metadata ceilings (#467) raise the envelope sums:
     // 1,520 + (221 − 80) + (256 − 16) + (256 − 40) requests, the last the malware ceiling, and
-    // 54 MiB − 15 MiB − 0.5 MiB + 77,000,000 + 9,484,288 bytes.
+    // 54 MiB − 15 MiB − 0.5 MiB + 76,800,000 + 9,484,288 bytes.
     maxRequests: 2117,
     maxResponseBytes: MiB,
-    maxTotalBytes: 126_854_464,
+    maxTotalBytes: 126_654_464,
     requestTimeoutMs: 15_000,
     totalTimeoutMs: 240_000,
   });
@@ -47,7 +47,7 @@ test('splits the envelope with nothing unallocated or over-allocated', () => {
     },
     session: { maxRequests: 160, maxTotalBytes: 12 * MiB },
     registry: { maxRequests: 640, maxTotalBytes: 4 * MiB },
-    upstream: { maxRequests: 240, maxTotalBytes: 77_000_000 },
+    upstream: { maxRequests: 240, maxTotalBytes: 76_800_000 },
     advisory: { maxRequests: 221, maxTotalBytes: 5 * MiB },
     signals: {
       maxRequests: 632,
@@ -201,9 +201,12 @@ test('the upstream byte and PyPI metadata shares grow with uv members up to thei
   expect(registered('research.share.upstream.bytes.rate.transitive')).toBe(upstreamRate);
   for (const unit of ['added', 'removed'])
     expect(registered(`research.share.upstream.bytes.rate.${unit}`), unit).toBe(0);
-  // The ceilings: 77 MB for upstream, two reads per change for metadata requests, and the
-  // metadata byte formula at the packet's change limit.
-  expect(upstream.maxTotalBytes).toBe(77_000_000);
+  // The ceilings: half the evidence window at 640,000 bytes/s for upstream, two reads per change
+  // for metadata requests, and the metadata byte formula at the packet's change limit.
+  expect(upstream.maxTotalBytes).toBe(
+    ((registered('evidence.envelope.totalTimeoutMs') / 1000) * 640_000) / 2,
+  );
+  expect(upstream.maxTotalBytes).toBe(76_800_000);
   expect(metadata.maxRequests).toBe(2 * changes);
   expect(metadata.maxTotalBytes).toBe(byteBase + byteRate * changes);
 
@@ -240,10 +243,10 @@ test('the upstream byte and PyPI metadata shares grow with uv members up to thei
     transitive: Math.floor(members / 2),
     eligible: { ...NO_UNITS.eligible, malware: members, metadata: members },
   });
-  // Upstream: the base plus 750,000 × 62 is under the 77 MB ceiling; 63 members pass it and are
+  // Upstream: the base plus 750,000 × 61 is under the 76.8 MB ceiling; 62 members pass it and are
   // capped there.
   const underUpstream = Math.floor((upstream.maxTotalBytes - upstreamBase) / upstreamRate);
-  expect(underUpstream).toBe(62);
+  expect(underUpstream).toBe(61);
   expect(researchShares(uv(underUpstream)).upstream.maxTotalBytes).toBe(
     upstreamBase + upstreamRate * underUpstream,
   );

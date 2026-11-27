@@ -1024,10 +1024,11 @@ register entry; this section cites ids only.
    Each rate is a `measured` entry citing the #462 measurement. The direct and
    transitive rates are 1.25 × the per-member bytes measured, the margin the
    fitted shares carry.
-3. **Ceiling.** `limit:evidence.allocation.upstream.maxTotalBytes` is a
-   `safety` entry: half of what the upstream reader can read, at its measured
-   throughput, within `limit:evidence.envelope.totalTimeoutMs`. With the
-   base, the rates reach it at a few dozen members.
+3. **Ceiling.** `limit:evidence.allocation.upstream.maxTotalBytes` is
+   `derived` from `limit:evidence.envelope.totalTimeoutMs` and the upstream
+   throughput measured for #467, a named constant beside the register: half
+   of what the upstream reader can read, at that throughput, within the
+   window. With the base, the rates reach it at a few dozen members.
 
 ### U2. PyPI metadata share
 
@@ -1093,8 +1094,8 @@ the one `limit:evidence.envelope.totalTimeoutMs` deadline. The upstream byte
 ceiling (U1.3) and the advisory ceiling each take half the window at the
 measured throughput and latency, so
 together they use the whole window at worst, and signals relies on neither
-reaching its ceiling. The upstream byte ceiling is written as a value, so it
-must be re-derived when `limit:evidence.envelope.totalTimeoutMs` changes.
+reaching its ceiling. Both ceilings are derived from
+`limit:evidence.envelope.totalTimeoutMs`, so they follow it when it changes.
 
 ### U6. Totals
 
