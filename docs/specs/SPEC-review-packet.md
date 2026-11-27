@@ -308,6 +308,13 @@ arrays, shorten identities, or delete findings to fit.
 | References, reasons, extras/groups, or action texts in one list | `limit:packet.listEntries` entries; each action text also obeys the text cap                                                        |
 | Source context                                                  | Existing C2 caps, including `limit:packet.contextBytes` serialized bytes and `limit:packet.excerptCodeUnits` code units per excerpt |
 
+The serialized byte cap is derived from runner heap, not chosen: the
+old-generation heap of the smallest runner (`limit:runner.oldGenerationBytes`),
+less the heap the concurrent model replies can hold
+(`limit:analysis.replyHeapBytes`), divided by the measured heap per packet byte
+(`limit:runner.heapBytesPerPacketByte`). The count and field caps above usually
+keep real packets far below it.
+
 The cap deliberately rejects PRs containing more than `limit:packet.changes`
 detected changes.
 [Public PR #307](../../tests/parity/scenarios.md#public-npm-unpaired-additions-pr-307)

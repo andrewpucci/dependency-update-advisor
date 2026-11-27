@@ -664,14 +664,58 @@ function allScaledShareEntries() {
 const DEFINITIONS = [
   {
     id: 'packet.bytes',
-    value: 1_048_576,
     unit: 'bytes',
     protects:
       'An untrusted review packet of unbounded size would make validation and the analysis projection unbounded in memory and CPU; the serialized size is measured and rejected above the cap.',
     effect:
       'The whole packet is rejected with category budget on field packet, and no partial packet is returned. Optional evidence is dropped first so the assembled packet can fit.',
-    basis: { kind: 'unjustified', note: 'awaiting L8 measurement' },
+    basis: {
+      kind: 'derived',
+      inputs: ['runner.oldGenerationBytes', 'analysis.replyHeapBytes', 'runner.heapBytesPerPacketByte'],
+      formula: (heap, replies, perByte) => Math.floor((heap - replies) / perByte),
+      description:
+        'The largest packet whose heap fits beside the concurrent model replies: (limit:runner.oldGenerationBytes − limit:analysis.replyHeapBytes) ÷ limit:runner.heapBytesPerPacketByte, rounded down. The packet is never sent to the model whole, so runner heap is its only real limit. Approved by the maintainer on 2026-11-27 (L11, #383).',
+    },
     test: 'src/schema.test.ts > enforces the exact serialized packet budget including multibyte text',
+  },
+  {
+    id: 'runner.heapBytesPerPacketByte',
+    value: 16.05,
+    unit: 'bytes',
+    protects:
+      'States how much heap a serialized packet byte costs at peak, through validation, revalidation, the analysis projection and render, so limit:packet.bytes can be sized from runner heap.',
+    basis: {
+      kind: 'measured',
+      command: 'npm run measure:heap',
+      corpus:
+        'the invented large-inventory npm packet (93 members plus 2 same-named nested copies, 1,043,616 bytes) and the same packet with its member records repeated 4 times (4,179,981 bytes), on Node 24.22.3 (V8 13.6) with a 1 MiB semi space',
+      statistic:
+        'the growth in the smallest --max-old-space-size at which validation, revalidation, analysis with a stub model and render complete (31 MiB to 79 MiB), divided by the growth in serialized packet bytes (3,136,365): 16.048, rounded up to 16.05. The sampled peak heapUsed is not used: it moved from 14.5 to 54.8 heap bytes per packet byte over identical runs, with garbage-collection timing',
+      headroom:
+        'none: a platform property, not a demand; the margin lies in limit:analysis.replyHeapBytes, which assumes every reply in flight is a hostile body of the full reply cap',
+      measured: '2026-11-27',
+    },
+    effect:
+      'Not enforced. limit:packet.bytes divides the heap left beside the model replies by it; a larger value lowers the packet cap.',
+    test: 'src/limits.test.ts > the heap inputs of packet.bytes keep their sources and formula',
+  },
+  {
+    id: 'runner.oldGenerationBytes',
+    value: 2_147_483_648,
+    unit: 'bytes',
+    protects:
+      "Records the old-generation heap V8 gives the reviewer's Node 24 process on the smallest supported runner (8 GB); past it the process aborts out of memory and the review job fails with no comment update.",
+    basis: {
+      kind: 'external',
+      url: 'https://github.com/nodejs/node/blob/v24.22.3/deps/v8/src/heap/heap.cc#L229-L310',
+      checked: '2026-11-27',
+      platformValue: 2_147_483_648,
+      margin:
+        'none: it is the ceiling limit:packet.bytes is derived under. HeapSizeFromPhysicalMemory (heap.cc#L229-L243) takes a quarter of physical memory times kHeapLimitMultiplier, capped at MaxOldGenerationSize (heap.cc#L291-L310), which is V8HeapTrait::kMaxSize = 1024 MB × kHeapLimitMultiplier (deps/v8/src/heap/heap-controller.h#L18) and doubles only at 15 GB or more of physical memory. kHeapLimitMultiplier is kSystemPointerSize / 4 = 2 on 64-bit Linux (deps/v8/src/heap/heap.h#L307), so an 8 GB runner gets min(4 GiB, 2 GiB) = 2 GiB. The same lines are unchanged in v24.11.0, the oldest Node the package supports. Checked against the V8 source and in cgroups by the maintainer on 2026-11-27 (L11, #383).',
+    },
+    effect:
+      'Not enforced by the reviewer. limit:packet.bytes is derived so the largest packet and the concurrent model replies fit inside it.',
+    test: 'none: a platform figure no code reads; src/limits.test.ts pins how limit:packet.bytes derives from it',
   },
   {
     id: 'packet.changes',
@@ -2315,6 +2359,41 @@ const DEFINITIONS = [
       test: 'src/analysis/mistral.test.ts > admits a valid stop at the full token-byte, escaping and envelope allowance, but rejects one extra observed byte',
     },
   ),
+  {
+    id: 'runner.heapBytesPerReplyByte',
+    value: 41.44,
+    unit: 'bytes',
+    protects:
+      'States how much heap one reply byte in flight can cost at peak, while the reply is read, parsed and copied, so the heap left for the packet can be computed.',
+    basis: {
+      kind: 'measured',
+      command: 'npm run measure:heap',
+      corpus:
+        'crafted reply bodies of limit:analysis.responseBytes (16,842,752 bytes) of empty arrays, empty objects and arrays nested 32 deep, for both calls of an invented 12-member npm packet (255,932 bytes, two batches, limit:analysis.maxConcurrentCalls in flight), on Node 24.22.3 (V8 13.6) with a 1 MiB semi space',
+      statistic:
+        'the smallest --max-old-space-size at which the review completes with the worst shape (nested arrays, 1,335 MiB; flat 895, objects 1,152), less that packet at limit:runner.heapBytesPerPacketByte, divided by the reply bytes in flight (2 × 16,842,718): 41.435, rounded up to 41.44. The process baseline stays in it. At the former 12,648,448-byte cap the same shape needed 1,016 MiB, 41.95 per byte',
+      headroom:
+        'none at the measured shape; every reply in flight is assumed to be a hostile body of the full reply cap, which no valid reply reaches',
+      measured: '2026-11-27',
+    },
+    effect:
+      'Not enforced. limit:analysis.replyHeapBytes multiplies it by the reply bytes in flight.',
+    test: 'src/limits.test.ts > the heap inputs of packet.bytes keep their sources and formula',
+  },
+  derived(
+    'analysis.replyHeapBytes',
+    'bytes',
+    ['analysis.maxConcurrentCalls', 'analysis.responseBytes', 'runner.heapBytesPerReplyByte'],
+    (calls, bytes, perByte) => Math.ceil(calls * bytes * perByte),
+    'The heap the model replies can hold at peak: limit:analysis.maxConcurrentCalls replies of limit:analysis.responseBytes in flight at once, at limit:runner.heapBytesPerReplyByte each, rounded up. Its measurement includes the process baseline, so limit:packet.bytes needs no separate term for it.',
+    {
+      protects:
+        'Reserves the runner heap the concurrent model replies can take, so the packet cap leaves room for them.',
+      effect:
+        'Not enforced. limit:packet.bytes subtracts it from limit:runner.oldGenerationBytes.',
+      test: 'src/limits.test.ts > the heap inputs of packet.bytes keep their sources and formula',
+    },
+  ),
   unjustified('analysis.textBytes', 1_024, 'bytes', {
     protects:
       'Each model text field (reason, impact, action, rationale) is capped at 1,024 UTF-8 bytes, which the spec states as concise per-unit advice. This is a design choice; the downstream comment body is separately checked.',
@@ -2441,7 +2520,7 @@ const DEFINITIONS = [
     value: 30_000,
     unit: 'milliseconds',
     protects:
-      'Keeps the large-inventory reporting and parity tests from failing by chance on a slow CI runner, while still ending a build or render that hangs.',
+      'Keeps the large-inventory reporting and parity tests, and the schema test that fills a packet to limit:packet.bytes, from failing by chance on a slow CI runner, while still ending a build or render that hangs.',
     basis: {
       kind: 'safety',
       reason:
@@ -2449,7 +2528,7 @@ const DEFINITIONS = [
     },
     effect:
       "A reporting or parity test past the allowance fails under vitest's timeout behavior, as any timed-out test does.",
-    test: 'none: a test-runner allowance for src/reporting.test.ts and tests/parity/large-inventory.test.ts, which no application code reads',
+    test: 'none: a test-runner allowance for src/reporting.test.ts, tests/parity/large-inventory.test.ts and the exact packet budget test in src/schema.test.ts, which no application code reads',
   },
   {
     id: 'tests.largeInventoryPacketHeadroomBytes',
@@ -2463,10 +2542,11 @@ const DEFINITIONS = [
         'npx vp test --run tests/parity/large-inventory.test.ts -t "builds 93", reading Buffer.byteLength(JSON.stringify(packet)) of the scenario packet',
       corpus:
         'the synthetic large inventory: 93 npm members plus 2 same-named nested copies, with C6 and C7 batched source text',
-      statistic: 'exact packet bytes: 1,043,616 of the 1,048,576-byte cap, 4,960 bytes under it',
+      statistic:
+        'exact packet bytes: 1,043,616, unchanged since 2026-11-26, now about 45.8 MB under the heap-derived limit:packet.bytes',
       headroom:
-        '864 bytes between the measured 4,960-byte margin and this 4,096-byte floor, room for a short wording change',
-      measured: '2026-11-26',
+        'the 4,096-byte floor set under the former 1 MiB cap, kept: with the cap derived from heap the floor no longer binds, and the test now fails only if the scenario packet grows to within it of the cap',
+      measured: '2026-11-27',
     },
     effect:
       'The large-inventory parity test fails when that packet comes within this many bytes of the packet cap.',
@@ -2563,20 +2643,22 @@ const DEFINITIONS = [
       test: 'src/evidence/advisory-read.test.ts > advisory findings accept the register cap exactly and refuse the finding past it',
     },
   ),
-  derived(
-    'analysis.projectionBytes',
-    'bytes',
-    ['packet.bytes'],
-    (bytes) => 8 * bytes,
-    "The analysis projection's input budget is eight times the packet's byte cap.",
-    {
-      protects:
-        'Input work during snapshot (the parsed reply or inventory and its detached copy) is capped at eight packet-byte caps, so crafted JSON cannot allocate without bound.',
-      effect:
-        'Exceeding the byte budget throws a budget error and no snapshot or batch is produced. Nothing partial is kept.',
-      test: 'src/analysis/projection.test.ts > the snapshot byte budget admits exactly eight packet caps of input and refuses one byte more',
-    },
-  ),
+  unjustified('analysis.projectionBytes', 8_388_608, 'bytes', {
+    protects:
+      'Input work during snapshot (the run input: the accepted packet, its T5 unit expansion and the config, and their detached copy) is capped in string bytes, so crafted input cannot allocate without bound.',
+    effect:
+      'Exceeding the byte budget throws a budget error and no snapshot or batch is produced. Nothing partial is kept.',
+    test: 'src/analysis/projection.test.ts > the snapshot byte budget admits exactly its registered string bytes of input and refuses one byte more',
+    note: 'kept at its former value, 8 × the old 1 MiB packet cap, when limit:packet.bytes became heap-derived (L11, #383); no recorded basis for how many string bytes the T5 expansion adds to a packet',
+  }),
+  unjustified('analysis.projectionEntries', 1_048_576, 'count', {
+    protects:
+      'Input work during snapshot is capped in values visited (strings, numbers, arrays and objects), so crafted input cannot make the detached copy visit an unbounded number of values.',
+    effect:
+      'Exceeding the entry budget, or an array or object with more entries than remain, throws a budget error and no snapshot or batch is produced. Nothing partial is kept.',
+    test: 'src/analysis/projection.test.ts > the snapshot entry budget admits exactly its registered count of values and refuses one more',
+    note: 'kept at its former value, the old 1 MiB packet cap read as a count, when limit:packet.bytes became heap-derived (L11, #383); no recorded basis for how many values a packet and its T5 expansion hold',
+  }),
   unjustified('analysis.maxProjectionDepth', 64, 'count', {
     protects:
       'Snapshot recursion depth is capped at 64, so deeply nested input cannot exhaust the call stack.',

@@ -349,10 +349,23 @@ test('sends the exact fixed request: greedy sampling with top_p 1 and no reasoni
   expect(messages).toHaveLength(2);
 });
 
-test('the snapshot byte budget admits exactly eight packet caps of input and refuses one byte more', () => {
+test('the snapshot byte budget admits exactly its registered string bytes of input and refuses one byte more', () => {
   const cap = limit('analysis.projectionBytes');
   expect(() => snapshotData('a'.repeat(cap))).not.toThrow();
   expect(() => snapshotData('a'.repeat(cap + 1))).toThrow('budget');
+  // Multibyte text counts in UTF-8 bytes.
+  expect(() => snapshotData('é'.repeat(cap / 2))).not.toThrow();
+  expect(() => snapshotData('é'.repeat(cap / 2) + 'a')).toThrow('budget');
+});
+
+test('the snapshot entry budget admits exactly its registered count of values and refuses one more', () => {
+  const cap = limit('analysis.projectionEntries');
+  const zeros = (length: number) => Array.from({ length }, () => 0);
+  // The array itself is one value, so it can hold one value fewer than the budget.
+  expect(() => snapshotData(zeros(cap - 1))).not.toThrow();
+  expect(() => snapshotData(zeros(cap))).toThrow('budget');
+  expect(() => snapshotData([zeros(cap - 2)])).not.toThrow();
+  expect(() => snapshotData([zeros(cap - 1)])).toThrow('budget');
 });
 
 test('the snapshot depth cap admits a leaf at the registered depth and refuses one level deeper', () => {

@@ -4,17 +4,26 @@ import * as optionalEvidence from './optional-evidence.js';
 import * as schema from './schema.js';
 import { formDecisionUnits } from './units.js';
 
+// The optional-evidence fitter's byte ceiling is lowered per test, so a fixture whose identifiers
+// cannot approach the register's packet cap can still overflow it.
+const cap = vi.hoisted(() => ({ bytes: Infinity }));
 vi.mock('./schema.js', async (importOriginal) => {
   const original = await importOriginal<typeof import('./schema.js')>();
-  return { ...original, validateReviewPacket: vi.fn(original.validateReviewPacket) };
+  const limits = { ...original.PACKET_LIMITS };
+  Object.defineProperty(limits, 'bytes', {
+    get: () => Math.min(cap.bytes, original.PACKET_LIMITS.bytes),
+  });
+  return {
+    ...original,
+    PACKET_LIMITS: limits,
+    validateReviewPacket: vi.fn(original.validateReviewPacket),
+  };
 });
 const validations = () => vi.mocked(schema.validateReviewPacket);
 vi.mock('./optional-evidence.js', async (importOriginal) => {
   const original = await importOriginal<typeof import('./optional-evidence.js')>();
   return { ...original, fitOptionalEvidence: vi.fn(original.fitOptionalEvidence) };
 });
-
-const PACKET_LIMITS_BYTES = 1_048_576;
 
 const repository = { id: 101, owner: 'example', name: 'consumer' };
 const head = 'a'.repeat(40);
@@ -393,20 +402,32 @@ test('over the byte ceiling with the count under the cap, optional evidence is d
   const verdicts = pairVerdicts('npm', 64, pad);
   expect(verdicts.length).toBe(1024);
   const full = JSON.stringify(verdicts);
-  validations().mockClear();
-  const result = ready(
-    await assembleMixed(
-      lockFragment('npm', 64, pad, { reachability: verdicts }),
-      lockFragment('uv', 64, pad),
-    ),
+  // The ceiling sits between the packet without optional evidence and the packet with all of it.
+  const required = ready(
+    await assembleMixed(lockFragment('npm', 64, pad), lockFragment('uv', 64, pad)),
   );
-  expect(validations()).toHaveBeenCalledTimes(1);
-  expect(Buffer.byteLength(JSON.stringify(result.packet))).toBeLessThanOrEqual(PACKET_LIMITS_BYTES);
-  expect(result.droppedOptional.length).toBeGreaterThan(0);
-  expect(result.packet.changes).toHaveLength(128);
-  expect(
-    Buffer.byteLength(JSON.stringify(result.packet)) + Buffer.byteLength(full),
-  ).toBeGreaterThan(PACKET_LIMITS_BYTES);
+  cap.bytes =
+    Buffer.byteLength(JSON.stringify(required.packet)) + Math.floor(Buffer.byteLength(full) / 2);
+  try {
+    validations().mockClear();
+    const result = ready(
+      await assembleMixed(
+        lockFragment('npm', 64, pad, { reachability: verdicts }),
+        lockFragment('uv', 64, pad),
+      ),
+    );
+    expect(validations()).toHaveBeenCalledTimes(1);
+    expect(Buffer.byteLength(JSON.stringify(result.packet))).toBeLessThanOrEqual(
+      schema.PACKET_LIMITS.bytes,
+    );
+    expect(result.droppedOptional.length).toBeGreaterThan(0);
+    expect(result.packet.changes).toHaveLength(128);
+    expect(
+      Buffer.byteLength(JSON.stringify(result.packet)) + Buffer.byteLength(full),
+    ).toBeGreaterThan(schema.PACKET_LIMITS.bytes);
+  } finally {
+    cap.bytes = Infinity;
+  }
 });
 
 test('second proofs are dropped after the proof cap, keeping every required proof', async () => {

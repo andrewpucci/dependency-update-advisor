@@ -99,8 +99,9 @@ authoritative PR decision and independently retain deterministic findings.
 The alias/projection and validation details live in `projection.ts` and
 `validation.ts`; neither depends on Mistral SDK types. Input-copy work is
 bounded separately to `limit:analysis.maxProjectionDepth` levels,
-`limit:packet.bytes` entries, and `limit:analysis.projectionBytes` of string
-values for the accepted packet plus T5 expansion. Reply-copy entries/string
+`limit:analysis.projectionEntries` values, and `limit:analysis.projectionBytes`
+of string values for the accepted packet plus T5 expansion. Neither budget
+derives from `limit:packet.bytes`. Reply-copy entries/string
 bytes are bounded by the selected response ceiling. These are work/retention
 limits, not expanded T4/C2 wire allowances or measured performance thresholds.
 
@@ -773,10 +774,13 @@ fully serialized unit with its attributable source/context records. Count
 deduplicated shared records once in the full batch and in every owning unit's
 individual budget. No initial packing or retry logic is added to M1.
 
-The response allowance intentionally exceeds T4's input-packet byte ceiling:
-the provider nests a JSON document as an escaped string and adds metadata.
-It does not enlarge any T4 or C2 input. The spike must record whether its
-observed outputs challenge the allowance; a different allowance needs review.
+The response allowance is sized from the reply, not from T4's input-packet
+byte ceiling: the provider nests a JSON document as an escaped string and adds
+metadata. It does not enlarge any T4 or C2 input. The heap the concurrent
+replies can hold, `limit:analysis.replyHeapBytes`, is instead subtracted from
+the runner heap that `limit:packet.bytes` is derived from. The spike must
+record whether its observed outputs challenge the allowance; a different
+allowance needs review.
 Boundary fixtures prove acceptance within this recorded allowance, not a
 maximum for every tokenizer or that all eight rich assessments fit
 `limit:analysis.completionTokens` tokens.

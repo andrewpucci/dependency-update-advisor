@@ -9,7 +9,6 @@ import {
   type UnitInventory,
   type DecisionUnit,
 } from '../units.js';
-import { PACKET_LIMITS } from '../schema.js';
 import { limit, replyBytesFor } from '../limits.js';
 import type { Finding, PolicyEvaluation, RuleTrace } from '../policy.js';
 import type {
@@ -60,7 +59,7 @@ function requireValue(value: unknown, category: AnalysisCategory = 'input'): ass
 export function snapshotData(
   value: unknown,
   budget: { entries: number; bytes: number } = {
-    entries: PACKET_LIMITS.bytes,
+    entries: limit('analysis.projectionEntries'),
     bytes: limit('analysis.projectionBytes'),
   },
   depth = 0,

@@ -222,6 +222,26 @@ which leaves the run incomplete rather than showing a batch gap. A
 run stopped by the request cap or a request error still writes what it
 measured, with `stopped` saying why.
 
+### Heap measurement
+
+`limit:packet.bytes` is derived from runner heap, from two measured inputs.
+Re-measure them on Node 24, the action's runtime, with:
+
+```sh
+npm run measure:heap
+```
+
+It builds invented packets through the parity collectors, makes no network
+request, and takes several minutes. Each figure is the smallest
+`--max-old-space-size` at which one packet completes validation,
+revalidation, analysis with a stub model, and render in its own process. The
+report gives `heapBytesPerPacketByte` for
+`limit:runner.heapBytesPerPacketByte` and `replyHeapBytesPerByte` for
+`limit:runner.heapBytesPerReplyByte`, measured with hostile replies of the
+current `limit:analysis.responseBytes`. Re-measure after a change to the
+validation, analysis or render path, and record the new values with the
+date.
+
 ### Token-length probe
 
 `limit:analysis.maxTokenEscapedBytes` is the longest vocabulary token of the

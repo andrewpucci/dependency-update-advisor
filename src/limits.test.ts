@@ -16,6 +16,9 @@ import {
   type LimitId,
 } from './limits.js';
 
+/** V8's maximum string length on 64-bit platforms, (1 << 29) - 24 code units. */
+const V8_MAX_STRING_LENGTH = 536_870_888;
+
 const unjustified = (id: string, value: number): LimitDefinition => ({
   id,
   value,
@@ -147,10 +150,8 @@ test('copies wired: the source-root and candidate bounds are one entry each, rea
 
 test('moved limits that mirror a packet bound are derived from it', () => {
   expect(dependents(REGISTER, 'packet.changes')).toContain('advisories.maxLookups');
-  expect(dependents(REGISTER, 'packet.bytes')).toContain('analysis.projectionBytes');
   expect(dependents(REGISTER, 'packet.findings')).toContain('research.maxFindings');
   expect(limit('advisories.maxLookups')).toBe(2 * PACKET_LIMITS.changes);
-  expect(limit('analysis.projectionBytes')).toBe(8 * PACKET_LIMITS.bytes);
   expect(limit('research.maxFindings')).toBe(PACKET_LIMITS.findings);
 });
 
@@ -180,6 +181,56 @@ test('derived packet bounds keep their formulas and the values they had as fixed
   if (relationships.kind !== 'derived' || textBytes.kind !== 'derived') throw new Error('derived');
   expect(relationships.formula(100)).toBe(200);
   expect(textBytes.formula(65_536, 30)).toBe(2_184);
+});
+
+test('the heap inputs of packet.bytes keep their sources and formula', () => {
+  expect(limitEntry('runner.oldGenerationBytes').basis).toMatchObject({
+    kind: 'external',
+    platformValue: 2_147_483_648,
+  });
+  for (const id of ['runner.heapBytesPerPacketByte', 'runner.heapBytesPerReplyByte'] as const)
+    expect(limitEntry(id).basis, id).toMatchObject({
+      kind: 'measured',
+      command: 'npm run measure:heap',
+    });
+  const inputs: LimitId[] = [
+    'analysis.maxConcurrentCalls',
+    'analysis.responseBytes',
+    'runner.heapBytesPerReplyByte',
+  ];
+  const { basis } = limitEntry('analysis.replyHeapBytes');
+  expect(basis).toMatchObject({ kind: 'derived', inputs });
+  if (basis.kind !== 'derived') throw new Error('derived');
+  const [calls, bytes, perByte] = inputs.map((id) => limit(id));
+  expect(limit('analysis.replyHeapBytes')).toBe(Math.ceil(calls * bytes * perByte));
+  // The formula, not the current inputs, is pinned: a reply cap or concurrency change moves it.
+  expect(basis.formula(2, 10, 1.25)).toBe(25);
+  expect(basis.formula(2, 10, 1.26)).toBe(26);
+  for (const input of inputs) expect(dependents(REGISTER, input)).toContain('analysis.replyHeapBytes');
+});
+
+test('packet.bytes is the packet that fits the runner heap beside the model replies', () => {
+  const inputs: LimitId[] = [
+    'runner.oldGenerationBytes',
+    'analysis.replyHeapBytes',
+    'runner.heapBytesPerPacketByte',
+  ];
+  const { basis } = limitEntry('packet.bytes');
+  expect(basis).toMatchObject({ kind: 'derived', inputs });
+  if (basis.kind !== 'derived') throw new Error('derived');
+  const [heap, replies, perByte] = inputs.map((id) => limit(id));
+  expect(limit('packet.bytes')).toBe(Math.floor((heap - replies) / perByte));
+  // The packet's own heap and the replies' heap together stay inside the runner heap.
+  expect(limit('packet.bytes') * perByte + replies).toBeLessThanOrEqual(heap);
+  expect((limit('packet.bytes') + 1) * perByte + replies).toBeGreaterThan(heap);
+  expect(basis.formula(1_000, 100, 3)).toBe(300);
+  for (const input of ['analysis.responseBytes', 'analysis.maxConcurrentCalls'] as const)
+    expect(dependents(REGISTER, input)).toContain('packet.bytes');
+  // The snapshot budgets no longer follow the packet cap.
+  expect(dependents(REGISTER, 'packet.bytes')).not.toContain('analysis.projectionBytes');
+  expect(limit('analysis.projectionBytes')).toBe(8_388_608);
+  expect(limit('analysis.projectionEntries')).toBe(1_048_576);
+  expect(limit('analysis.projectionBytes')).toBeLessThanOrEqual(V8_MAX_STRING_LENGTH);
 });
 
 test('the reply cap is the token budget in escaped bytes plus the envelope, with no escape multiplier', () => {
