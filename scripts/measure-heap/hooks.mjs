@@ -9,7 +9,11 @@ const ROOT = new URL('../../', import.meta.url).href;
 const LIMITS = new URL('src/limits.ts', ROOT).href;
 
 export async function resolve(specifier, context, next) {
-  if (specifier.startsWith('.') && specifier.endsWith('.js') && context.parentURL?.startsWith(ROOT)) {
+  if (
+    specifier.startsWith('.') &&
+    specifier.endsWith('.js') &&
+    context.parentURL?.startsWith(ROOT)
+  ) {
     const ts = new URL(specifier.replace(/\.js$/, '.ts'), context.parentURL);
     if (existsSync(fileURLToPath(ts))) return next(ts.href, context);
   }

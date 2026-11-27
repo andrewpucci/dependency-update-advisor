@@ -671,7 +671,11 @@ const DEFINITIONS = [
       'The whole packet is rejected with category budget on field packet, and no partial packet is returned. Optional evidence is dropped first so the assembled packet can fit.',
     basis: {
       kind: 'derived',
-      inputs: ['runner.oldGenerationBytes', 'analysis.replyHeapBytes', 'runner.heapBytesPerPacketByte'],
+      inputs: [
+        'runner.oldGenerationBytes',
+        'analysis.replyHeapBytes',
+        'runner.heapBytesPerPacketByte',
+      ],
       formula: (heap, replies, perByte) => Math.floor((heap - replies) / perByte),
       description:
         'The largest packet whose heap fits beside the concurrent model replies: (limit:runner.oldGenerationBytes − limit:analysis.replyHeapBytes) ÷ limit:runner.heapBytesPerPacketByte, rounded down. The packet is never sent to the model whole, so runner heap is its only real limit. Approved by the maintainer on 2026-11-27 (L11, #383).',
@@ -2348,7 +2352,11 @@ const DEFINITIONS = [
   derived(
     'analysis.responseBytes',
     'bytes',
-    ['analysis.completionTokens', 'analysis.maxTokenEscapedBytes', 'analysis.responseEnvelopeBytes'],
+    [
+      'analysis.completionTokens',
+      'analysis.maxTokenEscapedBytes',
+      'analysis.responseEnvelopeBytes',
+    ],
     replyBytesFor,
     'The largest legal reply: limit:analysis.completionTokens tokens of at most limit:analysis.maxTokenEscapedBytes JSON-escaped bytes each, plus limit:analysis.responseEnvelopeBytes for the envelope. The reader counts the raw UTF-8 body, in which the content is one JSON string, so the token bound is already in escaped bytes and no escape multiplier applies.',
     {
@@ -2389,8 +2397,7 @@ const DEFINITIONS = [
     {
       protects:
         'Reserves the runner heap the concurrent model replies can take, so the packet cap leaves room for them.',
-      effect:
-        'Not enforced. limit:packet.bytes subtracts it from limit:runner.oldGenerationBytes.',
+      effect: 'Not enforced. limit:packet.bytes subtracts it from limit:runner.oldGenerationBytes.',
       test: 'src/limits.test.ts > the heap inputs of packet.bytes keep their sources and formula',
     },
   ),

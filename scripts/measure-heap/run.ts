@@ -78,11 +78,15 @@ const describe = (file: string, env: NodeJS.ProcessEnv = {}): Run =>
 
 function completes(file: string, env: NodeJS.ProcessEnv, mib: number): Promise<boolean> {
   return new Promise((done) => {
-    spawn(process.execPath, [`--max-old-space-size=${mib}`, ...FLAGS, join(HERE, 'measure.ts'), file], {
-      cwd: ROOT,
-      env: { ...process.env, ...env },
-      stdio: 'ignore',
-    }).on('exit', (code) => done(code === 0));
+    spawn(
+      process.execPath,
+      [`--max-old-space-size=${mib}`, ...FLAGS, join(HERE, 'measure.ts'), file],
+      {
+        cwd: ROOT,
+        env: { ...process.env, ...env },
+        stdio: 'ignore',
+      },
+    ).on('exit', (code) => done(code === 0));
   });
 }
 

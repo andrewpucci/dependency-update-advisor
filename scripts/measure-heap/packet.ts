@@ -19,7 +19,10 @@ const [out, members, copies = '1'] = process.argv.slice(2);
 const { scenario, input } = await analysisScenario({
   inventory: { children: Number(members), anchorUnchanged: true, duplicateNames: 2 },
 });
-const packet = JSON.parse(JSON.stringify(input.inventory.packet)) as Record<string, { id: string }[]>;
+const packet = JSON.parse(JSON.stringify(input.inventory.packet)) as Record<
+  string,
+  { id: string }[]
+>;
 
 const HEX_ID = /[0-9a-f]{64}/g;
 const renamed = (value: unknown, copy: number): unknown =>
@@ -27,9 +30,7 @@ const renamed = (value: unknown, copy: number): unknown =>
     ? value
     : JSON.parse(
         JSON.stringify(value)
-          .replace(HEX_ID, (hex) =>
-            createHash('sha256').update(`${hex}:${copy}`).digest('hex'),
-          )
+          .replace(HEX_ID, (hex) => createHash('sha256').update(`${hex}:${copy}`).digest('hex'))
           .replace(/child-/g, `c${copy}child-`)
           .replace(/orbit/g, `orbit${copy}`)
           .replace(/"stepIndex":0/g, `"stepIndex":${copy}`),

@@ -206,7 +206,8 @@ test('the heap inputs of packet.bytes keep their sources and formula', () => {
   // The formula, not the current inputs, is pinned: a reply cap or concurrency change moves it.
   expect(basis.formula(2, 10, 1.25)).toBe(25);
   expect(basis.formula(2, 10, 1.26)).toBe(26);
-  for (const input of inputs) expect(dependents(REGISTER, input)).toContain('analysis.replyHeapBytes');
+  for (const input of inputs)
+    expect(dependents(REGISTER, input)).toContain('analysis.replyHeapBytes');
 });
 
 test('packet.bytes is the packet that fits the runner heap beside the model replies', () => {

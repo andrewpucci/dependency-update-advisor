@@ -88,7 +88,8 @@ function rankOf(entry: Record<string, unknown>, index: number): number {
  * `token_str`, so they are measured from that text's UTF-8 bytes.
  */
 export function summarize(tekken: unknown): Summary {
-  if (!isRecord(tekken) || Array.isArray(tekken)) throw new Error('the tokenizer file is not a JSON object');
+  if (!isRecord(tekken) || Array.isArray(tekken))
+    throw new Error('the tokenizer file is not a JSON object');
   const vocab = entries(tekken.vocab, 'vocab').map((entry, index) => {
     if (typeof entry.token_bytes !== 'string') throw new Error(`vocab ${index}: no token_bytes`);
     return tokenLengths(rankOf(entry, index), Buffer.from(entry.token_bytes, 'base64'));
