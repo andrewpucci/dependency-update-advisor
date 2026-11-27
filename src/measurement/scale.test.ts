@@ -55,8 +55,14 @@ test('derives the PyPI metadata ceilings from the packet change limit, scaled on
 });
 
 test('recomputes derived entries from the scaled inputs', () => {
+  // The freshness reads are a structural count of fixed call sites, which no run exceeds, so only
+  // the snapshot share scales in the transport total.
+  expect(valueAt(10, 'evidence.allocation.transport.maxRequests')).toBe(
+    10 * (REGISTER.get('evidence.allocation.transport.snapshot.maxRequests')?.value ?? 0) +
+      (REGISTER.get('evidence.allocation.transport.freshness.maxRequests')?.value ?? 0),
+  );
   for (const id of [
-    'evidence.allocation.transport.maxRequests',
+    'evidence.allocation.transport.maxTotalBytes',
     'evidence.allocation.signals.maxTotalBytes',
     'evidence.envelope.maxTotalBytes',
     // The retained-byte cap copies the research cache total (#467), so it scales through it.

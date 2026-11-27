@@ -28,10 +28,11 @@ test('records the evidence-read envelope', () => {
   expect(EVIDENCE_READ_ENVELOPE).toEqual({
     // The advisory, upstream byte, and PyPI metadata ceilings (#467) raise the envelope sums:
     // 1,520 + (221 − 80) + (256 − 16) + (256 − 40) requests, the last the malware ceiling, and
-    // 54 MiB − 15 MiB − 0.5 MiB + 76,800,000 + 9,484,288 bytes.
-    maxRequests: 2117,
+    // 54 MiB − 15 MiB − 0.5 MiB + 76,800,000 + 9,484,288 bytes. The structural freshness share
+    // (L11, #383) moves them by (17 − 24) requests and (17 − 3) MiB.
+    maxRequests: 2110,
     maxResponseBytes: MiB,
-    maxTotalBytes: 126_654_464,
+    maxTotalBytes: 141_334_528,
     requestTimeoutMs: 11_639,
     totalTimeoutMs: 240_000,
   });
@@ -40,10 +41,10 @@ test('records the evidence-read envelope', () => {
 test('splits the envelope with nothing unallocated or over-allocated', () => {
   expect(EVIDENCE_READ_ALLOCATION).toEqual({
     transport: {
-      maxRequests: 224,
-      maxTotalBytes: 12 * MiB,
+      maxRequests: 217,
+      maxTotalBytes: 26 * MiB,
       snapshot: { maxRequests: 200, maxTotalBytes: 9 * MiB },
-      freshness: { maxRequests: 24, maxTotalBytes: 3 * MiB },
+      freshness: { maxRequests: 17, maxTotalBytes: 17 * MiB },
     },
     session: { maxRequests: 160, maxTotalBytes: 12 * MiB },
     registry: { maxRequests: 640, maxTotalBytes: 4 * MiB },

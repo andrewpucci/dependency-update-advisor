@@ -330,6 +330,14 @@ These were approved as adopter configuration on 2026-11-27 (L11,
 [#383](https://github.com/andrewpucci/dependency-update-advisor/issues/383)),
 each with today's value as its default and the hard maximum named here:
 
+- **GitHub request cap, extended** (Q6(a)): the snapshot, session, and
+  signals-upstream request shares join the research requests in the GitHub
+  request cap. Tree reads grow with path depth, so these shares have no
+  structural bound. Hard maximum, joint over every share in the cap:
+  `limit:github.token.requestCapMax`, the documented `GITHUB_TOKEN` rate
+  limit less the freshness reads every run makes. It counts GitHub reads
+  only, so `limit:research.githubQuota.researchCeiling`, which sums every
+  host, cannot serve as it.
 - **Response cap** (Q3(a)): `limit:evidence.envelope.maxResponseBytes`. It
   is a parse-safety bound on untrusted responses, which the list above bars;
   this amendment admits it by name, because the cap binds legitimate

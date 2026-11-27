@@ -896,6 +896,35 @@ test('reads Dependabot roots only from the pinned default-branch tree', async ()
   expect(reader.calls).toContain('commit:main');
 });
 
+test('the smallest tree entry the snapshot accepts serializes to snapshot.minTreeEntryBytes', async () => {
+  const smallest = { path: 'a', mode: '040000', type: 'tree', sha: 'f'.repeat(40) };
+  const reader = reads([], {});
+  reader.readTree = async (_repository, sha) =>
+    sha === treeRevision
+      ? { kind: 'available', value: [smallest, { ...smallest, path: 'b' }] }
+      : { kind: 'available', value: [] };
+  await expect(
+    withTrustedSnapshot({ repository, reads: reader, temporaryRoot: tempRoot() }, async () => 'ok'),
+  ).resolves.toEqual({ kind: 'ready', value: 'ok' });
+  // Each entry after the first costs its JSON and one comma in the response.
+  expect(JSON.stringify([smallest, smallest]).length - JSON.stringify([smallest]).length).toBe(
+    limit('snapshot.minTreeEntryBytes'),
+  );
+  // Every field is at its shortest: a shorter path, mode, type or sha is refused.
+  for (const shorter of [{ path: '' }, { mode: '40000' }, { sha: 'f'.repeat(39) }]) {
+    reader.readTree = async (_repository, sha) =>
+      sha === treeRevision
+        ? { kind: 'available', value: [{ ...smallest, ...shorter }] }
+        : { kind: 'available', value: [] };
+    await expect(
+      withTrustedSnapshot(
+        { repository, reads: reader, temporaryRoot: tempRoot() },
+        async () => 'ok',
+      ),
+    ).resolves.toEqual({ kind: 'unavailable' });
+  }
+});
+
 test('a listing at snapshot.maxTreeEntries is read and one more entry is refused', async () => {
   const maxTreeEntries = limit('snapshot.maxTreeEntries');
   const rootListing = (count: number) => {

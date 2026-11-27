@@ -8,6 +8,7 @@ import {
   type GithubRead,
   type GithubTransport,
 } from './runtime.js';
+import { limit } from './limits.js';
 
 const env = {
   INPUT_GITHUB_TOKEN: 'read-token',
@@ -78,6 +79,20 @@ test('uses one fixed-origin, encoded workflow request with the read token', asyn
   );
 });
 
+test('startup resolves its workflow with exactly freshness.startupReads freshness reads', async () => {
+  const runtime = parseRuntime(env);
+  if (!runtime) throw new Error('fixture must parse');
+  let reads = 0;
+  const transport: Pick<GithubTransport, 'readWorkflow'> = {
+    readWorkflow: async () => {
+      reads += 1;
+      return { kind: 'available', value: { id: 301, path: '.github/workflows/ci.yml' } };
+    },
+  };
+  await expect(resolveWorkflow(runtime, transport)).resolves.not.toBeNull();
+  expect(reads).toBe(limit('freshness.startupReads'));
+});
+
 test('validates the returned workflow ID and exact path', async () => {
   const runtime = parseRuntime(env);
   if (!runtime) throw new Error('fixture must parse');
@@ -123,7 +138,7 @@ test('fails closed on a rate limit, redirect, or aggregate request budget', asyn
 
   expect(W2_GITHUB_LIMITS).toEqual({
     snapshot: { maxRequests: 200, maxTotalBytes: 9 * 1024 * 1024 },
-    freshness: { maxRequests: 24, maxTotalBytes: 3 * 1024 * 1024 },
+    freshness: { maxRequests: 17, maxTotalBytes: 17 * 1024 * 1024 },
     maxResponseBytes: 1024 * 1024,
     requestTimeoutMs: 11_639,
     totalTimeoutMs: 240_000,
@@ -369,7 +384,7 @@ const budget = { kind: 'unavailable', reason: 'budget' } as const;
 
 test.each([
   ['snapshot', snapshotRead, 'snapshot', 200],
-  ['freshness', freshnessRead, 'freshness', 24],
+  ['freshness', freshnessRead, 'freshness', 17],
 ] as const)(
   'refuses a %s read after its own request share',
   async (_name, read, share, requests) => {

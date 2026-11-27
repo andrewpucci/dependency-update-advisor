@@ -262,8 +262,11 @@ test('safety packet bounds keep their values and state a reason', () => {
   }
 });
 
-test('RELEASE_PAGE_SIZES halves from the register value down to 1 and is frozen', () => {
-  expect(RELEASE_PAGE_SIZES).toEqual([64, 32, 16, 8, 4, 2, 1]);
+test('RELEASE_PAGE_SIZES is a divisor chain from the register value down to 1 and is frozen', () => {
+  expect(RELEASE_PAGE_SIZES).toEqual([100, 50, 25, 5, 1]);
+  for (const [i, size] of RELEASE_PAGE_SIZES.slice(1).entries())
+    expect(RELEASE_PAGE_SIZES[i] % size).toBe(0);
+  expect(RELEASE_PAGE_SIZES[0]).toBe(limit('upstream.releasePageSize'));
   expect(Object.isFrozen(RELEASE_PAGE_SIZES)).toBe(true);
 });
 
@@ -481,4 +484,38 @@ test('the evidence deadline is an adopter setting whose hard maximum leaves one 
   expect(longer.get('evidence.allocation.advisory.maxRequests')?.value).toBe(443);
   expect(longer.get('evidence.allocation.upstream.maxTotalBytes')?.value).toBe(153_600_000);
   expect(settingProblems(REGISTER)).toEqual([]);
+});
+
+test('the GitHub read shares keep their sources and formulas', () => {
+  expect(limit('evidence.allocation.transport.freshness.maxRequests')).toBe(
+    limit('freshness.startupReads') +
+      limit('freshness.entryReads') +
+      limit('freshness.checksPerRun') * limit('freshness.readsPerCheck'),
+  );
+  expect(limit('evidence.allocation.transport.freshness.maxRequests')).toBe(17);
+  expect(limit('evidence.allocation.transport.freshness.maxTotalBytes')).toBe(
+    17 * limit('github.maxResponseBytes'),
+  );
+  expect(limit('github.token.requestCapMax')).toBe(
+    limit('github.token.restRequestsPerHour') -
+      limit('evidence.allocation.transport.freshness.maxRequests'),
+  );
+  for (const id of ['evidence.allocation.transport.snapshot.maxRequests'] as const)
+    expect(limitEntry(id).configurable, id).toMatchObject({
+      maximum: 'github.token.requestCapMax',
+      joint: true,
+    });
+  expect(limitEntry('github.compareMaxFiles').basis).toMatchObject({
+    kind: 'external',
+    platformValue: 300,
+  });
+  expect(limit('upstream.releasePageSize')).toBe(limit('github.pageSize'));
+  expect(limit('snapshot.maxTreeEntries')).toBe(
+    Math.floor(
+      limit('evidence.allocation.transport.snapshot.maxTotalBytes') /
+        limit('snapshot.minTreeEntryBytes'),
+    ),
+  );
+  expect(limit('snapshot.minTreeEntryBytes')).toBe(92);
+  expect(limit('snapshot.maxTreeEntries')).toBe(102_578);
 });

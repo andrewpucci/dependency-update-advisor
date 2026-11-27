@@ -103,6 +103,18 @@ test('binds one completed source attempt to the current open Dependabot PR', asy
   expect(f.readReplay).toHaveBeenCalledWith([101, 301, 401, 1, 42, HEAD]);
 });
 
+test('entry verification makes exactly freshness.entryReads GitHub reads', async () => {
+  const f = fixture();
+  expect(await verifyCiEvent(f.input, f.reads)).toMatchObject({ kind: 'verified' });
+  const githubReads = [f.readWorkflow, f.readRun, f.readPullRequest, f.readComparison].reduce(
+    (total, read) => total + read.mock.calls.length,
+    0,
+  );
+  // The replay read goes to the claim store, not GitHub.
+  expect(f.readReplay).toHaveBeenCalledTimes(1);
+  expect(githubReads).toBe(limit('freshness.entryReads'));
+});
+
 test.each([null, [], 'payload', 42])('rejects malformed event payload %j', async (payload) => {
   const f = fixture();
   expect(await verifyCiEvent({ ...f.input, payload }, f.reads)).toMatchObject({

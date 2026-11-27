@@ -1085,6 +1085,45 @@ const DEFINITIONS = [
       test: 'src/event.test.ts > a freshness recheck makes exactly freshness.readsPerCheck GitHub reads',
     },
   ),
+  derived(
+    'freshness.startupReads',
+    'count',
+    [],
+    () => 1,
+    'Startup reads the workflow file once to resolve the workflow identity (resolveWorkflow, src/runtime.ts), a fixed call site. Approved by the maintainer on 2026-11-27 (L11, #383).',
+    {
+      protects:
+        'Counts the freshness reads startup makes, so the freshness share reserves them.',
+      effect: 'Not enforced: it sizes limit:evidence.allocation.transport.freshness.maxRequests.',
+      test: 'src/runtime.test.ts > startup resolves its workflow with exactly freshness.startupReads freshness reads',
+    },
+  ),
+  derived(
+    'freshness.entryReads',
+    'count',
+    [],
+    () => 4,
+    'Event verification reads the workflow, the run, the pull request and the base-to-head comparison once each (verifyCiEvent, src/event.ts); its replay read goes to the claim store, not GitHub. Approved by the maintainer on 2026-11-27 (L11, #383).',
+    {
+      protects:
+        'Counts the GitHub reads of event verification, so the freshness share reserves them.',
+      effect: 'Not enforced: it sizes limit:evidence.allocation.transport.freshness.maxRequests.',
+      test: 'src/event.test.ts > entry verification makes exactly freshness.entryReads GitHub reads',
+    },
+  ),
+  derived(
+    'freshness.checksPerRun',
+    'count',
+    [],
+    () => 4,
+    'The pipeline rechecks freshness at entry, before research, before the model and before the handoff (src/pipeline.ts), fixed call sites with no loop. Approved by the maintainer on 2026-11-27 (L11, #383).',
+    {
+      protects:
+        'Counts the freshness rechecks one run makes, so the freshness share reserves their reads.',
+      effect: 'Not enforced: it sizes limit:evidence.allocation.transport.freshness.maxRequests.',
+      test: 'src/pipeline.test.ts > a full run makes freshness.checksPerRun freshness checks',
+    },
+  ),
   // Evidence read envelope and its reader shares, from budget.ts.
   derived(
     'evidence.envelope.maxRequests',
@@ -1225,13 +1264,23 @@ const DEFINITIONS = [
       test: 'none: sum of the snapshot and freshness byte shares; runtime.ts caps each share separately (src/runtime.ts:211 uses limits.maxTotalBytes of the share), and budget.test.ts:65-67 only asserts the sum',
     },
   ),
-  unjustified('evidence.allocation.transport.snapshot.maxRequests', 200, 'count', {
-    protects:
-      'Caps snapshot reads (repository, commit, trees, blobs) so a heavy snapshot cannot use the freshness share or the GitHub rate limit.',
-    effect: 'The read past the share is refused with budget before any request is sent.',
-    test: 'src/runtime.test.ts > an exhausted snapshot share cannot starve freshness reads, and the reverse',
-    note: 'awaiting L8 measurement',
-  }),
+  configured(
+    'evidence.allocation.transport.snapshot.maxRequests',
+    200,
+    'count',
+    {
+      setting: 'limits.githubRequests.snapshot',
+      maximum: 'github.token.requestCapMax',
+      joint: true,
+    },
+    "The adopter: snapshot reads spend the adopter's GITHUB_TOKEN quota, and tree reads grow with path depth (src/snapshot.ts), so no structural bound exists. It extends section 5's GitHub request cap (L11, Q6(a)).",
+    {
+      protects:
+        'Caps snapshot reads (repository, commit, trees, blobs) so a heavy snapshot cannot use the freshness share or the GitHub rate limit.',
+      effect: 'The read past the share is refused with budget before any request is sent.',
+      test: 'src/runtime.test.ts > an exhausted snapshot share cannot starve freshness reads, and the reverse',
+    },
+  ),
   unjustified('evidence.allocation.transport.snapshot.maxTotalBytes', 9 * MiB, 'bytes', {
     protects:
       'Caps snapshot response bytes so a heavy snapshot cannot use the freshness bytes or runner memory.',
@@ -1240,22 +1289,34 @@ const DEFINITIONS = [
     test: "src/runtime.test.ts > stops a %s read at that share's byte limit and leaves the other share alone",
     note: 'awaiting L8 measurement',
   }),
-  unjustified('evidence.allocation.transport.freshness.maxRequests', 24, 'count', {
-    protects:
-      'Reserves requests for freshness checks (workflow, run, PR, comparison) so a heavy snapshot cannot prevent the checks that keep a finished review valid.',
-    effect:
-      'The request past the share is refused with budget and no request is sent; a failed freshness read is an internal failure, never a stale head.',
-    test: 'src/runtime.test.ts > an exhausted snapshot share cannot starve freshness reads, and the reverse',
-    note: 'awaiting L8 measurement',
-  }),
-  unjustified('evidence.allocation.transport.freshness.maxTotalBytes', 3 * MiB, 'bytes', {
-    protects:
-      'Reserves response bytes for freshness checks so a heavy snapshot cannot starve the checks that keep a finished review valid.',
-    effect:
-      "A read that would pass the share's remaining bytes returns budget; the snapshot share is unaffected.",
-    test: "src/runtime.test.ts > stops a %s read at that share's byte limit and leaves the other share alone",
-    note: 'awaiting L8 measurement',
-  }),
+  derived(
+    'evidence.allocation.transport.freshness.maxRequests',
+    'count',
+    ['freshness.startupReads', 'freshness.entryReads', 'freshness.checksPerRun', 'freshness.readsPerCheck'],
+    (startup, entry, checks, perCheck) => startup + entry + checks * perCheck,
+    "Every freshness read one run makes: limit:freshness.startupReads at startup, limit:freshness.entryReads to verify the event, and limit:freshness.checksPerRun rechecks of limit:freshness.readsPerCheck reads each. A failed freshness read is an internal failure, never a stale head, so the share lets every one of them run. Each count comes from fixed call sites and is pinned by a test. Approved by the maintainer on 2026-11-27 (L11, #383).",
+    {
+      protects:
+        'Reserves requests for freshness checks (workflow, run, PR, comparison) so a heavy snapshot cannot prevent the checks that keep a finished review valid.',
+      effect:
+        'The request past the share is refused with budget and no request is sent; a failed freshness read is an internal failure, never a stale head.',
+      test: 'src/runtime.test.ts > an exhausted snapshot share cannot starve freshness reads, and the reverse',
+    },
+  ),
+  derived(
+    'evidence.allocation.transport.freshness.maxTotalBytes',
+    'bytes',
+    ['evidence.allocation.transport.freshness.maxRequests', 'github.maxResponseBytes'],
+    (requests, responseBytes) => requests * responseBytes,
+    'Every freshness read may return a response at the cap, limit:github.maxResponseBytes, and a freshness read that runs out fails the job closed, so the share holds limit:evidence.allocation.transport.freshness.maxRequests full responses. Approved by the maintainer on 2026-11-27 (L11, #383).',
+    {
+      protects:
+        'Reserves response bytes for freshness checks so a heavy snapshot cannot starve the checks that keep a finished review valid.',
+      effect:
+        "A read that would pass the share's remaining bytes returns budget; the snapshot share is unaffected.",
+      test: "src/runtime.test.ts > stops a %s read at that share's byte limit and leaves the other share alone",
+    },
+  ),
   unjustified('evidence.allocation.session.maxRequests', 160, 'count', {
     protects:
       'Caps requests of the GitHub evidence session reader so one review cannot exceed the GitHub rate limit or the evidence time.',
@@ -2087,14 +2148,36 @@ const DEFINITIONS = [
     note: 'awaiting L8 measurement',
     test: 'src/snapshot.test.ts > a link target at snapshot.maxBlobBytes is read and one byte more is refused unfetched',
   }),
-  unjustified('snapshot.maxTreeEntries', 10_000, 'count', {
-    protects:
-      'The total number of tree entries listed from GitHub is bounded, so a very large repository cannot make the snapshot listing unbounded (memory and requests).',
-    effect:
-      'Once the running count exceeds the cap, the listing throws Unavailable with the default reason unknown, and the snapshot is reported unusable.',
-    note: 'awaiting L8 measurement',
-    test: 'src/snapshot.test.ts > a listing at snapshot.maxTreeEntries is read and one more entry is refused',
-  }),
+  derived(
+    'snapshot.maxTreeEntries',
+    'count',
+    ['evidence.allocation.transport.snapshot.maxTotalBytes', 'snapshot.minTreeEntryBytes'],
+    (bytes, entryBytes) => Math.floor(bytes / entryBytes),
+    'As many tree entries as the snapshot byte share, limit:evidence.allocation.transport.snapshot.maxTotalBytes, can carry at the smallest entry the snapshot accepts, limit:snapshot.minTreeEntryBytes, rounded down. GitHub documents no entry limit for a non-recursive tree, and the bytes bound the listing first, so the count never cuts a listing the share admits. It follows the snapshot byte setting (L11, Q1(a)). Approved by the maintainer on 2026-11-27 (L11, Q7(a), #383).',
+    {
+      protects:
+        'The total number of tree entries listed from GitHub is bounded, so a very large repository cannot make the snapshot listing unbounded (memory and requests).',
+      effect:
+        'Once the running count exceeds the cap, the listing throws Unavailable with the default reason unknown, and the snapshot is reported unusable.',
+      test: 'src/snapshot.test.ts > a listing at snapshot.maxTreeEntries is read and one more entry is refused',
+    },
+  ),
+  derived(
+    'snapshot.minTreeEntryBytes',
+    'bytes',
+    [],
+    () =>
+      Buffer.byteLength(
+        JSON.stringify({ path: 'a', mode: '040000', type: 'tree', sha: '0'.repeat(40) }),
+      ) + 1,
+    'The serialized size of the smallest tree entry the snapshot accepts (classifyEntry, src/snapshot.ts): a one-character path, a six-character mode, the four-character type tree, a 40-character sha and no optional field, plus the comma that separates it from the next entry. Approved by the maintainer on 2026-11-27 (L11, Q7(a), #383).',
+    {
+      protects:
+        'Sizes limit:snapshot.maxTreeEntries from the snapshot byte share, so the count bound never sits below what the bytes admit.',
+      effect: 'Not enforced: it is the divisor of limit:snapshot.maxTreeEntries.',
+      test: 'src/snapshot.test.ts > the smallest tree entry the snapshot accepts serializes to snapshot.minTreeEntryBytes',
+    },
+  ),
   // GitHub reads, from runtime.ts. Each mirrors the evidence share it is read from.
   derived(
     'github.snapshot.maxRequests',
@@ -2813,14 +2896,24 @@ const DEFINITIONS = [
     note: 'no recorded reason',
     test: 'src/evidence/npm-registry.test.ts > an integrity string at the code-unit cap binds and one more code unit is malformed',
   }),
-  unjustified('github.compareMaxFiles', 300, 'count', {
+  {
+    id: 'github.compareMaxFiles',
+    value: 300,
+    unit: 'count',
     protects:
       'A compare response with the cap or more changed files may be incomplete, so the list is marked truncated instead of being treated as complete (evidence completeness).',
+    basis: {
+      kind: 'external',
+      url: 'https://docs.github.com/en/rest/commits/commits#compare-two-commits',
+      checked: '2026-11-27',
+      platformValue: 300,
+      margin:
+        'none: the response "includes up to 300 changed files for the entire comparison", so a list of that length may be cut and is marked truncated. Approved by the maintainer on 2026-11-27 (L11, #383).',
+    },
     effect:
       'At or above the cap, filesComplete is false and the reason truncated is recorded; the patches already read are kept.',
-    note: 'no recorded reason',
     test: 'src/evidence/upstream-github.test.ts > a comparison keeps its file list complete below the register file cap and truncates at it',
-  }),
+  },
   {
     id: 'github.processingTimeoutMs',
     value: 10_000,
@@ -2939,6 +3032,20 @@ const DEFINITIONS = [
       'Not enforced yet; L12 makes it the hard maximum of the GitHub request cap. Research already follows the quota GitHub reports at run time.',
     test: 'none: platform figure; L12 makes it the hard maximum of the GitHub request cap',
   },
+  derived(
+    'github.token.requestCapMax',
+    'count',
+    ['github.token.restRequestsPerHour', 'evidence.allocation.transport.freshness.maxRequests'],
+    (perHour, freshness) => perHour - freshness,
+    "The joint hard maximum of the GitHub request cap's settings: the documented GITHUB_TOKEN quota, limit:github.token.restRequestsPerHour, less the freshness reads every run makes, limit:evidence.allocation.transport.freshness.maxRequests, so the settings together never spend the reads a review needs to stay valid. It bounds only GitHub reads: limit:research.githubQuota.researchCeiling also counts other hosts, so it cannot serve. Approved by the maintainer on 2026-11-27 (L11, Q6(a), #383).",
+    {
+      protects:
+        "Keeps the adopter's GitHub request settings, together, inside one hour of the GITHUB_TOKEN quota with the freshness reads reserved.",
+      effect:
+        'Not enforced by the reviewer yet: L12 makes the config parser reject settings whose sum is larger. check:limits checks the defaults against it.',
+      test: 'none: the joint hard maximum of adopter settings the parser does not read yet (L12, #384); src/limits.test.ts pins its formula',
+    },
+  ),
   {
     id: 'github.hostedJobMaxMinutes',
     value: 360,
@@ -2957,14 +3064,20 @@ const DEFINITIONS = [
       'Not enforced yet; L13 makes it the hard maximum of the job budget input. Each workflow sets its own timeout-minutes far below it.',
     test: 'none: platform figure; L12 and L13 make it the hard maximum of the job budget',
   },
-  unjustified('upstream.releasePageSize', 64, 'count', {
-    protects:
-      'The start size of the release page-size ladder is bounded, so a release page that does not fit the response cap is halved and retried instead of failing outright (response size and memory).',
-    effect:
-      'A page that does not fit halves and is retried at the same offset; a single release over the cap fails with reason budget.',
-    test: 'src/evidence/upstream-releases.test.ts > halves the page until it fits and keeps reading from the same release',
-    note: 'no recorded reason',
-  }),
+  derived(
+    'upstream.releasePageSize',
+    'count',
+    ['github.pageSize'],
+    copy,
+    "The release ladder starts at GitHub's per_page maximum for listing releases, limit:github.pageSize (https://docs.github.com/en/rest/releases/releases#list-releases, \"max 100\"), as the compare ladder does (#471), so releases that fit read in the fewest pages. Approved by the maintainer on 2026-11-27 (L11, #383).",
+    {
+      protects:
+        'The start size of the release page-size ladder is bounded, so a release page that does not fit the response cap is halved and retried instead of failing outright (response size and memory).',
+      effect:
+        'A page that does not fit halves and is retried at the same offset; a single release over the cap fails with reason budget.',
+      test: 'src/evidence/upstream-releases.test.ts > halves the page until it fits and keeps reading from the same release',
+    },
+  ),
   derived(
     'upstream.comparePageSize',
     'count',

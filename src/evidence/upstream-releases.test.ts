@@ -86,10 +86,10 @@ async function rejectionReason(promise: Promise<unknown>): Promise<EvidenceReaso
 
 describe('forEachRelease', () => {
   test('reads every release in order when the first page fits', async () => {
-    const { reader, sizes } = fakeReader({ total: 150, fits: 64 });
+    const { reader, sizes } = fakeReader({ total: 150, fits: 100 });
     const seen = await visitAll(reader);
     expect(seen.map((item) => item.id)).toEqual(Array.from({ length: 150 }, (_, i) => i));
-    expect(new Set(sizes)).toEqual(new Set([64]));
+    expect(new Set(sizes)).toEqual(new Set([100]));
   });
 
   test('halves the page until it fits and keeps reading from the same release', async () => {
@@ -98,15 +98,16 @@ describe('forEachRelease', () => {
     const ids = seen.map((item) => item.id);
     expect(ids).toEqual(Array.from({ length: 150 }, (_, i) => i));
     expect(new Set(ids).size).toBe(ids.length);
-    expect(sizes.slice(0, 3)).toEqual([64, 32, 16]);
-    expect(sizes.slice(2).every((size) => size === 16)).toBe(true);
+    // The ladder is the divisor chain 100, 50, 25, 5, 1; 5 is the first size that fits.
+    expect(sizes.slice(0, 4)).toEqual([100, 50, 25, 5]);
+    expect(sizes.slice(3).every((size) => size <= 25)).toBe(true);
   });
 
   test('halves mid-stream and keeps reading from the offset already reached', async () => {
-    const { reader, sizes } = fakeReader({ total: 150, fits: (start) => (start < 64 ? 64 : 20) });
+    const { reader, sizes } = fakeReader({ total: 150, fits: (start) => (start < 100 ? 100 : 20) });
     const ids = (await visitAll(reader)).map((item) => item.id);
     expect(ids).toEqual(Array.from({ length: 150 }, (_, i) => i));
-    expect(sizes.slice(0, 4)).toEqual([64, 64, 32, 16]);
+    expect(sizes.slice(0, 5)).toEqual([100, 100, 50, 25, 5]);
   });
 
   test('a single release over the cap fails with budget', async () => {
@@ -118,17 +119,17 @@ describe('forEachRelease', () => {
   test('a stopped reader is not retried at a smaller size', async () => {
     const { reader, sizes } = fakeReader({ total: 150, fits: 0, stopped: 'budget' });
     expect(await rejectionReason(visitAll(reader))).toBe('budget');
-    expect(sizes).toEqual([64]);
+    expect(sizes).toEqual([100]);
   });
 
   test('stops at the page limit', async () => {
-    const { reader, sizes } = fakeReader({ total: 1000, fits: 64, maxPages: 3 });
+    const { reader, sizes } = fakeReader({ total: 1000, fits: 100, maxPages: 3 });
     expect(await rejectionReason(visitAll(reader))).toBe('budget');
-    expect(sizes).toEqual([64, 64, 64]);
+    expect(sizes).toEqual([100, 100, 100]);
   });
 
   test('a short page that claims more is a conflict', async () => {
-    const { reader } = fakeReader({ total: 150, fits: 64, short: true });
+    const { reader } = fakeReader({ total: 150, fits: 100, short: true });
     expect(await rejectionReason(visitAll(reader))).toBe('conflict');
   });
 });
@@ -179,7 +180,7 @@ describe('releases request shape', () => {
     const opened = createUpstreamReader(limits, { fetch, now: () => 0 });
     if (opened.kind !== 'ready') throw new Error('reader');
     const target = { kind: 'github', repository: 'fixture/action', resource: 'releases', page: 1 };
-    for (const perPage of [100, 50, 25, 12]) {
+    for (const perPage of [64, 32, 16, 12]) {
       const result = await opened.reader.read({ ...target, perPage });
       expect(result).toMatchObject({ status: 'unavailable', reasons: ['unsupported'] });
     }

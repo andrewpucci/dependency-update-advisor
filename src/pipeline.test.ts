@@ -457,6 +457,27 @@ test('runs npm, Actions, and uv changes through research and model analysis to a
   expect(publicCalls.some((url) => url.includes('/advisories'))).toBe(true);
 });
 
+test('a full run makes freshness.checksPerRun freshness checks', async () => {
+  const { input, modelCalls } = await setup({ evidence: 'changes' });
+  let checks = 0;
+  const readRun = input.eventReads.readRun;
+  const result = await runReview({
+    ...input,
+    eventReads: {
+      ...input.eventReads,
+      // Event verification reads the run once, and each recheck reads it first.
+      readRun: async (repo, id) => {
+        checks += 1;
+        return readRun(repo, id);
+      },
+    },
+  });
+  expect(result.kind).toBe('handed-off');
+  expect(modelCalls.length).toBeGreaterThan(0);
+  // Entry, before research, before the model, and the final check before the handoff.
+  expect(checks - 1).toBe(limit('freshness.checksPerRun'));
+});
+
 test('hands off a model failure as a status-only failure with no body', async () => {
   const { input, sink } = await setup({ evidence: 'changes', model: failingModel('transport') });
   const result = await runReview(input);
