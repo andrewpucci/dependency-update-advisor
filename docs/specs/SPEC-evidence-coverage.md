@@ -946,7 +946,9 @@ out-of-scope item "Scaling the collection registry share".
 3. **Ceiling.** The ×10 value of the former fixed share, under which every
    collected corpus PR completed. At ×1 the fixed share cut 28 of #276's
    105 members' vulnerability and malware coverage with `budget`; the
-   scaled share covers all of them.
+   scaled share covers all of them. The ceiling is corpus-derived, not
+   platform-derived: no documented npm registry limit sets it, pending L8
+   ([#380](https://github.com/andrewpucci/dependency-update-advisor/issues/380)).
 4. **Host.** These reads go to `registry.npmjs.org` with no credential.
    They are not research GitHub requests, so
    `limit:research.githubQuota.researchCeiling` and the quota guard never
