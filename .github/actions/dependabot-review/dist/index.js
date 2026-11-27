@@ -8991,10 +8991,8 @@ const UV_MEASURE = {
 	corpus: "four uv Dependabot PRs with 29–34 uv members each, from one of the maintainer's own projects (#462 measurement comment); approved by the maintainer on 2026-11-27, #467",
 	measured: "2026-11-27"
 };
-const UV_KEPT_BASE = {
-	statistic: "the former flat share, kept as the base for a change with no uv members; the eligible rate adds the per-member demand",
-	headroom: "the eligible rate carries 1.25× the measured per-member demand"
-};
+/** A base kept from the former flat share: it has no basis of its own yet. */
+const UV_KEPT_BASE = { note: "the former flat share, kept as the base for a change with no uv members (approved by the maintainer on 2026-11-27, #467); the eligible rate adds the per-member demand. Awaiting L8 measurement (#380)" };
 const UV_ZERO = {
 	role: {
 		statistic: FIT_ZERO_STATISTIC.role,
@@ -9089,16 +9087,22 @@ const rateAudit = (share, dimension, unit) => ({
 	protects: `Grows the ${share} ${dimension} share with each ${unit} member, so a larger change gets more and a small one fails faster.`,
 	effect: "Adds rate times the count to the share, rounded up and capped at the ceiling; zero leaves the share at its base."
 });
-/** A #467 sized dimension's base and rate entries, each a `measured` entry citing #462. */
+/** A #467 sized dimension's base and rate entries: `measured` entries citing #462, or a kept base. */
 function sizedShareEntries(share, dimension, sized, unit, units) {
-	return [fitted(`research.share.${share}.${dimension}.base`, sized.base.value, unit, {
-		...UV_MEASURE,
-		...sized.base.basis
-	}, {
+	const baseId = `research.share.${share}.${dimension}.base`;
+	const baseAudit = {
 		protects: "Sets the share a change of no counted members gets, before any per-member rate is added.",
 		effect: "The computed share starts here; each rate adds to it, rounded up and capped at the ceiling.",
 		test: SHARE_SIZED_TEST
-	}), ...units.map((rateUnit) => {
+	};
+	const { value, basis } = sized.base;
+	return ["note" in basis ? unjustified(baseId, value, unit, {
+		...baseAudit,
+		note: basis.note
+	}) : fitted(baseId, value, unit, {
+		...UV_MEASURE,
+		...basis
+	}, baseAudit), ...units.map((rateUnit) => {
 		const id = `research.share.${share}.${dimension}.rate.${rateUnit}`;
 		const rate = sized.rates[rateUnit];
 		return fitted(id, rate?.value ?? 0, unit, {
@@ -9483,12 +9487,12 @@ const DEFINITIONS = [
 		protects: "Caps response bytes of upstream research reads, the ceiling of the per-member upstream byte share, so they cannot take more of the evidence time or runner memory than the evidence window can read.",
 		basis: {
 			kind: "safety",
-			reason: "Upstream reads run inside limit:evidence.envelope.totalTimeoutMs (240 s). At the 0.64 MB/s upstream throughput measured on the #462 uv PRs, that window reads 240 × 0.64 = 153.6 MB; half of it, 76.8 MB, rounded to 77 MB, leaves a margin for slower responses. The per-member rate reaches it near 102 members (77 MB ÷ 0.75 MB). Approved by the maintainer on 2026-11-27, #467."
+			reason: "Upstream reads run inside limit:evidence.envelope.totalTimeoutMs (240 s). At the 0.64 MB/s upstream throughput measured on the #462 uv PRs, that window reads 240 × 0.64 = 153.6 MB; half of it, 76.8 MB, rounded to 77 MB, leaves a margin for slower responses: about 120 s of upstream reads. Research runs upstream, then advisories, then signals, one after another, on the one limit:evidence.envelope.totalTimeoutMs deadline: this ceiling and the advisory ceiling (limit:evidence.allocation.advisory.maxRequests) each take half the window, so together they use the whole window at worst, and signals relies on neither reaching its ceiling. The value is written here, not derived, so it depends on limit:evidence.envelope.totalTimeoutMs and must be re-derived when that changes. The per-member rate reaches it near 102 members (77 MB ÷ 0.75 MB). Approved by the maintainer on 2026-11-27, #467."
 		},
 		effect: "The ceiling of the scaled upstream byte share; a response past the share's remaining bytes is refused with budget and the upstream reader stops.",
 		test: "src/evidence/upstream-read.test.ts > upstream reader accepts a byte share exactly and refuses the byte past it"
 	},
-	derived("evidence.allocation.advisory.maxRequests", "count", ["evidence.envelope.totalTimeoutMs"], (totalMs) => Math.floor(totalMs / SLOWEST_OSV_RESPONSE_MS / 2), "The evidence window divided by the slowest measured OSV response (541 ms), halved for margin and rounded down: 240,000 ÷ 541 = 443.6, halved 221.8, so 221 sequential lookups fit in half the window. Approved by the maintainer on 2026-11-27, #467.", {
+	derived("evidence.allocation.advisory.maxRequests", "count", ["evidence.envelope.totalTimeoutMs"], (totalMs) => Math.floor(totalMs / SLOWEST_OSV_RESPONSE_MS / 2), "The evidence window divided by the slowest measured OSV response (541 ms), halved for margin and rounded down: 240,000 ÷ 541 = 443.6, halved 221.8, so 221 sequential lookups fit in half the window, about 120 s of OSV. Research runs upstream, then advisories, then signals, one after another, on the one limit:evidence.envelope.totalTimeoutMs deadline: this ceiling and the upstream byte ceiling (limit:evidence.allocation.upstream.maxTotalBytes) each take half the window, so together they use the whole window at worst, and signals relies on neither reaching its ceiling. Approved by the maintainer on 2026-11-27, #467.", {
 		protects: "Caps advisory lookups, the ceiling of the per-member advisory share, so a large group cannot take more of the shared evidence time than its lookups can use.",
 		effect: "The ceiling of the scaled advisory request share; requests past the share return budget, and the stage keeps the advisory evidence already read.",
 		test: "src/evidence/advisory-read.test.ts > advisory reader spends exactly its request share and refuses the lookup past it"
@@ -9911,7 +9915,7 @@ const DEFINITIONS = [
 		protects: "Untrusted upstream JSON cannot make a research reader parse an unbounded number of entries (CPU and memory).",
 		basis: {
 			kind: "safety",
-			reason: "The largest legitimate use is limit:packet.changes members at about 7,400 cumulative upstream entries each, as measured on the #462 uv PRs (225,529–251,223 entries over 29–34 members): 128 × 7,400 ≈ 947,000. Harm begins near 18 million: copying JSON measured 33 ms per 100,000 entries, and with a 10× allowance for a slower runner, 18 million entries would spend a quarter of limit:evidence.envelope.totalTimeoutMs on JSON copy alone. The cap sits above the first and far below the second. Approved by the maintainer on 2026-11-27, #467."
+			reason: "The largest legitimate use is limit:packet.changes members at the highest cumulative upstream entries per member measured on the #462 uv PRs. Those PRs used, in PR order, 251,223 entries for 34 members, 246,140 for 32, 240,318 for 31, and 225,529 for 29; the highest per member is 7,777 (the 29-member PR), so 128 × 7,777 = 995,456, under the cap. Harm begins near 18 million: a bench on the development Mac on 2026-11-27 (#467) measured JSON copying at 33 ms per 100,000 entries, and with a 10× allowance for a slower runner, 18 million entries would spend a quarter of limit:evidence.envelope.totalTimeoutMs on JSON copy alone. The cap sits above the first and far below the second. The same value also caps TOML entries in upstream pyproject reads (src/evidence/upstream-github.ts:175) and license expression tokens (src/evidence/policy-signals-licenses.ts:64); there the per-response byte caps bound the input first. Approved by the maintainer on 2026-11-27, #467."
 		},
 		effect: "Exceeding the cap fails that reader's read with reason budget; the stage stops and is recorded unavailable with its reason.",
 		test: "src/research.test.ts > the npm registry reader counts exactly research.maxJsonEntries entries and refuses one more"
@@ -9922,7 +9926,7 @@ const DEFINITIONS = [
 		note: "no recorded reason",
 		test: "src/evidence/advisory-read.test.ts > advisory JSON depth accepts the register depth exactly and refuses one level deeper"
 	}),
-	derived("research.maxRetainedBytes", "bytes", ["research.cache.maxTotalBytes"], copy, "A research reader may keep what research may read: the registry, upstream, advisory, and signals byte shares that bound the run's research cache (about 102 MB), about 1% of the 8 GB of the smallest standard GitHub-hosted Linux runner. Approved by the maintainer on 2026-11-27, #467.", {
+	derived("research.maxRetainedBytes", "bytes", ["research.cache.maxTotalBytes"], copy, "A research reader may keep what research may read: the registry, upstream, advisory, and signals byte shares that bound the run's research cache. That is about 102 MB of raw cached bodies; parsed copies and V8 object overhead make the worst-case heap a few hundred MB to about 1 GB, still within the default Node heap on the smallest standard GitHub-hosted Linux runner (2 CPUs and 8 GB for private repositories, https://docs.github.com/en/actions/reference/runners/github-hosted-runners, checked 2026-11-27). Approved by the maintainer on 2026-11-27, #467.", {
 		protects: "Bytes a research stage keeps from untrusted responses are bounded, so retained evidence cannot exhaust memory.",
 		effect: "Exceeding the cap sets the stage stop to budget; the stage stops, keeps the members it already retained, and records the stop.",
 		test: "src/research.test.ts > the npm registry reader retains exactly research.maxRetainedBytes and refuses one byte more"

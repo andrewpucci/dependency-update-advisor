@@ -1019,8 +1019,10 @@ register entry; this section cites ids only.
    `limit:research.share.signals.metadata.bytes.base`. The eligible rates,
    `limit:research.share.signals.metadata.requests.rate.eligible` and
    `limit:research.share.signals.metadata.bytes.rate.eligible`, give 1.25 ×
-   the per-member demand measured for #462, rounded up. Each is a `measured`
-   entry.
+   the per-member demand measured for #462, rounded up. The rates are
+   `measured` entries. The bases have no basis of their own yet, so they
+   stay `unjustified`, awaiting L8 measurement
+   ([#380](https://github.com/andrewpucci/dependency-update-advisor/issues/380)).
 3. **Ceilings.** Both are `derived` from `limit:packet.changes`.
    `limit:evidence.allocation.signals.readers.metadata.maxRequests` is two
    reads, base and head, per change.
@@ -1056,6 +1058,13 @@ scales it through the byte shares it copies.
 `limit:evidence.envelope.totalTimeoutMs`: the window divided by the slowest
 measured OSV response, halved for margin and rounded down, so the lookups
 the ceiling admits fit in half the window. The advisory rates are unchanged.
+
+Research runs upstream, then advisories, then signals, one after another, on
+the one `limit:evidence.envelope.totalTimeoutMs` deadline. The upstream byte
+ceiling (U1.3) and the advisory ceiling each take half the window, so
+together they use the whole window at worst, and signals relies on neither
+reaching its ceiling. The upstream byte ceiling is written as a value, so it
+must be re-derived when `limit:evidence.envelope.totalTimeoutMs` changes.
 
 ### U6. Totals
 

@@ -983,6 +983,79 @@ test('a uv change of 30 pip members keeps upstream, vulnerability and malware fo
   expect(JSON.stringify(result.signalAttempts)).not.toContain('budget');
 });
 
+test('a uv change whose advisory lookups pass the former ceiling of 80 completes them (#467)', async () => {
+  // 40 uv members, 20 direct and 20 transitive: pip reviewed lookups go to OSV one target at a
+  // time, two per member, so advisory needs 80 OSV queries plus the npm batches and the Action's
+  // lookups. That is above the former ceiling of 80 and under the ceiling of 221 the evidence
+  // deadline derives. (The malware share's ceiling binds at this size; this test pins advisory.)
+  const { fixture, packet } = await scenario({ uvDirect: 19, uvChildren: 20 });
+  const uv = packet.changes.filter((c) => c.ecosystem === 'uv' && !('basis' in c));
+  expect(uv).toHaveLength(40);
+  const share = researchShares(researchShareUnits(packet.changes)).advisory.maxRequests;
+  const ceiling = EVIDENCE_READ_ALLOCATION.advisory.maxRequests;
+  expect(ceiling).toBe(221);
+  let stage = 'none';
+  let advisory = 0;
+  const result = await runResearch({
+    ...base(fixture, packet),
+    fetch: async (url, init) => {
+      const target = new URL(url);
+      const reviewed =
+        target.host === 'api.osv.dev' ||
+        (target.pathname === '/advisories' && target.searchParams.get('type') === 'reviewed');
+      if (stage === 'advisories' && reviewed) advisory++;
+      return fixture.fetch(url, init);
+    },
+    observe: (observation) => {
+      if (observation.kind === 'stage-start') stage = observation.stage;
+    },
+  });
+  if (result.kind !== 'ready') throw new Error(result.kind);
+  expect(advisory).toBeGreaterThan(80);
+  expect(advisory).toBeLessThanOrEqual(share);
+  expect(share).toBeLessThanOrEqual(ceiling);
+  expect(result.unavailable.filter((item) => item.stage === 'advisories')).toEqual([]);
+  // Every member keeps its vulnerability check; none ends `budget`.
+  for (const change of result.packet.changes)
+    if (!('basis' in change))
+      expect(change.evidence.vulnerability, change.id).toMatchObject({
+        status: 'available',
+        reasons: [],
+      });
+});
+
+test.each([
+  ['one uv member', {}],
+  ['a direct member and seven transitive ones', { uvChildren: 7 }],
+  ['30 members, half direct', { uvDirect: 14, uvChildren: 15 }],
+  ['a member with two resolution variants', { uvVariants: true }],
+  ['a member with sdist and wheel artifacts', { uvArtifacts: true }],
+] as const)(
+  'the PyPI metadata reads stay within two per uv change, the reads its ceiling allows: %s',
+  async (_name, options) => {
+    // The ceiling is two reads per change, base and head, over the packet's change limit.
+    expect(EVIDENCE_READ_ALLOCATION.signals.readers.metadata.maxRequests).toBe(
+      2 * limit('packet.changes'),
+    );
+    const { fixture, packet } = await scenario(options);
+    const uvChanges = packet.changes.filter((c) => c.ecosystem === 'uv' && !('basis' in c));
+    expect(uvChanges.length).toBeGreaterThan(0);
+    const reads: string[] = [];
+    const result = await runResearch({
+      ...base(fixture, packet),
+      fetch: async (url, init) => {
+        if (new URL(url).host === 'pypi.org') reads.push(url);
+        return fixture.fetch(url, init);
+      },
+    });
+    if (result.kind !== 'ready') throw new Error(result.kind);
+    expect(reads.length).toBeGreaterThan(0);
+    expect(reads.length).toBeLessThanOrEqual(2 * uvChanges.length);
+    // Each exact release is read once, shared by upstream and signals.
+    expect(new Set(reads).size).toBe(reads.length);
+  },
+);
+
 const PLACEHOLDER = { status: 'unavailable', reasons: ['missing'], sourceIds: [] };
 const BUDGET = { status: 'unavailable', reasons: ['budget'], sourceIds: [] };
 
