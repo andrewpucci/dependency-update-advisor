@@ -1,6 +1,12 @@
-import { expect, test } from 'vite-plus/test';
+import { describe, expect, test } from 'vite-plus/test';
 import { createHash } from 'node:crypto';
-import { createUpstreamReader, type UpstreamDependencies } from './upstream-read.js';
+import {
+  createUpstreamReader,
+  type TagAnswer,
+  type TagCandidate,
+  type TagExistenceMap,
+  type UpstreamDependencies,
+} from './upstream-read.js';
 import { createResearchCache } from './research-cache.js';
 import { RESEARCH_CACHE_LIMITS } from '../budget.js';
 import { limit } from '../limits.js';
@@ -10,6 +16,8 @@ import {
   collectExactComparison,
   collectPackageComparison,
   resolvePackageVersion,
+  packageTagCandidates,
+  settleTagExistence,
 } from './upstream-github.js';
 
 const sha = 'a'.repeat(40);
@@ -420,4 +428,128 @@ test('a comparison keeps its file list complete below the register file cap and 
   const atCap = compareWithFiles(cap);
   expect(await compare(atCap)).toMatchObject({ reasons: ['truncated'] });
   atCap.reader.close();
+});
+
+describe('settling tag existence pairs answers by candidate, never by position', () => {
+  const v = { repository: 'fixture/orbit', tag: 'v2.0.0' },
+    bare = { repository: 'fixture/orbit', tag: '2.0.0' };
+  const key = (c: TagCandidate) => JSON.stringify([c.repository.toLowerCase(), c.tag]);
+  async function settle(answer: (asked: readonly TagCandidate[]) => TagAnswer[]) {
+    const existence: TagExistenceMap = new Map();
+    const { reader, calls } = setup({}, {}, { existence });
+    const asked: TagCandidate[][] = [];
+    const fake = {
+      ...reader,
+      tagExistence: async (candidates: readonly TagCandidate[]) => {
+        asked.push([...candidates]);
+        return answer(candidates);
+      },
+    };
+    await settleTagExistence(fake, [v, bare]);
+    return { existence, fake, calls, asked };
+  }
+
+  test('reordered answers land on the candidates they name', async () => {
+    const { existence, fake, calls, asked } = await settle(() => [
+      { candidate: bare, answer: 'present' },
+      { candidate: v, answer: 'absent' },
+    ]);
+    expect(asked).toEqual([[v, bare]]);
+    expect(existence.get(key(v))).toBe('absent');
+    expect(existence.get(key(bare))).toBe('present');
+    // The present tag is still proved over REST; only the absent one is settled without a request.
+    expect(await resolveUpstreamRef('fixture/orbit', 'tags/2.0.0', fake)).toMatchObject({
+      status: 'unavailable',
+      reason: 'missing',
+    });
+    expect(calls).toEqual(['https://api.github.com/repos/fixture/orbit/git/ref/tags/2.0.0']);
+    expect(await resolveUpstreamRef('fixture/orbit', 'tags/v2.0.0', fake)).toMatchObject({
+      status: 'unavailable',
+      reason: 'missing',
+    });
+    expect(calls).toHaveLength(1);
+    fake.close();
+  });
+
+  test('a short answer list leaves the unanswered candidate unknown, not another’s absent', async () => {
+    const { existence, fake } = await settle(() => [{ candidate: bare, answer: 'absent' }]);
+    expect(existence.get(key(v))).toBe('unknown');
+    expect(existence.get(key(bare))).toBe('absent');
+    fake.close();
+  });
+
+  test('answers for candidates not asked about are ignored, and disagreeing answers are unknown', async () => {
+    const { existence, fake } = await settle(() => [
+      { candidate: { repository: 'fixture/other', tag: 'v2.0.0' }, answer: 'absent' },
+      { candidate: v, answer: 'absent' },
+      { candidate: v, answer: 'present' },
+    ]);
+    expect([...existence]).toEqual([
+      [key(v), 'unknown'],
+      [key(bare), 'unknown'],
+    ]);
+    fake.close();
+  });
+
+  test('a candidate already answered for the run is not asked again', async () => {
+    const existence: TagExistenceMap = new Map([[key(v), 'present']]);
+    const { reader } = setup({}, {}, { existence });
+    const asked: TagCandidate[][] = [];
+    await settleTagExistence(
+      {
+        ...reader,
+        tagExistence: async (candidates) => {
+          asked.push([...candidates]);
+          return [];
+        },
+      },
+      [v, bare],
+    );
+    expect(asked).toEqual([[bare]]);
+    expect(existence.get(key(v))).toBe('present');
+    expect(existence.get(key(bare))).toBe('unknown');
+    reader.close();
+  });
+});
+
+describe('package tag candidates', () => {
+  test('metadata naming no supported repository has no candidates', () => {
+    const { reader } = setup();
+    for (const repository of [
+      'https://gitlab.com/fixture/orbit',
+      'not a url',
+      { url: 'https://github.com/fixture/orbit?x=1' },
+      undefined,
+    ])
+      expect(packageTagCandidates({ ...target, metadata: { repository } }, reader)).toEqual([]);
+    // Two different GitHub repositories conflict, which the release stage skips as well.
+    expect(
+      packageTagCandidates(
+        {
+          ...target,
+          metadata: {
+            repository: 'https://github.com/fixture/orbit',
+            project_urls: { Source: 'https://github.com/fixture/other' },
+          },
+        },
+        reader,
+      ),
+    ).toEqual([]);
+    expect(packageTagCandidates(target, reader)).toEqual([
+      { repository: 'fixture/orbit', tag: 'v2.0.0' },
+      { repository: 'fixture/orbit', tag: '2.0.0' },
+    ]);
+    reader.close();
+  });
+
+  test('an unexpected error while reading the metadata propagates', () => {
+    const { reader } = setup();
+    const metadata = Object.defineProperty({}, 'repository', {
+      get() {
+        throw new RangeError('a bug');
+      },
+    });
+    expect(() => packageTagCandidates({ ...target, metadata }, reader)).toThrow('a bug');
+    reader.close();
+  });
 });

@@ -10,6 +10,7 @@ import {
   type UpstreamReader,
   type GithubUpstreamTarget,
   type TagCandidate,
+  type TagExistence,
 } from './upstream-read.js';
 import type { EvidenceReason } from '../schema.js';
 import { limit } from '../limits.js';
@@ -121,7 +122,16 @@ export async function settleTagExistence(
   }
   if (!unanswered.size) return;
   const answers = await reader.tagExistence([...unanswered.values()]);
-  [...unanswered.keys()].forEach((key, i) => map.set(key, answers[i] ?? 'unknown'));
+  // Answers are paired by the candidate each names, never by position. An answer for a candidate
+  // not asked about is ignored; disagreeing answers for one candidate, or none, leave it `unknown`.
+  const settled = new Map<string, TagExistence>();
+  for (const { candidate, answer } of answers) {
+    const key = existenceKey(candidate.repository, candidate.tag);
+    if (!unanswered.has(key)) continue;
+    const prior = settled.get(key);
+    settled.set(key, prior === undefined || prior === answer ? answer : 'unknown');
+  }
+  for (const key of unanswered.keys()) map.set(key, settled.get(key) ?? 'unknown');
 }
 /**
  * The exact tags the release and comparison stages probe for one package side, within the
@@ -131,14 +141,23 @@ export function packageTagCandidates(
   target: PackageResearchTarget,
   reader: UpstreamReader,
 ): TagCandidate[] {
+  let repo: UpstreamRepository;
   try {
-    const repo = repositoryCandidate(target.metadata);
-    return packageTags(target, repo)
-      .slice(0, reader.limits.maxTagCandidates)
-      .map((tag) => ({ repository: repo.repository, tag }));
-  } catch {
-    return [];
+    repo = repositoryCandidate(target.metadata);
+  } catch (error) {
+    // The release stage skips exactly these, so there is nothing to ask about: a refusal of the
+    // metadata's repository (unsupported or conflicting URLs) or a repository string that is not a
+    // URL at all. Anything else is a bug and propagates.
+    if (error instanceof UpstreamFailure || invalidUrl(error)) return [];
+    throw error;
   }
+  return packageTags(target, repo)
+    .slice(0, reader.limits.maxTagCandidates)
+    .map((tag) => ({ repository: repo.repository, tag }));
+}
+/** The error `new URL` throws for a string it cannot parse. */
+function invalidUrl(error: unknown) {
+  return error instanceof TypeError && (error as { code?: unknown }).code === 'ERR_INVALID_URL';
 }
 export async function resolveUpstreamRef(
   repository: string,

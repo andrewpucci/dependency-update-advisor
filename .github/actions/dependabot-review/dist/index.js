@@ -15899,34 +15899,32 @@ var Reader = class {
 	}
 	async tagExistence(value) {
 		const candidates = Array.isArray(value) ? value : [];
-		const answers = candidates.map(() => "unknown");
-		if (!this.deps.githubToken || this.busy) return freeze$3(answers);
+		const unique = /* @__PURE__ */ new Map();
+		for (const c of candidates) {
+			if (!tagCandidate(c)) continue;
+			const key = JSON.stringify([c.repository, c.tag]);
+			if (!unique.has(key)) unique.set(key, {
+				candidate: {
+					repository: c.repository,
+					tag: c.tag
+				},
+				answer: "unknown"
+			});
+		}
+		const answers = () => freeze$3([...unique.values()].map((entry) => ({ ...entry })));
+		if (!this.deps.githubToken || this.busy) return answers();
 		this.busy = true;
 		try {
-			const unique = /* @__PURE__ */ new Map();
-			candidates.forEach((c, i) => {
-				if (!tagCandidate(c)) return;
-				const key = JSON.stringify([c.repository, c.tag]);
-				const entry = unique.get(key) ?? {
-					candidate: {
-						repository: c.repository,
-						tag: c.tag
-					},
-					at: []
-				};
-				entry.at.push(i);
-				unique.set(key, entry);
-			});
 			for (const batch of tagQueryBatches([...unique.values()])) {
 				const result = await this.tagQuery(batch.map((entry) => entry.candidate));
 				batch.forEach((entry, j) => {
-					for (const i of entry.at) answers[i] = result[j];
+					entry.answer = result[j] ?? "unknown";
 				});
 			}
 		} finally {
 			this.busy = false;
 		}
-		return freeze$3(answers);
+		return answers();
 	}
 	async read(value) {
 		const before = this.reads;
@@ -17947,22 +17945,35 @@ async function settleTagExistence(reader, candidates) {
 	}
 	if (!unanswered.size) return;
 	const answers = await reader.tagExistence([...unanswered.values()]);
-	[...unanswered.keys()].forEach((key, i) => map.set(key, answers[i] ?? "unknown"));
+	const settled = /* @__PURE__ */ new Map();
+	for (const { candidate, answer } of answers) {
+		const key = existenceKey(candidate.repository, candidate.tag);
+		if (!unanswered.has(key)) continue;
+		const prior = settled.get(key);
+		settled.set(key, prior === void 0 || prior === answer ? answer : "unknown");
+	}
+	for (const key of unanswered.keys()) map.set(key, settled.get(key) ?? "unknown");
 }
 /**
 * The exact tags the release and comparison stages probe for one package side, within the
 * candidate cap; none when its metadata names no supported repository.
 */
 function packageTagCandidates(target, reader) {
+	let repo;
 	try {
-		const repo = repositoryCandidate(target.metadata);
-		return packageTags(target, repo).slice(0, reader.limits.maxTagCandidates).map((tag) => ({
-			repository: repo.repository,
-			tag
-		}));
-	} catch {
-		return [];
+		repo = repositoryCandidate(target.metadata);
+	} catch (error) {
+		if (error instanceof UpstreamFailure || invalidUrl(error)) return [];
+		throw error;
 	}
+	return packageTags(target, repo).slice(0, reader.limits.maxTagCandidates).map((tag) => ({
+		repository: repo.repository,
+		tag
+	}));
+}
+/** The error `new URL` throws for a string it cannot parse. */
+function invalidUrl(error) {
+	return error instanceof TypeError && error.code === "ERR_INVALID_URL";
 }
 async function resolveUpstreamRef(repository, ref, reader) {
 	if (ref.startsWith("tags/") && reader.existence?.get(existenceKey(repository, ref.slice(5))) === "absent") return {

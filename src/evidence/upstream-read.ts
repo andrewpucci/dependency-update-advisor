@@ -83,6 +83,11 @@ export type TagCandidate = Readonly<{ repository: string; tag: string }>;
  */
 export type TagExistence = 'absent' | 'present' | 'unknown';
 /**
+ * One candidate's answer, carried with the candidate it answers, so a caller pairs answers by
+ * candidate and never by position.
+ */
+export type TagAnswer = Readonly<{ candidate: TagCandidate; answer: TagExistence }>;
+/**
  * One research run's existence answers, keyed by repository and exact tag (amendment item 7). The
  * run creates it, its upstream readers share it, and it is discarded when the run ends.
  */
@@ -92,10 +97,11 @@ export type UpstreamReader = Readonly<{
   read: (target: unknown) => Promise<UpstreamLookup>;
   /**
    * Asks GitHub's GraphQL API whether each candidate's exact tag exists, in queries of at most the
-   * approved size, and answers in candidate order. Sequential with `read`: a call while a read is
-   * in flight answers every candidate `unknown`.
+   * approved size. Each answer names the candidate it answers; their order is not meaningful, and a
+   * candidate with no answer is `unknown`. Sequential with `read`: a call while a read is in flight
+   * answers every candidate `unknown`.
    */
-  tagExistence?: (candidates: readonly TagCandidate[]) => Promise<readonly TagExistence[]>;
+  tagExistence?: (candidates: readonly TagCandidate[]) => Promise<readonly TagAnswer[]>;
   /** The run's existence map, when research gave this reader one. */
   existence?: TagExistenceMap;
   close: () => void;
@@ -838,34 +844,31 @@ class Reader {
     this.limitedBy(GITHUB_GRAPHQL_URL, response);
     return 'rate_limit';
   }
-  async tagExistence(value: unknown): Promise<readonly TagExistence[]> {
+  async tagExistence(value: unknown): Promise<readonly TagAnswer[]> {
     const candidates: unknown[] = Array.isArray(value) ? value : [];
-    const answers = candidates.map((): TagExistence => 'unknown');
-    if (!this.deps.githubToken || this.busy) return freeze(answers);
+    // Each distinct candidate is asked once and answered once; duplicates share its answer.
+    const unique = new Map<string, { candidate: TagCandidate; answer: TagExistence }>();
+    for (const c of candidates) {
+      if (!tagCandidate(c)) continue;
+      const key = JSON.stringify([c.repository, c.tag]);
+      if (!unique.has(key))
+        unique.set(key, { candidate: { repository: c.repository, tag: c.tag }, answer: 'unknown' });
+    }
+    const answers = (): readonly TagAnswer[] =>
+      freeze([...unique.values()].map((entry) => ({ ...entry })));
+    if (!this.deps.githubToken || this.busy) return answers();
     this.busy = true;
     try {
-      // Each distinct candidate is asked once; duplicates share its answer.
-      const unique = new Map<string, { candidate: TagCandidate; at: number[] }>();
-      candidates.forEach((c, i) => {
-        if (!tagCandidate(c)) return;
-        const key = JSON.stringify([c.repository, c.tag]);
-        const entry = unique.get(key) ?? {
-          candidate: { repository: c.repository, tag: c.tag },
-          at: [],
-        };
-        entry.at.push(i);
-        unique.set(key, entry);
-      });
       for (const batch of tagQueryBatches([...unique.values()])) {
         const result = await this.tagQuery(batch.map((entry) => entry.candidate));
         batch.forEach((entry, j) => {
-          for (const i of entry.at) answers[i] = result[j];
+          entry.answer = result[j] ?? 'unknown';
         });
       }
     } finally {
       this.busy = false;
     }
-    return freeze(answers);
+    return answers();
   }
   async read(value: unknown): Promise<UpstreamLookup> {
     const before = this.reads;
