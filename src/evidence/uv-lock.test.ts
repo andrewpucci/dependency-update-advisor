@@ -307,9 +307,9 @@ test('every array element counts as one record, so a record can be as small as u
   ];
   for (const [body, counter] of cases) {
     const budget = { entries: 0, packages: 0, declarations: 0, edges: 0 };
-    expect(readLock(new TextEncoder().encode(`version=1\nrevision=3\n${body}`), limits, budget).kind).toBe(
-      'parsed',
-    );
+    expect(
+      readLock(new TextEncoder().encode(`version=1\nrevision=3\n${body}`), limits, budget).kind,
+    ).toBe('parsed');
     expect(budget[counter], counter).toBe(3);
   }
 });

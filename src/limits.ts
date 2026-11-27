@@ -1092,8 +1092,7 @@ const DEFINITIONS = [
     () => 1,
     'Startup reads the workflow file once to resolve the workflow identity (resolveWorkflow, src/runtime.ts), a fixed call site. Approved by the maintainer on 2026-11-27 (L11, #383).',
     {
-      protects:
-        'Counts the freshness reads startup makes, so the freshness share reserves them.',
+      protects: 'Counts the freshness reads startup makes, so the freshness share reserves them.',
       effect: 'Not enforced: it sizes limit:evidence.allocation.transport.freshness.maxRequests.',
       test: 'src/runtime.test.ts > startup resolves its workflow with exactly freshness.startupReads freshness reads',
     },
@@ -1292,9 +1291,14 @@ const DEFINITIONS = [
   derived(
     'evidence.allocation.transport.freshness.maxRequests',
     'count',
-    ['freshness.startupReads', 'freshness.entryReads', 'freshness.checksPerRun', 'freshness.readsPerCheck'],
+    [
+      'freshness.startupReads',
+      'freshness.entryReads',
+      'freshness.checksPerRun',
+      'freshness.readsPerCheck',
+    ],
     (startup, entry, checks, perCheck) => startup + entry + checks * perCheck,
-    "Every freshness read one run makes: limit:freshness.startupReads at startup, limit:freshness.entryReads to verify the event, and limit:freshness.checksPerRun rechecks of limit:freshness.readsPerCheck reads each. A failed freshness read is an internal failure, never a stale head, so the share lets every one of them run. Each count comes from fixed call sites and is pinned by a test. Approved by the maintainer on 2026-11-27 (L11, #383).",
+    'Every freshness read one run makes: limit:freshness.startupReads at startup, limit:freshness.entryReads to verify the event, and limit:freshness.checksPerRun rechecks of limit:freshness.readsPerCheck reads each. A failed freshness read is an internal failure, never a stale head, so the share lets every one of them run. Each count comes from fixed call sites and is pinned by a test. Approved by the maintainer on 2026-11-27 (L11, #383).',
     {
       protects:
         'Reserves requests for freshness checks (workflow, run, PR, comparison) so a heavy snapshot cannot prevent the checks that keep a finished review valid.',
@@ -1321,7 +1325,11 @@ const DEFINITIONS = [
     'evidence.allocation.session.maxRequests',
     160,
     'count',
-    { setting: 'limits.githubRequests.session', maximum: 'github.token.requestCapMax', joint: true },
+    {
+      setting: 'limits.githubRequests.session',
+      maximum: 'github.token.requestCapMax',
+      joint: true,
+    },
     "The adopter: session reads spend the adopter's GITHUB_TOKEN quota, and each file read costs a commit, one tree per path segment and a blob (src/github-read.ts), so no structural bound exists. It extends section 5's GitHub request cap (L11, Q6(a)) and must leave room for limit:w2.session.maxPages file-list pages.",
     {
       protects:
@@ -1730,7 +1738,7 @@ const DEFINITIONS = [
     'count',
     ['github.treeMaxFiles', 'github.pageSize'],
     (files, pageSize) => Math.ceil(files / pageSize),
-    "Enough pages for every row GitHub lists: limit:github.treeMaxFiles files at limit:github.pageSize per page, rounded up. GitHub stops the list there, so a further page can never hold a row. Approved by the maintainer on 2026-11-27 (L11, #383).",
+    'Enough pages for every row GitHub lists: limit:github.treeMaxFiles files at limit:github.pageSize per page, rounded up. GitHub stops the list there, so a further page can never hold a row. Approved by the maintainer on 2026-11-27 (L11, #383).',
     {
       protects:
         "Bounds PR-file listing requests to the pages GitHub's file list can fill, so a PR's file list cannot drive unbounded paging.",
@@ -1744,7 +1752,7 @@ const DEFINITIONS = [
     'count',
     ['github.treeMaxFiles'],
     copy,
-    "The rows GitHub lists for a pull request, limit:github.treeMaxFiles; a longer list is already truncated by GitHub, and the reader marks it so. Approved by the maintainer on 2026-11-27 (L11, #383).",
+    'The rows GitHub lists for a pull request, limit:github.treeMaxFiles; a longer list is already truncated by GitHub, and the reader marks it so. Approved by the maintainer on 2026-11-27 (L11, #383).',
     {
       protects:
         'Caps PR-file rows examined per session, so an oversized file list cannot make the reader parse and retain unbounded rows.',
@@ -1975,8 +1983,7 @@ const DEFINITIONS = [
       reason:
         'Largest legitimate use: a uv.lock nests eight levels of tables and arrays (package, its wheels or dependencies, an entry, its fields); four public uv.lock files read on 2026-11-27 (astral-sh/uv, pydantic/pydantic, fastapi/fastapi, apache/airflow) nest eight. Harm: TOML parsing recurses per level, and smol-toml overflows the call stack at about 3,328 levels of nested inline arrays when its own depth guard is off (measured on 2026-11-27 under Node 22); the cap is also the depth guard the parser is given. Approved by the maintainer on 2026-11-27 (L11, #383).',
     },
-    effect:
-      'Exceeding the depth throws budget for that file and the side yields a budget gap.',
+    effect: 'Exceeding the depth throws budget for that file and the side yields a budget gap.',
     test: 'src/evidence/uv.test.ts > enforces exact/over %s through the real collector across both sides',
   },
   unjustified('w2.uv.maxTomlEntries', 100_000, 'count', {
@@ -1995,8 +2002,7 @@ const DEFINITIONS = [
     {
       protects:
         'Caps cumulative attempted package entries across uv.lock files, so a very large lock cannot drive unbounded parse and graph work.',
-      effect:
-        'Debiting past the cap throws budget and the file yields a budget gap.',
+      effect: 'Debiting past the cap throws budget and the file yields a budget gap.',
       test: 'src/evidence/uv.test.ts > enforces exact/over %s through the real collector across both sides',
     },
   ),
@@ -2009,8 +2015,7 @@ const DEFINITIONS = [
     {
       protects:
         'Caps cumulative requirement declarations from manifests and lock requires-dist items, bounding requirement parsing work.',
-      effect:
-        'Debiting past the cap throws budget and the side yields a budget gap.',
+      effect: 'Debiting past the cap throws budget and the side yields a budget gap.',
       test: 'src/evidence/uv.test.ts > enforces exact/over %s through the real collector across both sides',
     },
   ),
@@ -2021,10 +2026,8 @@ const DEFINITIONS = [
     (roots, fileBytes, recordBytes) => Math.floor((2 * roots * fileBytes) / recordBytes),
     'As many dependency edges as the uv.lock files one run reads can hold: 2 sides (base and head) × limit:w2.uv.maxRoots lockfiles of at most limit:w2.uv.maxFileBytes, over the smallest array element the parser counts, limit:uv.minRecordBytes, rounded down. The count is cumulative, so bytes bound the input first. It follows the uv root setting (L11, Q1(a)). Approved by the maintainer on 2026-11-27 (L11, #383).',
     {
-      protects:
-        'Caps cumulative dependency edges parsed from uv.lock, bounding graph input size.',
-      effect:
-        'Debiting past the cap throws budget and the head side yields a budget gap.',
+      protects: 'Caps cumulative dependency edges parsed from uv.lock, bounding graph input size.',
+      effect: 'Debiting past the cap throws budget and the head side yields a budget gap.',
       test: 'src/evidence/uv.test.ts > enforces file, edge, marker and selected-root caps at boundaries',
     },
   ),
@@ -2053,8 +2056,7 @@ const DEFINITIONS = [
       reason:
         'Largest legitimate use: requirement, marker and artifact URL strings run to hundreds of bytes; the longest string in four public uv.lock files read on 2026-11-27 is 463 bytes (a resolution marker). Harm: each string is decoded, normalized and, for a requirement, tokenized and kept, so without a per-string cap one string could be the whole file (limit:w2.uv.maxFileBytes) and multiply that work for every entry that names it. Approved by the maintainer on 2026-11-27 (L11, #383).',
     },
-    effect:
-      'A string over the cap throws budget for that entry, which becomes a budget gap.',
+    effect: 'A string over the cap throws budget for that entry, which becomes a budget gap.',
     test: 'src/evidence/uv.test.ts > enforces exact/over %s through the real collector across both sides',
   },
   {
@@ -2184,8 +2186,7 @@ const DEFINITIONS = [
       reason:
         'Largest legitimate use: an npm version document nests about four levels; the next, typescript, react, @babel/core and eslint version documents read from registry.npmjs.org on 2026-11-27 nest four. Harm: the reader walks the parsed value and serializes what it keeps, and JSON.stringify overflows the call stack at about 4,166 levels of nested arrays (measured on 2026-11-27 under Node 22). The cap sits far between the two. Approved by the maintainer on 2026-11-27 (L11, #383).',
     },
-    effect:
-      'Exceeding the depth throws budget and the read is unavailable with reason budget.',
+    effect: 'Exceeding the depth throws budget and the read is unavailable with reason budget.',
     test: 'src/evidence/npm-registry.test.ts > registry JSON nesting at the depth cap parses and one level deeper is a budget failure',
   },
   derived(
@@ -3210,7 +3211,7 @@ const DEFINITIONS = [
     'count',
     ['github.pageSize'],
     copy,
-    "The release ladder starts at GitHub's per_page maximum for listing releases, limit:github.pageSize (https://docs.github.com/en/rest/releases/releases#list-releases, \"max 100\"), as the compare ladder does (#471), so releases that fit read in the fewest pages. Approved by the maintainer on 2026-11-27 (L11, #383).",
+    'The release ladder starts at GitHub\'s per_page maximum for listing releases, limit:github.pageSize (https://docs.github.com/en/rest/releases/releases#list-releases, "max 100"), as the compare ladder does (#471), so releases that fit read in the fewest pages. Approved by the maintainer on 2026-11-27 (L11, #383).',
     {
       protects:
         'The start size of the release page-size ladder is bounded, so a release page that does not fit the response cap is halved and retried instead of failing outright (response size and memory).',

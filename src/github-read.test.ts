@@ -1284,9 +1284,7 @@ test('discovery reads exactly w2.session.maxPages pages and keeps the rows it re
   expect(partial).toMatchObject({ kind: 'partial', complete: false });
   expect(partial.reasons).toContain('budget');
   expect(partial.files).toHaveLength(fewer * pageSize);
-  expect(pastLimit.fetch.mock.calls.filter(([url]) => url.includes('/files?'))).toHaveLength(
-    fewer,
-  );
+  expect(pastLimit.fetch.mock.calls.filter(([url]) => url.includes('/files?'))).toHaveLength(fewer);
 });
 
 test('a page of exactly github.pageSize rows is accepted and a longer page is malformed', async () => {

@@ -88,10 +88,16 @@ test('a config entry needs its setting, a default equal to its value and defined
 });
 
 test('a register built at a setting moves the entries derived from it, and only settings move', () => {
-  const definitions = [setting('a', 4, 'max'), unjustified('max', 10), derived('b', ['a'], (a) => a * 3)];
+  const definitions = [
+    setting('a', 4, 'max'),
+    unjustified('max', 10),
+    derived('b', ['a'], (a) => a * 3),
+  ];
   expect(buildRegister(definitions).get('b')?.value).toBe(12);
   expect(buildRegister(definitions, new Map([['a', 7]])).get('b')?.value).toBe(21);
-  expect(() => buildRegister(definitions, new Map([['max', 7]]))).toThrow(/max: not an adopter setting/);
+  expect(() => buildRegister(definitions, new Map([['max', 7]]))).toThrow(
+    /max: not an adopter setting/,
+  );
 });
 
 test('settingProblems checks every setting at the defaults and at its hard maximum', () => {
@@ -110,7 +116,9 @@ test('settingProblems checks every setting at the defaults and at its hard maxim
     setting('b', 6, 'max', { joint: true }),
     unjustified('max', 10),
   ]);
-  expect(settingProblems(joint)).toContain('max: the settings it bounds sum past it at the defaults');
+  expect(settingProblems(joint)).toContain(
+    'max: the settings it bounds sum past it at the defaults',
+  );
   // The maximum of one setting may derive from another; raising that one can push it out.
   const coupled = buildRegister([
     setting('a', 4, 'room'),
@@ -118,7 +126,9 @@ test('settingProblems checks every setting at the defaults and at its hard maxim
     unjustified('limit', 10),
     derived('room', ['b'], (b) => 12 - b),
   ]);
-  expect(settingProblems(coupled)).toEqual(['a: above its hard maximum with b at its hard maximum']);
+  expect(settingProblems(coupled)).toEqual([
+    'a: above its hard maximum with b at its hard maximum',
+  ]);
 });
 
 test('a derived input that names no entry is reported with both ids and blocks the build', () => {

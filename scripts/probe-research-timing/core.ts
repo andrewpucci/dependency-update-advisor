@@ -40,7 +40,9 @@ export function parseOsvTargets(argv: readonly string[]): OsvTarget[] | { error:
 }
 
 /** `github:<owner>/<repo>` (its first releases page) or `pypi:<name>` (its JSON) per argument. */
-export function parseUpstreamTargets(argv: readonly string[]): UpstreamTarget[] | { error: string } {
+export function parseUpstreamTargets(
+  argv: readonly string[],
+): UpstreamTarget[] | { error: string } {
   const targets: UpstreamTarget[] = [];
   for (const arg of argv) {
     const github = GITHUB_TARGET.exec(arg);
