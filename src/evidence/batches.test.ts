@@ -79,4 +79,6 @@ test('a tag query holds exactly the register maximum of candidates, and one more
   expect(tagQueryBatches(candidates.slice(0, max))).toEqual([candidates.slice(0, max)]);
   expect(tagQueryBatches(candidates).map((query) => query.length)).toEqual([max, 1]);
   expect(tagQueryBatches([])).toEqual([]);
+  // No candidate is ever left unbatched: every one lands in a query, in order.
+  expect(tagQueryBatches(candidates).flat()).toEqual(candidates);
 });

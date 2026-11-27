@@ -16,6 +16,8 @@ export const TAG_QUERY_MAX_CANDIDATES = limit('upstream.tagExistence.maxCandidat
 /**
  * Items split in order into as few consecutive batches as `fits` allows, each of at most `max`.
  * An item `fits` rejects on its own can be in no batch, so it is returned as `unbatched`.
+ * Each item re-checks the whole open batch, so a URL-length `fits` is O(n²) in serialized URL
+ * length; it is meant for once-per-stage pre-passes, not per-request work.
  */
 export function splitBatches<T>(
   items: readonly T[],
@@ -67,7 +69,12 @@ export function advisoryBatches(
   return splitBatches(affects, BATCH_MAX_TARGETS, fits);
 }
 
-/** Tag existence candidates split into GraphQL queries of at most the approved size. */
+/**
+ * Tag existence candidates split into GraphQL queries of at most the approved size. Every
+ * candidate lands in a query: `fits` accepts any batch, so `unbatched` is always empty.
+ */
 export function tagQueryBatches<T>(candidates: readonly T[]): T[][] {
-  return splitBatches(candidates, TAG_QUERY_MAX_CANDIDATES, () => true).batches;
+  const { batches, unbatched } = splitBatches(candidates, TAG_QUERY_MAX_CANDIDATES, () => true);
+  if (unbatched.length) throw new Error('tagQueryBatches: a candidate fit no query');
+  return batches;
 }
