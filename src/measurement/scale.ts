@@ -14,7 +14,9 @@ const SHARE_PREFIXES = ['research.share.', 'collection.share.'];
  * research retained-byte cap. The retained-byte cap is a memory guard awaiting measurement (#431),
  * and the entry cap stopped upstream on every real uv change measured for #462 (approved by the
  * maintainer on 2026-11-27), so a run shows that demand while production keeps the register value. Derived entries are left for `buildRegister`
- * to recompute, so totals and copies of these values scale with them.
+ * to recompute, so totals and copies of these values scale with them. A ceiling derived only from
+ * `packet.changes`, such as the PyPI metadata request ceiling (two reads per change, #467), stays
+ * unscaled: no change can need more.
  */
 export function isReadBudget(entry: Limit): boolean {
   if (entry.basis.kind === 'derived') return false;

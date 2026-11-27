@@ -452,8 +452,17 @@ test('caps every reader at its share, so the readers together stay inside the en
       maxResponseBytes: Math.min(MiB, share.maxTotalBytes),
     });
     expect(share.maxRequests, name).toBeLessThanOrEqual(ceiling.maxRequests);
-    expect(share.maxTotalBytes, name).toBe(ceiling.maxTotalBytes);
+    expect(share.maxTotalBytes, name).toBeLessThanOrEqual(ceiling.maxTotalBytes);
   }
+  // The upstream byte share and the PyPI metadata share scale with members (#467): upstream
+  // bytes are 600,000 × 4 members, and the metadata share for its one uv member is 16 + 2.5
+  // requests, rounded up, and 524,288 + 70,000 bytes, raised to the one-response floor. Every
+  // other byte share stays at its ceiling.
+  expect(shares.upstream.maxTotalBytes).toBe(2_400_000);
+  expect(computed.metadata).toEqual({ maxRequests: 19, maxTotalBytes: MiB });
+  for (const [name, , share, ceiling] of expected)
+    if (!['S2 upstream', 'metadata'].includes(name))
+      expect(share.maxTotalBytes, name).toBe(ceiling.maxTotalBytes);
   // Three direct members (npm, Action, uv) and one transitive npm member: upstream
   // 9 + 5.9 × 4 = 32.6, advisory 3 + 3 × 3 + 2 = 14, malware 2 + 2 × 3 + 1 × 4 = 12, and
   // publish times 2 + 1.2 × 2 = 4.4, each rounded up and under its ceiling.
@@ -477,9 +486,10 @@ test('caps every reader at its share, so the readers together stay inside the en
   const otherRequests = others.reduce((sum, share) => sum + share.maxRequests, 0);
   expect(ceilings + otherRequests).toBe(EVIDENCE_READ_ENVELOPE.maxRequests);
   expect(used + otherRequests).toBeLessThan(EVIDENCE_READ_ENVELOPE.maxRequests);
-  expect(bytes + others.reduce((sum, share) => sum + share.maxTotalBytes, 0)).toBe(
-    EVIDENCE_READ_ENVELOPE.maxTotalBytes,
-  );
+  const ceilingBytes = expected.reduce((sum, [, , , ceiling]) => sum + ceiling.maxTotalBytes, 0);
+  const otherBytes = others.reduce((sum, share) => sum + share.maxTotalBytes, 0);
+  expect(ceilingBytes + otherBytes).toBe(EVIDENCE_READ_ENVELOPE.maxTotalBytes);
+  expect(bytes + otherBytes).toBeLessThan(EVIDENCE_READ_ENVELOPE.maxTotalBytes);
 });
 
 test('opens each reader with the share scaled from the packet members', async () => {
@@ -897,6 +907,52 @@ test('a uv change of one direct and seven transitive pip packages keeps every vu
     if (change.ecosystem === 'uv' && !('basis' in change))
       expect(change.evidence.vulnerability, change.id).toMatchObject({ status: 'available' });
   expect(JSON.stringify(result.packet)).not.toContain('budget');
+});
+
+test('a uv change of 30 pip members keeps upstream, vulnerability and malware for every member (#467)', async () => {
+  // About half direct and half transitive, as on the #462 PRs: orbit and 14 more direct pip
+  // packages, and 15 transitive ones under orbit. Each PyPI version response carries a README-sized
+  // description, near the 25–28 KB per read those PRs averaged.
+  const DIRECT = 14;
+  const CHILDREN = 15;
+  const { fixture, packet } = await scenario({
+    uvDirect: DIRECT,
+    uvChildren: CHILDREN,
+    pypiDescriptionBytes: 24_000,
+  });
+  const uv = packet.changes.filter((c) => c.ecosystem === 'uv' && !('basis' in c));
+  expect(uv).toHaveLength(30);
+  expect(uv.filter((c) => c.role === 'direct')).toHaveLength(DIRECT + 1);
+  // Two PyPI reads per member, which the former flat metadata share of 16 cut after 8 members.
+  const units = researchShareUnits(packet.changes);
+  expect(units.eligible.metadata).toBe(30);
+  expect(researchShares(units).signals.readers.metadata.maxRequests).toBe(
+    Math.ceil(
+      limit('research.share.signals.metadata.requests.base') +
+        30 * limit('research.share.signals.metadata.requests.rate.eligible'),
+    ),
+  );
+  let pypi = 0;
+  const result = await runResearch({
+    ...base(fixture, packet),
+    fetch: async (url, init) => {
+      if (new URL(url).host === 'pypi.org') pypi++;
+      return fixture.fetch(url, init);
+    },
+  });
+  if (result.kind !== 'ready') throw new Error(result.kind);
+  expect(pypi).toBe(2 * 30);
+  expect(result.unavailable).toEqual([]);
+  for (const change of result.packet.changes) {
+    if (change.ecosystem !== 'uv' || 'basis' in change) continue;
+    for (const category of ['upstream', 'vulnerability', 'malware'] as const)
+      expect(change.evidence[category], `${change.id} ${category}`).toMatchObject({
+        status: 'available',
+      });
+  }
+  expect(JSON.stringify(result.packet)).not.toContain('budget');
+  expect(JSON.stringify(result.upstreamAttempts)).not.toContain('budget');
+  expect(JSON.stringify(result.signalAttempts)).not.toContain('budget');
 });
 
 const PLACEHOLDER = { status: 'unavailable', reasons: ['missing'], sourceIds: [] };
@@ -1574,14 +1630,17 @@ test('the npm registry reader counts exactly research.maxJsonEntries entries and
   const fixedEntries = 6;
   const entriesFor = (elements: number) =>
     registryDocument({ extra: Array.from({ length: elements }, () => 0) });
+  // The document of a million entries is retained whole, so the retained-byte cap is lifted to
+  // the response cap here: this test pins the entry cap alone.
+  const maxRetainedBytes = 8 * 1024 * 1024;
   const atLimit = registryReader(
-    { maxJsonEntries, maxRetainedBytes: limit('research.maxRetainedBytes') },
+    { maxJsonEntries, maxRetainedBytes },
     entriesFor(maxJsonEntries - fixedEntries),
   );
   expect(await atLimit.read(registryRequest)).toMatchObject({ kind: 'metadata' });
 
   const pastLimit = registryReader(
-    { maxJsonEntries, maxRetainedBytes: limit('research.maxRetainedBytes') },
+    { maxJsonEntries, maxRetainedBytes },
     entriesFor(maxJsonEntries - fixedEntries + 1),
   );
   expect(await pastLimit.read(registryRequest)).toEqual({ kind: 'unavailable', reason: 'budget' });

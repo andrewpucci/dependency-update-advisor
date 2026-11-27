@@ -301,7 +301,8 @@ test('the R1 ceiling is the sum of the research request ceilings and scales with
     ].reduce((total, id) => total + (register.get(id)?.value ?? Number.NaN), 0);
   expect(limit('research.githubQuota.researchCeiling')).toBe(sum(REGISTER));
   const scaled = buildRegister(scaledDefinitions(REGISTER, 10));
-  expect(scaled.get('research.githubQuota.researchCeiling')?.value).toBe(10 * sum(REGISTER));
+  expect(scaled.get('research.githubQuota.researchCeiling')?.value).toBe(sum(scaled));
+  expect(sum(scaled)).toBeGreaterThan(sum(REGISTER));
 });
 
 test('counts only research-stage GitHub requests and keeps the lowest quota in the counter', async () => {

@@ -23,6 +23,11 @@ the user approved this spec's change on 2026-11-26. It cites register
 entries as `limit:<id>` instead of stating their values, with no value
 change.
 
+uv share sizing amendment
+([#467](https://github.com/andrewpucci/dependency-update-advisor/issues/467)):
+the maintainer approved its values on 2026-11-27; see the
+[uv Share Sizing Amendment](#uv-share-sizing-amendment).
+
 ## Objective
 
 A maintainer reading a review of an ordinary Dependabot PR should see whether
@@ -877,6 +882,8 @@ but the four cost-sized advisory and malware rates below cite this corpus:
 - The npm registry policy, PyPI metadata, and Actions upstream signals
   readers made no requests in the corpus. Their request shares, and every
   share's byte dimension, keep the base at the ceiling with every rate at 0.
+  The [uv Share Sizing Amendment](#uv-share-sizing-amendment) later sizes
+  the PyPI metadata share and the upstream byte share instead.
   The byte limit that binds is the packet limit
   ([#457](https://github.com/andrewpucci/dependency-update-advisor/issues/457)),
   which these shares do not control.
@@ -961,9 +968,99 @@ shares would cut off.
   two malware requests, and an npm or `pip` update at two reviewed
   requests and, for npm, one malware request.
 - Every unfitted share and every byte share equals its ceiling for no
-  members, one member, R1, and #276.
+  members, one member, R1, and #276, except the shares the
+  [uv Share Sizing Amendment](#uv-share-sizing-amendment) sizes.
 - The collection registry share grows with npm members, reaches its ceiling
   exactly, and stays there. The collection stage opens the registry reader
   with the share for its inventory's npm members.
 - The envelope request total is the sum of the ceilings, and each research
   reader opens with its computed share, at most its ceiling.
+
+## uv Share Sizing Amendment
+
+**Status: approved by the maintainer, 2026-11-27
+([#467](https://github.com/andrewpucci/dependency-update-advisor/issues/467)).**
+The maintainer approved each value below on 2026-11-27. It refines F2 for
+the upstream byte share and the PyPI metadata share, and gives the research
+JSON entry cap its basis. The #462 measurement of four real uv changes found
+that these limits stopped upstream research partway through each change, so
+the members it did not reach also lost their vulnerability and malware
+checks. Every value is a register entry; this section cites ids only.
+
+### U1. Upstream byte share
+
+1. **Function.** The upstream byte share scales as A1 states:
+   `min(ceiling, base + Σ rate × count)`, rounded up, with A1.5's floor of
+   one full response.
+2. **Values.** The base is `limit:research.share.upstream.bytes.base`.
+   Direct and transitive members take the same rate,
+   `limit:research.share.upstream.bytes.rate.direct` and
+   `limit:research.share.upstream.bytes.rate.transitive`, the members the
+   upstream request share rates. Additions and removals take
+   `limit:research.share.upstream.bytes.rate.added` and
+   `limit:research.share.upstream.bytes.rate.removed`, which add nothing.
+   Each is a `measured` entry citing the #462 measurement.
+3. **Ceiling.** `limit:evidence.allocation.upstream.maxTotalBytes` is a
+   `safety` entry: half of what the upstream reader can read, at its measured
+   throughput, within `limit:evidence.envelope.totalTimeoutMs`.
+
+### U2. PyPI metadata share
+
+1. **Function.** The metadata reader's request and byte shares scale on its
+   eligible members, the uv members, as A1 states. Its role rates add
+   nothing.
+2. **Values.** The bases keep the former flat share:
+   `limit:research.share.signals.metadata.requests.base` and
+   `limit:research.share.signals.metadata.bytes.base`. The eligible rates,
+   `limit:research.share.signals.metadata.requests.rate.eligible` and
+   `limit:research.share.signals.metadata.bytes.rate.eligible`, give 1.25 ×
+   the per-member demand measured for #462, rounded up. Each is a `measured`
+   entry.
+3. **Ceilings.** Both are `derived` from `limit:packet.changes`.
+   `limit:evidence.allocation.signals.readers.metadata.maxRequests` is two
+   reads, base and head, per change.
+   `limit:evidence.allocation.signals.readers.metadata.maxTotalBytes` is the
+   byte base plus the eligible byte rate for every change, the largest share
+   the formula gives.
+4. **Floor.** The byte base is below the per-response cap, so under A1.5 a
+   change with few uv members gets one full response.
+5. **Measurement.** Under F4, a demand run scales the bases and rates, and
+   so the byte ceiling. The request ceiling depends only on
+   `limit:packet.changes`, so it stays unscaled; no change can need more.
+
+### U3. Research JSON entries
+
+`limit:research.maxJsonEntries` becomes a `safety` entry. It sits above the
+entries `limit:packet.changes` uv members would use at the per-member count
+measured for #462, and far below the count whose JSON copying would spend a
+quarter of `limit:evidence.envelope.totalTimeoutMs` on a slow runner.
+
+### U4. Totals
+
+`limit:evidence.envelope.maxRequests`, `limit:evidence.envelope.maxTotalBytes`,
+the signals stage totals, `limit:research.cache.maxTotalBytes`, and
+`limit:research.githubQuota.researchCeiling` stay derived sums, so they grow
+with the new ceilings. A run's computed shares may total less.
+
+### uv share sizing verification
+
+- The share tests pin the upstream byte share and the PyPI metadata share
+  for no members, 30 uv members, and the counts at which each ceiling is
+  reached, with every value read from the register.
+- A uv change of 30 `pip` members, about half direct, keeps upstream,
+  vulnerability, and malware evidence for every member at the register's
+  values, with no `budget`. The test fails with the former flat metadata
+  share.
+- The research JSON entry boundary test reads the register value.
+
+### uv share sizing open questions
+
+- `limit:research.maxRetainedBytes` bounds the bytes an upstream reader
+  keeps, and it keeps each GitHub response it parses. A demand run scales
+  it, so #462 did not show whether it binds at production values. With
+  upstream responses near the per-member size #462 measured, it would stop
+  a 30-member uv change before every member is researched. Its basis is an
+  open decision for #467.
+- The advisory request ceiling, `limit:evidence.allocation.advisory.maxRequests`,
+  is unchanged here. Its raise for #467 waits on a basis whose arithmetic
+  gives the approved value.

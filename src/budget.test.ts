@@ -26,9 +26,11 @@ test('records the job window as the budget less the pre-startup allowance', () =
 
 test('records the evidence-read envelope', () => {
   expect(EVIDENCE_READ_ENVELOPE).toEqual({
-    maxRequests: 1520,
+    // The upstream byte ceiling and the PyPI metadata ceilings (#467) raise the envelope sums:
+    // 1,520 + (256 − 16) requests, and 54 MiB − 15 MiB − 0.5 MiB + 77,000,000 + 9,484,288 bytes.
+    maxRequests: 1760,
     maxResponseBytes: MiB,
-    maxTotalBytes: 54 * MiB,
+    maxTotalBytes: 126_854_464,
     requestTimeoutMs: 15_000,
     totalTimeoutMs: 240_000,
   });
@@ -44,16 +46,16 @@ test('splits the envelope with nothing unallocated or over-allocated', () => {
     },
     session: { maxRequests: 160, maxTotalBytes: 12 * MiB },
     registry: { maxRequests: 640, maxTotalBytes: 4 * MiB },
-    upstream: { maxRequests: 240, maxTotalBytes: 15 * MiB },
+    upstream: { maxRequests: 240, maxTotalBytes: 77_000_000 },
     advisory: { maxRequests: 80, maxTotalBytes: 5 * MiB },
     signals: {
-      maxRequests: 176,
-      maxTotalBytes: 6 * MiB,
+      maxRequests: 416,
+      maxTotalBytes: 15_251_456,
       readers: {
         malware: { maxRequests: 40, maxTotalBytes: 1.5 * MiB },
         publishTimes: { maxRequests: 40, maxTotalBytes: 1.5 * MiB },
         registry: { maxRequests: 64, maxTotalBytes: 2 * MiB },
-        metadata: { maxRequests: 16, maxTotalBytes: 0.5 * MiB },
+        metadata: { maxRequests: 256, maxTotalBytes: 9_484_288 },
         upstream: { maxRequests: 16, maxTotalBytes: 0.5 * MiB },
       },
     },
@@ -154,23 +156,101 @@ const ONE_UNITS: Units = {
   eligible: { ...NO_UNITS.eligible, malware: 1, publishTimes: 1, registry: 1 },
 };
 const READERS = ['malware', 'publishTimes', 'registry', 'metadata', 'upstream'] as const;
+/** A uv change of 30 pip members, 15 direct and 15 transitive, as on the #462 PRs. */
+const UV30_UNITS: Units = {
+  ...NO_UNITS,
+  direct: 15,
+  transitive: 15,
+  eligible: { ...NO_UNITS.eligible, malware: 30, metadata: 30 },
+};
 
 test('shares the fit keeps at their ceilings stay there for any change', () => {
-  for (const units of [NO_UNITS, ONE_UNITS, R1_UNITS, R276_UNITS]) {
+  for (const units of [NO_UNITS, ONE_UNITS, R1_UNITS, R276_UNITS, UV30_UNITS]) {
     const shares = researchShares(units);
-    const { upstream, advisory, signals } = EVIDENCE_READ_ALLOCATION;
-    // Every byte share stays at its ceiling.
-    expect(shares.upstream.maxTotalBytes).toBe(upstream.maxTotalBytes);
+    const { advisory, signals } = EVIDENCE_READ_ALLOCATION;
+    // Every byte share but upstream's and the PyPI metadata reader's (#467) stays at its ceiling.
     expect(shares.advisory.maxTotalBytes).toBe(advisory.maxTotalBytes);
-    for (const reader of READERS)
+    for (const reader of READERS.filter((name) => name !== 'metadata'))
       expect(shares.signals.readers[reader].maxTotalBytes, reader).toBe(
         signals.readers[reader].maxTotalBytes,
       );
-    expect(shares.signals.maxTotalBytes).toBe(signals.maxTotalBytes);
-    // The registry, metadata, and upstream signals readers keep their request ceilings too.
-    for (const reader of ['registry', 'metadata', 'upstream'] as const)
+    // The registry and upstream signals readers keep their request ceilings too.
+    for (const reader of ['registry', 'upstream'] as const)
       expect(shares.signals.readers[reader], reader).toEqual(signals.readers[reader]);
   }
+});
+
+test('the upstream byte and PyPI metadata shares grow with uv members up to their ceilings', () => {
+  const { upstream, signals } = EVIDENCE_READ_ALLOCATION;
+  const metadata = signals.readers.metadata;
+  const upstreamRate = registered('research.share.upstream.bytes.rate.direct');
+  const requestBase = registered('research.share.signals.metadata.requests.base');
+  const requestRate = registered('research.share.signals.metadata.requests.rate.eligible');
+  const byteBase = registered('research.share.signals.metadata.bytes.base');
+  const byteRate = registered('research.share.signals.metadata.bytes.rate.eligible');
+  const changes = registered('packet.changes');
+  // Upstream bytes: no base, the same rate for direct and transitive members, none for the others.
+  expect(registered('research.share.upstream.bytes.base')).toBe(0);
+  expect(registered('research.share.upstream.bytes.rate.transitive')).toBe(upstreamRate);
+  for (const unit of ['added', 'removed'])
+    expect(registered(`research.share.upstream.bytes.rate.${unit}`), unit).toBe(0);
+  // The ceilings: 77 MB for upstream, two reads per change for metadata requests, and the
+  // metadata byte formula at the packet's change limit.
+  expect(upstream.maxTotalBytes).toBe(77_000_000);
+  expect(metadata.maxRequests).toBe(2 * changes);
+  expect(metadata.maxTotalBytes).toBe(byteBase + byteRate * changes);
+
+  // No counted members: upstream bytes get the one-response floor, and so do metadata bytes,
+  // whose base is under it; metadata requests get their base.
+  const none = researchShares(NO_UNITS);
+  const response = registered('evidence.envelope.maxResponseBytes');
+  expect(none.upstream.maxTotalBytes).toBe(response);
+  expect(byteBase).toBeLessThan(response);
+  expect(none.signals.readers.metadata).toEqual({ maxRequests: 16, maxTotalBytes: response });
+  // Additions and removals alone add no upstream bytes.
+  expect(researchShares({ ...NO_UNITS, added: 5, removed: 5 }).upstream.maxTotalBytes).toBe(
+    none.upstream.maxTotalBytes,
+  );
+  // 30 uv members, 15 direct and 15 transitive: 600,000 × 30 upstream bytes; metadata
+  // 16 + 2.5 × 30 = 91 requests and 524,288 + 70,000 × 30 bytes.
+  const uv30 = researchShares(UV30_UNITS);
+  expect(uv30.upstream.maxTotalBytes).toBe(18_000_000);
+  expect(uv30.upstream.maxTotalBytes).toBe(upstreamRate * 30);
+  expect(uv30.signals.readers.metadata).toEqual({
+    maxRequests: 91,
+    maxTotalBytes: 2_624_288,
+  });
+  expect(uv30.signals.readers.metadata.maxRequests).toBe(requestBase + requestRate * 30);
+  // Metadata reads scale with uv members only: npm members leave the share at its base.
+  expect(researchShares(R276_UNITS).signals.readers.metadata).toEqual(
+    none.signals.readers.metadata,
+  );
+
+  const uv = (members: number): Units => ({
+    ...NO_UNITS,
+    direct: Math.ceil(members / 2),
+    transitive: Math.floor(members / 2),
+    eligible: { ...NO_UNITS.eligible, malware: members, metadata: members },
+  });
+  // Upstream: 600,000 × 128 is under the ceiling; 129 members pass it and are capped there.
+  expect(researchShares(uv(changes)).upstream.maxTotalBytes).toBe(upstreamRate * changes);
+  expect(researchShares(uv(changes + 1)).upstream.maxTotalBytes).toBe(upstream.maxTotalBytes);
+  // Metadata requests: 16 + 2.5 × 96 reaches the ceiling of 256 exactly; 95 members stay under.
+  const toCeiling = (metadata.maxRequests - requestBase) / requestRate;
+  expect(toCeiling).toBe(96);
+  expect(researchShares(uv(toCeiling - 1)).signals.readers.metadata.maxRequests).toBe(254);
+  expect(researchShares(uv(toCeiling)).signals.readers.metadata.maxRequests).toBe(256);
+  expect(researchShares(uv(changes)).signals.readers.metadata.maxRequests).toBe(256);
+  // Metadata bytes reach their ceiling exactly at the packet's change limit.
+  expect(researchShares(uv(changes - 1)).signals.readers.metadata.maxTotalBytes).toBe(
+    metadata.maxTotalBytes - byteRate,
+  );
+  expect(researchShares(uv(changes)).signals.readers.metadata.maxTotalBytes).toBe(
+    metadata.maxTotalBytes,
+  );
+  expect(researchShares(uv(changes + 1)).signals.readers.metadata.maxTotalBytes).toBe(
+    metadata.maxTotalBytes,
+  );
 });
 
 type FittedRequests = Readonly<

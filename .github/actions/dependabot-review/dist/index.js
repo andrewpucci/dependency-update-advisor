@@ -8897,6 +8897,7 @@ const ROLE_UNITS$1 = [
 const SHARE_FORMULA_TEST = "src/budget.test.ts > a share is its base plus each rate times its count, rounded up, under its ceiling";
 const SHARE_CEILING_TEST = "src/budget.test.ts > shares the fit keeps at their ceilings stay there for any change";
 const SHARE_FIT_TEST = "src/budget.test.ts > the fitted values give a one-member change a smaller share than R1 #276";
+const SHARE_SIZED_TEST = "src/budget.test.ts > the upstream byte and PyPI metadata shares grow with uv members up to their ceilings";
 /** The B12 demand fit, approved by the user on 2026-11-26 (#370 comment 7197038235). */
 const B12_FIT = {
 	command: "npm run measure:demand (MEASURE_SCALE=10)",
@@ -8982,6 +8983,77 @@ const COST_SIZED = {
 		}
 	}
 };
+/** The #462 measurement of four real uv changes, which sized the #467 values. */
+const UV_MEASURE = {
+	command: "npm run measure:demand (MEASURE_SCALE=10, with research.maxJsonEntries scaled)",
+	corpus: "four uv Dependabot PRs with 29–34 uv members each, from one of the maintainer's own projects (#462 measurement comment); approved by the maintainer on 2026-11-27, #467",
+	measured: "2026-11-27"
+};
+const UV_KEPT_BASE = {
+	statistic: "the former flat share, kept as the base for a change with no uv members; the eligible rate adds the per-member demand",
+	headroom: "the eligible rate carries 1.25× the measured per-member demand"
+};
+const UV_ZERO = {
+	role: {
+		statistic: FIT_ZERO_STATISTIC.role,
+		headroom: "none: this rate adds nothing"
+	},
+	signals: {
+		statistic: "the rate is 0: the PyPI metadata reader scales with its eligible (uv) members alone",
+		headroom: "none: this rate adds nothing"
+	}
+};
+/**
+* Share dimensions sized for uv changes from the #462 measurement, approved by the maintainer on
+* 2026-11-27 (#467). A sized dimension's other rates are 0. Its ceiling is the allocation entry.
+*/
+const UV_SIZED = {
+	"upstream.bytes": {
+		base: {
+			value: 0,
+			basis: {
+				statistic: "the upstream byte share is per member only: upstream bytes on the #462 PRs grow with their members",
+				headroom: "none: a change with no counted members still gets the one-response floor of limit:evidence.envelope.maxResponseBytes"
+			}
+		},
+		rates: Object.fromEntries(["direct", "transitive"].map((unit) => [unit, {
+			value: 6e5,
+			basis: {
+				statistic: "about 0.6 MB of upstream reads per uv member: 17.9–19.9 MB over 29–34 members; direct and transitive take the same rate, the members the upstream request share rates",
+				headroom: "none beyond the per-member rate"
+			}
+		}])),
+		zero: UV_ZERO.role
+	},
+	"signals.metadata.requests": {
+		base: {
+			value: 16,
+			basis: UV_KEPT_BASE
+		},
+		rates: { eligible: {
+			value: 2.5,
+			basis: {
+				statistic: "about 1.94 PyPI requests per uv member: 56–66 requests over 29–34 members; 1.25 × 1.94 = 2.425, rounded up to the next 0.1",
+				headroom: "1.25× the measured per-member demand"
+			}
+		} },
+		zero: UV_ZERO.signals
+	},
+	"signals.metadata.bytes": {
+		base: {
+			value: .5 * MiB,
+			basis: UV_KEPT_BASE
+		},
+		rates: { eligible: {
+			value: 7e4,
+			basis: {
+				statistic: "about 54 KB of PyPI metadata per uv member: 1.43–1.84 MB over 29–34 members; 1.25 × 54,000 = 67,500, rounded up to 70,000",
+				headroom: "1.25× the measured per-member demand"
+			}
+		} },
+		zero: UV_ZERO.signals
+	}
+};
 /** A value fitted to the B12 demand corpus, or sized with it; `basis` says how this one was. */
 function fitted(id, value, unit, basis, audit) {
 	return {
@@ -9011,13 +9083,40 @@ function rateBasis(share, unit, rate) {
 	if (rate > 0) return FIT_RATE_STATISTIC;
 	return share.startsWith("signals.") ? FIT_ZERO_STATISTIC.signals : FIT_ZERO_STATISTIC.role;
 }
+const rateAudit = (share, dimension, unit) => ({
+	protects: `Grows the ${share} ${dimension} share with each ${unit} member, so a larger change gets more and a small one fails faster.`,
+	effect: "Adds rate times the count to the share, rounded up and capped at the ceiling; zero leaves the share at its base."
+});
+/** A #467 sized dimension's base and rate entries, each a `measured` entry citing #462. */
+function sizedShareEntries(share, dimension, sized, unit, units) {
+	return [fitted(`research.share.${share}.${dimension}.base`, sized.base.value, unit, {
+		...UV_MEASURE,
+		...sized.base.basis
+	}, {
+		protects: "Sets the share a change of no counted members gets, before any per-member rate is added.",
+		effect: "The computed share starts here; each rate adds to it, rounded up and capped at the ceiling.",
+		test: SHARE_SIZED_TEST
+	}), ...units.map((rateUnit) => {
+		const id = `research.share.${share}.${dimension}.rate.${rateUnit}`;
+		const rate = sized.rates[rateUnit];
+		return fitted(id, rate?.value ?? 0, unit, {
+			...UV_MEASURE,
+			...rate?.basis ?? sized.zero
+		}, {
+			...rateAudit(share, dimension, rateUnit),
+			test: rate ? SHARE_SIZED_TEST : SHARE_FORMULA_TEST
+		});
+	})];
+}
 /** One scaled share's base and rate entries for one dimension; its ceiling is the allocation entry. */
 function scaledShareEntries(share, dimension) {
 	const ceiling = `${SCALED_SHARES[share]}.${SHARE_DIMENSIONS[dimension]}`;
 	const unit = dimension === "bytes" ? "bytes" : "count";
 	const units = share.startsWith("signals.") ? [...ROLE_UNITS$1, "eligible"] : ROLE_UNITS$1;
-	const fit = dimension === "requests" ? FITTED_REQUESTS[share] : void 0;
 	const baseId = `research.share.${share}.${dimension}.base`;
+	const sized = UV_SIZED[`${share}.${dimension}`];
+	if (sized) return sizedShareEntries(share, dimension, sized, unit, units);
+	const fit = dimension === "requests" ? FITTED_REQUESTS[share] : void 0;
 	const baseAudit = {
 		protects: "Sets the share a change of no counted members gets, before any per-member rate is added.",
 		effect: fit ? "The computed share starts here; each rate adds to it, rounded up and capped at the ceiling." : "The computed share starts here; with every rate at zero it equals the ceiling.",
@@ -9027,8 +9126,7 @@ function scaledShareEntries(share, dimension) {
 		const id = `research.share.${share}.${dimension}.rate.${rateUnit}`;
 		const rate = fit?.rates[rateUnit] ?? 0;
 		const audit = {
-			protects: `Grows the ${share} ${dimension} share with each ${rateUnit} member, so a larger change gets more and a small one fails faster.`,
-			effect: "Adds rate times the count to the share, rounded up and capped at the ceiling; zero leaves the share at its base.",
+			...rateAudit(share, dimension, rateUnit),
 			test: rate > 0 ? SHARE_FIT_TEST : SHARE_FORMULA_TEST
 		};
 		return fit ? fitted(id, rate, unit, rateBasis(share, rateUnit, rate), audit) : unjustified(id, 0, unit, {
@@ -9376,12 +9474,18 @@ const DEFINITIONS = [
 		note: "awaiting L8 measurement",
 		test: "src/evidence/upstream-read.test.ts > upstream reader spends exactly its request share and refuses the request past it"
 	}),
-	unjustified("evidence.allocation.upstream.maxTotalBytes", 15 * MiB, "bytes", {
-		protects: "Caps response bytes of upstream research reads so they cannot exhaust runner memory.",
-		effect: "A response past the share's remaining bytes is refused with budget and the upstream reader stops.",
-		note: "awaiting L8 measurement",
+	{
+		id: "evidence.allocation.upstream.maxTotalBytes",
+		value: 77e6,
+		unit: "bytes",
+		protects: "Caps response bytes of upstream research reads, the ceiling of the per-member upstream byte share, so they cannot take more of the evidence time or runner memory than the evidence window can read.",
+		basis: {
+			kind: "safety",
+			reason: "Upstream reads run inside limit:evidence.envelope.totalTimeoutMs (240 s). At the 0.64 MB/s upstream throughput measured on the #462 uv PRs, that window reads 240 × 0.64 = 153.6 MB; half of it, 76.8 MB, rounded to 77 MB, leaves a margin for slower responses. The per-member rate reaches it only near limit:packet.changes members (77 MB ÷ 0.6 MB ≈ 128). Approved by the maintainer on 2026-11-27, #467."
+		},
+		effect: "The ceiling of the scaled upstream byte share; a response past the share's remaining bytes is refused with budget and the upstream reader stops.",
 		test: "src/evidence/upstream-read.test.ts > upstream reader accepts a byte share exactly and refuses the byte past it"
-	}),
+	},
 	unjustified("evidence.allocation.advisory.maxRequests", 80, "count", {
 		protects: "Caps advisory lookups per changed package so a large group cannot take the shared evidence time.",
 		effect: "Requests past the cap return budget; the stage keeps the advisory evidence already read.",
@@ -9522,16 +9626,18 @@ const DEFINITIONS = [
 		note: "awaiting L8 measurement",
 		test: "src/evidence/npm-registry.test.ts > the signals registry byte share allows exactly its total and refuses the read that exceeds it"
 	}),
-	unjustified("evidence.allocation.signals.readers.metadata.maxRequests", 16, "count", {
-		protects: "Caps PyPI metadata requests in the signals stage so the stage stays inside the envelope.",
-		effect: "The request past the cap returns budget and the metadata reader stops.",
-		note: "awaiting L8 measurement",
+	derived("evidence.allocation.signals.readers.metadata.maxRequests", "count", ["packet.changes"], (changes) => 2 * changes, "Two PyPI reads (base and head) per change, for at most limit:packet.changes changes: 2 × 128 = 256. Approved by the maintainer on 2026-11-27, #467.", {
+		protects: "Caps PyPI metadata requests in the signals stage, the ceiling of the per-member metadata share, so the stage stays inside the envelope.",
+		effect: "The ceiling of the scaled metadata request share; the request past the share returns budget and the metadata reader stops.",
 		test: "src/evidence/policy-signals-read.test.ts > metadata reader spends exactly its request share and refuses the request past it"
 	}),
-	unjustified("evidence.allocation.signals.readers.metadata.maxTotalBytes", .5 * MiB, "bytes", {
-		protects: "Caps PyPI metadata response bytes so they cannot exhaust runner memory.",
-		effect: "A response past the share's remaining bytes returns budget and the reader stops.",
-		note: "awaiting L8 measurement",
+	derived("evidence.allocation.signals.readers.metadata.maxTotalBytes", "bytes", [
+		"research.share.signals.metadata.bytes.base",
+		"research.share.signals.metadata.bytes.rate.eligible",
+		"packet.changes"
+	], (base, rate, changes) => base + rate * changes, "The largest share the metadata byte formula gives: its base plus its eligible rate for limit:packet.changes uv members, 524,288 + 70,000 × 128 = 9,484,288 bytes. Approved by the maintainer on 2026-11-27, #467.", {
+		protects: "Caps PyPI metadata response bytes, the ceiling of the per-member metadata byte share, so they cannot exhaust runner memory.",
+		effect: "The ceiling of the scaled metadata byte share; a response past the share's remaining bytes returns budget and the reader stops.",
 		test: "src/evidence/policy-signals-read.test.ts > metadata reader accepts a byte share exactly and refuses the byte past it"
 	}),
 	unjustified("evidence.allocation.signals.readers.upstream.maxRequests", 16, "count", {
@@ -9797,12 +9903,18 @@ const DEFINITIONS = [
 		effect: "Each reader gets the smaller of this value and the time left before the deadline; when the envelope runs out, reads stop with reason timeout and partial evidence is kept.",
 		test: "src/collection.test.ts > limits the session to %s"
 	}),
-	unjustified("research.maxJsonEntries", 2e5, "count", {
+	{
+		id: "research.maxJsonEntries",
+		value: 1e6,
+		unit: "count",
 		protects: "Untrusted upstream JSON cannot make a research reader parse an unbounded number of entries (CPU and memory).",
+		basis: {
+			kind: "safety",
+			reason: "The largest legitimate use is limit:packet.changes members at about 7,400 cumulative upstream entries each, as measured on the #462 uv PRs (225,529–251,223 entries over 29–34 members): 128 × 7,400 ≈ 947,000. Harm begins near 18 million: copying JSON measured 33 ms per 100,000 entries, and with a 10× allowance for a slower runner, 18 million entries would spend a quarter of limit:evidence.envelope.totalTimeoutMs on JSON copy alone. The cap sits above the first and far below the second. Approved by the maintainer on 2026-11-27, #467."
+		},
 		effect: "Exceeding the cap fails that reader's read with reason budget; the stage stops and is recorded unavailable with its reason.",
-		note: "awaiting L8 measurement",
 		test: "src/research.test.ts > the npm registry reader counts exactly research.maxJsonEntries entries and refuses one more"
-	}),
+	},
 	unjustified("research.maxJsonDepth", 32, "count", {
 		protects: "Untrusted upstream JSON cannot nest deeper than the cap, so parsing cannot exhaust the stack or CPU.",
 		effect: "Input nested deeper than the cap fails that reader's read with reason budget; the stage is recorded unavailable.",

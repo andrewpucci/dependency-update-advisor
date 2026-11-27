@@ -41,6 +41,10 @@ type Options = {
   duplicateNames?: number;
   /** Transitive pip packages under the uv `orbit` member, each moving from 1.0.0 to 2.0.0. */
   uvChildren?: number;
+  /** Direct pip packages the project declares beside `orbit`, each moving from 1.0.0 to 2.0.0. */
+  uvDirect?: number;
+  /** Pads each PyPI version response's description to about this many bytes, as a README is. */
+  pypiDescriptionBytes?: number;
   /** Discovery records for one spelling; the harness default stores each target as itself. */
   stored?: Parameters<typeof viaAdvisoryHttp>[1];
 };
@@ -161,7 +165,10 @@ function researchFetch(options: Options, requests: string[]) {
             info: {
               name: parts[2],
               version: parts[3],
-              description: 'Exact PyPI version metadata.',
+              description: 'Exact PyPI version metadata.'.padEnd(
+                options.pypiDescriptionBytes ?? 0,
+                ' Release notes and usage.',
+              ),
               project_urls: { Source: 'https://github.com/fixture/py-' + parts[2] },
             },
           });
@@ -200,16 +207,29 @@ export async function upstreamScenario(options: Options = {}) {
     options.uvArtifacts
       ? `sdist={url="https://files.pythonhosted.org/orbit-${version}.tar.gz",hash="sha256:${'a'.repeat(64)}"}\nwheels=[{url="https://files.pythonhosted.org/orbit-${version}.whl",hash="sha256:${'b'.repeat(64)}"}]\n`
       : '';
+  const direct = Array.from({ length: options.uvDirect ?? 0 }, (_, i) => `pydirect-${i}`);
+  const manifest = uvManifest.replace(
+    'dependencies=["orbit>=1"]',
+    `dependencies=[${['orbit', ...direct].map((name) => `"${name}>=1"`).join(',')}]`,
+  );
   const python = (head: boolean) => {
     const version = head ? '2.0.0' : '1.0.0';
     const children = Array.from({ length: options.uvChildren ?? 0 }, (_, i) => `pychild-${i}`);
     const dependencies = children.length
       ? `dependencies=[${children.map((name) => `{name="${name}"}`).join(',')}]\n`
       : '';
+    const declared = ['orbit', ...direct];
     if (!options.uvVariants)
       return (
-        uvLock(version, dependencies + artifacts(version)) +
-        children.map((name) => uvPackage(name, version)).join('')
+        uvLock(version, dependencies + artifacts(version))
+          .replace(
+            'dependencies=[{name="orbit"}]',
+            `dependencies=[${declared.map((name) => `{name="${name}"}`).join(',')}]`,
+          )
+          .replace(
+            'requires-dist=[{name="orbit",specifier=">=1"}]',
+            `requires-dist=[${declared.map((name) => `{name="${name}",specifier=">=1"}`).join(',')}]`,
+          ) + [...children, ...direct].map((name) => uvPackage(name, version)).join('')
       );
     return (
       uvLock(version, 'resolution-markers=["sys_platform == \'linux\'"]\n' + artifacts(version)) +
@@ -222,7 +242,7 @@ export async function upstreamScenario(options: Options = {}) {
   };
   const files = (head: boolean) => ({
     ...npmFiles(head, options),
-    'pyproject.toml': uvManifest,
+    'pyproject.toml': manifest,
     'uv.lock': python(head),
     '.github/workflows/ci.yml': `jobs:\n  review:\n    steps:\n      - uses: ${head && options.actionChange === 'owner' ? 'other-owner/action' : 'fixture/action'}${options.actionsSubpath ? '/component' : ''}@${head && options.actionChange === 'mutable' ? 'v2.0.0' : (head ? '2' : '1').repeat(40)}\n`,
   });
