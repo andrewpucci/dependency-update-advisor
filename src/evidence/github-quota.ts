@@ -24,7 +24,10 @@ export type GithubQuotaGuard = Readonly<{
   started(url: string): void;
   /** Called only with a response returned by the network, never a cached or synthetic one. */
   observe(url: string, response: Response): void;
-  /** How many requests the guard has refused this run. */
+  /**
+   * How many requests the guard has refused this run. It does not report which counter refused
+   * each one; per-counter refusal reporting is an observability follow-up.
+   */
   refusals(): number;
   /**
    * When a rate-limited GitHub response can be retried: for the guard's own refusal, the latest
