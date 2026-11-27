@@ -135,7 +135,8 @@ describe('forEachRelease', () => {
 
 describe('forEachLadderPage', () => {
   test('a size that does not divide the offset reached is skipped for one that does', async () => {
-    // From 100, halving reaches 25 and then 12; after one page of 25, only 1 divides the offset.
+    // A compare-shaped target over a list that is not a divisor chain: from 25 the next size is
+    // 12, and after one page of 25 only 1 divides the offset.
     const { reader, sizes } = fakeReader({ total: 40, fits: (start) => (start < 25 ? 25 : 10) });
     const ids: number[] = [];
     await forEachLadderPage(

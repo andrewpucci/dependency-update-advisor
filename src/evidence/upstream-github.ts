@@ -431,6 +431,8 @@ async function comparisonPages(
         state.valid = true;
         return state.messages.size - before;
       },
+      // Only the first page carries the file list, so later pages climb back to full size.
+      { grow: true },
     );
     if (state.messages.size !== state.total) state.reasons.add('truncated');
     if (state.forward && [...state.messages.keys()].at(-1) !== head.sha)

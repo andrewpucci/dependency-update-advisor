@@ -158,8 +158,10 @@ test('RELEASE_PAGE_SIZES halves from the register value down to 1 and is frozen'
   expect(Object.isFrozen(RELEASE_PAGE_SIZES)).toBe(true);
 });
 
-test('COMPARE_PAGE_SIZES halves from the register value down to 1 and is frozen', () => {
-  expect(COMPARE_PAGE_SIZES).toEqual([100, 50, 25, 12, 6, 3, 1]);
+test('COMPARE_PAGE_SIZES is a divisor chain from the register value down to 1 and is frozen', () => {
+  expect(COMPARE_PAGE_SIZES).toEqual([100, 50, 25, 5, 1]);
+  for (const [i, size] of COMPARE_PAGE_SIZES.slice(1).entries())
+    expect(COMPARE_PAGE_SIZES[i] % size).toBe(0);
   expect(COMPARE_PAGE_SIZES[0]).toBe(limit('upstream.comparePageSize'));
   expect(Object.isFrozen(COMPARE_PAGE_SIZES)).toBe(true);
 });

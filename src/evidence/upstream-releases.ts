@@ -10,17 +10,21 @@ export type LadderPage = Readonly<{ data: Readonly<Record<string, unknown>>; off
 
 /**
  * Reads a paged GitHub resource in order, in pages that fit the per-response cap (coverage §1.6).
- * A page refused with `budget` while the reader can still read is too large for the cap, so it is
- * retried at the next smaller size in `sizes` whose page boundary falls on the offset already
- * reached; `sizes` ends at 1, which always does. Every read, retries included, counts against
- * `maxPages` and is charged by the reader as an ordinary request. `visit` checks one page and
- * returns how many items it held; a page that claims a next page must hold exactly `perPage`.
+ * `sizes` is a divisor chain ending at 1: each size divides every larger one. A page refused with
+ * `budget` while the reader can still read is too large for the cap, so it is retried at the next
+ * smaller size whose page boundary falls on the offset already reached. With `grow`, each page that
+ * claims a next page is followed at the largest size whose boundary falls on the new offset, so
+ * one heavy page does not leave the rest of the list in small pages. Every read, retries included,
+ * counts against `maxPages` and is charged by the reader as an ordinary request. `visit` checks one
+ * page and returns how many items it held; a page that claims a next page must hold exactly
+ * `perPage`.
  */
 export async function forEachLadderPage(
   reader: UpstreamReader,
   sizes: readonly number[],
   target: (page: number, perPage: number) => GithubUpstreamTarget,
   visit: (page: LadderPage) => Promise<number>,
+  options: Readonly<{ grow?: boolean }> = {},
 ): Promise<void> {
   let perPage = sizes[0];
   let offset = 0;
@@ -39,12 +43,14 @@ export async function forEachLadderPage(
     offset += count;
     if (!lookup.nextPage) return;
     requireUpstream(count === perPage, 'conflict');
+    if (options.grow) perPage = sizes.find((size) => offset % size === 0) ?? perPage;
   }
 }
 
 /**
  * Visits a repository's releases in order. Release sizes are powers of two, so each halving
- * starts on a boundary already read.
+ * starts on a boundary already read. Releases do not grow back: a release list is uniformly
+ * heavy, so a page that needed a smaller size predicts that the next one does too.
  */
 export async function forEachRelease(
   reader: UpstreamReader,

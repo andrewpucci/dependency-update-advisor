@@ -13,18 +13,26 @@ import type { ResearchCache } from './research-cache.js';
 import { limit } from '../limits.js';
 import { HTTP_STATUS } from '../format.js';
 
-/** Each halving of a register page size down to 1, for a page-size retry ladder. */
-function halvingFrom(start: number): number[] {
-  const sizes: number[] = [];
-  for (let size = start; size >= 1; size = Math.floor(size / 2)) sizes.push(size);
+/**
+ * A page-size retry ladder from a register page size down to 1: each size is the one above divided
+ * by its smallest prime factor, so every size divides every larger one. From a power of two this is
+ * plain halving.
+ */
+function divisorChain(start: number): number[] {
+  const sizes = [start];
+  for (let size = start; size > 1; sizes.push(size)) {
+    let factor = 2;
+    while (size % factor !== 0) factor++;
+    size /= factor;
+  }
   return sizes;
 }
 export const RELEASE_PAGE_SIZES: readonly number[] = Object.freeze(
-  halvingFrom(limit('upstream.releasePageSize')),
+  divisorChain(limit('upstream.releasePageSize')),
 );
-/** The compare commit page sizes, halving from the register's compare page size down to 1. */
+/** The compare commit page sizes, a divisor chain from the register's compare page size to 1. */
 export const COMPARE_PAGE_SIZES: readonly number[] = Object.freeze(
-  halvingFrom(limit('upstream.comparePageSize')),
+  divisorChain(limit('upstream.comparePageSize')),
 );
 
 export type UpstreamLimits = Readonly<{

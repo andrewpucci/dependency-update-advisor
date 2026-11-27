@@ -2666,7 +2666,7 @@ const DEFINITIONS = [
       protects:
         'The start size of the compare page-size ladder is bounded, so a compare page that does not fit the response cap is halved and retried instead of failing outright (response size and memory).',
       effect:
-        'A compare page that does not fit is retried at the next smaller size whose page boundary falls on the commits already read, down to 1; a page of one commit over the cap fails the comparison with reason budget. Each retry is an ordinary request against the upstream share.',
+        'A compare page that does not fit is retried at the next smaller size of a divisor chain from this value down to 1, and each later page returns to the largest size whose boundary falls on the commits already read; a page of one commit over the cap fails the comparison with reason budget. Each retry is an ordinary request against the upstream share.',
       test: 'src/evidence/upstream-github.test.ts > a compare page over the response cap is halved until it fits',
     },
   ),
