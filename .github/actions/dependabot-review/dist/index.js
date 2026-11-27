@@ -15910,34 +15910,32 @@ var Reader = class {
 	}
 	async tagExistence(value) {
 		const candidates = Array.isArray(value) ? value : [];
-		const answers = candidates.map(() => "unknown");
-		if (!this.deps.githubToken || this.busy) return freeze$3(answers);
+		const unique = /* @__PURE__ */ new Map();
+		for (const c of candidates) {
+			if (!tagCandidate(c)) continue;
+			const key = JSON.stringify([c.repository, c.tag]);
+			if (!unique.has(key)) unique.set(key, {
+				candidate: {
+					repository: c.repository,
+					tag: c.tag
+				},
+				answer: "unknown"
+			});
+		}
+		const answers = () => freeze$3([...unique.values()].map((entry) => ({ ...entry })));
+		if (!this.deps.githubToken || this.busy) return answers();
 		this.busy = true;
 		try {
-			const unique = /* @__PURE__ */ new Map();
-			candidates.forEach((c, i) => {
-				if (!tagCandidate(c)) return;
-				const key = JSON.stringify([c.repository, c.tag]);
-				const entry = unique.get(key) ?? {
-					candidate: {
-						repository: c.repository,
-						tag: c.tag
-					},
-					at: []
-				};
-				entry.at.push(i);
-				unique.set(key, entry);
-			});
 			for (const batch of tagQueryBatches([...unique.values()])) {
 				const result = await this.tagQuery(batch.map((entry) => entry.candidate));
 				batch.forEach((entry, j) => {
-					for (const i of entry.at) answers[i] = result[j];
+					entry.answer = result[j] ?? "unknown";
 				});
 			}
 		} finally {
 			this.busy = false;
 		}
-		return freeze$3(answers);
+		return answers();
 	}
 	async read(value) {
 		const before = this.reads;
@@ -15989,7 +15987,8 @@ function createUpstreamReader(value, deps) {
 				close: () => reader.close(),
 				spend: (amount) => reader.spend(amount),
 				stopped: () => reader.stopReason(),
-				stopLimit: () => reader.stopLimit()
+				stopLimit: () => reader.stopLimit(),
+				...deps.existence ? { existence: deps.existence } : {}
 			})
 		};
 	} catch {
@@ -17938,7 +17937,59 @@ function repositoryCandidate(metadata) {
 		directory: String(directory)
 	};
 }
+/** GitHub repository names are case-insensitive; tag names are compared exactly. */
+function existenceKey(repository, tag) {
+	return JSON.stringify([repository.toLowerCase(), tag]);
+}
+/**
+* Asks the reader's existence query about each candidate the run's map has not answered, and keeps
+* every answer for the run (amendment item 7). Without a map, or a reader that can ask, it does
+* nothing, so every candidate is probed over REST as today.
+*/
+async function settleTagExistence(reader, candidates) {
+	const map = reader.existence;
+	if (!map || !reader.tagExistence) return;
+	const unanswered = /* @__PURE__ */ new Map();
+	for (const candidate of candidates) {
+		const key = existenceKey(candidate.repository, candidate.tag);
+		if (!map.has(key)) unanswered.set(key, candidate);
+	}
+	if (!unanswered.size) return;
+	const answers = await reader.tagExistence([...unanswered.values()]);
+	const settled = /* @__PURE__ */ new Map();
+	for (const { candidate, answer } of answers) {
+		const key = existenceKey(candidate.repository, candidate.tag);
+		const prior = settled.get(key);
+		settled.set(key, prior === void 0 || prior === answer ? answer : "unknown");
+	}
+	for (const key of unanswered.keys()) map.set(key, settled.get(key) ?? "unknown");
+}
+/**
+* The exact tags the release and comparison stages probe for one package side, within the
+* candidate cap; none when its metadata names no supported repository.
+*/
+function packageTagCandidates(target, reader) {
+	let repo;
+	try {
+		repo = repositoryCandidate(target.metadata);
+	} catch (error) {
+		if (error instanceof UpstreamFailure || invalidUrl(error)) return [];
+		throw error;
+	}
+	return packageTags(target, repo).slice(0, reader.limits.maxTagCandidates).map((tag) => ({
+		repository: repo.repository,
+		tag
+	}));
+}
+/** The error `new URL` throws for a string it cannot parse. */
+function invalidUrl(error) {
+	return error instanceof TypeError && error.code === "ERR_INVALID_URL";
+}
 async function resolveUpstreamRef(repository, ref, reader) {
+	if (ref.startsWith("tags/") && reader.existence?.get(existenceKey(repository, ref.slice(5))) === "absent") return {
+		status: "unavailable",
+		reason: "missing"
+	};
 	try {
 		const data = await githubData(reader, {
 			repository,
@@ -21030,17 +21081,20 @@ function metadataCoverage(change, side, lookup, sourceIds) {
 		}
 	}
 }
-async function metadata$2(input, output, change, side, reader, pypiReader) {
-	const instance = side === "base" ? change.from : change.to;
-	if (!instance) return;
+async function metadataLookup(input, change, side, reader, pypiReader) {
+	if (!(side === "base" ? change.from : change.to)) return;
 	const target = metadataTarget(input, change, side);
-	const lookup = target ? target.kind === "pypi" && pypiReader ? await sharedPyPILookup(target, pypiReader) : await reader.read(target) : {
+	return target ? target.kind === "pypi" && pypiReader ? await sharedPyPILookup(target, pypiReader) : await reader.read(target) : {
 		status: "unavailable",
 		fetched: false,
 		url: null,
 		data: null,
 		reasons: ["unsupported"]
 	};
+}
+function metadata$2(input, output, change, side, lookup) {
+	const instance = side === "base" ? change.from : change.to;
+	if (!instance || !lookup) return;
 	const sourceIds = [];
 	if (lookup.status === "available") {
 		const source = metadataSource(input, change, side, lookup);
@@ -21346,7 +21400,116 @@ function rollback(output, point, reason) {
 function markUnresearched(output, from, reason) {
 	for (let index = from; index < output.changes.length; index++) if (!("basis" in output.changes[index])) rollback(output, checkpoint(output, index), reason);
 }
-async function enrichChange(input, output, change, reader, pypiReader, index, mark) {
+/**
+* Reads every package member's metadata before any member's tags are probed, so the pre-pass sees
+* every candidate (amendment item 1). A side that throws ends its member, as it does in the member
+* loop. Each side's metadata is also retained in a scratch copy and bounded there, so a member
+* over its bounds stops reading about where it did in the member loop. The scratch is only
+* approximately the real output's size at the same point. It can be smaller, since it holds no
+* research from earlier members; then a side is read that the member loop would not have read,
+* though the loop still refuses it at the same point. It can be larger, where an earlier member's
+* research rewrote its upstream evidence to something shorter than its metadata coverage; then a
+* side the member loop would have read is left unread and its member ends with `budget`. Reading
+* stops at a reader stop; `stop` names the member whose read it was and the reason.
+*/
+async function prefetchMetadata(input, output, reader, pypiReader) {
+	const members = /* @__PURE__ */ new Map();
+	const scratch = structuredClone(output);
+	for (const [index, change] of output.changes.entries()) {
+		if ("basis" in change || change.ecosystem === "actions") continue;
+		const sides = /* @__PURE__ */ new Map();
+		members.set(index, sides);
+		const point = checkpoint(scratch, index);
+		for (const side of ["base", "head"]) try {
+			const lookup = await metadataLookup(input, change, side, reader, pypiReader);
+			sides.set(side, { lookup });
+			metadata$2(input, scratch, scratch.changes[index], side, lookup);
+			bounds(scratch, input.limits, scratch.changes[index]);
+		} catch (error) {
+			if (!sides.has(side)) sides.set(side, { error });
+			else if (side === "base") sides.set("head", { error });
+			rollback(scratch, point, upstreamFailureReason(error));
+			break;
+		}
+		const reason = reader.stopped?.();
+		if (reason) return {
+			members,
+			stop: {
+				index,
+				reason
+			}
+		};
+	}
+	return {
+		members,
+		stop: null
+	};
+}
+/** Retains a member's read-ahead metadata as the member loop does; what it throws ends the member. */
+function attachMetadata(input, output, change, prefetched) {
+	const lookups = /* @__PURE__ */ new Map();
+	for (const side of ["base", "head"]) {
+		const read = prefetched?.get(side);
+		if (read && "error" in read) throw read.error;
+		const lookup = read?.lookup;
+		metadata$2(input, output, change, side, lookup);
+		if (lookup) lookups.set(side, lookup);
+		bounds(output, input.limits, change);
+	}
+	return lookups;
+}
+/**
+* A reader stop while reading ahead at member `stopAt`: every member up to it keeps the metadata
+* read for it and is then marked stopped exactly as a later member is marked unresearched, with no
+* GitHub stage read. Members after it are unresearched as before.
+*/
+function stopAfterPrefetch(input, output, members, stopAt, reason) {
+	for (let index = 0; index <= stopAt; index++) {
+		const change = output.changes[index];
+		if ("basis" in change) continue;
+		const point = checkpoint(output, index);
+		try {
+			if (change.ecosystem !== "actions") attachMetadata(input, output, change, members.get(index));
+		} catch (error) {
+			rollback(output, point, upstreamFailureReason(error));
+		}
+		rollback(output, checkpoint(output, index), reason);
+	}
+	output.stopped = reason;
+	markUnresearched(output, stopAt + 1, reason);
+}
+/** The exact tags the upstream stage may probe for one member: its target and comparison base. */
+function memberTagCandidates(change, sides, reader) {
+	if (change.ecosystem === "actions" || "basis" in change) return [];
+	const instance = change.to ?? change.from, lookup = sides.get(change.to ? "head" : "base")?.lookup, base = sides.get("base")?.lookup;
+	const candidates = [];
+	const side = (name, version, data) => candidates.push(...packageTagCandidates({
+		ecosystem: change.ecosystem,
+		name,
+		version,
+		metadata: data
+	}, reader));
+	if (instance && lookup?.data) side(instance.name, instance.version, lookup.data);
+	if (change.from && change.to && base?.data) side(change.from.name, change.from.version, base.data);
+	return candidates;
+}
+/**
+* One existence query pass over every member's candidates. A member whose candidates cannot be
+* listed is left out, so only its tags go to REST; a failed query leaves every candidate to REST.
+*/
+async function tagPrepass(changes, members, reader) {
+	const candidates = [...members].flatMap(([index, sides]) => {
+		try {
+			return memberTagCandidates(changes[index], sides, reader);
+		} catch {
+			return [];
+		}
+	});
+	try {
+		await settleTagExistence(reader, candidates);
+	} catch {}
+}
+async function enrichChange(input, output, change, reader, prefetched, index, mark) {
 	if ("basis" in change) return;
 	if (change.ecosystem === "actions") {
 		mark(checkpoint(output, index));
@@ -21357,15 +21520,28 @@ async function enrichChange(input, output, change, reader, pypiReader, index, ma
 		return;
 	}
 	mark(checkpoint(output, index));
-	const lookups = /* @__PURE__ */ new Map();
-	for (const side of ["base", "head"]) {
-		const lookup = await metadata$2(input, output, change, side, reader, pypiReader);
-		if (lookup) lookups.set(side, lookup);
-		bounds(output, input.limits, change);
-	}
+	const lookups = attachMetadata(input, output, change, prefetched);
 	mark(checkpoint(output, index));
 	await packageResearch(input, output, change, lookups, reader);
 	bounds(output, input.limits, change);
+}
+/** Researches each member in order, from its read-ahead metadata, until the reader stops. */
+async function researchMembers(input, output, members, reader) {
+	for (let index = 0; index < output.changes.length; index++) {
+		const marks = [];
+		try {
+			await enrichChange(input, output, output.changes[index], reader, members.get(index), index, (p) => marks.push(p));
+		} catch (error) {
+			const point = marks.at(-1);
+			if (point) rollback(output, point, upstreamFailureReason(error));
+		}
+		const stopped = reader.stopped?.() ?? null;
+		if (stopped) {
+			output.stopped = stopped;
+			markUnresearched(output, index + 1, stopped);
+			return;
+		}
+	}
 }
 /** Enrich exact inventory identities; caller retains inventory coverage and relationships separately. */
 async function enrichUpstream(value, dependencies) {
@@ -21395,20 +21571,12 @@ async function enrichUpstream(value, dependencies) {
 	};
 	try {
 		bounds(output, input.limits);
-		for (let index = 0; index < output.changes.length; index++) {
-			const marks = [];
-			try {
-				await enrichChange(input, output, output.changes[index], dependencies.reader, dependencies.pypiReader, index, (p) => marks.push(p));
-			} catch (error) {
-				const point = marks.at(-1);
-				if (point) rollback(output, point, upstreamFailureReason(error));
-			}
-			const stopped = dependencies.reader.stopped?.() ?? null;
-			if (stopped) {
-				output.stopped = stopped;
-				markUnresearched(output, index + 1, stopped);
-				break;
-			}
+		const { reader, pypiReader } = dependencies;
+		const { members, stop } = await prefetchMetadata(input, output, reader, pypiReader);
+		if (stop) stopAfterPrefetch(input, output, members, stop.index, stop.reason);
+		else {
+			await tagPrepass(output.changes, members, reader);
+			await researchMembers(input, output, members, reader);
 		}
 		return freeze$3(output);
 	} catch (error) {
@@ -22443,6 +22611,18 @@ function researchFetch(token, fetchImpl) {
 	const authenticated = authenticatedFetch(token, fetchImpl);
 	const open = publicFetch(fetchImpl);
 	return async (url, init) => httpsUrl(url).origin === "https://api.github.com" ? authenticated(url, init) : open(url, init);
+}
+/**
+* The research fetch carrying the flag research needs: `researchFetch` adds the read token to
+* every api.github.com request, so research may send the batched tag existence query. The flag is
+* a property of the fetch itself, so it cannot travel without the fetch that attaches the token.
+*/
+function researchFetchWithToken(token, fetchImpl) {
+	return Object.assign(researchFetch(token, fetchImpl), { githubToken: true });
+}
+/** `wrapped`, carrying `original`'s token flag, for a wrapper that still sends through it. */
+function withTokenFlag(wrapped, original) {
+	return original.githubToken ? Object.assign(wrapped, { githubToken: true }) : wrapped;
 }
 /**
 * Binds every request to one attempt: nothing starts once the attempt has ended or ownership is
@@ -32846,10 +33026,15 @@ async function enrichAdvisoryStage(input, dependencies, readers, progress, fail,
 async function enrichSignalsStage(input, dependencies, readers, progress, fail, metadata, stageShares) {
 	const limitsForStage = limits(stageShares.signals, input);
 	const { readers: shares } = stageShares.signals;
-	const malware = createMalwareReader(limits(shares.malware, input), dependencies);
-	const registry = createNpmRegistryReader(limits(shares.registry, input), dependencies);
-	const times = createNpmPublishTimeReader(limits(shares.publishTimes, input), dependencies);
-	const upstream = createUpstreamReader(limits(shares.upstream, input), dependencies);
+	const { githubToken, existence, ...shared } = dependencies;
+	const malware = createMalwareReader(limits(shares.malware, input), shared);
+	const registry = createNpmRegistryReader(limits(shares.registry, input), shared);
+	const times = createNpmPublishTimeReader(limits(shares.publishTimes, input), shared);
+	const upstream = createUpstreamReader(limits(shares.upstream, input), {
+		...shared,
+		githubToken,
+		existence
+	});
 	for (const opened of [malware, times]) if (opened.kind === "ready") readers.push(opened);
 	if (upstream.kind === "ready") readers.push(upstream.reader);
 	if (malware.kind !== "ready" || registry.kind !== "ready" || times.kind !== "ready" || !metadata || upstream.kind !== "ready") return fail("signals", "malformed");
@@ -32890,6 +33075,11 @@ async function runResearch(input) {
 			wallNow: input.wallNow ?? Date.now,
 			windowMs: limit("research.githubQuota.windowMs")
 		})
+	};
+	const upstreamDependencies = {
+		...dependencies,
+		githubToken: input.githubToken === true,
+		existence: /* @__PURE__ */ new Map()
 	};
 	const unavailable = [];
 	const stopLimits = /* @__PURE__ */ new Map();
@@ -32944,9 +33134,9 @@ async function runResearch(input) {
 		const metadata = createPolicySignalReader(limits(shares.signals.readers.metadata, input), dependencies);
 		const sharedMetadata = metadata.kind === "ready" ? metadata : null;
 		if (sharedMetadata) readers.push(sharedMetadata);
-		await runStage("upstream", () => enrichUpstreamStage(input, dependencies, readers, progress, fail, shares, sharedMetadata ?? void 0));
+		await runStage("upstream", () => enrichUpstreamStage(input, upstreamDependencies, readers, progress, fail, shares, sharedMetadata ?? void 0));
 		await runStage("advisories", () => enrichAdvisoryStage(input, dependencies, readers, progress, fail, shares));
-		await runStage("signals", () => enrichSignalsStage(input, dependencies, readers, progress, fail, sharedMetadata, shares));
+		await runStage("signals", () => enrichSignalsStage(input, upstreamDependencies, readers, progress, fail, sharedMetadata, shares));
 		restorePacketOrder(progress, packet);
 		const retryAt = dependencies.quota.latestRetryAt();
 		observe({
@@ -34085,7 +34275,7 @@ async function runReview(input) {
 		return evaluateEvidence({
 			...input,
 			githubFetch: guard(input.githubFetch),
-			publicFetch: guard(input.publicFetch)
+			publicFetch: withTokenFlag(guard(input.publicFetch), input.publicFetch)
 		}, binding, started, attempt.signal, () => state, stillCurrent, halted);
 	};
 	let outcome;
@@ -34266,6 +34456,7 @@ async function evaluateEvidence(input, binding, started, signal, state, recheck,
 				npmInventory,
 				comparison: null,
 				fetch: input.publicFetch,
+				...input.publicFetch.githubToken ? { githubToken: true } : {},
 				cache: researchCache,
 				now: input.now,
 				deadline: evidenceDeadline,
@@ -34664,7 +34855,7 @@ async function runStartup(writeError, environment = process.env, dependencies = 
 			claims,
 			sink,
 			githubFetch: authenticatedFetch(runtime.githubToken, dependencies.fetch),
-			publicFetch: researchFetch(runtime.githubToken, dependencies.fetch),
+			publicFetch: researchFetchWithToken(runtime.githubToken, dependencies.fetch),
 			model: dependencies.model,
 			now: dependencies.now,
 			jobStartedAt,

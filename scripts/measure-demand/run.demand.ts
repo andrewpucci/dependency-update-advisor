@@ -26,7 +26,7 @@ import { mkdirSync, writeFileSync } from 'node:fs';
 import { dirname, resolve, sep } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { test, vi } from 'vite-plus/test';
-import { authenticatedFetch, researchFetch } from '../../src/adapters.js';
+import { authenticatedFetch, researchFetchWithToken } from '../../src/adapters.js';
 import {
   EVIDENCE_READ_ALLOCATION,
   EVIDENCE_READ_ENVELOPE,
@@ -291,7 +291,7 @@ test('measure research read demand', async () => {
     now,
     startedAt: started,
   });
-  const publicFetch = researchFetch(token, base);
+  const publicFetch = researchFetchWithToken(token, base);
   const reopened = reopenPullRequest(labelShare('session', base), pr);
   let npmInventory: unknown = null;
   // As in the pipeline: one cache shared by collection's registry reads and research.
@@ -352,6 +352,7 @@ test('measure research read demand', async () => {
         npmInventory: npmInventory as never,
         comparison: null,
         fetch: publicFetch,
+        githubToken: publicFetch.githubToken,
         cache: researchCache,
         quota,
         now,

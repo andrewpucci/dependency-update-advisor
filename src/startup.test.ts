@@ -491,6 +491,14 @@ test('takes one job start before the first GitHub read and hands it to the pipel
   );
 });
 
+test('tells the pipeline its research fetch carries the read token', async () => {
+  vi.mocked(pipelineModule.runReview).mockClear();
+  const github = mockGithub();
+  await runStartup((line) => void line, environmentFor(), dependenciesFor(github));
+  const input = vi.mocked(pipelineModule.runReview).mock.calls[0]?.[0];
+  expect(input?.publicFetch.githubToken).toBe(true);
+});
+
 test('hands the pipeline the live wall clock for quota resets', async () => {
   vi.mocked(pipelineModule.runReview).mockClear();
   const github = mockGithub();

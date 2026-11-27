@@ -392,6 +392,64 @@ test('sends no credentials to any public source', async () => {
   for (const sent of headers) expect(sent).not.toHaveProperty('authorization');
 });
 
+const GRAPHQL = 'https://api.github.com/graphql';
+/** The upstream readers' dependencies from the calls since `from`: the stage's, then signals'. */
+function upstreamReaderDeps(from: number) {
+  return vi
+    .mocked(upstreamReadModule.createUpstreamReader)
+    .mock.calls.slice(from)
+    .map(([, deps]) => deps);
+}
+async function monorepoRun(githubToken: boolean | undefined) {
+  const { fixture, packet } = await scenario({ monorepo: true });
+  const from = vi.mocked(upstreamReadModule.createUpstreamReader).mock.calls.length;
+  const result = await runResearch({
+    ...base(fixture, packet),
+    ...(githubToken === undefined ? {} : { githubToken }),
+  });
+  const github = fixture.requests.filter((url) => url.startsWith('https://api.github.com/'));
+  return {
+    result,
+    graphql: github.filter((url) => url === GRAPHQL).length,
+    rest: github.filter((url) => url !== GRAPHQL).length,
+    deps: upstreamReaderDeps(from),
+  };
+}
+
+test.each([undefined, false])(
+  'without a research token (%s), no tag existence query is sent',
+  async (githubToken) => {
+    const run = await monorepoRun(githubToken);
+    expect(run.graphql).toBe(0);
+    expect(run.deps).toHaveLength(2);
+    for (const deps of run.deps) expect(deps.githubToken).toBe(false);
+  },
+);
+
+test('with a research token, a fixture packet is unchanged with fewer REST requests', async () => {
+  const today = await monorepoRun(false);
+  const batched = await monorepoRun(true);
+  expect(today.result.kind).toBe('ready');
+  expect(batched.result).toEqual(today.result);
+  // Every npm package shares one repository, so one query answers all of its absent tags.
+  expect(batched.graphql).toBe(1);
+  expect(batched.rest).toBeLessThan(today.rest);
+  // The upstream stage and the signals upstream reader share the run's one existence map.
+  expect(batched.deps).toHaveLength(2);
+  for (const deps of batched.deps) expect(deps.githubToken).toBe(true);
+  expect(batched.deps[0].existence).toBeInstanceOf(Map);
+  expect(batched.deps[1].existence).toBe(batched.deps[0].existence);
+});
+
+test('another run does not reuse the existence map: its query reaches the network again', async () => {
+  const first = await monorepoRun(true);
+  const second = await monorepoRun(true);
+  expect(first.graphql).toBe(1);
+  expect(second.graphql).toBe(1);
+  expect(second.rest).toBe(first.rest);
+  expect(second.deps[0].existence).not.toBe(first.deps[0].existence);
+});
+
 test('caps every reader at its share, so the readers together stay inside the envelope', async () => {
   const { fixture, packet } = await scenario();
   for (const mock of [

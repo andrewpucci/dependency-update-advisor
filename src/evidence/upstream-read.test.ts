@@ -3,7 +3,13 @@ import { describe, expect, test, vi } from 'vite-plus/test';
 import { TAG_QUERY_MAX_CANDIDATES } from './batches.js';
 import { createNpmRegistryReader } from './npm-registry.js';
 import { createResearchCache, type ResearchCache } from './research-cache.js';
-import { createUpstreamReader, GITHUB_GRAPHQL_URL, tagExistenceQuery } from './upstream-read.js';
+import {
+  createUpstreamReader,
+  GITHUB_GRAPHQL_URL,
+  tagExistenceQuery,
+  type TagCandidate,
+  type UpstreamReader,
+} from './upstream-read.js';
 import { EVIDENCE_READ_ALLOCATION } from '../budget.js';
 import { createGithubQuotaGuard } from './github-quota.js';
 import { limit } from '../limits.js';
@@ -771,6 +777,15 @@ describe('batched tag existence (S2 Batched Tag Existence Amendment)', () => {
   ) as Record<string, unknown>;
   const WALL = Date.parse('2026-11-21T00:00:00Z');
   const widget = (tag: string) => ({ repository: 'fixture/widget', tag });
+  /** Each candidate's answer, found by the candidate it names; a candidate with none is unknown. */
+  async function ask(reader: UpstreamReader, candidates: readonly TagCandidate[]) {
+    const answers = await reader.tagExistence!(candidates);
+    return candidates.map(
+      (c) =>
+        answers.find((a) => a.candidate.repository === c.repository && a.candidate.tag === c.tag)
+          ?.answer ?? 'unknown',
+    );
+  }
   type Sent = { query: string; variables: Record<string, string> };
   /** A reader whose GraphQL answers come from `answer`; REST GitHub reads answer a repository. */
   function existence(
@@ -828,14 +843,19 @@ describe('batched tag existence (S2 Batched Tag Existence Amendment)', () => {
 
   test('without a token every answer is unknown and nothing is sent', async () => {
     const f = existence(fixture('absentAndPresent'), { token: false });
-    expect(await f.reader.tagExistence!(pair)).toEqual(['unknown', 'unknown']);
+    expect(await ask(f.reader, pair)).toEqual(['unknown', 'unknown']);
     expect(f.fetch).not.toHaveBeenCalled();
   });
 
   test('an absent candidate is absent and a present one is present, from one POST', async () => {
     const f = existence(fixture('absentAndPresent'));
-    expect(await f.reader.tagExistence!(pair)).toEqual(['absent', 'present']);
+    expect(await ask(f.reader, pair)).toEqual(['absent', 'present']);
     expect(f.fetch).toHaveBeenCalledTimes(1);
+    // Each answer names the candidate it answers.
+    expect(await f.reader.tagExistence!(pair)).toEqual([
+      { candidate: widget('v1.0.0'), answer: 'absent' },
+      { candidate: widget('v1.0.1'), answer: 'present' },
+    ]);
     expect(f.fetch).toHaveBeenCalledWith(
       'https://api.github.com/graphql',
       expect.objectContaining({
@@ -867,8 +887,8 @@ describe('batched tag existence (S2 Batched Tag Existence Amendment)', () => {
       { repository: 'Some-Owner/pkg.js', tag: '@scope/pkg@1.0.0' },
       { repository: 'other/repo_x', tag: 'v1") { x } #' },
     ];
-    await f.reader.tagExistence!(pair);
-    await f.reader.tagExistence!(odd);
+    await ask(f.reader, pair);
+    await ask(f.reader, odd);
     expect(f.sent).toHaveLength(2);
     expect(f.sent[1].query).toBe(f.sent[0].query);
     for (const value of ['Some-Owner', 'pkg.js', '@scope', 'v1"', 'v1.0.0', 'other/', 'repo_x'])
@@ -883,42 +903,44 @@ describe('batched tag existence (S2 Batched Tag Existence Amendment)', () => {
 
   test('an error naming one alias makes that alias unknown and keeps the others', async () => {
     const f = existence(fixture('aliasError'));
-    expect(
-      await f.reader.tagExistence!([{ repository: 'fixture/gone', tag: 'v1' }, ...pair]),
-    ).toEqual(['unknown', 'absent', 'present']);
+    expect(await ask(f.reader, [{ repository: 'fixture/gone', tag: 'v1' }, ...pair])).toEqual([
+      'unknown',
+      'absent',
+      'present',
+    ]);
   });
 
   test('an error naming an alias overrides that alias’s null ref', async () => {
     const f = existence(fixture('aliasErrorOnPresentData'));
-    expect(await f.reader.tagExistence!(pair)).toEqual(['unknown', 'absent']);
+    expect(await ask(f.reader, pair)).toEqual(['unknown', 'absent']);
   });
 
   test.each(['pathlessError', 'missingData'])('%s makes every answer unknown', async (name) => {
     const f = existence(fixture(name));
-    expect(await f.reader.tagExistence!(pair)).toEqual(['unknown', 'unknown']);
+    expect(await ask(f.reader, pair)).toEqual(['unknown', 'unknown']);
   });
 
   test.each(['errorsObject', 'errorsNull', 'emptyErrorPath', 'numericErrorPath'])(
     'malformed errors (%s) make every answer unknown',
     async (name) => {
       const f = existence(fixture(name));
-      expect(await f.reader.tagExistence!(pair)).toEqual(['unknown', 'unknown']);
+      expect(await ask(f.reader, pair)).toEqual(['unknown', 'unknown']);
     },
   );
 
   test('a repository without a ref field is unknown, not absent', async () => {
     const f = existence(fixture('missingRef'));
-    expect(await f.reader.tagExistence!(pair)).toEqual(['unknown', 'absent']);
+    expect(await ask(f.reader, pair)).toEqual(['unknown', 'absent']);
   });
 
   test('a null repository is unknown, not absent', async () => {
     const f = existence(fixture('nullRepository'));
-    expect(await f.reader.tagExistence!(pair)).toEqual(['unknown', 'absent']);
+    expect(await ask(f.reader, pair)).toEqual(['unknown', 'absent']);
   });
 
   test('a case-only nameWithOwner difference is absent; a real rename is unknown', async () => {
     const f = existence(fixture('renames'));
-    expect(await f.reader.tagExistence!(pair)).toEqual(['absent', 'unknown']);
+    expect(await ask(f.reader, pair)).toEqual(['absent', 'unknown']);
   });
 
   test.each([
@@ -936,13 +958,13 @@ describe('batched tag existence (S2 Batched Tag Existence Amendment)', () => {
     ],
   ])('GraphQL’s primary limit (%s) is unknown and leaves REST open', async (_, answer) => {
     const f = existence(answer);
-    expect(await f.reader.tagExistence!([widget('v1.0.0')])).toEqual(['unknown']);
+    expect(await ask(f.reader, [widget('v1.0.0')])).toEqual(['unknown']);
     expect(await f.reader.read(restRead)).toMatchObject({
       status: 'available',
       fetched: true,
     });
     // The spent GraphQL budget sends no further existence query.
-    expect(await f.reader.tagExistence!([widget('v1.0.1')])).toEqual(['unknown']);
+    expect(await ask(f.reader, [widget('v1.0.1')])).toEqual(['unknown']);
     expect(f.sent).toHaveLength(1);
     expect(f.quota.latestRetryAt()).toBeNull();
   });
@@ -958,12 +980,12 @@ describe('batched tag existence (S2 Batched Tag Existence Amendment)', () => {
     ],
   ])('a secondary limit (%s) blocks the GitHub origin as REST does', async (_, answer) => {
     const f = existence(answer);
-    expect(await f.reader.tagExistence!([widget('v1.0.0')])).toEqual(['unknown']);
+    expect(await ask(f.reader, [widget('v1.0.0')])).toEqual(['unknown']);
     expect(await f.reader.read(restRead)).toMatchObject({
       fetched: false,
       reasons: ['rate_limit'],
     });
-    expect(await f.reader.tagExistence!([widget('v1.0.1')])).toEqual(['unknown']);
+    expect(await ask(f.reader, [widget('v1.0.1')])).toEqual(['unknown']);
     expect(f.fetch).toHaveBeenCalledTimes(1);
   });
 
@@ -972,13 +994,13 @@ describe('batched tag existence (S2 Batched Tag Existence Amendment)', () => {
     let calls = 0;
     const answered = fixture('absentAndPresent');
     const f = existence(() => (calls++ === 0 ? limited() : answered()));
-    expect(await settled(() => f.reader.tagExistence!(pair))).toEqual(['absent', 'present']);
+    expect(await settled(() => ask(f.reader, pair))).toEqual(['absent', 'present']);
     expect(f.sent).toHaveLength(2);
     expect(f.quota.latestRetryAt()).toBeNull();
     expect(await f.reader.read(restRead)).toMatchObject({ status: 'available', fetched: true });
     // The reader's one wait is spent: a second secondary limit stops at once.
     calls = 0;
-    expect(await settled(() => f.reader.tagExistence!([widget('v2')]))).toEqual(['unknown']);
+    expect(await settled(() => ask(f.reader, [widget('v2')]))).toEqual(['unknown']);
     expect(f.sent).toHaveLength(3);
     expect(await f.reader.read(restRead)).toMatchObject({
       fetched: false,
@@ -988,7 +1010,7 @@ describe('batched tag existence (S2 Batched Tag Existence Amendment)', () => {
 
   test('GraphQL never reaches the REST quota guard', async () => {
     const f = existence(fixture('absentAndPresent'));
-    expect(await f.reader.tagExistence!(pair)).toEqual(['absent', 'present']);
+    expect(await ask(f.reader, pair)).toEqual(['absent', 'present']);
     expect(f.guarded).toEqual([]);
     await f.reader.read(restRead);
     expect(f.guarded).toContain('https://api.github.com/repos/fixture/widget');
@@ -1002,7 +1024,7 @@ describe('batched tag existence (S2 Batched Tag Existence Amendment)', () => {
         headers: { 'retry-after': '30' },
       }),
     );
-    await f.reader.tagExistence!([widget('v1.0.0')]);
+    await ask(f.reader, [widget('v1.0.0')]);
     expect(f.quota.latestRetryAt()).toBe(WALL + 30_000);
   });
 
@@ -1013,14 +1035,14 @@ describe('batched tag existence (S2 Batched Tag Existence Amendment)', () => {
     });
     const f = existence(fixture('absentAndPresent'), { cache });
     const g = existence(fixture('absentAndPresent'), { cache });
-    expect(await f.reader.tagExistence!(pair)).toEqual(['absent', 'present']);
-    expect(await f.reader.tagExistence!([widget('v2.0.0'), widget('v2.0.1')])).toEqual([
+    expect(await ask(f.reader, pair)).toEqual(['absent', 'present']);
+    expect(await ask(f.reader, [widget('v2.0.0'), widget('v2.0.1')])).toEqual([
       'absent',
       'present',
     ]);
     // The same query again, and from another reader on the same cache.
-    expect(await f.reader.tagExistence!(pair)).toEqual(['absent', 'present']);
-    expect(await g.reader.tagExistence!(pair)).toEqual(['absent', 'present']);
+    expect(await ask(f.reader, pair)).toEqual(['absent', 'present']);
+    expect(await ask(g.reader, pair)).toEqual(['absent', 'present']);
     expect(f.fetch).toHaveBeenCalledTimes(3);
     expect(g.fetch).toHaveBeenCalledTimes(1);
   });
@@ -1036,7 +1058,7 @@ describe('batched tag existence (S2 Batched Tag Existence Amendment)', () => {
       }),
     );
     const many = Array.from({ length: TAG_QUERY_MAX_CANDIDATES + 1 }, (_, i) => widget('v' + i));
-    const answers = await f.reader.tagExistence!([...many, widget('v0')]);
+    const answers = await ask(f.reader, [...many, widget('v0')]);
     expect(answers).toHaveLength(TAG_QUERY_MAX_CANDIDATES + 2);
     expect(new Set(answers)).toEqual(new Set(['absent']));
     expect(f.sent.map((s) => Object.keys(s.variables).length / 3)).toEqual([
@@ -1044,12 +1066,15 @@ describe('batched tag existence (S2 Batched Tag Existence Amendment)', () => {
       1,
     ]);
     expect(f.sent[0].query).toBe(tagExistenceQuery(TAG_QUERY_MAX_CANDIDATES));
+    // The duplicate is answered once, under its candidate.
+    const raw = await f.reader.tagExistence!([widget('v0'), widget('v0')]);
+    expect(raw).toEqual([{ candidate: widget('v0'), answer: 'absent' }]);
   });
 
   test('a candidate REST could not probe is unknown and never sent', async () => {
     const f = existence(fixture('absentAndPresent'));
     expect(
-      await f.reader.tagExistence!([
+      await ask(f.reader, [
         { repository: 'not a repository', tag: 'v1' },
         { repository: 'fixture/widget', tag: '../escape' },
         widget('v1.0.0'),
@@ -1066,8 +1091,8 @@ describe('batched tag existence (S2 Batched Tag Existence Amendment)', () => {
     const f = existence(fixture('absentAndPresent'), {
       overrides: { maxRequests: 1 },
     });
-    expect(await f.reader.tagExistence!([widget('v1.0.0')])).toEqual(['absent']);
-    expect(await f.reader.tagExistence!([widget('v1.0.1')])).toEqual(['unknown']);
+    expect(await ask(f.reader, [widget('v1.0.0')])).toEqual(['absent']);
+    expect(await ask(f.reader, [widget('v1.0.1')])).toEqual(['unknown']);
     expect(await f.reader.read(restRead)).toMatchObject({
       fetched: false,
       reasons: ['budget'],
@@ -1081,8 +1106,8 @@ describe('batched tag existence (S2 Batched Tag Existence Amendment)', () => {
     const f = existence(fixture('absentAndPresent'), {
       overrides: { maxTotalBytes: size + 10, maxResponseBytes: size + 10 },
     });
-    expect(await f.reader.tagExistence!([widget('v1.0.0')])).toEqual(['absent']);
-    expect(await f.reader.tagExistence!([widget('v1.0.1')])).toEqual(['unknown']);
+    expect(await ask(f.reader, [widget('v1.0.0')])).toEqual(['absent']);
+    expect(await ask(f.reader, [widget('v1.0.1')])).toEqual(['unknown']);
     expect(f.reader.stopLimit?.()).toBe('maxTotalBytes');
   });
 
@@ -1090,7 +1115,7 @@ describe('batched tag existence (S2 Batched Tag Existence Amendment)', () => {
     const f = existence(fixture('absentAndPresent'), {
       overrides: { maxResponseBytes: 50 },
     });
-    expect(await f.reader.tagExistence!(pair)).toEqual(['unknown', 'unknown']);
+    expect(await ask(f.reader, pair)).toEqual(['unknown', 'unknown']);
   });
 
   test.each([
@@ -1119,14 +1144,14 @@ describe('batched tag existence (S2 Batched Tag Existence Amendment)', () => {
     ],
   ])('%s makes every answer unknown', async (_, answer) => {
     const f = existence(answer);
-    expect(await f.reader.tagExistence!(pair)).toEqual(['unknown', 'unknown']);
+    expect(await ask(f.reader, pair)).toEqual(['unknown', 'unknown']);
   });
 
   test('a timed-out query makes every answer unknown', async () => {
     vi.useFakeTimers();
     try {
       const f = existence(() => new Promise<Response>(() => {}));
-      const pending = f.reader.tagExistence!([widget('v1.0.0')]);
+      const pending = ask(f.reader, [widget('v1.0.0')]);
       await vi.advanceTimersByTimeAsync(limits.requestTimeoutMs);
       expect(await pending).toEqual(['unknown']);
     } finally {

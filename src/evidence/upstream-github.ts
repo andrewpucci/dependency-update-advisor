@@ -9,6 +9,8 @@ import {
   upstreamFailureReason,
   type UpstreamReader,
   type GithubUpstreamTarget,
+  type TagCandidate,
+  type TagExistence,
 } from './upstream-read.js';
 import type { EvidenceReason } from '../schema.js';
 import { limit } from '../limits.js';
@@ -98,6 +100,65 @@ export function repositoryCandidate(
   requireUpstream(directory === '' || isEvidencePath(directory), 'unsupported');
   return { repository: [...normalized][0], directory: String(directory) };
 }
+/** GitHub repository names are case-insensitive; tag names are compared exactly. */
+function existenceKey(repository: string, tag: string) {
+  return JSON.stringify([repository.toLowerCase(), tag]);
+}
+/**
+ * Asks the reader's existence query about each candidate the run's map has not answered, and keeps
+ * every answer for the run (amendment item 7). Without a map, or a reader that can ask, it does
+ * nothing, so every candidate is probed over REST as today.
+ */
+export async function settleTagExistence(
+  reader: UpstreamReader,
+  candidates: readonly TagCandidate[],
+): Promise<void> {
+  const map = reader.existence;
+  if (!map || !reader.tagExistence) return;
+  const unanswered = new Map<string, TagCandidate>();
+  for (const candidate of candidates) {
+    const key = existenceKey(candidate.repository, candidate.tag);
+    if (!map.has(key)) unanswered.set(key, candidate);
+  }
+  if (!unanswered.size) return;
+  const answers = await reader.tagExistence([...unanswered.values()]);
+  // Answers are paired by the candidate each names, never by position. Only asked candidates are
+  // filed, so an answer for any other is ignored; disagreeing answers for one candidate, or none,
+  // leave it `unknown`.
+  const settled = new Map<string, TagExistence>();
+  for (const { candidate, answer } of answers) {
+    const key = existenceKey(candidate.repository, candidate.tag);
+    const prior = settled.get(key);
+    settled.set(key, prior === undefined || prior === answer ? answer : 'unknown');
+  }
+  for (const key of unanswered.keys()) map.set(key, settled.get(key) ?? 'unknown');
+}
+/**
+ * The exact tags the release and comparison stages probe for one package side, within the
+ * candidate cap; none when its metadata names no supported repository.
+ */
+export function packageTagCandidates(
+  target: PackageResearchTarget,
+  reader: UpstreamReader,
+): TagCandidate[] {
+  let repo: UpstreamRepository;
+  try {
+    repo = repositoryCandidate(target.metadata);
+  } catch (error) {
+    // The release stage skips exactly these, so there is nothing to ask about: a refusal of the
+    // metadata's repository (unsupported or conflicting URLs) or a repository string that is not a
+    // URL at all. Anything else is a bug and propagates.
+    if (error instanceof UpstreamFailure || invalidUrl(error)) return [];
+    throw error;
+  }
+  return packageTags(target, repo)
+    .slice(0, reader.limits.maxTagCandidates)
+    .map((tag) => ({ repository: repo.repository, tag }));
+}
+/** The error `new URL` throws for a string it cannot parse. */
+function invalidUrl(error: unknown) {
+  return error instanceof TypeError && (error as { code?: unknown }).code === 'ERR_INVALID_URL';
+}
 export async function resolveUpstreamRef(
   repository: string,
   ref: string,
@@ -106,6 +167,13 @@ export async function resolveUpstreamRef(
   | { status: 'available'; sha: string; ref: string }
   | { status: 'unavailable'; reason: EvidenceReason }
 > {
+  // An absent answer settles the tag as a REST 404 would, with no request; `present` and
+  // `unknown` are proved over REST, since a GraphQL answer is never proof (amendment items 2-3).
+  if (
+    ref.startsWith('tags/') &&
+    reader.existence?.get(existenceKey(repository, ref.slice('tags/'.length))) === 'absent'
+  )
+    return { status: 'unavailable', reason: 'missing' };
   try {
     const data = await githubData(reader, { repository, resource: 'ref', ref });
     requireUpstream(data.ref === 'refs/' + ref && isPlainObject(data.object), 'conflict');
