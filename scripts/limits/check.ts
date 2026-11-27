@@ -8,7 +8,7 @@ import type * as Limits from '../../src/limits.js';
 const ROOT = fileURLToPath(new URL('../../', import.meta.url));
 // Loaded by path, not by a static import: tsc rejects a literal `.ts` specifier, and Node runs
 // the register source directly, as scripts/complexity/report.mjs does.
-const { PENDING_AUDIT, REGISTER, limit } = (await import(
+const { PENDING_AUDIT, REGISTER, limit, settingProblems } = (await import(
   pathToFileURL(join(ROOT, 'src/limits.ts')).href
 )) as typeof Limits;
 const { BINARY_BYTES, DURATION_MS } = (await import(
@@ -422,6 +422,7 @@ function main(): void {
     ...schemaProblems(REGISTER, schemas),
     ...testProblems(REGISTER, readRepoFile),
     ...migrationProblems(REGISTER, MIGRATION_OPEN, allowlist),
+    ...settingProblems(REGISTER),
   ];
   if (problems.length > 0) {
     for (const problem of problems) console.error(problem);

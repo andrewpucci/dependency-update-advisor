@@ -11,6 +11,7 @@ import {
   dependents,
   limit,
   limitEntry,
+  settingProblems,
   type LimitDefinition,
   type LimitId,
 } from './limits.js';
@@ -49,10 +50,75 @@ test('PACKET_LIMITS is a frozen view of the register with the same values and ke
   expect(packetIds).toHaveLength(14);
 });
 
-test('checkRegister names an entry whose basis kind is not one of the five', () => {
+test('checkRegister names an entry whose basis kind is not one of the six', () => {
   const guessed = { ...unjustified('guessed', 1), basis: { kind: 'guess', note: 'x' } };
   expect(checkRegister([guessed])).toEqual([expect.stringMatching(/guessed/)]);
   expect(checkRegister([{ ...guessed, basis: { kind: 'safety', reason: 'x' } }])).toEqual([]);
+});
+
+const setting = (
+  id: string,
+  value: number,
+  maximum: string,
+  extra: Partial<NonNullable<LimitDefinition['configurable']>> = {},
+): LimitDefinition => ({
+  ...unjustified(id, value),
+  basis: { kind: 'config', bears: 'the adopter', approved: 'test' },
+  configurable: { setting: `limits.${id}`, default: value, maximum, ...extra },
+});
+
+test('a config entry needs its setting, a default equal to its value and defined bounds', () => {
+  const max = unjustified('max', 10);
+  expect(checkRegister([setting('a', 4, 'max'), max])).toEqual([]);
+  expect(checkRegister([{ ...setting('a', 4, 'max'), configurable: undefined }, max])).toEqual([
+    expect.stringMatching(/a: a config entry needs configurable/),
+  ]);
+  expect(checkRegister([{ ...setting('a', 4, 'max'), value: 5 }, max])).toEqual([
+    expect.stringMatching(/a: the setting default must equal value/),
+  ]);
+  expect(checkRegister([setting('a', 4, 'missing')])).toEqual([
+    expect.stringMatching(/a: setting bound "missing" is not defined/),
+  ]);
+  expect(
+    checkRegister([
+      { ...unjustified('b', 1), configurable: setting('a', 1, 'max').configurable },
+      max,
+    ]),
+  ).toEqual([expect.stringMatching(/b: only a config entry may set configurable/)]);
+});
+
+test('a register built at a setting moves the entries derived from it, and only settings move', () => {
+  const definitions = [setting('a', 4, 'max'), unjustified('max', 10), derived('b', ['a'], (a) => a * 3)];
+  expect(buildRegister(definitions).get('b')?.value).toBe(12);
+  expect(buildRegister(definitions, new Map([['a', 7]])).get('b')?.value).toBe(21);
+  expect(() => buildRegister(definitions, new Map([['max', 7]]))).toThrow(/max: not an adopter setting/);
+});
+
+test('settingProblems checks every setting at the defaults and at its hard maximum', () => {
+  const within = buildRegister([setting('a', 4, 'max'), unjustified('max', 10)]);
+  expect(settingProblems(within)).toEqual([]);
+  const above = buildRegister([setting('a', 12, 'max'), unjustified('max', 10)]);
+  expect(settingProblems(above)).toContain('a: above its hard maximum at the defaults');
+  const below = buildRegister([
+    setting('a', 4, 'max', { minimum: 'min' }),
+    unjustified('max', 10),
+    unjustified('min', 5),
+  ]);
+  expect(settingProblems(below)).toContain('a: below its hard minimum at the defaults');
+  const joint = buildRegister([
+    setting('a', 6, 'max', { joint: true }),
+    setting('b', 6, 'max', { joint: true }),
+    unjustified('max', 10),
+  ]);
+  expect(settingProblems(joint)).toContain('max: the settings it bounds sum past it at the defaults');
+  // The maximum of one setting may derive from another; raising that one can push it out.
+  const coupled = buildRegister([
+    setting('a', 4, 'room'),
+    setting('b', 4, 'limit'),
+    unjustified('limit', 10),
+    derived('room', ['b'], (b) => 12 - b),
+  ]);
+  expect(settingProblems(coupled)).toEqual(['a: above its hard maximum with b at its hard maximum']);
 });
 
 test('a derived input that names no entry is reported with both ids and blocks the build', () => {

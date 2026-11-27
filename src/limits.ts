@@ -39,7 +39,38 @@ export type LimitBasis =
       measured: string;
     }
   | { kind: 'safety'; reason: string }
+  | {
+      /**
+       * An adopter setting (SPEC-limit-register section 5): `value` is its default, today's value,
+       * and `configurable` names the setting and the register entries that bound it.
+       */
+      kind: 'config';
+      /** Who bears the trade-off, the first condition of section 5. */
+      bears: string;
+      /** The approval that admitted the setting, with its date and issue. */
+      approved: string;
+    }
   | { kind: 'unjustified'; note: string };
+
+/**
+ * The adopter setting a `config` entry stands for. The bounds are register ids, so a bound derived
+ * from other entries moves with them; `limit()` gives the default, and the run-time value is the
+ * adopter's setting once L12's parser reads it.
+ */
+export type LimitSetting = {
+  /** The config key L12 adds; provisional until the parser lands. */
+  setting: string;
+  default: number;
+  /** The entry whose value is the hard maximum; the parser rejects a larger setting. */
+  maximum: string;
+  /** The entry whose value is the hard minimum, when one exists; otherwise the minimum is 1. */
+  minimum?: string;
+  /**
+   * Set when the hard maximum bounds the sum of every setting that names it, as the GitHub request
+   * cap bounds its shares together.
+   */
+  joint?: boolean;
+};
 
 export type LimitDefinition = {
   id: string;
@@ -51,12 +82,20 @@ export type LimitDefinition = {
   effect: string;
   /** `<test file> > <test title>`, or `none: <reason>`, or PENDING_AUDIT. */
   test: string;
-  configurable?: { setting: string; default: number; maximum: number };
+  /** Set exactly when the basis is `config`. */
+  configurable?: LimitSetting;
 };
 
 export type Limit = LimitDefinition & { value: number };
 
-const BASIS_KINDS: readonly string[] = ['external', 'derived', 'measured', 'safety', 'unjustified'];
+const BASIS_KINDS: readonly string[] = [
+  'external',
+  'derived',
+  'measured',
+  'safety',
+  'config',
+  'unjustified',
+];
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === 'object' && value !== null;
@@ -78,7 +117,42 @@ function basisProblems(entry: Record<string, unknown>, id: string): string[] {
     return entry.value === undefined ? [] : [`${id}: derived entries must not set value`];
   }
   const hasValue = typeof entry.value === 'number' && Number.isFinite(entry.value);
-  return hasValue ? [] : [`${id}: value must be a finite number`];
+  return [
+    ...(hasValue ? [] : [`${id}: value must be a finite number`]),
+    ...settingShapeProblems(entry, id, kind),
+  ];
+}
+
+/** A `config` entry carries its setting, its default is its value, and no other entry has one. */
+function settingShapeProblems(entry: Record<string, unknown>, id: string, kind: string): string[] {
+  const setting = entry.configurable;
+  if (kind !== 'config') {
+    return setting === undefined ? [] : [`${id}: only a config entry may set configurable`];
+  }
+  if (!isRecord(setting) || typeof setting.setting !== 'string') {
+    return [`${id}: a config entry needs configurable with its setting`];
+  }
+  return [
+    ...(setting.default === entry.value ? [] : [`${id}: the setting default must equal value`]),
+    ...(typeof setting.maximum === 'string' ? [] : [`${id}: the setting needs a hard maximum`]),
+  ];
+}
+
+function settingBounds(entry: unknown): unknown[] {
+  if (!isRecord(entry) || !isRecord(entry.configurable)) return [];
+  const { maximum, minimum } = entry.configurable;
+  return minimum === undefined ? [maximum] : [maximum, minimum];
+}
+
+function boundProblems(definitions: readonly unknown[], known: ReadonlySet<string>): string[] {
+  return definitions.flatMap((entry) =>
+    settingBounds(entry)
+      .filter((bound) => typeof bound !== 'string' || !known.has(bound))
+      .map(
+        (bound) =>
+          `${isRecord(entry) ? String(entry.id) : '?'}: setting bound ${JSON.stringify(bound)} is not defined`,
+      ),
+  );
 }
 
 function duplicateProblems(ids: readonly string[]): string[] {
@@ -159,11 +233,15 @@ export function checkRegister(definitions: readonly unknown[]): string[] {
     ...definitions.flatMap((entry, index) => entryProblems(entry, index)),
     ...duplicateProblems(ids),
     ...inputProblems(definitions, known),
+    ...boundProblems(definitions, known),
     ...cycleProblems(derivedGraph(definitions)),
   ];
 }
 
-function resolveValues(definitions: readonly LimitDefinition[]): Map<string, number> {
+function resolveValues(
+  definitions: readonly LimitDefinition[],
+  settings: ReadonlyMap<string, number> = new Map(),
+): Map<string, number> {
   const byId = new Map(definitions.map((definition) => [definition.id, definition]));
   const values = new Map<string, number>();
   const valueOfId = (id: string): number => {
@@ -173,7 +251,9 @@ function resolveValues(definitions: readonly LimitDefinition[]): Map<string, num
     if (definition === undefined) throw new Error(`unknown limit id: ${id}`);
     const { basis } = definition;
     const value =
-      basis.kind === 'derived' ? basis.formula(...basis.inputs.map(valueOfId)) : definition.value;
+      basis.kind === 'derived'
+        ? basis.formula(...basis.inputs.map(valueOfId))
+        : (settings.get(id) ?? definition.value);
     if (value === undefined) throw new Error(`limit ${id} has no value`);
     values.set(id, value);
     return value;
@@ -182,12 +262,24 @@ function resolveValues(definitions: readonly LimitDefinition[]): Map<string, num
   return values;
 }
 
-export function buildRegister(definitions: readonly LimitDefinition[]): ReadonlyMap<string, Limit> {
+/**
+ * The register with each named adopter setting in place of its default. Derived entries follow
+ * the settings they derive from (SPEC-limit-register section 5, approved 2026-11-27, #383), so
+ * this is the value set a run with those settings uses. Only `config` entries may be set.
+ */
+export function buildRegister(
+  definitions: readonly LimitDefinition[],
+  settings: ReadonlyMap<string, number> = new Map(),
+): ReadonlyMap<string, Limit> {
   const problems = checkRegister(definitions);
+  for (const id of settings.keys()) {
+    const definition = definitions.find((entry) => entry.id === id);
+    if (definition?.basis.kind !== 'config') problems.push(`${id}: not an adopter setting`);
+  }
   if (problems.length > 0) {
     throw new Error(`invalid limit register:\n${problems.join('\n')}`);
   }
-  const values = resolveValues(definitions);
+  const values = resolveValues(definitions, settings);
   return new Map(
     definitions.map((definition): [string, Limit] => [
       definition.id,
@@ -212,6 +304,63 @@ export function dependents(register: ReadonlyMap<string, Limit>, id: string): st
     }
   }
   return [...found].sort();
+}
+
+function settingProblemsAt(register: ReadonlyMap<string, Limit>, where: string): string[] {
+  const valueOf = (id: string | undefined) =>
+    id === undefined ? 1 : (register.get(id)?.value ?? Number.NaN);
+  const joint = new Map<string, Limit[]>();
+  const problems: string[] = [];
+  for (const entry of register.values()) {
+    if (!Number.isFinite(entry.value)) problems.push(`${entry.id}: not finite ${where}`);
+    const setting = entry.configurable;
+    if (setting === undefined) continue;
+    if (entry.value < valueOf(setting.minimum))
+      problems.push(`${entry.id}: below its hard minimum ${where}`);
+    if (setting.joint === true) {
+      joint.set(setting.maximum, [...(joint.get(setting.maximum) ?? []), entry]);
+    } else if (entry.value > valueOf(setting.maximum)) {
+      problems.push(`${entry.id}: above its hard maximum ${where}`);
+    }
+  }
+  for (const [maximum, members] of joint) {
+    const total = members.reduce((sum, member) => sum + member.value, 0);
+    if (total > valueOf(maximum))
+      problems.push(`${maximum}: the settings it bounds sum past it ${where}`);
+  }
+  return problems;
+}
+
+/**
+ * Checks every adopter setting at its default and at its hard maximum (SPEC-limit-register
+ * section 5, approved 2026-11-27, #383): each setting stays within its bounds, a joint maximum
+ * holds over the sum of its settings, and every derived value stays finite. A setting is raised
+ * alone, with the others at their defaults; a joint setting is raised to what its maximum leaves
+ * after the others' defaults.
+ */
+export function settingProblems(register: ReadonlyMap<string, Limit>): string[] {
+  // A built register carries each derived entry's resolved value; a definition must not.
+  const definitions = [...register.values()].map(({ value, ...entry }): LimitDefinition =>
+    entry.basis.kind === 'derived' ? entry : { ...entry, value },
+  );
+  const defaults = buildRegister(definitions);
+  const problems = settingProblemsAt(defaults, 'at the defaults');
+  for (const entry of defaults.values()) {
+    const setting = entry.configurable;
+    if (setting === undefined) continue;
+    const maximum = defaults.get(setting.maximum)?.value ?? Number.NaN;
+    const others = [...defaults.values()]
+      .filter(
+        (other) =>
+          setting.joint === true &&
+          other.id !== entry.id &&
+          other.configurable?.maximum === setting.maximum,
+      )
+      .reduce((sum, other) => sum + other.value, 0);
+    const raised = buildRegister(definitions, new Map([[entry.id, maximum - others]]));
+    problems.push(...settingProblemsAt(raised, `with ${entry.id} at its hard maximum`));
+  }
+  return problems;
 }
 
 const MiB = 1024 * 1024;

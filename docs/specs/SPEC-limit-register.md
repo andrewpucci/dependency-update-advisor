@@ -116,6 +116,9 @@ One module, `src/limits.ts`, defines every limit. Each entry has:
   - `safety`: why this number protects the named resource. For a guard on
     untrusted input, that is the margin above the largest legitimate value
     observed and below the point where harm begins;
+  - `config`: an adopter setting that section 5 admits. The value is its
+    default, and the basis names who bears the trade-off and the approval
+    that admitted it. The entry's `configurable` field holds the rest;
   - `unjustified`: an explicit, visible marker for a value with no basis yet,
     with a pending note. It exists only during migration, and none may
     remain after phase 2.
@@ -125,7 +128,18 @@ One module, `src/limits.ts`, defines every limit. Each entry has:
 - `test`: the test that pins the at-limit and over-limit behavior, or `none`
   with a reason.
 - `configurable`: absent, or the adopter setting with its default and hard
-  maximum (section 5).
+  maximum (section 5). It is set exactly when the basis is `config`. The hard
+  maximum, and a hard minimum where one exists, name register entries rather
+  than numbers, so a bound derived from other entries moves with them. A
+  joint maximum bounds the sum of every setting that names it.
+
+Amended (L11): the `config` kind and the shape of `configurable` were
+approved by the maintainer on 2026-11-27
+([#383](https://github.com/andrewpucci/dependency-update-advisor/issues/383)),
+with the configurable categories in section 5. L12
+([#384](https://github.com/andrewpucci/dependency-update-advisor/issues/384))
+adds each setting to the config contract, the published schema, and the
+parser; until then a run uses the default.
 
 Dependents come from the `derived` formulas, so the register can list every
 entry that a change would move.
@@ -252,6 +266,18 @@ separate decision.
 
 Under the review-config spec's boundaries, adding a configurable category is
 Ask-first.
+
+**Derived entries follow the settings they derive from** (L11, Q1; approved
+by the maintainer on 2026-11-27,
+[#383](https://github.com/andrewpucci/dependency-update-advisor/issues/383)).
+An entry derived from an adopter setting takes the value its formula gives
+at the run's setting, not at the setting's hard maximum. The register shows
+each derived value at the defaults. `npm run check:limits` evaluates the
+register at the defaults and again with each setting at its hard maximum,
+and fails when a setting leaves its bounds or a derived value is not finite.
+A freshness allowance stays never configurable in its own right, but it may
+follow a setting it derives from. L12 adds the run-time code path that
+builds the register at the adopter's settings.
 
 The user approved these as adopter configuration on 2026-11-17. Each keeps
 today's value as its default, and each needs a cited hard maximum before
