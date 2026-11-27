@@ -221,3 +221,17 @@ REST status of both 200 and 404 for one tag is reported as `tagRestConflict`,
 which leaves the run incomplete rather than showing a batch gap. A
 run stopped by the request cap or a request error still writes what it
 measured, with `stopped` saying why.
+
+### Token-length probe
+
+`limit:analysis.maxTokenEscapedBytes` is the longest vocabulary token of the
+models `mistral-large-latest` may name. Download each model's `tekken.json`
+from Hugging Face at a pinned commit and run:
+
+```sh
+npm run probe:token-length -- <tekken.json> [<tekken.json> ...]
+```
+
+For each file it prints the longest token in raw bytes, decoded UTF-16 code
+units, JSON-escaped bytes, and bytes with every non-ASCII code unit escaped,
+each with its rank. Record the file's commit with the value.

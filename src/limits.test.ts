@@ -11,6 +11,7 @@ import {
   dependents,
   limit,
   limitEntry,
+  replyBytesFor,
   type LimitDefinition,
   type LimitId,
 } from './limits.js';
@@ -179,6 +180,24 @@ test('derived packet bounds keep their formulas and the values they had as fixed
   if (relationships.kind !== 'derived' || textBytes.kind !== 'derived') throw new Error('derived');
   expect(relationships.formula(100)).toBe(200);
   expect(textBytes.formula(65_536, 30)).toBe(2_184);
+});
+
+test('the reply cap is the token budget in escaped bytes plus the envelope, with no escape multiplier', () => {
+  const inputs: LimitId[] = [
+    'analysis.completionTokens',
+    'analysis.maxTokenEscapedBytes',
+    'analysis.responseEnvelopeBytes',
+  ];
+  expect(limitEntry('analysis.responseBytes').basis).toMatchObject({ kind: 'derived', inputs });
+  expect(limit('analysis.responseBytes')).toBe(
+    replyBytesFor(...(inputs.map((id) => limit(id)) as [number, number, number])),
+  );
+  expect(limit('analysis.responseBytes')).toBe(16_384 * 1_024 + 65_536);
+  expect(limitEntry('analysis.maxTokenEscapedBytes').basis).toMatchObject({
+    kind: 'external',
+    platformValue: 1_024,
+    probe: { command: 'npm run probe:token-length' },
+  });
 });
 
 test('safety packet bounds keep their values and state a reason', () => {

@@ -1,4 +1,4 @@
-import { ALIAS_RADIX, JSON_ESCAPE_BYTES } from '../format.js';
+import { ALIAS_RADIX } from '../format.js';
 import { createHash } from 'node:crypto';
 import { isDeepStrictEqual, types } from 'node:util';
 import { parseReviewConfig, type ConfigResult } from '../config.js';
@@ -10,7 +10,7 @@ import {
   type DecisionUnit,
 } from '../units.js';
 import { PACKET_LIMITS } from '../schema.js';
-import { limit } from '../limits.js';
+import { limit, replyBytesFor } from '../limits.js';
 import type { Finding, PolicyEvaluation, RuleTrace } from '../policy.js';
 import type {
   AnalysisLimits,
@@ -131,8 +131,11 @@ function limits(value: unknown, ceilings: AnalysisLimits): AnalysisLimits {
   const result = value as AnalysisLimits;
   requireValue(
     result.responseBytes >=
-      result.completionTokens * limit('analysis.maxTokenCodeUnits') * JSON_ESCAPE_BYTES +
+      replyBytesFor(
+        result.completionTokens,
+        limit('analysis.maxTokenEscapedBytes'),
         limit('analysis.responseEnvelopeBytes'),
+      ),
     'budget',
   );
   return result;

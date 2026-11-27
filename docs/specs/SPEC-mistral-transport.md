@@ -156,8 +156,8 @@ remain the final verification commands. Default tests use only invented
 files/HTTP data and mocked Mistral; no credential or paid request is needed.
 The full-response boundary fixture admits exactly
 `limit:analysis.responseBytes`, including the recorded completion-byte
-allowance, worst-case JSON escaping and metadata.
-That synthetic allowance is not a universal tokenizer guarantee.
+allowance, the escaped token bytes and metadata.
+That allowance holds for the recorded tokenizers, not every tokenizer.
 
 M2 must separately prove packing, concurrency, request counts, recursive length
 splits, every-unit accounting, and PR aggregation. O1/W1/W2 must prove rendering,
@@ -518,8 +518,11 @@ so these facts were observed on 2026-11-12 and may change:
    75 tokens per second, a reply that uses the full cap at its 2026-11-12
    value takes about 230 s. The observed-bytes
    ceiling `limit:analysis.responseBytes` follows the stated formula:
-   `limit:analysis.completionTokens` times `limit:analysis.maxTokenCodeUnits`
-   times 6, plus `limit:analysis.responseEnvelopeBytes`. Each remains clipped
+   `limit:analysis.completionTokens` times
+   `limit:analysis.maxTokenEscapedBytes`, plus
+   `limit:analysis.responseEnvelopeBytes`. The token bound is the longest
+   vocabulary token after JSON string escaping, so no separate escape
+   multiplier applies (L11, #383). Each remains clipped
    to the caller's remaining analysis time, and M2's
    `limit:analysis.maxAnalysisMs` analysis maximum, `limit:analysis.maxCalls`
    call cap, and `limit:analysis.maxConcurrentCalls` concurrency do not change.
@@ -753,10 +756,9 @@ are proposed. M2/W2 still choose their cumulative budgets and publication reserv
 | Final serialized HTTP request bytes                | `limit:analysis.requestBytes`                                              | Includes fixed prompts, model/options, JSON string escaping, and envelope.                                             |
 | Completion tokens                                  | `limit:analysis.completionTokens`                                          | Reasoning tokens count against it; live replies used 4.1k-8.0k (2026-11-12).                                           |
 | Per-request timeout                                | `limit:analysis.requestTimeoutMs` maximum                                  | Live replies took 58-101 s; clipped to the caller's remaining analysis time.                                           |
-| Inner content allowance                            | `limit:analysis.maxTokenCodeUnits` code units per completion token         | Conservative planning allowance, not a documented guarantee for every model/tokenizer.                                 |
-| Outer JSON escaping multiplier                     | 6                                                                          | Allows byte-to-`\uXXXX` expansion when content is encoded inside the response envelope.                                |
+| Content allowance per completion token             | `limit:analysis.maxTokenEscapedBytes` bytes                                | Longest vocabulary token after JSON string escaping, over the tokenizers `mistral-large-latest` may name.               |
 | Provider envelope allowance                        | `limit:analysis.responseEnvelopeBytes`                                     | Bounded metadata overhead beyond generated content.                                                                    |
-| Observed response bytes                            | `limit:analysis.responseBytes`                                             | Completion tokens × content allowance × escaping multiplier + envelope allowance; input C2/T4 limits remain unchanged. |
+| Observed response bytes                            | `limit:analysis.responseBytes`                                             | Completion tokens × escaped bytes per token + envelope allowance; input C2/T4 limits remain unchanged.                 |
 | Model reason/rationale/action/impact text          | `limit:analysis.textBytes` each                                            | Concise per-unit advice; nonempty when required.                                                                       |
 | Feature text                                       | `limit:analysis.featureBytes`                                              | At most one capability per unit.                                                                                       |
 | Follow-up description                              | `limit:analysis.followupBytes`                                             | Does not expand the baseline's 280-character bound.                                                                    |
@@ -776,7 +778,7 @@ the provider nests a JSON document as an escaped string and adds metadata.
 It does not enlarge any T4 or C2 input. The spike must record whether its
 observed outputs challenge the allowance; a different allowance needs review.
 Boundary fixtures prove acceptance within this recorded allowance, not a
-universal tokenizer maximum or that all eight rich assessments fit
+maximum for every tokenizer or that all eight rich assessments fit
 `limit:analysis.completionTokens` tokens.
 
 ### Local identity and aliases

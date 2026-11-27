@@ -234,6 +234,19 @@ const SLOWEST_OSV_RESPONSE_MS = 541;
 const UPSTREAM_THROUGHPUT_BYTES_PER_SECOND = 640_000;
 
 const sum = (...values: number[]): number => values.reduce((total, value) => total + value, 0);
+
+/**
+ * The largest reply body a completion budget allows: each completion token at most
+ * `limit:analysis.maxTokenEscapedBytes` of JSON-escaped content, plus the envelope allowance.
+ * `limit:analysis.responseBytes` derives from it, and preparation checks caller limits against
+ * it (src/analysis/projection.ts), so the formula is written once.
+ */
+export const replyBytesFor = (
+  completionTokens: number,
+  maxTokenEscapedBytes: number,
+  responseEnvelopeBytes: number,
+): number => completionTokens * maxTokenEscapedBytes + responseEnvelopeBytes;
+
 const copy = (value: number): number => value;
 
 /** What the audit (L7) found for an entry; a field it has not filled stays PENDING_AUDIT. */
@@ -2288,14 +2301,20 @@ const DEFINITIONS = [
     test: 'src/analysis/mistral.test.ts > clips the per-request limit independently of the caller deadline',
     note: 'awaiting L8 measurement',
   }),
-  unjustified('analysis.responseBytes', 12_648_448, 'bytes', {
-    protects:
-      'The reply body read is capped so a runaway or hostile response cannot exhaust memory. The cap is sized to hold the largest legal reply.',
-    effect:
-      'A reply body over the cap fails the whole call as response-size. No assessments are kept.',
-    test: 'src/analysis/mistral.test.ts > admits a valid stop at the full token-byte, escaping and envelope allowance, but rejects one extra observed byte',
-    note: 'awaiting L8 measurement',
-  }),
+  derived(
+    'analysis.responseBytes',
+    'bytes',
+    ['analysis.completionTokens', 'analysis.maxTokenEscapedBytes', 'analysis.responseEnvelopeBytes'],
+    replyBytesFor,
+    'The largest legal reply: limit:analysis.completionTokens tokens of at most limit:analysis.maxTokenEscapedBytes JSON-escaped bytes each, plus limit:analysis.responseEnvelopeBytes for the envelope. The reader counts the raw UTF-8 body, in which the content is one JSON string, so the token bound is already in escaped bytes and no escape multiplier applies.',
+    {
+      protects:
+        'The reply body read is capped so a runaway or hostile response cannot exhaust memory. The cap is sized to hold the largest legal reply.',
+      effect:
+        'A reply body over the cap fails the whole call as response-size. No assessments are kept.',
+      test: 'src/analysis/mistral.test.ts > admits a valid stop at the full token-byte, escaping and envelope allowance, but rejects one extra observed byte',
+    },
+  ),
   unjustified('analysis.textBytes', 1_024, 'bytes', {
     protects:
       'Each model text field (reason, impact, action, rationale) is capped at 1,024 UTF-8 bytes, which the spec states as concise per-unit advice. This is a design choice; the downstream comment body is separately checked.',
@@ -2565,14 +2584,29 @@ const DEFINITIONS = [
     note: 'no recorded reason',
     test: 'src/analysis/projection.test.ts > the snapshot depth cap admits a leaf at the registered depth and refuses one level deeper',
   }),
-  unjustified('analysis.maxTokenCodeUnits', 128, 'code units', {
+  {
+    id: 'analysis.maxTokenEscapedBytes',
+    value: 1_024,
+    unit: 'bytes',
     protects:
-      'Sets the assumed code units per token in the reply-byte formula (completionTokens * 128 * 6 plus the envelope), so the reply byte cap covers the largest legal reply.',
+      'Bounds the reply bytes one completion token can add: the longest vocabulary token of the models `mistral-large-latest` may point to, measured after JSON string escaping, so the reply byte cap covers the largest legal reply.',
+    basis: {
+      kind: 'external',
+      url: 'https://huggingface.co/mistralai/Mistral-Large-4-1T-A52B/blob/6c0166e17ab8a3d504ff1553804abec9fb0993dc/tekken.json',
+      checked: '2026-11-27',
+      platformValue: 1_024,
+      margin:
+        "none: the larger of the two tokenizers the undocumented alias may name. Mistral Large 4 (tekken.json v15 at 6c0166e17ab8a3d504ff1553804abec9fb0993dc, 203,800 vocab tokens) has a 1,024-byte token of 1,024 spaces (rank 128398): 1,024 bytes raw, 1,024 UTF-16 code units, 1,024 bytes JSON-escaped. Mistral Large 3 (mistralai/Mistral-Large-3-675B-Instruct-2512, tekken.json v13 at 51330c9da67945183568346369a07be224e5e1b0, 130,072 vocab tokens) tops out at 76 (rank 98679, 76 '-'). Special tokens, measured from token_str, reach 18 bytes. Escaped bytes are UTF-8 bytes of JSON.stringify of the decoded token, so a provider that writes non-ASCII as \\u escapes could exceed this; the probe also reports that form.",
+      probe: {
+        command: 'npm run probe:token-length',
+        repositoryType:
+          'public, organization-owned, huggingface.co model repositories; the file path is the argument',
+      },
+    },
     effect:
-      'Caller limits whose responseBytes is below the formula fail preparation as budget (projection.ts:132-137). A reply over responseBytes fails as response-size at runtime.',
+      'Caller limits whose responseBytes is below the reply formula fail preparation as budget (src/analysis/projection.ts). A reply over limit:analysis.responseBytes fails as response-size at runtime.',
     test: 'src/analysis/bounds.test.ts > every declared resource limit rejects larger, unsafe, fractional and incompatible values before a usable handle',
-    note: 'no recorded reason',
-  }),
+  },
   unjustified('analysis.responseEnvelopeBytes', 65_536, 'bytes', {
     protects:
       "Allowance for the reply's JSON envelope on top of the token text, so a maximal valid reply is not rejected as oversize.",
