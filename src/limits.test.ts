@@ -153,6 +153,49 @@ test('moved limits that mirror a packet bound are derived from it', () => {
   expect(limit('research.maxFindings')).toBe(PACKET_LIMITS.findings);
 });
 
+test('derived packet bounds keep their formulas and the values they had as fixed numbers', () => {
+  const cases: [LimitId, LimitId[], number, number][] = [
+    ['packet.relationships', ['packet.changes'], 2 * limit('packet.changes'), 256],
+    [
+      'packet.textBytes',
+      ['analysis.unitBytes', 'packet.listEntries'],
+      Math.floor(limit('analysis.unitBytes') / limit('packet.listEntries')),
+      2_048,
+    ],
+    ['packet.contextBytes', ['analysis.unitBytes'], limit('analysis.unitBytes'), 65_536],
+  ];
+  for (const [id, inputs, expected, previous] of cases) {
+    const { basis } = limitEntry(id);
+    expect(basis, id).toMatchObject({ kind: 'derived', inputs });
+    if (basis.kind !== 'derived') continue;
+    expect(basis.formula(...inputs.map((input) => limit(input))), id).toBe(expected);
+    expect(limit(id), id).toBe(expected);
+    expect(limit(id), id).toBe(previous);
+    for (const input of inputs) expect(dependents(REGISTER, input), id).toContain(id);
+  }
+  // The formulas, not the current inputs, are pinned: a moved input moves the bound.
+  const relationships = limitEntry('packet.relationships').basis;
+  const textBytes = limitEntry('packet.textBytes').basis;
+  if (relationships.kind !== 'derived' || textBytes.kind !== 'derived') throw new Error('derived');
+  expect(relationships.formula(100)).toBe(200);
+  expect(textBytes.formula(65_536, 30)).toBe(2_184);
+});
+
+test('safety packet bounds keep their values and state a reason', () => {
+  const values: [LimitId, number][] = [
+    ['packet.findings', 512],
+    ['packet.pathInstances', 32],
+    ['packet.idCodeUnits', 256],
+    ['packet.identityBytes', 1_024],
+    ['packet.listEntries', 32],
+  ];
+  for (const [id, value] of values) {
+    const { basis } = limitEntry(id);
+    expect(basis, id).toMatchObject({ kind: 'safety', reason: expect.any(String) });
+    expect(limit(id), id).toBe(value);
+  }
+});
+
 test('RELEASE_PAGE_SIZES halves from the register value down to 1 and is frozen', () => {
   expect(RELEASE_PAGE_SIZES).toEqual([64, 32, 16, 8, 4, 2, 1]);
   expect(Object.isFrozen(RELEASE_PAGE_SIZES)).toBe(true);

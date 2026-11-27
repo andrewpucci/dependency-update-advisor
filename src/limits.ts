@@ -690,18 +690,27 @@ const DEFINITIONS = [
       'Finding count comes from untrusted input; an unbounded list would let validation and linking work grow without limit.',
     effect:
       'Overflow rejects the whole packet with budget on findings; findings are never deleted to fit.',
-    basis: { kind: 'unjustified', note: 'awaiting L8 measurement' },
+    basis: {
+      kind: 'safety',
+      reason:
+        'The largest legitimate use measured is 192 findings for the 105 members of #276 (https://github.com/andrewpucci/dependency-update-advisor/issues/350#issuecomment-6940522903); scaled to limit:packet.changes members that is about 234, so 512 leaves about 2× headroom. Above the cap, schema validation and finding-to-change linking work grow with the count of untrusted records, and limit:research.maxFindings copies this value, so a larger cap also lets one advisory reader retain and return more findings before it stops with budget. Approved by the maintainer on 2026-11-27, #383.',
+    },
     test: 'src/schema.test.ts > accepts 512 findings and rejects the overflow record',
   },
   {
     id: 'packet.relationships',
-    value: 256,
     unit: 'count',
     protects:
       'Relationship proofs come from collector output and their linking work grows with their count; an unbounded set would grow the proof graph without limit.',
     effect:
       'Overflow rejects the packet with budget on relationships. The assembler drops optional proofs before this check runs.',
-    basis: { kind: 'unjustified', note: 'awaiting L8 measurement' },
+    basis: {
+      kind: 'derived',
+      inputs: ['packet.changes'],
+      formula: (changes) => 2 * changes,
+      description:
+        'At most two proofs per member, the claimed anchor and one more to evidence ambiguity (docs/specs/SPEC-reachability-evidence.md, Bounds), over at most limit:packet.changes members, so twice the change cap holds every proof the collectors emit. Approved by the maintainer on 2026-11-27, #383.',
+    },
     test: 'src/schema.test.ts > accepts 256 distinct proofs and rejects the overflow proof',
   },
   {
@@ -723,7 +732,11 @@ const DEFINITIONS = [
       "A relationship path's instance count comes from untrusted input; an unbounded path would make path walks grow without limit.",
     effect:
       'A path over 32 instances rejects the packet with budget on relationships. The graph collectors separately stop with path_limit and do not expand the path.',
-    basis: { kind: 'unjustified', note: 'awaiting L8 measurement' },
+    basis: {
+      kind: 'safety',
+      reason:
+        "The largest legitimate path observed is 7 instances: the shortest path from a direct dependency to each installed package, counting both ends, over every package in each of the 6 committed versions of this repository's package-lock.json (346 to 360 packages, resolved by nearest node_modules lookup, 2026-11-27). That is npm only and one repository; no uv lock is committed and the demand corpus records no path lengths. 32 is more than 4× that. Above the cap, schema validation and the unit-forming path walk grow with each proof's length, and every instance record counts against limit:packet.bytes: limit:packet.relationships proofs of 32 instances are already 8,192 instance records. A longer path is not lost silently: the npm and uv collectors stop with path_limit and leave the member standalone with that reason. Approved by the maintainer on 2026-11-27, #383.",
+    },
     test: 'src/schema.test.ts > enforces the 32-instance path ceiling',
   },
   {
@@ -734,7 +747,11 @@ const DEFINITIONS = [
       'IDs and package names come from untrusted registry and repository input; an oversized ID would inflate every record that repeats it and the packet bytes budget.',
     effect:
       'An over-long ID rejects the packet with budget on the field; the code-unit count is checked inside text().',
-    basis: { kind: 'unjustified', note: 'no recorded reason' },
+    basis: {
+      kind: 'safety',
+      reason:
+        'npm documents a package name maximum of 214 characters, including the scope (https://docs.npmjs.com/cli/v11/configuring-npm/package-json, checked 2026-11-27), and synthetic ids are a short kind prefix plus a 64-character SHA-256 hex digest, under 100 code units (for example src/evidence/npm.ts and src/evidence/actions.ts). 256 sits above both. Above it, one oversized id is repeated in every record that cites it, inflating the packet against limit:packet.bytes; limit:context.maxIdCodeUnits copies this value. Approved by the maintainer on 2026-11-27, #383.',
+    },
     test: 'src/schema.test.ts > enforces 256-code-unit IDs and 1024-byte identity strings',
   },
   {
@@ -744,18 +761,27 @@ const DEFINITIONS = [
     protects:
       'Other identity strings such as versions, refs and paths come from untrusted input; an oversized byte length would inflate records and the packet bytes budget.',
     effect: 'An identity string over the byte cap rejects the packet with budget on the field.',
-    basis: { kind: 'unjustified', note: 'no recorded reason' },
+    basis: {
+      kind: 'safety',
+      reason:
+        'node-semver rejects a version string longer than MAX_LENGTH, 256 (https://raw.githubusercontent.com/npm/node-semver/main/internal/constants.js, checked 2026-11-27), so 1,024 bytes is 4× the longest version npm accepts. Git refs and lockfile and repository paths have no documented maximum below Linux PATH_MAX (4,096 bytes), so for them the cap is a sanity bound, not a platform figure. Above it, one identity string repeated in records inflates the packet against limit:packet.bytes; limit:context.maxPathBytes and limit:dependabot.maxPathBytes copy this value. The same cap also bounds versioned advisory URLs (src/evidence/advisory-read.ts), where a long URL can reach it and the target is reported unsupported; for URLs it can bind, and moving that use to its own entry is left to a separate change. Approved by the maintainer on 2026-11-27, #383.',
+    },
     test: 'src/schema.test.ts > enforces 256-code-unit IDs and 1024-byte identity strings',
   },
   {
     id: 'packet.textBytes',
-    value: 2_048,
     unit: 'bytes',
     protects:
       'Rationale, title and upstream excerpt text come from untrusted advisory and registry input; unbounded text would dominate the packet bytes budget and the comment.',
     effect:
       'Over-long text rejects the packet with budget on the field. Upstream and policy readers stop adding text at the cap before the packet check.',
-    basis: { kind: 'unjustified', note: 'awaiting L8 measurement' },
+    basis: {
+      kind: 'derived',
+      inputs: ['analysis.unitBytes', 'packet.listEntries'],
+      formula: (unitBytes, listEntries) => Math.floor(unitBytes / listEntries),
+      description:
+        "A list of limit:packet.listEntries text fields, each at this cap, fits one unit's attributable byte budget, limit:analysis.unitBytes, so one unit's longest list of excerpts cannot alone exceed the unit cap. Approved by the maintainer on 2026-11-27, #383.",
+    },
     test: 'src/schema.test.ts > enforces text and reference-list bounds independently of the packet size',
   },
   {
@@ -766,18 +792,27 @@ const DEFINITIONS = [
       'Reference, reason and member lists come from untrusted input; an unbounded list multiplies per-entry checks and the packet bytes budget.',
     effect:
       'A list over 32 entries rejects the packet with budget on that field. The npm and Actions readers split larger member lists into several sources instead.',
-    basis: { kind: 'unjustified', note: 'awaiting L8 measurement' },
+    basis: {
+      kind: 'safety',
+      reason:
+        'Splitting means no legitimate member is dropped at any value: the npm, Actions and uv readers split a longer member list into several sources (src/evidence/npm.ts, src/evidence/actions.ts, src/evidence/uv-output.ts). Other lists stop at the cap visibly, with budget or a truncated flag, and never silently. Above it, every list multiplies per-entry checks and its entries count against limit:packet.bytes. Approved by the maintainer on 2026-11-27, #383.',
+    },
     test: 'src/schema.test.ts > enforces text and reference-list bounds independently of the packet size',
   },
   {
     id: 'packet.contextBytes',
-    value: 65_536,
     unit: 'bytes',
     protects:
       'Source context is serialized into every packet and read from repository files; an unbounded context would grow the packet and the analysis input without limit.',
     effect:
       'A context over the byte cap rejects the packet with budget on context; no partial context is kept.',
-    basis: { kind: 'unjustified', note: 'awaiting L8 measurement' },
+    basis: {
+      kind: 'derived',
+      inputs: ['analysis.unitBytes'],
+      formula: copy,
+      description:
+        "The whole source context is sent with the analysis input, so it must fit one unit's attributable byte budget, limit:analysis.unitBytes. Approved by the maintainer on 2026-11-27, #383.",
+    },
     test: 'src/schema.test.ts > enforces exactly 65536 serialized context bytes across 128 dependencies',
   },
   {
