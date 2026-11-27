@@ -394,6 +394,16 @@ test('reports the quota as the guard reads it: core only, lowest per counter, on
   });
   expect(recorder.report({}).github.counters).toHaveLength(3);
   expect(recorder.report({}).github.trace).toBeUndefined();
+
+  // A resource-mismatch reading is ignored and counted; a header-less response after it is not.
+  responses.set(
+    'https://api.github.com/l',
+    quotaHeaders('7', RESET, { 'x-ratelimit-resource': 'search' }),
+  );
+  responses.set('https://api.github.com/m', {});
+  await fetch('https://api.github.com/l', {});
+  await fetch('https://api.github.com/m', {});
+  expect(recorder.report({}).github.ignoredReadings).toBe(5);
 });
 
 /** A recorder that has seen one GitHub API response per `[remaining, reset]` reading, in order. */
