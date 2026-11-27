@@ -14,7 +14,7 @@ import {
   researchShares,
 } from './budget.js';
 import { REGISTER } from './limits.js';
-import { registered, registerShareParameters } from '../tests/parity/shares.js';
+import { leaves, registered, registerShareParameters } from '../tests/parity/shares.js';
 
 const MiB = 1024 * 1024;
 
@@ -540,12 +540,6 @@ test('reads every scaled-share base and rate from its own register entry', () =>
       );
     }
 });
-
-/** Every leaf of a limits object, as `prefix.path` and its value. */
-function leaves(value: unknown, prefix: string): [string, unknown][] {
-  if (typeof value !== 'object' || value === null) return [[prefix, value]];
-  return Object.entries(value).flatMap(([key, child]) => leaves(child, `${prefix}.${key}`));
-}
 
 test('wires every budget constant, share ceiling, and computed share to its register entry', () => {
   // Each value's path names its register id, and every register id under these prefixes is wired.

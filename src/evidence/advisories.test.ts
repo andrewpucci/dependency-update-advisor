@@ -1,4 +1,4 @@
-import { expect, test, vi } from 'vite-plus/test';
+import { afterEach, expect, test, vi } from 'vite-plus/test';
 import * as limitsModule from '../limits.js';
 import {
   AdvisoryFailure,
@@ -18,10 +18,15 @@ import {
   collectMixedAdvisoryInventories,
 } from '../../tests/parity/advisories.js';
 
-// Wraps the register lookup, so a test can see which limits validation read before it stopped.
+// Wraps the register lookup in a pass-through mock, so one test can lower a single limit. Each
+// test ends with the real lookup restored, so no override reaches another test.
 vi.mock('../limits.js', async (original) => {
   const actual = await original<typeof import('../limits.js')>();
   return { ...actual, limit: vi.fn(actual.limit) };
+});
+afterEach(() => {
+  // mockReset returns a vi.fn to the implementation it was created with: the real lookup.
+  vi.mocked(limitsModule.limit).mockReset();
 });
 
 export const advisoryLimits = {
@@ -802,13 +807,9 @@ test('accepts exactly advisories.maxLookups public identities and refuses one mo
   vi.mocked(limitsModule.limit).mockImplementation((id) =>
     id === 'advisories.maxLookups' ? lowered : actual.limit(id),
   );
-  try {
-    expect(prepareAdvisoryInput(atLimit).ok).toBe(false);
-    const atLowered = { ...atLimit, publicIdentities: identities.slice(0, lowered) };
-    expect(prepareAdvisoryInput(atLowered).ok).toBe(true);
-  } finally {
-    vi.mocked(limitsModule.limit).mockImplementation(actual.limit);
-  }
+  expect(prepareAdvisoryInput(atLimit).ok).toBe(false);
+  const atLowered = { ...atLimit, publicIdentities: identities.slice(0, lowered) };
+  expect(prepareAdvisoryInput(atLowered).ok).toBe(true);
 });
 
 /** The packet fields of an enrichment, with batched source text read as the singleton's. */
