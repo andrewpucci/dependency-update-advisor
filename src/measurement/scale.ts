@@ -11,8 +11,8 @@ const SHARE_PREFIXES = ['research.share.', 'collection.share.'];
  * demand while production keeps the register value. Derived entries are left for `buildRegister`
  * to recompute, so totals and copies of these values scale with them: the retained-byte cap
  * follows the research cache total (#467), and the advisory ceiling follows the evidence deadline.
- * A ceiling derived only from `packet.changes`, such as the PyPI metadata request ceiling (two
- * reads per change, #467), stays unscaled: no change can need more.
+ * A ceiling derived only from `packet.changes` stays unscaled, since no change can need more.
+ * The PyPI metadata request ceiling, two reads per change (#467), is one such ceiling.
  */
 export function isReadBudget(entry: Limit): boolean {
   if (entry.basis.kind === 'derived') return false;
