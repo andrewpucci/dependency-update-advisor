@@ -299,6 +299,12 @@ exceed file bytes. The counters and units are:
 | `maxRequirementTokens`, `maxMarkerDepth`     | Per requirement's lexical tokens and marker parenthesis nesting.                                                                                         |
 | `maxRetainedBytes`                           | Entire serialized metadata result, including sources, diagnostics, and comparison availability.                                                          |
 
+The collector's per-file cap, `limit:w2.uv.maxFileBytes`, equals the session
+reader's per-file cap, `limit:w2.session.maxFileBytes`, as the npm lockfile cap
+does. Real uv projects' Dependabot locks measured for #462 were all over the
+earlier, smaller cap, so the reviewer found no uv members on them. Status:
+approved by the maintainer on 2026-11-27.
+
 Retention uses a deterministic sorted prefix of whole roots. Every omitted file
 keeps a scoped budget gap; omitted sources are removed. If the remaining envelope
 cannot fit, return fixed `unavailable: budget` instead of a metadata payload.

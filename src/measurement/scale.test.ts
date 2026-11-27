@@ -47,18 +47,13 @@ test('recomputes derived entries from the scaled inputs', () => {
     'evidence.envelope.maxRequests',
     'w2.session.maxRequests',
     'w2.session.maxTotalBytes',
+    'research.maxJsonEntries',
   ])
     expect(valueAt(10, id), id).toBe(10 * (REGISTER.get(id)?.value ?? 0));
 });
 
 test('leaves limits outside the read budget unchanged', () => {
-  for (const id of [
-    'packet.bytes',
-    'w2.npm.maxFileBytes',
-    'research.maxWork',
-    'research.maxJsonEntries',
-    'job.budget',
-  ])
+  for (const id of ['packet.bytes', 'w2.npm.maxFileBytes', 'research.maxWork', 'job.budget'])
     expect(valueAt(10, id), id).toBe(REGISTER.get(id)?.value);
 });
 
