@@ -1,6 +1,10 @@
 import { expect, test } from 'vite-plus/test';
 import { createHash } from 'node:crypto';
-import { createUpstreamReader, type UpstreamDependencies } from './upstream-read.js';
+import {
+  COMPARE_PAGE_SIZES,
+  createUpstreamReader,
+  type UpstreamDependencies,
+} from './upstream-read.js';
 import { createResearchCache } from './research-cache.js';
 import { RESEARCH_CACHE_LIMITS } from '../budget.js';
 import { limit, UPSTREAM_TAG_CANDIDATES } from '../limits.js';
@@ -239,10 +243,14 @@ test('a failed comparison continuation preserves earlier commits as partial', as
               base_commit: { sha: base },
               merge_base_commit: { sha: base },
               status: 'ahead',
-              ahead_by: 2,
+              ahead_by: 101,
               behind_by: 0,
-              total_commits: 2,
-              commits: [{ sha: 'd'.repeat(40), commit: { message: 'Earlier retained commit' } }],
+              total_commits: 101,
+              // A page that claims a next page is full, so continuation starts on its boundary.
+              commits: Array.from({ length: 100 }, (_, i) => ({
+                sha: String(i).padStart(40, 'd'),
+                commit: { message: i === 0 ? 'Earlier retained commit' : 'Earlier ' + i },
+              })),
               files: [{ filename: 'index.js', patch: '@@ change' }],
             },
             {
@@ -421,6 +429,209 @@ test('a comparison keeps its file list complete below the register file cap and 
   const atCap = compareWithFiles(cap);
   expect(await compare(atCap)).toMatchObject({ reasons: ['truncated'] });
   atCap.reader.close();
+});
+
+type PagedComparison = {
+  total: number;
+  /** Message length of each commit, by its index in the comparison. */
+  messageBytes: number | ((index: number) => number);
+  /** Length of the one file patch, which GitHub lists on the first page only. */
+  patchBytes?: number;
+  /** Serves one commit fewer than asked for on the first page, while still claiming another. */
+  short?: boolean;
+  readerLimits?: Record<string, unknown>;
+};
+
+/**
+ * A forward comparison served in whatever page size the reader asks for, with a next link while
+ * commits remain.
+ */
+function pagedComparison({
+  total,
+  messageBytes,
+  patchBytes = 10,
+  short = false,
+  readerLimits = {},
+}: PagedComparison) {
+  const base = 'c'.repeat(40),
+    path = '/compare/' + base + '...' + sha;
+  const shas = Array.from({ length: total }, (_, i) =>
+    i === total - 1 ? sha : String(i).padStart(40, 'd'),
+  );
+  const length = (i: number) => (typeof messageBytes === 'number' ? messageBytes : messageBytes(i));
+  const f = setup(
+    {
+      [path]: (url: string) => {
+        const params = new URL(url).searchParams;
+        const perPage = Number(params.get('per_page'));
+        const page = Number(params.get('page'));
+        const start = (page - 1) * perPage;
+        const served = short && start === 0 ? perPage - 1 : perPage;
+        const commits = shas.slice(start, start + served).map((id, i) => ({
+          sha: id,
+          commit: { message: ('#' + (start + i) + '#').padEnd(length(start + i), '.') },
+        }));
+        const next = start + perPage < total;
+        return Response.json(
+          {
+            base_commit: { sha: base },
+            merge_base_commit: { sha: base },
+            status: 'ahead',
+            ahead_by: total,
+            behind_by: 0,
+            total_commits: total,
+            commits,
+            ...(start === 0
+              ? { files: [{ filename: 'index.js', patch: '+change'.padEnd(patchBytes, '.') }] }
+              : {}),
+          },
+          next
+            ? {
+                headers: {
+                  link: `<https://api.github.com/repos/fixture/orbit${path}?per_page=${perPage}&page=${page + 1}>; rel="next"`,
+                },
+              }
+            : {},
+        );
+      },
+    },
+    readerLimits,
+  );
+  const compare = () =>
+    collectExactComparison(
+      'fixture/orbit',
+      { sha: base, value: '1.0.0' },
+      { sha, value: '2.0.0' },
+      f.reader,
+    );
+  const sizes = () =>
+    f.calls
+      .filter((url) => url.includes('/compare/'))
+      .map((url) => Number(new URL(url).searchParams.get('per_page')));
+  return { ...f, compare, sizes };
+}
+
+/** Every commit message of a `total`-commit comparison appears once, in order, in its text. */
+function expectEveryCommit(text: string, total: number) {
+  const seen = [...text.matchAll(/#(\d+)#/gu)].map((match) => Number(match[1]));
+  expect(seen).toEqual(Array.from({ length: total }, (_, i) => i));
+}
+
+/** Room for comparisons of many light commits: the reader's other limits stay out of the way. */
+const ROOMY = {
+  maxRequests: 50,
+  maxPages: 50,
+  maxTotalBytes: 2_000_000,
+  maxRetainedBytes: 2_000_000,
+};
+/** A file patch that leaves room on the first page for one light commit, but not for five. */
+const HEAVY_PATCH = 48_800;
+
+test('a compare page over the response cap is halved until it fits', async () => {
+  // 100 commits of 1,000-byte messages overflow the 50,000-byte cap at 100 and 50 per page.
+  const f = pagedComparison({ total: 100, messageBytes: 1_000 });
+  const result = await f.compare();
+  expect(result).toMatchObject({ status: 'available', reasons: [] });
+  expectEveryCommit(result.sources[0].text, 100);
+  expect(result.sources[0].text).toContain('+change');
+  // Each page that fits is followed at the largest size its offset allows: 50 is tried again at
+  // offset 50 and refused, so the rest of the list is read at 25.
+  expect(f.sizes()).toEqual([100, 50, 25, 25, 50, 25, 25]);
+  f.reader.close();
+});
+
+test('a compare page of one commit over the response cap still fails with budget', async () => {
+  const f = pagedComparison({ total: 1, messageBytes: 60_000 });
+  expect(await f.compare()).toMatchObject({ status: 'unavailable', reasons: ['budget'] });
+  expect(f.sizes()).toEqual([100, 50, 25, 5, 1]);
+  f.reader.close();
+});
+
+test('a first page whose file list alone overflows the cap ends in budget after one try per size', async () => {
+  const f = pagedComparison({
+    total: 300,
+    messageBytes: 300,
+    patchBytes: 60_000,
+    readerLimits: ROOMY,
+  });
+  expect(await f.compare()).toMatchObject({ status: 'unavailable', reasons: ['budget'] });
+  expect(f.sizes()).toEqual([100, 50, 25, 5, 1]);
+  f.reader.close();
+});
+
+test('a compare retry is refused unsent once the request share is spent', async () => {
+  const f = pagedComparison({ total: 100, messageBytes: 1_000, readerLimits: { maxRequests: 1 } });
+  expect(await f.compare()).toMatchObject({ status: 'unavailable', reasons: ['budget'] });
+  // The oversized first page was the one request the share allowed; the retry never left.
+  expect(f.sizes()).toEqual([100]);
+  expect(f.reader.stopLimit?.()).toBe('maxRequests');
+  f.reader.close();
+});
+
+test('a comparison whose first page fits only one commit climbs back to full pages', async () => {
+  const f = pagedComparison({
+    total: 300,
+    messageBytes: 300,
+    patchBytes: HEAVY_PATCH,
+    readerLimits: ROOMY,
+  });
+  const result = await f.compare();
+  expect(result).toMatchObject({ status: 'available', reasons: [] });
+  expectEveryCommit(result.sources[0].text, 300);
+  // Four refusals, then 1 until offset 5, 5 until 25, one page each of 25 and 50, then 100s.
+  expect(f.sizes()).toEqual([100, 50, 25, 5, 1, 1, 1, 1, 1, 5, 5, 5, 5, 25, 50, 100, 100]);
+  expect(f.calls).toHaveLength(17);
+  f.reader.close();
+});
+
+test.each([1, 99, 300, 1_000])(
+  'a %i-commit comparison with a heavy first page costs one ladder, one climb, then full pages',
+  async (total) => {
+    const f = pagedComparison({
+      total,
+      messageBytes: 300,
+      patchBytes: HEAVY_PATCH,
+      readerLimits: ROOMY,
+    });
+    const result = await f.compare();
+    expect(result).toMatchObject({ status: 'available', reasons: [] });
+    expectEveryCommit(result.sources[0].text, total);
+    // The refusals down the ladder, the pages that climb from 1 back to the top size (each step
+    // takes at most its ratio in pages), and then full pages for the rest of the list.
+    const ladder = COMPARE_PAGE_SIZES.length - 1;
+    const climb = COMPARE_PAGE_SIZES.slice(1).reduce(
+      (pages, size, i) => pages + COMPARE_PAGE_SIZES[i] / size,
+      0,
+    );
+    const full = Math.ceil(total / COMPARE_PAGE_SIZES[0]);
+    expect(f.calls.length).toBeLessThanOrEqual(ladder + climb + full);
+    f.reader.close();
+  },
+);
+
+test('a heavy page partway through the list is halved there and the list climbs back', async () => {
+  // Commit 150 is heavy: the page from 100 at size 100 overflows, 50 fits on both sides of it.
+  const f = pagedComparison({
+    total: 300,
+    messageBytes: (i) => (i === 150 ? 20_000 : 300),
+    readerLimits: ROOMY,
+  });
+  const result = await f.compare();
+  expect(result).toMatchObject({ status: 'available', reasons: [] });
+  expectEveryCommit(result.sources[0].text, 300);
+  expect(f.sizes()).toEqual([100, 100, 50, 50, 100]);
+  f.reader.close();
+});
+
+test('a compare page short of its size that still claims a next page is a conflict', async () => {
+  const f = pagedComparison({ total: 300, messageBytes: 300, short: true, readerLimits: ROOMY });
+  const result = await f.compare();
+  expect(result.status).toBe('partial');
+  expect(result.reasons).toContain('conflict');
+  // The commits of the short page are kept, and no further page is requested.
+  expect(result.sources[0].text).toContain('#98#');
+  expect(f.sizes()).toEqual([100]);
+  f.reader.close();
 });
 
 test('package tag candidates stay within the count the upstream byte base assumes (#467)', () => {

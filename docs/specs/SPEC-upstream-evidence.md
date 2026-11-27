@@ -572,3 +572,55 @@ The amendment's text is not edited.
   from the L8 corpus. Every measured query size, up to the register value,
   answered at a cost of 1 point, and the largest query's response was 7,139
   bytes.
+
+## Compare Page-Size Ladder Amendment
+
+**Status: approved, 2026-11-27.** The maintainer approved compare retries
+after live uv measurement found one member's first compare page over
+`limit:evidence.envelope.maxResponseBytes` on each of four real uv
+Dependabot PRs. The compare read had a fixed page size and gave up on a
+page it could not read. This applies evidence coverage §1.6 to the compare
+read, as the release list already does.
+
+1. **Start.** Compare pages ask for `limit:upstream.comparePageSize`
+   commits, GitHub's `per_page` maximum.
+2. **Retry.** A page refused with `budget` while the upstream reader can
+   still read is too large for the per-response cap. It is retried at the
+   next smaller size in a divisor chain from the start size down to one
+   commit: each size is the one above divided by its smallest prime factor,
+   so every size divides every larger one and a smaller page always starts
+   on a boundary already read. The release list uses the same code; from its
+   power-of-two start the chain is plain halving.
+3. **Grow-back.** After each compare page that claims a next page, the next
+   page asks for the largest size in the chain whose boundary falls on the
+   commits read so far. A heavy first page therefore does not leave the rest
+   of the comparison in small pages: the reads climb back through the chain
+   to full pages. The release list does not grow back; it keeps the size
+   that fit.
+4. **Charge.** Each retry is an ordinary request against the upstream
+   request and byte shares, and counts as a page. A retry the share refuses
+   is not sent, and the comparison ends with `budget`.
+5. **Failure.** A page of one commit over the cap ends the comparison with
+   `budget`, as before. A reader that has stopped is not retried, and the
+   comparison ends with the reader's stop reason: `budget` for a spent share,
+   `timeout` for a reader stopped by its time limit. Commits read from
+   earlier pages are kept, and the comparison is `partial`.
+6. **Files.** GitHub lists changed files on the first page only. The ladder
+   shrinks the commit list, not the file list. When page 1 is over the cap
+   because of the file list alone, the ladder spends one request at each size
+   in the chain, and the bytes each refused page streamed before the cap,
+   before the comparison ends with `budget`.
+7. **Pages.** A page that claims a next page must hold exactly the size it
+   asked for; a short one is a `conflict`.
+
+Verification: `src/evidence/upstream-github.test.ts` pins a compare page
+over the cap that reads after halving; a one-commit page over the cap that
+reports `budget` after the whole chain; a first page over the cap from its
+file list alone that reports `budget` after one request per size; a retry
+refused unsent when the request share is spent; a comparison whose first page
+fits only one commit climbing back to full pages, with its request count; the
+cost of such a comparison staying within one ladder, one climb, and full
+pages; a heavy page partway through the list; and a short page that claims a
+next page as a `conflict`. `src/evidence/upstream-releases.test.ts` exercises
+`forEachLadderPage` with a compare-shaped target for the skip to a size that
+divides the offset reached, and keeps release sizes fixed after a halving.

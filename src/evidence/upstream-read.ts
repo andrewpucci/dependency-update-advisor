@@ -13,14 +13,26 @@ import type { ResearchCache } from './research-cache.js';
 import { limit } from '../limits.js';
 import { HTTP_STATUS } from '../format.js';
 
-/** Each halving of the register's release page size down to 1, for the page-size retry ladder. */
-function halvingFrom(start: number): number[] {
-  const sizes: number[] = [];
-  for (let size = start; size >= 1; size = Math.floor(size / 2)) sizes.push(size);
+/**
+ * A page-size retry ladder from a register page size down to 1: each size is the one above divided
+ * by its smallest prime factor, so every size divides every larger one. From a power of two this is
+ * plain halving.
+ */
+function divisorChain(start: number): number[] {
+  const sizes = [start];
+  for (let size = start; size > 1; sizes.push(size)) {
+    let factor = 2;
+    while (size % factor !== 0) factor++;
+    size /= factor;
+  }
   return sizes;
 }
 export const RELEASE_PAGE_SIZES: readonly number[] = Object.freeze(
-  halvingFrom(limit('upstream.releasePageSize')),
+  divisorChain(limit('upstream.releasePageSize')),
+);
+/** The compare commit page sizes, a divisor chain from the register's compare page size to 1. */
+export const COMPARE_PAGE_SIZES: readonly number[] = Object.freeze(
+  divisorChain(limit('upstream.comparePageSize')),
 );
 
 export type UpstreamLimits = Readonly<{
@@ -237,9 +249,11 @@ function githubTarget(value: unknown): GithubUpstreamTarget {
     );
   if (['compare', 'releases'].includes(String(value.resource)))
     requireUpstream(Number.isSafeInteger(value.page) && Number(value.page) > 0, 'unsupported');
-  if (value.resource === 'releases')
+  if (['compare', 'releases'].includes(String(value.resource)))
     requireUpstream(
-      (RELEASE_PAGE_SIZES as readonly unknown[]).includes(value.perPage),
+      (value.resource === 'compare' ? COMPARE_PAGE_SIZES : RELEASE_PAGE_SIZES).includes(
+        value.perPage as number,
+      ),
       'unsupported',
     );
   return value as unknown as GithubUpstreamTarget;
@@ -274,7 +288,9 @@ export function upstreamGithubUrl(t: GithubUpstreamTarget) {
         base + '/contents/' + t.path!.split('/').map(encodeURIComponent).join('/') + '?ref=' + t.sha
       );
     case 'compare':
-      return base + '/compare/' + t.base + '...' + t.head + '?per_page=100&page=' + t.page;
+      return (
+        base + '/compare/' + t.base + '...' + t.head + '?per_page=' + t.perPage + '&page=' + t.page
+      );
     case 'releases':
       return base + '/releases?per_page=' + t.perPage + '&page=' + t.page;
   }

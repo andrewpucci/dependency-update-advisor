@@ -99,7 +99,9 @@ By convention, specs are value-free: they cite a register entry as
   retains live transport, workflow diagnostics/budgets, downstream analysis,
   publication, packaging, adoption, parity, and cutover gates. A
   [batched tag existence amendment](SPEC-upstream-evidence.md#batched-tag-existence-amendment)
-  is approved for planning (#380, 2026-11-19).
+  is approved for planning (#380, 2026-11-19). A
+  [compare page-size ladder amendment](SPEC-upstream-evidence.md#compare-page-size-ladder-amendment)
+  is approved and implemented (2026-11-27).
 - [Applicable vulnerability advisories](SPEC-advisory-lookup.md) — S1 #19 and
   #173–#181 implemented; #19 tracks review and merge. Exact public-identity
   proofs, Actions mappings and separate lookup outcomes preserve T4/T5/C3

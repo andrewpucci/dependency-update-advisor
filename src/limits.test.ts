@@ -2,7 +2,7 @@ import { readFileSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import { expect, test } from 'vite-plus/test';
 import { PACKET_LIMITS } from './schema.js';
-import { RELEASE_PAGE_SIZES } from './evidence/upstream-read.js';
+import { COMPARE_PAGE_SIZES, RELEASE_PAGE_SIZES } from './evidence/upstream-read.js';
 import {
   PENDING_AUDIT,
   REGISTER,
@@ -156,6 +156,14 @@ test('moved limits that mirror a packet bound are derived from it', () => {
 test('RELEASE_PAGE_SIZES halves from the register value down to 1 and is frozen', () => {
   expect(RELEASE_PAGE_SIZES).toEqual([64, 32, 16, 8, 4, 2, 1]);
   expect(Object.isFrozen(RELEASE_PAGE_SIZES)).toBe(true);
+});
+
+test('COMPARE_PAGE_SIZES is a divisor chain from the register value down to 1 and is frozen', () => {
+  expect(COMPARE_PAGE_SIZES).toEqual([100, 50, 25, 5, 1]);
+  for (const [i, size] of COMPARE_PAGE_SIZES.slice(1).entries())
+    expect(COMPARE_PAGE_SIZES[i] % size).toBe(0);
+  expect(COMPARE_PAGE_SIZES[0]).toBe(limit('upstream.comparePageSize'));
+  expect(Object.isFrozen(COMPARE_PAGE_SIZES)).toBe(true);
 });
 
 test('checkRegister rejects a value that is not a finite number', () => {

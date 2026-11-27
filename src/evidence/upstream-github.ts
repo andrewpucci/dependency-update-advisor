@@ -9,7 +9,9 @@ import {
   upstreamFailureReason,
   type UpstreamReader,
   type GithubUpstreamTarget,
+  COMPARE_PAGE_SIZES,
 } from './upstream-read.js';
+import { forEachLadderPage } from './upstream-releases.js';
 import type { EvidenceReason } from '../schema.js';
 import { limit } from '../limits.js';
 
@@ -407,32 +409,36 @@ async function comparisonPages(
     filesComplete: false,
     reasons: new Set(),
   };
-  for (let page = 1; page <= reader.limits.maxPages; page++) {
-    try {
-      const result = await reader.read({
+  try {
+    await forEachLadderPage(
+      reader,
+      COMPARE_PAGE_SIZES,
+      (page, perPage) => ({
         kind: 'github',
         repository,
         resource: 'compare',
         base: base.sha,
         head: head.sha,
         page,
-      });
-      requireUpstream(result.status === 'available' && result.data, result.reasons[0] ?? 'unknown');
-      comparisonIdentity(result.data, base, state);
-      comparisonCommits(result.data, state);
-      if (page === 1) comparisonFiles(result.data, state);
-      state.valid = true;
-      if (!result.nextPage) {
-        if (state.messages.size !== state.total) state.reasons.add('truncated');
-        if (state.forward && [...state.messages.keys()].at(-1) !== head.sha)
-          state.reasons.add('conflict');
-        return state;
-      }
-      requireUpstream(page < reader.limits.maxPages, 'budget');
-    } catch (error) {
-      state.reasons.add(upstreamFailureReason(error));
-      return state;
-    }
+        perPage,
+      }),
+      async ({ data, offset }) => {
+        const before = state.messages.size;
+        comparisonIdentity(data, base, state);
+        comparisonCommits(data, state);
+        // GitHub lists the changed files on the first page only, whatever its size.
+        if (offset === 0) comparisonFiles(data, state);
+        state.valid = true;
+        return state.messages.size - before;
+      },
+      // Only the first page carries the file list, so later pages climb back to full size.
+      { grow: true },
+    );
+    if (state.messages.size !== state.total) state.reasons.add('truncated');
+    if (state.forward && [...state.messages.keys()].at(-1) !== head.sha)
+      state.reasons.add('conflict');
+  } catch (error) {
+    state.reasons.add(upstreamFailureReason(error));
   }
   return state;
 }
