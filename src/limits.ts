@@ -1371,14 +1371,20 @@ const DEFINITIONS = [
     test: 'src/evidence/actions.test.ts > retention bounds preserve explicit incompleteness, valid packet references and a detached immutable result',
     note: 'awaiting L8 measurement',
   }),
-  unjustified('w2.uv.maxFileBytes', 100_000, 'bytes', {
-    protects:
-      'Caps bytes of one PR-controlled uv.lock or pyproject.toml before fatal UTF-8 decoding and TOML parsing.',
-    effect:
-      'A file over the cap throws budget before decoding, and the side yields a budget gap for that file.',
-    test: 'src/evidence/uv.test.ts > enforces file, edge, marker and selected-root caps at boundaries',
-    note: 'awaiting L8 measurement',
-  }),
+  derived(
+    'w2.uv.maxFileBytes',
+    'bytes',
+    ['w2.session.maxFileBytes'],
+    copy,
+    'A uv.lock or pyproject.toml may be as large as any file the session reader returns, as a package-lock.json may (approved by the maintainer on 2026-11-27, #462).',
+    {
+      protects:
+        'Caps bytes of one PR-controlled uv.lock or pyproject.toml before fatal UTF-8 decoding and TOML parsing.',
+      effect:
+        'A file over the cap throws budget before decoding, and the side yields a budget gap for that file.',
+      test: 'src/evidence/uv.test.ts > enforces file, edge, marker and selected-root caps at boundaries',
+    },
+  ),
   unjustified('w2.uv.maxTomlDepth', 32, 'count', {
     protects:
       'Caps TOML nesting depth in PR-controlled files, so recursive inline parsing cannot exhaust the stack.',
