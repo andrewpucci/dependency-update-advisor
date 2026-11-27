@@ -238,3 +238,37 @@ makes no write. It prints one JSON line of counts and the figure, with no
 target name, URL, or token. Name the upstream projects and package versions of
 the uv PRs the entry cites, and record a new run on the entry's issue before
 changing its value.
+
+### Heap measurement
+
+`limit:packet.bytes` is derived from runner heap, from two measured inputs.
+Re-measure them on Node 24, the action's runtime, with:
+
+```sh
+npm run measure:heap
+```
+
+It builds invented packets through the parity collectors, makes no network
+request, and takes several minutes. Each figure is the smallest
+`--max-old-space-size` at which one packet completes validation,
+revalidation, analysis with a stub model, and render in its own process. The
+report gives `heapBytesPerPacketByte` for
+`limit:runner.heapBytesPerPacketByte` and `replyHeapBytesPerByte` for
+`limit:runner.heapBytesPerReplyByte`, measured with hostile replies of the
+current `limit:analysis.responseBytes`. Re-measure after a change to the
+validation, analysis or render path, and record the new values with the
+date.
+
+### Token-length probe
+
+`limit:analysis.maxTokenEscapedBytes` is the longest vocabulary token of the
+models `mistral-large-latest` may name. Download each model's `tekken.json`
+from Hugging Face at a pinned commit and run:
+
+```sh
+npm run probe:token-length -- <tekken.json> [<tekken.json> ...]
+```
+
+For each file it prints the longest token in raw bytes, decoded UTF-16 code
+units, JSON-escaped bytes, and bytes with every non-ASCII code unit escaped,
+each with its rank. Record the file's commit with the value.

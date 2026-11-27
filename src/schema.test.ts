@@ -1,5 +1,6 @@
 import { expect, test, vi } from 'vite-plus/test';
 import { PACKET_LIMITS, validateReviewPacket } from './schema.js';
+import { limit } from './limits.js';
 
 const HEAD = 'a'.repeat(40);
 const BASE = 'b'.repeat(40);
@@ -1363,24 +1364,49 @@ test('enforces the 32-instance path ceiling', () => {
   });
 });
 
-test('enforces the exact serialized packet budget including multibyte text', () => {
+// Filling the packet cap takes about 2 s locally, like the large-inventory tests, so it shares
+// their allowance.
+const FILLED = { timeout: limit('tests.largeInventoryRenderTimeoutMs') };
+test('enforces the exact serialized packet budget including multibyte text', FILLED, () => {
   const f = findingFixture();
-  const findings = Array.from({ length: 512 }, (_, i) => ({
+  // Filled to the cap through every finding's text fields: the rationale and both action lists,
+  // each entry at most one byte under the text cap, so one more byte still fits a field.
+  const room = PACKET_LIMITS.textBytes - 1;
+  const texts = new Map<number, string>();
+  const text = (bytes: number) => {
+    let value = texts.get(bytes);
+    if (value === undefined) {
+      value = 'é'.repeat(Math.floor(bytes / 2)) + (bytes % 2 ? 'a' : '');
+      texts.set(bytes, value);
+    }
+    return value;
+  };
+  const findings = Array.from({ length: PACKET_LIMITS.findings }, (_, i) => ({
     ...f.finding,
     id: `finding:${i}`,
     rationale: 'a',
+    remediation: [] as string[],
+    validation: [] as string[],
   }));
   const packet = { ...f.packet, findings };
   let remaining = PACKET_LIMITS.bytes - Buffer.byteLength(JSON.stringify(packet));
+  // A new list entry costs its text plus two quotes and, after the first, a comma.
+  const entryCost = (list: string[]) => (list.length ? 3 : 2);
   for (const finding of findings) {
-    const extra = Math.min(2047, remaining);
-    finding.rationale += 'é'.repeat(Math.floor(extra / 2)) + (extra % 2 ? 'a' : '');
+    const extra = Math.min(room - 1, remaining);
+    finding.rationale += text(extra);
     remaining -= extra;
+    for (const list of [finding.remediation, finding.validation])
+      while (list.length < PACKET_LIMITS.listEntries && remaining > entryCost(list)) {
+        const bytes = Math.min(room, remaining - entryCost(list));
+        remaining -= bytes + entryCost(list);
+        list.push(text(bytes));
+      }
   }
   expect(remaining).toBe(0);
   expect(Buffer.byteLength(JSON.stringify(packet))).toBe(PACKET_LIMITS.bytes);
-  expect(accepted({ ...f, packet }).findings).toHaveLength(512);
-  const last = findings.find((f) => Buffer.byteLength(f.rationale) < 2048);
+  expect(accepted({ ...f, packet }).findings).toHaveLength(PACKET_LIMITS.findings);
+  const last = findings.find((f) => Buffer.byteLength(f.rationale) < PACKET_LIMITS.textBytes);
   if (!last) throw new Error('expected room in a single field');
   last.rationale += 'a';
   expect(validateReviewPacket(packet, f.expected)).toEqual({

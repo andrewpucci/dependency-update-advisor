@@ -144,7 +144,7 @@ test('a test reference naming a missing title is a problem', () => {
 
 test('an unjustified entry is a problem only while migration is closed', () => {
   expect(migrationProblems(REGISTER, false)).toContainEqual(
-    expect.stringContaining('packet.bytes'),
+    expect.stringContaining('packet.changes'),
   );
   expect(migrationProblems(REGISTER, true)).toEqual([]);
 });
@@ -188,7 +188,7 @@ test('only the unlisted line in a file with an allowlisted one is a problem', ()
 
 test.each([
   ['Parse at most 16 KiB of JSON.', 'config.maxBytes'],
-  ['The packet holds at most 1 MiB.', 'packet.bytes'],
+  ['An evidence response holds at most 1 MiB.', 'evidence.envelope.maxResponseBytes'],
   [
     'Each signals reader gets 1.5 MiB.',
     'evidence.allocation.signals.readers.malware.maxTotalBytes',

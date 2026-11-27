@@ -163,7 +163,7 @@
   },
   {
     "file": "docs/specs/SPEC-mistral-transport.md",
-    "line": "| Follow-up description                              | `limit:analysis.followupBytes`                                             | Does not expand the baseline's 280-character bound.                                                                    |",
+    "line": "| Follow-up description                              | `limit:analysis.followupBytes`                                             | Does not expand the baseline's 280-character bound.                                                       |",
     "values": [280],
     "reason": "historical: the baseline reviewer's bound, not a register value"
   },
