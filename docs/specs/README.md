@@ -72,6 +72,10 @@ gaps and an introduced vulnerability before parity is claimed.
 
 ## Spec index
 
+By convention, specs are value-free: they cite a register entry as
+`limit:<id>` instead of stating its value, as the
+[limit register](SPEC-limit-register.md) defines.
+
 - [Review configuration](SPEC-review-config.md) — approved for planning.
 - [Trusted config parser](SPEC-config-parser.md) — implemented on `main`
   for C1 #5, with the approved C3 amendment in #49.
