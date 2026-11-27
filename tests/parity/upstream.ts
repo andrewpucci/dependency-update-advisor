@@ -41,6 +41,19 @@ type Options = {
   duplicateNames?: number;
   /** Transitive pip packages under the uv `orbit` member, each moving from 1.0.0 to 2.0.0. */
   uvChildren?: number;
+  /** Direct pip packages the project declares beside `orbit`, each moving from 1.0.0 to 2.0.0. */
+  uvDirect?: number;
+  /** Pads each PyPI version response's description to about this many bytes, as a README is. */
+  pypiDescriptionBytes?: number;
+  /**
+   * Gives each GitHub release of a pip package this many wheel asset records, shaped as the REST
+   * API returns them, so a member's upstream reads carry a real package's size.
+   */
+  pipReleaseAssets?: number;
+  /** Pads each pip package's GitHub repository description to about this many bytes. */
+  pipRepositoryBytes?: number;
+  /** Leaves the npm and Actions files the same on both sides, so only uv members change. */
+  uvOnly?: boolean;
   /** Discovery records for one spelling; the harness default stores each target as itself. */
   stored?: Parameters<typeof viaAdvisoryHttp>[1];
 };
@@ -106,11 +119,68 @@ function release(repository: string, version: string) {
     body: 'Version-specific fixture notes.',
   };
 }
-function githubResponse(url: URL) {
+const BOT = 'https://api.github.com/users/github-actions%5Bbot%5D';
+/** The uploader of a release asset built in Actions, as the REST API returns it. */
+const ACTIONS_BOT = {
+  login: 'github-actions[bot]',
+  id: 41_898_282,
+  node_id: 'MDM6Qm90NDE4OTgyODI=',
+  avatar_url: 'https://avatars.githubusercontent.com/in/15368?v=4',
+  gravatar_id: '',
+  url: BOT,
+  html_url: 'https://github.com/apps/github-actions',
+  followers_url: `${BOT}/followers`,
+  following_url: `${BOT}/following{/other_user}`,
+  gists_url: `${BOT}/gists{/gist_id}`,
+  starred_url: `${BOT}/starred{/owner}{/repo}`,
+  subscriptions_url: `${BOT}/subscriptions`,
+  organizations_url: `${BOT}/orgs`,
+  repos_url: `${BOT}/repos`,
+  events_url: `${BOT}/events{/privacy}`,
+  received_events_url: `${BOT}/received_events`,
+  type: 'Bot',
+  user_view_type: 'public',
+  site_admin: false,
+};
+/** One GitHub release asset record, shaped as the REST API returns it. */
+function releaseAsset(repository: string, version: string, index: number) {
+  const name = `pkg-${version}-${index}-cp312-cp312-manylinux_2_17_x86_64.manylinux2014_x86_64.whl`;
+  return {
+    url: `https://api.github.com/repos/${repository}/releases/assets/${100_000 + index}`,
+    id: 100_000 + index,
+    node_id: `RA_kwDOFixture${index}`,
+    name,
+    label: '',
+    uploader: ACTIONS_BOT,
+    content_type: 'application/octet-stream',
+    state: 'uploaded',
+    size: 1_234_567,
+    download_count: 42,
+    created_at: '2026-10-01T00:00:00Z',
+    updated_at: '2026-10-01T00:00:00Z',
+    browser_download_url: `https://github.com/${repository}/releases/download/v${version}/${name}`,
+  };
+}
+function pipRelease(repository: string, version: string, assets = 0) {
+  const plain = release(repository, version);
+  if (!assets || !repository.split('/')[1]?.startsWith('py-')) return plain;
+  return {
+    ...plain,
+    assets: Array.from({ length: assets }, (_, i) => releaseAsset(repository, version, i)),
+  };
+}
+function githubResponse(url: URL, options: Options) {
   const repository = url.pathname.split('/').slice(2, 4).join('/');
   const tail = url.pathname.split('/').slice(4).map(decodeURIComponent).join('/');
   const repo = repository.split('/')[1];
-  if (!tail) return Response.json({ private: false, full_name: repository });
+  if (!tail)
+    return Response.json({
+      private: false,
+      full_name: repository,
+      ...(options.pipRepositoryBytes && repository.split('/')[1]?.startsWith('py-')
+        ? { description: ''.padEnd(options.pipRepositoryBytes, 'A fixture Python package. ') }
+        : {}),
+    });
   if (tail.startsWith('commits/')) return Response.json({ sha: tail.slice('commits/'.length) });
   const ref = tail.slice('git/ref/'.length);
   if (tail.startsWith('git/ref/') && ['tags/v1.0.0', 'tags/v2.0.0'].includes(ref))
@@ -123,7 +193,7 @@ function githubResponse(url: URL) {
   if (tail.startsWith('releases/tags/v')) {
     const version = tail.slice('releases/tags/v'.length);
     return ['1.0.0', '2.0.0'].includes(version)
-      ? Response.json(release(repository, version))
+      ? Response.json(pipRelease(repository, version, options.pipReleaseAssets))
       : Response.json({}, { status: 404 });
   }
   if (tail.startsWith('contents/')) {
@@ -161,7 +231,10 @@ function researchFetch(options: Options, requests: string[]) {
             info: {
               name: parts[2],
               version: parts[3],
-              description: 'Exact PyPI version metadata.',
+              description: 'Exact PyPI version metadata.'.padEnd(
+                options.pypiDescriptionBytes ?? 0,
+                ' Release notes and usage.',
+              ),
               project_urls: { Source: 'https://github.com/fixture/py-' + parts[2] },
             },
           });
@@ -190,7 +263,7 @@ function researchFetch(options: Options, requests: string[]) {
           : [],
       );
     }
-    if (url.origin === 'https://api.github.com') return githubResponse(url);
+    if (url.origin === 'https://api.github.com') return githubResponse(url, options);
     throw new Error('Unexpected research host');
   }, options.stored);
 }
@@ -200,16 +273,29 @@ export async function upstreamScenario(options: Options = {}) {
     options.uvArtifacts
       ? `sdist={url="https://files.pythonhosted.org/orbit-${version}.tar.gz",hash="sha256:${'a'.repeat(64)}"}\nwheels=[{url="https://files.pythonhosted.org/orbit-${version}.whl",hash="sha256:${'b'.repeat(64)}"}]\n`
       : '';
+  const direct = Array.from({ length: options.uvDirect ?? 0 }, (_, i) => `pydirect-${i}`);
+  const manifest = uvManifest.replace(
+    'dependencies=["orbit>=1"]',
+    `dependencies=[${['orbit', ...direct].map((name) => `"${name}>=1"`).join(',')}]`,
+  );
   const python = (head: boolean) => {
     const version = head ? '2.0.0' : '1.0.0';
     const children = Array.from({ length: options.uvChildren ?? 0 }, (_, i) => `pychild-${i}`);
     const dependencies = children.length
       ? `dependencies=[${children.map((name) => `{name="${name}"}`).join(',')}]\n`
       : '';
+    const declared = ['orbit', ...direct];
     if (!options.uvVariants)
       return (
-        uvLock(version, dependencies + artifacts(version)) +
-        children.map((name) => uvPackage(name, version)).join('')
+        uvLock(version, dependencies + artifacts(version))
+          .replace(
+            'dependencies=[{name="orbit"}]',
+            `dependencies=[${declared.map((name) => `{name="${name}"}`).join(',')}]`,
+          )
+          .replace(
+            'requires-dist=[{name="orbit",specifier=">=1"}]',
+            `requires-dist=[${declared.map((name) => `{name="${name}",specifier=">=1"}`).join(',')}]`,
+          ) + [...children, ...direct].map((name) => uvPackage(name, version)).join('')
       );
     return (
       uvLock(version, 'resolution-markers=["sys_platform == \'linux\'"]\n' + artifacts(version)) +
@@ -220,12 +306,15 @@ export async function upstreamScenario(options: Options = {}) {
       )
     );
   };
-  const files = (head: boolean) => ({
-    ...npmFiles(head, options),
-    'pyproject.toml': uvManifest,
-    'uv.lock': python(head),
-    '.github/workflows/ci.yml': `jobs:\n  review:\n    steps:\n      - uses: ${head && options.actionChange === 'owner' ? 'other-owner/action' : 'fixture/action'}${options.actionsSubpath ? '/component' : ''}@${head && options.actionChange === 'mutable' ? 'v2.0.0' : (head ? '2' : '1').repeat(40)}\n`,
-  });
+  const files = (proposed: boolean) => {
+    const head = proposed && !options.uvOnly;
+    return {
+      ...npmFiles(head, options),
+      'pyproject.toml': manifest,
+      'uv.lock': python(proposed),
+      '.github/workflows/ci.yml': `jobs:\n  review:\n    steps:\n      - uses: ${head && options.actionChange === 'owner' ? 'other-owner/action' : 'fixture/action'}${options.actionsSubpath ? '/component' : ''}@${head && options.actionChange === 'mutable' ? 'v2.0.0' : (head ? '2' : '1').repeat(40)}\n`,
+    };
+  };
   const fixture = uvMetadataScenario('permission403', {
     files: { base: files(false), head: files(true) },
   });

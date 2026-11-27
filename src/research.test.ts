@@ -452,8 +452,17 @@ test('caps every reader at its share, so the readers together stay inside the en
       maxResponseBytes: Math.min(MiB, share.maxTotalBytes),
     });
     expect(share.maxRequests, name).toBeLessThanOrEqual(ceiling.maxRequests);
-    expect(share.maxTotalBytes, name).toBe(ceiling.maxTotalBytes);
+    expect(share.maxTotalBytes, name).toBeLessThanOrEqual(ceiling.maxTotalBytes);
   }
+  // The upstream byte share and the PyPI metadata share scale with members (#467): upstream
+  // bytes are the 29-response base plus 750,000 × 4 members, and the metadata share for its one uv member is 16 + 2.5
+  // requests, rounded up, and 524,288 + 70,000 bytes, raised to the one-response floor. Every
+  // other byte share stays at its ceiling.
+  expect(shares.upstream.maxTotalBytes).toBe(33_408_704);
+  expect(computed.metadata).toEqual({ maxRequests: 19, maxTotalBytes: MiB });
+  for (const [name, , share, ceiling] of expected)
+    if (!['S2 upstream', 'metadata'].includes(name))
+      expect(share.maxTotalBytes, name).toBe(ceiling.maxTotalBytes);
   // Three direct members (npm, Action, uv) and one transitive npm member: upstream
   // 9 + 5.9 × 4 = 32.6, advisory 3 + 3 × 3 + 2 = 14, malware 2 + 2 × 3 + 1 × 4 = 12, and
   // publish times 2 + 1.2 × 2 = 4.4, each rounded up and under its ceiling.
@@ -477,9 +486,10 @@ test('caps every reader at its share, so the readers together stay inside the en
   const otherRequests = others.reduce((sum, share) => sum + share.maxRequests, 0);
   expect(ceilings + otherRequests).toBe(EVIDENCE_READ_ENVELOPE.maxRequests);
   expect(used + otherRequests).toBeLessThan(EVIDENCE_READ_ENVELOPE.maxRequests);
-  expect(bytes + others.reduce((sum, share) => sum + share.maxTotalBytes, 0)).toBe(
-    EVIDENCE_READ_ENVELOPE.maxTotalBytes,
-  );
+  const ceilingBytes = expected.reduce((sum, [, , , ceiling]) => sum + ceiling.maxTotalBytes, 0);
+  const otherBytes = others.reduce((sum, share) => sum + share.maxTotalBytes, 0);
+  expect(ceilingBytes + otherBytes).toBe(EVIDENCE_READ_ENVELOPE.maxTotalBytes);
+  expect(bytes + otherBytes).toBeLessThan(EVIDENCE_READ_ENVELOPE.maxTotalBytes);
 });
 
 test('opens each reader with the share scaled from the packet members', async () => {
@@ -897,6 +907,199 @@ test('a uv change of one direct and seven transitive pip packages keeps every vu
     if (change.ecosystem === 'uv' && !('basis' in change))
       expect(change.evidence.vulnerability, change.id).toMatchObject({ status: 'available' });
   expect(JSON.stringify(result.packet)).not.toContain('budget');
+});
+
+test('a uv change of 30 pip members keeps upstream, vulnerability and malware for every member (#467)', async () => {
+  // About half direct and half transitive, as on the #462 PRs: orbit and 14 more direct pip
+  // packages, and 15 transitive ones under orbit. Each PyPI version response carries a README-sized
+  // description, near the 25–28 KB per read those PRs averaged. Each member's GitHub release
+  // carries wheel assets shaped as the REST API returns them, about the 0.6 MB of upstream reads
+  // per member #462 measured. Asset records are denser in JSON entries than those PRs' reads
+  // (about 7,400 per member), so this change uses more entries than they did. Together they pass
+  // each former cap: the 200,000-entry cap, the flat 15 MiB upstream byte share, and the
+  // 2,000,000-byte retained cap; the reader keeps each release it parses.
+  const DIRECT = 14;
+  const CHILDREN = 15;
+  const { fixture, packet } = await scenario({
+    uvDirect: DIRECT,
+    uvChildren: CHILDREN,
+    pypiDescriptionBytes: 24_000,
+    pipReleaseAssets: 360,
+  });
+  const uv = packet.changes.filter((c) => c.ecosystem === 'uv' && !('basis' in c));
+  expect(uv).toHaveLength(30);
+  expect(uv.filter((c) => c.role === 'direct')).toHaveLength(DIRECT + 1);
+  // Two PyPI reads per member, which the former flat metadata share of 16 cut after 8 members.
+  const units = researchShareUnits(packet.changes);
+  expect(units.eligible.metadata).toBe(30);
+  expect(researchShares(units).signals.readers.metadata.maxRequests).toBe(
+    Math.ceil(
+      limit('research.share.signals.metadata.requests.base') +
+        30 * limit('research.share.signals.metadata.requests.rate.eligible'),
+    ),
+  );
+  const countEntries = (value: unknown): number =>
+    typeof value === 'object' && value !== null
+      ? Object.values(value).reduce<number>((total, child) => total + 1 + countEntries(child), 0)
+      : 0;
+  let pypi = 0;
+  const releases = { reads: 0, bytes: 0, entries: 0 };
+  const result = await runResearch({
+    ...base(fixture, packet),
+    fetch: async (url, init) => {
+      const target = new URL(url);
+      if (target.host === 'pypi.org') pypi++;
+      const response = await fixture.fetch(url, init);
+      if (/^\/repos\/fixture\/py-[^/]+\/releases\/tags\//u.test(target.pathname)) {
+        const text = await response.clone().text();
+        releases.reads++;
+        releases.bytes += Buffer.byteLength(text);
+        releases.entries += countEntries(JSON.parse(text));
+      }
+      return response;
+    },
+  });
+  if (result.kind !== 'ready') throw new Error(result.kind);
+  expect(pypi).toBe(2 * 30);
+  // One release read per member, each about 0.6 MB, all kept by the reader.
+  expect(releases.reads).toBe(30);
+  expect(releases.bytes / 30).toBeGreaterThan(550_000);
+  expect(releases.bytes / 30).toBeLessThan(650_000);
+  expect(releases.entries).toBeGreaterThan(200_000);
+  expect(releases.bytes).toBeGreaterThan(15 * 1024 * 1024);
+  expect(releases.bytes).toBeLessThan(limit('research.maxRetainedBytes'));
+  expect(releases.entries).toBeLessThan(limit('research.maxJsonEntries'));
+  expect(releases.bytes).toBeLessThan(researchShares(units).upstream.maxTotalBytes);
+  expect(result.unavailable).toEqual([]);
+  for (const change of result.packet.changes) {
+    if (change.ecosystem !== 'uv' || 'basis' in change) continue;
+    for (const category of ['upstream', 'vulnerability', 'malware'] as const)
+      expect(change.evidence[category], `${change.id} ${category}`).toMatchObject({
+        status: 'available',
+      });
+  }
+  expect(JSON.stringify(result.packet)).not.toContain('budget');
+  expect(JSON.stringify(result.upstreamAttempts)).not.toContain('budget');
+  expect(JSON.stringify(result.signalAttempts)).not.toContain('budget');
+});
+
+test('a uv change whose advisory and malware lookups pass the former ceilings completes them (#467)', async () => {
+  // 40 uv members, 20 direct and 20 transitive: pip reviewed lookups go to OSV one target at a
+  // time, two per member, so advisory needs 80 OSV queries plus the npm batches and the Action's
+  // lookups. That is above the former ceiling of 80 and under the ceiling of 221 the evidence
+  // deadline derives. Malware takes a pip discovery batch and a versioned query per member, past
+  // the former malware ceiling of 40 and under the ceiling of 256 (#467).
+  const { fixture, packet } = await scenario({ uvDirect: 19, uvChildren: 20 });
+  const uv = packet.changes.filter((c) => c.ecosystem === 'uv' && !('basis' in c));
+  expect(uv).toHaveLength(40);
+  const share = researchShares(researchShareUnits(packet.changes)).advisory.maxRequests;
+  const ceiling = EVIDENCE_READ_ALLOCATION.advisory.maxRequests;
+  expect(ceiling).toBe(221);
+  expect(EVIDENCE_READ_ALLOCATION.signals.readers.malware.maxRequests).toBe(256);
+  let stage = 'none';
+  let advisory = 0;
+  let malware = 0;
+  const result = await runResearch({
+    ...base(fixture, packet),
+    fetch: async (url, init) => {
+      const target = new URL(url);
+      const reviewed =
+        target.host === 'api.osv.dev' ||
+        (target.pathname === '/advisories' && target.searchParams.get('type') === 'reviewed');
+      if (stage === 'advisories' && reviewed) advisory++;
+      if (target.searchParams.get('type') === 'malware') malware++;
+      return fixture.fetch(url, init);
+    },
+    observe: (observation) => {
+      if (observation.kind === 'stage-start') stage = observation.stage;
+    },
+  });
+  if (result.kind !== 'ready') throw new Error(result.kind);
+  expect(advisory).toBeGreaterThan(80);
+  expect(advisory).toBeLessThanOrEqual(share);
+  expect(share).toBeLessThanOrEqual(ceiling);
+  expect(malware).toBeGreaterThan(40);
+  expect(result.unavailable).toEqual([]);
+  // Every member keeps its vulnerability and malware checks; none ends `budget`.
+  for (const change of result.packet.changes)
+    if (!('basis' in change))
+      for (const category of ['vulnerability', 'malware'] as const)
+        expect(change.evidence[category], `${change.id} ${category}`).toMatchObject({
+          status: 'available',
+          reasons: [],
+        });
+  expect(JSON.stringify(result.packet)).not.toContain('budget');
+  expect(JSON.stringify(result.signalAttempts)).not.toContain('budget');
+});
+
+test.each([
+  ['one uv member', {}],
+  ['a direct member and seven transitive ones', { uvChildren: 7 }],
+  ['30 members, half direct', { uvDirect: 14, uvChildren: 15 }],
+  ['a member with two resolution variants', { uvVariants: true }],
+  ['a member with sdist and wheel artifacts', { uvArtifacts: true }],
+] as const)(
+  'the PyPI metadata reads stay within two per uv change, the reads its ceiling allows: %s',
+  async (_name, options) => {
+    // The ceiling is two reads per change, base and head, over the packet's change limit.
+    expect(EVIDENCE_READ_ALLOCATION.signals.readers.metadata.maxRequests).toBe(
+      2 * limit('packet.changes'),
+    );
+    const { fixture, packet } = await scenario(options);
+    const uvChanges = packet.changes.filter((c) => c.ecosystem === 'uv' && !('basis' in c));
+    expect(uvChanges.length).toBeGreaterThan(0);
+    const reads: string[] = [];
+    const result = await runResearch({
+      ...base(fixture, packet),
+      fetch: async (url, init) => {
+        if (new URL(url).host === 'pypi.org') reads.push(url);
+        return fixture.fetch(url, init);
+      },
+    });
+    if (result.kind !== 'ready') throw new Error(result.kind);
+    expect(reads.length).toBeGreaterThan(0);
+    expect(reads.length).toBeLessThanOrEqual(2 * uvChanges.length);
+    // Each exact release is read once, shared by upstream and signals.
+    expect(new Set(reads).size).toBe(reads.length);
+  },
+);
+
+test('a one-member uv change whose upstream reads pass one response completes upstream (#467)', async () => {
+  // Only the uv member changes. Its repository and release responses together pass the
+  // one-response floor and the single member rate, so it needs the upstream byte base: the most
+  // reads one member's release stage can make, each a full response.
+  const { fixture, packet } = await scenario({
+    uvOnly: true,
+    pipReleaseAssets: 540,
+    pipRepositoryBytes: 300_000,
+  });
+  const members = packet.changes.filter((c) => !('basis' in c));
+  expect(members.map((c) => c.ecosystem)).toEqual(['uv']);
+  const share = researchShares(researchShareUnits(packet.changes)).upstream.maxTotalBytes;
+  expect(share).toBe(
+    limit('research.share.upstream.bytes.base') +
+      limit('research.share.upstream.bytes.rate.direct'),
+  );
+  let github = 0;
+  const result = await runResearch({
+    ...base(fixture, packet),
+    fetch: async (url, init) => {
+      const response = await fixture.fetch(url, init);
+      if (new URL(url).host === 'api.github.com' && !url.includes('/advisories'))
+        github += Buffer.byteLength(await response.clone().text());
+      return response;
+    },
+  });
+  if (result.kind !== 'ready') throw new Error(result.kind);
+  const response = limit('evidence.envelope.maxResponseBytes');
+  expect(github).toBeGreaterThan(response);
+  expect(github).toBeGreaterThan(limit('research.share.upstream.bytes.rate.direct'));
+  expect(github).toBeLessThan(limit('research.share.upstream.bytes.base'));
+  expect(result.unavailable).toEqual([]);
+  expect(members).toHaveLength(1);
+  const [member] = result.packet.changes.filter((c) => !('basis' in c));
+  expect(member?.evidence.upstream).toMatchObject({ status: 'available', reasons: [] });
+  expect(JSON.stringify(result.upstreamAttempts)).not.toContain('budget');
 });
 
 const PLACEHOLDER = { status: 'unavailable', reasons: ['missing'], sourceIds: [] };
@@ -1529,7 +1732,12 @@ const REGISTRY_URL = `https://registry.npmjs.org/${REGISTRY_NAME}/${REGISTRY_VER
 
 /** A registry reader whose only limits are the research register values under test. */
 function registryReader(
-  limits: { maxJsonEntries: number; maxRetainedBytes: number },
+  limits: {
+    maxJsonEntries: number;
+    maxRetainedBytes: number;
+    maxResponseBytes?: number;
+    maxTotalBytes?: number;
+  },
   body: unknown,
 ) {
   const MiB8 = 8 * 1024 * 1024;
@@ -1574,14 +1782,17 @@ test('the npm registry reader counts exactly research.maxJsonEntries entries and
   const fixedEntries = 6;
   const entriesFor = (elements: number) =>
     registryDocument({ extra: Array.from({ length: elements }, () => 0) });
+  // The document of a million entries is retained whole, so the retained-byte cap is lifted to
+  // the response cap here: this test pins the entry cap alone.
+  const maxRetainedBytes = 8 * 1024 * 1024;
   const atLimit = registryReader(
-    { maxJsonEntries, maxRetainedBytes: limit('research.maxRetainedBytes') },
+    { maxJsonEntries, maxRetainedBytes },
     entriesFor(maxJsonEntries - fixedEntries),
   );
   expect(await atLimit.read(registryRequest)).toMatchObject({ kind: 'metadata' });
 
   const pastLimit = registryReader(
-    { maxJsonEntries, maxRetainedBytes: limit('research.maxRetainedBytes') },
+    { maxJsonEntries, maxRetainedBytes },
     entriesFor(maxJsonEntries - fixedEntries + 1),
   );
   expect(await pastLimit.read(registryRequest)).toEqual({ kind: 'unavailable', reason: 'budget' });
@@ -1604,14 +1815,20 @@ test('the npm registry reader retains exactly research.maxRetainedBytes and refu
     );
   const padding = maxRetainedBytes - retainedWith(0);
   expect(retainedWith(padding)).toBe(maxRetainedBytes);
+  // The cap is the research cache total, above any one response, so the response caps are lifted
+  // here: this test pins the retained-byte cap alone.
+  const responseCaps = {
+    maxResponseBytes: 2 * maxRetainedBytes,
+    maxTotalBytes: 2 * maxRetainedBytes,
+  };
   const atLimit = registryReader(
-    { maxJsonEntries: limit('research.maxJsonEntries'), maxRetainedBytes },
+    { maxJsonEntries: limit('research.maxJsonEntries'), maxRetainedBytes, ...responseCaps },
     registryDocument({ pad: 'x'.repeat(padding) }),
   );
   expect(await atLimit.read(registryRequest)).toMatchObject({ kind: 'metadata' });
 
   const pastLimit = registryReader(
-    { maxJsonEntries: limit('research.maxJsonEntries'), maxRetainedBytes },
+    { maxJsonEntries: limit('research.maxJsonEntries'), maxRetainedBytes, ...responseCaps },
     registryDocument({ pad: 'x'.repeat(padding + 1) }),
   );
   expect(await pastLimit.read(registryRequest)).toEqual({ kind: 'unavailable', reason: 'budget' });

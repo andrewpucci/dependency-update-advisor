@@ -505,7 +505,7 @@ export async function resolvePackageVersion(
   }
   throw new UpstreamFailure(failure);
 }
-function packageTags(target: PackageResearchTarget, repo: UpstreamRepository) {
+export function packageTags(target: PackageResearchTarget, repo: UpstreamRepository) {
   return repo.directory
     ? [target.name + '@' + target.version]
     : ['v' + target.version, target.version];

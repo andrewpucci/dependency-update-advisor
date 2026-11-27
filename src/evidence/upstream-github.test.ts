@@ -3,13 +3,14 @@ import { createHash } from 'node:crypto';
 import { createUpstreamReader, type UpstreamDependencies } from './upstream-read.js';
 import { createResearchCache } from './research-cache.js';
 import { RESEARCH_CACHE_LIMITS } from '../budget.js';
-import { limit } from '../limits.js';
+import { limit, UPSTREAM_TAG_CANDIDATES } from '../limits.js';
 import {
   collectTargetRelease,
   resolveUpstreamRef,
   collectExactComparison,
   collectPackageComparison,
   resolvePackageVersion,
+  packageTags,
 } from './upstream-github.js';
 
 const sha = 'a'.repeat(40);
@@ -420,4 +421,16 @@ test('a comparison keeps its file list complete below the register file cap and 
   const atCap = compareWithFiles(cap);
   expect(await compare(atCap)).toMatchObject({ reasons: ['truncated'] });
   atCap.reader.close();
+});
+
+test('package tag candidates stay within the count the upstream byte base assumes (#467)', () => {
+  const root = packageTags(target, { repository: 'fixture/orbit', directory: '' });
+  const component = packageTags(target, {
+    repository: 'fixture/orbit',
+    directory: 'packages/orbit',
+  });
+  expect(root).toEqual(['v2.0.0', '2.0.0']);
+  expect(component).toEqual(['orbit@2.0.0']);
+  expect(root.length).toBeLessThanOrEqual(UPSTREAM_TAG_CANDIDATES);
+  expect(component.length).toBeLessThanOrEqual(UPSTREAM_TAG_CANDIDATES);
 });

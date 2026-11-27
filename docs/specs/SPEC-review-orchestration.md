@@ -181,19 +181,19 @@ receives `process.env` or a general fetch function.
    freshness reads are bounded by the job window (Diagnostic Amendments 2
    and 3).
 
-   | Reader                                    | Request ceiling                                                      | Request share scales on        | Bytes                                                                  |
-   | ----------------------------------------- | -------------------------------------------------------------------- | ------------------------------ | ---------------------------------------------------------------------- |
-   | Snapshot reads (repository, commit, tree) | `limit:evidence.allocation.transport.snapshot.maxRequests`           | fixed                          | `limit:evidence.allocation.transport.snapshot.maxTotalBytes`           |
-   | Freshness (workflow, run, PR, compare)    | `limit:evidence.allocation.transport.freshness.maxRequests`          | fixed                          | `limit:evidence.allocation.transport.freshness.maxTotalBytes`          |
-   | GitHub evidence session                   | `limit:evidence.allocation.session.maxRequests`                      | fixed                          | `limit:evidence.allocation.session.maxTotalBytes`                      |
-   | npm registry details                      | `limit:evidence.allocation.registry.maxRequests`                     | npm inventory members          | `limit:evidence.allocation.registry.maxTotalBytes`                     |
-   | Upstream evidence                         | `limit:evidence.allocation.upstream.maxRequests`                     | direct and transitive members  | `limit:evidence.allocation.upstream.maxTotalBytes`                     |
-   | Advisory lookup                           | `limit:evidence.allocation.advisory.maxRequests`                     | direct and transitive members  | `limit:evidence.allocation.advisory.maxTotalBytes`                     |
-   | Signals: malware                          | `limit:evidence.allocation.signals.readers.malware.maxRequests`      | every member, plus direct ones | `limit:evidence.allocation.signals.readers.malware.maxTotalBytes`      |
-   | Signals: npm publish times                | `limit:evidence.allocation.signals.readers.publishTimes.maxRequests` | npm members                    | `limit:evidence.allocation.signals.readers.publishTimes.maxTotalBytes` |
-   | Signals: npm registry policy              | `limit:evidence.allocation.signals.readers.registry.maxRequests`     | fixed at the ceiling           | `limit:evidence.allocation.signals.readers.registry.maxTotalBytes`     |
-   | Signals: PyPI metadata                    | `limit:evidence.allocation.signals.readers.metadata.maxRequests`     | fixed at the ceiling           | `limit:evidence.allocation.signals.readers.metadata.maxTotalBytes`     |
-   | Signals: Actions upstream                 | `limit:evidence.allocation.signals.readers.upstream.maxRequests`     | fixed at the ceiling           | `limit:evidence.allocation.signals.readers.upstream.maxTotalBytes`     |
+   | Reader                                    | Request ceiling                                                      | Request share scales on        | Byte ceiling                                                           | Byte share scales on          |
+   | ----------------------------------------- | -------------------------------------------------------------------- | ------------------------------ | ---------------------------------------------------------------------- | ----------------------------- |
+   | Snapshot reads (repository, commit, tree) | `limit:evidence.allocation.transport.snapshot.maxRequests`           | fixed                          | `limit:evidence.allocation.transport.snapshot.maxTotalBytes`           | fixed                         |
+   | Freshness (workflow, run, PR, compare)    | `limit:evidence.allocation.transport.freshness.maxRequests`          | fixed                          | `limit:evidence.allocation.transport.freshness.maxTotalBytes`          | fixed                         |
+   | GitHub evidence session                   | `limit:evidence.allocation.session.maxRequests`                      | fixed                          | `limit:evidence.allocation.session.maxTotalBytes`                      | fixed                         |
+   | npm registry details                      | `limit:evidence.allocation.registry.maxRequests`                     | npm inventory members          | `limit:evidence.allocation.registry.maxTotalBytes`                     | fixed                         |
+   | Upstream evidence                         | `limit:evidence.allocation.upstream.maxRequests`                     | direct and transitive members  | `limit:evidence.allocation.upstream.maxTotalBytes`                     | direct and transitive members |
+   | Advisory lookup                           | `limit:evidence.allocation.advisory.maxRequests`                     | direct and transitive members  | `limit:evidence.allocation.advisory.maxTotalBytes`                     | fixed at the ceiling          |
+   | Signals: malware                          | `limit:evidence.allocation.signals.readers.malware.maxRequests`      | every member, plus direct ones | `limit:evidence.allocation.signals.readers.malware.maxTotalBytes`      | fixed at the ceiling          |
+   | Signals: npm publish times                | `limit:evidence.allocation.signals.readers.publishTimes.maxRequests` | npm members                    | `limit:evidence.allocation.signals.readers.publishTimes.maxTotalBytes` | fixed at the ceiling          |
+   | Signals: npm registry policy              | `limit:evidence.allocation.signals.readers.registry.maxRequests`     | fixed at the ceiling           | `limit:evidence.allocation.signals.readers.registry.maxTotalBytes`     | fixed at the ceiling          |
+   | Signals: PyPI metadata                    | `limit:evidence.allocation.signals.readers.metadata.maxRequests`     | uv members                     | `limit:evidence.allocation.signals.readers.metadata.maxTotalBytes`     | uv members                    |
+   | Signals: Actions upstream                 | `limit:evidence.allocation.signals.readers.upstream.maxRequests`     | fixed at the ceiling           | `limit:evidence.allocation.signals.readers.upstream.maxTotalBytes`     | fixed at the ceiling          |
 
    Fitted share values amendment
    ([#371](https://github.com/andrewpucci/dependency-update-advisor/issues/371)):
@@ -202,13 +202,27 @@ receives `process.env` or a general fetch function.
    trusted inventory when the reader opens. The bases and rates are the
    `measured` register entries listed in the
    [fitted share values amendment](SPEC-evidence-coverage.md#fitted-share-values-amendment)
-   (F2 and F3). Byte shares stay at the values above. A one-member change
+   (F2 and F3). A one-member change
    gets a few requests per scaled reader, so a runaway reader stops sooner;
    a large group gets more, up to the ceiling, and past it ends incomplete
    with a `budget` reason. The `limit:evidence.envelope.totalTimeoutMs`
    deadline, not the request count, bounds a very large group. The npm
    registry reads go to `registry.npmjs.org` and never count against the
    research GitHub quota.
+
+   uv share sizing amendment
+   ([#467](https://github.com/andrewpucci/dependency-update-advisor/issues/467)):
+   the maintainer approved its values on 2026-11-27. The upstream byte
+   share scales on direct and transitive members, and the PyPI metadata
+   share's requests and bytes scale on uv members, by the same formula
+   with A1.5's byte floor of one full response. Their bases, rates, and
+   ceilings are listed in the
+   [uv share sizing amendment](SPEC-evidence-coverage.md#uv-share-sizing-amendment).
+   The advisory request ceiling is derived from the
+   `limit:evidence.envelope.totalTimeoutMs` deadline, and the malware request
+   ceiling from `limit:packet.changes` (U5). Every other byte
+   share stays at its ceiling, and the envelope totals stay the sums of the
+   ceilings.
 
    The snapshot share covers C1's `limit:context.maxSourceCandidates` excerpt
    files with their directories. Freshness reads are reserved separately so a
