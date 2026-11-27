@@ -297,9 +297,11 @@ gaps and an introduced vulnerability before parity is claimed.
   [uv share sizing amendment](SPEC-evidence-coverage.md#uv-share-sizing-amendment)
   ([#467](https://github.com/andrewpucci/dependency-update-advisor/issues/467)),
   approved by the maintainer 2026-11-27, scales the upstream byte share and
-  the PyPI metadata share with members, derives the advisory ceiling from
-  the evidence deadline and the retained-byte cap from the research cache
-  total, and gives the research JSON entry cap a safety basis.
+  the PyPI metadata share with members, derives the upstream byte base from
+  one member's release-stage reads, the advisory ceiling from the evidence
+  deadline, the malware ceiling from the packet change limit, and the
+  retained-byte cap from the research cache total, and gives the research
+  JSON entry cap a safety basis.
 - [Limit register](SPEC-limit-register.md) — approved for planning,
   2026-11-17; its plan was approved for execution the same day. One
   register for every limit (maxima, minima, defaults, timeouts, thresholds),

@@ -219,7 +219,8 @@ receives `process.env` or a general fetch function.
    ceilings are listed in the
    [uv share sizing amendment](SPEC-evidence-coverage.md#uv-share-sizing-amendment).
    The advisory request ceiling is derived from the
-   `limit:evidence.envelope.totalTimeoutMs` deadline (U5). Every other byte
+   `limit:evidence.envelope.totalTimeoutMs` deadline, and the malware request
+   ceiling from `limit:packet.changes` (U5). Every other byte
    share stays at its ceiling, and the envelope totals stay the sums of the
    ceilings.
 

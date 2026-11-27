@@ -8825,6 +8825,11 @@ function buildRegister(definitions) {
 	})]));
 }
 const MiB = 1048576;
+/**
+* Tags a package's target-release stage tries: `v<version>` and `<version>`, or one
+* `<name>@<version>` in a monorepo (`packageTags`, src/evidence/upstream-github.ts:508).
+*/
+const UPSTREAM_TAG_CANDIDATES = 2;
 /** The slowest OSV `v1/query` response measured for #467, which sizes the advisory ceiling. */
 const SLOWEST_OSV_RESPONSE_MS = 541;
 const sum = (...values) => values.reduce((total, value) => total + value, 0);
@@ -9010,11 +9015,9 @@ const UV_ZERO = {
 const UV_SIZED = {
 	"upstream.bytes": {
 		base: {
-			value: 0,
-			basis: {
-				statistic: "the upstream byte share is per member only: upstream bytes on the #462 PRs grow with their members",
-				headroom: "none: a change with no counted members still gets the one-response floor of limit:evidence.envelope.maxResponseBytes"
-			}
+			inputs: ["research.maxTagDepth", "evidence.envelope.maxResponseBytes"],
+			formula: (depth, response) => (1 + UPSTREAM_TAG_CANDIDATES * (depth + 4)) * response,
+			description: "The most reads one member's target-release stage can make, each a full response: 1 repository read, then for each of the 2 candidate tags (src/evidence/upstream-github.ts:508) 1 ref, up to limit:research.maxTagDepth annotated-tag reads, 1 contents, 1 release, and 1 recheck ref (src/evidence/upstream-github.ts:252-296). With the register's tag depth that is 29 reads × limit:evidence.envelope.maxResponseBytes, about 29 MiB, so a one-member change can always finish its release stage. Approved by the maintainer on 2026-11-27, #467."
 		},
 		rates: Object.fromEntries(["direct", "transitive"].map((unit) => [unit, {
 			value: 75e4,
@@ -9087,6 +9090,18 @@ const rateAudit = (share, dimension, unit) => ({
 	protects: `Grows the ${share} ${dimension} share with each ${unit} member, so a larger change gets more and a small one fails faster.`,
 	effect: "Adds rate times the count to the share, rounded up and capped at the ceiling; zero leaves the share at its base."
 });
+/** A sized base as its register entry: derived, kept (`unjustified`), or measured. */
+function sizedBase(id, base, unit, audit) {
+	if ("inputs" in base) return derived(id, unit, base.inputs, base.formula, base.description, audit);
+	if ("note" in base.basis) return unjustified(id, base.value, unit, {
+		...audit,
+		note: base.basis.note
+	});
+	return fitted(id, base.value, unit, {
+		...UV_MEASURE,
+		...base.basis
+	}, audit);
+}
 /** A #467 sized dimension's base and rate entries: `measured` entries citing #462, or a kept base. */
 function sizedShareEntries(share, dimension, sized, unit, units) {
 	const baseId = `research.share.${share}.${dimension}.base`;
@@ -9095,14 +9110,7 @@ function sizedShareEntries(share, dimension, sized, unit, units) {
 		effect: "The computed share starts here; each rate adds to it, rounded up and capped at the ceiling.",
 		test: SHARE_SIZED_TEST
 	};
-	const { value, basis } = sized.base;
-	return ["note" in basis ? unjustified(baseId, value, unit, {
-		...baseAudit,
-		note: basis.note
-	}) : fitted(baseId, value, unit, {
-		...UV_MEASURE,
-		...basis
-	}, baseAudit), ...units.map((rateUnit) => {
+	return [sizedBase(baseId, sized.base, unit, baseAudit), ...units.map((rateUnit) => {
 		const id = `research.share.${share}.${dimension}.rate.${rateUnit}`;
 		const rate = sized.rates[rateUnit];
 		return fitted(id, rate?.value ?? 0, unit, {
@@ -9487,7 +9495,7 @@ const DEFINITIONS = [
 		protects: "Caps response bytes of upstream research reads, the ceiling of the per-member upstream byte share, so they cannot take more of the evidence time or runner memory than the evidence window can read.",
 		basis: {
 			kind: "safety",
-			reason: "Upstream reads run inside limit:evidence.envelope.totalTimeoutMs (240 s). At the 0.64 MB/s upstream throughput measured on the #462 uv PRs, that window reads 240 × 0.64 = 153.6 MB; half of it, 76.8 MB, rounded to 77 MB, leaves a margin for slower responses: about 120 s of upstream reads. Research runs upstream, then advisories, then signals, one after another, on the one limit:evidence.envelope.totalTimeoutMs deadline: this ceiling and the advisory ceiling (limit:evidence.allocation.advisory.maxRequests) each take half the window, so together they use the whole window at worst, and signals relies on neither reaching its ceiling. The value is written here, not derived, so it depends on limit:evidence.envelope.totalTimeoutMs and must be re-derived when that changes. The per-member rate reaches it near 102 members (77 MB ÷ 0.75 MB). Approved by the maintainer on 2026-11-27, #467."
+			reason: "Upstream reads run inside limit:evidence.envelope.totalTimeoutMs (240 s). At the 0.64 MB/s upstream throughput measured on the #462 uv PRs, that window reads 240 × 0.64 = 153.6 MB; half of it, 76.8 MB, rounded to 77 MB, leaves a margin for slower responses: about 120 s of upstream reads. Research runs upstream, then advisories, then signals, one after another, on the one limit:evidence.envelope.totalTimeoutMs deadline: this ceiling and the advisory ceiling (limit:evidence.allocation.advisory.maxRequests) each take half the window, so together they use the whole window at worst, and signals relies on neither reaching its ceiling. The value is written here, not derived, so it depends on limit:evidence.envelope.totalTimeoutMs and must be re-derived when that changes. With the derived base of about 29 MiB, the per-member rate reaches it at 63 members ((77,000,000 − 30,408,704) ÷ 750,000 ≈ 62.1). Approved by the maintainer on 2026-11-27, #467."
 		},
 		effect: "The ceiling of the scaled upstream byte share; a response past the share's remaining bytes is refused with budget and the upstream reader stops.",
 		test: "src/evidence/upstream-read.test.ts > upstream reader accepts a byte share exactly and refuses the byte past it"
@@ -9525,10 +9533,9 @@ const DEFINITIONS = [
 		effect: "Reached only when all five readers' byte caps are spent; each then returns budget.",
 		test: "none: sum of the five signal reader byte shares (src/budget.ts:71); the signals stage passes it to enrichPolicySignals (src/research.ts:275), which reads only maxFindings and maxRetainedBytes (src/evidence/policy-signals-evidence.ts:192-194), and each reader stops at its own byte share"
 	}),
-	unjustified("evidence.allocation.signals.readers.malware.maxRequests", 40, "count", {
-		protects: "Caps malware-signal lookups at one per extra changed package, so the signals stage cannot exhaust the envelope.",
-		effect: "The lookup past the cap returns budget and the malware reader stops, keeping results already read.",
-		note: "awaiting L8 measurement",
+	derived("evidence.allocation.signals.readers.malware.maxRequests", "count", ["packet.changes"], (changes) => 2 * changes, "A malware lookup takes at most 2 requests per change (an Actions or pip stored-name discovery, then the versioned query; npm takes 1), for at most limit:packet.changes changes: 2 × 128 = 256. Approved by the maintainer on 2026-11-27, #467.", {
+		protects: "Caps malware-signal lookups, the ceiling of the per-member malware share, so the signals stage cannot exhaust the envelope.",
+		effect: "The ceiling of the scaled malware request share; the lookup past the share returns budget and the malware reader stops, keeping results already read.",
 		test: "src/evidence/advisory-read.test.ts > malware reader spends exactly its request share and refuses the lookup past it"
 	}),
 	unjustified("evidence.allocation.signals.readers.malware.maxTotalBytes", 1.5 * MiB, "bytes", {

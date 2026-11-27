@@ -27,9 +27,9 @@ test('records the job window as the budget less the pre-startup allowance', () =
 test('records the evidence-read envelope', () => {
   expect(EVIDENCE_READ_ENVELOPE).toEqual({
     // The advisory, upstream byte, and PyPI metadata ceilings (#467) raise the envelope sums:
-    // 1,520 + (221 − 80) + (256 − 16) requests, and
+    // 1,520 + (221 − 80) + (256 − 16) + (256 − 40) requests, the last the malware ceiling, and
     // 54 MiB − 15 MiB − 0.5 MiB + 77,000,000 + 9,484,288 bytes.
-    maxRequests: 1901,
+    maxRequests: 2117,
     maxResponseBytes: MiB,
     maxTotalBytes: 126_854_464,
     requestTimeoutMs: 15_000,
@@ -50,10 +50,10 @@ test('splits the envelope with nothing unallocated or over-allocated', () => {
     upstream: { maxRequests: 240, maxTotalBytes: 77_000_000 },
     advisory: { maxRequests: 221, maxTotalBytes: 5 * MiB },
     signals: {
-      maxRequests: 416,
+      maxRequests: 632,
       maxTotalBytes: 15_251_456,
       readers: {
-        malware: { maxRequests: 40, maxTotalBytes: 1.5 * MiB },
+        malware: { maxRequests: 256, maxTotalBytes: 1.5 * MiB },
         publishTimes: { maxRequests: 40, maxTotalBytes: 1.5 * MiB },
         registry: { maxRequests: 64, maxTotalBytes: 2 * MiB },
         metadata: { maxRequests: 256, maxTotalBytes: 9_484_288 },
@@ -190,8 +190,14 @@ test('the upstream byte and PyPI metadata shares grow with uv members up to thei
   const byteBase = registered('research.share.signals.metadata.bytes.base');
   const byteRate = registered('research.share.signals.metadata.bytes.rate.eligible');
   const changes = registered('packet.changes');
-  // Upstream bytes: no base, the same rate for direct and transitive members, none for the others.
-  expect(registered('research.share.upstream.bytes.base')).toBe(0);
+  // Upstream bytes: a base of one member's whole release stage, 1 repository read plus, for each
+  // of 2 candidate tags, a ref, up to the tag depth of annotated tags, contents, release, and a
+  // recheck ref, each a full response; then the same rate for direct and transitive members, and
+  // none for the others.
+  const response = registered('evidence.envelope.maxResponseBytes');
+  const upstreamBase = registered('research.share.upstream.bytes.base');
+  expect(upstreamBase).toBe((1 + 2 * (registered('research.maxTagDepth') + 4)) * response);
+  expect(upstreamBase).toBe(29 * response);
   expect(registered('research.share.upstream.bytes.rate.transitive')).toBe(upstreamRate);
   for (const unit of ['added', 'removed'])
     expect(registered(`research.share.upstream.bytes.rate.${unit}`), unit).toBe(0);
@@ -201,22 +207,23 @@ test('the upstream byte and PyPI metadata shares grow with uv members up to thei
   expect(metadata.maxRequests).toBe(2 * changes);
   expect(metadata.maxTotalBytes).toBe(byteBase + byteRate * changes);
 
-  // No counted members: upstream bytes get the one-response floor, and so do metadata bytes,
-  // whose base is under it; metadata requests get their base.
+  // No counted members: upstream bytes get their base; metadata bytes get the one-response floor,
+  // since their base is under it; metadata requests get their base.
   const none = researchShares(NO_UNITS);
-  const response = registered('evidence.envelope.maxResponseBytes');
-  expect(none.upstream.maxTotalBytes).toBe(response);
+  expect(none.upstream.maxTotalBytes).toBe(upstreamBase);
+  // One member gets the base and one rate.
+  expect(researchShares(ONE_UNITS).upstream.maxTotalBytes).toBe(upstreamBase + upstreamRate);
   expect(byteBase).toBeLessThan(response);
   expect(none.signals.readers.metadata).toEqual({ maxRequests: 16, maxTotalBytes: response });
   // Additions and removals alone add no upstream bytes.
   expect(researchShares({ ...NO_UNITS, added: 5, removed: 5 }).upstream.maxTotalBytes).toBe(
     none.upstream.maxTotalBytes,
   );
-  // 30 uv members, 15 direct and 15 transitive: 750,000 × 30 upstream bytes; metadata
+  // 30 uv members, 15 direct and 15 transitive: the base plus 750,000 × 30 upstream bytes; metadata
   // 16 + 2.5 × 30 = 91 requests and 524,288 + 70,000 × 30 bytes.
   const uv30 = researchShares(UV30_UNITS);
-  expect(uv30.upstream.maxTotalBytes).toBe(22_500_000);
-  expect(uv30.upstream.maxTotalBytes).toBe(upstreamRate * 30);
+  expect(uv30.upstream.maxTotalBytes).toBe(52_908_704);
+  expect(uv30.upstream.maxTotalBytes).toBe(upstreamBase + upstreamRate * 30);
   expect(uv30.signals.readers.metadata).toEqual({
     maxRequests: 91,
     maxTotalBytes: 2_624_288,
@@ -233,11 +240,12 @@ test('the upstream byte and PyPI metadata shares grow with uv members up to thei
     transitive: Math.floor(members / 2),
     eligible: { ...NO_UNITS.eligible, malware: members, metadata: members },
   });
-  // Upstream: 750,000 × 102 is under the 77 MB ceiling; 103 members pass it and are capped there.
-  const underUpstream = Math.floor(upstream.maxTotalBytes / upstreamRate);
-  expect(underUpstream).toBe(102);
+  // Upstream: the base plus 750,000 × 62 is under the 77 MB ceiling; 63 members pass it and are
+  // capped there.
+  const underUpstream = Math.floor((upstream.maxTotalBytes - upstreamBase) / upstreamRate);
+  expect(underUpstream).toBe(62);
   expect(researchShares(uv(underUpstream)).upstream.maxTotalBytes).toBe(
-    upstreamRate * underUpstream,
+    upstreamBase + upstreamRate * underUpstream,
   );
   expect(researchShares(uv(underUpstream)).upstream.maxTotalBytes).toBeLessThan(
     upstream.maxTotalBytes,
@@ -281,14 +289,15 @@ test('the fitted values give a one-member change a smaller share than R1 #276', 
   // One transitive npm member: advisory 3 + 2 = 5 and malware 2 + 1 = 3.
   const transitive = researchShares({ ...ONE_UNITS, direct: 0, transitive: 1 });
   expect(fittedRequests(transitive)).toMatchObject({ advisory: 5, malware: 3 });
-  // 105 members, 2 direct: every fitted share but advisory passes its ceiling. Advisory is
-  // 3 + 3 × 2 + 2 × 103 = 215, under its ceiling of 221 (#467), and malware
-  // 2 + 2 × 2 + 1 × 105 = 111.
+  // 105 members, 2 direct: upstream and publish times pass their ceilings. Advisory is
+  // 3 + 3 × 2 + 2 × 103 = 215, under its ceiling of 221, and malware 2 + 2 × 2 + 1 × 105 = 111,
+  // under its ceiling of 256 (#467).
   expect(advisory.maxRequests).toBe(221);
+  expect(signals.readers.malware.maxRequests).toBe(256);
   expect(fittedRequests(large)).toEqual({
     upstream: upstream.maxRequests,
     advisory: 215,
-    malware: signals.readers.malware.maxRequests,
+    malware: 111,
     publishTimes: signals.readers.publishTimes.maxRequests,
   });
   const largeRequests = fittedRequests(large);

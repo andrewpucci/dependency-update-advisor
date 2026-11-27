@@ -982,8 +982,9 @@ shares would cut off.
 ([#467](https://github.com/andrewpucci/dependency-update-advisor/issues/467)).**
 The maintainer approved each value below on 2026-11-27, and approved three
 corrections the same day: the advisory request ceiling, 1.25 × headroom on
-the upstream byte rate, and the retained-byte cap. It refines F2 for the
-upstream byte share, the PyPI metadata share, and the advisory ceiling, and
+the upstream byte rate, the retained-byte cap, a derived upstream byte base,
+and the malware request ceiling. It refines F2 for the upstream byte share,
+the PyPI metadata share, and the advisory and malware ceilings, and
 gives the research JSON entry and retained-byte caps their bases. The #462
 measurement of four real uv changes found that these limits stopped
 upstream research partway through each change, so the members it did not
@@ -995,19 +996,26 @@ register entry; this section cites ids only.
 1. **Function.** The upstream byte share scales as A1 states:
    `min(ceiling, base + Σ rate × count)`, rounded up, with A1.5's floor of
    one full response.
-2. **Values.** The base is `limit:research.share.upstream.bytes.base`.
+2. **Values.** The base, `limit:research.share.upstream.bytes.base`, is
+   `derived`: the most reads one member's target-release stage can make,
+   each a full `limit:evidence.envelope.maxResponseBytes` response. That is
+   one repository read, then for each of the two candidate tags a ref, up to
+   `limit:research.maxTagDepth` annotated-tag reads, the package manifest,
+   the release, and a recheck ref. So a change of one member can always
+   finish its release stage, whatever its responses weigh.
    Direct and transitive members take the same rate,
    `limit:research.share.upstream.bytes.rate.direct` and
    `limit:research.share.upstream.bytes.rate.transitive`, the members the
    upstream request share rates. Additions and removals take
    `limit:research.share.upstream.bytes.rate.added` and
    `limit:research.share.upstream.bytes.rate.removed`, which add nothing.
-   Each is a `measured` entry citing the #462 measurement. The direct and
+   Each rate is a `measured` entry citing the #462 measurement. The direct and
    transitive rates are 1.25 × the per-member bytes measured, the margin the
    fitted shares carry.
 3. **Ceiling.** `limit:evidence.allocation.upstream.maxTotalBytes` is a
    `safety` entry: half of what the upstream reader can read, at its measured
-   throughput, within `limit:evidence.envelope.totalTimeoutMs`.
+   throughput, within `limit:evidence.envelope.totalTimeoutMs`. With the
+   base, the rates reach it at a few dozen members.
 
 ### U2. PyPI metadata share
 
@@ -1052,12 +1060,18 @@ real response sizes after a few members. The copy is about one percent of
 the memory of the smallest standard GitHub-hosted Linux runner. A demand run
 scales it through the byte shares it copies.
 
-### U5. Advisory request ceiling
+### U5. Advisory and malware request ceilings
 
 `limit:evidence.allocation.advisory.maxRequests` becomes `derived` from
 `limit:evidence.envelope.totalTimeoutMs`: the window divided by the slowest
 measured OSV response, halved for margin and rounded down, so the lookups
 the ceiling admits fit in half the window. The advisory rates are unchanged.
+
+`limit:evidence.allocation.signals.readers.malware.maxRequests` becomes
+`derived` from `limit:packet.changes`, as the PyPI metadata request ceiling
+is: a malware lookup takes at most two requests per change, a stored-name
+discovery and then the versioned query for Actions and `pip`, and one for
+npm. The fitted malware rates and the malware byte ceiling are unchanged.
 
 Research runs upstream, then advisories, then signals, one after another, on
 the one `limit:evidence.envelope.totalTimeoutMs` deadline. The upstream byte
@@ -1078,6 +1092,11 @@ with the new ceilings. A run's computed shares may total less.
 - The share tests pin the upstream byte share and the PyPI metadata share
   for no members, 30 uv members, and the counts at which each ceiling is
   reached, with every value read from the register.
+- A one-member uv change whose upstream reads pass one full response
+  completes upstream, and fails without the upstream byte base.
+- A uv change whose advisory and malware lookups pass the former ceilings
+  keeps every vulnerability and malware check, and fails with either former
+  ceiling.
 - A uv change of 30 `pip` members, about half direct, keeps upstream,
   vulnerability, and malware evidence for every member at the register's
   values, with no `budget`. Its GitHub release responses carry about the

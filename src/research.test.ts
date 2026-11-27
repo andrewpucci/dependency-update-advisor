@@ -455,10 +455,10 @@ test('caps every reader at its share, so the readers together stay inside the en
     expect(share.maxTotalBytes, name).toBeLessThanOrEqual(ceiling.maxTotalBytes);
   }
   // The upstream byte share and the PyPI metadata share scale with members (#467): upstream
-  // bytes are 750,000 × 4 members, and the metadata share for its one uv member is 16 + 2.5
+  // bytes are the 29-response base plus 750,000 × 4 members, and the metadata share for its one uv member is 16 + 2.5
   // requests, rounded up, and 524,288 + 70,000 bytes, raised to the one-response floor. Every
   // other byte share stays at its ceiling.
-  expect(shares.upstream.maxTotalBytes).toBe(3_000_000);
+  expect(shares.upstream.maxTotalBytes).toBe(33_408_704);
   expect(computed.metadata).toEqual({ maxRequests: 19, maxTotalBytes: MiB });
   for (const [name, , share, ceiling] of expected)
     if (!['S2 upstream', 'metadata'].includes(name))
@@ -983,19 +983,22 @@ test('a uv change of 30 pip members keeps upstream, vulnerability and malware fo
   expect(JSON.stringify(result.signalAttempts)).not.toContain('budget');
 });
 
-test('a uv change whose advisory lookups pass the former ceiling of 80 completes them (#467)', async () => {
+test('a uv change whose advisory and malware lookups pass the former ceilings completes them (#467)', async () => {
   // 40 uv members, 20 direct and 20 transitive: pip reviewed lookups go to OSV one target at a
   // time, two per member, so advisory needs 80 OSV queries plus the npm batches and the Action's
   // lookups. That is above the former ceiling of 80 and under the ceiling of 221 the evidence
-  // deadline derives. (The malware share's ceiling binds at this size; this test pins advisory.)
+  // deadline derives. Malware takes a pip discovery batch and a versioned query per member, past
+  // the former malware ceiling of 40 and under the ceiling of 256 (#467).
   const { fixture, packet } = await scenario({ uvDirect: 19, uvChildren: 20 });
   const uv = packet.changes.filter((c) => c.ecosystem === 'uv' && !('basis' in c));
   expect(uv).toHaveLength(40);
   const share = researchShares(researchShareUnits(packet.changes)).advisory.maxRequests;
   const ceiling = EVIDENCE_READ_ALLOCATION.advisory.maxRequests;
   expect(ceiling).toBe(221);
+  expect(EVIDENCE_READ_ALLOCATION.signals.readers.malware.maxRequests).toBe(256);
   let stage = 'none';
   let advisory = 0;
+  let malware = 0;
   const result = await runResearch({
     ...base(fixture, packet),
     fetch: async (url, init) => {
@@ -1004,6 +1007,7 @@ test('a uv change whose advisory lookups pass the former ceiling of 80 completes
         target.host === 'api.osv.dev' ||
         (target.pathname === '/advisories' && target.searchParams.get('type') === 'reviewed');
       if (stage === 'advisories' && reviewed) advisory++;
+      if (target.searchParams.get('type') === 'malware') malware++;
       return fixture.fetch(url, init);
     },
     observe: (observation) => {
@@ -1014,14 +1018,18 @@ test('a uv change whose advisory lookups pass the former ceiling of 80 completes
   expect(advisory).toBeGreaterThan(80);
   expect(advisory).toBeLessThanOrEqual(share);
   expect(share).toBeLessThanOrEqual(ceiling);
-  expect(result.unavailable.filter((item) => item.stage === 'advisories')).toEqual([]);
-  // Every member keeps its vulnerability check; none ends `budget`.
+  expect(malware).toBeGreaterThan(40);
+  expect(result.unavailable).toEqual([]);
+  // Every member keeps its vulnerability and malware checks; none ends `budget`.
   for (const change of result.packet.changes)
     if (!('basis' in change))
-      expect(change.evidence.vulnerability, change.id).toMatchObject({
-        status: 'available',
-        reasons: [],
-      });
+      for (const category of ['vulnerability', 'malware'] as const)
+        expect(change.evidence[category], `${change.id} ${category}`).toMatchObject({
+          status: 'available',
+          reasons: [],
+        });
+  expect(JSON.stringify(result.packet)).not.toContain('budget');
+  expect(JSON.stringify(result.signalAttempts)).not.toContain('budget');
 });
 
 test.each([
@@ -1055,6 +1063,44 @@ test.each([
     expect(new Set(reads).size).toBe(reads.length);
   },
 );
+
+test('a one-member uv change whose upstream reads pass one response completes upstream (#467)', async () => {
+  // Only the uv member changes. Its repository and release responses together pass the
+  // one-response floor and the single member rate, so it needs the upstream byte base: the most
+  // reads one member's release stage can make, each a full response.
+  const { fixture, packet } = await scenario({
+    uvOnly: true,
+    pipReleaseAssets: 540,
+    pipRepositoryBytes: 300_000,
+  });
+  const members = packet.changes.filter((c) => !('basis' in c));
+  expect(members.map((c) => c.ecosystem)).toEqual(['uv']);
+  const share = researchShares(researchShareUnits(packet.changes)).upstream.maxTotalBytes;
+  expect(share).toBe(
+    limit('research.share.upstream.bytes.base') +
+      limit('research.share.upstream.bytes.rate.direct'),
+  );
+  let github = 0;
+  const result = await runResearch({
+    ...base(fixture, packet),
+    fetch: async (url, init) => {
+      const response = await fixture.fetch(url, init);
+      if (new URL(url).host === 'api.github.com' && !url.includes('/advisories'))
+        github += Buffer.byteLength(await response.clone().text());
+      return response;
+    },
+  });
+  if (result.kind !== 'ready') throw new Error(result.kind);
+  const response = limit('evidence.envelope.maxResponseBytes');
+  expect(github).toBeGreaterThan(response);
+  expect(github).toBeGreaterThan(limit('research.share.upstream.bytes.rate.direct'));
+  expect(github).toBeLessThan(limit('research.share.upstream.bytes.base'));
+  expect(result.unavailable).toEqual([]);
+  expect(members).toHaveLength(1);
+  const [member] = result.packet.changes.filter((c) => !('basis' in c));
+  expect(member?.evidence.upstream).toMatchObject({ status: 'available', reasons: [] });
+  expect(JSON.stringify(result.upstreamAttempts)).not.toContain('budget');
+});
 
 const PLACEHOLDER = { status: 'unavailable', reasons: ['missing'], sourceIds: [] };
 const BUDGET = { status: 'unavailable', reasons: ['budget'], sourceIds: [] };

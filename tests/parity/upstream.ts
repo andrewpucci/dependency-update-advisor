@@ -50,6 +50,10 @@ type Options = {
    * API returns them, so a member's upstream reads carry a real package's size.
    */
   pipReleaseAssets?: number;
+  /** Pads each pip package's GitHub repository description to about this many bytes. */
+  pipRepositoryBytes?: number;
+  /** Leaves the npm and Actions files the same on both sides, so only uv members change. */
+  uvOnly?: boolean;
   /** Discovery records for one spelling; the harness default stores each target as itself. */
   stored?: Parameters<typeof viaAdvisoryHttp>[1];
 };
@@ -169,7 +173,14 @@ function githubResponse(url: URL, options: Options) {
   const repository = url.pathname.split('/').slice(2, 4).join('/');
   const tail = url.pathname.split('/').slice(4).map(decodeURIComponent).join('/');
   const repo = repository.split('/')[1];
-  if (!tail) return Response.json({ private: false, full_name: repository });
+  if (!tail)
+    return Response.json({
+      private: false,
+      full_name: repository,
+      ...(options.pipRepositoryBytes && repository.split('/')[1]?.startsWith('py-')
+        ? { description: ''.padEnd(options.pipRepositoryBytes, 'A fixture Python package. ') }
+        : {}),
+    });
   if (tail.startsWith('commits/')) return Response.json({ sha: tail.slice('commits/'.length) });
   const ref = tail.slice('git/ref/'.length);
   if (tail.startsWith('git/ref/') && ['tags/v1.0.0', 'tags/v2.0.0'].includes(ref))
@@ -295,12 +306,15 @@ export async function upstreamScenario(options: Options = {}) {
       )
     );
   };
-  const files = (head: boolean) => ({
-    ...npmFiles(head, options),
-    'pyproject.toml': manifest,
-    'uv.lock': python(head),
-    '.github/workflows/ci.yml': `jobs:\n  review:\n    steps:\n      - uses: ${head && options.actionChange === 'owner' ? 'other-owner/action' : 'fixture/action'}${options.actionsSubpath ? '/component' : ''}@${head && options.actionChange === 'mutable' ? 'v2.0.0' : (head ? '2' : '1').repeat(40)}\n`,
-  });
+  const files = (proposed: boolean) => {
+    const head = proposed && !options.uvOnly;
+    return {
+      ...npmFiles(head, options),
+      'pyproject.toml': manifest,
+      'uv.lock': python(proposed),
+      '.github/workflows/ci.yml': `jobs:\n  review:\n    steps:\n      - uses: ${head && options.actionChange === 'owner' ? 'other-owner/action' : 'fixture/action'}${options.actionsSubpath ? '/component' : ''}@${head && options.actionChange === 'mutable' ? 'v2.0.0' : (head ? '2' : '1').repeat(40)}\n`,
+    };
+  };
   const fixture = uvMetadataScenario('permission403', {
     files: { base: files(false), head: files(true) },
   });

@@ -14,7 +14,7 @@ test('scale 1 leaves every register value unchanged', () => {
 
 test('scales the hand-set evidence shares, envelope values, and research caps', () => {
   for (const id of [
-    'evidence.allocation.signals.readers.malware.maxRequests',
+    'evidence.allocation.signals.readers.registry.maxRequests',
     'evidence.allocation.upstream.maxTotalBytes',
     'evidence.envelope.totalTimeoutMs',
     'evidence.envelope.maxResponseBytes',
