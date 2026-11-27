@@ -116,6 +116,12 @@ Items 1–3 are already required by S1 ("preserve valid findings from completed
 work when a later request fails") and S2 ("preserve useful independent
 evidence when a stage fails"). Items 2–5 amend S3 and research orchestration.
 
+Item 2 reaches lookups that need an identity proof (#439): a side whose proof
+upstream tried and lost carries the stop's reason. A member with partial
+upstream evidence whose side's attempts a rollback removed reports
+`unsupported` for that side, since retained upstream evidence cannot say why
+that side's proof is missing.
+
 ### 2. Read each thing once per run
 
 1. **Scope.** Research readers (npm registry details, upstream, advisory, and
