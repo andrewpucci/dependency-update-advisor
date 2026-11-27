@@ -10488,6 +10488,11 @@ const DEFINITIONS = [
 		test: "src/evidence/upstream-releases.test.ts > halves the page until it fits and keeps reading from the same release",
 		note: "no recorded reason"
 	}),
+	derived("upstream.comparePageSize", "count", ["github.pageSize"], copy, "The compare ladder starts at GitHub's per_page maximum, limit:github.pageSize, the size the compare read asked for before it had a ladder, so a comparison that fits reads in the fewest pages.", {
+		protects: "The start size of the compare page-size ladder is bounded, so a compare page that does not fit the response cap is halved and retried instead of failing outright (response size and memory).",
+		effect: "A compare page that does not fit is retried at the next smaller size of a divisor chain from this value down to 1, and each later page returns to the largest size whose boundary falls on the commits already read; a page of one commit over the cap fails the comparison with reason budget. Each retry is an ordinary request against the upstream share.",
+		test: "src/evidence/upstream-github.test.ts > a compare page over the response cap is halved until it fits"
+	}),
 	unjustified("uv.maxCorroborationCodeUnits", 4096, "code units", {
 		protects: "Lines over the cap are skipped before the claim regex runs, so untrusted changelog text cannot make the matcher do unbounded work (CPU).",
 		effect: "A longer line is skipped and yields no claim; the remaining lines are still read.",
@@ -15842,13 +15847,23 @@ function interpretNpmLifecycle(change, input) {
 }
 
 // src/evidence/upstream-read.ts
-/** Each halving of the register's release page size down to 1, for the page-size retry ladder. */
-function halvingFrom(start) {
-	const sizes = [];
-	for (let size = start; size >= 1; size = Math.floor(size / 2)) sizes.push(size);
+/**
+* A page-size retry ladder from a register page size down to 1: each size is the one above divided
+* by its smallest prime factor, so every size divides every larger one. From a power of two this is
+* plain halving.
+*/
+function divisorChain(start) {
+	const sizes = [start];
+	for (let size = start; size > 1; sizes.push(size)) {
+		let factor = 2;
+		while (size % factor !== 0) factor++;
+		size /= factor;
+	}
 	return sizes;
 }
-const RELEASE_PAGE_SIZES = Object.freeze(halvingFrom(limit("upstream.releasePageSize")));
+const RELEASE_PAGE_SIZES = Object.freeze(divisorChain(limit("upstream.releasePageSize")));
+/** The compare commit page sizes, a divisor chain from the register's compare page size to 1. */
+const COMPARE_PAGE_SIZES = Object.freeze(divisorChain(limit("upstream.comparePageSize")));
 var UpstreamFailure = class extends Error {
 	reason;
 	constructor(reason) {
@@ -15953,7 +15968,7 @@ function githubTarget(value) {
 	if (value.resource === "contents") requireUpstream(isEvidencePath(value.path), "unsupported");
 	if (value.resource === "compare") requireUpstream([value.base, value.head].every((sha) => typeof sha === "string" && /^[a-f\d]{40}$/u.test(sha)), "unsupported");
 	if (["compare", "releases"].includes(String(value.resource))) requireUpstream(Number.isSafeInteger(value.page) && Number(value.page) > 0, "unsupported");
-	if (value.resource === "releases") requireUpstream(RELEASE_PAGE_SIZES.includes(value.perPage), "unsupported");
+	if (["compare", "releases"].includes(String(value.resource))) requireUpstream((value.resource === "compare" ? COMPARE_PAGE_SIZES : RELEASE_PAGE_SIZES).includes(value.perPage), "unsupported");
 	return value;
 }
 function githubNext(link, original) {
@@ -15976,7 +15991,7 @@ function upstreamGithubUrl(t) {
 		case "commit": return base + "/commits/" + t.sha;
 		case "release": return base + "/releases/tags/" + encodeURIComponent(t.ref);
 		case "contents": return base + "/contents/" + t.path.split("/").map(encodeURIComponent).join("/") + "?ref=" + t.sha;
-		case "compare": return base + "/compare/" + t.base + "..." + t.head + "?per_page=100&page=" + t.page;
+		case "compare": return base + "/compare/" + t.base + "..." + t.head + "?per_page=" + t.perPage + "&page=" + t.page;
 		case "releases": return base + "/releases?per_page=" + t.perPage + "&page=" + t.page;
 	}
 }
@@ -17735,6 +17750,61 @@ function readToml(bytes, limits, budget = newBudget()) {
 	}
 }
 
+// src/evidence/upstream-releases.ts
+/**
+* Reads a paged GitHub resource in order, in pages that fit the per-response cap (coverage §1.6).
+* `sizes` is a divisor chain ending at 1: each size divides every larger one. A page refused with
+* `budget` while the reader can still read is too large for the cap, so it is retried at the next
+* smaller size whose page boundary falls on the offset already reached. With `grow`, each page that
+* claims a next page is followed at the largest size whose boundary falls on the new offset, so
+* one heavy page does not leave the rest of the list in small pages. Every read, retries included,
+* counts against `maxPages` and is charged by the reader as an ordinary request. `visit` checks one
+* page and returns how many items it held; a page that claims a next page must hold exactly
+* `perPage`.
+*/
+async function forEachLadderPage(reader, sizes, target, visit, options = {}) {
+	let perPage = sizes[0];
+	let offset = 0;
+	let requests = 0;
+	for (;;) {
+		requireUpstream(++requests <= reader.limits.maxPages, "budget");
+		const lookup = await reader.read(target(offset / perPage + 1, perPage));
+		const tooLarge = lookup.status === "unavailable" && lookup.reasons[0] === "budget";
+		const smaller = sizes.find((size) => size < perPage && offset % size === 0);
+		if (tooLarge && smaller !== void 0 && (reader.stopped?.() ?? null) === null) {
+			perPage = smaller;
+			continue;
+		}
+		requireUpstream(lookup.status === "available" && lookup.data, lookup.reasons[0] ?? "unknown");
+		const count = await visit({
+			data: lookup.data,
+			offset
+		});
+		offset += count;
+		if (!lookup.nextPage) return;
+		requireUpstream(count === perPage, "conflict");
+		if (options.grow) perPage = sizes.find((size) => offset % size === 0) ?? perPage;
+	}
+}
+/**
+* Visits a repository's releases in order. Release sizes are powers of two, so each halving
+* starts on a boundary already read. Releases do not grow back: a release list is uniformly
+* heavy, so a page that needed a smaller size predicts that the next one does too.
+*/
+async function forEachRelease(reader, repository, visit) {
+	await forEachLadderPage(reader, RELEASE_PAGE_SIZES, (page, perPage) => ({
+		kind: "github",
+		repository,
+		resource: "releases",
+		page,
+		perPage
+	}), async ({ data }) => {
+		requireUpstream(Array.isArray(data.items));
+		for (const item of data.items) await visit(item);
+		return data.items.length;
+	});
+}
+
 // src/evidence/upstream-github.ts
 async function githubData(reader, target) {
 	const result = await reader.read({
@@ -18002,29 +18072,27 @@ async function comparisonPages(repository, base, head, reader) {
 		filesComplete: false,
 		reasons: /* @__PURE__ */ new Set()
 	};
-	for (let page = 1; page <= reader.limits.maxPages; page++) try {
-		const result = await reader.read({
+	try {
+		await forEachLadderPage(reader, COMPARE_PAGE_SIZES, (page, perPage) => ({
 			kind: "github",
 			repository,
 			resource: "compare",
 			base: base.sha,
 			head: head.sha,
-			page
-		});
-		requireUpstream(result.status === "available" && result.data, result.reasons[0] ?? "unknown");
-		comparisonIdentity$2(result.data, base, state);
-		comparisonCommits(result.data, state);
-		if (page === 1) comparisonFiles(result.data, state);
-		state.valid = true;
-		if (!result.nextPage) {
-			if (state.messages.size !== state.total) state.reasons.add("truncated");
-			if (state.forward && [...state.messages.keys()].at(-1) !== head.sha) state.reasons.add("conflict");
-			return state;
-		}
-		requireUpstream(page < reader.limits.maxPages, "budget");
+			page,
+			perPage
+		}), async ({ data, offset }) => {
+			const before = state.messages.size;
+			comparisonIdentity$2(data, base, state);
+			comparisonCommits(data, state);
+			if (offset === 0) comparisonFiles(data, state);
+			state.valid = true;
+			return state.messages.size - before;
+		}, { grow: true });
+		if (state.messages.size !== state.total) state.reasons.add("truncated");
+		if (state.forward && [...state.messages.keys()].at(-1) !== head.sha) state.reasons.add("conflict");
 	} catch (error) {
 		state.reasons.add(upstreamFailureReason(error));
-		return state;
 	}
 	return state;
 }
@@ -20124,37 +20192,6 @@ function withinUpstreamRange(ecosystem, candidate, from, to) {
 	const upper = compareUpstreamVersions(ecosystem, candidate, to);
 	if (lower === null || upper === null) return null;
 	return lower < 0 && upper <= 0;
-}
-
-// src/evidence/upstream-releases.ts
-/**
-* Visits a repository's releases in order, in pages that fit the per-response cap (coverage §1.6).
-* Sizes are powers of two, so a smaller page always starts on a boundary already read.
-*/
-async function forEachRelease(reader, repository, visit) {
-	let perPage = RELEASE_PAGE_SIZES[0];
-	let offset = 0;
-	let requests = 0;
-	for (;;) {
-		requireUpstream(++requests <= reader.limits.maxPages, "budget");
-		const lookup = await reader.read({
-			kind: "github",
-			repository,
-			resource: "releases",
-			page: offset / perPage + 1,
-			perPage
-		});
-		if (lookup.status === "unavailable" && lookup.reasons[0] === "budget" && perPage > 1 && (reader.stopped?.() ?? null) === null) {
-			perPage /= 2;
-			continue;
-		}
-		requireUpstream(lookup.status === "available" && lookup.data, lookup.reasons[0] ?? "unknown");
-		requireUpstream(Array.isArray(lookup.data.items));
-		for (const item of lookup.data.items) await visit(item);
-		offset += lookup.data.items.length;
-		if (!lookup.nextPage) return;
-		requireUpstream(lookup.data.items.length === perPage, "conflict");
-	}
 }
 
 // src/evidence/upstream-actions.ts
