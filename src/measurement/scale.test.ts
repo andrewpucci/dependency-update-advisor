@@ -19,7 +19,6 @@ test('scales the hand-set evidence shares, envelope values, and research caps', 
     'evidence.envelope.totalTimeoutMs',
     'evidence.envelope.maxResponseBytes',
     'research.maxAttempts',
-    'research.maxRetainedBytes',
   ])
     expect(valueAt(10, id), id).toBe(10 * (REGISTER.get(id)?.value ?? 0));
 });
@@ -60,11 +59,22 @@ test('recomputes derived entries from the scaled inputs', () => {
     'evidence.allocation.transport.maxRequests',
     'evidence.allocation.signals.maxTotalBytes',
     'evidence.envelope.maxTotalBytes',
+    // The retained-byte cap copies the research cache total (#467), so it scales through it.
+    'research.maxRetainedBytes',
     'w2.session.maxRequests',
     'w2.session.maxTotalBytes',
     'research.maxJsonEntries',
   ])
     expect(valueAt(10, id), id).toBe(10 * (REGISTER.get(id)?.value ?? 0));
+});
+
+test('the advisory ceiling follows the scaled evidence deadline', () => {
+  // It is floor(deadline ÷ slowest OSV response ÷ 2) (#467), so it grows with the deadline and,
+  // rounded down from the scaled deadline, is at least ten times the production ceiling.
+  const id = 'evidence.allocation.advisory.maxRequests';
+  const production = REGISTER.get(id)?.value ?? 0;
+  expect(valueAt(10, id)).toBeGreaterThanOrEqual(10 * production);
+  expect(valueAt(10, id)).toBeLessThan(10 * (production + 1));
 });
 
 test('leaves limits outside the read budget unchanged', () => {

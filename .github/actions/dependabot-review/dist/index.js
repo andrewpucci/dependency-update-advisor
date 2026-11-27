@@ -8825,6 +8825,8 @@ function buildRegister(definitions) {
 	})]));
 }
 const MiB = 1048576;
+/** The slowest OSV `v1/query` response measured for #467, which sizes the advisory ceiling. */
+const SLOWEST_OSV_RESPONSE_MS = 541;
 const sum = (...values) => values.reduce((total, value) => total + value, 0);
 const copy = (value) => value;
 /** A hand-picked value with no recorded basis yet; `note` says what would supply one. */
@@ -9017,10 +9019,10 @@ const UV_SIZED = {
 			}
 		},
 		rates: Object.fromEntries(["direct", "transitive"].map((unit) => [unit, {
-			value: 6e5,
+			value: 75e4,
 			basis: {
-				statistic: "about 0.6 MB of upstream reads per uv member: 17.9–19.9 MB over 29–34 members; direct and transitive take the same rate, the members the upstream request share rates",
-				headroom: "none beyond the per-member rate"
+				statistic: "about 0.6 MB of upstream reads per uv member: 17.9–19.9 MB over 29–34 members; 1.25 × 600,000 = 750,000. Direct and transitive take the same rate, the members the upstream request share rates",
+				headroom: "1.25× the measured per-member demand, the margin the fitted shares carry"
 			}
 		}])),
 		zero: UV_ZERO.role
@@ -9481,15 +9483,14 @@ const DEFINITIONS = [
 		protects: "Caps response bytes of upstream research reads, the ceiling of the per-member upstream byte share, so they cannot take more of the evidence time or runner memory than the evidence window can read.",
 		basis: {
 			kind: "safety",
-			reason: "Upstream reads run inside limit:evidence.envelope.totalTimeoutMs (240 s). At the 0.64 MB/s upstream throughput measured on the #462 uv PRs, that window reads 240 × 0.64 = 153.6 MB; half of it, 76.8 MB, rounded to 77 MB, leaves a margin for slower responses. The per-member rate reaches it only near limit:packet.changes members (77 MB ÷ 0.6 MB ≈ 128). Approved by the maintainer on 2026-11-27, #467."
+			reason: "Upstream reads run inside limit:evidence.envelope.totalTimeoutMs (240 s). At the 0.64 MB/s upstream throughput measured on the #462 uv PRs, that window reads 240 × 0.64 = 153.6 MB; half of it, 76.8 MB, rounded to 77 MB, leaves a margin for slower responses. The per-member rate reaches it near 102 members (77 MB ÷ 0.75 MB). Approved by the maintainer on 2026-11-27, #467."
 		},
 		effect: "The ceiling of the scaled upstream byte share; a response past the share's remaining bytes is refused with budget and the upstream reader stops.",
 		test: "src/evidence/upstream-read.test.ts > upstream reader accepts a byte share exactly and refuses the byte past it"
 	},
-	unjustified("evidence.allocation.advisory.maxRequests", 80, "count", {
-		protects: "Caps advisory lookups per changed package so a large group cannot take the shared evidence time.",
-		effect: "Requests past the cap return budget; the stage keeps the advisory evidence already read.",
-		note: "awaiting L8 measurement",
+	derived("evidence.allocation.advisory.maxRequests", "count", ["evidence.envelope.totalTimeoutMs"], (totalMs) => Math.floor(totalMs / SLOWEST_OSV_RESPONSE_MS / 2), "The evidence window divided by the slowest measured OSV response (541 ms), halved for margin and rounded down: 240,000 ÷ 541 = 443.6, halved 221.8, so 221 sequential lookups fit in half the window. Approved by the maintainer on 2026-11-27, #467.", {
+		protects: "Caps advisory lookups, the ceiling of the per-member advisory share, so a large group cannot take more of the shared evidence time than its lookups can use.",
+		effect: "The ceiling of the scaled advisory request share; requests past the share return budget, and the stage keeps the advisory evidence already read.",
 		test: "src/evidence/advisory-read.test.ts > advisory reader spends exactly its request share and refuses the lookup past it"
 	}),
 	unjustified("evidence.allocation.advisory.maxTotalBytes", 5 * MiB, "bytes", {
@@ -9921,10 +9922,9 @@ const DEFINITIONS = [
 		note: "no recorded reason",
 		test: "src/evidence/advisory-read.test.ts > advisory JSON depth accepts the register depth exactly and refuses one level deeper"
 	}),
-	unjustified("research.maxRetainedBytes", 2e6, "bytes", {
+	derived("research.maxRetainedBytes", "bytes", ["research.cache.maxTotalBytes"], copy, "A research reader may keep what research may read: the registry, upstream, advisory, and signals byte shares that bound the run's research cache (about 102 MB), about 1% of the 8 GB of the smallest standard GitHub-hosted Linux runner. Approved by the maintainer on 2026-11-27, #467.", {
 		protects: "Bytes a research stage keeps from untrusted responses are bounded, so retained evidence cannot exhaust memory.",
 		effect: "Exceeding the cap sets the stage stop to budget; the stage stops, keeps the members it already retained, and records the stop.",
-		note: "awaiting L8 measurement",
 		test: "src/research.test.ts > the npm registry reader retains exactly research.maxRetainedBytes and refuses one byte more"
 	}),
 	{

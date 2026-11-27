@@ -45,6 +45,11 @@ type Options = {
   uvDirect?: number;
   /** Pads each PyPI version response's description to about this many bytes, as a README is. */
   pypiDescriptionBytes?: number;
+  /**
+   * Gives each GitHub release of a pip package this many wheel asset records, shaped as the REST
+   * API returns them, so a member's upstream reads carry a real package's size.
+   */
+  pipReleaseAssets?: number;
   /** Discovery records for one spelling; the harness default stores each target as itself. */
   stored?: Parameters<typeof viaAdvisoryHttp>[1];
 };
@@ -110,7 +115,57 @@ function release(repository: string, version: string) {
     body: 'Version-specific fixture notes.',
   };
 }
-function githubResponse(url: URL) {
+const BOT = 'https://api.github.com/users/github-actions%5Bbot%5D';
+/** The uploader of a release asset built in Actions, as the REST API returns it. */
+const ACTIONS_BOT = {
+  login: 'github-actions[bot]',
+  id: 41_898_282,
+  node_id: 'MDM6Qm90NDE4OTgyODI=',
+  avatar_url: 'https://avatars.githubusercontent.com/in/15368?v=4',
+  gravatar_id: '',
+  url: BOT,
+  html_url: 'https://github.com/apps/github-actions',
+  followers_url: `${BOT}/followers`,
+  following_url: `${BOT}/following{/other_user}`,
+  gists_url: `${BOT}/gists{/gist_id}`,
+  starred_url: `${BOT}/starred{/owner}{/repo}`,
+  subscriptions_url: `${BOT}/subscriptions`,
+  organizations_url: `${BOT}/orgs`,
+  repos_url: `${BOT}/repos`,
+  events_url: `${BOT}/events{/privacy}`,
+  received_events_url: `${BOT}/received_events`,
+  type: 'Bot',
+  user_view_type: 'public',
+  site_admin: false,
+};
+/** One GitHub release asset record, shaped as the REST API returns it. */
+function releaseAsset(repository: string, version: string, index: number) {
+  const name = `pkg-${version}-${index}-cp312-cp312-manylinux_2_17_x86_64.manylinux2014_x86_64.whl`;
+  return {
+    url: `https://api.github.com/repos/${repository}/releases/assets/${100_000 + index}`,
+    id: 100_000 + index,
+    node_id: `RA_kwDOFixture${index}`,
+    name,
+    label: '',
+    uploader: ACTIONS_BOT,
+    content_type: 'application/octet-stream',
+    state: 'uploaded',
+    size: 1_234_567,
+    download_count: 42,
+    created_at: '2026-10-01T00:00:00Z',
+    updated_at: '2026-10-01T00:00:00Z',
+    browser_download_url: `https://github.com/${repository}/releases/download/v${version}/${name}`,
+  };
+}
+function pipRelease(repository: string, version: string, assets = 0) {
+  const plain = release(repository, version);
+  if (!assets || !repository.split('/')[1]?.startsWith('py-')) return plain;
+  return {
+    ...plain,
+    assets: Array.from({ length: assets }, (_, i) => releaseAsset(repository, version, i)),
+  };
+}
+function githubResponse(url: URL, options: Options) {
   const repository = url.pathname.split('/').slice(2, 4).join('/');
   const tail = url.pathname.split('/').slice(4).map(decodeURIComponent).join('/');
   const repo = repository.split('/')[1];
@@ -127,7 +182,7 @@ function githubResponse(url: URL) {
   if (tail.startsWith('releases/tags/v')) {
     const version = tail.slice('releases/tags/v'.length);
     return ['1.0.0', '2.0.0'].includes(version)
-      ? Response.json(release(repository, version))
+      ? Response.json(pipRelease(repository, version, options.pipReleaseAssets))
       : Response.json({}, { status: 404 });
   }
   if (tail.startsWith('contents/')) {
@@ -197,7 +252,7 @@ function researchFetch(options: Options, requests: string[]) {
           : [],
       );
     }
-    if (url.origin === 'https://api.github.com') return githubResponse(url);
+    if (url.origin === 'https://api.github.com') return githubResponse(url, options);
     throw new Error('Unexpected research host');
   }, options.stored);
 }

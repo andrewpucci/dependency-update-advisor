@@ -218,8 +218,10 @@ receives `process.env` or a general fetch function.
    with A1.5's byte floor of one full response. Their bases, rates, and
    ceilings are listed in the
    [uv share sizing amendment](SPEC-evidence-coverage.md#uv-share-sizing-amendment).
-   Every other byte share stays at its ceiling, and the envelope totals stay
-   the sums of the ceilings.
+   The advisory request ceiling is derived from the
+   `limit:evidence.envelope.totalTimeoutMs` deadline (U5). Every other byte
+   share stays at its ceiling, and the envelope totals stay the sums of the
+   ceilings.
 
    The snapshot share covers C1's `limit:context.maxSourceCandidates` excerpt
    files with their directories. Freshness reads are reserved separately so a

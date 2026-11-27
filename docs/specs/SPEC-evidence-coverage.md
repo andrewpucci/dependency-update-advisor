@@ -25,8 +25,8 @@ change.
 
 uv share sizing amendment
 ([#467](https://github.com/andrewpucci/dependency-update-advisor/issues/467)):
-the maintainer approved its values on 2026-11-27; see the
-[uv Share Sizing Amendment](#uv-share-sizing-amendment).
+the maintainer approved its values and three corrections on 2026-11-27; see
+the [uv Share Sizing Amendment](#uv-share-sizing-amendment).
 
 ## Objective
 
@@ -980,12 +980,15 @@ shares would cut off.
 
 **Status: approved by the maintainer, 2026-11-27
 ([#467](https://github.com/andrewpucci/dependency-update-advisor/issues/467)).**
-The maintainer approved each value below on 2026-11-27. It refines F2 for
-the upstream byte share and the PyPI metadata share, and gives the research
-JSON entry cap its basis. The #462 measurement of four real uv changes found
-that these limits stopped upstream research partway through each change, so
-the members it did not reach also lost their vulnerability and malware
-checks. Every value is a register entry; this section cites ids only.
+The maintainer approved each value below on 2026-11-27, and approved three
+corrections the same day: the advisory request ceiling, 1.25 × headroom on
+the upstream byte rate, and the retained-byte cap. It refines F2 for the
+upstream byte share, the PyPI metadata share, and the advisory ceiling, and
+gives the research JSON entry and retained-byte caps their bases. The #462
+measurement of four real uv changes found that these limits stopped
+upstream research partway through each change, so the members it did not
+reach also lost their vulnerability and malware checks. Every value is a
+register entry; this section cites ids only.
 
 ### U1. Upstream byte share
 
@@ -999,7 +1002,9 @@ checks. Every value is a register entry; this section cites ids only.
    upstream request share rates. Additions and removals take
    `limit:research.share.upstream.bytes.rate.added` and
    `limit:research.share.upstream.bytes.rate.removed`, which add nothing.
-   Each is a `measured` entry citing the #462 measurement.
+   Each is a `measured` entry citing the #462 measurement. The direct and
+   transitive rates are 1.25 × the per-member bytes measured, the margin the
+   fitted shares carry.
 3. **Ceiling.** `limit:evidence.allocation.upstream.maxTotalBytes` is a
    `safety` entry: half of what the upstream reader can read, at its measured
    throughput, within `limit:evidence.envelope.totalTimeoutMs`.
@@ -1035,7 +1040,24 @@ entries `limit:packet.changes` uv members would use at the per-member count
 measured for #462, and far below the count whose JSON copying would spend a
 quarter of `limit:evidence.envelope.totalTimeoutMs` on a slow runner.
 
-### U4. Totals
+### U4. Research retained bytes
+
+`limit:research.maxRetainedBytes` becomes `derived`: a copy of
+`limit:research.cache.maxTotalBytes`, so a research reader may keep what
+research may read. The upstream reader keeps each GitHub response it parses,
+so the former hand-set cap, which demand runs scaled, stopped a uv change of
+real response sizes after a few members. The copy is about one percent of
+the memory of the smallest standard GitHub-hosted Linux runner. A demand run
+scales it through the byte shares it copies.
+
+### U5. Advisory request ceiling
+
+`limit:evidence.allocation.advisory.maxRequests` becomes `derived` from
+`limit:evidence.envelope.totalTimeoutMs`: the window divided by the slowest
+measured OSV response, halved for margin and rounded down, so the lookups
+the ceiling admits fit in half the window. The advisory rates are unchanged.
+
+### U6. Totals
 
 `limit:evidence.envelope.maxRequests`, `limit:evidence.envelope.maxTotalBytes`,
 the signals stage totals, `limit:research.cache.maxTotalBytes`, and
@@ -1049,18 +1071,14 @@ with the new ceilings. A run's computed shares may total less.
   reached, with every value read from the register.
 - A uv change of 30 `pip` members, about half direct, keeps upstream,
   vulnerability, and malware evidence for every member at the register's
-  values, with no `budget`. The test fails with the former flat metadata
-  share.
-- The research JSON entry boundary test reads the register value.
+  values, with no `budget`. Its GitHub release responses carry about the
+  per-member bytes #462 measured. The test fails with each former value:
+  the flat metadata share, the flat upstream byte share, the former JSON
+  entry cap, and the former retained-byte cap.
+- The research JSON entry and retained-byte boundary tests read the register
+  values.
 
 ### uv share sizing open questions
 
-- `limit:research.maxRetainedBytes` bounds the bytes an upstream reader
-  keeps, and it keeps each GitHub response it parses. A demand run scales
-  it, so #462 did not show whether it binds at production values. With
-  upstream responses near the per-member size #462 measured, it would stop
-  a 30-member uv change before every member is researched. Its basis is an
-  open decision for #467.
-- The advisory request ceiling, `limit:evidence.allocation.advisory.maxRequests`,
-  is unchanged here. Its raise for #467 waits on a basis whose arithmetic
-  gives the approved value.
+None. The retained-byte cap and the advisory ceiling, open in the first
+draft, are settled by U4 and U5 (maintainer, 2026-11-27).

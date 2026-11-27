@@ -26,9 +26,10 @@ test('records the job window as the budget less the pre-startup allowance', () =
 
 test('records the evidence-read envelope', () => {
   expect(EVIDENCE_READ_ENVELOPE).toEqual({
-    // The upstream byte ceiling and the PyPI metadata ceilings (#467) raise the envelope sums:
-    // 1,520 + (256 − 16) requests, and 54 MiB − 15 MiB − 0.5 MiB + 77,000,000 + 9,484,288 bytes.
-    maxRequests: 1760,
+    // The advisory, upstream byte, and PyPI metadata ceilings (#467) raise the envelope sums:
+    // 1,520 + (221 − 80) + (256 − 16) requests, and
+    // 54 MiB − 15 MiB − 0.5 MiB + 77,000,000 + 9,484,288 bytes.
+    maxRequests: 1901,
     maxResponseBytes: MiB,
     maxTotalBytes: 126_854_464,
     requestTimeoutMs: 15_000,
@@ -47,7 +48,7 @@ test('splits the envelope with nothing unallocated or over-allocated', () => {
     session: { maxRequests: 160, maxTotalBytes: 12 * MiB },
     registry: { maxRequests: 640, maxTotalBytes: 4 * MiB },
     upstream: { maxRequests: 240, maxTotalBytes: 77_000_000 },
-    advisory: { maxRequests: 80, maxTotalBytes: 5 * MiB },
+    advisory: { maxRequests: 221, maxTotalBytes: 5 * MiB },
     signals: {
       maxRequests: 416,
       maxTotalBytes: 15_251_456,
@@ -211,10 +212,10 @@ test('the upstream byte and PyPI metadata shares grow with uv members up to thei
   expect(researchShares({ ...NO_UNITS, added: 5, removed: 5 }).upstream.maxTotalBytes).toBe(
     none.upstream.maxTotalBytes,
   );
-  // 30 uv members, 15 direct and 15 transitive: 600,000 × 30 upstream bytes; metadata
+  // 30 uv members, 15 direct and 15 transitive: 750,000 × 30 upstream bytes; metadata
   // 16 + 2.5 × 30 = 91 requests and 524,288 + 70,000 × 30 bytes.
   const uv30 = researchShares(UV30_UNITS);
-  expect(uv30.upstream.maxTotalBytes).toBe(18_000_000);
+  expect(uv30.upstream.maxTotalBytes).toBe(22_500_000);
   expect(uv30.upstream.maxTotalBytes).toBe(upstreamRate * 30);
   expect(uv30.signals.readers.metadata).toEqual({
     maxRequests: 91,
@@ -232,9 +233,17 @@ test('the upstream byte and PyPI metadata shares grow with uv members up to thei
     transitive: Math.floor(members / 2),
     eligible: { ...NO_UNITS.eligible, malware: members, metadata: members },
   });
-  // Upstream: 600,000 × 128 is under the ceiling; 129 members pass it and are capped there.
-  expect(researchShares(uv(changes)).upstream.maxTotalBytes).toBe(upstreamRate * changes);
-  expect(researchShares(uv(changes + 1)).upstream.maxTotalBytes).toBe(upstream.maxTotalBytes);
+  // Upstream: 750,000 × 102 is under the 77 MB ceiling; 103 members pass it and are capped there.
+  const underUpstream = Math.floor(upstream.maxTotalBytes / upstreamRate);
+  expect(underUpstream).toBe(102);
+  expect(researchShares(uv(underUpstream)).upstream.maxTotalBytes).toBe(
+    upstreamRate * underUpstream,
+  );
+  expect(researchShares(uv(underUpstream)).upstream.maxTotalBytes).toBeLessThan(
+    upstream.maxTotalBytes,
+  );
+  expect(researchShares(uv(underUpstream + 1)).upstream.maxTotalBytes).toBe(upstream.maxTotalBytes);
+  expect(researchShares(uv(changes)).upstream.maxTotalBytes).toBe(upstream.maxTotalBytes);
   // Metadata requests: 16 + 2.5 × 96 reaches the ceiling of 256 exactly; 95 members stay under.
   const toCeiling = (metadata.maxRequests - requestBase) / requestRate;
   expect(toCeiling).toBe(96);
@@ -272,11 +281,13 @@ test('the fitted values give a one-member change a smaller share than R1 #276', 
   // One transitive npm member: advisory 3 + 2 = 5 and malware 2 + 1 = 3.
   const transitive = researchShares({ ...ONE_UNITS, direct: 0, transitive: 1 });
   expect(fittedRequests(transitive)).toMatchObject({ advisory: 5, malware: 3 });
-  // 105 members, 2 direct: every fitted share passes its ceiling. Advisory is
-  // 3 + 3 × 2 + 2 × 103 = 215 and malware 2 + 2 × 2 + 1 × 105 = 111.
+  // 105 members, 2 direct: every fitted share but advisory passes its ceiling. Advisory is
+  // 3 + 3 × 2 + 2 × 103 = 215, under its ceiling of 221 (#467), and malware
+  // 2 + 2 × 2 + 1 × 105 = 111.
+  expect(advisory.maxRequests).toBe(221);
   expect(fittedRequests(large)).toEqual({
     upstream: upstream.maxRequests,
-    advisory: advisory.maxRequests,
+    advisory: 215,
     malware: signals.readers.malware.maxRequests,
     publishTimes: signals.readers.publishTimes.maxRequests,
   });
