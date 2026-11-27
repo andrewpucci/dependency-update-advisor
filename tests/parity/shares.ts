@@ -8,6 +8,12 @@ export function registered(id: string): number {
   return entry.value;
 }
 
+/** Every leaf of a limits object, as `prefix.path` and its value. */
+export function leaves(value: unknown, prefix: string): [string, unknown][] {
+  if (typeof value !== 'object' || value === null) return [[prefix, value]];
+  return Object.entries(value).flatMap(([key, child]) => leaves(child, `${prefix}.${key}`));
+}
+
 const READERS = ['malware', 'publishTimes', 'registry', 'metadata', 'upstream'] as const;
 const ROLES = ['direct', 'transitive', 'added', 'removed'] as const;
 

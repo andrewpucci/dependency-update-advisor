@@ -321,7 +321,7 @@ export function collectionRegistryRequests(
   parameters: CollectionRegistryShareParameters = COLLECTION_REGISTRY_SHARE_PARAMETERS,
 ): number {
   if (!Number.isSafeInteger(npmMembers) || npmMembers < 0)
-    throw new Error('invalid npm member count');
+    throw new Error('collectionRegistryRequests: invalid npm member count');
   const total = exactShare(parameters.base, [
     { name: 'npm', rate: parameters.rates.npm, count: npmMembers },
   ]);

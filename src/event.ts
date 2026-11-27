@@ -217,7 +217,10 @@ function actor(value: unknown): Actor | null {
   return { id: value.id, login: value.login, type: value.type };
 }
 
-/** Whether an actor is the Dependabot bot account. */
+/**
+ * Whether an actor is the Dependabot bot account. Exported for the measurement scripts
+ * (src/measurement/demand.ts), so an unused-export cleanup must keep it.
+ */
 export function isDependabot(value: Actor): boolean {
   return value.login === 'dependabot[bot]' && value.type === 'Bot';
 }

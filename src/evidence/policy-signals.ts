@@ -153,6 +153,7 @@ async function collectNpmTimes(
     const key = JSON.stringify([target?.name, versions]);
     // A side with no lookup target carries why its identity proof is absent, as vulnerability does.
     // These records carry one reason; a gap usually holds just one, and its first is kept.
+    // The first attempt's reason wins: identity gaps list reasons deduplicated in attempt order.
     const result = !target
       ? { kind: 'unavailable' as const, reason: unresolvedReasons(input, change, side)[0]! }
       : (cache.get(key) ??

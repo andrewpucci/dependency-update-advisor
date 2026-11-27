@@ -116,6 +116,12 @@ Items 1–3 are already required by S1 ("preserve valid findings from completed
 work when a later request fails") and S2 ("preserve useful independent
 evidence when a stage fails"). Items 2–5 amend S3 and research orchestration.
 
+Item 2 reaches lookups that need an identity proof (#439): a side whose proof
+upstream tried and lost carries the stop's reason. A member with partial
+upstream evidence whose side's attempts a rollback removed reports
+`unsupported` for that side, since retained upstream evidence cannot say why
+that side's proof is missing.
+
 ### 2. Read each thing once per run
 
 1. **Scope.** Research readers (npm registry details, upstream, advisory, and
@@ -940,7 +946,9 @@ out-of-scope item "Scaling the collection registry share".
 3. **Ceiling.** The ×10 value of the former fixed share, under which every
    collected corpus PR completed. At ×1 the fixed share cut 28 of #276's
    105 members' vulnerability and malware coverage with `budget`; the
-   scaled share covers all of them.
+   scaled share covers all of them. The ceiling is corpus-derived, not
+   platform-derived: no documented npm registry limit sets it, pending L8
+   ([#380](https://github.com/andrewpucci/dependency-update-advisor/issues/380)).
 4. **Host.** These reads go to `registry.npmjs.org` with no credential.
    They are not research GitHub requests, so
    `limit:research.githubQuota.researchCeiling` and the quota guard never
@@ -1016,10 +1024,11 @@ register entry; this section cites ids only.
    Each rate is a `measured` entry citing the #462 measurement. The direct and
    transitive rates are 1.25 × the per-member bytes measured, the margin the
    fitted shares carry.
-3. **Ceiling.** `limit:evidence.allocation.upstream.maxTotalBytes` is a
-   `safety` entry: half of what the upstream reader can read, at its measured
-   throughput, within `limit:evidence.envelope.totalTimeoutMs`. With the
-   base, the rates reach it at a few dozen members.
+3. **Ceiling.** `limit:evidence.allocation.upstream.maxTotalBytes` is
+   `derived` from `limit:evidence.envelope.totalTimeoutMs` and the upstream
+   throughput measured for #467, a named constant beside the register: half
+   of what the upstream reader can read, at that throughput, within the
+   window. With the base, the rates reach it at a few dozen members.
 
 ### U2. PyPI metadata share
 
@@ -1085,8 +1094,8 @@ the one `limit:evidence.envelope.totalTimeoutMs` deadline. The upstream byte
 ceiling (U1.3) and the advisory ceiling each take half the window at the
 measured throughput and latency, so
 together they use the whole window at worst, and signals relies on neither
-reaching its ceiling. The upstream byte ceiling is written as a value, so it
-must be re-derived when `limit:evidence.envelope.totalTimeoutMs` changes.
+reaching its ceiling. Both ceilings are derived from
+`limit:evidence.envelope.totalTimeoutMs`, so they follow it when it changes.
 
 ### U6. Totals
 

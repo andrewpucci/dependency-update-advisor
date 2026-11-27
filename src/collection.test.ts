@@ -5,6 +5,7 @@ import * as npmGraphModule from './evidence/npm-graph.js';
 import * as uvGraphModule from './evidence/uv-graph.js';
 import * as readModule from './github-read.js';
 import { npmScenario } from '../tests/parity/npm-inventory.js';
+import { leaves } from '../tests/parity/shares.js';
 import { collectionRegistryRequests } from './budget.js';
 import { uvMetadataScenario } from '../tests/parity/uv-metadata.js';
 import { createEvidenceCollectors, openEvidenceSession, W2_EVIDENCE_LIMITS } from './collection.js';
@@ -548,10 +549,6 @@ test('opens the evidence session with a request timeout no longer than the time 
 test('wires every W2 reader limit to its own register entry', () => {
   // Each value's path under W2_EVIDENCE_LIMITS names its register id: session.maxPages is
   // w2.session.maxPages. The values are read from the register, never from a production constant.
-  const leaves = (value: unknown, prefix: string): [string, unknown][] =>
-    typeof value === 'object' && value !== null
-      ? Object.entries(value).flatMap(([key, child]) => leaves(child, `${prefix}.${key}`))
-      : [[prefix, value]];
   const wired = leaves(W2_EVIDENCE_LIMITS, 'w2');
   for (const [id, value] of wired) expect(value, id).toBe(REGISTER.get(id)?.value);
   // Every w2 register entry is wired, so none is left to a hard-coded value.

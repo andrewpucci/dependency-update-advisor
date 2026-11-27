@@ -220,8 +220,18 @@ const MiB = 1024 * 1024;
  * `<name>@<version>` in a monorepo (`packageTags`, src/evidence/upstream-github.ts:508).
  */
 export const UPSTREAM_TAG_CANDIDATES = 2;
-/** The slowest OSV `v1/query` response measured for #467, which sizes the advisory ceiling. */
+/**
+ * The slowest OSV `v1/query` response measured for #467, which sizes the advisory ceiling. It is a
+ * measurement, not a register entry, so check:limits cannot see that the ceiling depends on it: the
+ * ceiling's description names it, and src/budget.test.ts pins the value it gives.
+ */
 const SLOWEST_OSV_RESPONSE_MS = 541;
+/**
+ * The upstream read throughput measured on the #462 uv PRs (#467), 0.64 MB/s, which sizes the
+ * upstream byte ceiling. Like SLOWEST_OSV_RESPONSE_MS, it is a measurement that check:limits cannot
+ * see; the ceiling's description names it, and src/budget.test.ts pins the value it gives.
+ */
+const UPSTREAM_THROUGHPUT_BYTES_PER_SECOND = 640_000;
 
 const sum = (...values: number[]): number => values.reduce((total, value) => total + value, 0);
 const copy = (value: number): number => value;
@@ -1068,27 +1078,26 @@ const DEFINITIONS = [
     note: 'awaiting L8 measurement',
     test: 'src/evidence/upstream-read.test.ts > upstream reader spends exactly its request share and refuses the request past it',
   }),
-  {
-    id: 'evidence.allocation.upstream.maxTotalBytes',
-    value: 77_000_000,
-    unit: 'bytes',
-    protects:
-      'Caps response bytes of upstream research reads, the ceiling of the per-member upstream byte share, so they cannot take more of the evidence time or runner memory than the evidence window can read.',
-    basis: {
-      kind: 'safety',
-      reason:
-        'Upstream reads run inside limit:evidence.envelope.totalTimeoutMs (240 s). At the 0.64 MB/s upstream throughput measured on the #462 uv PRs, that window reads 240 × 0.64 = 153.6 MB; half of it, 76.8 MB, rounded to 77 MB, leaves a margin for slower responses: about 120 s of upstream reads. Research runs upstream, then advisories, then signals, one after another, on the one limit:evidence.envelope.totalTimeoutMs deadline: this ceiling and the advisory ceiling (limit:evidence.allocation.advisory.maxRequests) each take half the window at the measured throughput and latency, so together they use the whole window at worst, and signals relies on neither reaching its ceiling. The value is written here, not derived, so it depends on limit:evidence.envelope.totalTimeoutMs and must be re-derived when that changes. With the derived base of about 29 MiB, the per-member rate reaches it at 63 members ((77,000,000 − 30,408,704) ÷ 750,000 ≈ 62.1). Approved by the maintainer on 2026-11-27, #467.',
+  derived(
+    'evidence.allocation.upstream.maxTotalBytes',
+    'bytes',
+    ['evidence.envelope.totalTimeoutMs'],
+    (totalMs) => Math.floor(((totalMs / 1000) * UPSTREAM_THROUGHPUT_BYTES_PER_SECOND) / 2),
+    'Half of what the upstream reader can read in the evidence window at the measured upstream throughput (UPSTREAM_THROUGHPUT_BYTES_PER_SECOND, 640,000 bytes/s on the #462 uv PRs): limit:evidence.envelope.totalTimeoutMs ÷ 1,000 × 640,000 ÷ 2 = 240 × 640,000 ÷ 2 = 76,800,000 bytes, rounded down, about 120 s of upstream reads; the halving leaves a margin for slower responses. Research runs upstream, then advisories, then signals, one after another, on the one limit:evidence.envelope.totalTimeoutMs deadline: this ceiling and the advisory ceiling (limit:evidence.allocation.advisory.maxRequests) each take half the window at the measured throughput and latency, so together they use the whole window at worst, and signals relies on neither reaching its ceiling. With the derived base of about 29 MiB, the per-member rate reaches it at 62 members ((76,800,000 − 30,408,704) ÷ 750,000 ≈ 61.9). Approved by the maintainer on 2026-11-27, #467; derived rather than written as a value on review of #468.',
+    {
+      protects:
+        'Caps response bytes of upstream research reads, the ceiling of the per-member upstream byte share, so they cannot take more of the evidence time or runner memory than the evidence window can read.',
+      effect:
+        "The ceiling of the scaled upstream byte share; a response past the share's remaining bytes is refused with budget and the upstream reader stops.",
+      test: 'src/evidence/upstream-read.test.ts > upstream reader accepts a byte share exactly and refuses the byte past it',
     },
-    effect:
-      "The ceiling of the scaled upstream byte share; a response past the share's remaining bytes is refused with budget and the upstream reader stops.",
-    test: 'src/evidence/upstream-read.test.ts > upstream reader accepts a byte share exactly and refuses the byte past it',
-  },
+  ),
   derived(
     'evidence.allocation.advisory.maxRequests',
     'count',
     ['evidence.envelope.totalTimeoutMs'],
     (totalMs) => Math.floor(totalMs / SLOWEST_OSV_RESPONSE_MS / 2),
-    'The evidence window divided by the slowest measured OSV response (541 ms), halved for margin and rounded down: 240,000 ÷ 541 = 443.6, halved 221.8, so 221 sequential lookups fit in half the window, about 120 s of OSV. Research runs upstream, then advisories, then signals, one after another, on the one limit:evidence.envelope.totalTimeoutMs deadline: this ceiling and the upstream byte ceiling (limit:evidence.allocation.upstream.maxTotalBytes) each take half the window at the measured throughput and latency, so together they use the whole window at worst, and signals relies on neither reaching its ceiling. Approved by the maintainer on 2026-11-27, #467.',
+    'The evidence window, limit:evidence.envelope.totalTimeoutMs, divided by the slowest measured OSV response (SLOWEST_OSV_RESPONSE_MS, 541 ms), halved for margin and rounded down: 240,000 ÷ 541 = 443.6, halved 221.8, so 221 sequential lookups fit in half the window, about 120 s of OSV. Research runs upstream, then advisories, then signals, one after another, on the one limit:evidence.envelope.totalTimeoutMs deadline: this ceiling and the upstream byte ceiling (limit:evidence.allocation.upstream.maxTotalBytes) each take half the window at the measured throughput and latency, so together they use the whole window at worst, and signals relies on neither reaching its ceiling. Approved by the maintainer on 2026-11-27, #467.',
     {
       protects:
         'Caps advisory lookups, the ceiling of the per-member advisory share, so a large group cannot take more of the shared evidence time than its lookups can use.',
@@ -1770,7 +1779,7 @@ const DEFINITIONS = [
     basis: {
       kind: 'safety',
       reason:
-        'The largest legitimate use is limit:packet.changes members at the highest cumulative upstream entries per member measured on the #462 uv PRs. Those PRs used, in PR order, 251,223 entries for 34 members, 246,140 for 32, 240,318 for 31, and 225,529 for 29; the highest per member is 7,777 (the 29-member PR), so 128 × 7,777 = 995,456, under the cap. In practice the upstream byte ceiling stops reading at about 63 members, about 490,000 entries at 7,777 per member, so the practical margin is about 2×. Harm begins near 18 million: a bench on the development Mac on 2026-11-27 (#467) measured JSON copying at 33 ms per 100,000 entries, and with a 10× allowance for a slower runner, 18 million entries would spend a quarter of limit:evidence.envelope.totalTimeoutMs on JSON copy alone. The cap sits above the first and far below the second. The same value also caps TOML entries in upstream pyproject reads (src/evidence/upstream-github.ts:175) and license expression tokens (src/evidence/policy-signals-licenses.ts:64); there the per-response byte caps bound the input first. Approved by the maintainer on 2026-11-27, #467.',
+        'The largest legitimate use is limit:packet.changes members at the highest cumulative upstream entries per member measured on the #462 uv PRs. Those PRs used, in PR order, 251,223 entries for 34 members, 246,140 for 32, 240,318 for 31, and 225,529 for 29; the highest per member is 7,777 (the 29-member PR), so 128 × 7,777 = 995,456, under the cap. In practice the upstream byte ceiling stops reading at about 62 members, about 482,000 entries at 7,777 per member, so the practical margin is about 2×. Harm begins near 18 million: a bench on the development Mac on 2026-11-27 (#467) measured JSON copying at 33 ms per 100,000 entries, and with a 10× allowance for a slower runner, 18 million entries would spend a quarter of limit:evidence.envelope.totalTimeoutMs on JSON copy alone. The cap sits above the first and far below the second. The same value also caps TOML entries in upstream pyproject reads (src/evidence/upstream-github.ts:175) and license expression tokens (src/evidence/policy-signals-licenses.ts:64); there the per-response byte caps bound the input first. Approved by the maintainer on 2026-11-27, #467.',
     },
     effect:
       "Exceeding the cap fails that reader's read with reason budget; the stage stops and is recorded unavailable with its reason.",
