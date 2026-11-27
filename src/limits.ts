@@ -1819,22 +1819,35 @@ const DEFINITIONS = [
       test: 'src/github-read.test.ts > aborts an in-flight request at its deadline and rejects late success',
     },
   ),
-  unjustified('w2.npm.maxFileBytes', 500_000, 'bytes', {
-    protects:
-      'Caps the decoded bytes of one PR-controlled package-lock.json before JSON parsing, so a huge lockfile cannot make the npm reader parse unbounded data (memory and CPU).',
-    effect:
-      'A file over the cap is refused with budget before parsing, so the inventory is not claimed complete.',
-    note: 'awaiting L8 measurement',
-    test: 'src/evidence/npm.test.ts > the file byte cap admits a lockfile of exactly the registered size and refuses one byte more',
-  }),
-  unjustified('w2.npm.maxJsonDepth', 32, 'count', {
+  derived(
+    'w2.npm.maxFileBytes',
+    'bytes',
+    ['w2.session.maxFileBytes'],
+    copy,
+    'A package-lock.json may be as large as any file the session reader returns, as a uv.lock may (#462). Approved by the maintainer on 2026-11-27 (L11, #383).',
+    {
+      protects:
+        'Caps the decoded bytes of one PR-controlled package-lock.json before JSON parsing, so a huge lockfile cannot make the npm reader parse unbounded data (memory and CPU).',
+      effect:
+        'A file over the cap is refused with budget before parsing, so the inventory is not claimed complete.',
+      test: 'src/evidence/npm.test.ts > the file byte cap admits a lockfile of exactly the registered size and refuses one byte more',
+    },
+  ),
+  {
+    id: 'w2.npm.maxJsonDepth',
+    value: 32,
+    unit: 'count',
     protects:
       'Caps nesting depth of PR-controlled package-lock.json input, so deeply nested JSON cannot exhaust the stack or CPU in the depth walk and parser.',
+    basis: {
+      kind: 'safety',
+      reason:
+        'Largest legitimate use: package-lock.json v3 nests five levels (packages, a package path, a field such as dependencies, and its entries); the npm/cli lockfile read on 2026-11-27 nests five. Harm: the reader walks the parsed value and serializes what it keeps, and JSON.stringify overflows the call stack at about 4,166 levels of nested arrays (measured on 2026-11-27 under Node 22). The cap sits far between the two. Approved by the maintainer on 2026-11-27 (L11, #383).',
+    },
     effect:
       'Depth over the cap throws budget: the input envelope is reported invalid with no reads, and a parsed file yields a budget gap.',
     test: 'src/evidence/npm.test.ts > counts the input envelope as depth 1 like parsed files',
-    note: 'no recorded reason',
-  }),
+  },
   unjustified('w2.npm.maxJsonEntries', 100_000, 'count', {
     protects:
       'Caps cumulative JSON entries across PR-controlled lockfiles, so many or wide objects cannot drive unbounded parse and walk work.',
@@ -1843,14 +1856,20 @@ const DEFINITIONS = [
     note: 'awaiting L8 measurement',
     test: 'src/evidence/npm.test.ts > the cumulative JSON entry cap admits exactly the registered count and refuses one more',
   }),
-  unjustified('w2.npm.maxRoots', 10, 'count', {
-    protects:
-      'Caps the number of changed npm roots read in one run, so a PR touching many package directories cannot multiply lockfile reads beyond the session budget.',
-    effect:
-      'Roots past the cap are not read; a budget gap is recorded for the whole inventory and the first sorted roots are kept.',
-    note: 'awaiting L8 measurement',
-    test: 'src/evidence/npm.test.ts > the changed npm root cap reads exactly the registered number of roots and records a budget gap for the rest',
-  }),
+  configured(
+    'w2.npm.maxRoots',
+    10,
+    'count',
+    { setting: 'limits.coverage.npmRoots', maximum: 'dependabot.maxRoots' },
+    "The adopter: each changed npm root costs lockfile reads on both sides from the session's GitHub requests, so a larger setting buys coverage of more package directories with quota and time. Coverage bound category (L11, Q9(a)); its hard maximum is the roots dependabot.yml may name.",
+    {
+      protects:
+        'Caps the number of changed npm roots read in one run, so a PR touching many package directories cannot multiply lockfile reads beyond the session budget.',
+      effect:
+        'Roots past the cap are not read; a budget gap is recorded for the whole inventory and the first sorted roots are kept.',
+      test: 'src/evidence/npm.test.ts > the changed npm root cap reads exactly the registered number of roots and records a budget gap for the rest',
+    },
+  ),
   unjustified('w2.npm.maxRetainedBytes', 2_000_000, 'bytes', {
     protects:
       'Caps the serialized npm inventory bytes kept in memory and handed to the graph stage.',
@@ -1945,13 +1964,21 @@ const DEFINITIONS = [
       test: 'src/evidence/uv.test.ts > enforces file, edge, marker and selected-root caps at boundaries',
     },
   ),
-  unjustified('w2.uv.maxTomlDepth', 32, 'count', {
+  {
+    id: 'w2.uv.maxTomlDepth',
+    value: 32,
+    unit: 'count',
     protects:
       'Caps TOML nesting depth in PR-controlled files, so recursive inline parsing cannot exhaust the stack.',
-    effect: 'Exceeding the depth throws budget for that file and the side yields a budget gap.',
+    basis: {
+      kind: 'safety',
+      reason:
+        'Largest legitimate use: a uv.lock nests eight levels of tables and arrays (package, its wheels or dependencies, an entry, its fields); four public uv.lock files read on 2026-11-27 (astral-sh/uv, pydantic/pydantic, fastapi/fastapi, apache/airflow) nest eight. Harm: TOML parsing recurses per level, and smol-toml overflows the call stack at about 3,328 levels of nested inline arrays when its own depth guard is off (measured on 2026-11-27 under Node 22); the cap is also the depth guard the parser is given. Approved by the maintainer on 2026-11-27 (L11, #383).',
+    },
+    effect:
+      'Exceeding the depth throws budget for that file and the side yields a budget gap.',
     test: 'src/evidence/uv.test.ts > enforces exact/over %s through the real collector across both sides',
-    note: 'no recorded reason',
-  }),
+  },
   unjustified('w2.uv.maxTomlEntries', 100_000, 'count', {
     protects:
       'Caps cumulative TOML object properties and array elements across all uv files, so ignored fields cannot drive unbounded parse work.',
@@ -1959,57 +1986,121 @@ const DEFINITIONS = [
     test: 'src/evidence/uv.test.ts > enforces exact/over %s through the real collector across both sides',
     note: 'awaiting L8 measurement',
   }),
-  unjustified('w2.uv.maxPackages', 1_000, 'count', {
-    protects:
-      'Caps cumulative attempted package entries across uv.lock files, so a very large lock cannot drive unbounded parse and graph work.',
-    effect: 'Debiting past the cap throws budget and the file yields a budget gap.',
-    test: 'src/evidence/uv.test.ts > enforces exact/over %s through the real collector across both sides',
-    note: 'awaiting L8 measurement',
-  }),
-  unjustified('w2.uv.maxDeclarations', 1_000, 'count', {
-    protects:
-      'Caps cumulative requirement declarations from manifests and lock requires-dist items, bounding requirement parsing work.',
-    effect: 'Debiting past the cap throws budget and the side yields a budget gap.',
-    test: 'src/evidence/uv.test.ts > enforces exact/over %s through the real collector across both sides',
-    note: 'awaiting L8 measurement',
-  }),
-  unjustified('w2.uv.maxEdges', 1_000, 'count', {
-    protects: 'Caps cumulative dependency edges parsed from uv.lock, bounding graph input size.',
-    effect: 'Debiting past the cap throws budget and the head side yields a budget gap.',
-    test: 'src/evidence/uv.test.ts > enforces file, edge, marker and selected-root caps at boundaries',
-    note: 'awaiting L8 measurement',
-  }),
-  unjustified('w2.uv.maxStringBytes', 4_096, 'bytes', {
+  derived(
+    'w2.uv.maxPackages',
+    'count',
+    ['w2.uv.maxRoots', 'w2.uv.maxFileBytes', 'uv.minRecordBytes'],
+    (roots, fileBytes, recordBytes) => Math.floor((2 * roots * fileBytes) / recordBytes),
+    'As many package entries as the uv.lock files one run reads can hold: 2 sides (base and head) × limit:w2.uv.maxRoots lockfiles of at most limit:w2.uv.maxFileBytes, over the smallest array element the parser counts, limit:uv.minRecordBytes, rounded down. The count is cumulative across files and sides, so a fixed number bound legitimate PRs (one 600-package uv.lock read on base and head passes 1,000); bytes bound the input first. It follows the uv root setting (L11, Q1(a)). Approved by the maintainer on 2026-11-27 (L11, #383).',
+    {
+      protects:
+        'Caps cumulative attempted package entries across uv.lock files, so a very large lock cannot drive unbounded parse and graph work.',
+      effect:
+        'Debiting past the cap throws budget and the file yields a budget gap.',
+      test: 'src/evidence/uv.test.ts > enforces exact/over %s through the real collector across both sides',
+    },
+  ),
+  derived(
+    'w2.uv.maxDeclarations',
+    'count',
+    ['w2.uv.maxRoots', 'w2.uv.maxFileBytes', 'uv.minRecordBytes'],
+    (roots, fileBytes, recordBytes) => Math.floor((2 * 2 * roots * fileBytes) / recordBytes),
+    'As many requirement declarations as the files one run reads can hold: 2 sides (base and head) × limit:w2.uv.maxRoots roots × 2 files (pyproject.toml and the uv.lock requires-dist lists) of at most limit:w2.uv.maxFileBytes, over the smallest array element the parser counts, limit:uv.minRecordBytes, rounded down. The count is cumulative, so bytes bound the input first. It follows the uv root setting (L11, Q1(a)). Approved by the maintainer on 2026-11-27 (L11, #383).',
+    {
+      protects:
+        'Caps cumulative requirement declarations from manifests and lock requires-dist items, bounding requirement parsing work.',
+      effect:
+        'Debiting past the cap throws budget and the side yields a budget gap.',
+      test: 'src/evidence/uv.test.ts > enforces exact/over %s through the real collector across both sides',
+    },
+  ),
+  derived(
+    'w2.uv.maxEdges',
+    'count',
+    ['w2.uv.maxRoots', 'w2.uv.maxFileBytes', 'uv.minRecordBytes'],
+    (roots, fileBytes, recordBytes) => Math.floor((2 * roots * fileBytes) / recordBytes),
+    'As many dependency edges as the uv.lock files one run reads can hold: 2 sides (base and head) × limit:w2.uv.maxRoots lockfiles of at most limit:w2.uv.maxFileBytes, over the smallest array element the parser counts, limit:uv.minRecordBytes, rounded down. The count is cumulative, so bytes bound the input first. It follows the uv root setting (L11, Q1(a)). Approved by the maintainer on 2026-11-27 (L11, #383).',
+    {
+      protects:
+        'Caps cumulative dependency edges parsed from uv.lock, bounding graph input size.',
+      effect:
+        'Debiting past the cap throws budget and the head side yields a budget gap.',
+      test: 'src/evidence/uv.test.ts > enforces file, edge, marker and selected-root caps at boundaries',
+    },
+  ),
+  derived(
+    'uv.minRecordBytes',
+    'bytes',
+    [],
+    () => Buffer.byteLength('1,'),
+    'The fewest bytes one counted record can take in a uv file: the uv parsers debit every element of a package, dependency or requires-dist array before they check it (src/evidence/uv-lock.ts, src/evidence/uv-manifest.ts), and the shortest TOML array element is a one-digit value and its comma. Approved by the maintainer on 2026-11-27 (L11, #383).',
+    {
+      protects:
+        'Sizes the uv package, declaration and edge counts from the file bytes, so the count bounds never sit below what the bytes admit.',
+      effect:
+        'Not enforced: it is the divisor of limit:w2.uv.maxPackages, limit:w2.uv.maxDeclarations and limit:w2.uv.maxEdges.',
+      test: 'src/evidence/uv-lock.test.ts > every array element counts as one record, so a record can be as small as uv.minRecordBytes',
+    },
+  ),
+  {
+    id: 'w2.uv.maxStringBytes',
+    value: 4_096,
+    unit: 'bytes',
     protects:
       'Caps each TOML key or string value and requirement text, so one very long string cannot drive unbounded decode and identity work.',
-    effect: 'A string over the cap throws budget for that entry, which becomes a budget gap.',
+    basis: {
+      kind: 'safety',
+      reason:
+        'Largest legitimate use: requirement, marker and artifact URL strings run to hundreds of bytes; the longest string in four public uv.lock files read on 2026-11-27 is 463 bytes (a resolution marker). Harm: each string is decoded, normalized and, for a requirement, tokenized and kept, so without a per-string cap one string could be the whole file (limit:w2.uv.maxFileBytes) and multiply that work for every entry that names it. Approved by the maintainer on 2026-11-27 (L11, #383).',
+    },
+    effect:
+      'A string over the cap throws budget for that entry, which becomes a budget gap.',
     test: 'src/evidence/uv.test.ts > enforces exact/over %s through the real collector across both sides',
-    note: 'awaiting L8 measurement',
-  }),
-  unjustified('w2.uv.maxRequirementTokens', 200, 'count', {
+  },
+  {
+    id: 'w2.uv.maxRequirementTokens',
+    value: 200,
+    unit: 'count',
     protects:
       'Caps lexical tokens per requirement, so one pathological requirement string cannot drive unbounded tokenization.',
+    basis: {
+      kind: 'safety',
+      reason:
+        'Largest legitimate use: the longest requirement in four public uv.lock files read on 2026-11-27, a dependency with a four-way platform marker, needs 71 tokens, and the longest requires-dist entry 23. Harm: tokenizing and parsing a requirement is linear in its tokens, and without this cap a string at limit:w2.uv.maxStringBytes would yield up to about 2,000 tokens, each parsed again for every side and root that reads it. Approved by the maintainer on 2026-11-27 (L11, #383).',
+    },
     effect:
       'Exceeding the token cap throws budget for that requirement, which becomes a budget gap.',
     test: 'src/evidence/uv.test.ts > enforces exact/over %s through the real collector across both sides',
-    note: 'awaiting L8 measurement',
-  }),
-  unjustified('w2.uv.maxMarkerDepth', 16, 'count', {
+  },
+  {
+    id: 'w2.uv.maxMarkerDepth',
+    value: 16,
+    unit: 'count',
     protects:
       'Caps parenthesis nesting in requirement environment markers, so nested markers cannot drive unbounded recursion.',
+    basis: {
+      kind: 'safety',
+      reason:
+        'Largest legitimate use: uv writes markers as a disjunction of conjunctions, one level of parentheses; across the 1,546 requires-dist entries and 378 dependency markers of four public uv.lock files read on 2026-11-27 the deepest nests one. Harm: the marker parser recurses once per parenthesis, and plain recursion overflows the call stack at about 9,640 frames (measured on 2026-11-27 under Node 22). Approved by the maintainer on 2026-11-27 (L11, #383).',
+    },
     effect:
       'Exceeding the nesting depth throws budget for that requirement, which becomes a budget gap.',
     test: 'src/evidence/uv.test.ts > enforces file, edge, marker and selected-root caps at boundaries',
-    note: 'no recorded reason',
-  }),
-  unjustified('w2.uv.maxRoots', 20, 'count', {
-    protects:
-      'Caps the number of selected uv roots read, so many changed directories cannot multiply file reads beyond the session budget.',
-    effect:
-      'Configured roots above the cap make the input invalid (src/evidence/uv.ts:173); discovered roots past the cap are not read and each adds a budget gap.',
-    test: 'src/evidence/uv.test.ts > enforces file, edge, marker and selected-root caps at boundaries',
-    note: 'awaiting L8 measurement',
-  }),
+  },
+  configured(
+    'w2.uv.maxRoots',
+    20,
+    'count',
+    { setting: 'limits.coverage.uvRoots', maximum: 'dependabot.maxRoots' },
+    "The adopter: each selected uv root costs pyproject.toml and uv.lock reads on both sides from the session's GitHub requests, so a larger setting buys coverage of more Python projects with quota and time. Coverage bound category (L11, Q9(a)); its hard maximum is the roots dependabot.yml may name.",
+    {
+      protects:
+        'Caps the number of selected uv roots read, so many changed directories cannot multiply file reads beyond the session budget.',
+      effect:
+        'Configured roots above the cap make the input invalid (src/evidence/uv.ts:173); discovered roots past the cap are not read and each adds a budget gap.',
+      test: 'src/evidence/uv.test.ts > enforces file, edge, marker and selected-root caps at boundaries',
+    },
+  ),
   unjustified('w2.uv.maxRetainedBytes', 1_000_000, 'bytes', {
     protects: 'Caps serialized uv metadata bytes kept in memory and handed to the graph stage.',
     effect:
@@ -2082,13 +2173,21 @@ const DEFINITIONS = [
     note: 'awaiting L8 measurement',
     test: 'src/evidence/npm-registry.test.ts > registry JSON entries at the cap parse and one more entry is a budget failure',
   }),
-  unjustified('w2.registry.maxJsonDepth', 32, 'count', {
+  {
+    id: 'w2.registry.maxJsonDepth',
+    value: 32,
+    unit: 'count',
     protects:
       'Caps nesting depth in registry documents, so deep JSON cannot exhaust the stack or CPU in the walker.',
-    effect: 'Exceeding the depth throws budget and the read is unavailable with reason budget.',
-    note: 'no recorded reason',
+    basis: {
+      kind: 'safety',
+      reason:
+        'Largest legitimate use: an npm version document nests about four levels; the next, typescript, react, @babel/core and eslint version documents read from registry.npmjs.org on 2026-11-27 nest four. Harm: the reader walks the parsed value and serializes what it keeps, and JSON.stringify overflows the call stack at about 4,166 levels of nested arrays (measured on 2026-11-27 under Node 22). The cap sits far between the two. Approved by the maintainer on 2026-11-27 (L11, #383).',
+    },
+    effect:
+      'Exceeding the depth throws budget and the read is unavailable with reason budget.',
     test: 'src/evidence/npm-registry.test.ts > registry JSON nesting at the depth cap parses and one level deeper is a budget failure',
-  }),
+  },
   derived(
     'w2.registry.requestTimeoutMs',
     'milliseconds',
@@ -2923,14 +3022,21 @@ const DEFINITIONS = [
       test: 'src/evidence/advisories.test.ts > accepts exactly advisories.maxLookups public identities and refuses one more',
     },
   ),
-  unjustified('npm.maxIntegrityCodeUnits', 1_024, 'code units', {
+  {
+    id: 'npm.maxIntegrityCodeUnits',
+    value: 1_024,
+    unit: 'code units',
     protects:
       'The integrity string from the untrusted npm registry is bounded before the hash parser splits and matches it, so the parse cannot do unbounded work (CPU).',
+    basis: {
+      kind: 'safety',
+      reason:
+        'Largest legitimate use: an SRI string is the algorithm prefix and a base64 digest, 95 code units for sha512 and about 140 with a second hash; the longest of the npm/cli lockfile read on 2026-11-27 is 95. Harm: the hash parser splits and matches the untrusted string, and without this cap the string could be a whole registry response (limit:w2.registry.maxResponseBytes). Approved by the maintainer on 2026-11-27 (L11, #383).',
+    },
     effect:
       "A longer integrity string fails the registry document with reason malformed, so the package's registry evidence is unavailable.",
-    note: 'no recorded reason',
     test: 'src/evidence/npm-registry.test.ts > an integrity string at the code-unit cap binds and one more code unit is malformed',
-  }),
+  },
   {
     id: 'github.compareMaxFiles',
     value: 300,

@@ -542,3 +542,28 @@ test('the session reads follow GitHub file-list limits, and workflow files stay 
   );
   expect(limitEntry('w2.actions.maxYamlDepth').basis.kind).toBe('safety');
 });
+
+test('the uv and npm collection bounds keep their sources and formulas', () => {
+  const lockBytes = 2 * limit('w2.uv.maxRoots') * limit('w2.uv.maxFileBytes');
+  expect(limit('w2.uv.maxPackages')).toBe(Math.floor(lockBytes / limit('uv.minRecordBytes')));
+  expect(limit('w2.uv.maxEdges')).toBe(Math.floor(lockBytes / limit('uv.minRecordBytes')));
+  expect(limit('w2.uv.maxDeclarations')).toBe(
+    Math.floor((2 * lockBytes) / limit('uv.minRecordBytes')),
+  );
+  expect(limit('w2.uv.maxPackages')).toBe(10_000_000);
+  expect(limit('w2.npm.maxFileBytes')).toBe(limit('w2.session.maxFileBytes'));
+  for (const id of ['w2.npm.maxRoots', 'w2.uv.maxRoots'] as const) {
+    expect(limitEntry(id).configurable, id).toMatchObject({ maximum: 'dependabot.maxRoots' });
+    expect(limit(id), id).toBeLessThanOrEqual(limit('dependabot.maxRoots'));
+  }
+  for (const id of [
+    'w2.npm.maxJsonDepth',
+    'w2.registry.maxJsonDepth',
+    'w2.uv.maxTomlDepth',
+    'w2.uv.maxMarkerDepth',
+    'w2.uv.maxStringBytes',
+    'w2.uv.maxRequirementTokens',
+    'npm.maxIntegrityCodeUnits',
+  ] as const)
+    expect(limitEntry(id).basis.kind, id).toBe('safety');
+});

@@ -338,6 +338,15 @@ each with today's value as its default and the hard maximum named here:
   limit less the freshness reads every run makes. It counts GitHub reads
   only, so `limit:research.githubQuota.researchCeiling`, which sums every
   host, cannot serve as it.
+- **Coverage bounds** (Q9(a)): limits that bound how much of a change the
+  reviewer covers, where the adopter bears the coverage they give up and
+  the quota and time a larger setting spends: `limit:w2.npm.maxRoots`,
+  `limit:w2.uv.maxRoots`, `limit:w2.actions.maxWorkflows`,
+  `limit:research.maxTagCandidates`, `limit:context.maxSourceFileBytes`, and
+  `limit:context.maxTotalSourceReadBytes`. Each keeps today's value as its
+  default; each register entry names its hard maximum. The npm and uv root
+  counts are bounded by the roots Dependabot's file may name,
+  `limit:dependabot.maxRoots`.
 - **Response cap** (Q3(a)): `limit:evidence.envelope.maxResponseBytes`. It
   is a parse-safety bound on untrusted responses, which the list above bars;
   this amendment admits it by name, because the cap binds legitimate
