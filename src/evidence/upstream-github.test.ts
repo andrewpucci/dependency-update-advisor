@@ -500,7 +500,8 @@ describe('settling tag existence pairs answers by candidate, never by position',
         ...reader,
         tagExistence: async (candidates) => {
           asked.push([...candidates]);
-          return [];
+          // An answer for the candidate the run already answered must not overwrite it.
+          return [{ candidate: v, answer: 'absent' }];
         },
       },
       [v, bare],
@@ -508,6 +509,35 @@ describe('settling tag existence pairs answers by candidate, never by position',
     expect(asked).toEqual([[bare]]);
     expect(existence.get(key(v))).toBe('present');
     expect(existence.get(key(bare))).toBe('unknown');
+    reader.close();
+  });
+
+  test('repository case is folded through the existence key; tag case is not', async () => {
+    const existence: TagExistenceMap = new Map();
+    const { reader, calls } = setup({}, {}, { existence });
+    const upper = { repository: 'Fixture/Orbit', tag: 'v2.0.0' },
+      other = { repository: 'Fixture/Orbit', tag: 'w2.0.0' };
+    await settleTagExistence(
+      {
+        ...reader,
+        // The reader names the repository in another case, and one tag in another case.
+        tagExistence: async () => [
+          { candidate: { repository: 'fixture/orbit', tag: 'v2.0.0' }, answer: 'absent' },
+          { candidate: { repository: 'fixture/orbit', tag: 'W2.0.0' }, answer: 'absent' },
+        ],
+      },
+      [upper, other],
+    );
+    expect([...existence]).toEqual([
+      [JSON.stringify(['fixture/orbit', 'v2.0.0']), 'absent'],
+      [JSON.stringify(['fixture/orbit', 'w2.0.0']), 'unknown'],
+    ]);
+    // A probe naming the repository in yet another case is settled with no request.
+    expect(await resolveUpstreamRef('FIXTURE/orbit', 'tags/v2.0.0', reader)).toEqual({
+      status: 'unavailable',
+      reason: 'missing',
+    });
+    expect(calls).toEqual([]);
     reader.close();
   });
 });
@@ -550,6 +580,19 @@ describe('package tag candidates', () => {
       },
     });
     expect(() => packageTagCandidates({ ...target, metadata }, reader)).toThrow('a bug');
+    reader.close();
+  });
+
+  test('a TypeError that is not an unparseable URL propagates', () => {
+    const { reader } = setup();
+    const metadata = Object.defineProperty({}, 'repository', {
+      get() {
+        throw new TypeError('a bug');
+      },
+    });
+    expect(() => packageTagCandidates({ ...target, metadata }, reader)).toThrow(
+      new TypeError('a bug'),
+    );
     reader.close();
   });
 });

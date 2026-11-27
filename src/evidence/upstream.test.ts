@@ -1,5 +1,17 @@
 import { createHash } from 'node:crypto';
-import { describe, expect, test } from 'vite-plus/test';
+import { describe, expect, test, vi } from 'vite-plus/test';
+// A package whose tag candidates throw an unexpected error, to test that the pre-pass skips only it.
+const prepass = vi.hoisted(() => ({ failFor: null as string | null }));
+vi.mock('./upstream-github.js', async (importOriginal) => {
+  const original = await importOriginal<typeof import('./upstream-github.js')>();
+  return {
+    ...original,
+    packageTagCandidates: (...args: Parameters<typeof original.packageTagCandidates>) => {
+      if (args[0].name === prepass.failFor) throw new RangeError('a bug');
+      return original.packageTagCandidates(...args);
+    },
+  };
+});
 import { collectAdvisoryNpm, collectAdvisoryUv } from '../../tests/parity/advisories.js';
 import { graphqlTagAnswer } from '../../tests/parity/upstream.js';
 import { enrichUpstream, attachUpstreamResearch, upstreamBounds } from './upstream.js';
@@ -639,6 +651,31 @@ describe('the batched tag existence pre-pass', () => {
     expect(batched.existence.get(JSON.stringify(['fixture/mono', 'synthetic-child-0@1.0.0']))).toBe(
       'absent',
     );
+  });
+
+  test('a member whose candidates throw goes to REST alone; the others are still batched', async () => {
+    const today = monorepo(undefined, false);
+    const expected = await run(today);
+    prepass.failFor = 'fixture-anchor';
+    let batched;
+    try {
+      batched = monorepo();
+      expect(await run(batched)).toEqual(expected);
+    } finally {
+      prepass.failFor = null;
+    }
+    // Only the other member's tag was asked about, and its absent answer replaced its REST probe.
+    expect(batched.sent).toHaveLength(1);
+    expect(Object.values(batched.sent[0].variables).filter((v) => v.startsWith('refs/'))).toEqual([
+      'refs/tags/synthetic-child-0@1.0.0',
+    ]);
+    expect(batched.existence.get(JSON.stringify(['fixture/mono', 'synthetic-child-0@1.0.0']))).toBe(
+      'absent',
+    );
+    const probes = restTagProbes(batched.calls);
+    expect(probes.some((url) => url.endsWith('/tags/synthetic-child-0@1.0.0'))).toBe(false);
+    for (const tag of ['fixture-anchor@1.0.0', 'fixture-anchor@1.1.0'])
+      expect(probes.some((url) => url.endsWith('/tags/' + tag))).toBe(true);
   });
 
   test('a present tag is proved over REST exactly as today', async () => {

@@ -942,7 +942,10 @@ function memberTagCandidates(
     side(change.from.name, change.from.version, base.data);
   return candidates;
 }
-/** One existence query pass over every member's candidates; a failure leaves them to REST. */
+/**
+ * One existence query pass over every member's candidates. A member whose candidates cannot be
+ * listed is left out, so only its tags go to REST; a failed query leaves every candidate to REST.
+ */
 async function tagPrepass(
   changes: readonly PacketChange[],
   members: Map<number, MemberLookups>,
@@ -951,10 +954,15 @@ async function tagPrepass(
   // Candidates in a repository that later fails the public check are still asked about. They cost
   // alias slots and share, but an answer is used only by a probe that check allows, so it can
   // never make a candidate missing that REST would not.
+  const candidates = [...members].flatMap(([index, sides]) => {
+    try {
+      return memberTagCandidates(changes[index], sides, reader);
+    } catch {
+      // This member's tags are probed over REST as today; the others are still batched.
+      return [];
+    }
+  });
   try {
-    const candidates = [...members].flatMap(([index, sides]) =>
-      memberTagCandidates(changes[index], sides, reader),
-    );
     await settleTagExistence(reader, candidates);
   } catch {
     // Unanswered candidates are probed over REST as today.

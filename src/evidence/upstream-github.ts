@@ -122,12 +122,12 @@ export async function settleTagExistence(
   }
   if (!unanswered.size) return;
   const answers = await reader.tagExistence([...unanswered.values()]);
-  // Answers are paired by the candidate each names, never by position. An answer for a candidate
-  // not asked about is ignored; disagreeing answers for one candidate, or none, leave it `unknown`.
+  // Answers are paired by the candidate each names, never by position. Only asked candidates are
+  // filed, so an answer for any other is ignored; disagreeing answers for one candidate, or none,
+  // leave it `unknown`.
   const settled = new Map<string, TagExistence>();
   for (const { candidate, answer } of answers) {
     const key = existenceKey(candidate.repository, candidate.tag);
-    if (!unanswered.has(key)) continue;
     const prior = settled.get(key);
     settled.set(key, prior === undefined || prior === answer ? answer : 'unknown');
   }

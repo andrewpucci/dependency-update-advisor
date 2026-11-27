@@ -17948,7 +17948,6 @@ async function settleTagExistence(reader, candidates) {
 	const settled = /* @__PURE__ */ new Map();
 	for (const { candidate, answer } of answers) {
 		const key = existenceKey(candidate.repository, candidate.tag);
-		if (!unanswered.has(key)) continue;
 		const prior = settled.get(key);
 		settled.set(key, prior === void 0 || prior === answer ? answer : "unknown");
 	}
@@ -21483,10 +21482,19 @@ function memberTagCandidates(change, sides, reader) {
 	if (change.from && change.to && base?.data) side(change.from.name, change.from.version, base.data);
 	return candidates;
 }
-/** One existence query pass over every member's candidates; a failure leaves them to REST. */
+/**
+* One existence query pass over every member's candidates. A member whose candidates cannot be
+* listed is left out, so only its tags go to REST; a failed query leaves every candidate to REST.
+*/
 async function tagPrepass(changes, members, reader) {
+	const candidates = [...members].flatMap(([index, sides]) => {
+		try {
+			return memberTagCandidates(changes[index], sides, reader);
+		} catch {
+			return [];
+		}
+	});
 	try {
-		const candidates = [...members].flatMap(([index, sides]) => memberTagCandidates(changes[index], sides, reader));
 		await settleTagExistence(reader, candidates);
 	} catch {}
 }
