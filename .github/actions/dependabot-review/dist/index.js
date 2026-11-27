@@ -34750,8 +34750,8 @@ function repository(value, id) {
 	if (pieces.length !== 2 || !pieces.every((piece) => plainText(piece) && !/[\s/]/u.test(piece)) || !positiveId(numericId) || !/^\d+$/u.test(id)) return null;
 	return Object.freeze({
 		id: numericId,
-		owner: pieces[0],
-		name: pieces[1]
+		owner: pieces[0].toLowerCase(),
+		name: pieces[1].toLowerCase()
 	});
 }
 function workflow(value) {

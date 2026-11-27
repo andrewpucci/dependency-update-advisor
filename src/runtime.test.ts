@@ -8,6 +8,7 @@ import {
   type GithubRead,
   type GithubTransport,
 } from './runtime.js';
+import { parseReviewBinding } from './event.js';
 
 const env = {
   INPUT_GITHUB_TOKEN: 'read-token',
@@ -26,6 +27,37 @@ test('accepts trusted caller context and preserves an empty LLM key for failure 
     repository: { id: 101, owner: 'example', name: 'consumer' },
     workflowFile: 'ci.yml',
     workflowPath: '.github/workflows/ci.yml',
+  });
+});
+
+test('lowercases a mixed-case repository so it matches the bound repository identity', () => {
+  const runtime = parseRuntime({
+    ...env,
+    GITHUB_REPOSITORY: 'Example-Org/Consumer.App',
+  });
+  if (!runtime) throw new Error('expected runtime');
+  const binding = parseReviewBinding({
+    repository: { id: 101, owner: 'Example-Org', name: 'Consumer.App' },
+    workflow: { id: 7, path: '.github/workflows/ci.yml' },
+    runId: 9,
+    runAttempt: 1,
+    pullNumber: 3,
+    headRepository: { id: 101, owner: 'Example-Org', name: 'Consumer.App' },
+    headSha: 'a'.repeat(40),
+    baseRef: 'main',
+    baseSha: 'b'.repeat(40),
+    mergeBaseSha: 'c'.repeat(40),
+    actorId: 49699333,
+    conclusion: 'success',
+    identity: [101, 7, 9, 1, 3, 'a'.repeat(40)],
+  });
+  if (!binding) throw new Error('expected binding');
+  // Collectors deep-compare the snapshot's repository, taken from the runtime, with the binding's.
+  expect(runtime.repository).toStrictEqual(binding.repository);
+  expect(runtime.repository).toStrictEqual({
+    id: 101,
+    owner: 'example-org',
+    name: 'consumer.app',
   });
 });
 
@@ -62,11 +94,18 @@ test('uses one fixed-origin, encoded workflow request with the read token', asyn
   const fetch = vi.fn(
     async () => new Response(JSON.stringify({ id: 301, path: '.github/workflows/ci.yml' })),
   );
-  const transport = createGithubTransport({ token: 'read-token', now: () => 0, fetch });
+  const transport = createGithubTransport({
+    token: 'read-token',
+    now: () => 0,
+    fetch,
+  });
 
   await expect(
     transport.readWorkflow({ id: 101, owner: 'space name', name: 'consumer/name' }, 'ci.yml'),
-  ).resolves.toEqual({ kind: 'available', value: { id: 301, path: '.github/workflows/ci.yml' } });
+  ).resolves.toEqual({
+    kind: 'available',
+    value: { id: 301, path: '.github/workflows/ci.yml' },
+  });
   expect(fetch).toHaveBeenCalledExactlyOnceWith(
     'https://api.github.com/repos/space%20name/consumer%2Fname/actions/workflows/ci.yml',
     expect.objectContaining({
@@ -85,13 +124,18 @@ test('validates the returned workflow ID and exact path', async () => {
     kind: 'available',
     value: { id: 301, path: '.github/workflows/ci.yml' },
   };
-  const transport: Pick<GithubTransport, 'readWorkflow'> = { readWorkflow: async () => response };
+  const transport: Pick<GithubTransport, 'readWorkflow'> = {
+    readWorkflow: async () => response,
+  };
   await expect(resolveWorkflow(runtime, transport)).resolves.toEqual({
     id: 301,
     path: '.github/workflows/ci.yml',
   });
 
-  response = { kind: 'available', value: { id: 301, path: '.github/workflows/other.yml' } };
+  response = {
+    kind: 'available',
+    value: { id: 301, path: '.github/workflows/other.yml' },
+  };
   await expect(resolveWorkflow(runtime, transport)).resolves.toBeNull();
 });
 
@@ -100,7 +144,10 @@ test('fails closed on a rate limit, redirect, or aggregate request budget', asyn
     token: 'read-token',
     now: () => 0,
     fetch: async () =>
-      new Response(null, { status: 403, headers: { 'x-ratelimit-remaining': '0' } }),
+      new Response(null, {
+        status: 403,
+        headers: { 'x-ratelimit-remaining': '0' },
+      }),
   });
   await expect(
     rateLimited.readWorkflow({ id: 101, owner: 'example', name: 'consumer' }, 'ci.yml'),
@@ -149,7 +196,10 @@ test.each([
     now: () => 0,
     fetch: async () => response,
   });
-  await expect(transport.readRepository(repo)).resolves.toEqual({ kind: 'unavailable', reason });
+  await expect(transport.readRepository(repo)).resolves.toEqual({
+    kind: 'unavailable',
+    reason,
+  });
   expect(response.bodyUsed).toBe(true);
 });
 
@@ -212,7 +262,10 @@ test('times out and cancels an error body that never finishes', async () => {
     });
     const pending = transport.readRepository(repo);
     await vi.advanceTimersByTimeAsync(W2_GITHUB_LIMITS.requestTimeoutMs);
-    await expect(pending).resolves.toEqual({ kind: 'unavailable', reason: 'timeout' });
+    await expect(pending).resolves.toEqual({
+      kind: 'unavailable',
+      reason: 'timeout',
+    });
     expect(cancelled).toBe(true);
   } finally {
     vi.useRealTimers();
@@ -234,7 +287,10 @@ test('limits a late request to the time left in the total deadline', async () =>
     clock = W2_GITHUB_LIMITS.totalTimeoutMs - 1_000;
     const pending = transport.readRepository(repo);
     await vi.advanceTimersByTimeAsync(1_000);
-    await expect(pending).resolves.toEqual({ kind: 'unavailable', reason: 'timeout' });
+    await expect(pending).resolves.toEqual({
+      kind: 'unavailable',
+      reason: 'timeout',
+    });
   } finally {
     vi.useRealTimers();
   }
@@ -255,7 +311,9 @@ describe('freshness reads and the shared evidence deadline', () => {
       },
     });
     clock = pastEvidenceDeadline;
-    await expect(transport.readRun(repo, 401)).resolves.toMatchObject({ kind: 'available' });
+    await expect(transport.readRun(repo, 401)).resolves.toMatchObject({
+      kind: 'available',
+    });
     expect(urls).toHaveLength(1);
     await expect(transport.readBlob(repo, 'a'.repeat(40))).resolves.toEqual({
       kind: 'unavailable',
@@ -323,7 +381,9 @@ describe('freshness reads and the shared evidence deadline', () => {
       kind: 'available',
     });
     clock = started + JOB_WINDOW_MS - 1_000;
-    await expect(transport.readRun(repo, 401)).resolves.toMatchObject({ kind: 'available' });
+    await expect(transport.readRun(repo, 401)).resolves.toMatchObject({
+      kind: 'available',
+    });
   });
 
   test.each([
@@ -354,7 +414,10 @@ describe('freshness reads and the shared evidence deadline', () => {
         await vi.advanceTimersByTimeAsync(timeout - 1);
         expect(settled).toBe(false);
         await vi.advanceTimersByTimeAsync(1);
-        await expect(pending).resolves.toEqual({ kind: 'unavailable', reason: 'timeout' });
+        await expect(pending).resolves.toEqual({
+          kind: 'unavailable',
+          reason: 'timeout',
+        });
       } finally {
         vi.useRealTimers();
       }
@@ -380,7 +443,9 @@ test.each([
       fetch: async () => new Response('{}'),
     });
     for (let index = 0; index < requests; index += 1)
-      await expect(read(transport)).resolves.toMatchObject({ kind: 'available' });
+      await expect(read(transport)).resolves.toMatchObject({
+        kind: 'available',
+      });
     await expect(read(transport)).resolves.toEqual(budget);
   },
 );
@@ -395,7 +460,9 @@ test('an exhausted snapshot share cannot starve freshness reads, and the reverse
     await snapshotRead(transport);
   await expect(snapshotRead(transport)).resolves.toEqual(budget);
   for (let index = 0; index < W2_GITHUB_LIMITS.freshness.maxRequests; index += 1)
-    await expect(freshnessRead(transport)).resolves.toMatchObject({ kind: 'available' });
+    await expect(freshnessRead(transport)).resolves.toMatchObject({
+      kind: 'available',
+    });
   await expect(freshnessRead(transport)).resolves.toEqual(budget);
   await expect(snapshotRead(transport)).resolves.toEqual(budget);
 });
@@ -445,7 +512,9 @@ test.each([
 ] as const)(
   "stops a %s read at that share's byte limit and leaves the other share alone",
   async (share, read) => {
-    const chunk = JSON.stringify({ pad: 'x'.repeat(W2_GITHUB_LIMITS.maxResponseBytes - 32) });
+    const chunk = JSON.stringify({
+      pad: 'x'.repeat(W2_GITHUB_LIMITS.maxResponseBytes - 32),
+    });
     const transport = createGithubTransport({
       token: 'read-token',
       now: () => 0,
@@ -465,13 +534,19 @@ test.each([
       Math.ceil(W2_GITHUB_LIMITS[share].maxTotalBytes / W2_GITHUB_LIMITS.maxResponseBytes),
     );
     const other = share === 'snapshot' ? freshnessRead : snapshotRead;
-    await expect(other(transport)).resolves.toMatchObject({ kind: 'available' });
+    await expect(other(transport)).resolves.toMatchObject({
+      kind: 'available',
+    });
   },
 );
 
 test('reads runs, pull requests, comparisons, and workflows by ID from the fixed origin', async () => {
   const fetch = vi.fn(async (_url: string, _init: RequestInit) => new Response('{"ok":true}'));
-  const transport = createGithubTransport({ token: 'read-token', now: () => 0, fetch });
+  const transport = createGithubTransport({
+    token: 'read-token',
+    now: () => 0,
+    fetch,
+  });
   const odd = { id: 101, owner: 'space name', name: 'consumer/name' };
   await transport.readRun(odd, 401);
   await transport.readPullRequest(odd, 42);
@@ -491,7 +566,11 @@ test.each([
   ['an uppercase SHA', 'A'.repeat(40), 'b'.repeat(40)],
 ])('rejects a comparison with %s before any request', async (_label, base, head) => {
   const fetch = vi.fn(async () => new Response('{}'));
-  const transport = createGithubTransport({ token: 'read-token', now: () => 0, fetch });
+  const transport = createGithubTransport({
+    token: 'read-token',
+    now: () => 0,
+    fetch,
+  });
   await expect(transport.readComparison(repo, base, head)).resolves.toEqual({
     kind: 'unavailable',
     reason: 'malformed',
@@ -511,7 +590,14 @@ test.each([
   ],
 ])('rejects %s before any request', async (_label, read) => {
   const fetch = vi.fn(async () => new Response('{}'));
-  const transport = createGithubTransport({ token: 'read-token', now: () => 0, fetch });
-  await expect(read(transport)).resolves.toEqual({ kind: 'unavailable', reason: 'malformed' });
+  const transport = createGithubTransport({
+    token: 'read-token',
+    now: () => 0,
+    fetch,
+  });
+  await expect(read(transport)).resolves.toEqual({
+    kind: 'unavailable',
+    reason: 'malformed',
+  });
   expect(fetch).not.toHaveBeenCalled();
 });
