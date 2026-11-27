@@ -1,14 +1,19 @@
 import type { Limit, LimitDefinition } from '../limits.js';
 
-const SCALED_RESEARCH = new Set(['research.maxAttempts', 'research.maxRetainedBytes']);
+const SCALED_RESEARCH = new Set([
+  'research.maxAttempts',
+  'research.maxJsonEntries',
+  'research.maxRetainedBytes',
+]);
 /** Scaled-share bases and rates, so a share lifts with its ceiling and the run sees uncut demand. */
 const SHARE_PREFIXES = ['research.share.', 'collection.share.'];
 
 /**
  * The hand-set read budget a demand measurement lifts: every evidence share and envelope value,
- * every scaled-share base and rate, the research attempt cap, and the research retained-byte cap.
- * The retained-byte cap is a memory guard awaiting measurement (#431), so a run shows retained
- * demand while production keeps the register value. Derived entries are left for `buildRegister`
+ * every scaled-share base and rate, the research attempt cap, the research JSON entry cap, and the
+ * research retained-byte cap. The retained-byte cap is a memory guard awaiting measurement (#431),
+ * and the entry cap stopped upstream on every real uv change measured for #462 (approved by the
+ * maintainer on 2026-11-27), so a run shows that demand while production keeps the register value. Derived entries are left for `buildRegister`
  * to recompute, so totals and copies of these values scale with them.
  */
 export function isReadBudget(entry: Limit): boolean {
