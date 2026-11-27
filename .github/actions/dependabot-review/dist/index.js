@@ -15832,6 +15832,17 @@ var Reader = class {
 	* the REST quota the guard keeps. It counts one request and its bytes against this reader's
 	* share. A secondary limit gets REST's single wait and resend. Any failure answers every
 	* candidate `unknown`.
+	*
+	* The response body streams through the same `body` check as a REST read, so the share's
+	* `maxResponseBytes` (the smaller of `evidence.envelope.maxResponseBytes` and the share's total
+	* bytes) refuses an oversized answer as `budget`, and every candidate is then `unknown`.
+	*
+	* The query asks for `rateLimit { cost }`, but nothing reads it. GraphQL cost is charged in
+	* points against GitHub's separate `graphql` primary limit, so cost accounting would land
+	* there, beside `graphqlSpent`. It would not charge the quota guard, which ignores a reading
+	* that names any resource but `core` (and is never given this query), or this reader's share,
+	* which counts each query as one request whatever its cost. Today the reader learns that the
+	* `graphql` limit is spent only from a `RATE_LIMITED` error or a spent `graphql` refusal.
 	*/
 	async tagQuery(batch) {
 		const unknown = batch.map(() => "unknown");
