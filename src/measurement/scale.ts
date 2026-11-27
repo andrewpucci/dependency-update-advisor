@@ -49,6 +49,9 @@ export function scaledDefinitions(
   return [...register.values()].map(({ value, ...entry }) => {
     // A built register carries each derived entry's resolved value; a definition must not.
     if (entry.basis.kind === 'derived') return entry;
-    return { ...entry, value: isReadBudget({ ...entry, value }) ? times(value, factor) : value };
+    const scaled = isReadBudget({ ...entry, value }) ? times(value, factor) : value;
+    // An adopter setting's default is its value, so the two scale together.
+    const setting = entry.configurable && { ...entry.configurable, default: scaled };
+    return { ...entry, value: scaled, ...(setting && { configurable: setting }) };
   });
 }

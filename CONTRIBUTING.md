@@ -221,3 +221,20 @@ REST status of both 200 and 404 for one tag is reported as `tagRestConflict`,
 which leaves the run incomplete rather than showing a batch gap. A
 run stopped by the request cap or a request error still writes what it
 measured, with `stopped` saying why.
+
+### Research timing probes
+
+Two register inputs are measured platform figures, not demand: the slowest
+OSV response (`limit:osv.slowestResponseMs`) and the upstream read throughput
+(`limit:upstream.throughputBytesPerSecond`). Reproduce them with:
+
+```sh
+npm run probe:osv-latency -- <ecosystem>:<name>@<version> ...
+GITHUB_TOKEN=<read token> npm run probe:upstream-throughput -- github:<owner>/<repo> pypi:<name> ...
+```
+
+Each probe reads every target once, one after another, as research does, and
+makes no write. It prints one JSON line of counts and the figure, with no
+target name, URL, or token. Name the upstream projects and package versions of
+the uv PRs the entry cites, and record a new run on the entry's issue before
+changing its value.

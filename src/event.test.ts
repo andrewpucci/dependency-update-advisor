@@ -8,6 +8,7 @@ import {
   type EventReads,
   type ReviewIdentity,
 } from './event.js';
+import { limit } from './limits.js';
 
 const HEAD = 'a'.repeat(40);
 const BASE = 'b'.repeat(40);
@@ -263,6 +264,22 @@ async function boundFixture() {
   f.readReplay.mockClear();
   return { ...f, binding: result.binding };
 }
+
+test('a freshness recheck makes exactly freshness.readsPerCheck GitHub reads', async () => {
+  const f = await boundFixture();
+  // A moved base adds the comparison read, the longest path a recheck takes.
+  f.pullRequest.base.sha = NEXT_HEAD;
+  f.comparison.base_commit.sha = NEXT_HEAD;
+  for (const read of [f.readWorkflow, f.readRun, f.readPullRequest, f.readComparison])
+    read.mockClear();
+  expect(await reverifyReviewBinding(f.binding, f.reads)).toEqual({ kind: 'fresh' });
+  const githubReads = [f.readWorkflow, f.readRun, f.readPullRequest, f.readComparison].reduce(
+    (total, read) => total + read.mock.calls.length,
+    0,
+  );
+  expect(githubReads).toBe(limit('freshness.readsPerCheck'));
+  expect(f.readReplay).not.toHaveBeenCalled();
+});
 
 test('reverifies the same binding without demanding unseen replay state', async () => {
   const f = await boundFixture();

@@ -35,10 +35,17 @@ import {
   type ReviewOutcomeKind,
 } from './review.js';
 import { withTrustedSnapshot, type SnapshotReads } from './snapshot.js';
-import { limit } from './limits.js';
 
-/** How often a pending request is checked against ownership; shorter than any request timeout. */
-const OWNERSHIP_WATCH_MS = limit('pipeline.ownershipWatchMs');
+/**
+ * How often a pending request is checked against ownership. Its only rule is to stay shorter than
+ * any request timeout, so lost work stops before a request it started could finish; no adopter
+ * bears it and the claim store has no production backend to bound it. It is an internal constant
+ * outside the limit register (SPEC-limit-register section 4, register scope, approved 2026-11-27,
+ * #383); src/pipeline.test.ts pins it below `limit:github.requestTimeoutMs`. Revisit it when the
+ * claim store has a backend.
+ */
+// oxlint-disable-next-line limits/no-literal-limit -- an internal constant outside the register (see above)
+export const OWNERSHIP_WATCH_MS = 2_000;
 
 export type PipelineInput = Readonly<{
   /** The trusted workflow_run event with its expected repository and workflow. */

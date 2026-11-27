@@ -32,7 +32,7 @@ test('records the evidence-read envelope', () => {
     maxRequests: 2117,
     maxResponseBytes: MiB,
     maxTotalBytes: 126_654_464,
-    requestTimeoutMs: 15_000,
+    requestTimeoutMs: 11_639,
     totalTimeoutMs: 240_000,
   });
 });

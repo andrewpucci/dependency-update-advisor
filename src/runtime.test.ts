@@ -125,7 +125,7 @@ test('fails closed on a rate limit, redirect, or aggregate request budget', asyn
     snapshot: { maxRequests: 200, maxTotalBytes: 9 * 1024 * 1024 },
     freshness: { maxRequests: 24, maxTotalBytes: 3 * 1024 * 1024 },
     maxResponseBytes: 1024 * 1024,
-    requestTimeoutMs: 15_000,
+    requestTimeoutMs: 11_639,
     totalTimeoutMs: 240_000,
   });
 });

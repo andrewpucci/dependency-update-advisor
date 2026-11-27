@@ -169,7 +169,7 @@ test('derived limits are wired to the entries they sum or copy', () => {
   expect(dependents(REGISTER, 'evidence.allocation.registry.maxTotalBytes')).toEqual(
     expect.arrayContaining(['evidence.envelope.maxTotalBytes', 'research.cache.maxTotalBytes']),
   );
-  expect(dependents(REGISTER, 'job.budget')).toEqual(['job.window']);
+  expect(dependents(REGISTER, 'job.budget')).toEqual(['job.maxEvidenceDeadlineMs', 'job.window']);
 });
 
 test('the job budget is derived from the dependabot review workflow timeout', () => {
@@ -428,4 +428,57 @@ test("the comment cap is derived from GitHub's byte limit so any body within it 
       repositoryType: 'private, user-owned, github.com',
     },
   });
+});
+
+test('the evidence timeouts derive from the GitHub processing timeout, the cap and the probes', () => {
+  expect(limitEntry('github.processingTimeoutMs').basis).toMatchObject({
+    kind: 'external',
+    platformValue: 10_000,
+  });
+  for (const [id, command] of [
+    ['upstream.throughputBytesPerSecond', 'npm run probe:upstream-throughput'],
+    ['osv.slowestResponseMs', 'npm run probe:osv-latency'],
+  ] as const)
+    expect(limitEntry(id).basis).toMatchObject({ kind: 'external', probe: { command } });
+  expect(limit('evidence.envelope.requestTimeoutMs')).toBe(
+    limit('github.processingTimeoutMs') +
+      Math.ceil(
+        (limit('evidence.envelope.maxResponseBytes') * 1000) /
+          limit('upstream.throughputBytesPerSecond'),
+      ),
+  );
+  expect(limit('evidence.envelope.requestTimeoutMs')).toBe(11_639);
+  expect(limit('github.requestTimeoutMs')).toBe(limit('evidence.envelope.requestTimeoutMs'));
+  expect(limit('evidence.allocation.advisory.maxRequests')).toBe(221);
+  expect(limit('evidence.allocation.upstream.maxTotalBytes')).toBe(76_800_000);
+});
+
+test('the evidence deadline is an adopter setting whose hard maximum leaves one model call', () => {
+  const deadline = limitEntry('evidence.envelope.totalTimeoutMs');
+  expect(deadline.basis.kind).toBe('config');
+  expect(deadline.configurable).toMatchObject({
+    default: 240_000,
+    maximum: 'job.maxEvidenceDeadlineMs',
+  });
+  expect(limit('job.maxEvidenceDeadlineMs')).toBe(
+    limit('job.window') -
+      limit('freshness.readsPerCheck') * limit('github.requestTimeoutMs') -
+      limit('analysis.requestTimeoutMs') -
+      limit('analysis.publicationReserveMs') -
+      limit('job.freshnessAllowance'),
+  );
+  expect(limit('evidence.envelope.totalTimeoutMs')).toBeLessThanOrEqual(
+    limit('job.maxEvidenceDeadlineMs'),
+  );
+  // The window-derived research ceilings follow the setting (L11, Q1(a)).
+  const definitions = [...REGISTER.values()].map(({ value, ...entry }): LimitDefinition =>
+    entry.basis.kind === 'derived' ? entry : { ...entry, value },
+  );
+  const longer = buildRegister(
+    definitions,
+    new Map([['evidence.envelope.totalTimeoutMs', 2 * limit('evidence.envelope.totalTimeoutMs')]]),
+  );
+  expect(longer.get('evidence.allocation.advisory.maxRequests')?.value).toBe(443);
+  expect(longer.get('evidence.allocation.upstream.maxTotalBytes')?.value).toBe(153_600_000);
+  expect(settingProblems(REGISTER)).toEqual([]);
 });

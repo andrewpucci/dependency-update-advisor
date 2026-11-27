@@ -14,7 +14,7 @@ import { analyzeMistralBatch } from './analysis/mistral.js';
 import type { EventReads, RepositoryIdentity, ReviewIdentity } from './event.js';
 import { createEventReads } from './adapters.js';
 import { createRehearsalSink } from './handoff.js';
-import { runReview, type PipelineInput } from './pipeline.js';
+import { OWNERSHIP_WATCH_MS, runReview, type PipelineInput } from './pipeline.js';
 import { limit } from './limits.js';
 import {
   ASSESSMENT_FAILURE_REASONS,
@@ -1286,8 +1286,14 @@ test('ends analysis job.freshnessAllowance before the job window closes', async 
   expect(call?.[0].deadlineMs).toBe(deadline);
 });
 
-test('checks ownership every pipeline.ownershipWatchMs while a request is pending', async () => {
-  const interval = limit('pipeline.ownershipWatchMs');
+test('the ownership watch interval stays below every request timeout', () => {
+  expect(OWNERSHIP_WATCH_MS).toBeLessThan(limit('github.requestTimeoutMs'));
+  expect(OWNERSHIP_WATCH_MS).toBeLessThan(limit('w2.session.requestTimeoutMs'));
+  expect(OWNERSHIP_WATCH_MS).toBeLessThan(limit('w2.registry.requestTimeoutMs'));
+});
+
+test('checks ownership every OWNERSHIP_WATCH_MS while a request is pending', async () => {
+  const interval = OWNERSHIP_WATCH_MS;
   const claims = createTestClaimStore();
   const { input } = await setup({ claims });
   vi.useFakeTimers();

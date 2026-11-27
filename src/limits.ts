@@ -369,19 +369,6 @@ const MiB = 1024 * 1024;
  * `<name>@<version>` in a monorepo (`packageTags`, src/evidence/upstream-github.ts:508).
  */
 export const UPSTREAM_TAG_CANDIDATES = 2;
-/**
- * The slowest OSV `v1/query` response measured for #467, which sizes the advisory ceiling. It is a
- * measurement, not a register entry, so check:limits cannot see that the ceiling depends on it: the
- * ceiling's description names it, and src/budget.test.ts pins the value it gives.
- */
-const SLOWEST_OSV_RESPONSE_MS = 541;
-/**
- * The upstream read throughput measured on the #462 uv PRs (#467), 0.64 MB/s, which sizes the
- * upstream byte ceiling. Like SLOWEST_OSV_RESPONSE_MS, it is a measurement that check:limits cannot
- * see; the ceiling's description names it, and src/budget.test.ts pins the value it gives.
- */
-const UPSTREAM_THROUGHPUT_BYTES_PER_SECOND = 640_000;
-
 const sum = (...values: number[]): number => values.reduce((total, value) => total + value, 0);
 const copy = (value: number): number => value;
 
@@ -435,6 +422,34 @@ function derived<const Id extends string>(
     effect: audit.effect ?? PENDING_AUDIT,
     basis: { kind: 'derived', inputs, formula, description },
     test: audit.test ?? PENDING_AUDIT,
+  } as const;
+}
+
+/** The 2026-11-27 approval of the L11 recommendations (#383), which admitted these settings. */
+const L11_APPROVAL = 'approved by the maintainer on 2026-11-27 (L11, #383)';
+
+/**
+ * An adopter setting (SPEC-limit-register section 5): `value` is its default, today's value, and
+ * the bounds name register entries. L12 (#384) adds the setting to the config contract, the
+ * schema and the parser; until then every run uses the default.
+ */
+function configured<const Id extends string>(
+  id: Id,
+  value: number,
+  unit: LimitUnit,
+  setting: Omit<LimitSetting, 'default'>,
+  bears: string,
+  audit: Required<Omit<Audit, 'note'>>,
+) {
+  return {
+    id,
+    value,
+    unit,
+    protects: audit.protects,
+    effect: audit.effect,
+    basis: { kind: 'config', bears, approved: L11_APPROVAL },
+    configurable: { ...setting, default: value },
+    test: audit.test,
   } as const;
 }
 
@@ -1056,6 +1071,20 @@ const DEFINITIONS = [
     note: 'awaiting L8 measurement',
     test: 'src/pipeline.test.ts > ends analysis job.freshnessAllowance before the job window closes',
   }),
+  derived(
+    'freshness.readsPerCheck',
+    'count',
+    [],
+    () => 3,
+    'A freshness recheck reads the workflow run, the pull request and the base-to-head comparison, one after another, from fixed call sites (reverifyReviewBinding, src/event.ts). Approved by the maintainer on 2026-11-27 (L11, #383).',
+    {
+      protects:
+        "Counts the GitHub reads of one freshness recheck, so the freshness share and the evidence deadline's hard maximum reserve them.",
+      effect:
+        'Not enforced: it sizes limit:evidence.allocation.transport.freshness.maxRequests and limit:job.maxEvidenceDeadlineMs.',
+      test: 'src/event.test.ts > a freshness recheck makes exactly freshness.readsPerCheck GitHub reads',
+    },
+  ),
   // Evidence read envelope and its reader shares, from budget.ts.
   derived(
     'evidence.envelope.maxRequests',
@@ -1107,22 +1136,61 @@ const DEFINITIONS = [
       test: "none: derived sum of the six share byte caps (src/budget.ts:23-29); no code compares against the envelope's maxTotalBytes itself (src/budget.ts:26 defines it, src/research.ts:99 uses each share's maxTotalBytes, and each share is enforced by its reader, e.g. src/evidence/npm-registry.ts:247).",
     },
   ),
-  unjustified('evidence.envelope.requestTimeoutMs', 15_000, 'milliseconds', {
-    protects:
-      'One stalled request must not hold the job until the runner kills it; the timeout frees the time for the reads that follow, including freshness reads.',
-    effect:
-      'The request is aborted with the fixed timeout reason and its reader stops with that reason, keeping the evidence it already collected.',
-    test: 'src/runtime.test.ts > times a freshness read made %s out at the smaller of the request timeout and the time left',
-    note: 'awaiting L8 measurement',
-  }),
-  unjustified('evidence.envelope.totalTimeoutMs', 240_000, 'milliseconds', {
-    protects:
-      "The shared evidence deadline keeps every pre-analysis read inside the job window, so analysis and the final freshness check keep their time before the runner's timeout.",
-    effect:
-      "Once the time is spent, a reader's next request is refused with budget or cut off with timeout, and the evidence already collected is kept.",
-    test: 'src/runtime.test.ts > limits a late request to the time left in the total deadline',
-    note: 'awaiting L8 measurement',
-  }),
+  derived(
+    'evidence.envelope.requestTimeoutMs',
+    'milliseconds',
+    [
+      'github.processingTimeoutMs',
+      'evidence.envelope.maxResponseBytes',
+      'upstream.throughputBytesPerSecond',
+    ],
+    (processingMs, responseBytes, throughput) =>
+      processingMs + Math.ceil((responseBytes * 1000) / throughput),
+    "GitHub's processing timeout, limit:github.processingTimeoutMs, plus the time to read a body at the response cap, limit:evidence.envelope.maxResponseBytes, at the measured upstream throughput, limit:upstream.throughputBytesPerSecond, rounded up to the millisecond. A request that GitHub still processes is never cut off, and its largest admissible body has time to arrive. npm, OSV and PyPI document no server timeout, so their reads share GitHub's figure. The cap is the input, so the timeout follows it (L11, Q3(a)). Approved by the maintainer on 2026-11-27 (L11, #383).",
+    {
+      protects:
+        'One stalled request must not hold the job until the runner kills it; the timeout frees the time for the reads that follow, including freshness reads.',
+      effect:
+        'The request is aborted with the fixed timeout reason and its reader stops with that reason, keeping the evidence it already collected.',
+      test: 'src/runtime.test.ts > times a freshness read made %s out at the smaller of the request timeout and the time left',
+    },
+  ),
+  configured(
+    'evidence.envelope.totalTimeoutMs',
+    240_000,
+    'milliseconds',
+    { setting: 'limits.evidenceDeadlineMs', maximum: 'job.maxEvidenceDeadlineMs' },
+    'The adopter: a longer deadline buys research coverage with run time, and a shorter one fails research sooner. Section 5 admitted the evidence deadline as configuration on 2026-11-17, with the job budget.',
+    {
+      protects:
+        "The shared evidence deadline keeps every pre-analysis read inside the job window, so analysis and the final freshness check keep their time before the runner's timeout.",
+      effect:
+        "Once the time is spent, a reader's next request is refused with budget or cut off with timeout, and the evidence already collected is kept.",
+      test: 'src/runtime.test.ts > limits a late request to the time left in the total deadline',
+    },
+  ),
+  derived(
+    'job.maxEvidenceDeadlineMs',
+    'milliseconds',
+    [
+      'job.window',
+      'freshness.readsPerCheck',
+      'github.requestTimeoutMs',
+      'analysis.requestTimeoutMs',
+      'analysis.publicationReserveMs',
+      'job.freshnessAllowance',
+    ],
+    (window, recheckReads, requestMs, modelCallMs, publicationMs, freshnessMs) =>
+      window - recheckReads * requestMs - modelCallMs - publicationMs - freshnessMs,
+    'The latest the evidence deadline may fall so one full model call still fits: limit:job.window less what must follow evidence, which is the before-model recheck (limit:freshness.readsPerCheck sequential reads of limit:github.requestTimeoutMs, exempt from the evidence deadline), one model call (limit:analysis.requestTimeoutMs), the publication reserve (limit:analysis.publicationReserveMs) and the final freshness allowance (limit:job.freshnessAllowance). Approved by the maintainer on 2026-11-27 (L11, Q4(a), #383).',
+    {
+      protects:
+        'Keeps an adopter setting of the evidence deadline from taking the time analysis needs for one model call, the recheck before it, publication, and the final freshness check.',
+      effect:
+        'Not enforced by the reviewer yet: L12 makes the config parser reject a larger evidence deadline. check:limits evaluates the register at this value.',
+      test: 'none: the hard maximum of an adopter setting the parser does not read yet (L12, #384); src/limits.test.ts pins its formula',
+    },
+  ),
   derived(
     'evidence.allocation.transport.maxRequests',
     'count',
@@ -1265,9 +1333,9 @@ const DEFINITIONS = [
   derived(
     'evidence.allocation.upstream.maxTotalBytes',
     'bytes',
-    ['evidence.envelope.totalTimeoutMs'],
-    (totalMs) => Math.floor(((totalMs / 1000) * UPSTREAM_THROUGHPUT_BYTES_PER_SECOND) / 2),
-    'Half of what the upstream reader can read in the evidence window at the measured upstream throughput (UPSTREAM_THROUGHPUT_BYTES_PER_SECOND, 640,000 bytes/s on the #462 uv PRs): limit:evidence.envelope.totalTimeoutMs ÷ 1,000 × 640,000 ÷ 2 = 240 × 640,000 ÷ 2 = 76,800,000 bytes, rounded down, about 120 s of upstream reads; the halving leaves a margin for slower responses. Research runs upstream, then advisories, then signals, one after another, on the one limit:evidence.envelope.totalTimeoutMs deadline: this ceiling and the advisory ceiling (limit:evidence.allocation.advisory.maxRequests) each take half the window at the measured throughput and latency, so together they use the whole window at worst, and signals relies on neither reaching its ceiling. With the derived base of about 29 MiB, the per-member rate reaches it at 62 members ((76,800,000 − 30,408,704) ÷ 750,000 ≈ 61.9). Approved by the maintainer on 2026-11-27, #467; derived rather than written as a value on review of #468.',
+    ['evidence.envelope.totalTimeoutMs', 'upstream.throughputBytesPerSecond'],
+    (totalMs, throughput) => Math.floor(((totalMs / 1000) * throughput) / 2),
+    'Half of what the upstream reader can read in the evidence window at the measured upstream throughput (limit:upstream.throughputBytesPerSecond, 640,000 bytes/s on the #462 uv PRs, reproduced by npm run probe:upstream-throughput): limit:evidence.envelope.totalTimeoutMs ÷ 1,000 × 640,000 ÷ 2 = 240 × 640,000 ÷ 2 = 76,800,000 bytes, rounded down, about 120 s of upstream reads; the halving leaves a margin for slower responses. Research runs upstream, then advisories, then signals, one after another, on the one limit:evidence.envelope.totalTimeoutMs deadline: this ceiling and the advisory ceiling (limit:evidence.allocation.advisory.maxRequests) each take half the window at the measured throughput and latency, so together they use the whole window at worst, and signals relies on neither reaching its ceiling. With the derived base of about 29 MiB, the per-member rate reaches it at 62 members ((76,800,000 − 30,408,704) ÷ 750,000 ≈ 61.9). Approved by the maintainer on 2026-11-27, #467; derived rather than written as a value on review of #468; the throughput became a register input with its probe command on 2026-11-27 (L11, #383). It follows the evidence deadline setting (L11, Q1).',
     {
       protects:
         'Caps response bytes of upstream research reads, the ceiling of the per-member upstream byte share, so they cannot take more of the evidence time or runner memory than the evidence window can read.',
@@ -1279,9 +1347,9 @@ const DEFINITIONS = [
   derived(
     'evidence.allocation.advisory.maxRequests',
     'count',
-    ['evidence.envelope.totalTimeoutMs'],
-    (totalMs) => Math.floor(totalMs / SLOWEST_OSV_RESPONSE_MS / 2),
-    'The evidence window, limit:evidence.envelope.totalTimeoutMs, divided by the slowest measured OSV response (SLOWEST_OSV_RESPONSE_MS, 541 ms), halved for margin and rounded down: 240,000 ÷ 541 = 443.6, halved 221.8, so 221 sequential lookups fit in half the window, about 120 s of OSV. Research runs upstream, then advisories, then signals, one after another, on the one limit:evidence.envelope.totalTimeoutMs deadline: this ceiling and the upstream byte ceiling (limit:evidence.allocation.upstream.maxTotalBytes) each take half the window at the measured throughput and latency, so together they use the whole window at worst, and signals relies on neither reaching its ceiling. Approved by the maintainer on 2026-11-27, #467.',
+    ['evidence.envelope.totalTimeoutMs', 'osv.slowestResponseMs'],
+    (totalMs, slowest) => Math.floor(totalMs / slowest / 2),
+    'The evidence window, limit:evidence.envelope.totalTimeoutMs, divided by the slowest measured OSV response (limit:osv.slowestResponseMs, 541 ms, reproduced by npm run probe:osv-latency), halved for margin and rounded down: 240,000 ÷ 541 = 443.6, halved 221.8, so 221 sequential lookups fit in half the window, about 120 s of OSV. Research runs upstream, then advisories, then signals, one after another, on the one limit:evidence.envelope.totalTimeoutMs deadline: this ceiling and the upstream byte ceiling (limit:evidence.allocation.upstream.maxTotalBytes) each take half the window at the measured throughput and latency, so together they use the whole window at worst, and signals relies on neither reaching its ceiling. Approved by the maintainer on 2026-11-27, #467; the latency became a register input with its probe command on 2026-11-27 (L11, #383). It follows the evidence deadline setting (L11, Q1).',
     {
       protects:
         'Caps advisory lookups, the ceiling of the per-member advisory share, so a large group cannot take more of the shared evidence time than its lookups can use.',
@@ -2643,13 +2711,6 @@ const DEFINITIONS = [
     note: 'no recorded reason',
     test: 'src/evidence/policy-signals-npm.test.ts > a maintainer list at the registered cap is kept and one more is unchecked for budget',
   }),
-  unjustified('pipeline.ownershipWatchMs', 2_000, 'milliseconds', {
-    protects:
-      'A lost claim must stop a pending request within the watch interval, and the code requires that interval to be shorter than any request timeout, so lost work does not keep running (work after ownership is lost).',
-    effect: 'Each tick checks ownership; when ownership is lost the pending request is aborted.',
-    note: 'no recorded reason',
-    test: 'src/pipeline.test.ts > checks ownership every pipeline.ownershipWatchMs while a request is pending',
-  }),
   unjustified('research.maxTagCandidates', 100, 'count', {
     protects:
       'Release and tag candidates from untrusted upstream data are bounded, so tag matching cannot grow requests or CPU without limit (requests and CPU).',
@@ -2760,6 +2821,70 @@ const DEFINITIONS = [
     note: 'no recorded reason',
     test: 'src/evidence/upstream-github.test.ts > a comparison keeps its file list complete below the register file cap and truncates at it',
   }),
+  {
+    id: 'github.processingTimeoutMs',
+    value: 10_000,
+    unit: 'milliseconds',
+    protects:
+      'Records how long GitHub processes one REST request before it terminates it with a timeout response, the floor below which the reviewer would cut off a request GitHub still answers.',
+    basis: {
+      kind: 'external',
+      url: 'https://docs.github.com/en/rest/using-the-rest-api/troubleshooting-the-rest-api#timeouts',
+      checked: '2026-11-27',
+      platformValue: 10_000,
+      margin:
+        'none: "If GitHub takes more than 10 seconds to process an API request, GitHub will terminate the request and you will receive a timeout response." GitHub reserves the right to change the window. The GraphQL API documents the same 10-second processing timeout. It covers processing before the response, not the body transfer, which limit:evidence.envelope.requestTimeoutMs adds.',
+    },
+    effect:
+      'Not enforced by the reviewer; limit:evidence.envelope.requestTimeoutMs derives from it.',
+    test: 'none: platform figure; src/limits.test.ts pins how limit:evidence.envelope.requestTimeoutMs derives from it',
+  },
+  {
+    id: 'upstream.throughputBytesPerSecond',
+    value: 640_000,
+    unit: 'bytes',
+    protects:
+      'Records the read throughput of upstream research reads (GitHub releases and PyPI JSON), so the request timeout and the upstream byte ceiling can be sized in time.',
+    basis: {
+      kind: 'external',
+      url: 'https://github.com/andrewpucci/dependency-update-advisor/pull/468',
+      checked: '2026-11-27',
+      platformValue: 640_000,
+      margin:
+        'none: a measured platform property, not demand (L11, E4, approved 2026-11-27). Bytes per second over the upstream reads of the #462 uv PRs, measured for #467 and stated in #468 as 0.64 MB/s. npm run probe:upstream-throughput reproduces it: it reads each named GitHub releases page and PyPI project one after another and reports the total body bytes over the total wall time, rounded down. The derived ceilings carry their own margin (the upstream byte ceiling takes half the window).',
+      probe: {
+        command: 'npm run probe:upstream-throughput',
+        repositoryType:
+          'public, organization- and user-owned, github.com and pypi.org; the arguments name the upstream projects of the #462 uv members',
+      },
+    },
+    effect:
+      'Not enforced; limit:evidence.envelope.requestTimeoutMs and limit:evidence.allocation.upstream.maxTotalBytes derive from it. A lower figure gives a longer timeout and a smaller upstream byte ceiling.',
+    test: 'tests/probe-research-timing/core.test.ts > throughput is the successful bytes over their summed wall time, rounded down',
+  },
+  {
+    id: 'osv.slowestResponseMs',
+    value: 541,
+    unit: 'milliseconds',
+    protects:
+      'Records the slowest OSV v1/query response, so the advisory request ceiling can be sized in time.',
+    basis: {
+      kind: 'external',
+      url: 'https://github.com/andrewpucci/dependency-update-advisor/pull/468',
+      checked: '2026-11-27',
+      platformValue: 541,
+      margin:
+        'none: a measured platform property, not demand (L11, E4, approved 2026-11-27). The slowest OSV response measured for #467 and stated in #468. npm run probe:osv-latency reproduces it: it queries each named package version one after another and reports the slowest successful response, rounded up. The advisory ceiling carries its own margin (it takes half the window).',
+      probe: {
+        command: 'npm run probe:osv-latency',
+        repositoryType:
+          'public, api.osv.dev; the arguments name the package versions of the #462 uv members',
+      },
+    },
+    effect:
+      'Not enforced; limit:evidence.allocation.advisory.maxRequests derives from it. A slower figure gives fewer advisory lookups.',
+    test: 'tests/probe-research-timing/core.test.ts > the slowest response is the longest successful read, rounded up',
+  },
   {
     id: 'github.pageSize',
     value: 100,

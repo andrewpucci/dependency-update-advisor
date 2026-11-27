@@ -218,6 +218,23 @@ covers everything else. They fail when:
 - **Tests:** an entry names a test that doesn't exist.
 - **Migration:** after phase 2, any entry is still `unjustified`.
 
+**Register scope** (L11, Q5 and Q25; approved by the maintainer on
+2026-11-27,
+[#383](https://github.com/andrewpucci/dependency-update-advisor/issues/383)).
+Two kinds of value sit outside the register's basis rule, because no adopter
+bears them and no outside constraint bounds them:
+
+- repository tooling policy, such as this repository's own CI and probe
+  timeouts and check:limits settings;
+- an internal constant whose only rule is an invariant against a register
+  entry, such as the pipeline's ownership watch interval, which must stay
+  below every request timeout while the claim store has no production
+  backend.
+
+Each one stays a named constant beside the code that reads it, with a
+lint exception that gives its reason and a test that pins its invariant.
+Revisit the ownership watch interval when the claim store has a backend.
+
 Small values such as 1, 2, and 15 also appear in specs with unrelated
 meanings. The plan measures how many spec lines the check matches before
 choosing how to scope it, so the allowlist stays reviewable.
@@ -295,10 +312,34 @@ phase 3:
   provider's maximum output tokens.
 - **Job budget and evidence deadline:** `limit:job.budget` and
   `limit:evidence.envelope.totalTimeoutMs`. Hard maximum: the
-  `limit:github.hostedJobMaxMinutes` hosted-job limit. This needs a new
+  `limit:github.hostedJobMaxMinutes` hosted-job limit for the job budget.
+  This needs a new
   reusable-workflow
   input, because `timeout-minutes` lives in the shared workflow. The pipeline
   must derive its job window from that input.
+  - Amended (L11, Q4(a); approved by the maintainer on 2026-11-27,
+    [#383](https://github.com/andrewpucci/dependency-update-advisor/issues/383)):
+    the evidence deadline's hard maximum is
+    `limit:job.maxEvidenceDeadlineMs`, derived from the job window less what
+    must follow evidence: the before-model recheck, one model call, the
+    publication reserve, and the final freshness allowance. The hosted-job
+    limit bounds it only through the job budget. So an adopter's deadline
+    always leaves analysis time for one full model call.
+
+These were approved as adopter configuration on 2026-11-27 (L11,
+[#383](https://github.com/andrewpucci/dependency-update-advisor/issues/383)),
+each with today's value as its default and the hard maximum named here:
+
+- **Response cap** (Q3(a)): `limit:evidence.envelope.maxResponseBytes`. It
+  is a parse-safety bound on untrusted responses, which the list above bars;
+  this amendment admits it by name, because the cap binds legitimate
+  responses (such as the compare page of
+  [#472](https://github.com/andrewpucci/dependency-update-advisor/issues/472))
+  and no constraint gives its value. Hard maximum: the runner heap divided
+  by the responses in flight at once times their parse amplification, pinned
+  by a structural test. The request timeout derives from the cap, not the
+  reverse. Revisit this when #472 lands. The register entry stays
+  `unjustified` until the runner-heap entry it needs is in the register.
 
 ### 6. Changing a limit
 

@@ -49,12 +49,6 @@
   },
   {
     "file": "docs/specs/SPEC-evidence-coverage.md",
-    "line": "hour per repository, or 15,000 for resources in a GitHub Enterprise Cloud",
-    "values": [15000],
-    "reason": "external: quotes GitHub's documented or observed limit, not a register value"
-  },
-  {
-    "file": "docs/specs/SPEC-evidence-coverage.md",
     "line": "| Upstream   | Stage `budget` after 240 requests; nothing retained      | Completed: 456 requests (244 were 404), 88 s    | Upstream share, 240 requests     |",
     "values": [240],
     "reason": "historical measurement: the R1 demand run (PR #276) records the limits in force when it ran, not the current register value"
@@ -238,12 +232,6 @@
     "line": "(mutation: add \"at most 3,000 code units\" to an approved spec);",
     "values": [3000],
     "reason": "limit register spec: names a registered value as an example or test"
-  },
-  {
-    "file": "docs/specs/SPEC-limit-register.md",
-    "line": "repository, or 15,000 for Enterprise Cloud resources",
-    "values": [15000],
-    "reason": "external: quotes GitHub's documented or observed limit, not a register value"
   },
   {
     "file": "docs/specs/SPEC-limit-register.md",
