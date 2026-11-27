@@ -8,7 +8,7 @@ import {
   type UpstreamLookup,
   type UpstreamReader,
 } from './upstream-read.js';
-import { forEachRelease } from './upstream-releases.js';
+import { forEachLadderPage, forEachRelease } from './upstream-releases.js';
 
 const limits: UpstreamLimits = {
   maxRequests: 500,
@@ -130,6 +130,33 @@ describe('forEachRelease', () => {
   test('a short page that claims more is a conflict', async () => {
     const { reader } = fakeReader({ total: 150, fits: 64, short: true });
     expect(await rejectionReason(visitAll(reader))).toBe('conflict');
+  });
+});
+
+describe('forEachLadderPage', () => {
+  test('a size that does not divide the offset reached is skipped for one that does', async () => {
+    // From 100, halving reaches 25 and then 12; after one page of 25, only 1 divides the offset.
+    const { reader, sizes } = fakeReader({ total: 40, fits: (start) => (start < 25 ? 25 : 10) });
+    const ids: number[] = [];
+    await forEachLadderPage(
+      reader,
+      [100, 50, 25, 12, 6, 3, 1],
+      (page, perPage) => ({
+        kind: 'github',
+        repository: 'fixture/orbit',
+        resource: 'compare',
+        page,
+        perPage,
+      }),
+      async ({ data, offset }) => {
+        const items = data.items as { id: number }[];
+        expect(items[0]?.id ?? offset).toBe(offset);
+        ids.push(...items.map((item) => item.id));
+        return items.length;
+      },
+    );
+    expect(ids).toEqual(Array.from({ length: 40 }, (_, i) => i));
+    expect(sizes.slice(0, 5)).toEqual([100, 50, 25, 25, 1]);
   });
 });
 

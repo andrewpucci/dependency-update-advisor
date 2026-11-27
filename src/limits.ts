@@ -2656,6 +2656,20 @@ const DEFINITIONS = [
     test: 'src/evidence/upstream-releases.test.ts > halves the page until it fits and keeps reading from the same release',
     note: 'no recorded reason',
   }),
+  derived(
+    'upstream.comparePageSize',
+    'count',
+    ['github.pageSize'],
+    copy,
+    "The compare ladder starts at GitHub's per_page maximum, limit:github.pageSize, the size the compare read asked for before it had a ladder, so a comparison that fits reads in the fewest pages.",
+    {
+      protects:
+        'The start size of the compare page-size ladder is bounded, so a compare page that does not fit the response cap is halved and retried instead of failing outright (response size and memory).',
+      effect:
+        'A compare page that does not fit is retried at the next smaller size whose page boundary falls on the commits already read, down to 1; a page of one commit over the cap fails the comparison with reason budget. Each retry is an ordinary request against the upstream share.',
+      test: 'src/evidence/upstream-github.test.ts > a compare page over the response cap is halved until it fits',
+    },
+  ),
   unjustified('uv.maxCorroborationCodeUnits', 4_096, 'code units', {
     protects:
       'Lines over the cap are skipped before the claim regex runs, so untrusted changelog text cannot make the matcher do unbounded work (CPU).',

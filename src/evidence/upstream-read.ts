@@ -13,7 +13,7 @@ import type { ResearchCache } from './research-cache.js';
 import { limit } from '../limits.js';
 import { HTTP_STATUS } from '../format.js';
 
-/** Each halving of the register's release page size down to 1, for the page-size retry ladder. */
+/** Each halving of a register page size down to 1, for a page-size retry ladder. */
 function halvingFrom(start: number): number[] {
   const sizes: number[] = [];
   for (let size = start; size >= 1; size = Math.floor(size / 2)) sizes.push(size);
@@ -21,6 +21,10 @@ function halvingFrom(start: number): number[] {
 }
 export const RELEASE_PAGE_SIZES: readonly number[] = Object.freeze(
   halvingFrom(limit('upstream.releasePageSize')),
+);
+/** The compare commit page sizes, halving from the register's compare page size down to 1. */
+export const COMPARE_PAGE_SIZES: readonly number[] = Object.freeze(
+  halvingFrom(limit('upstream.comparePageSize')),
 );
 
 export type UpstreamLimits = Readonly<{
@@ -237,9 +241,11 @@ function githubTarget(value: unknown): GithubUpstreamTarget {
     );
   if (['compare', 'releases'].includes(String(value.resource)))
     requireUpstream(Number.isSafeInteger(value.page) && Number(value.page) > 0, 'unsupported');
-  if (value.resource === 'releases')
+  if (['compare', 'releases'].includes(String(value.resource)))
     requireUpstream(
-      (RELEASE_PAGE_SIZES as readonly unknown[]).includes(value.perPage),
+      (value.resource === 'compare' ? COMPARE_PAGE_SIZES : RELEASE_PAGE_SIZES).includes(
+        value.perPage as number,
+      ),
       'unsupported',
     );
   return value as unknown as GithubUpstreamTarget;
@@ -274,7 +280,9 @@ export function upstreamGithubUrl(t: GithubUpstreamTarget) {
         base + '/contents/' + t.path!.split('/').map(encodeURIComponent).join('/') + '?ref=' + t.sha
       );
     case 'compare':
-      return base + '/compare/' + t.base + '...' + t.head + '?per_page=100&page=' + t.page;
+      return (
+        base + '/compare/' + t.base + '...' + t.head + '?per_page=' + t.perPage + '&page=' + t.page
+      );
     case 'releases':
       return base + '/releases?per_page=' + t.perPage + '&page=' + t.page;
   }

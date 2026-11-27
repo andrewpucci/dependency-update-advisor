@@ -572,3 +572,38 @@ The amendment's text is not edited.
   from the L8 corpus. Every measured query size, up to the register value,
   answered at a cost of 1 point, and the largest query's response was 7,139
   bytes.
+
+## Compare Page-Size Ladder Amendment
+
+**Status: approved, 2026-11-27.** The maintainer approved compare retries
+after live uv measurement found one member's first compare page over
+`limit:evidence.envelope.maxResponseBytes` on each of four real uv
+Dependabot PRs. The compare read had a fixed page size and gave up on a
+page it could not read. This applies evidence coverage §1.6 to the compare
+read, as the release list already does.
+
+1. **Start.** Compare pages ask for `limit:upstream.comparePageSize`
+   commits, GitHub's `per_page` maximum.
+2. **Retry.** A page refused with `budget` while the upstream reader can
+   still read is too large for the per-response cap. It is retried at the
+   next smaller size in the halving ladder whose page boundary falls on the
+   commits already read, down to one commit, which always does. The release
+   list uses the same code; its sizes are powers of two, so its next size is
+   always the half.
+3. **Charge.** Each retry is an ordinary request against the upstream
+   request and byte shares, and counts as a page. A retry the share refuses
+   is not sent, and the comparison ends with `budget`.
+4. **Failure.** A page of one commit over the cap, or any page once the
+   reader has stopped, ends the comparison with `budget`, as before. Commits
+   read from earlier pages are kept, and the comparison is `partial`.
+5. **Files.** GitHub lists changed files on the first page only. The ladder
+   shrinks the commit list, not the file list, so a first page whose file
+   patches alone exceed the cap still ends with `budget`.
+6. **Pages.** A page that claims a next page must hold exactly the size it
+   asked for; a short one is a `conflict`.
+
+Verification: `src/evidence/upstream-github.test.ts` pins a compare page
+over the cap that reads after halving, a one-commit page over the cap that
+reports `budget` after the whole ladder, and a retry refused unsent when the
+request share is spent. `src/evidence/upstream-releases.test.ts` pins the
+skip to a size that divides the offset reached.
