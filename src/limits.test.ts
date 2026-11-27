@@ -519,3 +519,26 @@ test('the GitHub read shares keep their sources and formulas', () => {
   expect(limit('snapshot.minTreeEntryBytes')).toBe(92);
   expect(limit('snapshot.maxTreeEntries')).toBe(102_578);
 });
+
+test('the session reads follow GitHub file-list limits, and workflow files stay within them', () => {
+  expect(limit('w2.session.maxPages')).toBe(
+    Math.ceil(limit('github.treeMaxFiles') / limit('github.pageSize')),
+  );
+  expect(limit('w2.session.maxPages')).toBe(30);
+  expect(limit('w2.session.maxFiles')).toBe(limit('github.treeMaxFiles'));
+  expect(limitEntry('w2.actions.maxFileBytes').basis).toMatchObject({
+    kind: 'external',
+    platformValue: 500_000,
+  });
+  // A workflow file is read by the session reader, so its cap may not exceed the session's.
+  expect(limit('w2.actions.maxFileBytes')).toBeLessThanOrEqual(limit('w2.session.maxFileBytes'));
+  expect(limitEntry('evidence.allocation.session.maxRequests').configurable).toMatchObject({
+    maximum: 'github.token.requestCapMax',
+    joint: true,
+  });
+  // The session share must still hold every file-list page.
+  expect(limit('evidence.allocation.session.maxRequests')).toBeGreaterThan(
+    limit('w2.session.maxPages'),
+  );
+  expect(limitEntry('w2.actions.maxYamlDepth').basis.kind).toBe('safety');
+});

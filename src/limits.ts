@@ -1317,14 +1317,20 @@ const DEFINITIONS = [
       test: "src/runtime.test.ts > stops a %s read at that share's byte limit and leaves the other share alone",
     },
   ),
-  unjustified('evidence.allocation.session.maxRequests', 160, 'count', {
-    protects:
-      'Caps requests of the GitHub evidence session reader so one review cannot exceed the GitHub rate limit or the evidence time.',
-    effect:
-      'The request past the cap returns budget and no request is sent; other readers are not borrowed from.',
-    note: 'awaiting L8 measurement',
-    test: 'src/github-read.test.ts > the session stops at exactly evidence.allocation.session.maxRequests requests',
-  }),
+  configured(
+    'evidence.allocation.session.maxRequests',
+    160,
+    'count',
+    { setting: 'limits.githubRequests.session', maximum: 'github.token.requestCapMax', joint: true },
+    "The adopter: session reads spend the adopter's GITHUB_TOKEN quota, and each file read costs a commit, one tree per path segment and a blob (src/github-read.ts), so no structural bound exists. It extends section 5's GitHub request cap (L11, Q6(a)) and must leave room for limit:w2.session.maxPages file-list pages.",
+    {
+      protects:
+        'Caps requests of the GitHub evidence session reader so one review cannot exceed the GitHub rate limit or the evidence time.',
+      effect:
+        'The request past the cap returns budget and no request is sent; other readers are not borrowed from.',
+      test: 'src/github-read.test.ts > the session stops at exactly evidence.allocation.session.maxRequests requests',
+    },
+  ),
   unjustified('evidence.allocation.session.maxTotalBytes', 12 * MiB, 'bytes', {
     protects: 'Caps response bytes of the GitHub evidence session reader against runner memory.',
     effect:
@@ -1719,22 +1725,34 @@ const DEFINITIONS = [
       test: 'src/github-read.test.ts > requires final metadata to complete discovery within %s requests',
     },
   ),
-  unjustified('w2.session.maxPages', 10, 'count', {
-    protects:
-      "Bounds PR-file listing requests to 10 pages (1,000 rows at GitHub's 100-per-page size), so a PR's file list cannot drive unbounded paging.",
-    effect:
-      'Requesting a page beyond the cap throws budget before dispatch, discovery is partial with reason budget, and rows already read are kept.',
-    note: 'awaiting L8 measurement',
-    test: 'src/github-read.test.ts > discovery reads exactly w2.session.maxPages pages and keeps the rows it read',
-  }),
-  unjustified('w2.session.maxFiles', 1_000, 'count', {
-    protects:
-      'Caps PR-file rows examined per session, so an oversized file list cannot make the reader parse and retain unbounded rows.',
-    effect:
-      'Examining one row beyond the cap throws budget, discovery is partial with reason budget, and the earlier rows are retained.',
-    test: 'src/github-read.test.ts > accepts exact file entry count and rejects one beyond %s',
-    note: 'awaiting L8 measurement',
-  }),
+  derived(
+    'w2.session.maxPages',
+    'count',
+    ['github.treeMaxFiles', 'github.pageSize'],
+    (files, pageSize) => Math.ceil(files / pageSize),
+    "Enough pages for every row GitHub lists: limit:github.treeMaxFiles files at limit:github.pageSize per page, rounded up. GitHub stops the list there, so a further page can never hold a row. Approved by the maintainer on 2026-11-27 (L11, #383).",
+    {
+      protects:
+        "Bounds PR-file listing requests to the pages GitHub's file list can fill, so a PR's file list cannot drive unbounded paging.",
+      effect:
+        'Requesting a page beyond the cap throws budget before dispatch, discovery is partial with reason budget, and rows already read are kept.',
+      test: 'src/github-read.test.ts > discovery reads exactly w2.session.maxPages pages and keeps the rows it read',
+    },
+  ),
+  derived(
+    'w2.session.maxFiles',
+    'count',
+    ['github.treeMaxFiles'],
+    copy,
+    "The rows GitHub lists for a pull request, limit:github.treeMaxFiles; a longer list is already truncated by GitHub, and the reader marks it so. Approved by the maintainer on 2026-11-27 (L11, #383).",
+    {
+      protects:
+        'Caps PR-file rows examined per session, so an oversized file list cannot make the reader parse and retain unbounded rows.',
+      effect:
+        'Examining one row beyond the cap throws budget, discovery is partial with reason budget, and the earlier rows are retained.',
+      test: 'src/github-read.test.ts > accepts exact file entry count and rejects one beyond %s',
+    },
+  ),
   unjustified('w2.session.maxJsonEntries', 200_000, 'count', {
     protects:
       'Caps JSON properties and array elements across examined GitHub responses, so a hostile or very large response cannot make the reader walk unbounded structure (memory and CPU).',
@@ -1841,14 +1859,24 @@ const DEFINITIONS = [
     note: 'awaiting L8 measurement',
     test: 'src/evidence/npm.test.ts > the retained inventory cap keeps a whole inventory at its exact serialized size and trims one byte under it',
   }),
-  unjustified('w2.actions.maxFileBytes', 100_000, 'bytes', {
+  {
+    id: 'w2.actions.maxFileBytes',
+    value: 500_000,
+    unit: 'bytes',
     protects:
       'Caps the bytes of one PR-controlled workflow file before YAML parsing, so a huge workflow cannot make the YAML parser run unbounded (memory and CPU).',
+    basis: {
+      kind: 'external',
+      url: 'https://docs.github.com/en/actions/reference/limits',
+      checked: '2026-11-27',
+      platformValue: 500_000,
+      margin:
+        'none: "Workflow file size: 500 KB per file; larger files won\'t start runs." GitHub writes KB, so this reads it as the smaller 500,000 bytes, the safe reading; a workflow larger than GitHub runs is not a legitimate input. It must stay at most limit:w2.session.maxFileBytes, which src/limits.test.ts checks. Approved by the maintainer on 2026-11-27 (L11, #383).',
+    },
     effect:
       'The workflow read returns unavailable with reason budget before decoding, so no jobs from that file are parsed.',
     test: 'src/evidence/actions-yaml.test.ts > enforces byte, node, nesting and occurrence limits with fatal UTF-8 decoding',
-    note: 'awaiting L8 measurement',
-  }),
+  },
   unjustified('w2.actions.maxWorkflows', 20, 'count', {
     protects:
       'Caps workflow files read per run, so a PR touching many workflows cannot multiply session reads beyond the request and time budgets.',
@@ -1865,14 +1893,21 @@ const DEFINITIONS = [
     test: 'src/evidence/actions-yaml.test.ts > counts cumulative nodes and UTF-8 bytes at exact boundaries and bounds deeply nested flow input before composition',
     note: 'awaiting L8 measurement',
   }),
-  unjustified('w2.actions.maxYamlDepth', 32, 'count', {
+  {
+    id: 'w2.actions.maxYamlDepth',
+    value: 32,
+    unit: 'count',
     protects:
       'Caps YAML nesting depth before composition, so deeply nested input cannot exhaust the recursion stack or CPU in the composer.',
+    basis: {
+      kind: 'safety',
+      reason:
+        'Largest legitimate use: a workflow nests about six levels (jobs.<id>.steps[].with.<input>); four large public workflows read on 2026-11-27 (microsoft/vscode pr.yml, nodejs/node test-linux.yml, pytorch/pytorch pull.yml, home-assistant/core ci.yaml) nest five or six. Harm: composition recurses at least once per level, and the yaml library overflows the call stack at about 1,024 levels of nested flow collections (measured on 2026-11-27 under Node 22). The cap is checked before composition and sits far between the two. Approved by the maintainer on 2026-11-27 (L11, #383).',
+    },
     effect:
       'Exceeding the depth throws budget and the workflow read is unavailable with reason budget.',
     test: 'src/evidence/actions-yaml.test.ts > counts cumulative nodes and UTF-8 bytes at exact boundaries and bounds deeply nested flow input before composition',
-    note: 'no recorded reason',
-  }),
+  },
   unjustified('w2.actions.maxAliasExpansions', 100, 'count', {
     protects:
       'Caps alias expansions in one YAML document, so anchors and aliases cannot amplify the composed graph beyond the node budget.',
