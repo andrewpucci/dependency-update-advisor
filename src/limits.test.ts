@@ -914,7 +914,8 @@ test('the analysis request and unit caps derive from the context window', () => 
       limit('analysis.model.templateTokens'),
   );
   expect(limit('analysis.requestBytes')).toBe(245_755);
-  // A lone unit at the cap, every byte JSON-escaped to two, still fits one request.
+  // A lone unit at the cap, every byte JSON-escaped to two, fits beside the fixed request. The
+  // run-wide projection fields are not counted; see the analysis.unitBytes description.
   expect(limit('analysis.fixedRequestBytes') + 2 * limit('analysis.unitBytes')).toBeLessThanOrEqual(
     limit('analysis.requestBytes'),
   );

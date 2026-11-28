@@ -777,7 +777,11 @@ Amended (L11, Q13(a), Q15(a) and Q16(a); approved by the maintainer on
   window.
 - `limit:analysis.unitBytes` is half of the request cap less the fixed
   request, `limit:analysis.fixedRequestBytes`, so a lone unit at the cap fits
-  one request after JSON string escaping.
+  beside the fixed request after JSON string escaping. The run-wide
+  projection fields (coverage and the sources it names, context status,
+  policy) are not counted, since their packet-bounded worst case leaves no
+  room for a unit; a request they push past the cap is refused with `budget`
+  before any call.
 - `limit:analysis.sourceBytes` copies `limit:packet.textBytes`, and
   `limit:analysis.references` copies `limit:packet.listEntries`.
 - A reply's assessment rows are bounded by the units in its request, not by
