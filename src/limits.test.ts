@@ -23,6 +23,7 @@ import {
   type LimitDefinition,
   type LimitId,
 } from './limits.js';
+import { COUNTERS } from '../scripts/probe-parse-cost/core.js';
 
 /** V8's maximum string length on 64-bit platforms, (1 << 29) - 24 code units. */
 const V8_MAX_STRING_LENGTH = 536_870_888;
@@ -894,6 +895,18 @@ test('the Q8(a) parse-count bounds whose check passed are safety and cite the pa
       'npm run probe:parse-cost -- use',
     );
   }
+});
+
+test('every parse-cost counter the register cites is one the probe runs', () => {
+  // Reasons and stop notes alike: a cited counter the probe does not have cannot be re-run.
+  const counters: readonly string[] = COUNTERS;
+  const cited = [...REGISTER.values()].flatMap((entry) =>
+    [...JSON.stringify(entry).matchAll(/probe:parse-cost -- harm ([a-z-]+)/gu)].map(
+      ([, counter]) => [entry.id, counter] as const,
+    ),
+  );
+  expect(cited.length).toBeGreaterThan(0);
+  for (const [id, counter] of cited) expect(counters, `${id} cites ${counter}`).toContain(counter);
 });
 
 test('the research and signal bounds keep their sources and formulas', () => {
