@@ -4385,13 +4385,20 @@ const DEFINITIONS = [
       test: 'src/evidence/upstream-github.test.ts > a compare page over the response cap is halved until it fits',
     },
   ),
-  unjustified('uv.maxCorroborationCodeUnits', 4_096, 'code units', {
+  {
+    id: 'uv.maxCorroborationCodeUnits',
+    value: 4_096,
+    unit: 'code units',
     protects:
       'Lines over the cap are skipped before the claim regex runs, so untrusted changelog text cannot make the matcher do unbounded work (CPU).',
+    basis: {
+      kind: 'safety',
+      reason:
+        'Largest legitimate use: a claim line is "Bumps [name](url) from a to b."; with the longest project name in the PyPI simple index read on 2026-11-28 (188 code units, among 951,539 names), a GitHub repository URL at the documented 39-character owner and 100-character repository name limits, and the longest version among the 2,000 recorded PyPI project and release documents (23) on both sides, it is 414 code units (npm run probe:parse-cost -- use, over those files, on 2026-11-28). Harm: CPU, and the matching is linear in the text. On a description of 249,916 code units, half of limit:w2.graph.maxGraphWork, which the stage charges one unit per code unit, lines that each reopen a Markdown link whose URL never closes take a median of 22.6, 36.0, 50.0 and 58.7 ms at 512, 1,024, 2,048 and 4,096 code units a line, against 6.5 ms for plain text (npm run probe:parse-cost -- harm claims, on 2026-11-28 under Node 24.22.3, the runtime of the action). Within a line the cost grows faster than the length only until the link scan reaches the 1,024 bound of its repetitions, and per code unit it then approaches a fixed ceiling; the slowest of 5 runs at the cap is 84.2 ms, so with the allowance of #467 for a runner 10 times slower, harm begins near 17.8 million code units, a quarter of limit:evidence.envelope.totalTimeoutMs. The cap sits far between the two. Approved by the maintainer on 2026-11-27 (L11, Q8(a), #383).',
+    },
     effect: 'A longer line is skipped and yields no claim; the remaining lines are still read.',
-    note: 'no recorded reason',
     test: 'src/evidence/uv-corroboration.test.ts > a changelog line at the registered code-unit cap is read and one code unit longer is skipped',
-  }),
+  },
   unjustified('uv.corroborationWorkPerEntry', 64, 'count', {
     protects:
       'Each corroborated entry reserves a fixed work cost before any contradiction is learned, so corroboration cannot run past the work budget (CPU).',

@@ -883,6 +883,7 @@ test('the Q8(a) parse-count bounds whose check passed are safety and cite the pa
     ['dependabot.maxYamlNodes', 'dependabot-nodes'],
     ['dependabot.maxUpdates', 'dependabot-updates'],
     ['dependabot.maxRoots', 'dependabot-roots'],
+    ['uv.maxCorroborationCodeUnits', 'claims'],
   ] as const) {
     const { basis } = limitEntry(id);
     expect(basis.kind, id).toBe('safety');
