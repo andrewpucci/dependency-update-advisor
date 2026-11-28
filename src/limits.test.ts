@@ -348,9 +348,17 @@ test('the Q10 byte shares and retained caps are settings under one joint heap ma
       maximum: 'runner.maxEvidenceRetainedBytes',
       joint: true,
     });
-  expect(limitEntry('evidence.allocation.registry.maxTotalBytes').configurable).toMatchObject({
-    minimum: 'evidence.envelope.maxResponseBytes',
-  });
+  for (const id of [
+    'evidence.allocation.registry.maxTotalBytes',
+    'evidence.allocation.signals.readers.upstream.maxTotalBytes',
+  ] as const)
+    expect(limitEntry(id).configurable, id).toMatchObject({
+      minimum: 'evidence.envelope.maxResponseBytes',
+    });
+  // Q11(a): the upstream share's default rises to one response at the cap.
+  expect(limit('evidence.allocation.signals.readers.upstream.maxTotalBytes')).toBe(
+    limit('evidence.envelope.maxResponseBytes'),
+  );
   const { basis } = limitEntry('runner.maxEvidenceRetainedBytes');
   if (basis.kind !== 'derived') throw new Error('derived');
   // (H − packet × rate − reads × response × parse rate) ÷ retained rate − research − config.

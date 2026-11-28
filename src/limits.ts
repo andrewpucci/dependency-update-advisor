@@ -2341,7 +2341,9 @@ const DEFINITIONS = [
   retainedSetting(
     'evidence.allocation.signals.readers.upstream.maxTotalBytes',
     'limits.upstreamSignalBytes',
-    0.5 * MiB,
+    // One response at the cap must fit the share (the #467 floor rule, src/budget.ts:265), so the
+    // default is the response cap, not the 0.5 MiB it was (L11, Q11(a), #383).
+    MiB,
     'bytes',
     {
       protects: 'Caps GitHub Actions upstream response bytes so they cannot exhaust runner memory.',
@@ -2349,6 +2351,7 @@ const DEFINITIONS = [
         "A response past the share's remaining bytes is refused with budget and the upstream reader stops.",
       test: 'src/evidence/upstream-read.test.ts > signals upstream reader accepts a byte share exactly and refuses the byte past it',
     },
+    'evidence.envelope.maxResponseBytes',
   ),
   // Research cache, from budget.ts.
   derived(

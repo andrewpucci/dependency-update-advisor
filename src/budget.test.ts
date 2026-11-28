@@ -29,10 +29,11 @@ test('records the evidence-read envelope', () => {
     // The advisory, upstream byte, and PyPI metadata ceilings (#467) raise the envelope sums:
     // 1,520 + (221 − 80) + (256 − 16) + (256 − 40) requests, the last the malware ceiling, and
     // 54 MiB − 15 MiB − 0.5 MiB + 76,800,000 + 9,484,288 bytes. The structural freshness share
-    // (L11, #383) moves them by (17 − 24) requests and (17 − 3) MiB.
+    // (L11, #383) moves them by (17 − 24) requests and (17 − 3) MiB, and the signals upstream
+    // share's floor of one response (L11, Q11(a)) by 0.5 MiB.
     maxRequests: 2110,
     maxResponseBytes: MiB,
-    maxTotalBytes: 141_334_528,
+    maxTotalBytes: 141_858_816,
     requestTimeoutMs: 11_639,
     totalTimeoutMs: 240_000,
   });
@@ -52,13 +53,13 @@ test('splits the envelope with nothing unallocated or over-allocated', () => {
     advisory: { maxRequests: 221, maxTotalBytes: 5 * MiB },
     signals: {
       maxRequests: 632,
-      maxTotalBytes: 15_251_456,
+      maxTotalBytes: 15_775_744,
       readers: {
         malware: { maxRequests: 256, maxTotalBytes: 1.5 * MiB },
         publishTimes: { maxRequests: 40, maxTotalBytes: 1.5 * MiB },
         registry: { maxRequests: 64, maxTotalBytes: 2 * MiB },
         metadata: { maxRequests: 256, maxTotalBytes: 9_484_288 },
-        upstream: { maxRequests: 16, maxTotalBytes: 0.5 * MiB },
+        upstream: { maxRequests: 16, maxTotalBytes: MiB },
       },
     },
   });

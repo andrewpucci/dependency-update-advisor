@@ -443,8 +443,12 @@ responses in flight are priced at the parse peak
 
 - The thirteen byte shares and retained caps Q10 names are adopter settings.
   Their defaults are today's values, under one joint hard maximum
-  (`limit:runner.maxEvidenceRetainedBytes`). The registry byte share also has
-  a hard minimum of the response cap.
+  (`limit:runner.maxEvidenceRetainedBytes`). The registry byte share and the
+  signals upstream reader's byte share
+  (`limit:evidence.allocation.signals.readers.upstream.maxTotalBytes`) have a
+  hard minimum of the response cap, so one response at the cap always fits.
+  The upstream share is the one exception to "default equals today's value":
+  its default rises to the response cap (L11, Q11(a)).
 - They are held beside `limit:research.maxRetainedBytes` and the trusted
   config for the whole evidence phase. Together these make up
   `limit:runner.evidenceRetainedHeapBytes`.
