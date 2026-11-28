@@ -859,7 +859,5 @@ test('a discovery page over the response cap is retried at the same cursor at th
   const stuck = ready(createAdvisoryReader, always.fetch, { maxResponseBytes: 200 });
   expect(await stuck.read(tj)).toMatchObject({ complete: false, reasons: ['budget'] });
   stuck.close();
-  expect(sizes(always.requests).map(([size]) => Number(size))).toEqual([
-    ...DISCOVERY_PAGE_SIZES,
-  ]);
+  expect(sizes(always.requests).map(([size]) => Number(size))).toEqual([...DISCOVERY_PAGE_SIZES]);
 });

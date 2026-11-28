@@ -1,4 +1,3 @@
-
 /**
  * Serves S1/S3 advisory requests from a synthetic handler written for one exact GitHub query.
  * Stored-name discovery finds each target stored under its canonical name unless `stored` says

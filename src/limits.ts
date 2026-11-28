@@ -2222,7 +2222,7 @@ const DEFINITIONS = [
     protects:
       "Each discovery request's first URL leaves room under the URL cap for GitHub's `after` cursor.",
     effect: 'A first discovery URL is filled to at most the URL cap minus this headroom.',
-    note: "stopped (L11, Q12(a), #383): the approved basis is external, the most bytes an `after` cursor GitHub returned adds to a query URL, from npm run probe:batching, which now reports it as longest.cursorHeadroomBytes. The C3 run of 2026-11-26 predates that field, and the probe needs a GitHub token and the corpus targets file, neither of which this session has, so the probed value is unknown and 256 stays. Run the probe and set the value it reports, with no margin",
+    note: 'stopped (L11, Q12(a), #383): the approved basis is external, the most bytes an `after` cursor GitHub returned adds to a query URL, from npm run probe:batching, which now reports it as longest.cursorHeadroomBytes. The C3 run of 2026-11-26 predates that field, and the probe needs a GitHub token and the corpus targets file, neither of which this session has, so the probed value is unknown and 256 stays. Run the probe and set the value it reports, with no margin',
     test: 'src/evidence/advisory-read.name-forms.test.ts > discovery fills a request up to exactly the cursor headroom under the cap',
   }),
   unjustified('advisory.discovery.spellingCeiling', 243, 'count', {
@@ -3504,7 +3504,7 @@ const DEFINITIONS = [
       checked: '2026-11-27',
       platformValue: 262_144,
       margin:
-        'none: Mistral Large 3 (mistral-large-2512) documents a 256K context, read as 262,144 tokens; it is the smaller window `mistral-large-latest` can resolve to until its retirement on 2027-04-30 (Mistral Large 4 documents 1M). Mistral does not document what the alias names, so the smaller window is the one that holds for both. A consumer that configures a model with a smaller window gets a 400 at a request near the cap; a run-time read of the model\'s max_context_length is not implemented (L11, Q13(a), #383).',
+        "none: Mistral Large 3 (mistral-large-2512) documents a 256K context, read as 262,144 tokens; it is the smaller window `mistral-large-latest` can resolve to until its retirement on 2027-04-30 (Mistral Large 4 documents 1M). Mistral does not document what the alias names, so the smaller window is the one that holds for both. A consumer that configures a model with a smaller window gets a 400 at a request near the cap; a run-time read of the model's max_context_length is not implemented (L11, Q13(a), #383).",
     },
     effect: 'Not enforced: limit:analysis.requestBytes derives from it.',
     test: 'src/limits.test.ts > the analysis request and unit caps derive from the context window',
@@ -3553,7 +3553,7 @@ const DEFINITIONS = [
     240_000,
     'milliseconds',
     { setting: 'limits.analysisRequestTimeoutMs', maximum: 'job.maxAnalysisTimeMs' },
-    "The adopter: the model is consumer configuration, so its speed is not a fixed platform property; a longer timeout lets a slower model finish a call and spends more of the analysis time on one hung request. A call cannot outlast the analysis time the job leaves, limit:job.maxAnalysisTimeMs. Section 5 admitted it as configuration on 2026-11-27 (L11, Q18(a), #383).",
+    'The adopter: the model is consumer configuration, so its speed is not a fixed platform property; a longer timeout lets a slower model finish a call and spends more of the analysis time on one hung request. A call cannot outlast the analysis time the job leaves, limit:job.maxAnalysisTimeMs. Section 5 admitted it as configuration on 2026-11-27 (L11, Q18(a), #383).',
     {
       protects:
         'Each Mistral call is stopped at the timeout, so one hung request cannot consume the analysis window. Live replies took 58 to 101 s.',

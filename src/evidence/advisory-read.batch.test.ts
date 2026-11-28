@@ -647,8 +647,9 @@ test('an oversized discovery page drops only its own batch', async () => {
 });
 test('packages share a discovery batch only while their spellings fit one request', async () => {
   // More spellings than one request holds: 9 per name.
-  const many = Array.from({ length: Math.ceil(limit('advisory.discovery.urlBytes') / 100) }, (_, i) =>
-    pip(`pkg${i}-alpha-beta`),
+  const many = Array.from(
+    { length: Math.ceil(limit('advisory.discovery.urlBytes') / 100) },
+    (_, i) => pip(`pkg${i}-alpha-beta`),
   );
   const fake = server(() => Response.json([]));
   const reader = ready('malware', fake.fetch);

@@ -915,9 +915,9 @@ test('the analysis request and unit caps derive from the context window', () => 
   );
   expect(limit('analysis.requestBytes')).toBe(245_755);
   // A lone unit at the cap, every byte JSON-escaped to two, still fits one request.
-  expect(
-    limit('analysis.fixedRequestBytes') + 2 * limit('analysis.unitBytes'),
-  ).toBeLessThanOrEqual(limit('analysis.requestBytes'));
+  expect(limit('analysis.fixedRequestBytes') + 2 * limit('analysis.unitBytes')).toBeLessThanOrEqual(
+    limit('analysis.requestBytes'),
+  );
   expect(limit('analysis.unitBytes')).toBe(
     Math.floor((limit('analysis.requestBytes') - limit('analysis.fixedRequestBytes')) / 2),
   );
