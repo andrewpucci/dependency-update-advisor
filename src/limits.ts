@@ -828,15 +828,13 @@ const UV_ZERO = {
 } as const;
 
 type SizedValue = Readonly<{ value: number; basis: Omit<MeasuredBasis, keyof typeof UV_MEASURE> }>;
-/** A sized base is measured or derived from other entries. */
-type SizedBase =
-  | SizedValue
-  | Readonly<{
-      inputs: readonly string[];
-      formula: (...values: number[]) => number;
-      description: string;
-      structuralTest?: string;
-    }>;
+/** A sized base is derived from other entries, or structural with no inputs. */
+type SizedBase = Readonly<{
+  inputs: readonly string[];
+  formula: (...values: number[]) => number;
+  description: string;
+  structuralTest?: string;
+}>;
 type SizedShare = Readonly<{
   base: SizedBase;
   rates: Readonly<Partial<Record<ShareUnit, SizedValue>>>;
@@ -949,20 +947,17 @@ const rateAudit = (share: ScaledShare, dimension: ShareDimension, unit: ShareUni
     'Adds rate times the count to the share, rounded up and capped at the ceiling; zero leaves the share at its base.',
 });
 
-/** A sized base as its register entry: derived or measured. */
+/** A sized base as its register entry: always derived. */
 function sizedBase<const Id extends string>(
   id: Id,
   base: SizedBase,
   unit: LimitUnit,
   audit: FittedAudit,
 ): LimitDefinition & { id: Id } {
-  if ('inputs' in base) {
-    const entry = derived(id, unit, base.inputs, base.formula, base.description, audit);
-    return base.structuralTest === undefined
-      ? entry
-      : { ...entry, basis: { ...entry.basis, structuralTest: base.structuralTest } };
-  }
-  return fitted(id, base.value, unit, { ...UV_MEASURE, ...base.basis }, audit);
+  const entry = derived(id, unit, base.inputs, base.formula, base.description, audit);
+  return base.structuralTest === undefined
+    ? entry
+    : { ...entry, basis: { ...entry.basis, structuralTest: base.structuralTest } };
 }
 
 /** A scaled share's base or rate entry for one dimension. */
@@ -970,7 +965,7 @@ type ShareEntry<S extends ScaledShare, D extends ShareDimension> = LimitDefiniti
   id: `research.share.${S}.${D}.base` | `research.share.${S}.${D}.rate.${ShareUnit}`;
 };
 
-/** A #467 sized dimension's base and rate entries: `measured` entries citing #462, or a kept base. */
+/** A #467 sized dimension's base and rate entries: a derived base and `measured` rates citing #462. */
 function sizedShareEntries<const S extends ScaledShare, const D extends ShareDimension>(
   share: S,
   dimension: D,
