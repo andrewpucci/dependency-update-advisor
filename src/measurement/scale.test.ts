@@ -85,6 +85,7 @@ test('the advisory ceiling follows the scaled evidence deadline', () => {
 
 test('leaves limits outside the read budget unchanged', () => {
   for (const id of [
+    'packet.bytes',
     'w2.npm.maxFileBytes',
     'research.maxWork',
     'job.budget',
@@ -95,22 +96,15 @@ test('leaves limits outside the read budget unchanged', () => {
     expect(valueAt(10, id), id).toBe(REGISTER.get(id)?.value);
 });
 
-test('the packet byte limit follows the runner heap left after the scaled off-heap buffers', () => {
-  // The research cache and in-flight reads are off-heap buffers subtracted from runner memory
-  // (#383), so a scaled read budget leaves less old generation for the packet.
+test('the packet byte limit stays at its production value while the heap terms scale', () => {
+  // The off-heap buffers and the retained evidence grow with the read budget, which would lower
+  // the packet cap; a demand run holds it, so it admits every packet production admits.
   const scaled = buildRegister(scaledDefinitions(REGISTER, 10));
   const at = (id: string) => scaled.get(id)?.value ?? 0;
-  expect(at('runner.offHeapBytes')).toBeGreaterThan(
-    REGISTER.get('runner.offHeapBytes')?.value ?? 0,
-  );
-  expect(at('packet.bytes')).toBe(
-    Math.floor(
-      (at('runner.heapBytes') -
-        at('analysis.replyHeapBytes') -
-        at('runner.unitExpansionHeapBytes')) /
-        at('runner.heapBytesPerPacketByte'),
-    ),
-  );
+  for (const id of ['runner.offHeapBytes', 'runner.evidenceRetainedHeapBytes'])
+    expect(at(id), id).toBeGreaterThan(REGISTER.get(id)?.value ?? 0);
+  expect(at('packet.bytes')).toBe(REGISTER.get('packet.bytes')?.value);
+  expect(at('analysis.projectionBytes')).toBe(REGISTER.get('analysis.projectionBytes')?.value);
 });
 
 test('rejects a scale that is not a positive integer', () => {

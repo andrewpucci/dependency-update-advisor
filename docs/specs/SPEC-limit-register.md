@@ -384,8 +384,8 @@ less what it holds, so the two phases' budgets are not added together.
 - **Evidence phase:** the packet at its evidence rate
   (`limit:runner.evidenceHeapBytesPerPacketByte`), which covers assembly,
   validation and revalidation, plus the responses being parsed and the
-  evidence readers retain. `limit:runner.evidenceHeapBytes` is what is left
-  for responses and retained evidence.
+  evidence readers retain (`limit:runner.evidenceRetainedHeapBytes`).
+  `limit:runner.evidenceHeapBytes` is what is left for responses in flight.
 - **State that spans both phases** counts in each phase's budget. The
   pipeline releases the snapshot tree, the research cache and the npm
   inventory once research returns, before analysis starts, so they count in
@@ -428,6 +428,32 @@ A hard maximum is read from the register evaluated at the settings. When it
 falls as its own setting rises, the hard maximum is the largest setting that
 still holds. The response cap's maximum behaves this way, because a larger cap
 adds off-heap buffers. `npm run check:limits` evaluates the register there.
+
+#### Retained evidence
+
+Amended (L11, Q10(a); approved by the maintainer on 2026-11-27,
+[#383](https://github.com/andrewpucci/dependency-update-advisor/issues/383)).
+The evidence the readers keep after a parse is priced at its own measured
+rate (`limit:runner.heapBytesPerRetainedByte`), not at the parse peak. Only the
+responses in flight are priced at the parse peak
+(`limit:runner.heapBytesPerEvidenceByte`).
+
+- The thirteen byte shares and retained caps Q10 names are adopter settings.
+  Their defaults are today's values, under one joint hard maximum
+  (`limit:runner.maxEvidenceRetainedBytes`). The registry byte share also has
+  a hard minimum of the response cap.
+- They are held beside `limit:research.maxRetainedBytes` and the trusted
+  config for the whole evidence phase. Together these make up
+  `limit:runner.evidenceRetainedHeapBytes`.
+- `limit:packet.bytes` is the smaller of its analysis-phase and
+  evidence-phase values. The evidence phase binds on the smallest runner, so
+  the packet cap takes the heap the defaults leave. A setting raised above its
+  default would lower the packet cap. The joint maximum and the response cap's
+  hard maximum are therefore their defaults until the heap is shared out
+  differently.
+- A demand measurement (`npm run measure:demand`) holds `limit:packet.bytes`
+  at its production value. Its scaled read budget would otherwise spend the
+  packet's heap.
 
 ### 6. Changing a limit
 

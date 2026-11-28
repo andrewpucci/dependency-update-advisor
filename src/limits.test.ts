@@ -266,10 +266,7 @@ test('derived packet bounds keep their formulas and the values they had as fixed
 });
 
 test('the heap inputs of packet.bytes keep their sources and formula', () => {
-  expect(limitEntry('runner.oldGenerationBytes').basis).toMatchObject({
-    kind: 'external',
-    platformValue: 2_147_483_648,
-  });
+  expect(limitEntry('runner.heapBytes').basis).toMatchObject({ kind: 'derived' });
   for (const id of ['runner.heapBytesPerPacketByte', 'runner.heapBytesPerReplyByte'] as const)
     expect(limitEntry(id).basis, id).toMatchObject({
       kind: 'measured',
@@ -308,15 +305,12 @@ test('the evidence-phase heap inputs keep their sources and formula', () => {
       'runner.heapBytes',
       'packet.bytes',
       'runner.evidenceHeapBytesPerPacketByte',
-      'config.maxBytes',
-      'evidence.allocation.transport.snapshot.maxTotalBytes',
-      'w2.npm.maxRetainedBytes',
-      'runner.heapBytesPerEvidenceByte',
+      'runner.evidenceRetainedHeapBytes',
     ],
   });
   if (heap.kind !== 'derived') throw new Error('derived');
-  // H − packet × rate − (state held through the evidence phase) × evidence rate.
-  expect(heap.formula(1000, 10, 2, 1, 2, 3, 5)).toBe(1000 - 20 - 30);
+  // H − packet × rate − the retained evidence: the heap left for responses in flight.
+  expect(heap.formula(1000, 10, 2, 30)).toBe(1000 - 20 - 30);
   const cap = limitEntry('runner.maxEvidenceResponseBytes').basis;
   expect(cap).toMatchObject({
     kind: 'derived',
@@ -334,11 +328,39 @@ test('the evidence-phase heap inputs keep their sources and formula', () => {
   expect(limit('evidence.envelope.maxResponseBytes')).toBeLessThanOrEqual(
     limit('runner.maxEvidenceResponseBytes'),
   );
-  // A larger cap adds off-heap buffers and so lowers its own maximum: the hard maximum is the
-  // largest cap that still holds.
-  const highest = hardMaximum(REGISTER, 'evidence.envelope.maxResponseBytes');
-  expect(highest).toBeGreaterThanOrEqual(limit('evidence.envelope.maxResponseBytes'));
-  expect(highest).toBeLessThan(limit('runner.maxEvidenceResponseBytes'));
+  // The packet cap takes the evidence-phase heap the defaults leave, so the response cap's hard
+  // maximum is its default: a larger cap would lower limit:packet.bytes, not fit beside it.
+  expect(limit('runner.maxEvidenceResponseBytes')).toBe(
+    limit('evidence.envelope.maxResponseBytes'),
+  );
+  expect(hardMaximum(REGISTER, 'evidence.envelope.maxResponseBytes')).toBe(
+    limit('evidence.envelope.maxResponseBytes'),
+  );
+});
+
+test('the Q10 byte shares and retained caps are settings under one joint heap maximum', () => {
+  const members = Q10_RETAINED_INPUTS.filter(
+    (id) => id !== 'research.maxRetainedBytes' && id !== 'config.maxBytes',
+  );
+  expect(members).toHaveLength(13);
+  for (const id of members)
+    expect(limitEntry(id).configurable, id).toMatchObject({
+      maximum: 'runner.maxEvidenceRetainedBytes',
+      joint: true,
+    });
+  expect(limitEntry('evidence.allocation.registry.maxTotalBytes').configurable).toMatchObject({
+    minimum: 'evidence.envelope.maxResponseBytes',
+  });
+  const { basis } = limitEntry('runner.maxEvidenceRetainedBytes');
+  if (basis.kind !== 'derived') throw new Error('derived');
+  // (H − packet × rate − reads × response × parse rate) ÷ retained rate − research − config.
+  expect(basis.formula(1000, 10, 2, 1, 4, 5, 2, 100, 50)).toBe(
+    Math.floor((1000 - 20 - 20) / 2) - 150,
+  );
+  // The defaults fit under it, with the packet at its value.
+  const total = members.reduce((sum, id) => sum + limit(id), 0);
+  expect(total).toBeLessThanOrEqual(limit('runner.maxEvidenceRetainedBytes'));
+  expect(settingProblems(REGISTER)).toEqual([]);
 });
 
 test('the evidence retained state is sized at the retained rate', () => {
@@ -402,10 +424,13 @@ test('the runner heap derives from runner memory less what is not old generation
           )) +
       limit('analysis.maxConcurrentCalls') * 2 * limit('analysis.responseBytes'),
   );
-  // Until the runner probe records the OS and agent reserve, its placeholder holds the heap at
-  // the old generation V8 already gives the smallest runner, so no cap moves on its account.
-  expect(limitEntry('runner.systemReservedBytes').basis.kind).toBe('unjustified');
-  expect(limit('runner.heapBytes')).toBe(limit('runner.oldGenerationBytes'));
+  // The OS and agent reserve is MemTotal − MemAvailable recorded on a GitHub-hosted runner.
+  expect(limitEntry('runner.systemReservedBytes').basis).toMatchObject({
+    kind: 'measured',
+    command: 'npm run probe:runner-memory',
+  });
+  // The reviewer plans for more old generation than the 2 GiB V8 would give the smallest runner.
+  expect(limit('runner.heapBytes')).toBeGreaterThan(2 * 1024 ** 3);
 });
 
 test('packet.bytes is the packet that fits the runner heap beside the model replies', () => {
@@ -414,16 +439,45 @@ test('packet.bytes is the packet that fits the runner heap beside the model repl
     'analysis.replyHeapBytes',
     'runner.unitExpansionHeapBytes',
     'runner.heapBytesPerPacketByte',
+    'runner.evidenceRetainedHeapBytes',
+    'evidence.readsInFlight',
+    'evidence.envelope.maxResponseBytes',
+    'runner.heapBytesPerEvidenceByte',
+    'runner.evidenceHeapBytesPerPacketByte',
   ];
   const { basis } = limitEntry('packet.bytes');
   expect(basis).toMatchObject({ kind: 'derived', inputs });
   if (basis.kind !== 'derived') throw new Error('derived');
-  const [heap, replies, expansion, perByte] = inputs.map((id) => limit(id));
-  expect(limit('packet.bytes')).toBe(Math.floor((heap - replies - expansion) / perByte));
-  // The packet's own heap, the unit expansion and the replies together stay inside the heap.
+  const [heap, replies, expansion, perByte, retained, reads, response, perResponse, evidenceRate] =
+    inputs.map((id) => limit(id)) as [
+      number,
+      number,
+      number,
+      number,
+      number,
+      number,
+      number,
+      number,
+      number,
+    ];
+  const responses = reads * response * perResponse;
+  expect(limit('packet.bytes')).toBe(
+    Math.min(
+      Math.floor((heap - replies - expansion) / perByte),
+      Math.floor((heap - retained - responses) / evidenceRate),
+    ),
+  );
+  // In each phase the packet's own heap and what is held beside it stay inside the heap.
   expect(limit('packet.bytes') * perByte + replies + expansion).toBeLessThanOrEqual(heap);
-  expect((limit('packet.bytes') + 1) * perByte + replies + expansion).toBeGreaterThan(heap);
-  expect(basis.formula(1_000, 100, 300, 3)).toBe(200);
+  expect(limit('packet.bytes') * evidenceRate + retained + responses).toBeLessThanOrEqual(heap);
+  // One byte more passes the binding phase.
+  expect(
+    (limit('packet.bytes') + 1) * perByte + replies + expansion > heap ||
+      (limit('packet.bytes') + 1) * evidenceRate + retained + responses > heap,
+  ).toBe(true);
+  // Each phase can bind.
+  expect(basis.formula(1_000, 100, 300, 3, 0, 0, 0, 0, 1)).toBe(200);
+  expect(basis.formula(1_000, 0, 0, 1, 400, 1, 10, 10, 2)).toBe(250);
   expect(limitEntry('runner.unitExpansionHeapBytes').basis).toMatchObject({
     kind: 'measured',
     command: 'npm run measure:heap',

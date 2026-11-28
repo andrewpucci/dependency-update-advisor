@@ -288,16 +288,19 @@ subtracts four things that are not old generation:
 
 - what the runner OS and agent keep (`limit:runner.systemReservedBytes`).
   Only the runner can measure it. Run this as a step of a job on a
-  GitHub-hosted `ubuntu-latest` runner in a private repository, before
-  anything else in the job:
+  GitHub-hosted `ubuntu-latest` runner, before anything else in the job:
 
   ```sh
   npm run probe:runner-memory
   ```
 
-  Record its `reservedBytes` (MemTotal − MemAvailable) and the runner
-  processes' resident sets on the entry's issue. A run on any other machine,
-  including a Mac, measures a different machine.
+  Record its `reservedBytes` (MemTotal − MemAvailable), the runner image and
+  the runner processes' resident sets on the entry's issue. The recorded value
+  comes from a public repository's 16 GB runner and is applied as an absolute
+  reserve to the private 8 GB runner, because OS and agent memory does not
+  grow with the runner's memory. A run in a private repository would confirm
+  it. A run on any other machine, including a Mac, measures a different
+  machine.
 
 ### Token-length probe
 

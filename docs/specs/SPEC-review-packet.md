@@ -321,6 +321,13 @@ keep real packets far below it.
   [#383](https://github.com/andrewpucci/dependency-update-advisor/issues/383)):
   the heap is sized from runner memory and the decision-unit expansion is set
   aside, as SPEC-limit-register section 5 describes.
+- Amended (L11, Q10(a); approved by the maintainer on 2026-11-27,
+  [#383](https://github.com/andrewpucci/dependency-update-advisor/issues/383)):
+  the cap is the smaller of that analysis-phase value and an evidence-phase
+  value. The evidence-phase value is the runner heap less the evidence the
+  readers keep (`limit:runner.evidenceRetainedHeapBytes`) and the responses
+  in flight at their parse peak, divided by the evidence-phase heap per packet
+  byte (`limit:runner.evidenceHeapBytesPerPacketByte`).
 
 The cap deliberately rejects PRs containing more than `limit:packet.changes`
 detected changes.

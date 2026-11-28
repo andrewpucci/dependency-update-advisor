@@ -546,6 +546,29 @@ export const heapBytesFor = (
   reserved: number,
 ): number => memory - youngGeneration - offHeap - baseline - reserved;
 
+/**
+ * The largest packet whose heap fits in both phases (`limit:packet.bytes`): in analysis beside
+ * the model replies and the unit expansion, and in evidence beside the retained evidence and the
+ * responses in flight at their parse peak. Each phase is rounded down and the smaller is kept.
+ */
+export const packetBytesFor = (
+  heap: number,
+  replies: number,
+  expansion: number,
+  perPacketByte: number,
+  retained: number,
+  readsInFlight: number,
+  responseBytes: number,
+  perResponseByte: number,
+  evidencePerPacketByte: number,
+): number =>
+  Math.min(
+    Math.floor((heap - replies - expansion) / perPacketByte),
+    Math.floor(
+      (heap - retained - readsInFlight * responseBytes * perResponseByte) / evidencePerPacketByte,
+    ),
+  );
+
 const copy = (value: number): number => value;
 
 /** What the audit (L7) found for an entry; a field it has not filled stays PENDING_AUDIT. */
@@ -627,6 +650,37 @@ function configured<const Id extends string>(
     configurable: { ...setting, default: value },
     test: audit.test,
   } as const;
+}
+
+/**
+ * A Q10 byte share or retained cap (L11, Q10(a), #383): an adopter setting whose default is
+ * today's value, under the joint hard maximum `limit:runner.maxEvidenceRetainedBytes`.
+ */
+function retainedSetting<const Id extends string>(
+  id: Id,
+  setting: string,
+  value: number,
+  unit: LimitUnit,
+  audit: Audit,
+  minimum?: string,
+) {
+  return configured(
+    id,
+    value,
+    unit,
+    {
+      setting,
+      maximum: 'runner.maxEvidenceRetainedBytes',
+      joint: true,
+      ...(minimum === undefined ? {} : { minimum }),
+    },
+    "The adopter: a larger value reads or keeps more of that reader's evidence and spends more evidence-phase heap, which lowers limit:packet.bytes. Section 5 admitted the byte shares and retained caps as configuration on 2026-11-27 (L11, Q10(a), #383).",
+    {
+      protects: audit.protects ?? PENDING_AUDIT,
+      effect: audit.effect ?? PENDING_AUDIT,
+      test: audit.test ?? PENDING_AUDIT,
+    },
+  );
 }
 
 /** Research shares that scale with the change; each maps to the allocation entry that caps it. */
@@ -1026,11 +1080,15 @@ const DEFINITIONS = [
         'analysis.replyHeapBytes',
         'runner.unitExpansionHeapBytes',
         'runner.heapBytesPerPacketByte',
+        'runner.evidenceRetainedHeapBytes',
+        'evidence.readsInFlight',
+        'evidence.envelope.maxResponseBytes',
+        'runner.heapBytesPerEvidenceByte',
+        'runner.evidenceHeapBytesPerPacketByte',
       ],
-      formula: (heap, replies, expansion, perByte) =>
-        Math.floor((heap - replies - expansion) / perByte),
+      formula: packetBytesFor,
       description:
-        'The largest packet whose analysis-phase heap fits: (limit:runner.heapBytes − limit:analysis.replyHeapBytes − limit:runner.unitExpansionHeapBytes) ÷ limit:runner.heapBytesPerPacketByte, rounded down. The concurrent model replies and the decision-unit expansion at its structural maximum come off first; the snapshot tree, research cache and npm inventory are released before analysis (src/pipeline.ts), so no evidence state is held beside them. The packet is never sent to the model whole, so runner heap is its only real limit. Approved by the maintainer on 2026-11-27 (L11, #383); the expansion and the released state on 2026-11-28.',
+        'The largest packet whose heap fits in both phases, the smaller of two values. Analysis: (limit:runner.heapBytes − limit:analysis.replyHeapBytes − limit:runner.unitExpansionHeapBytes) ÷ limit:runner.heapBytesPerPacketByte; the concurrent model replies and the decision-unit expansion at its structural maximum come off first, and the snapshot tree, research cache and npm inventory are released before analysis (src/pipeline.ts), so no evidence state is held beside them. Evidence: (limit:runner.heapBytes − limit:runner.evidenceRetainedHeapBytes − limit:evidence.readsInFlight × limit:evidence.envelope.maxResponseBytes × limit:runner.heapBytesPerEvidenceByte) ÷ limit:runner.evidenceHeapBytesPerPacketByte; the evidence the readers keep at the Q10 settings and the responses in flight at their parse peak come off first. Each is rounded down. The packet is never sent to the model whole, so runner heap is its only real limit. Approved by the maintainer on 2026-11-27 (L11, #383); the expansion, the released state and the evidence-phase bound on 2026-11-28.',
     },
     test: 'src/schema.test.ts > enforces the exact serialized packet budget including multibyte text',
   },
@@ -1123,22 +1181,19 @@ const DEFINITIONS = [
     protects:
       'Bounds the heap the evidence phase may give to responses in flight and retained evidence, after the packet and the state that stays reachable into analysis.',
     effect:
-      'Not enforced: limit:runner.maxEvidenceResponseBytes divides it; it is the budget the byte shares and retained caps must fit once they are configuration (Q10).',
+      'Not enforced: limit:runner.maxEvidenceResponseBytes divides it; it is the heap left for responses in flight beside the packet and the retained evidence.',
     basis: {
       kind: 'derived',
       inputs: [
         'runner.heapBytes',
         'packet.bytes',
         'runner.evidenceHeapBytesPerPacketByte',
-        'config.maxBytes',
-        'evidence.allocation.transport.snapshot.maxTotalBytes',
-        'w2.npm.maxRetainedBytes',
-        'runner.heapBytesPerEvidenceByte',
+        'runner.evidenceRetainedHeapBytes',
       ],
-      formula: (heap, packet, perPacketByte, config, snapshot, npm, perEvidenceByte) =>
-        Math.floor(heap - packet * perPacketByte - (config + snapshot + npm) * perEvidenceByte),
+      formula: (heap, packet, perPacketByte, retained) =>
+        Math.floor(heap - packet * perPacketByte - retained),
       description:
-        "The evidence phase's share of the heap. Evidence and research run before analysis, and research readers are locals of runResearch, closed in its finally (src/research.ts:452-459), so the heap is shared by phase. The packet is held at its evidence-phase rate (limit:runner.evidenceHeapBytesPerPacketByte × limit:packet.bytes). The trusted config (src/pipeline.ts, at most limit:config.maxBytes), the snapshot tree (src/snapshot.ts, parsed from at most limit:evidence.allocation.transport.snapshot.maxTotalBytes) and the npm inventory (src/pipeline.ts, at most limit:w2.npm.maxRetainedBytes) are held through the whole phase, each at limit:runner.heapBytesPerEvidenceByte; the tree and inventory are released before analysis. Approved by the maintainer on 2026-11-27 (L11, Q3(a), #383).",
+        "The evidence phase's share of the heap. Evidence and research run before analysis, and research readers are locals of runResearch, closed in its finally (src/research.ts:452-459), so the heap is shared by phase. The packet is held at its evidence-phase rate (limit:runner.evidenceHeapBytesPerPacketByte × limit:packet.bytes). The evidence the readers keep, the trusted config among it, is held through the whole phase at limit:runner.evidenceRetainedHeapBytes; what is left is the heap for responses in flight. Approved by the maintainer on 2026-11-27 (L11, Q3(a), #383); the retained rate on 2026-11-28.",
     },
     test: 'src/limits.test.ts > the evidence-phase heap inputs keep their sources and formula',
   },
@@ -1158,7 +1213,7 @@ const DEFINITIONS = [
       ],
       formula: (heap, inFlight, perByte) => Math.floor(heap / (inFlight * perByte)),
       description:
-        'The hard maximum of limit:evidence.envelope.maxResponseBytes: limit:runner.evidenceHeapBytes ÷ (limit:evidence.readsInFlight × limit:runner.heapBytesPerEvidenceByte), rounded down. It does not yet reserve heap for the evidence the other readers retain, which the Q10 joint maximum is to bound. Approved by the maintainer on 2026-11-27 (L11, Q3(a), #383).',
+        'The hard maximum of limit:evidence.envelope.maxResponseBytes: limit:runner.evidenceHeapBytes ÷ (limit:evidence.readsInFlight × limit:runner.heapBytesPerEvidenceByte), rounded down. The evidence the readers keep is already set aside in limit:runner.evidenceHeapBytes. Approved by the maintainer on 2026-11-27 (L11, Q3(a), #383).',
     },
     test: 'none: the hard maximum of an adopter setting the parser does not read yet (L12, #384); src/limits.test.ts pins its formula',
   },
@@ -1189,7 +1244,7 @@ const DEFINITIONS = [
     protects:
       'States the heap the evidence the readers keep may hold at once in the evidence phase, at the Q10 defaults, so the joint maximum of those caps can be checked against runner heap.',
     effect:
-      'Not enforced yet: the Q10 joint maximum is to keep it, one response at its parse peak and the packet at its evidence-phase rate within limit:runner.heapBytes. At the placeholder limit:runner.systemReservedBytes it exceeds the heap, so limit:packet.bytes does not take the evidence-phase bound until the reserve is measured.',
+      'Not enforced. limit:packet.bytes and limit:runner.evidenceHeapBytes subtract it from the evidence-phase heap; a larger retained state lowers the packet cap.',
     basis: {
       kind: 'derived',
       inputs: [...Q10_RETAINED_INPUTS, 'runner.heapBytesPerRetainedByte'],
@@ -1201,6 +1256,47 @@ const DEFINITIONS = [
         'The retained state at limit:runner.heapBytesPerRetainedByte: the thirteen Q10 byte shares and retained caps (the snapshot, session, registry and advisory byte shares, the malware, publish-time, registry and upstream signal-reader shares, and the session, npm, actions, uv and graph retained caps), limit:research.maxRetainedBytes, and the trusted config (limit:config.maxBytes), held through the whole phase. The byte shares stand for what their readers keep from the bytes they read; the research shares are also inside limit:research.maxRetainedBytes, so the sum is an upper bound. Q10(a) approved by the maintainer on 2026-11-27, #383.',
     },
     test: 'src/limits.test.ts > the evidence retained state is sized at the retained rate',
+  },
+  {
+    id: 'runner.maxEvidenceRetainedBytes',
+    unit: 'bytes',
+    protects:
+      'Keeps adopter settings of the byte shares and retained caps from letting the evidence the readers keep exhaust the evidence-phase heap.',
+    effect:
+      'Not enforced by the reviewer yet: L12 makes the config parser reject settings whose sum passes it. check:limits evaluates the register at it.',
+    basis: {
+      kind: 'derived',
+      inputs: [
+        'runner.heapBytes',
+        'packet.bytes',
+        'runner.evidenceHeapBytesPerPacketByte',
+        'evidence.readsInFlight',
+        'evidence.envelope.maxResponseBytes',
+        'runner.heapBytesPerEvidenceByte',
+        'runner.heapBytesPerRetainedByte',
+        'research.maxRetainedBytes',
+        'config.maxBytes',
+      ],
+      formula: (
+        heap,
+        packet,
+        perPacketByte,
+        inFlight,
+        response,
+        perResponseByte,
+        perRetained,
+        research,
+        config,
+      ) =>
+        Math.floor(
+          (heap - packet * perPacketByte - inFlight * response * perResponseByte) / perRetained,
+        ) -
+        research -
+        config,
+      description:
+        'The joint hard maximum of the thirteen Q10 byte shares and retained caps: the evidence-phase heap left beside the packet at its evidence-phase rate and the responses in flight at their parse peak, at limit:runner.heapBytesPerRetainedByte, less limit:research.maxRetainedBytes and limit:config.maxBytes, which are held beside them, rounded down. limit:packet.bytes takes the evidence-phase heap the defaults leave, so a setting raised above its default lowers the packet cap rather than passing this maximum. Q10(a) approved by the maintainer on 2026-11-27, #383.',
+    },
+    test: 'none: the joint hard maximum of adopter settings the parser does not read yet (L12, #384); src/limits.test.ts pins its formula',
   },
   {
     id: 'runner.memoryBytes',
@@ -1282,13 +1378,26 @@ const DEFINITIONS = [
     effect: 'Not enforced: limit:runner.heapBytes subtracts it.',
     test: 'tests/probe-runtime-baseline/core.test.ts > the baseline is the largest parent plus child peak resident set',
   },
-  unjustified('runner.systemReservedBytes', 5_300_094_976, 'bytes', {
+  {
+    id: 'runner.systemReservedBytes',
+    value: 1_072_902_144,
+    unit: 'bytes',
     protects:
       "Reserves the runner memory the runner's OS, services and runner agent keep, which the reviewer cannot use.",
+    basis: {
+      kind: 'measured',
+      command: 'npm run probe:runner-memory',
+      corpus:
+        'one run on a GitHub-hosted ubuntu-latest runner on 2026-11-28: Actions run 46102933198, job 140849238342, runner image 20261122.9.1, Node v24.22.3, no cgroup memory limit (process.constrainedMemory() unconstrained). The repository is public, so the job ran on the public 4-CPU, 16 GB runner (MemTotal 16,759,431,168), not the private-repository 8 GB runner limit:runner.memoryBytes describes',
+      statistic:
+        'MemTotal − MemAvailable at job start, from /proc/meminfo: 16,759,431,168 − 15,686,529,024 = 1,072,902,144 bytes. It includes the runner agent (Runner.Listener 99,885,056 and Runner.Worker 131,256,320 bytes resident) and the OS, services and page cache the kernel does not count as available. It is applied as an absolute reserve to the 8 GB runner: OS and agent memory does not scale with the memory size, and a run in a private repository would confirm it',
+      headroom:
+        'none: a platform property, not a demand; MemAvailable excludes reclaimable cache the kernel could free, so the reserve overstates what the reviewer cannot use',
+      measured: '2026-11-28',
+    },
     effect: 'Not enforced: limit:runner.heapBytes subtracts it.',
-    note: "a placeholder, not a measurement: it holds limit:runner.heapBytes at limit:runner.oldGenerationBytes, the old generation V8 already gives the smallest runner, so no cap moves until the reserve is measured. Awaiting a run on a GitHub-hosted ubuntu-latest runner in a private repository that records MemTotal − MemAvailable at job start and the runner agent's resident set (CONTRIBUTING.md, Runner memory)",
     test: 'src/limits.test.ts > the runner heap derives from runner memory less what is not old generation',
-  }),
+  },
   {
     id: 'runner.heapBytes',
     unit: 'bytes',
@@ -1310,24 +1419,6 @@ const DEFINITIONS = [
         'The smallest runner\'s memory (limit:runner.memoryBytes) less what is not old generation: the young generation (limit:runner.youngGenerationBytes), the off-heap buffers (limit:runner.offHeapBytes), the runtime baseline (limit:runner.baselineBytes) and what the runner OS and agent keep (limit:runner.systemReservedBytes). Approved by the maintainer on 2026-11-28 ("Raise heap to runner memory", L11, #383).',
     },
     test: 'src/relaunch.test.ts > relaunches once with the derived old-generation size and passes the exit code through',
-  },
-  {
-    id: 'runner.oldGenerationBytes',
-    value: 2_147_483_648,
-    unit: 'bytes',
-    protects:
-      "Records the old-generation heap V8 gives the reviewer's Node 24 process on the smallest supported runner (8 GB); past it the process aborts out of memory and the review job fails with no comment update.",
-    basis: {
-      kind: 'external',
-      url: 'https://github.com/nodejs/node/blob/v24.22.3/deps/v8/src/heap/heap.cc#L229-L310',
-      checked: '2026-11-27',
-      platformValue: 2_147_483_648,
-      margin:
-        'none: it is the ceiling limit:packet.bytes is derived under. HeapSizeFromPhysicalMemory (heap.cc#L229-L243) takes a quarter of physical memory times kHeapLimitMultiplier, capped at MaxOldGenerationSize (heap.cc#L291-L310), which is V8HeapTrait::kMaxSize = 1024 MB × kHeapLimitMultiplier (deps/v8/src/heap/heap-controller.h#L18) and doubles only at 15 GB or more of physical memory. kHeapLimitMultiplier is kSystemPointerSize / 4 = 2 on 64-bit Linux (deps/v8/src/heap/heap.h#L307), so an 8 GB runner gets min(4 GiB, 2 GiB) = 2 GiB. The same lines are unchanged in v24.11.0, the oldest Node the package supports. Checked against the V8 source and in cgroups by the maintainer on 2026-11-27 (L11, #383).',
-    },
-    effect:
-      'Not enforced by the reviewer. The action now sets its own old generation (limit:runner.heapBytes); this default stays only as the figure the placeholder limit:runner.systemReservedBytes holds that heap at, until the runner reserve is measured.',
-    test: 'src/limits.test.ts > the runner heap derives from runner memory less what is not old generation',
   },
   {
     id: 'packet.changes',
@@ -1805,14 +1896,19 @@ const DEFINITIONS = [
       test: 'src/runtime.test.ts > an exhausted snapshot share cannot starve freshness reads, and the reverse',
     },
   ),
-  unjustified('evidence.allocation.transport.snapshot.maxTotalBytes', 9 * MiB, 'bytes', {
-    protects:
-      'Caps snapshot response bytes so a heavy snapshot cannot use the freshness bytes or runner memory.',
-    effect:
-      "A read that would pass the share's remaining bytes returns budget and is not returned as available; the freshness share is unaffected.",
-    test: "src/runtime.test.ts > stops a %s read at that share's byte limit and leaves the other share alone",
-    note: 'awaiting L8 measurement',
-  }),
+  retainedSetting(
+    'evidence.allocation.transport.snapshot.maxTotalBytes',
+    'limits.snapshotBytes',
+    9 * MiB,
+    'bytes',
+    {
+      protects:
+        'Caps snapshot response bytes so a heavy snapshot cannot use the freshness bytes or runner memory.',
+      effect:
+        "A read that would pass the share's remaining bytes returns budget and is not returned as available; the freshness share is unaffected.",
+      test: "src/runtime.test.ts > stops a %s read at that share's byte limit and leaves the other share alone",
+    },
+  ),
   derived(
     'evidence.allocation.transport.freshness.maxRequests',
     'count',
@@ -1864,13 +1960,18 @@ const DEFINITIONS = [
       test: 'src/github-read.test.ts > the session stops at exactly evidence.allocation.session.maxRequests requests',
     },
   ),
-  unjustified('evidence.allocation.session.maxTotalBytes', 12 * MiB, 'bytes', {
-    protects: 'Caps response bytes of the GitHub evidence session reader against runner memory.',
-    effect:
-      "A response past the share's remaining bytes returns budget and the reader stops; other shares are unaffected.",
-    note: 'awaiting L8 measurement',
-    test: 'src/github-read.test.ts > the session refuses the read that passes evidence.allocation.session.maxTotalBytes',
-  }),
+  retainedSetting(
+    'evidence.allocation.session.maxTotalBytes',
+    'limits.sessionBytes',
+    12 * MiB,
+    'bytes',
+    {
+      protects: 'Caps response bytes of the GitHub evidence session reader against runner memory.',
+      effect:
+        "A response past the share's remaining bytes returns budget and the reader stops; other shares are unaffected.",
+      test: 'src/github-read.test.ts > the session refuses the read that passes evidence.allocation.session.maxTotalBytes',
+    },
+  ),
   {
     id: 'evidence.allocation.registry.maxRequests',
     value: 640,
@@ -1914,14 +2015,21 @@ const DEFINITIONS = [
       test: 'src/budget.test.ts > the collection registry share scales with npm members and stops at its ceiling',
     },
   ),
-  unjustified('evidence.allocation.registry.maxTotalBytes', 4 * MiB, 'bytes', {
-    protects:
-      'Caps response bytes of npm registry detail reads so they cannot exhaust runner memory or the envelope.',
-    effect:
-      "A response past the share's remaining bytes returns budget and the reader stops; other shares are unaffected.",
-    note: 'awaiting L8 measurement',
-    test: 'src/evidence/npm-registry.test.ts > the registry byte share allows exactly its total and refuses the read that exceeds it',
-  }),
+  retainedSetting(
+    'evidence.allocation.registry.maxTotalBytes',
+    'limits.registryBytes',
+    4 * MiB,
+    'bytes',
+    {
+      protects:
+        'Caps response bytes of npm registry detail reads so they cannot exhaust runner memory or the envelope.',
+      effect:
+        "A response past the share's remaining bytes returns budget and the reader stops; other shares are unaffected.",
+      test: 'src/evidence/npm-registry.test.ts > the registry byte share allows exactly its total and refuses the read that exceeds it',
+    },
+    // The reader refuses a share below one response (src/evidence/npm-registry.ts:76).
+    'evidence.envelope.maxResponseBytes',
+  ),
   unjustified('evidence.allocation.upstream.maxRequests', 240, 'count', {
     protects:
       'Caps upstream research requests (GitHub and registry lookups) that scale with the changed group, so a large group cannot take the shared evidence time or the GitHub rate limit.',
@@ -1958,13 +2066,18 @@ const DEFINITIONS = [
       test: 'src/evidence/advisory-read.test.ts > advisory reader spends exactly its request share and refuses the lookup past it',
     },
   ),
-  unjustified('evidence.allocation.advisory.maxTotalBytes', 5 * MiB, 'bytes', {
-    protects: 'Caps response bytes of advisory reads so they cannot exhaust runner memory.',
-    effect:
-      "A response past the share's remaining bytes is refused with budget and the advisory reader stops.",
-    note: 'awaiting L8 measurement',
-    test: 'src/evidence/advisory-read.test.ts > advisory reader accepts a byte share exactly and refuses the byte past it',
-  }),
+  retainedSetting(
+    'evidence.allocation.advisory.maxTotalBytes',
+    'limits.advisoryBytes',
+    5 * MiB,
+    'bytes',
+    {
+      protects: 'Caps response bytes of advisory reads so they cannot exhaust runner memory.',
+      effect:
+        "A response past the share's remaining bytes is refused with budget and the advisory reader stops.",
+      test: 'src/evidence/advisory-read.test.ts > advisory reader accepts a byte share exactly and refuses the byte past it',
+    },
+  ),
   derived(
     'evidence.allocation.signals.maxRequests',
     'count',
@@ -2017,12 +2130,17 @@ const DEFINITIONS = [
       test: 'src/evidence/advisory-read.test.ts > malware reader spends exactly its request share and refuses the lookup past it',
     },
   ),
-  unjustified('evidence.allocation.signals.readers.malware.maxTotalBytes', 1.5 * MiB, 'bytes', {
-    protects: 'Caps malware-signal response bytes so they cannot exhaust runner memory.',
-    effect: "A response past the share's remaining bytes returns budget and the reader stops.",
-    note: 'awaiting L8 measurement',
-    test: 'src/evidence/advisory-read.test.ts > malware reader accepts a byte share exactly and refuses the byte past it',
-  }),
+  retainedSetting(
+    'evidence.allocation.signals.readers.malware.maxTotalBytes',
+    'limits.malwareSignalBytes',
+    1.5 * MiB,
+    'bytes',
+    {
+      protects: 'Caps malware-signal response bytes so they cannot exhaust runner memory.',
+      effect: "A response past the share's remaining bytes returns budget and the reader stops.",
+      test: 'src/evidence/advisory-read.test.ts > malware reader accepts a byte share exactly and refuses the byte past it',
+    },
+  ),
   unjustified('advisory.discovery.pageSize', 50, 'count', {
     protects:
       'A stored-name discovery page of heavily advised packages fits the 1 MiB per-response cap (a 100-record pillow page did not).',
@@ -2139,14 +2257,14 @@ const DEFINITIONS = [
     note: 'awaiting L8 measurement',
     test: 'src/evidence/npm-publish-times.test.ts > the publish-time request share allows exactly its count and refuses the next lookup unsent',
   }),
-  unjustified(
+  retainedSetting(
     'evidence.allocation.signals.readers.publishTimes.maxTotalBytes',
+    'limits.publishTimeSignalBytes',
     1.5 * MiB,
     'bytes',
     {
       protects: 'Caps npm publish-time response bytes so they cannot exhaust runner memory.',
       effect: "A response past the share's remaining bytes returns budget and the reader stops.",
-      note: 'awaiting L8 measurement',
       test: 'src/evidence/npm-publish-times.test.ts > the publish-time byte share allows exactly its total and refuses the read that exceeds it',
     },
   ),
@@ -2154,15 +2272,19 @@ const DEFINITIONS = [
     protects:
       'Caps npm registry policy requests in the signals stage, separate from the W2 registry share, so the stage stays inside the envelope.',
     effect: 'The request past the cap returns budget and no request is sent.',
-    note: 'awaiting L8 measurement',
     test: 'src/evidence/npm-registry.test.ts > the signals registry request share allows exactly its count and refuses the next read unsent',
   }),
-  unjustified('evidence.allocation.signals.readers.registry.maxTotalBytes', 2 * MiB, 'bytes', {
-    protects: 'Caps npm registry policy response bytes so they cannot exhaust runner memory.',
-    effect: "A response past the share's remaining bytes returns budget and the reader stops.",
-    note: 'awaiting L8 measurement',
-    test: 'src/evidence/npm-registry.test.ts > the signals registry byte share allows exactly its total and refuses the read that exceeds it',
-  }),
+  retainedSetting(
+    'evidence.allocation.signals.readers.registry.maxTotalBytes',
+    'limits.registrySignalBytes',
+    2 * MiB,
+    'bytes',
+    {
+      protects: 'Caps npm registry policy response bytes so they cannot exhaust runner memory.',
+      effect: "A response past the share's remaining bytes returns budget and the reader stops.",
+      test: 'src/evidence/npm-registry.test.ts > the signals registry byte share allows exactly its total and refuses the read that exceeds it',
+    },
+  ),
   derived(
     'evidence.allocation.signals.readers.metadata.maxRequests',
     'count',
@@ -2202,13 +2324,18 @@ const DEFINITIONS = [
     note: 'awaiting L8 measurement',
     test: 'src/evidence/upstream-read.test.ts > signals upstream reader spends exactly its request share and refuses the request past it',
   }),
-  unjustified('evidence.allocation.signals.readers.upstream.maxTotalBytes', 0.5 * MiB, 'bytes', {
-    protects: 'Caps GitHub Actions upstream response bytes so they cannot exhaust runner memory.',
-    effect:
-      "A response past the share's remaining bytes is refused with budget and the upstream reader stops.",
-    note: 'awaiting L8 measurement',
-    test: 'src/evidence/upstream-read.test.ts > signals upstream reader accepts a byte share exactly and refuses the byte past it',
-  }),
+  retainedSetting(
+    'evidence.allocation.signals.readers.upstream.maxTotalBytes',
+    'limits.upstreamSignalBytes',
+    0.5 * MiB,
+    'bytes',
+    {
+      protects: 'Caps GitHub Actions upstream response bytes so they cannot exhaust runner memory.',
+      effect:
+        "A response past the share's remaining bytes is refused with budget and the upstream reader stops.",
+      test: 'src/evidence/upstream-read.test.ts > signals upstream reader accepts a byte share exactly and refuses the byte past it',
+    },
+  ),
   // Research cache, from budget.ts.
   derived(
     'research.cache.maxEntryBytes',
@@ -2330,14 +2457,19 @@ const DEFINITIONS = [
       test: 'src/github-read.test.ts > counts UTF-8 streamed bytes at exact %s boundary',
     },
   ),
-  unjustified('w2.session.maxRetainedBytes', 2_000_000, 'bytes', {
-    protects:
-      'Caps cumulative UTF-8 bytes of results the session keeps in memory, so repeated or large results cannot grow retained memory without bound.',
-    effect:
-      'A single retained result that does not fit throws budget and marks the session stopped; a collection that overflows keeps the prefix that fits and reports budget.',
-    test: 'src/github-read.test.ts > retained results share a cumulative byte budget with exact UTF-8 accounting',
-    note: 'awaiting L8 measurement',
-  }),
+  retainedSetting(
+    'w2.session.maxRetainedBytes',
+    'limits.sessionRetainedBytes',
+    2_000_000,
+    'bytes',
+    {
+      protects:
+        'Caps cumulative UTF-8 bytes of results the session keeps in memory, so repeated or large results cannot grow retained memory without bound.',
+      effect:
+        'A single retained result that does not fit throws budget and marks the session stopped; a collection that overflows keeps the prefix that fits and reports budget.',
+      test: 'src/github-read.test.ts > retained results share a cumulative byte budget with exact UTF-8 accounting',
+    },
+  ),
   derived(
     'w2.session.requestTimeoutMs',
     'milliseconds',
@@ -2403,12 +2535,11 @@ const DEFINITIONS = [
       test: 'src/evidence/npm.test.ts > the changed npm root cap reads exactly the registered number of roots and records a budget gap for the rest',
     },
   ),
-  unjustified('w2.npm.maxRetainedBytes', 2_000_000, 'bytes', {
+  retainedSetting('w2.npm.maxRetainedBytes', 'limits.npmRetainedBytes', 2_000_000, 'bytes', {
     protects:
       'Caps the serialized npm inventory bytes kept in memory and handed to the graph stage.',
     effect:
       'The inventory is trimmed to the longest prefix that fits with a budget gap; if no prefix fits the result is unavailable with reason budget.',
-    note: 'awaiting L8 measurement',
     test: 'src/evidence/npm.test.ts > the retained inventory cap keeps a whole inventory at its exact serialized size and trims one byte under it',
   }),
   {
@@ -2476,13 +2607,18 @@ const DEFINITIONS = [
     test: 'src/evidence/actions.test.ts > occurrence and alias budgets accumulate across base/head files',
     note: 'awaiting L8 measurement',
   }),
-  unjustified('w2.actions.maxRetainedBytes', 2_000_000, 'bytes', {
-    protects: 'Caps the serialized actions inventory bytes kept in memory.',
-    effect:
-      'The inventory is trimmed to the longest prefix that fits with a budget gap; if no prefix fits the result is unavailable with reason budget.',
-    test: 'src/evidence/actions.test.ts > retention bounds preserve explicit incompleteness, valid packet references and a detached immutable result',
-    note: 'awaiting L8 measurement',
-  }),
+  retainedSetting(
+    'w2.actions.maxRetainedBytes',
+    'limits.actionsRetainedBytes',
+    2_000_000,
+    'bytes',
+    {
+      protects: 'Caps the serialized actions inventory bytes kept in memory.',
+      effect:
+        'The inventory is trimmed to the longest prefix that fits with a budget gap; if no prefix fits the result is unavailable with reason budget.',
+      test: 'src/evidence/actions.test.ts > retention bounds preserve explicit incompleteness, valid packet references and a detached immutable result',
+    },
+  ),
   derived(
     'w2.uv.maxFileBytes',
     'bytes',
@@ -2628,12 +2764,11 @@ const DEFINITIONS = [
       test: 'src/evidence/uv.test.ts > enforces file, edge, marker and selected-root caps at boundaries',
     },
   ),
-  unjustified('w2.uv.maxRetainedBytes', 1_000_000, 'bytes', {
+  retainedSetting('w2.uv.maxRetainedBytes', 'limits.uvRetainedBytes', 1_000_000, 'bytes', {
     protects: 'Caps serialized uv metadata bytes kept in memory and handed to the graph stage.',
     effect:
       'The metadata is trimmed to the longest fitting root prefix with explicit budget gaps; if no prefix fits the result is unavailable with reason budget.',
     test: 'src/evidence/uv.test.ts > retention keeps a deterministic root prefix and every omitted file scope visible',
-    note: 'awaiting L8 measurement',
   }),
   unjustified('w2.graph.maxGraphWork', 500_000, 'count', {
     protects:
@@ -2643,13 +2778,12 @@ const DEFINITIONS = [
     test: 'src/evidence/uv-paths.test.ts > optional proof-work exhaustion retains the entire usable inventory and an explicit limit',
     note: 'awaiting L8 measurement',
   }),
-  unjustified('w2.graph.maxRetainedBytes', 2_000_000, 'bytes', {
+  retainedSetting('w2.graph.maxRetainedBytes', 'limits.graphRetainedBytes', 2_000_000, 'bytes', {
     protects:
       "Caps serialized bytes of the graph stage's input and output, so inventories and proofs cannot grow retained memory without bound.",
     effect:
       'Input over the cap throws budget; an output that cannot fit is unavailable with reason budget; optional proofs are dropped first and scope records kept.',
     test: 'src/evidence/npm-graph.test.ts > second proofs are dropped after pair verdicts, and core overflow still fails the result',
-    note: 'awaiting L8 measurement',
   }),
   derived(
     'w2.registry.maxRequests',
@@ -3296,7 +3430,7 @@ const DEFINITIONS = [
     {
       protects:
         'Reserves the runner heap the concurrent model replies can take, so the packet cap leaves room for them.',
-      effect: 'Not enforced. limit:packet.bytes subtracts it from limit:runner.oldGenerationBytes.',
+      effect: 'Not enforced. limit:packet.bytes subtracts it from limit:runner.heapBytes.',
       test: 'src/limits.test.ts > the heap inputs of packet.bytes keep their sources and formula',
     },
   ),
