@@ -353,9 +353,11 @@ test('the snapshot byte budget admits exactly its registered string bytes of inp
   const cap = limit('analysis.projectionBytes');
   expect(() => snapshotData('a'.repeat(cap))).not.toThrow();
   expect(() => snapshotData('a'.repeat(cap + 1))).toThrow('budget');
-  // Multibyte text counts in UTF-8 bytes.
-  expect(() => snapshotData('é'.repeat(cap / 2))).not.toThrow();
-  expect(() => snapshotData('é'.repeat(cap / 2) + 'a')).toThrow('budget');
+  // Multibyte text counts in UTF-8 bytes; an odd cap ends with one one-byte character.
+  const multibyte = 'é'.repeat(Math.floor(cap / 2)) + (cap % 2 ? 'a' : '');
+  expect(Buffer.byteLength(multibyte)).toBe(cap);
+  expect(() => snapshotData(multibyte)).not.toThrow();
+  expect(() => snapshotData(multibyte + 'a')).toThrow('budget');
 }, 120_000);
 
 test('the snapshot entry budget admits exactly its registered count of values and refuses one more', () => {
