@@ -1426,7 +1426,7 @@ const DEFINITIONS = [
       description:
         'The smallest runner\'s memory (limit:runner.memoryBytes) less what is not old generation: the young generation (limit:runner.youngGenerationBytes), the off-heap buffers (limit:runner.offHeapBytes), the runtime baseline (limit:runner.baselineBytes) and what the runner OS and agent keep (limit:runner.systemReservedBytes). Approved by the maintainer on 2026-11-28 ("Raise heap to runner memory", L11, #383).',
     },
-    test: 'src/relaunch.test.ts > relaunches once with the derived old-generation size and passes the exit code through',
+    test: 'src/relaunch.test.ts > sizes the heap with the register formula and the runner memory',
   },
   {
     id: 'packet.changes',
@@ -3866,9 +3866,10 @@ const DEFINITIONS = [
   {
     id: 'upstream.throughputBytesPerSecond',
     value: 640_000,
+    // The register has no rate unit: the value is bytes per second, as its id says.
     unit: 'bytes',
     protects:
-      'Records the read throughput of upstream research reads (GitHub releases and PyPI JSON), so the request timeout and the upstream byte ceiling can be sized in time.',
+      'Records the read throughput of upstream research reads (GitHub releases and PyPI JSON), in bytes per second, so the request timeout and the upstream byte ceiling can be sized in time.',
     basis: {
       kind: 'external',
       url: 'https://github.com/andrewpucci/dependency-update-advisor/pull/468',
