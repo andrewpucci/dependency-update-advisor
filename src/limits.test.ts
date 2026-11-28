@@ -798,7 +798,11 @@ test('the GitHub read shares keep their sources and formulas', () => {
     limit('github.token.restRequestsPerHour') -
       limit('evidence.allocation.transport.freshness.maxRequests'),
   );
-  for (const id of ['evidence.allocation.transport.snapshot.maxRequests'] as const)
+  for (const id of [
+    'evidence.allocation.transport.snapshot.maxRequests',
+    'evidence.allocation.upstream.maxRequests',
+    'evidence.allocation.signals.readers.upstream.maxRequests',
+  ] as const)
     expect(limitEntry(id).configurable, id).toMatchObject({
       maximum: 'github.token.requestCapMax',
       joint: true,
@@ -863,5 +867,35 @@ test('the uv and npm collection bounds keep their sources and formulas', () => {
     'w2.uv.maxRequirementTokens',
     'npm.maxIntegrityCodeUnits',
   ] as const)
+    expect(limitEntry(id).basis.kind, id).toBe('safety');
+});
+
+test('the research and signal bounds keep their sources and formulas', () => {
+  // The coverage setting's hard maximum is the upstream request ceiling (Q9(a)); a listed release
+  // outside the range costs no request beyond its page, so it is not a per-candidate bound.
+  expect(limitEntry('research.maxTagCandidates').configurable).toMatchObject({
+    maximum: 'evidence.allocation.upstream.maxRequests',
+  });
+  expect(limit('research.maxTagCandidates')).toBeLessThanOrEqual(
+    limit('evidence.allocation.upstream.maxRequests'),
+  );
+  // One npm read per side of a change; the stage and research sums follow.
+  for (const id of [
+    'evidence.allocation.signals.readers.publishTimes.maxRequests',
+    'evidence.allocation.signals.readers.registry.maxRequests',
+  ] as const)
+    expect(limit(id), id).toBe(2 * limit('packet.changes'));
+  const readers = ['malware', 'publishTimes', 'registry', 'metadata', 'upstream'] as const;
+  const signals = readers.reduce(
+    (total, reader) => total + limit(`evidence.allocation.signals.readers.${reader}.maxRequests`),
+    0,
+  );
+  expect(limit('evidence.allocation.signals.maxRequests')).toBe(signals);
+  expect(limit('research.githubQuota.researchCeiling')).toBe(
+    limit('evidence.allocation.upstream.maxRequests') +
+      limit('evidence.allocation.advisory.maxRequests') +
+      signals,
+  );
+  for (const id of ['research.maxJsonDepth', 'research.maxTagDepth'] as const)
     expect(limitEntry(id).basis.kind, id).toBe('safety');
 });

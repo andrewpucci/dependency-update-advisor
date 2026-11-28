@@ -14,7 +14,7 @@ test('scale 1 leaves every register value unchanged', () => {
 
 test('scales the hand-set evidence shares, envelope values, and research caps', () => {
   for (const id of [
-    'evidence.allocation.signals.readers.registry.maxRequests',
+    'evidence.allocation.signals.readers.upstream.maxRequests',
     'evidence.allocation.upstream.maxTotalBytes',
     'evidence.envelope.totalTimeoutMs',
     'evidence.envelope.maxResponseBytes',
@@ -31,7 +31,6 @@ test('scales the fitted share bases and rates with their ceilings, without binar
     'collection.share.registry.requests.base',
     'collection.share.registry.requests.rate.npm',
     'research.share.upstream.bytes.rate.direct',
-    'research.share.signals.metadata.requests.base',
     'research.share.signals.metadata.bytes.rate.eligible',
   ])
     expect(valueAt(10, id), id).toBe(10 * (REGISTER.get(id)?.value ?? 0));
@@ -40,6 +39,12 @@ test('scales the fitted share bases and rates with their ceilings, without binar
   // A base the fit kept at its ceiling is derived, so it follows the scaled ceiling.
   expect(valueAt(10, 'research.share.advisory.bytes.base')).toBe(
     10 * (REGISTER.get('evidence.allocation.advisory.maxTotalBytes')?.value ?? 0),
+  );
+  // The metadata bases are one uv member's two PyPI reads (L11, #383): the request count is
+  // structural and stays, and the byte base follows the scaled response cap.
+  expect(valueAt(10, 'research.share.signals.metadata.requests.base')).toBe(2);
+  expect(valueAt(10, 'research.share.signals.metadata.bytes.base')).toBe(
+    2 * 10 * (REGISTER.get('evidence.envelope.maxResponseBytes')?.value ?? 0),
   );
   // 2.5 × 3 stays 7.5.
   expect(valueAt(3, 'research.share.signals.metadata.requests.rate.eligible')).toBe(7.5);

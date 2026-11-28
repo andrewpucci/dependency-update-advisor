@@ -14,8 +14,8 @@ const SHARE_PREFIXES = ['research.share.', 'collection.share.'];
  * to recompute, so totals and copies of these values scale with them: the retained-byte cap
  * follows the research cache total (#467), and the advisory and upstream byte ceilings follow the
  * evidence deadline. A ceiling derived only from `packet.changes` stays unscaled, since no change
- * can need more. The PyPI metadata request ceiling, two reads per change (#467), is one such
- * ceiling.
+ * can need more. The PyPI metadata request ceiling, two reads per change (#467), and the npm
+ * publish-time and registry policy ceilings, two reads per change (L11, #383), are such ceilings.
  */
 export function isReadBudget(entry: Limit): boolean {
   if (entry.basis.kind === 'derived') return false;
