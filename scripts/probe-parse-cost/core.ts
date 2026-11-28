@@ -53,7 +53,9 @@ export function doublingSizes(cap: number, below: number, above: number): number
  * (`note` in src/evidence/npm-graph.ts), the one place that stage reports it without a reason field.
  */
 export function npmBudgetFindingId(memberId: string): string {
-  const digest = createHash('sha256').update(JSON.stringify([memberId, 'budget'])).digest('hex');
+  const digest = createHash('sha256')
+    .update(JSON.stringify([memberId, 'budget']))
+    .digest('hex');
   return `npm:relationship:${digest}`;
 }
 
@@ -73,7 +75,12 @@ export function reportsBudget(result: unknown): boolean {
   const pending: unknown[] = [result];
   for (let item = pending.pop(); item !== undefined; item = pending.pop()) {
     if (typeof item !== 'object' || item === null) continue;
-    const fields = item as { reason?: unknown; reasons?: unknown; id?: unknown; memberId?: unknown };
+    const fields = item as {
+      reason?: unknown;
+      reasons?: unknown;
+      id?: unknown;
+      memberId?: unknown;
+    };
     if (fields.reason === 'budget') return true;
     if (typeof fields.memberId === 'string' && fields.id === npmBudgetFindingId(fields.memberId))
       return true;

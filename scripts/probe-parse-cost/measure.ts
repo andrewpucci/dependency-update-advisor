@@ -116,7 +116,8 @@ async function jsonSeries(
   const series: Series[] = [];
   for (const shape of Object.keys(core.JSON_UNITS) as Core.JsonShape[]) {
     const points: Point[] = [];
-    for (const bytes of sizes(cap)) points.push(await point(shape, core.jsonDocument(shape, bytes), bytes));
+    for (const bytes of sizes(cap))
+      points.push(await point(shape, core.jsonDocument(shape, bytes), bytes));
     series.push({ shape, points });
   }
   return series;
@@ -208,7 +209,12 @@ function npmSession(
 function npmSeries(): Promise<Series[]> {
   const { binding: scenario, expected } = npmScenario();
   return jsonSeries(W2_EVIDENCE_LIMITS.npm.maxFileBytes, async (shape, body, bytes) => {
-    const limits = { ...W2_EVIDENCE_LIMITS.npm, maxFileBytes: bytes, maxJsonEntries: LIFTED, maxRoots: 1 };
+    const limits = {
+      ...W2_EVIDENCE_LIMITS.npm,
+      maxFileBytes: bytes,
+      maxJsonEntries: LIFTED,
+      maxRoots: 1,
+    };
     const run = () =>
       collectNpmInventory(
         { binding: scenario, roots: ['.'], configRevision: expected.contextRevision, limits },
@@ -220,7 +226,9 @@ function npmSeries(): Promise<Series[]> {
     const result = (await run()) as { kind?: unknown; gaps?: { path: string; reason: string }[] };
     const locks = (result.gaps ?? []).filter((gap) => gap.path === 'package-lock.json');
     expectWalked(
-      result.kind === 'inventory' && locks.length > 0 && locks.every((gap) => gap.reason === 'malformed'),
+      result.kind === 'inventory' &&
+        locks.length > 0 &&
+        locks.every((gap) => gap.reason === 'malformed'),
       `npm ${shape}`,
     );
     return { bytes, units: locks.length * core.entryCount(JSON.parse(body)), run };
@@ -352,7 +360,8 @@ function dependabotSeries(shape: Core.DependabotShape): Series[] {
         const units = {
           nodes: counts.preflight,
           updates: counts.updates,
-          roots: parsed.kind === 'roots' && parsed.npm.kind === 'roots' ? parsed.npm.roots.length : 0,
+          roots:
+            parsed.kind === 'roots' && parsed.npm.kind === 'roots' ? parsed.npm.roots.length : 0,
         }[shape];
         return { bytes: size, units, run: () => parseDependabotRoots(bytes) };
       }),
@@ -387,7 +396,11 @@ async function uvGraphSeries(): Promise<Series[]> {
   const smallest = BINARY_BYTES.KiB * DECIMAL_RADIX;
   for (const shape of core.GRAPH_SHAPES) {
     const points: Point[] = [];
-    for (let size = W2_EVIDENCE_LIMITS.uv.maxFileBytes; size >= smallest; size = Math.floor(size / 2)) {
+    for (
+      let size = W2_EVIDENCE_LIMITS.uv.maxFileBytes;
+      size >= smallest;
+      size = Math.floor(size / 2)
+    ) {
       const base = core.uvProject(shape, size, '1');
       const head = core.uvProject(shape, size, '2');
       const input = await uvGraphFixture(
@@ -573,7 +586,10 @@ const readers: Record<string, (bytes: Buffer) => Reading> = {
     return {
       counts: {
         projects: projects.length,
-        nameCodeUnits: projects.reduce((longest, { name }) => Math.max(longest, String(name).length), 0),
+        nameCodeUnits: projects.reduce(
+          (longest, { name }) => Math.max(longest, String(name).length),
+          0,
+        ),
       },
       refused: projects.length === 0 ? 'no projects' : null,
     };
@@ -584,10 +600,16 @@ const readers: Record<string, (bytes: Buffer) => Reading> = {
       info?: { version?: unknown };
       releases?: Record<string, unknown>;
     };
-    const versions = [...Object.keys(document.releases ?? {}), String(document.info?.version ?? '')];
+    const versions = [
+      ...Object.keys(document.releases ?? {}),
+      String(document.info?.version ?? ''),
+    ];
     return {
       counts: {
-        versionCodeUnits: versions.reduce((longest, version) => Math.max(longest, version.length), 0),
+        versionCodeUnits: versions.reduce(
+          (longest, version) => Math.max(longest, version.length),
+          0,
+        ),
       },
       refused: document.info === undefined ? 'no info' : null,
     };
@@ -612,7 +634,10 @@ function useOf(corpus: string) {
     .filter((path) => path.includes(sep))
     .sort();
   const names = [...new Set(files.map((path) => path.split(sep)[0] as string))];
-  const groups = new Map<string, { reader: string; rows: Record<string, number>[]; refused: Record<string, number> }>();
+  const groups = new Map<
+    string,
+    { reader: string; rows: Record<string, number>[]; refused: Record<string, number> }
+  >();
   for (const [index, path] of files.entries()) {
     const name = path.split(sep)[0] as string;
     const reader = Object.keys(readers).find((key) => name.startsWith(key));
@@ -670,7 +695,9 @@ for (const { shape, points } of await series()) {
     const summary = core.timingSummary(timings);
     slowest.push(summary.slowestMs);
     medians.push(summary.medianMs);
-    console.log(JSON.stringify({ node: process.version, counter, shape, bytes, units, ...summary }));
+    console.log(
+      JSON.stringify({ node: process.version, counter, shape, bytes, units, ...summary }),
+    );
   }
   console.log(
     JSON.stringify({
