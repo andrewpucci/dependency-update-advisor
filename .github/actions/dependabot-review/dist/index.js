@@ -1,6 +1,7 @@
 import { createRequire } from "node:module";
 import { spawn } from "node:child_process";
 import { tmpdir, totalmem } from "node:os";
+import { getHeapStatistics } from "node:v8";
 import { Duplex, Readable, Writable } from "node:stream";
 import { pipeline } from "node:stream/promises";
 import { isDeepStrictEqual, types } from "node:util";
@@ -149,7 +150,8 @@ const REVIEW_IDENTITY = Object.freeze({
 /** Process exit codes the action reports to the runner. */
 const EXIT_CODE = Object.freeze({
 	notWired: 78,
-	selfCheck: 79
+	selfCheck: 79,
+	heap: 80
 });
 
 // src/limits.ts
@@ -2830,6 +2832,8 @@ const FORWARDED_SIGNALS = [
 	"SIGTERM",
 	"SIGHUP"
 ];
+/** The exit code of an action that stops because it cannot have the heap its caps assume. */
+const HEAP_EXIT_CODE = EXIT_CODE.heap;
 /**
 * The memory this process may use, as Node itself sizes the heap: the cgroup limit when one is
 * set below physical memory, otherwise physical memory (`uv_get_constrained_memory`).
@@ -2840,7 +2844,7 @@ function runnerMemory(total = totalmem(), constrained = process.constrainedMemor
 /**
 * The old-generation size, in whole MiB, for a runner with this much memory: the register's
 * heap formula (limit:runner.heapBytes) with the runner's own memory in place of the smallest
-* runner's. Null when nothing is left for the heap, so the process keeps V8's default.
+* runner's. Null when nothing is left for the heap; the relaunch then fails closed.
 */
 function oldSpaceMiB(memory) {
 	const bytes = heapBytesFor(memory, limit("runner.youngGenerationBytes"), limit("runner.offHeapBytes"), limit("runner.baselineBytes"), limit("runner.systemReservedBytes"));
@@ -2848,34 +2852,56 @@ function oldSpaceMiB(memory) {
 	return mib >= 1 ? mib : null;
 }
 /**
+* A fixed message naming why the action cannot run with the heap its caps assume. No error text
+* is echoed, as in src/startup.ts.
+*/
+const failed$1 = (why) => ({
+	kind: "failed",
+	message: `dependabot-review: ${why}; no review ran.`
+});
+/**
 * Re-runs this script in a child Node with the derived old-generation size, passing through its
 * arguments, environment and standard streams, and resolves with the child's exit. Resolves
-* `run` when this process should run the action itself: it is the relaunched child, an
-* old-generation size was already given, or the runner leaves no heap to size.
+* `run` when this process should run the action itself: it is the relaunched child, or an
+* old-generation size was already given, and either way its V8 heap limit is at least the heap
+* the caps are sized for (limit:runner.heapBytes). It fails closed, never running at V8's
+* default, when the runner leaves no heap to size, the child cannot be started, or the heap
+* limit is below that heap.
 */
 async function relaunch(current) {
-	if (current.env["DEPENDENCY_REVIEW_RELAUNCHED"] !== void 0) return { kind: "run" };
-	if (current.execArgv.some((arg) => arg === OLD_SPACE_FLAG || arg.startsWith(`${OLD_SPACE_FLAG}=`))) return { kind: "run" };
+	const required = current.requiredHeapBytes ?? limit("runner.heapBytes");
+	const heapLimit = current.heapLimit ?? (() => getHeapStatistics().heap_size_limit);
+	const verified = () => {
+		const actual = heapLimit();
+		return actual >= required ? { kind: "run" } : failed$1(`the Node heap limit is ${actual} bytes, below the ${required} bytes the review's limits assume (limit:runner.heapBytes)`);
+	};
+	if (current.env["DEPENDENCY_REVIEW_RELAUNCHED"] !== void 0) return verified();
+	if (current.execArgv.some((arg) => arg === OLD_SPACE_FLAG || arg.startsWith(`${OLD_SPACE_FLAG}=`))) return verified();
 	const mib = oldSpaceMiB(current.memory);
-	if (mib === null) return { kind: "run" };
+	if (mib === null) return failed$1(`the runner's ${current.memory} bytes of memory leave no heap for the review`);
 	const spawn$1 = current.spawn ?? spawn;
 	const signals = current.signals ?? process;
-	const child = spawn$1(current.execPath, [
-		`${OLD_SPACE_FLAG}=${mib}`,
-		...current.execArgv,
-		...current.argv.slice(1)
-	], {
-		stdio: current.ipc ? [
-			"inherit",
-			"inherit",
-			"inherit",
-			"ipc"
-		] : "inherit",
-		env: {
-			...current.env,
-			[RELAUNCHED_ENV]: String(mib)
-		}
-	});
+	let child;
+	try {
+		child = spawn$1(current.execPath, [
+			`${OLD_SPACE_FLAG}=${mib}`,
+			...current.execArgv,
+			...current.argv.slice(1)
+		], {
+			stdio: current.ipc ? [
+				"inherit",
+				"inherit",
+				"inherit",
+				"ipc"
+			] : "inherit",
+			env: {
+				...current.env,
+				[RELAUNCHED_ENV]: String(mib)
+			}
+		});
+	} catch {
+		return failed$1("Node could not be relaunched with the runner heap");
+	}
 	const forward = (signal) => child.kill(signal);
 	for (const signal of FORWARDED_SIGNALS) signals.on(signal, forward);
 	const ipc = current.ipc;
@@ -2888,8 +2914,8 @@ async function relaunch(current) {
 		child.on("message", up);
 	}
 	try {
-		return await new Promise((resolve, reject) => {
-			child.once("error", reject);
+		return await new Promise((resolve) => {
+			child.once("error", () => resolve(failed$1("Node could not be relaunched with the runner heap")));
 			child.once("exit", (code, signal) => resolve({
 				kind: "exited",
 				code,
@@ -2901,9 +2927,15 @@ async function relaunch(current) {
 		ipc?.off("message", down);
 	}
 }
-/** Ends this process as the child ended: the same exit code, or the same signal. */
-function exitAs(exit) {
-	if (exit.signal) process.kill(process.pid, exit.signal);
+/**
+* Ends this process as the child ended: the same exit code, or the same signal. A relaunch that
+* failed writes its message and exits with HEAP_EXIT_CODE.
+*/
+function exitAs(exit, writeError = (line) => process.stderr.write(`${line}\n`)) {
+	if (exit.kind === "failed") {
+		writeError(exit.message);
+		process.exitCode = HEAP_EXIT_CODE;
+	} else if (exit.signal) process.kill(process.pid, exit.signal);
 	else process.exitCode = exit.code ?? 1;
 }
 
@@ -36050,7 +36082,10 @@ const launched = await relaunch({
 	env: process.env,
 	memory: runnerMemory(),
 	...process.channel && process.send ? { ipc: process } : {}
-}).catch(() => ({ kind: "run" }));
+}).catch(() => ({
+	kind: "failed",
+	message: "dependabot-review: Node could not be relaunched with the runner heap; no review ran."
+}));
 if (launched.kind === "run") process.exitCode = await runStartup((line) => process.stderr.write(`${line}\n`));
 else exitAs(launched);
 
