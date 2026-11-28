@@ -469,65 +469,201 @@ function largestAtFloor(ceiling, floor, packet) {
 	return low;
 }
 /**
-* Printable ASCII a packet id may hold with no JSON escape: 0x20 to 0x7E less `"` and `\`, the
-* one-byte characters T4's text check admits (src/schema.ts `text`).
+* The reasons T4 admits for an unavailable evidence category (EVIDENCE_REASONS in src/schema.ts,
+* which imports this module; src/schema.test.ts checks the two match).
 */
-const FLOOR_ID_ALPHABET = Array.from({ length: 95 }, (_, index) => String.fromCharCode(32 + index)).filter((character) => character !== "\"" && character !== "\\");
-/** The `index`th shortest distinct string over FLOOR_ID_ALPHABET (bijective base 93). */
-function shortestId(index) {
-	let rest = index + 1;
-	let id = "";
-	while (rest > 0) {
-		rest -= 1;
-		id = `${FLOOR_ID_ALPHABET[rest % FLOOR_ID_ALPHABET.length] ?? ""}${id}`;
-		rest = Math.floor(rest / FLOOR_ID_ALPHABET.length);
-	}
-	return id;
-}
+const FLOOR_EVIDENCE_REASONS = Object.freeze([
+	"permission",
+	"rate_limit",
+	"timeout",
+	"missing",
+	"malformed",
+	"unsupported",
+	"truncated",
+	"budget",
+	"conflict",
+	"unknown"
+]);
+/** The ecosystems a floor packet can take; limit:packet.floorBytes is the largest of them. */
+const FLOOR_SHAPES = Object.freeze([
+	"npm",
+	"actions",
+	"uv"
+]);
 const FLOOR_SHA = "0".repeat(40);
+/** The largest number a packet id field admits (positiveId in src/event.ts). */
+const FLOOR_NUMBER = Number.MAX_SAFE_INTEGER;
+/** The longest CI conclusion the binding admits (CONCLUSIONS in src/event.ts). */
+const FLOOR_CONCLUSION = "startup_failure";
+/** The first of the 20,000 three-byte CJK characters floorId writes. */
+const FLOOR_CJK_FIRST = 19968;
+const FLOOR_CJK_COUNT = 2e4;
+/** The uv ids floorId draws per change: the change, its two file sources and two name lists. */
+const FLOOR_ID_STRIDE = 8;
+/** The registry identity's fixed prefix. */
+const FLOOR_REGISTRY = "https://a/";
+const FLOOR_LIST_STRIDE = 100;
 /**
-* The smallest review packet T4 accepts with `changes` changes (limit:packet.floorBytes), and the
-* trusted snapshot it validates against: every change an npm declaration addition, which carries
-* no evidence category, with the shortest distinct id and name; one root `package.json` head
-* source per limit:packet.listEntries members; the inventory source; every binding string at its
-* shortest valid length and every number 1; context disabled; no finding, relationship or
-* reachability verdict. src/schema.test.ts validates it and pins its bytes.
+* `units` code units of three-byte text, the most bytes an id serializes to under the code-unit
+* cap; its first two characters keep it distinct for each `index` below 20,000 squared.
 */
-function floorPacket(changes, listEntries) {
+function floorId(index, units) {
+	return `${String.fromCharCode(FLOOR_CJK_FIRST + index % FLOOR_CJK_COUNT, FLOOR_CJK_FIRST + Math.floor(index / FLOOR_CJK_COUNT))}${"中".repeat(units)}`.slice(0, units);
+}
+/** `"` written `bytes` times: one byte the cap counts, two serialized, the most T4 admits. */
+function quoted(bytes) {
+	return "\"".repeat(Math.max(0, bytes));
+}
+/** `prefix` padded with `"` to `bytes`. */
+function padded(prefix, bytes) {
+	return `${prefix}${quoted(bytes - prefix.length)}`;
+}
+/**
+* The largest review packet T4 accepts with `changes` changes of one `shape` and no optional
+* evidence (limit:packet.floorBytes), and the trusted snapshot it validates against. Every
+* required field sits at its cap: each change an update with both sides, its required evidence
+* categories unavailable for every reason, its own base and head file source, and every id, path
+* and identity at limit:packet.idCodeUnits or limit:packet.identityBytes in the characters that
+* serialize longest; uv carries its extras and groups at limit:packet.listEntries; the binding's
+* strings at their caps and its numbers at the largest safe integer; context disabled; no
+* finding, relationship or reachability verdict. src/schema.test.ts validates it and pins its
+* bytes.
+*/
+function floorPacket(changes, caps, shape = "uv") {
+	const { listEntries, idCodeUnits, identityBytes } = caps;
 	const repository = {
-		id: 1,
-		owner: "a",
-		name: "a"
+		id: FLOOR_NUMBER,
+		owner: "a".repeat(identityBytes),
+		name: "a".repeat(identityBytes)
 	};
 	const binding = {
 		repository,
 		workflow: {
-			id: 1,
-			path: "a"
+			id: FLOOR_NUMBER,
+			path: quoted(identityBytes)
 		},
-		runId: 1,
-		runAttempt: 1,
-		pullNumber: 1,
+		runId: FLOOR_NUMBER,
+		runAttempt: FLOOR_NUMBER,
+		pullNumber: FLOOR_NUMBER,
 		headRepository: repository,
 		headSha: FLOOR_SHA,
-		baseRef: "a",
+		baseRef: quoted(identityBytes),
 		baseSha: FLOOR_SHA,
 		mergeBaseSha: FLOOR_SHA,
-		actorId: 1,
-		conclusion: "success",
+		actorId: FLOOR_NUMBER,
+		conclusion: FLOOR_CONCLUSION,
 		identity: [
-			1,
-			1,
-			1,
-			1,
-			1,
+			FLOOR_NUMBER,
+			FLOOR_NUMBER,
+			FLOOR_NUMBER,
+			FLOOR_NUMBER,
+			FLOOR_NUMBER,
 			FLOOR_SHA
 		]
 	};
-	const ids = Array.from({ length: changes }, (_, index) => shortestId(index));
-	const groups = Array.from({ length: Math.ceil(changes / listEntries) }, (_, index) => ids.slice(index * listEntries, (index + 1) * listEntries));
-	const inventoryId = shortestId(0);
-	const fileIds = groups.map((_, index) => shortestId(index + 1));
+	const id = (index) => floorId(index, idCodeUnits);
+	const inventoryId = id(changes * FLOOR_ID_STRIDE);
+	const evidence = Object.fromEntries((shape === "npm" ? [
+		"upstream",
+		"vulnerability",
+		"malware",
+		"installScript"
+	] : [
+		"upstream",
+		"vulnerability",
+		"malware"
+	]).map((key) => [key, {
+		status: "unavailable",
+		reasons: [...FLOOR_EVIDENCE_REASONS],
+		sourceIds: []
+	}]));
+	const registry = {
+		kind: "registry",
+		identity: padded(FLOOR_REGISTRY, identityBytes)
+	};
+	const files = [];
+	const side = (index, salt, changeId) => {
+		const sourceId = id(index * FLOOR_ID_STRIDE + 1 + salt);
+		const version = `${quoted(identityBytes - 1)}${salt}`;
+		let path;
+		let fields;
+		if (shape === "actions") {
+			path = `${padded(`.github/workflows/w${index}-${salt}`, identityBytes - 4)}.yml`;
+			fields = {
+				workflow: path,
+				jobId: id(index * FLOOR_ID_STRIDE + 3),
+				stepIndex: FLOOR_NUMBER,
+				action: `a/${"中".repeat(idCodeUnits - 2)}`,
+				ref: version,
+				refKind: "tag"
+			};
+		} else if (shape === "npm") {
+			const root = padded(`r${index}-${salt}/`, identityBytes - 18);
+			path = `${root}/package-lock.json`;
+			fields = {
+				root,
+				name: id(index * FLOOR_ID_STRIDE + 3),
+				lockPath: version,
+				version,
+				source: registry
+			};
+		} else {
+			const root = padded(`r${index}-${salt}/`, identityBytes - 15);
+			path = `${root}/pyproject.toml`;
+			const list = (kind) => Array.from({ length: listEntries }, (_, entry) => id((index * FLOOR_LIST_STRIDE + entry) * FLOOR_ID_STRIDE + kind)).sort();
+			fields = {
+				root,
+				name: `a${index}-${"b".repeat(idCodeUnits - String(index).length - 2)}`,
+				version,
+				source: registry,
+				marker: quoted(identityBytes),
+				extras: list(6),
+				groups: list(7)
+			};
+		}
+		files.push({
+			id: sourceId,
+			kind: "file",
+			ecosystems: [shape],
+			memberIds: [changeId],
+			status: "available",
+			reasons: [],
+			provenance: {
+				kind: "file",
+				revision: salt === 0 ? "base" : "head",
+				repository,
+				sha: FLOOR_SHA,
+				path
+			}
+		});
+		return {
+			...fields,
+			sourceId
+		};
+	};
+	const packetChanges = Array.from({ length: changes }, (_, index) => {
+		const changeId = id(index * FLOOR_ID_STRIDE);
+		return {
+			id: changeId,
+			ecosystem: shape,
+			kind: "update",
+			role: "direct",
+			...shape === "npm" ? { directRoles: [
+				"production",
+				"development",
+				"peer",
+				"optional"
+			] } : {},
+			evidence,
+			from: side(index, 0, changeId),
+			to: side(index, 1, changeId)
+		};
+	});
+	const coverage = Object.fromEntries(FLOOR_SHAPES.map((ecosystem) => [ecosystem, {
+		status: ecosystem === shape ? "complete" : "not_applicable",
+		reasons: [],
+		sourceIds: [inventoryId]
+	}]));
 	const contextRevision = {
 		repository,
 		sha: FLOOR_SHA
@@ -538,49 +674,18 @@ function floorPacket(changes, listEntries) {
 		dependencies: [],
 		reasons: []
 	};
-	const absent = {
-		status: "not_applicable",
-		reasons: [],
-		sourceIds: [inventoryId]
-	};
 	return {
 		packet: {
 			version: 1,
 			binding,
 			baseSha: FLOOR_SHA,
 			contextRevision,
-			coverage: {
-				npm: {
-					status: "complete",
-					reasons: [],
-					sourceIds: [inventoryId]
-				},
-				actions: absent,
-				uv: absent
-			},
-			changes: ids.map((id, index) => ({
-				id,
-				ecosystem: "npm",
-				basis: "declaration",
-				kind: "addition",
-				role: "direct",
-				evidence: {},
-				from: null,
-				to: {
-					root: ".",
-					name: id,
-					specifiers: { dependencies: "" },
-					sourceId: fileIds[Math.floor(index / listEntries)]
-				}
-			})),
+			coverage,
+			changes: packetChanges,
 			sources: [{
 				id: inventoryId,
 				kind: "file-list",
-				ecosystems: [
-					"npm",
-					"actions",
-					"uv"
-				],
+				ecosystems: [...FLOOR_SHAPES],
 				memberIds: [],
 				status: "available",
 				reasons: [],
@@ -589,23 +694,9 @@ function floorPacket(changes, listEntries) {
 					repository,
 					baseSha: FLOOR_SHA,
 					headSha: FLOOR_SHA,
-					absentEcosystems: ["actions", "uv"]
+					absentEcosystems: FLOOR_SHAPES.filter((ecosystem) => ecosystem !== shape)
 				}
-			}, ...groups.map((members, index) => ({
-				id: fileIds[index],
-				kind: "file",
-				ecosystems: ["npm"],
-				memberIds: members,
-				status: "available",
-				reasons: [],
-				provenance: {
-					kind: "file",
-					revision: "head",
-					repository,
-					sha: FLOOR_SHA,
-					path: "package.json"
-				}
-			}))],
+			}, ...files],
 			findings: [],
 			relationships: [],
 			reachability: [],
@@ -619,6 +710,22 @@ function floorPacket(changes, listEntries) {
 			context
 		}
 	};
+}
+const floorCache = /* @__PURE__ */ new Map();
+/** The serialized bytes of the largest floor packet over FLOOR_SHAPES (limit:packet.floorBytes). */
+function floorBytes(changes, caps) {
+	const key = JSON.stringify([
+		changes,
+		caps.listEntries,
+		caps.idCodeUnits,
+		caps.identityBytes
+	]);
+	let bytes = floorCache.get(key);
+	if (bytes === void 0) {
+		bytes = Math.max(...FLOOR_SHAPES.map((shape) => Buffer.byteLength(JSON.stringify(floorPacket(changes, caps, shape).packet))));
+		floorCache.set(key, bytes);
+	}
+	return bytes;
 }
 /**
 * Fixed text of a stored-name discovery URL (githubUrl in src/evidence/advisory-read.ts) for pip
@@ -1095,14 +1202,23 @@ const DEFINITIONS = [
 	{
 		id: "packet.floorBytes",
 		unit: "bytes",
-		protects: "States the smallest packet a valid change at limit:packet.changes changes can produce, so an adopter setting that spends heap can never take limit:packet.bytes below what any review at the change cap needs.",
+		protects: "States the largest packet a valid change set at limit:packet.changes changes needs with no optional evidence, so an adopter setting that spends heap can never take limit:packet.bytes below what any review at the change cap needs.",
 		effect: "Not enforced at run time. check:limits rejects a register whose limit:packet.bytes falls below it at the defaults or with any setting at its hard maximum, and each heap-spending setting's hard maximum is the largest value at which limit:packet.bytes stays at or above it; L12 makes the config parser apply the same check at the adopter's settings.",
 		basis: {
 			kind: "derived",
-			inputs: ["packet.changes", "packet.listEntries"],
-			formula: (changes, listEntries) => Buffer.byteLength(JSON.stringify(floorPacket(changes, listEntries).packet)),
-			description: "The serialized bytes of the smallest packet T4 accepts with limit:packet.changes changes and no optional evidence (floorPacket in src/limits.ts): every change an npm declaration addition, the change kind with no evidence category, with the shortest distinct ids and names over the 93 printable ASCII characters JSON writes unescaped; one root package.json head source per limit:packet.listEntries members and the inventory source; every binding string at its shortest valid length; context disabled; no finding, relationship or reachability verdict. Below it no valid change at the change cap can produce any packet, so it is a structural floor, not demand. A heap-spending setting's hard maximum is the largest value at which limit:packet.bytes stays at or above it (SPEC-limit-register section 5). Approved by the maintainer on 2026-11-28 (L11, A1, #383).",
-			structuralTest: "src/schema.test.ts > the packet floor is the smallest packet T4 accepts at the change cap"
+			inputs: [
+				"packet.changes",
+				"packet.listEntries",
+				"packet.idCodeUnits",
+				"packet.identityBytes"
+			],
+			formula: (changes, listEntries, idCodeUnits, identityBytes) => floorBytes(changes, {
+				listEntries,
+				idCodeUnits,
+				identityBytes
+			}),
+			description: "The serialized bytes of the largest required-only packet T4 accepts with limit:packet.changes changes (floorPacket and floorBytes in src/limits.ts), so any valid PR at the change cap fits. Each change is an update with both sides and only its required evidence categories, each unavailable for all ten reasons; each side has its own base or head file source; every id, name, path, version, marker and identity sits at limit:packet.idCodeUnits or limit:packet.identityBytes in the characters that serialize longest (three-byte text under the code-unit cap, an escaped quote elsewhere); the binding's strings sit at their caps and its numbers at the largest safe integer; context is disabled; there is no finding, relationship or reachability verdict. The floor is the largest of the three ecosystem shapes, and uv binds: its extras and groups at limit:packet.listEntries each make it about 16.7 MB at the change cap, against about 4.2 MB for npm and 3.4 MB for Actions. The proposal's estimate of 1 to 10 MB was not part of the definition. Below the floor some valid change at the change cap cannot produce its packet, so it is a structural floor, not demand. A heap-spending setting's hard maximum is the largest value at which limit:packet.bytes stays at or above it (SPEC-limit-register section 5). Approved by the maintainer on 2026-11-28 (L11, A1, #383).",
+			structuralTest: "src/schema.test.ts > the packet floor is the largest required-only packet T4 accepts at the change cap"
 		},
 		test: "src/limits.test.ts > no heap setting at its hard maximum takes packet.bytes below its floor"
 	},
@@ -3036,7 +3152,7 @@ const DEFINITIONS = [
 			kind: "derived",
 			inputs: ["packet.changes", "research.maxTagCandidates"],
 			formula: (changes, candidates) => changes * (candidates + 1 + 10),
-			description: `The most attempts the members of one packet can record: limit:packet.changes members, each at most limit:research.maxTagCandidates range attempts (one per release the scan reads, src/evidence/upstream-range.ts), 1 range summary or stop, and ${10} fixed attempts outside the scan: 2 metadata reads (base and head) and the metadata fallback record (src/evidence/upstream.ts), 2 release tag candidates (src/evidence/upstream-github.ts, packageTags), the comparison and its final tag recheck, and 3 changelog paths (src/evidence/upstream-range.ts). An Actions member records fewer: 2 mappings, 1 release-notes failure, 4 ref rechecks and 1 comparison. So 128 × (100 + 1 + ${10}) = 14,208 at the defaults; it follows both settings. R1 #276 recorded 594 attempts for 105 members, which the earlier 512 refused. Approved by the maintainer on 2026-11-28 (L11, item 5(a), #383). The L11 proposal estimated 6 fixed attempts (13,696); the structural test counts ${10}. The test drives one path, and it is the worst one because every recording site in src/evidence records at most a fixed number per member on any path, and that path reaches each at its most: metadataAttempt once per side (2) and the fallback record once (upstream.ts); the target release, one per packageTags candidate, which is at most 2, or 1 when the repository fails first (upstream-github.ts); the comparison, its exact comparison and final recheck (2), or 1 when it fails first; the range scan, one per release read, refused past limit:research.maxTagCandidates, and then its summary or its stop (1, upstream-range.ts); and the changelog, one per path, at most 3, or 1 when the repository fails first. researchAttempts copies each stage's attempts one for one, and skippedStages records only for stages that did not run, so a path that skips a stage records at most as many as one that runs and fails it: 4 skipped stages after missing metadata, 3 after the target release, 2 after the comparison or for a one-sided change, each no more than the attempts those stages record when they run and fail. A rollback only truncates. The attempts' bytes are still bounded by limit:research.maxRetainedBytes and limit:packet.bytes in the same check.`,
+			description: `The most attempts the members of one packet can record: limit:packet.changes members, each at most limit:research.maxTagCandidates range attempts (one per release the scan reads, src/evidence/upstream-range.ts), 1 range summary or stop, and ${10} fixed attempts outside the scan: 2 metadata reads (base and head) and the metadata fallback record (src/evidence/upstream.ts), 2 release tag candidates (src/evidence/upstream-github.ts, packageTags), the comparison and its final tag recheck, and 3 changelog paths (src/evidence/upstream-range.ts). An Actions member records fewer: 2 mappings, 1 release-notes failure, 4 ref rechecks and 1 comparison. So 128 × (100 + 1 + ${10}) = 14,208 at the defaults; it follows both settings. R1 #276 recorded 594 attempts for 105 members, which the earlier 512 refused. Approved by the maintainer on 2026-11-28 (L11, item 5(a), #383). The L11 proposal estimated 6 fixed attempts (13,696); the structural test counts ${10}. The test drives one path, and it is the worst one because every recording site in src/evidence records at most a fixed number per member on any path, and that path reaches each at its most: metadataAttempt once per side (2) and the fallback record once (upstream.ts); the target release, one per packageTags candidate, which is at most 2, or 1 when the repository fails first (upstream-github.ts); the comparison, its exact comparison and final recheck (2), or 1 when it fails first; the range scan, one per release read, refused past limit:research.maxTagCandidates, and then its summary or its stop (1, upstream-range.ts); and the changelog, one per path, at most 3, or 1 when the repository fails first. researchAttempts copies each stage's attempts one for one, and skippedStages records only for stages that did not run, so a path that skips a stage records at most as many as one that runs and fails it: 4 skipped stages after missing metadata, 3 after the target release, 2 after the comparison or for a one-sided change, each no more than the attempts those stages record when they run and fail. A rollback only truncates. The attempts' bytes are still bounded by limit:research.maxRetainedBytes and limit:packet.bytes in the same check, and at the worst-case record size the byte cap binds first: a record with a 768-byte member id, a name@version target, a range, an encoded registry URL, all ten reasons and one source id serializes to 12,089 bytes, so 14,208 of them would need 171,760,512 bytes against the 103,585,792 limit:research.maxRetainedBytes allows, which holds about 8,568 (the count cap would bind only below about 7,290 bytes a record). An overflow fails with budget. This count is therefore a structural ceiling on the attempts one packet can record, and the retained-bytes cap is the binding one; no value changes.`,
 			structuralTest: "src/evidence/upstream.test.ts > a package member records at most research.maxTagCandidates + 1 + the fixed attempts"
 		},
 		test: "src/evidence/upstream.test.ts > upstream bounds keep exactly research.maxAttempts attempts and refuse one more"
