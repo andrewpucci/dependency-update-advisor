@@ -284,9 +284,15 @@ not rely on the exact-shape test (Requirement 5) to catch its defect.
     the reviewer step sets `timeout-minutes` to
     `limit:workflow.dependabotReview.review.steps.1.timeoutMinutes`, which
     the runner times from the step's own start, and the job sets it to
-    `limit:workflow.dependabotReview.review.timeoutMinutes`, the step's
-    timeout plus the minutes of `limit:job.preStepAllowance` for the action
-    download and the app-token step. The reviewer step's keys are `uses`,
+    `limit:workflow.dependabotReview.review.timeoutMinutes`, the reviewer
+    step's timeout plus the app-token step's. The app-token step sets
+    `timeout-minutes` to
+    `limit:workflow.dependabotReview.review.steps.0.timeoutMinutes`, its 12
+    requests at `limit:github.requestTimeoutMs` and its retry waits rounded
+    up to whole minutes, since the action sets no request timeout of its
+    own (item 10 review follow-up, 2026-11-28, in place of the deleted
+    job.preStepAllowance). The app-token step's keys are `id`, `uses`,
+    `timeout-minutes`, and `with`, and the reviewer step's are `uses`,
     `timeout-minutes`, and `with`; item 5 and the expected workflow above are
     narrowed accordingly.
 

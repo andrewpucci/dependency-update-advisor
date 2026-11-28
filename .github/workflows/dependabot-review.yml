@@ -24,10 +24,11 @@ jobs:
   review:
     name: Dependabot review
     runs-on: ubuntu-latest
-    timeout-minutes: 16
+    timeout-minutes: 18
     steps:
       - id: app-token
         uses: actions/create-github-app-token@f418cff399f7aef4c2f0ad47e25ca7a6abbdd6fc # v3.4.0
+        timeout-minutes: 3
         with:
           client-id: ${{ secrets.review_app_client_id }}
           private-key: ${{ secrets.review_app_private_key }}

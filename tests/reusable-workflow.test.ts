@@ -116,11 +116,12 @@ test('R5 uses the exact privileged review job shape', () => {
       review: {
         name: 'Dependabot review',
         'runs-on': 'ubuntu-latest',
-        'timeout-minutes': 16,
+        'timeout-minutes': 18,
         steps: [
           {
             id: 'app-token',
             uses: 'actions/create-github-app-token@f418cff399f7aef4c2f0ad47e25ca7a6abbdd6fc',
+            'timeout-minutes': 3,
             with: {
               'client-id': '${{ secrets.review_app_client_id }}',
               'private-key': '${{ secrets.review_app_private_key }}',
@@ -161,13 +162,24 @@ test('R10 bounds execution without concurrency or ignored failures', () => {
     };
   };
   const review = workflow.jobs.review;
-  // The review step carries the timeout the runner times from the step's own start, and the job
-  // outlasts it by the minutes allowed before the step (L11, item 10(b)).
+  // The review step carries the timeout the runner times from the step's own start (L11, item
+  // 10(b)); the app-token step carries one derived from its requests at the GitHub request
+  // timeout, and the job outlasts both.
   const step = limit('workflow.dependabotReview.review.steps.1.timeoutMinutes');
+  const appToken = limit('workflow.dependabotReview.review.steps.0.timeoutMinutes');
   expect(review.steps[1]['timeout-minutes']).toBe(step);
   expect(review.steps[1]['timeout-minutes']).toBe(15);
-  expect(review.steps[0]['timeout-minutes']).toBeUndefined();
-  expect(review['timeout-minutes']).toBe(step + Math.ceil(limit('job.preStepAllowance') / 60_000));
+  expect(review.steps[0]['timeout-minutes']).toBe(appToken);
+  expect(appToken).toBe(
+    Math.ceil(
+      (limit('appToken.maxRequests') * limit('github.requestTimeoutMs') +
+        limit('appToken.retryWaitMs')) /
+        60_000,
+    ),
+  );
+  expect(appToken).toBe(3);
+  expect(review['timeout-minutes']).toBe(appToken + step);
+  expect(limit('job.reviewStepMaxMinutes')).toBe(limit('github.hostedJobMaxMinutes') - appToken);
   expect(limit('job.budget')).toBe(step * 60_000);
   expect(workflow.concurrency).toBeUndefined();
   expect(review.concurrency).toBeUndefined();

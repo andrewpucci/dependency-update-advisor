@@ -209,8 +209,14 @@ test('the job budget is derived from the dependabot review workflow timeout', ()
       'workflow.dependabotReview.review.timeoutMinutes',
     ]),
   );
+  expect(dependents(REGISTER, 'workflow.dependabotReview.review.steps.0.timeoutMinutes')).toEqual(
+    expect.arrayContaining([
+      'job.reviewStepMaxMinutes',
+      'workflow.dependabotReview.review.timeoutMinutes',
+    ]),
+  );
   expect(limit('job.budget')).toBe(900_000);
-  expect(limit('workflow.dependabotReview.review.timeoutMinutes')).toBe(16);
+  expect(limit('workflow.dependabotReview.review.timeoutMinutes')).toBe(18);
 });
 
 /** Each copy of a packet limit, paired with the packet entry whose value it mirrors. */

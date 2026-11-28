@@ -4,8 +4,8 @@ import { limit, REGISTER } from './limits.js';
 /** The runner's wall-clock limit for the job, mirroring the workflow's `timeout-minutes`. */
 export const JOB_BUDGET_MS = limit('job.budget');
 /**
- * Time the runner spends before `runStartup` takes its job start: the app-token step, action
- * download, Node load, and self-check. It is an allowance, not a measurement.
+ * Time the review step spends before `runStartup` takes its job start: Node load, the relaunch,
+ * and the self-check. It is an allowance, not a measurement.
  */
 export const PRE_STARTUP_ALLOWANCE_MS = limit('job.preStartupAllowance');
 /**

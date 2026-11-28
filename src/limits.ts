@@ -1979,23 +1979,65 @@ const DEFINITIONS = [
     },
     L11_STOPS_APPROVAL,
   ),
-  unjustified('job.preStepAllowance', 60_000, 'milliseconds', {
+  {
+    id: 'appToken.maxRequests',
+    value: 12,
+    unit: 'count',
     protects:
-      "The job's timeout counts the action download and the app-token step before the review step starts, so it must exceed the review step's timeout by that time, or the runner could end the job before the step's own timeout.",
+      'Records how many GitHub requests the pinned app-token action can make in its main step, so that step can carry a timeout derived from the request timeout.',
+    basis: {
+      kind: 'external',
+      url: 'https://github.com/actions/create-github-app-token/blob/f418cff399f7aef4c2f0ad47e25ca7a6abbdd6fc/lib/main.js',
+      checked: '2026-11-28',
+      platformValue: 12,
+      margin:
+        'none. At the pinned v3.4.0, main.js retries the token request with p-retry (retries: 3, so 4 attempts, only on a 5xx or network error); each attempt is GET /repos/{owner}/{repo}/installation through the @octokit/auth-app 8.3.1 hook (dist-src/hook.js), which repeats a JWT request once after a clock-skew 401, and POST /app/installations/{installation_id}/access_tokens on the plain request (dist-src/get-installation-authentication.js), which has no retry: 4 × (2 + 1) = 12. The post step\'s one DELETE /installation/token (lib/post.js) runs after the review step and is not counted here',
+    },
     effect:
-      "Adds whole minutes to the job's timeout-minutes above the review step's; it shortens no deadline and converts no outcome to success. A pre-step time above it lets the job timeout end the review step early, which fails closed.",
-    note: "chosen: the user chose 60,000 on 2026-11-11 (SPEC-review-orchestration Amendment 3, item 2) for everything before runStartup; L11 item 10(b) (2026-11-28) moved the review's timeout onto its step, so the part before the step, the action download and the app-token step, now counts only against the job timeout. No GitHub document bounds the download, and the app-token step has no timeout of its own, so the value stays chosen.",
+      'Not enforced: limit:workflow.dependabotReview.review.steps.0.timeoutMinutes is derived from it.',
     test: 'tests/reusable-workflow.test.ts > R10 bounds execution without concurrency or ignored failures',
-  }),
+  },
+  {
+    id: 'appToken.retryWaitMs',
+    value: 7_000,
+    unit: 'milliseconds',
+    protects:
+      "Records the waits between the pinned app-token action's token attempts, so that step's timeout covers them.",
+    basis: {
+      kind: 'external',
+      url: 'https://github.com/actions/create-github-app-token/blob/f418cff399f7aef4c2f0ad47e25ca7a6abbdd6fc/lib/main.js',
+      checked: '2026-11-28',
+      platformValue: 7_000,
+      margin:
+        'none. main.js sets only retries: 3, so p-retry 8.0.1 (the version its package-lock.json resolves) waits minTimeout × factor^(n − 1) before retry n with its defaults minTimeout 1,000, factor 2 and randomize false: 1,000 + 2,000 + 4,000 = 7,000 ms',
+    },
+    effect:
+      'Not enforced: limit:workflow.dependabotReview.review.steps.0.timeoutMinutes is derived from it.',
+    test: 'tests/reusable-workflow.test.ts > R10 bounds execution without concurrency or ignored failures',
+  },
+  derived(
+    'workflow.dependabotReview.review.steps.0.timeoutMinutes',
+    'minutes',
+    ['appToken.maxRequests', 'github.requestTimeoutMs', 'appToken.retryWaitMs'],
+    (requests, requestMs, waitMs) => Math.ceil((requests * requestMs + waitMs) / 60_000),
+    "The app-token step's timeout: its requests (limit:appToken.maxRequests), each allowed the reviewer's own GitHub request timeout (limit:github.requestTimeoutMs), and the waits between its attempts (limit:appToken.retryWaitMs), rounded up to whole minutes: ⌈(12 × 11,639 + 7,000) ÷ 60,000⌉ = 3. The action sets no request timeout of its own, so the step timeout is what bounds it. Added by the L11 item 10 review follow-up (2026-11-28, #383) in place of job.preStepAllowance, the user's 2026-11-11 allowance, which is deleted.",
+    {
+      protects:
+        'The runner kills the app-token step at its timeout-minutes, so a stalled token request cannot spend the job timeout the review step needs.',
+      effect:
+        'The runner cancels the step when the timeout passes; the job fails before the review starts, which fails closed.',
+      test: 'tests/reusable-workflow.test.ts > R10 bounds execution without concurrency or ignored failures',
+    },
+  ),
   derived(
     'job.reviewStepMaxMinutes',
     'minutes',
-    ['github.hostedJobMaxMinutes', 'job.preStepAllowance'],
-    (hosted, preStep) => hosted - Math.ceil(preStep / 60_000),
-    "The longest review step a hosted job can hold: GitHub's hosted-job limit less the whole minutes allowed before the step (limit:job.preStepAllowance). Approved by the maintainer on 2026-11-28 (L11, item 10(b), #383).",
+    ['github.hostedJobMaxMinutes', 'workflow.dependabotReview.review.steps.0.timeoutMinutes'],
+    (hosted, appToken) => hosted - appToken,
+    "The longest review step a hosted job can hold: GitHub's hosted-job limit less the app-token step's timeout (limit:workflow.dependabotReview.review.steps.0.timeoutMinutes). Approved by the maintainer on 2026-11-28 (L11, item 10(b), #383). Since the item 10 review follow-up (2026-11-28) the app-token step's timeout stands in place of job.preStepAllowance, which is deleted.",
     {
       protects:
-        "Keeps the adopter's review-step timeout, with the minutes before the step, inside GitHub's hosted-job limit.",
+        "Keeps the adopter's review-step timeout, with the app-token step's, inside GitHub's hosted-job limit.",
       effect:
         'Not enforced: check:limits evaluates the register with the step timeout at this value; the workflow input that sets it lands with L13.',
       test: 'none: the hard maximum of a setting the workflow does not read yet (L13); check:limits evaluates it',
@@ -2004,14 +2046,17 @@ const DEFINITIONS = [
   derived(
     'workflow.dependabotReview.review.timeoutMinutes',
     'minutes',
-    ['workflow.dependabotReview.review.steps.1.timeoutMinutes', 'job.preStepAllowance'],
-    (step, preStep) => step + Math.ceil(preStep / 60_000),
-    "The job's timeout: the review step's timeout and the whole minutes allowed before the step, the action download and the app-token step (limit:job.preStepAllowance), so the runner ends the job no earlier than the step's own timeout. Approved by the maintainer on 2026-11-28 (L11, item 10(b), #383).",
+    [
+      'workflow.dependabotReview.review.steps.0.timeoutMinutes',
+      'workflow.dependabotReview.review.steps.1.timeoutMinutes',
+    ],
+    (appToken, review) => appToken + review,
+    "The job's timeout: the app-token step's timeout and the review step's, so the runner ends the job no earlier than either step's own timeout. The job setup (the action download) and the app-token post step's one revocation request are bounded by no register value; they run in the app-token step's minutes that step does not spend, and if they pass them the job timeout ends the review step early, which fails closed. Approved by the maintainer on 2026-11-28 (L11, item 10(b), #383). Since the item 10 review follow-up (2026-11-28) the app-token step's timeout stands in place of job.preStepAllowance, which is deleted.",
     {
       protects:
-        "The runner kills the job at its timeout-minutes, timed from the job's start, so the job must outlast the steps before the review and the review step's own timeout.",
+        "The runner kills the job at its timeout-minutes, timed from the job's start, so the job must outlast both steps' own timeouts.",
       effect:
-        'The runner cancels the job when the timeout passes; the review step ends first at its own timeout unless the time before it passes limit:job.preStepAllowance.',
+        "The runner cancels the job when the timeout passes; the review step ends first at its own timeout unless the job setup, the app-token step and its post step together pass the app-token step's timeout.",
       test: 'tests/reusable-workflow.test.ts > R10 bounds execution without concurrency or ignored failures',
     },
   ),
@@ -2035,7 +2080,7 @@ const DEFINITIONS = [
       "The pipeline clock starts at runStartup, after the review step has spent time on Node load, the relaunch and the self-check; this allowance keeps the window inside the step's timeout.",
     effect:
       'Shortens the job window by 60,000 ms, so the analysis and freshness deadlines move earlier; it converts no outcome to success.',
-    note: "pending a hosted-runner run (L11, item 10(b), approved by the maintainer on 2026-11-28, #383): the review's timeout is now on its step (limit:workflow.dependabotReview.review.steps.1.timeoutMinutes), which the runner times from the step's own start, so the action download and the app-token step no longer count against it (they moved to limit:job.preStepAllowance). What remains is the in-step time before runStartup takes the job start: Node load, the relaunch and the self-check, a platform property. The recorded command is npm run probe:runtime-baseline, after npm run build, inside a workflow step on the smallest supported hosted runner (ubuntu-latest, 2 CPUs); it reports startupMs, the slowest of 5 runs from the parent's process start to the relaunched child's exit, which follows right after the job start. It has not been run: the proposal expects it to free about 55 s of the 60,000. The value stays the user's 2026-11-11 choice until that run gives a basis",
+    note: "pending a hosted-runner run (L11, item 10(b), approved by the maintainer on 2026-11-28, #383): the review's timeout is now on its step (limit:workflow.dependabotReview.review.steps.1.timeoutMinutes), which the runner times from the step's own start, so the action download and the app-token step no longer count against it (they count against the job timeout, limit:workflow.dependabotReview.review.timeoutMinutes). What remains is the in-step time before runStartup takes the job start: Node load, the relaunch and the self-check, a platform property. The recorded command is npm run probe:runtime-baseline, after npm run build, inside a workflow step on the smallest supported hosted runner (ubuntu-latest, 2 CPUs); it reports startupMs, the slowest of 5 runs from the parent's process start to the relaunched child's exit, which follows right after the job start. It has not been run: the proposal expects it to free about 55 s of the 60,000. The value stays the user's 2026-11-11 choice until that run gives a basis",
     test: 'none: subtracted only inside job.window (src/budget.ts:9 and :15); the window is enforced by src/runtime.ts:187, covered by the existing test in src/runtime.test.ts:267, and the analysis deadline at src/pipeline.ts:500 is pinned by the existing deadline tests',
   }),
   derived(

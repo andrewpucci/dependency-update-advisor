@@ -31,7 +31,7 @@ function reading(files: Record<string, string>): (path: string) => string | null
 const CLEAN_WORKFLOWS = [
   {
     file: '.github/workflows/dependabot-review.yml',
-    text: 'jobs:\n  review:\n    timeout-minutes: 16\n    steps:\n      - id: app-token\n      - uses: review\n        timeout-minutes: 15\n',
+    text: 'jobs:\n  review:\n    timeout-minutes: 18\n    steps:\n      - id: app-token\n        timeout-minutes: 3\n      - uses: review\n        timeout-minutes: 15\n',
   },
   { file: '.github/workflows/ci.yml', text: 'jobs:\n  quality:\n    timeout-minutes: 10\n' },
   {
@@ -48,7 +48,7 @@ test('a workflow job timeout that differs from its register entry is a problem',
   const workflows = [
     {
       file: '.github/workflows/dependabot-review.yml',
-      text: 'jobs:\n  review:\n    timeout-minutes: 17\n    steps:\n      - id: app-token\n      - uses: review\n        timeout-minutes: 15\n',
+      text: 'jobs:\n  review:\n    timeout-minutes: 17\n    steps:\n      - id: app-token\n        timeout-minutes: 3\n      - uses: review\n        timeout-minutes: 15\n',
     },
     CLEAN_WORKFLOWS[1],
     CLEAN_WORKFLOWS[2],

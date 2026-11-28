@@ -624,14 +624,19 @@ the review's `timeout-minutes` moves from the job to the review step
 runner times from the step's own start, after the action download and the
 app-token step. `JOB_BUDGET_MS` (`limit:job.budget`) is that step timeout. The
 job's `timeout-minutes` (`limit:workflow.dependabotReview.review.timeoutMinutes`)
-is the step timeout plus the whole minutes of `limit:job.preStepAllowance`, the
-user's 2026-11-11 allowance now carried by the time before the step, so the
-runner ends the job no earlier than the step's own timeout unless that time
-runs over, which fails closed. `preStartupAllowanceMs` now covers only the
-in-step time before `runStartup` takes the job start: Node load, the relaunch,
-and the self-check. It keeps its value until a hosted-runner run of the
-recorded command, `npm run probe:runtime-baseline` (its `startupMs`), gives a
-basis; that run has not been made. Item 1's "`timeout-minutes` and
+is the step timeout plus the app-token step's own `timeout-minutes`
+(`limit:workflow.dependabotReview.review.steps.0.timeoutMinutes`), derived
+from that action's 12 requests at `limit:github.requestTimeoutMs` and its
+retry waits, rounded up to 3 minutes; this replaces the user's 2026-11-11
+allowance for the time before the step (job.preStepAllowance, deleted in the
+item 10 review follow-up). The runner ends the job no earlier than either
+step's own timeout unless the job setup and the app-token post step pass the
+minutes the app-token step leaves, which fails closed.
+`preStartupAllowanceMs` now covers only the in-step time before `runStartup`
+takes the job start: Node load, the relaunch, and the self-check. It keeps
+its value until a hosted-runner run of the recorded command,
+`npm run probe:runtime-baseline` (its `startupMs`), gives a basis; that run
+has not been made. Item 1's "`timeout-minutes` and
 `JOB_BUDGET_MS` are unchanged" is narrowed accordingly; no job-start anchor is
 read and no clock is converted.
 
