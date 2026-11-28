@@ -24,7 +24,7 @@ jobs:
   review:
     name: Dependabot review
     runs-on: ubuntu-latest
-    timeout-minutes: 15
+    timeout-minutes: 16
     steps:
       - id: app-token
         uses: actions/create-github-app-token@f418cff399f7aef4c2f0ad47e25ca7a6abbdd6fc # v3.4.0
@@ -34,6 +34,7 @@ jobs:
           permission-issues: write
           permission-statuses: write
       - uses: $/.github/actions/dependabot-review
+        timeout-minutes: 15
         with:
           github-token: ${{ github.token }}
           app-token: ${{ steps.app-token.outputs.token }}

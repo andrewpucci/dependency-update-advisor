@@ -1,6 +1,7 @@
 import { readFileSync } from 'node:fs';
 import { expect, test } from 'vite-plus/test';
 import { isScalar, parseDocument, visit } from 'yaml';
+import { limit } from '../src/limits.js';
 
 const workflowPath = new URL('../.github/workflows/dependabot-review.yml', import.meta.url);
 
@@ -115,7 +116,7 @@ test('R5 uses the exact privileged review job shape', () => {
       review: {
         name: 'Dependabot review',
         'runs-on': 'ubuntu-latest',
-        'timeout-minutes': 15,
+        'timeout-minutes': 16,
         steps: [
           {
             id: 'app-token',
@@ -129,6 +130,7 @@ test('R5 uses the exact privileged review job shape', () => {
           },
           {
             uses: '$/.github/actions/dependabot-review',
+            'timeout-minutes': 15,
             with: {
               'github-token': '${{ github.token }}',
               'app-token': '${{ steps.app-token.outputs.token }}',
@@ -150,12 +152,25 @@ test('R10 bounds execution without concurrency or ignored failures', () => {
         concurrency?: unknown;
         'continue-on-error'?: unknown;
         'timeout-minutes'?: unknown;
-        steps: Array<{ concurrency?: unknown; 'continue-on-error'?: unknown }>;
+        steps: Array<{
+          concurrency?: unknown;
+          'continue-on-error'?: unknown;
+          'timeout-minutes'?: unknown;
+        }>;
       };
     };
   };
   const review = workflow.jobs.review;
-  expect(review['timeout-minutes']).toBe(15);
+  // The review step carries the timeout the runner times from the step's own start, and the job
+  // outlasts it by the minutes allowed before the step (L11, item 10(b)).
+  const step = limit('workflow.dependabotReview.review.steps.1.timeoutMinutes');
+  expect(review.steps[1]['timeout-minutes']).toBe(step);
+  expect(review.steps[1]['timeout-minutes']).toBe(15);
+  expect(review.steps[0]['timeout-minutes']).toBeUndefined();
+  expect(review['timeout-minutes']).toBe(
+    step + Math.ceil(limit('job.preStepAllowance') / 60_000),
+  );
+  expect(limit('job.budget')).toBe(step * 60_000);
   expect(workflow.concurrency).toBeUndefined();
   expect(review.concurrency).toBeUndefined();
   expect(review['continue-on-error']).toBeUndefined();

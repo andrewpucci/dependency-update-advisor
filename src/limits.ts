@@ -1955,34 +1955,71 @@ const DEFINITIONS = [
     basis: { kind: 'unjustified', note: 'awaiting L8 measurement' },
     test: 'src/schema.test.ts > enforces the context fact count independently of excerpt and packet bounds',
   },
-  // Workflow timeouts, copied from the YAML `timeout-minutes` of each job.
+  // Workflow timeouts, copied from the YAML `timeout-minutes` of each job and step.
   configured(
-    'workflow.dependabotReview.review.timeoutMinutes',
+    'workflow.dependabotReview.review.steps.1.timeoutMinutes',
     15,
     'minutes',
     {
       setting: 'reusable-workflow input timeout-minutes (L13, provisional)',
-      maximum: 'github.hostedJobMaxMinutes',
+      maximum: 'job.reviewStepMaxMinutes',
     },
-    "The adopter: a longer job spends more of their Actions minutes and leaves a PR waiting longer for its review, and a shorter one leaves less time for evidence and analysis. Section 5 admitted the job budget as configuration on 2026-11-17 through a reusable-workflow input (L13); its hard maximum is GitHub's hosted-job limit.",
+    "The adopter: a longer review spends more of their Actions minutes and leaves a PR waiting longer for its review, and a shorter one leaves less time for evidence and analysis. Section 5 admitted the job budget as configuration on 2026-11-17 through a reusable-workflow input (L13). Since L11 item 10 the timeout is on the review step, which the runner times from the step's own start, after the action download and the app-token step; its hard maximum is GitHub's hosted-job limit less the time before the step.",
     {
       protects:
-        "The runner kills the review job at its timeout-minutes, so the pipeline's deadlines must finish inside that wall-clock limit.",
+        "The runner kills the review step at its timeout-minutes, timed from the step's start, so the pipeline's deadlines must finish inside that wall-clock limit.",
       effect:
-        'The runner cancels the job when the timeout passes; the pipeline derives its job budget from this value, so its deadlines are set to end before it.',
-      test: 'none: checked against the workflow file by check:limits (L6); the workflow input that sets it lands with L13',
+        'The runner cancels the step when the timeout passes; the pipeline derives its job budget from this value, so its deadlines are set to end before it.',
+      test: 'tests/reusable-workflow.test.ts > R10 bounds execution without concurrency or ignored failures',
+    },
+    L11_STOPS_APPROVAL,
+  ),
+  unjustified('job.preStepAllowance', 60_000, 'milliseconds', {
+    protects:
+      "The job's timeout counts the action download and the app-token step before the review step starts, so it must exceed the review step's timeout by that time, or the runner could end the job before the step's own timeout.",
+    effect:
+      "Adds whole minutes to the job's timeout-minutes above the review step's; it shortens no deadline and converts no outcome to success. A pre-step time above it lets the job timeout end the review step early, which fails closed.",
+    note: "chosen: the user chose 60,000 on 2026-11-11 (SPEC-review-orchestration Amendment 3, item 2) for everything before runStartup; L11 item 10(b) (2026-11-28) moved the review's timeout onto its step, so the part before the step, the action download and the app-token step, now counts only against the job timeout. No GitHub document bounds the download, and the app-token step has no timeout of its own, so the value stays chosen.",
+    test: 'tests/reusable-workflow.test.ts > R10 bounds execution without concurrency or ignored failures',
+  }),
+  derived(
+    'job.reviewStepMaxMinutes',
+    'minutes',
+    ['github.hostedJobMaxMinutes', 'job.preStepAllowance'],
+    (hosted, preStep) => hosted - Math.ceil(preStep / 60_000),
+    "The longest review step a hosted job can hold: GitHub's hosted-job limit less the whole minutes allowed before the step (limit:job.preStepAllowance). Approved by the maintainer on 2026-11-28 (L11, item 10(b), #383).",
+    {
+      protects:
+        "Keeps the adopter's review-step timeout, with the minutes before the step, inside GitHub's hosted-job limit.",
+      effect:
+        'Not enforced: check:limits evaluates the register with the step timeout at this value; the workflow input that sets it lands with L13.',
+      test: 'none: the hard maximum of a setting the workflow does not read yet (L13); check:limits evaluates it',
+    },
+  ),
+  derived(
+    'workflow.dependabotReview.review.timeoutMinutes',
+    'minutes',
+    ['workflow.dependabotReview.review.steps.1.timeoutMinutes', 'job.preStepAllowance'],
+    (step, preStep) => step + Math.ceil(preStep / 60_000),
+    "The job's timeout: the review step's timeout and the whole minutes allowed before the step, the action download and the app-token step (limit:job.preStepAllowance), so the runner ends the job no earlier than the step's own timeout. Approved by the maintainer on 2026-11-28 (L11, item 10(b), #383).",
+    {
+      protects:
+        "The runner kills the job at its timeout-minutes, timed from the job's start, so the job must outlast the steps before the review and the review step's own timeout.",
+      effect:
+        'The runner cancels the job when the timeout passes; the review step ends first at its own timeout unless the time before it passes limit:job.preStepAllowance.',
+      test: 'tests/reusable-workflow.test.ts > R10 bounds execution without concurrency or ignored failures',
     },
   ),
   // Job timing, from budget.ts.
   derived(
     'job.budget',
     'milliseconds',
-    ['workflow.dependabotReview.review.timeoutMinutes'],
+    ['workflow.dependabotReview.review.steps.1.timeoutMinutes'],
     (minutes) => minutes * 60_000,
-    "The runner's wall-clock limit is the reusable workflow's timeout-minutes, in milliseconds.",
+    "The runner's wall-clock limit for the review is the review step's timeout-minutes, in milliseconds, timed from the step's start (L11, item 10(b)).",
     {
       protects:
-        "The runner's wall-clock limit for the review job; every pipeline deadline is measured against it.",
+        "The runner's wall-clock limit for the review step; every pipeline deadline is measured against it.",
       effect:
         "Not reached directly; it is the input to job.window, which sets the pipeline's deadlines.",
       test: 'none: derived into job.window; no code compares against job.budget itself. JOB_BUDGET_MS (src/budget.ts:4) is read only by budget.test.ts, and job.window (src/budget.ts:15) is compared in src/runtime.ts:187 (now - started >= window) and used as the analysis deadline in src/pipeline.ts:500',
@@ -1990,10 +2027,10 @@ const DEFINITIONS = [
   ),
   unjustified('job.preStartupAllowance', 60_000, 'milliseconds', {
     protects:
-      "The pipeline clock starts at runStartup, after the runner has spent time on the app-token step, action download, Node load and self-check; this allowance keeps the window inside the runner's timeout.",
+      "The pipeline clock starts at runStartup, after the review step has spent time on Node load, the relaunch and the self-check; this allowance keeps the window inside the step's timeout.",
     effect:
       'Shortens the job window by 60,000 ms, so the analysis and freshness deadlines move earlier; it converts no outcome to success.',
-    note: "stopped (L11, D9 and Q22(b), #383): the approved option anchors the job window at the runner's job start, read once at startup, and deletes this entry. Implemented, it relocates the chosen margin rather than removing it. GitHub gives a job's start only as a wall-clock started_at, to the second, in the run's jobs listing, which names the job only by its runner_name; the window is kept on the monotonic clock (src/startup.ts), so the anchor must convert GitHub's clock to the runner's. That conversion is off by the clock skew between GitHub and the runner, which no GitHub document bounds, so keeping the window inside the runner's timeout would need a new chosen skew allowance. The run's run_started_at, already read during event verification, is earlier than the job start by the queue time, which is also unbounded. Value unchanged; a basis needs a maintainer decision on the skew",
+    note: "pending a hosted-runner run (L11, item 10(b), approved by the maintainer on 2026-11-28, #383): the review's timeout is now on its step (limit:workflow.dependabotReview.review.steps.1.timeoutMinutes), which the runner times from the step's own start, so the action download and the app-token step no longer count against it (they moved to limit:job.preStepAllowance). What remains is the in-step time before runStartup takes the job start: Node load, the relaunch and the self-check, a platform property. The recorded command is npm run probe:runtime-baseline, after npm run build, inside a workflow step on the smallest supported hosted runner (ubuntu-latest, 2 CPUs); it reports startupMs, the slowest of 5 runs from the parent's process start to the relaunched child's exit, which follows right after the job start. It has not been run: the proposal expects it to free about 55 s of the 60,000. The value stays the user's 2026-11-11 choice until that run gives a basis",
     test: 'none: subtracted only inside job.window (src/budget.ts:9 and :15); the window is enforced by src/runtime.ts:187, covered by the existing test in src/runtime.test.ts:267, and the analysis deadline at src/pipeline.ts:500 is pinned by the existing deadline tests',
   }),
   derived(

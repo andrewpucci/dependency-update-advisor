@@ -617,6 +617,24 @@ publication spends that reserve.
    spent by publication. The publication work re-checks the allowance against
    its own measured pre-startup time and records the result in its spec.
 
+Amended (L11, item 10(b); approved by the maintainer on 2026-11-28,
+[#383](https://github.com/andrewpucci/dependency-update-advisor/issues/383)):
+the review's `timeout-minutes` moves from the job to the review step
+(`limit:workflow.dependabotReview.review.steps.1.timeoutMinutes`), which the
+runner times from the step's own start, after the action download and the
+app-token step. `JOB_BUDGET_MS` (`limit:job.budget`) is that step timeout. The
+job's `timeout-minutes` (`limit:workflow.dependabotReview.review.timeoutMinutes`)
+is the step timeout plus the whole minutes of `limit:job.preStepAllowance`, the
+user's 2026-11-11 allowance now carried by the time before the step, so the
+runner ends the job no earlier than the step's own timeout unless that time
+runs over, which fails closed. `preStartupAllowanceMs` now covers only the
+in-step time before `runStartup` takes the job start: Node load, the relaunch,
+and the self-check. It keeps its value until a hosted-runner run of the
+recorded command, `npm run probe:runtime-baseline` (its `startupMs`), gives a
+basis; that run has not been made. Item 1's "`timeout-minutes` and
+`JOB_BUDGET_MS` are unchanged" is narrowed accordingly; no job-start anchor is
+read and no clock is converted.
+
 ### Amendment 3 Boundaries
 
 - **Always:** keep one derived `jobWindowMs`, keep the final freshness check as
