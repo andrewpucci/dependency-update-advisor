@@ -1621,13 +1621,23 @@ const DEFINITIONS = [
     test: 'src/schema.test.ts > enforces the context fact count independently of excerpt and packet bounds',
   },
   // Workflow timeouts, copied from the YAML `timeout-minutes` of each job.
-  unjustifiedWorkflow('workflow.dependabotReview.review.timeoutMinutes', 15, {
-    protects:
-      "The runner kills the review job at its timeout-minutes, so the pipeline's deadlines must finish inside that wall-clock limit.",
-    effect:
-      'The runner cancels the job when the timeout passes; the pipeline derives its job budget from this value, so its deadlines are set to end before it.',
-    note: 'awaiting L8 measurement',
-  }),
+  configured(
+    'workflow.dependabotReview.review.timeoutMinutes',
+    15,
+    'minutes',
+    {
+      setting: 'reusable-workflow input timeout-minutes (L13, provisional)',
+      maximum: 'github.hostedJobMaxMinutes',
+    },
+    "The adopter: a longer job spends more of their Actions minutes and leaves a PR waiting longer for its review, and a shorter one leaves less time for evidence and analysis. Section 5 admitted the job budget as configuration on 2026-11-17 through a reusable-workflow input (L13); its hard maximum is GitHub's hosted-job limit.",
+    {
+      protects:
+        "The runner kills the review job at its timeout-minutes, so the pipeline's deadlines must finish inside that wall-clock limit.",
+      effect:
+        'The runner cancels the job when the timeout passes; the pipeline derives its job budget from this value, so its deadlines are set to end before it.',
+      test: 'none: checked against the workflow file by check:limits (L6); the workflow input that sets it lands with L13',
+    },
+  ),
   unjustifiedWorkflow('workflow.ci.quality.timeoutMinutes', 10, {
     protects:
       'The runner kills a hung CI quality job at this timeout, so one stuck job cannot hold a runner indefinitely.',
