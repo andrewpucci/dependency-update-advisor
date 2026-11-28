@@ -2,6 +2,7 @@ import { expect, test } from 'vite-plus/test';
 import {
   jsonDepth,
   nestedArrays,
+  nestedFlowSequences,
   overflowDepth,
   summarizeDepths,
 } from '../../scripts/probe-json-depth/core.js';
@@ -31,4 +32,9 @@ test('the overflow depth is the smallest nesting the call cannot complete', () =
       throw new TypeError('not a stack overflow');
     }, 10),
   ).toThrow(TypeError);
+});
+
+test('nested flow sequences put the deepest one at the given depth under one key', () => {
+  expect(nestedFlowSequences(0)).toBe('updates: \n');
+  expect(nestedFlowSequences(2)).toBe('updates: [[]]\n');
 });
