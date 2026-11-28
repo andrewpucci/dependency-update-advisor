@@ -8,7 +8,7 @@ import type * as Limits from '../../src/limits.js';
 const ROOT = fileURLToPath(new URL('../../', import.meta.url));
 // Loaded by path, not by a static import: tsc rejects a literal `.ts` specifier, and Node runs
 // the register source directly, as scripts/complexity/report.mjs does.
-const { PENDING_AUDIT, REGISTER, limit, settingProblems } = (await import(
+const { PENDING_AUDIT, REGISTER, settingProblems } = (await import(
   pathToFileURL(join(ROOT, 'src/limits.ts')).href
 )) as typeof Limits;
 const { BINARY_BYTES, DURATION_MS } = (await import(
@@ -23,6 +23,28 @@ export type AllowedSpecLine = { file: string; line: string; values: number[]; re
 export const MIGRATION_OPEN = true;
 
 const WORKFLOW_PREFIX = 'workflow.';
+
+/**
+ * Repository tooling policy outside the register (SPEC-limit-register section 4, register scope,
+ * L11 Q25(a), approved 2026-11-27, #383): no adopter bears these values and no outside constraint
+ * bounds them. This repository's own CI job timeouts are checked against the workflow files here,
+ * as register entries are, so they cannot drift unseen.
+ */
+/* oxlint-disable no-magic-numbers, limits/no-literal-limit -- repository tooling policy outside the register (see above) */
+export const TOOLING_TIMEOUT_MINUTES: Readonly<Record<string, number>> = Object.freeze({
+  'workflow.ci.quality.timeoutMinutes': 10,
+  'workflow.complexity.report.timeoutMinutes': 10,
+  'workflow.complexity.comment.timeoutMinutes': 5,
+});
+/* oxlint-enable no-magic-numbers, limits/no-literal-limit */
+
+/**
+ * Spec lines are checked only for register values above this floor: smaller values match hundreds
+ * of unrelated spec lines, so checking them would make the allowlist unreviewable. Repository
+ * tooling policy outside the register (section 4, register scope, L11 Q25(a), #383).
+ */
+// oxlint-disable-next-line limits/no-literal-limit -- repository tooling policy outside the register (see above)
+export const SPEC_VALUE_FLOOR = 64;
 const TEST_SEPARATOR = ' > ';
 const NUMBER_RUN = /[\w.,]+/g;
 const WHOLE_NUMBER = /^(?:\d+|\d{1,3}(?:[,_]\d{3})+)$/;
@@ -95,11 +117,11 @@ function timeoutProblem(
   // An alias or expression hides the number from this check, so the value must be literal.
   if (isAlias(node) || !isScalar(node) || typeof node.value !== 'number')
     return `${where}: ${label} timeout-minutes must be a literal number`;
-  const entry = register.get(id);
-  if (entry === undefined)
+  const expected = register.get(id)?.value ?? TOOLING_TIMEOUT_MINUTES[id];
+  if (expected === undefined)
     return `${where}: ${label} has timeout-minutes but no register entry ${id}`;
-  if (entry.value !== node.value)
-    return `${where}: ${label} timeout-minutes ${String(node.value)} differs from ${id} (${entry.value})`;
+  if (expected !== node.value)
+    return `${where}: ${label} timeout-minutes ${String(node.value)} differs from ${id} (${expected})`;
   return undefined;
 }
 
@@ -114,7 +136,7 @@ export function workflowProblems(
     const problem = timeoutProblem(register, where, timeout);
     return problem ? [problem] : [];
   });
-  for (const id of register.keys()) {
+  for (const id of [...register.keys(), ...Object.keys(TOOLING_TIMEOUT_MINUTES)]) {
     if (id.startsWith(WORKFLOW_PREFIX) && !found.has(id)) {
       problems.push(`${id}: no job with timeout-minutes in the workflow files`);
     }
@@ -433,7 +455,7 @@ function readRepoFile(path: string): string | null {
 }
 
 function main(): void {
-  const floor = limit('checkLimits.specValueFloor');
+  const floor = SPEC_VALUE_FLOOR;
   const specs = readdirSync(join(ROOT, 'docs/specs'))
     .filter((name) => name.endsWith('.md'))
     .map((name) => repoFile(`docs/specs/${name}`));

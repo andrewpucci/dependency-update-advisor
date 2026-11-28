@@ -8,13 +8,14 @@ import {
   schemaProblems,
   specProblems,
   testProblems,
+  SPEC_VALUE_FLOOR,
   workflowLiteralProblems,
   workflowProblems,
 } from '../../scripts/limits/check.js';
 import { PENDING_AUDIT, REGISTER, limit, type Limit } from '../../src/limits.js';
 
 const ROOT = fileURLToPath(new URL('../../', import.meta.url));
-const FLOOR = limit('checkLimits.specValueFloor');
+const FLOOR = SPEC_VALUE_FLOOR;
 const SPEC = 'docs/specs/SPEC-example.md';
 
 function entryOf(id: string): Limit {

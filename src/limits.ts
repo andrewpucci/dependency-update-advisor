@@ -621,19 +621,6 @@ function unjustified<const Id extends string>(
   } as const;
 }
 
-/** A workflow job's `timeout-minutes`; the workflow file is checked by check:limits, not by a test. */
-function unjustifiedWorkflow<const Id extends string>(id: Id, value: number, audit: Audit = {}) {
-  return {
-    id,
-    value,
-    unit: 'minutes',
-    protects: audit.protects ?? PENDING_AUDIT,
-    effect: audit.effect ?? PENDING_AUDIT,
-    basis: { kind: 'unjustified', note: audit.note ?? PENDING_AUDIT },
-    test: audit.test ?? 'none: checked against the workflow file by check:limits (L6)',
-  } as const;
-}
-
 /** A value computed from other entries; `description` states the relation in words. */
 function derived<const Id extends string>(
   id: Id,
@@ -1650,24 +1637,6 @@ const DEFINITIONS = [
       test: 'none: checked against the workflow file by check:limits (L6); the workflow input that sets it lands with L13',
     },
   ),
-  unjustifiedWorkflow('workflow.ci.quality.timeoutMinutes', 10, {
-    protects:
-      'The runner kills a hung CI quality job at this timeout, so one stuck job cannot hold a runner indefinitely.',
-    effect: 'The runner cancels the job at the timeout; no application code reads this value.',
-    note: 'awaiting L8 measurement',
-  }),
-  unjustifiedWorkflow('workflow.complexity.report.timeoutMinutes', 10, {
-    protects:
-      'The runner kills the complexity report job at this timeout, bounding a hung report run.',
-    effect: 'The runner cancels the job at the timeout; no application code reads this value.',
-    note: 'awaiting L8 measurement',
-  }),
-  unjustifiedWorkflow('workflow.complexity.comment.timeoutMinutes', 5, {
-    protects:
-      'The runner kills the complexity comment job at this timeout, bounding a hung comment run.',
-    effect: 'The runner cancels the job at the timeout; no application code reads this value.',
-    note: 'awaiting L8 measurement',
-  }),
   // Job timing, from budget.ts.
   derived(
     'job.budget',
@@ -4444,15 +4413,6 @@ const DEFINITIONS = [
       test: 'src/startup.test.ts > prints bounded timing for %s',
     },
   ),
-  // Spec values at or below this floor are not checked by check:limits, from scripts/limits/check.ts.
-  unjustified('checkLimits.specValueFloor', 64, 'count', {
-    protects:
-      'Keeps the spec allowlist reviewable: register values of 64 or less match about 800 unrelated spec lines, so check:limits checks only larger values.',
-    effect:
-      'Spec lines with register values at or below 64 are not checked; larger values must be allowlisted by trimmed text.',
-    note: 'no recorded reason',
-    test: 'tests/limits/check-limits.test.ts > a register value at the spec floor, or a non-whole number, is not a problem',
-  }),
   derived(
     'research.githubQuota.researchCeiling',
     'count',
@@ -4652,15 +4612,6 @@ const DEFINITIONS = [
       'Agreement queries carry at most this many candidates each, and the cost sweep halves down from this value to one.',
     test: 'tests/measure-batching/probe.test.ts > tag queries carry at most the register maximum, and one more candidate starts a second query',
   },
-  // The probe's runner is a single vitest test (scripts/measure-batching/vitest.config.mjs).
-  unjustified('probe.batching.testTimeoutMs', 900_000, 'milliseconds', {
-    protects:
-      'A hung GitHub request inside the batching probe would otherwise run indefinitely, since the probe sets no per-request timeout; the timeout ends that test.',
-    effect:
-      "A run past the timeout fails under vitest's timeout behavior and writes no report; the measured part is lost.",
-    note: 'kept at the demand measurement value it reused before #440; awaiting the C3 probe run (#390), whose duration would give a measured basis',
-    test: 'none: the timeout of the manual batching probe, which needs a live token and is not part of npm test',
-  }),
   ...allScaledShareEntries(),
 ] as const satisfies readonly LimitDefinition[];
 
