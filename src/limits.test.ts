@@ -798,7 +798,11 @@ test('the GitHub read shares keep their sources and formulas', () => {
     limit('github.token.restRequestsPerHour') -
       limit('evidence.allocation.transport.freshness.maxRequests'),
   );
-  for (const id of ['evidence.allocation.transport.snapshot.maxRequests'] as const)
+  for (const id of [
+    'evidence.allocation.transport.snapshot.maxRequests',
+    'evidence.allocation.upstream.maxRequests',
+    'evidence.allocation.signals.readers.upstream.maxRequests',
+  ] as const)
     expect(limitEntry(id).configurable, id).toMatchObject({
       maximum: 'github.token.requestCapMax',
       joint: true,

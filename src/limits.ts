@@ -2043,14 +2043,24 @@ const DEFINITIONS = [
     // The reader refuses a share below one response (src/evidence/npm-registry.ts:76).
     'evidence.envelope.maxResponseBytes',
   ),
-  unjustified('evidence.allocation.upstream.maxRequests', 240, 'count', {
-    protects:
-      'Caps upstream research requests (GitHub and registry lookups) that scale with the changed group, so a large group cannot take the shared evidence time or the GitHub rate limit.',
-    effect:
-      'The upstream reader stops with budget at the cap, and the stage keeps the evidence already gathered.',
-    note: 'awaiting L8 measurement',
-    test: 'src/evidence/upstream-read.test.ts > upstream reader spends exactly its request share and refuses the request past it',
-  }),
+  configured(
+    'evidence.allocation.upstream.maxRequests',
+    240,
+    'count',
+    {
+      setting: 'limits.githubRequests.upstream',
+      maximum: 'github.token.requestCapMax',
+      joint: true,
+    },
+    "The adopter: upstream research reads are mostly GitHub reads on the adopter's GITHUB_TOKEN quota, and no GitHub latency is recorded, so no time derivation exists. It is section 5's GitHub request cap, which covers research requests (approved 2026-11-17; joint hard maximum L11, Q6(a), #383).",
+    {
+      protects:
+        'Caps upstream research requests (GitHub and registry lookups) that scale with the changed group, so a large group cannot take the shared evidence time or the GitHub rate limit.',
+      effect:
+        'The ceiling of the scaled upstream request share; the upstream reader stops with budget at the share, and the stage keeps the evidence already gathered.',
+      test: 'src/evidence/upstream-read.test.ts > upstream reader spends exactly its request share and refuses the request past it',
+    },
+  ),
   derived(
     'evidence.allocation.upstream.maxTotalBytes',
     'bytes',
@@ -2330,13 +2340,23 @@ const DEFINITIONS = [
       test: 'src/evidence/policy-signals-read.test.ts > metadata reader accepts a byte share exactly and refuses the byte past it',
     },
   ),
-  unjustified('evidence.allocation.signals.readers.upstream.maxRequests', 16, 'count', {
-    protects:
-      'Caps GitHub Actions upstream requests in the signals stage so the stage stays inside the envelope.',
-    effect: 'The request past the cap returns budget and the upstream reader stops.',
-    note: 'awaiting L8 measurement',
-    test: 'src/evidence/upstream-read.test.ts > signals upstream reader spends exactly its request share and refuses the request past it',
-  }),
+  configured(
+    'evidence.allocation.signals.readers.upstream.maxRequests',
+    16,
+    'count',
+    {
+      setting: 'limits.githubRequests.signalsUpstream',
+      maximum: 'github.token.requestCapMax',
+      joint: true,
+    },
+    "The adopter: the signals stage's Actions upstream reads spend the adopter's GITHUB_TOKEN quota, and no per-change count bounds them. It extends section 5's GitHub request cap (L11, Q6(a), #383).",
+    {
+      protects:
+        'Caps GitHub Actions upstream requests in the signals stage so the stage stays inside the envelope.',
+      effect: 'The request past the cap returns budget and the upstream reader stops.',
+      test: 'src/evidence/upstream-read.test.ts > signals upstream reader spends exactly its request share and refuses the request past it',
+    },
+  ),
   retainedSetting(
     'evidence.allocation.signals.readers.upstream.maxTotalBytes',
     'limits.upstreamSignalBytes',
