@@ -888,6 +888,11 @@ but the four cost-sized advisory and malware rates below cite this corpus:
 - The npm registry policy, PyPI metadata, and Actions upstream signals
   readers made no requests in the corpus. Their request shares, and every
   share's byte dimension, keep the base at the ceiling with every rate at 0.
+  Amended (L11; approved by the maintainer on 2026-11-27,
+  [#383](https://github.com/andrewpucci/dependency-update-advisor/issues/383)):
+  such a dimension has no rate entries in the register. Its base is a
+  `derived` copy of its ceiling, and the share function reads only the rates
+  a dimension has.
   The [uv Share Sizing Amendment](#uv-share-sizing-amendment) later sizes
   the PyPI metadata share and the upstream byte share instead.
   The byte limit that binds is the packet limit

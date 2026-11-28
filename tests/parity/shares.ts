@@ -25,11 +25,11 @@ export function registerShareParameters(): ResearchShareParameters {
   const dimension = (share: string, name: 'requests' | 'bytes', ceilingId: string) => ({
     base: registered(`research.share.${share}.${name}.base`),
     ceiling: registered(ceilingId),
+    // A dimension kept at its ceiling has no rate entries (L11, #383).
     rates: Object.fromEntries(
-      [...ROLES, ...(share.startsWith('signals.') ? ['eligible'] : [])].map((unit) => [
-        unit,
-        registered(`research.share.${share}.${name}.rate.${unit}`),
-      ]),
+      [...ROLES, ...(share.startsWith('signals.') ? ['eligible'] : [])]
+        .filter((unit) => REGISTER.has(`research.share.${share}.${name}.rate.${unit}`))
+        .map((unit) => [unit, registered(`research.share.${share}.${name}.rate.${unit}`)]),
     ),
   });
   const parameters = (share: string, allocation: string) => ({

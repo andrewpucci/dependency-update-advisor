@@ -538,12 +538,38 @@ test('reads every scaled-share base and rate from its own register entry', () =>
       expect(dim.base, `${share} ${dimension} base`).toBe(entry('base')?.value);
       for (const [unit, rate] of Object.entries(dim.rates))
         expect(rate, `${share} ${dimension} ${unit}`).toBe(entry(`rate.${unit}`)?.value);
-      expect(Object.keys(dim.rates).sort()).toEqual(
-        share.startsWith('signals.')
-          ? ['added', 'direct', 'eligible', 'removed', 'transitive']
-          : ['added', 'direct', 'removed', 'transitive'],
-      );
+      // A dimension kept at its ceiling has no rate entries (L11, #383); any other has all of them.
+      const units = share.startsWith('signals.')
+        ? ['added', 'direct', 'eligible', 'removed', 'transitive']
+        : ['added', 'direct', 'removed', 'transitive'];
+      const kept = entry('rate.direct') === undefined;
+      expect(Object.keys(dim.rates).sort(), `${share} ${dimension}`).toEqual(kept ? [] : units);
+      if (kept) expect(dim.base, `${share} ${dimension}`).toBe(dim.ceiling);
     }
+});
+
+test('a share dimension kept at its ceiling has no rate entries', () => {
+  // The B12 fit keeps these dimensions at their ceilings; their 34 zero rates were deleted (L11).
+  const kept = [...REGISTER.keys()].filter(
+    (id) => id.startsWith('research.share.') && id.endsWith('.base'),
+  );
+  const withoutRates = kept.filter(
+    (id) => ![...REGISTER.keys()].some((other) => other.startsWith(id.replace(/base$/u, 'rate.'))),
+  );
+  expect(withoutRates.sort()).toEqual(
+    [
+      'advisory.bytes',
+      'signals.malware.bytes',
+      'signals.publishTimes.bytes',
+      'signals.registry.requests',
+      'signals.registry.bytes',
+      'signals.upstream.requests',
+      'signals.upstream.bytes',
+    ]
+      .map((dimension) => `research.share.${dimension}.base`)
+      .sort(),
+  );
+  for (const id of withoutRates) expect(REGISTER.get(id)?.basis.kind, id).toBe('derived');
 });
 
 test('wires every budget constant, share ceiling, and computed share to its register entry', () => {

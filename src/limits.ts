@@ -724,8 +724,6 @@ const B12_FIT = {
   headroom: '1.25× measured demand on every uncensored PR',
   measured: '2026-11-26',
 } as const;
-const FIT_NOTE =
-  'the B12 fit approved 2026-11-26 (#370) keeps this dimension at its ceiling with every rate at 0';
 const FIT_BASE_STATISTIC =
   '1.25 × the highest measured demand among the one-to-three-member PRs (#123 and #172), rounded up';
 const FIT_RATE_STATISTIC =
@@ -1013,7 +1011,7 @@ function scaledShareEntries<const S extends ScaledShare, const D extends ShareDi
       'Sets the share a change of no counted members gets, before any per-member rate is added.',
     effect: fit
       ? 'The computed share starts here; each rate adds to it, rounded up and capped at the ceiling.'
-      : 'The computed share starts here; with every rate at zero it equals the ceiling.',
+      : 'The computed share starts here; the dimension has no rates, so it equals the ceiling.',
     test: fit ? SHARE_FIT_TEST : SHARE_CEILING_TEST,
   };
   const base = fit
@@ -1026,17 +1024,18 @@ function scaledShareEntries<const S extends ScaledShare, const D extends ShareDi
         `The B12 fit (approved 2026-11-26, #370) keeps the ${share} ${dimension} share at its ceiling.`,
         baseAudit,
       );
+  // A dimension the fit keeps at its ceiling has no rate entries: its base already equals the
+  // ceiling, so every rate would be 0 (L11, approved by the maintainer on 2026-11-27, #383).
+  if (!fit) return [base];
   const rates = units.map((rateUnit) => {
     const id =
       `research.share.${share}.${dimension}.rate.${rateUnit}` as `research.share.${S}.${D}.rate.${ShareUnit}`;
-    const rate = fit?.rates[rateUnit] ?? 0;
+    const rate = fit.rates[rateUnit] ?? 0;
     const audit = {
       ...rateAudit(share, dimension, rateUnit),
       test: rate > 0 ? SHARE_FIT_TEST : SHARE_FORMULA_TEST,
     };
-    return fit
-      ? fitted(id, rate, unit, rateBasis(share, rateUnit, rate), audit)
-      : unjustified(id, 0, unit, { ...audit, note: FIT_NOTE });
+    return fitted(id, rate, unit, rateBasis(share, rateUnit, rate), audit);
   });
   return [base, ...rates];
 }

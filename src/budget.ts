@@ -1,5 +1,5 @@
 import { DECIMAL_RADIX } from './format.js';
-import { limit } from './limits.js';
+import { limit, REGISTER } from './limits.js';
 
 /** The runner's wall-clock limit for the job, mirroring the workflow's `timeout-minutes`. */
 export const JOB_BUDGET_MS = limit('job.budget');
@@ -150,8 +150,13 @@ function dimensionParameters(
   return {
     base: limit(`research.share.${share}.${dimension}.base`),
     ceiling,
+    // A dimension the B12 fit keeps at its ceiling has no rate entries, so its rates are 0 (L11,
+    // #383); `scaled` reads only the rates a dimension has.
     rates: Object.fromEntries(
-      units.map((unit) => [unit, limit(`research.share.${share}.${dimension}.rate.${unit}`)]),
+      units.flatMap((unit) => {
+        const rate = REGISTER.get(`research.share.${share}.${dimension}.rate.${unit}`);
+        return rate === undefined ? [] : [[unit, rate.value]];
+      }),
     ),
   };
 }
