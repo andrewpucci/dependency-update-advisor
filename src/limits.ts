@@ -3705,7 +3705,7 @@ const DEFINITIONS = [
     effect:
       "Longer text is cut at the cap without splitting a surrogate pair and marked '[reason truncated]'.",
     test: 'src/evidence/policy-signals-npm.test.ts > a long deprecation reason never splits a surrogate pair',
-    note: 'no recorded reason',
+    note: "L11 (#383) recommended deriving it from limit:packet.textBytes as ⌊(2,048 − 19) ÷ 3⌋ = 676, but that bounds only the finding's text field. The reason also lands in the deprecation signal's source excerpt, JSON.stringify of {deprecated: {marker, reason}} (src/evidence/policy-signals-evidence.ts recordSignal), which must fit limit:packet.excerptCodeUnits (500) or the signal is dropped as truncated. At 676 a cut reason is 695 code units and its excerpt 745, so every long reason would lose its deprecation evidence; with 676 the test 'exact PyPI release evidence with an astral-heavy long reason passes T4 with earliest upload and yank findings' fails. The excerpt bounds a cut plain-text reason at 500 − 50 − 19 = 431 code units, and JSON escaping of quotes and backslashes doubles them, so even 350 can overflow it. The value stays until a derivation covers the excerpt path.",
   }),
   unjustified('signals.npmMaxMaintainers', 32, 'count', {
     protects:
@@ -3758,7 +3758,7 @@ const DEFINITIONS = [
     protects:
       'The number of attempt records one enrichment can carry is bounded, so the output built from them stays within memory and output size (memory).',
     effect: 'Output with more attempts than the cap fails the enrichment with reason budget.',
-    note: 'awaiting L8 measurement',
+    note: 'L11 (#383) recommended deriving it as a structural per-member attempt count (at least 6) × limit:packet.changes, at least 768, but the per-member count is not a fixed number: the range stage records one attempt per release it scans, up to limit:research.maxTagCandidates (100), plus a summary (src/evidence/upstream-range.ts), so a member can record at least 101 attempts, bounded by that setting. 512 already binds legitimate use: R1 #276 recorded 594 attempts for 105 members. A derivation needs limit:research.maxTagCandidates as an input, at least 101 × 128 ≈ 13,000, which the approval did not name, so the value stays until one is approved.',
     test: 'src/evidence/upstream.test.ts > upstream bounds keep exactly research.maxAttempts attempts and refuse one more',
   }),
   derived(
