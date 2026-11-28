@@ -1486,7 +1486,7 @@ const DEFINITIONS = [
 	}),
 	derived("advisory.discovery.pageSize", "count", ["github.pageSize"], copy, "Discovery starts at the per_page maximum GitHub documents for the global advisories list, limit:github.pageSize (https://docs.github.com/en/rest/security-advisories/global-advisories#list-global-security-advisories, \"max 100\"), so record sets that fit read in the fewest pages. A page that does not fit limit:evidence.envelope.maxResponseBytes, as the 100-record pillow discovery page of 1,009,662 bytes nearly did, is retried at the same cursor down the page-size ladder (DISCOVERY_PAGE_SIZES, src/evidence/advisory-read.ts) instead of failing the read, as the compare and release ladders do (#471). Approved by the maintainer on 2026-11-27 (L11, E6, #383).", {
 		protects: "The start size of the discovery page-size ladder is bounded, so a discovery page of heavily advised packages that does not fit the per-response cap is retried smaller instead of failing the read (response size and memory).",
-		effect: "Discovery asks for this many records per page and follows every page under the cursor rules. A page over the per-response cap is resent at the same cursor at the next smaller size of the ladder, and the rest of the query keeps that size; each resend is a charged request, and a page over the cap at size 1 fails the read with budget.",
+		effect: "Discovery asks for this many records per page and follows every page under the cursor rules. A page over the per-response cap is resent at the same cursor at the next smaller size of the ladder, and the rest of the query keeps that size; only a 200 page is resent, and an error body over the cap fails as budget. Each resend is a charged request, and the oversized body it replaces stays charged to limit:evidence.allocation.advisory.maxTotalBytes, up to limit:evidence.envelope.maxResponseBytes plus the chunk that crossed it, so at the defaults the 5 MiB share holds at most 4 such bodies. A page over the cap at size 1 fails the read with budget.",
 		test: "src/evidence/advisory-read.name-forms.test.ts > a discovery page over the response cap is retried at the same cursor at the next smaller page size"
 	}),
 	{
@@ -1547,7 +1547,7 @@ const DEFINITIONS = [
 	}),
 	derived("advisory.batch.pageSize", "count", ["advisory.discovery.pageSize"], copy, "Batches reuse discovery's page size and its page-size ladder (user-approved 2026-11-26; the ladder L11, E6, 2026-11-27, #383). The C3 probe's largest npm batch page was 121,579 bytes at per_page=100; discovery's 100-record pillow page (1,009,662 bytes) shows how heavily advised record sets approach limit:evidence.envelope.maxResponseBytes, which the ladder handles by retrying smaller.", {
 		protects: "The start size of the batch page-size ladder is bounded, so a batch page of heavily advised packages that does not fit the per-response cap is retried smaller.",
-		effect: "A batch asks for this many records per page and follows every page. A page over the per-response cap is resent at the same cursor at the next smaller size (BATCH_PAGE_SIZES, src/evidence/batches.ts).",
+		effect: "A batch asks for this many records per page and follows every page. A page over the per-response cap is resent at the same cursor at the next smaller size (BATCH_PAGE_SIZES, src/evidence/batches.ts), charged as for limit:advisory.discovery.pageSize.",
 		test: "src/evidence/batches.test.ts > a batch URL asks for the register page size"
 	}),
 	{
@@ -2042,7 +2042,7 @@ const DEFINITIONS = [
 	}),
 	derived("context.maxSourceContextBytes", "bytes", ["packet.contextBytes"], copy, "The serialized source-context cap mirrors the packet's context byte cap.", {
 		protects: "The packet rejects a context whose serialized JSON exceeds limit:packet.contextBytes (budget), so the collector must stop before that point.",
-		effect: "An empty context over the cap fails with category budget (src/context.ts:312); at the identity caps the widest empty context fits below it. During collection the fact that would overflow is dropped with reason context-byte-limit and collection stops, keeping facts already added (partial).",
+		effect: "The empty-context check (src/context.ts:312) fails a context with category budget when its widest reservation is over the cap, but at limit:context.maxDependencies identities of limit:context.maxIdCodeUnits that reservation is 102,556 bytes, below the cap, so no input reaches it at the register values; the test pins that margin. During collection the fact that would overflow is dropped with reason context-byte-limit and collection stops, keeping facts already added (partial).",
 		test: "src/context.test.ts > the serialized context cap admits a context of exactly the cap and drops the fact one byte past it"
 	}),
 	derived("context.maxSourceExcerptCodeUnits", "code units", ["packet.excerptCodeUnits"], copy, "The excerpt cap mirrors the packet's excerpt code-unit cap.", {
@@ -2197,7 +2197,7 @@ const DEFINITIONS = [
 		effect: "Not enforced: limit:analysis.unitBytes subtracts it.",
 		test: "src/analysis/projection.test.ts > the fixed request bytes are the skeleton and system prompt the projection sends"
 	}),
-	derived("analysis.unitBytes", "bytes", ["analysis.requestBytes", "analysis.fixedRequestBytes"], (requestBytes, fixedBytes) => Math.floor((requestBytes - fixedBytes) / 2), "A lone unit at the cap fits one request after JSON escaping: the projection is stringified into the user message (src/analysis/projection.ts), where only a quote or a backslash grows, to 2 bytes, so the unit's bytes at most double. So the cap is half of limit:analysis.requestBytes less the fixed request, limit:analysis.fixedRequestBytes, rounded down. The run-wide projection fields beside the unit (coverage, context status and policy) are not in the fixed part; a request they push past limit:analysis.requestBytes is still refused with budget at preparation. Approved by the maintainer on 2026-11-27 (L11, Q15(a), #383).", {
+	derived("analysis.unitBytes", "bytes", ["analysis.requestBytes", "analysis.fixedRequestBytes"], (requestBytes, fixedBytes) => Math.floor((requestBytes - fixedBytes) / 2), "A lone unit at the cap, with the fixed request, fits one request after JSON escaping: the projection is stringified into the user message (src/analysis/projection.ts), where only a quote, a backslash or a packet-permitted line break or tab grows, to 2 bytes, so the unit's bytes at most double. So the cap is half of limit:analysis.requestBytes less the fixed request, limit:analysis.fixedRequestBytes, rounded down. The bound does not cover the run-wide projection fields sent beside the unit (version, coverage and the coverage-only sources it names, context status and reasons, policy). Packet caps bound them, but their worst case leaves no room for a unit: coverage alone may name 3 × limit:packet.listEntries = 96 sources outside the unit, whose locators of up to limit:packet.identityBytes are 98,304 bytes before keys, reasons and escaping. So they are not counted in the fixed part, and a request they push past limit:analysis.requestBytes is refused with budget at preparation, before any call. Approved by the maintainer on 2026-11-27 (L11, Q15(a), #383).", {
 		protects: "One unit's attributable JSON is capped, so a single unit cannot push the request over its byte cap.",
 		effect: "A unit over the cap is refused with budget. Alone it is reported budget with no call; in a batch the batch is split first. No partial unit record is sent.",
 		test: "src/analysis/bounds.test.ts > exact attributable unit bytes retain every required record or reject the whole unit"
@@ -2212,7 +2212,7 @@ const DEFINITIONS = [
 			url: "https://docs.mistral.ai/models/mistral-large-3-25-12",
 			checked: "2026-11-27",
 			platformValue: 262144,
-			margin: "none: Mistral Large 3 (mistral-large-2512) documents a 256K context, read as 262,144 tokens; it is the smaller window `mistral-large-latest` can resolve to until its retirement on 2027-04-30 (Mistral Large 4 documents 1M). Mistral does not document what the alias names, so the smaller window is the one that holds for both. A consumer that configures a model with a smaller window gets a 400 at a request near the cap; a run-time read of the model's max_context_length is not implemented (L11, Q13(a), #383)."
+			margin: "none: Mistral Large 3 (mistral-large-2512) documents a 256K context, read as 262,144 tokens (256 × 1,024). If 256K means 256,000, limit:analysis.requestBytes drops by 6,144 to 239,611, limit:analysis.unitBytes, limit:packet.contextBytes and limit:context.maxSourceContextBytes to 117,954, and limit:packet.textBytes and limit:analysis.sourceBytes to 3,686; a request between those caps could then be refused by Mistral with a 400. This is the smaller window `mistral-large-latest` can resolve to until its retirement on 2027-04-30 (Mistral Large 4 documents 1M). Mistral does not document what the alias names, so the smaller window is the one that holds for both. The template tokens beside it, limit:analysis.model.templateTokens, are read from the Hugging Face chat template of the open weights, not from Mistral's API; whether response_format json_object adds prompt tokens on Mistral's side is not covered. A consumer that configures a model with a smaller window gets a 400 at a request near the cap; a run-time read of the model's max_context_length is not implemented (L11, Q13(a), #383)."
 		},
 		effect: "Not enforced: limit:analysis.requestBytes derives from it.",
 		test: "src/limits.test.ts > the analysis request and unit caps derive from the context window"
@@ -2227,7 +2227,7 @@ const DEFINITIONS = [
 			url: "https://huggingface.co/mistralai/Mistral-Large-3-675B-Instruct-2512/blob/main/chat_template.jinja",
 			checked: "2026-11-28",
 			platformValue: 5,
-			margin: "none: for one system message, one user message and no tools, the template writes the begin-of-sequence token, [SYSTEM_PROMPT] and [/SYSTEM_PROMPT] around the system message, and [INST] and [/INST] around the user message: 5 tokens. A supplied system message replaces the default one, so no default prompt is added."
+			margin: "none: for one system message, one user message and no tools, the template writes the begin-of-sequence token, [SYSTEM_PROMPT] and [/SYSTEM_PROMPT] around the system message, and [INST] and [/INST] around the user message: 5 tokens. A supplied system message replaces the default one, so no default prompt is added. This is the open-weights template; that the Mistral API applies the same one, and whether response_format json_object adds prompt tokens, is not covered."
 		},
 		effect: "Not enforced: limit:analysis.requestBytes subtracts it.",
 		test: "src/limits.test.ts > the analysis request and unit caps derive from the context window"
@@ -2245,7 +2245,7 @@ const DEFINITIONS = [
 		protects: "max_tokens caps the output one call may produce, which bounds output cost per call and sizes the reply-byte formula. The spec records that reasoning tokens count against this budget.",
 		effect: "A reply that reaches the cap ends with finish_reason length and is reported truncated. The batch splits toward single units, and results from other batches are kept.",
 		test: "src/analysis/mistral.test.ts > admits a valid stop at the full token-byte, escaping and envelope allowance, but rejects one extra observed byte",
-		note: "awaiting L8 measurement"
+		note: "stopped (L11, Q14(a), #383): the approved basis is config with the hard maximum limit:analysis.model.contextTokens less the minimal request, about 258,437 tokens (262,144 − limit:analysis.fixedRequestBytes 3,702 − limit:analysis.model.templateTokens 5). The register cannot hold that maximum: at 258,437 tokens limit:analysis.requestBytes falls to 3,702, limit:analysis.unitBytes and limit:packet.textBytes to 0, and limit:analysis.responseBytes rises to 264,705,024 bytes, so limit:analysis.replyHeapBytes is 21,938,752,390 bytes, more than limit:runner.heapBytes (5,380,243,456 at that setting), and limit:packet.bytes goes negative (−877,203,177). Q14(a) also needs the section 5 amendment text, which the maintainer has not written. Value unchanged."
 	}),
 	configured("analysis.requestTimeoutMs", 24e4, "milliseconds", {
 		setting: "limits.analysisRequestTimeoutMs",
@@ -2308,7 +2308,7 @@ const DEFINITIONS = [
 		protects: "Each model text field (reason, impact, action, rationale) is capped at 1,024 UTF-8 bytes, which the spec states as concise per-unit advice. The downstream comment body is separately checked.",
 		basis: {
 			kind: "safety",
-			reason: "Parse safety on untrusted model output, which section 5 makes never configurable. Largest legitimate use: one concise paragraph per field, the spec's \"concise per-unit advice\", which the system prompt states as under 1,024 bytes. Harm above: the rendered assessments crowd limit:comment.maxBodyCodeUnits, and fitComment (src/reporting.ts) drops whole sections, the assessments last, to fit. Approved by the maintainer on 2026-11-27 (L11, #383)."
+			reason: "Parse safety on untrusted model output, which section 5 makes never configurable. Largest legitimate use: one concise paragraph per field, the spec's \"concise per-unit advice\", which the system prompt states as under 1,024 bytes. Harm above: blocker text (reason, impact, evidence claims, remediation and validation steps) renders in the Reasons-not-to-merge lines of the comment head, which fitComment (src/reporting.ts) never drops, so a longer field makes the run fail with category size sooner; assessment text renders in the sections fitComment drops, the assessments last. The cap alone does not keep the head inside limit:comment.maxBodyCodeUnits (87,381 code units): rendering the malware analysis parity scenario (tests/parity/analysis.ts) with its blocker filled to the caps, a blocker whose reason, impact, one evidence claim and limit:analysis.steps remediation and validation steps are each 1,024 ASCII bytes renders as an 18,830-code-unit line, so 5 such blockers overflow the comment (5 × 18,830 = 94,150) whatever else the head holds; with limit:analysis.references evidence claims at the cap one blocker is 52,868 code units and 2 overflow; text that escapes (each & renders as 5 code units) overflows with 1. Approved by the maintainer on 2026-11-27 (L11, #383)."
 		},
 		effect: "A field over the cap fails validation of the whole reply (category schema), and no assessment is kept.",
 		test: "src/analysis/bounds.test.ts > reason text counts UTF-8 bytes at the exact boundary for %j"
@@ -2320,7 +2320,7 @@ const DEFINITIONS = [
 		protects: "Each capability feature label is capped at 512 bytes, which the spec states as at most one capability per unit.",
 		basis: {
 			kind: "safety",
-			reason: "Parse safety on untrusted model output, as for limit:analysis.textBytes. Largest legitimate use: one short label naming a capability, below a paragraph, so the cap sits below the text cap. Harm above: the same crowding of the comment. Approved by the maintainer on 2026-11-27 (L11, #383)."
+			reason: "Parse safety on untrusted model output, as for limit:analysis.textBytes. Largest legitimate use: one short label naming a capability, below a paragraph, so the cap sits below the text cap. Harm above: capability lines render in the optional sections fitComment (src/reporting.ts) drops first to fit limit:comment.maxBodyCodeUnits, so longer labels drop them sooner. Approved by the maintainer on 2026-11-27 (L11, #383)."
 		},
 		effect: "An over-cap feature fails validation of the whole reply (category schema), and no assessment is kept.",
 		test: "src/analysis/bounds.test.ts > capability feature, action and rationale use their own byte ceilings"
@@ -2368,7 +2368,7 @@ const DEFINITIONS = [
 		protects: "Provider calls in flight are capped at two per run, the concurrency the spec reserves. No provider or platform limit is cited, so the harm is not established.",
 		effect: "No new call starts while two are in flight. Final records do not depend on completion order.",
 		test: "src/analysis/batches.test.ts > completion order does not change dispatched batches, concurrency, or final states",
-		note: "no recorded reason"
+		note: "stopped (L11, #383): the approved basis is config with the hard maximum of limit:analysis.maxCalls, limit:analysis.maxCallsMax (240). The register cannot hold it: at 240 concurrent calls limit:analysis.replyHeapBytes is 167,511,274,292 bytes (about 167 GB) and limit:runner.offHeapBytes 8,192,301,056, so limit:runner.heapBytes goes negative (−1,645,215,744) and limit:packet.bytes with it (−8,908,675,867). No smaller hard maximum is approved. Value unchanged."
 	}),
 	unjustified("analysis.maxAnalysisMs", 6e5, "milliseconds", {
 		protects: "Analysis time is capped at the spec's 600 s maximum, so the stage cannot outlast the job's time budget.",
@@ -2590,7 +2590,7 @@ const DEFINITIONS = [
 		protects: "Allowance for the reply's JSON envelope on top of the token text, so a maximal valid reply is not rejected as oversize.",
 		effect: "Caller limits whose responseBytes is below the formula fail preparation as budget (projection.ts:132-137). A reply over responseBytes fails as response-size at runtime (mistral.ts:350).",
 		test: "src/analysis/bounds.test.ts > every declared resource limit rejects larger, unsafe, fractional and incompatible values before a usable handle",
-		note: "awaiting L8 measurement"
+		note: "stopped (L11, #383): the approved basis is safety, whose largest legitimate use is the id, model, usage and choices metadata of a real Mistral reply. No reply is recorded in the repository (the replies in src/analysis/mistral.test.ts are synthetic), and this session has no Mistral key to record one, so the largest legitimate use cannot be checked offline. The harm above is measured by the register: every envelope byte is one more limit:analysis.responseBytes byte per call, carried into limit:analysis.replyHeapBytes. Value unchanged."
 	}),
 	derived("advisories.maxLookups", "count", ["packet.changes"], (changes) => 2 * changes, "The advisory lookup cap is one identity per side of each packet change.", {
 		protects: "Public identity and action-version lookups sent to advisory sources are bounded to one per side of each packet change, so lookup requests cannot grow past the change count (outbound requests).",
@@ -14235,8 +14235,8 @@ var AdvisoryFailure = class extends Error {
 	}
 };
 /**
-* A response larger than the per-response byte cap, while the reader's byte share still had room:
-* the page, not the share, is too large, so a page-size ladder may retry it at a smaller size.
+* A 200 response larger than the per-response byte cap, while the reader's byte share still had
+* room: the page, not the share, is too large, so a page-size ladder may retry it smaller.
 */
 var ResponseTooLarge = class extends AdvisoryFailure {
 	constructor() {
@@ -14661,6 +14661,7 @@ var Reader$1 = class {
 		return this.clock.remaining(stopped);
 	}
 	async body(response, aborted, provider, cached) {
+		const ok = response.status === HTTP_STATUS.ok;
 		advisoryCheck(response.body);
 		const stream = response.body.getReader(), chunks = [];
 		let size = 0;
@@ -14671,7 +14672,7 @@ var Reader$1 = class {
 				size += chunk.value.byteLength;
 				if (!cached) this.bytes += chunk.value.byteLength;
 				advisoryCheck(cached || this.bytes <= this.limits.maxTotalBytes, "budget");
-				if (size > this.limits.maxResponseBytes) throw new ResponseTooLarge();
+				if (size > this.limits.maxResponseBytes) throw ok ? new ResponseTooLarge() : new AdvisoryFailure("budget");
 				this.remaining(provider);
 				chunks.push(chunk.value);
 			}
@@ -14802,7 +14803,9 @@ var Reader$1 = class {
 	* Every page of one GitHub query, from the original URL through validated cursors. With
 	* `sizes`, a page-size ladder whose first size is the URL's `per_page`: a page over the
 	* per-response cap is retried at the same cursor at the next smaller size, and the rest of the
-	* query keeps that size. Every retry is an ordinary charged request.
+	* query keeps that size. Only a 200 page is resent. Every retry is an ordinary charged request,
+	* and the oversized body it replaces stays charged to the byte share, up to the per-response
+	* cap plus the chunk that crossed it.
 	*/
 	async github(url, each, cap, sizes = []) {
 		let query = url;
