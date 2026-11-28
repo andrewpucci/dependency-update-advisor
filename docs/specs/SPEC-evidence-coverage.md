@@ -1040,34 +1040,34 @@ register entry; this section cites ids only.
 1. **Function.** The metadata reader's request and byte shares scale on its
    eligible members, the uv members, as A1 states. Its role rates add
    nothing.
-2. **Values.** The bases keep the former flat share:
-   `limit:research.share.signals.metadata.requests.base` and
-   `limit:research.share.signals.metadata.bytes.base`. The eligible rates,
+2. **Values.** Amended (L11; approved by the maintainer on 2026-11-27,
+   [#383](https://github.com/andrewpucci/dependency-update-advisor/issues/383)):
+   the bases are `derived` from one uv member's reads, its base and head
+   metadata reads, so a one-member change can always finish them. The
+   request base, `limit:research.share.signals.metadata.requests.base`, is
+   those 2 reads, pinned by a structural test. The byte base,
+   `limit:research.share.signals.metadata.bytes.base`, is 2 ×
+   `limit:evidence.envelope.maxResponseBytes`. They replace the former flat
+   share the bases first kept. The eligible rates,
    `limit:research.share.signals.metadata.requests.rate.eligible` and
    `limit:research.share.signals.metadata.bytes.rate.eligible`, give 1.25 ×
    the per-member demand measured for #462, rounded up. The rates are
-   `measured` entries. The bases have no basis of their own yet, so they
-   stay `unjustified`, awaiting L8 measurement
-   ([#380](https://github.com/andrewpucci/dependency-update-advisor/issues/380)).
+   `measured` entries.
 3. **Ceilings.** Both are `derived` from `limit:packet.changes`.
    `limit:evidence.allocation.signals.readers.metadata.maxRequests` is two
    reads, base and head, per change.
    `limit:evidence.allocation.signals.readers.metadata.maxTotalBytes` is the
    byte base plus the eligible byte rate for every change, the largest share
    the formula gives.
-4. **Floor.** The byte base is below the per-response cap, so under A1.5 a
-   change with few uv members gets one full response.
-   - Amended (L11; approved by the maintainer on 2026-11-27,
-     [#383](https://github.com/andrewpucci/dependency-update-advisor/issues/383)):
-     the bases are `derived` from one uv member's reads, its base and head
-     metadata reads. The request base is those 2 reads, pinned by a
-     structural test. The byte base is 2 ×
-     `limit:evidence.envelope.maxResponseBytes`, so it sits above the floor,
-     and a one-member change can always finish its metadata reads. This
-     replaces the kept flat-share bases of item 2.
-5. **Measurement.** Under F4, a demand run scales the bases and rates, and
-   so the byte ceiling. The request ceiling depends only on
-   `limit:packet.changes`, so it stays unscaled; no change can need more.
+4. **Floor.** The byte base is two full responses, above the one-response
+   floor of A1.5, so the floor never raises this share. (Amended in L11:
+   the former flat byte base was below the per-response cap, and the floor
+   raised it to one response.)
+5. **Measurement.** Under F4, a demand run scales the eligible rates and
+   the response cap, so the byte base and the byte ceiling scale through
+   them. The request base is a structural count of 2 reads and the request
+   ceiling depends only on `limit:packet.changes`, so neither scales; no
+   change can need more.
 
 ### U3. Research JSON entries
 
