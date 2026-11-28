@@ -1251,23 +1251,40 @@ test('discovery reads exactly w2.session.maxPages pages and keeps the rows it re
     maxPages,
   );
 
+  // At the register cap the pages hold every row GitHub lists, so a full list ends truncated by
+  // GitHub, never cut by the cap.
   const fullTotal = maxPages * pageSize;
+  expect(fullTotal).toBe(limit('github.treeMaxFiles'));
+  const fullList = fixture(
+    [
+      json(pr(fullTotal + 1)),
+      json(pr(fullTotal + 1)),
+      ...Array.from({ length: maxPages }, (_, p) => page(p * pageSize, pageSize)),
+      json(pr(fullTotal + 1)),
+    ],
+    { maxPages },
+  );
+  const truncated = await (await ready(fullList)).discoverFiles();
+  expect(truncated).toMatchObject({ kind: 'partial', complete: false });
+  expect(truncated.reasons).toEqual(['truncated']);
+  expect(truncated.files).toHaveLength(fullTotal);
+
+  // A cap below GitHub's list stops with budget after exactly its pages and keeps their rows.
+  const fewer = maxPages - 1;
   const pastLimit = fixture(
     [
       json(pr(fullTotal)),
       json(pr(fullTotal)),
-      ...Array.from({ length: maxPages }, (_, p) => page(p * pageSize, pageSize)),
+      ...Array.from({ length: fewer }, (_, p) => page(p * pageSize, pageSize)),
       json(pr(fullTotal)),
     ],
-    { maxPages },
+    { maxPages: fewer },
   );
   const partial = await (await ready(pastLimit)).discoverFiles();
   expect(partial).toMatchObject({ kind: 'partial', complete: false });
   expect(partial.reasons).toContain('budget');
-  expect(partial.files).toHaveLength(fullTotal);
-  expect(pastLimit.fetch.mock.calls.filter(([url]) => url.includes('/files?'))).toHaveLength(
-    maxPages,
-  );
+  expect(partial.files).toHaveLength(fewer * pageSize);
+  expect(pastLimit.fetch.mock.calls.filter(([url]) => url.includes('/files?'))).toHaveLength(fewer);
 });
 
 test('a page of exactly github.pageSize rows is accepted and a longer page is malformed', async () => {

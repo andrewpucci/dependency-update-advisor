@@ -1,5 +1,7 @@
 import type { Limit, LimitDefinition } from '../limits.js';
 
+/** The packet cap a demand run keeps at its production value; see scaledDefinitions. */
+const HELD_PACKET_CAP = 'packet.bytes';
 const SCALED_RESEARCH = new Set(['research.maxAttempts', 'research.maxJsonEntries']);
 /** Scaled-share bases and rates, so a share lifts with its ceiling and the run sees uncut demand. */
 const SHARE_PREFIXES = ['research.share.', 'collection.share.'];
@@ -47,8 +49,16 @@ export function scaledDefinitions(
   if (!Number.isSafeInteger(factor) || factor < 1)
     throw new Error(`measurement scale must be a positive integer, got ${factor}`);
   return [...register.values()].map(({ value, ...entry }) => {
+    // The packet cap is held at its production value: it is the runner heap left beside the
+    // retained evidence, which a scaled read budget would spend, and a demand run measures reads,
+    // not heap, so it must still admit every packet production admits.
+    if (entry.id === HELD_PACKET_CAP && entry.basis.kind === 'derived')
+      return { ...entry, basis: { ...entry.basis, inputs: [], formula: () => value } };
     // A built register carries each derived entry's resolved value; a definition must not.
     if (entry.basis.kind === 'derived') return entry;
-    return { ...entry, value: isReadBudget({ ...entry, value }) ? times(value, factor) : value };
+    const scaled = isReadBudget({ ...entry, value }) ? times(value, factor) : value;
+    // An adopter setting's default is its value, so the two scale together.
+    const setting = entry.configurable && { ...entry.configurable, default: scaled };
+    return { ...entry, value: scaled, ...(setting && { configurable: setting }) };
   });
 }

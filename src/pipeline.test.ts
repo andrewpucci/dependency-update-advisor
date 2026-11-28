@@ -1,3 +1,5 @@
+import { setFlagsFromString } from 'node:v8';
+import { runInNewContext } from 'node:vm';
 import { expect, test, vi } from 'vite-plus/test';
 import * as assessmentModule from './assessment.js';
 import * as collectionModule from './collection.js';
@@ -14,7 +16,7 @@ import { analyzeMistralBatch } from './analysis/mistral.js';
 import type { EventReads, RepositoryIdentity, ReviewIdentity } from './event.js';
 import { createEventReads } from './adapters.js';
 import { createRehearsalSink } from './handoff.js';
-import { runReview, type PipelineInput } from './pipeline.js';
+import { OWNERSHIP_WATCH_MS, runReview, type PipelineInput } from './pipeline.js';
 import { limit } from './limits.js';
 import {
   ASSESSMENT_FAILURE_REASONS,
@@ -455,6 +457,127 @@ test('runs npm, Actions, and uv changes through research and model analysis to a
   expect(result.body).toEqual(expect.stringContaining(HEAD));
   expect(modelCalls.length).toBeGreaterThan(0);
   expect(publicCalls.some((url) => url.includes('/advisories'))).toBe(true);
+});
+
+test('the analysis phase holds only the packet research built, not the assembled one', async () => {
+  // limit:packet.bytes assumes one packet in the analysis phase. The assembled packet is watched
+  // through a WeakRef; when the model is called, a full collection must have freed it.
+  setFlagsFromString('--expose-gc');
+  const gc = runInNewContext('gc') as () => void;
+  const actual = await vi.importActual<typeof import('./packet.js')>('./packet.js');
+  const actualReview = await vi.importActual<typeof import('./assessment.js')>('./assessment.js');
+  let watched: WeakRef<object> | undefined;
+  let freed: boolean | undefined;
+  vi.mocked(packetModule.assembleReviewPacket).mockImplementationOnce(async (packetInput) => {
+    const assembled = await actual.assembleReviewPacket(packetInput);
+    if (assembled.kind === 'ready') watched = new WeakRef(assembled.packet);
+    return assembled;
+  });
+  vi.mocked(assessmentModule.reviewPacket).mockImplementationOnce(async (reviewInput) => {
+    // The test's own mocks record calls and results; clear them so only the pipeline holds refs.
+    vi.clearAllMocks();
+    // A WeakRef keeps its target until the job that created it ends; let it end first.
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    gc();
+    freed = watched !== undefined && watched.deref() === undefined;
+    return actualReview.reviewPacket(reviewInput);
+  });
+  const { input } = await setup({ evidence: 'changes' });
+  const result = await runReview(input);
+  expect(result.kind).toBe('handed-off');
+  expect(watched).toBeDefined();
+  expect(freed).toBe(true);
+});
+
+test('a full run makes freshness.checksPerRun freshness checks', async () => {
+  const { input, modelCalls } = await setup({ evidence: 'changes' });
+  let checks = 0;
+  const readRun = input.eventReads.readRun;
+  const result = await runReview({
+    ...input,
+    eventReads: {
+      ...input.eventReads,
+      // Event verification reads the run once, and each recheck reads it first.
+      readRun: async (repo, id) => {
+        checks += 1;
+        return readRun(repo, id);
+      },
+    },
+  });
+  expect(result.kind).toBe('handed-off');
+  expect(modelCalls.length).toBeGreaterThan(0);
+  // Entry, before research, before the model, and the final check before the handoff.
+  expect(checks - 1).toBe(limit('freshness.checksPerRun'));
+});
+
+test('a full run has at most evidence.readsInFlight evidence responses in flight', async () => {
+  const { input, modelCalls, githubCalls, publicCalls } = await setup({ evidence: 'changes' });
+  let live = 0;
+  let most = 0;
+  const begin = () => {
+    live += 1;
+    most = Math.max(most, live);
+  };
+  // A response is in flight from its request until its body is read to the end or cancelled.
+  const tracked =
+    (fetch: PipelineInput['githubFetch']): PipelineInput['githubFetch'] =>
+    async (url, init) => {
+      begin();
+      const response = await fetch(url, init);
+      let open = true;
+      const end = () => {
+        if (open) live -= 1;
+        open = false;
+      };
+      if (!response.body) {
+        end();
+        return response;
+      }
+      const reader = response.body.getReader();
+      const body = new ReadableStream<Uint8Array>({
+        async pull(controller) {
+          const chunk = await reader.read();
+          if (chunk.done) {
+            end();
+            controller.close();
+          } else controller.enqueue(chunk.value);
+        },
+        cancel(reason) {
+          end();
+          return reader.cancel(reason);
+        },
+      });
+      return new Response(body, { status: response.status, headers: response.headers });
+    };
+  // Snapshot and event reads return parsed values, so each is in flight while it is awaited.
+  const awaited = <T extends object>(reads: T): T =>
+    Object.fromEntries(
+      Object.entries(reads).map(([name, read]) => [
+        name,
+        typeof read === 'function'
+          ? async (...args: unknown[]) => {
+              begin();
+              try {
+                return await (read as (...a: unknown[]) => Promise<unknown>)(...args);
+              } finally {
+                live -= 1;
+              }
+            }
+          : read,
+      ]),
+    ) as T;
+  const result = await runReview({
+    ...input,
+    githubFetch: tracked(input.githubFetch),
+    publicFetch: tracked(input.publicFetch),
+    snapshotReads: awaited(input.snapshotReads),
+    eventReads: awaited(input.eventReads),
+  });
+  expect(result.kind).toBe('handed-off');
+  expect(modelCalls.length).toBeGreaterThan(0);
+  expect(githubCalls.length + publicCalls.length).toBeGreaterThan(1);
+  expect(live).toBe(0);
+  expect(most).toBe(limit('evidence.readsInFlight'));
 });
 
 test('hands off a model failure as a status-only failure with no body', async () => {
@@ -1273,7 +1396,9 @@ test('measures every deadline from the shared job start, not from its own clock'
     expect.objectContaining({ deadline: 140_000 }),
   );
   expect(assessmentModule.reviewPacket).toHaveBeenCalledWith(
-    expect.objectContaining({ deadlineMs: 695_000 }),
+    expect.objectContaining({
+      deadlineMs: -100_000 + limit('job.window') - limit('job.freshnessAllowance'),
+    }),
   );
 });
 
@@ -1286,8 +1411,14 @@ test('ends analysis job.freshnessAllowance before the job window closes', async 
   expect(call?.[0].deadlineMs).toBe(deadline);
 });
 
-test('checks ownership every pipeline.ownershipWatchMs while a request is pending', async () => {
-  const interval = limit('pipeline.ownershipWatchMs');
+test('the ownership watch interval stays below every request timeout', () => {
+  expect(OWNERSHIP_WATCH_MS).toBeLessThan(limit('github.requestTimeoutMs'));
+  expect(OWNERSHIP_WATCH_MS).toBeLessThan(limit('w2.session.requestTimeoutMs'));
+  expect(OWNERSHIP_WATCH_MS).toBeLessThan(limit('w2.registry.requestTimeoutMs'));
+});
+
+test('checks ownership every OWNERSHIP_WATCH_MS while a request is pending', async () => {
+  const interval = OWNERSHIP_WATCH_MS;
   const claims = createTestClaimStore();
   const { input } = await setup({ claims });
   vi.useFakeTimers();
@@ -1335,7 +1466,7 @@ test('wires the clock, model key, signal attempts, and npm inventory into resear
     expect.objectContaining({
       apiKey: sentinel,
       evaluatedAt: evaluationTime,
-      deadlineMs: 795_000,
+      deadlineMs: limit('job.window') - limit('job.freshnessAllowance'),
       signalAttempts: expect.arrayContaining([expect.anything()]),
     }),
   );

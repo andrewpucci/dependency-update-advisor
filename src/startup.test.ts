@@ -14,6 +14,7 @@ import {
   MODEL_FAILURE_CATEGORIES,
   createTestClaimStore,
 } from './review.js';
+import { limit } from './limits.js';
 import type { StartupDependencies } from './startup.js';
 import {
   MAX_EVENT_BYTES,
@@ -459,7 +460,16 @@ test('leaves the publication reserve intact when the whole pre-startup allowance
   // The reads of the final freshness check ran, and their stderr matches the control.
   expect(late.finalReadEnds.length).toBeGreaterThan(0);
   expect(late.stderr).not.toEqual(control.stderr);
-  expect(late.stderr[0]).toContain('analysis 1 call (504999 ms), max split depth 0');
+  // The call runs from the files read at 290,000 ms to the analysis deadline (job start 60,000 +
+  // window − freshness allowance) less the publication reserve, ending 1 ms before it.
+  const callMs =
+    60_000 +
+    limit('job.window') -
+    limit('job.freshnessAllowance') -
+    limit('analysis.publicationReserveMs') -
+    290_000 -
+    1;
+  expect(late.stderr[0]).toContain(`analysis 1 call (${callMs} ms), max split depth 0`);
   // 900,000 ms runner timeout less the 60,000 ms publication reserve, as a literal.
   expect(Math.max(...late.finalReadEnds)).toBeLessThanOrEqual(840_000);
 });
@@ -467,9 +477,11 @@ test('leaves the publication reserve intact when the whole pre-startup allowance
 test('hands analysis a deadline inside the job window, not the full job budget', async () => {
   vi.mocked(assessmentModule.reviewPacket).mockClear();
   await runWithPreStartupTime(false);
-  // Job start 60,000 + job window 840,000 - freshness allowance 45,000.
+  // Job start 60,000 + job window - freshness allowance.
   expect(assessmentModule.reviewPacket).toHaveBeenCalledWith(
-    expect.objectContaining({ deadlineMs: 855_000 }),
+    expect.objectContaining({
+      deadlineMs: 60_000 + limit('job.window') - limit('job.freshnessAllowance'),
+    }),
   );
 });
 

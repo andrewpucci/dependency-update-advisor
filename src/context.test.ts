@@ -530,7 +530,8 @@ test('JSON-escaped identity metadata overflows before contents or inventory are 
   expect(enumerate).not.toHaveBeenCalled();
 });
 
-test.each([10_000, 10_001])(
+const TRACKED_PATH_CAP = limit('context.maxTrackedPathEntries');
+test.each([TRACKED_PATH_CAP, TRACKED_PATH_CAP + 1])(
   'inventory budget bounds %i records including duplicates',
   async (matchAt) => {
     const root = await fixture();
@@ -552,7 +553,7 @@ test.each([10_000, 10_001])(
     if (!result.ok) throw new Error('expected context');
     expect(calls).toBe(matchAt);
     expect(closed).toBe(true);
-    if (matchAt === 10_000) expect(result.dependencies[0].facts).toHaveLength(1);
+    if (matchAt === TRACKED_PATH_CAP) expect(result.dependencies[0].facts).toHaveLength(1);
     else {
       expect(result.dependencies[0].facts).toHaveLength(0);
       expect(result.reasons).toContain('inventory-limit');

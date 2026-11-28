@@ -132,7 +132,8 @@ function canonical(value: unknown): unknown {
     );
   return value;
 }
-const actions: Record<GroupingReason, string> = {
+/** Each grouping reason's next action; UNIT_TEXT in src/limits.ts is pinned to these texts. */
+export const GROUPING_ACTIONS: Readonly<Record<GroupingReason, string>> = {
   independent_change: 'Assess this change using its own evidence.',
   actions_occurrence: 'Assess this exact workflow occurrence using its own evidence.',
   unknown_role: 'Establish the dependency role or assess this change independently.',
@@ -397,7 +398,7 @@ export function formDecisionUnits(input: Packet): UnitInventory {
         proofKeys: group ? group.proofs.sort() : [],
         verdictKeys: group ? group.verdicts.sort() : [],
         relationshipLimits: group ? [] : assignment.limits,
-        relationship: { reason, nextAction: actions[reason] },
+        relationship: { reason, nextAction: GROUPING_ACTIONS[reason] },
       },
     ];
   });

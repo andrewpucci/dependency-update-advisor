@@ -44,14 +44,8 @@
   {
     "file": "docs/specs/SPEC-event-verification.md",
     "line": "- 3 of 92 open `nodejs/node` PRs and 5 of 100 open `home-assistant/core` PRs",
-    "values": [100],
+    "values": [100, 92],
     "reason": "measurement: the number of open home-assistant/core PRs sampled in the 2026-10-24 survey, not a register value"
-  },
-  {
-    "file": "docs/specs/SPEC-evidence-coverage.md",
-    "line": "hour per repository, or 15,000 for resources in a GitHub Enterprise Cloud",
-    "values": [15000],
-    "reason": "external: quotes GitHub's documented or observed limit, not a register value"
   },
   {
     "file": "docs/specs/SPEC-evidence-coverage.md",
@@ -80,7 +74,7 @@
   {
     "file": "docs/specs/SPEC-evidence-coverage.md",
     "line": "512-attempt ceiling before any read. Raised, its 92 malware lookups ran and",
-    "values": [512],
+    "values": [512, 92],
     "reason": "historical measurement: the R1 demand run (PR #276) records the limits in force when it ran, not the current register value"
   },
   {
@@ -169,7 +163,7 @@
   },
   {
     "file": "docs/specs/SPEC-mistral-transport.md",
-    "line": "| Follow-up description                              | `limit:analysis.followupBytes`                                             | Does not expand the baseline's 280-character bound.                                                                    |",
+    "line": "| Follow-up description                              | `limit:analysis.followupBytes`                                             | Does not expand the baseline's 280-character bound.                                                       |",
     "values": [280],
     "reason": "historical: the baseline reviewer's bound, not a register value"
   },
@@ -241,14 +235,56 @@
   },
   {
     "file": "docs/specs/SPEC-limit-register.md",
-    "line": "repository, or 15,000 for Enterprise Cloud resources",
-    "values": [15000],
-    "reason": "external: quotes GitHub's documented or observed limit, not a register value"
-  },
-  {
-    "file": "docs/specs/SPEC-limit-register.md",
     "line": "errors report 65,536 characters, and third-party sources disagree on whether",
     "values": [65536],
     "reason": "external: quotes GitHub's documented or observed limit, not a register value"
+  },
+  {
+    "file": "docs/specs/SPEC-comment-experience.md",
+    "line": "vulnerability evidence unavailable for 92 units.",
+    "values": [92],
+    "reason": "measurement: a count of members, units or PRs in a recorded run, not a register value"
+  },
+  {
+    "file": "docs/specs/SPEC-comment-experience.md",
+    "line": "that names every member with a required record (92 of the 93), all 21",
+    "values": [92],
+    "reason": "measurement: a count of members, units or PRs in a recorded run, not a register value"
+  },
+  {
+    "file": "docs/specs/SPEC-comment-experience.md",
+    "line": "vulnerability evidence was unavailable for 92 of 93 units because research",
+    "values": [92],
+    "reason": "measurement: a count of members, units or PRs in a recorded run, not a register value"
+  },
+  {
+    "file": "docs/specs/SPEC-evidence-coverage.md",
+    "line": "- Signals reserves six attempts per member, so 92 members exceed its fixed",
+    "values": [92],
+    "reason": "measurement: a count of members, units or PRs in a recorded run, not a register value"
+  },
+  {
+    "file": "docs/specs/SPEC-evidence-coverage.md",
+    "line": "registry identity, as S1's npm row defines (92 of the 93 records in R1; the",
+    "values": [92],
+    "reason": "measurement: a count of members, units or PRs in a recorded run, not a register value"
+  },
+  {
+    "file": "docs/specs/SPEC-evidence-coverage.md",
+    "line": "members; R1's 93 records are 92 members. The units are:",
+    "values": [92],
+    "reason": "measurement: a count of members, units or PRs in a recorded run, not a register value"
+  },
+  {
+    "file": "docs/specs/SPEC-evidence-coverage.md",
+    "line": "(92 members). A fractional product rounds up; a request share is never",
+    "values": [92],
+    "reason": "measurement: a count of members, units or PRs in a recorded run, not a register value"
+  },
+  {
+    "file": "docs/specs/SPEC-limit-register.md",
+    "line": "Checkpoint B's 92-member criterion depends on packet bytes, attempts, and",
+    "values": [92],
+    "reason": "measurement: a count of members, units or PRs in a recorded run, not a register value"
   }
 ]

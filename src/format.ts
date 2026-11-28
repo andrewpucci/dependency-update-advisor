@@ -107,4 +107,4 @@ export const FORMAT_VERSION = Object.freeze({
 export const REVIEW_IDENTITY = Object.freeze({ length: 6, shaIndex: 5 });
 
 /** Process exit codes the action reports to the runner. */
-export const EXIT_CODE = Object.freeze({ notWired: 78, selfCheck: 79 });
+export const EXIT_CODE = Object.freeze({ notWired: 78, selfCheck: 79, heap: 80 });

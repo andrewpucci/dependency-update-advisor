@@ -1,4 +1,5 @@
 import { expect, test } from 'vite-plus/test';
+import { limit } from '../limits.js';
 import { readLock } from './uv-lock.js';
 import type { UvParseLimits } from './uv-toml.js';
 const limits: UvParseLimits = {
@@ -292,4 +293,23 @@ test.each([
   );
   expect(r.gaps).toEqual([]);
   expect(r.value.packages.find((p) => p.name === 'project')?.metadata).toMatchObject(metadata);
+});
+
+test('every array element counts as one record, so a record can be as small as uv.minRecordBytes', () => {
+  const smallest = '1,';
+  expect(Buffer.byteLength(smallest)).toBe(limit('uv.minRecordBytes'));
+  const list = smallest.repeat(3).slice(0, -1);
+  const pkg = 'name="a"\nversion="1"\nsource={registry="https://pypi.org/simple"}\n';
+  const cases: [string, 'packages' | 'edges' | 'declarations'][] = [
+    [`package=[${list}]\n`, 'packages'],
+    [`[[package]]\n${pkg}dependencies=[${list}]\n`, 'edges'],
+    [`[[package]]\n${pkg}[package.metadata]\nrequires-dist=[${list}]\n`, 'declarations'],
+  ];
+  for (const [body, counter] of cases) {
+    const budget = { entries: 0, packages: 0, declarations: 0, edges: 0 };
+    expect(
+      readLock(new TextEncoder().encode(`version=1\nrevision=3\n${body}`), limits, budget).kind,
+    ).toBe('parsed');
+    expect(budget[counter], counter).toBe(3);
+  }
 });

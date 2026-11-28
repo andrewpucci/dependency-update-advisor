@@ -308,6 +308,27 @@ arrays, shorten identities, or delete findings to fit.
 | References, reasons, extras/groups, or action texts in one list | `limit:packet.listEntries` entries; each action text also obeys the text cap                                                        |
 | Source context                                                  | Existing C2 caps, including `limit:packet.contextBytes` serialized bytes and `limit:packet.excerptCodeUnits` code units per excerpt |
 
+The serialized byte cap is derived from runner heap, not chosen. It is the
+old-generation heap of the smallest runner (`limit:runner.heapBytes`), less two
+things: the heap the concurrent model replies can hold
+(`limit:analysis.replyHeapBytes`) and the decision-unit expansion at its
+structural maximum (`limit:runner.unitExpansionHeapBytes`). That remainder is
+divided by the measured heap per packet byte on the densest valid packet shape
+(`limit:runner.heapBytesPerPacketByte`). The count and field caps above usually
+keep real packets far below it.
+
+- Amended (L11; approved by the maintainer on 2026-11-28,
+  [#383](https://github.com/andrewpucci/dependency-update-advisor/issues/383)):
+  the heap is sized from runner memory and the decision-unit expansion is set
+  aside, as SPEC-limit-register section 5 describes.
+- Amended (L11, Q10(a); approved by the maintainer on 2026-11-27,
+  [#383](https://github.com/andrewpucci/dependency-update-advisor/issues/383)):
+  the cap is the smaller of that analysis-phase value and an evidence-phase
+  value. The evidence-phase value is the runner heap less the evidence the
+  readers keep (`limit:runner.evidenceRetainedHeapBytes`) and the responses
+  in flight at their parse peak, divided by the evidence-phase heap per packet
+  byte (`limit:runner.evidenceHeapBytesPerPacketByte`).
+
 The cap deliberately rejects PRs containing more than `limit:packet.changes`
 detected changes.
 [Public PR #307](../../tests/parity/scenarios.md#public-npm-unpaired-additions-pr-307)

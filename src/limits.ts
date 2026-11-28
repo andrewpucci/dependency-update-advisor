@@ -39,7 +39,38 @@ export type LimitBasis =
       measured: string;
     }
   | { kind: 'safety'; reason: string }
+  | {
+      /**
+       * An adopter setting (SPEC-limit-register section 5): `value` is its default, today's value,
+       * and `configurable` names the setting and the register entries that bound it.
+       */
+      kind: 'config';
+      /** Who bears the trade-off, the first condition of section 5. */
+      bears: string;
+      /** The approval that admitted the setting, with its date and issue. */
+      approved: string;
+    }
   | { kind: 'unjustified'; note: string };
+
+/**
+ * The adopter setting a `config` entry stands for. The bounds are register ids, so a bound derived
+ * from other entries moves with them; `limit()` gives the default, and the run-time value is the
+ * adopter's setting once L12's parser reads it.
+ */
+export type LimitSetting = {
+  /** The config key L12 adds; provisional until the parser lands. */
+  setting: string;
+  default: number;
+  /** The entry whose value is the hard maximum; the parser rejects a larger setting. */
+  maximum: string;
+  /** The entry whose value is the hard minimum, when one exists; otherwise the minimum is 1. */
+  minimum?: string;
+  /**
+   * Set when the hard maximum bounds the sum of every setting that names it, as the GitHub request
+   * cap bounds its shares together.
+   */
+  joint?: boolean;
+};
 
 export type LimitDefinition = {
   id: string;
@@ -51,12 +82,20 @@ export type LimitDefinition = {
   effect: string;
   /** `<test file> > <test title>`, or `none: <reason>`, or PENDING_AUDIT. */
   test: string;
-  configurable?: { setting: string; default: number; maximum: number };
+  /** Set exactly when the basis is `config`. */
+  configurable?: LimitSetting;
 };
 
 export type Limit = LimitDefinition & { value: number };
 
-const BASIS_KINDS: readonly string[] = ['external', 'derived', 'measured', 'safety', 'unjustified'];
+const BASIS_KINDS: readonly string[] = [
+  'external',
+  'derived',
+  'measured',
+  'safety',
+  'config',
+  'unjustified',
+];
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === 'object' && value !== null;
@@ -78,7 +117,42 @@ function basisProblems(entry: Record<string, unknown>, id: string): string[] {
     return entry.value === undefined ? [] : [`${id}: derived entries must not set value`];
   }
   const hasValue = typeof entry.value === 'number' && Number.isFinite(entry.value);
-  return hasValue ? [] : [`${id}: value must be a finite number`];
+  return [
+    ...(hasValue ? [] : [`${id}: value must be a finite number`]),
+    ...settingShapeProblems(entry, id, kind),
+  ];
+}
+
+/** A `config` entry carries its setting, its default is its value, and no other entry has one. */
+function settingShapeProblems(entry: Record<string, unknown>, id: string, kind: string): string[] {
+  const setting = entry.configurable;
+  if (kind !== 'config') {
+    return setting === undefined ? [] : [`${id}: only a config entry may set configurable`];
+  }
+  if (!isRecord(setting) || typeof setting.setting !== 'string') {
+    return [`${id}: a config entry needs configurable with its setting`];
+  }
+  return [
+    ...(setting.default === entry.value ? [] : [`${id}: the setting default must equal value`]),
+    ...(typeof setting.maximum === 'string' ? [] : [`${id}: the setting needs a hard maximum`]),
+  ];
+}
+
+function settingBounds(entry: unknown): unknown[] {
+  if (!isRecord(entry) || !isRecord(entry.configurable)) return [];
+  const { maximum, minimum } = entry.configurable;
+  return minimum === undefined ? [maximum] : [maximum, minimum];
+}
+
+function boundProblems(definitions: readonly unknown[], known: ReadonlySet<string>): string[] {
+  return definitions.flatMap((entry) =>
+    settingBounds(entry)
+      .filter((bound) => typeof bound !== 'string' || !known.has(bound))
+      .map(
+        (bound) =>
+          `${isRecord(entry) ? String(entry.id) : '?'}: setting bound ${JSON.stringify(bound)} is not defined`,
+      ),
+  );
 }
 
 function duplicateProblems(ids: readonly string[]): string[] {
@@ -159,11 +233,15 @@ export function checkRegister(definitions: readonly unknown[]): string[] {
     ...definitions.flatMap((entry, index) => entryProblems(entry, index)),
     ...duplicateProblems(ids),
     ...inputProblems(definitions, known),
+    ...boundProblems(definitions, known),
     ...cycleProblems(derivedGraph(definitions)),
   ];
 }
 
-function resolveValues(definitions: readonly LimitDefinition[]): Map<string, number> {
+function resolveValues(
+  definitions: readonly LimitDefinition[],
+  settings: ReadonlyMap<string, number> = new Map(),
+): Map<string, number> {
   const byId = new Map(definitions.map((definition) => [definition.id, definition]));
   const values = new Map<string, number>();
   const valueOfId = (id: string): number => {
@@ -173,7 +251,9 @@ function resolveValues(definitions: readonly LimitDefinition[]): Map<string, num
     if (definition === undefined) throw new Error(`unknown limit id: ${id}`);
     const { basis } = definition;
     const value =
-      basis.kind === 'derived' ? basis.formula(...basis.inputs.map(valueOfId)) : definition.value;
+      basis.kind === 'derived'
+        ? basis.formula(...basis.inputs.map(valueOfId))
+        : (settings.get(id) ?? definition.value);
     if (value === undefined) throw new Error(`limit ${id} has no value`);
     values.set(id, value);
     return value;
@@ -182,12 +262,24 @@ function resolveValues(definitions: readonly LimitDefinition[]): Map<string, num
   return values;
 }
 
-export function buildRegister(definitions: readonly LimitDefinition[]): ReadonlyMap<string, Limit> {
+/**
+ * The register with each named adopter setting in place of its default. Derived entries follow
+ * the settings they derive from (SPEC-limit-register section 5, approved 2026-11-27, #383), so
+ * this is the value set a run with those settings uses. Only `config` entries may be set.
+ */
+export function buildRegister(
+  definitions: readonly LimitDefinition[],
+  settings: ReadonlyMap<string, number> = new Map(),
+): ReadonlyMap<string, Limit> {
   const problems = checkRegister(definitions);
+  for (const id of settings.keys()) {
+    const definition = definitions.find((entry) => entry.id === id);
+    if (definition?.basis.kind !== 'config') problems.push(`${id}: not an adopter setting`);
+  }
   if (problems.length > 0) {
     throw new Error(`invalid limit register:\n${problems.join('\n')}`);
   }
-  const values = resolveValues(definitions);
+  const values = resolveValues(definitions, settings);
   return new Map(
     definitions.map((definition): [string, Limit] => [
       definition.id,
@@ -214,26 +306,277 @@ export function dependents(register: ReadonlyMap<string, Limit>, id: string): st
   return [...found].sort();
 }
 
+function settingProblemsAt(register: ReadonlyMap<string, Limit>, where: string): string[] {
+  const valueOf = (id: string | undefined) =>
+    id === undefined ? 1 : (register.get(id)?.value ?? Number.NaN);
+  const joint = new Map<string, Limit[]>();
+  const problems: string[] = [];
+  for (const entry of register.values()) {
+    if (!Number.isFinite(entry.value)) problems.push(`${entry.id}: not finite ${where}`);
+    const setting = entry.configurable;
+    if (setting === undefined) continue;
+    if (entry.value < valueOf(setting.minimum))
+      problems.push(`${entry.id}: below its hard minimum ${where}`);
+    if (setting.joint === true) {
+      joint.set(setting.maximum, [...(joint.get(setting.maximum) ?? []), entry]);
+    } else if (entry.value > valueOf(setting.maximum)) {
+      problems.push(`${entry.id}: above its hard maximum ${where}`);
+    }
+  }
+  for (const [maximum, members] of joint) {
+    const total = members.reduce((sum, member) => sum + member.value, 0);
+    if (total > valueOf(maximum))
+      problems.push(`${maximum}: the settings it bounds sum past it ${where}`);
+  }
+  return problems;
+}
+
+/** Whether a setting's own bound holds in a register evaluated at the settings. */
+function withinMaximum(register: ReadonlyMap<string, Limit>, id: string): boolean {
+  const setting = register.get(id)?.configurable;
+  if (setting === undefined) return true;
+  const maximum = register.get(setting.maximum)?.value ?? Number.NaN;
+  const value =
+    setting.joint === true
+      ? [...register.values()]
+          .filter((other) => other.configurable?.maximum === setting.maximum)
+          .reduce((sum, other) => sum + other.value, 0)
+      : (register.get(id)?.value ?? Number.NaN);
+  return value <= maximum;
+}
+
+/**
+ * Checks every adopter setting at its default and at its hard maximum (SPEC-limit-register
+ * section 5, approved 2026-11-27, #383): each setting stays within its bounds, a joint maximum
+ * holds over the sum of its settings, and every derived value stays finite. A setting is raised
+ * alone, with the others at their defaults; a joint setting is raised to what its maximum leaves
+ * after the others' defaults. A maximum is read from the register evaluated at the settings, so
+ * when it falls as its own setting rises (the response cap's heap maximum does, through the
+ * off-heap buffers), the hard maximum is the largest setting that still holds, found by
+ * bisection (approved 2026-11-28, #383).
+ */
+export function settingProblems(register: ReadonlyMap<string, Limit>): string[] {
+  // A built register carries each derived entry's resolved value; a definition must not.
+  const definitions = [...register.values()].map(({ value, ...entry }): LimitDefinition =>
+    entry.basis.kind === 'derived' ? entry : { ...entry, value },
+  );
+  const defaults = buildRegister(definitions);
+  const problems = settingProblemsAt(defaults, 'at the defaults');
+  for (const entry of defaults.values()) {
+    if (entry.configurable === undefined) continue;
+    const highest = hardMaximum(defaults, entry.id);
+    if (!Number.isFinite(highest)) {
+      problems.push(`${entry.id}: no setting holds its hard maximum at the defaults`);
+      continue;
+    }
+    const raised = buildRegister(definitions, new Map([[entry.id, highest]]));
+    problems.push(...settingProblemsAt(raised, `with ${entry.id} at its hard maximum`));
+  }
+  return problems;
+}
+
+/** The largest value a setting may take, other settings at their defaults; see settingProblems. */
+export function hardMaximum(register: ReadonlyMap<string, Limit>, id: string): number {
+  const definitions = [...register.values()].map(({ value, ...entry }): LimitDefinition =>
+    entry.basis.kind === 'derived' ? entry : { ...entry, value },
+  );
+  const entry = register.get(id);
+  const setting = entry?.configurable;
+  if (entry === undefined || setting === undefined) return Number.NaN;
+  const at = (value: number) => buildRegister(definitions, new Map([[id, value]]));
+  const others = [...register.values()]
+    .filter(
+      (other) =>
+        setting.joint === true &&
+        other.id !== id &&
+        other.configurable?.maximum === setting.maximum,
+    )
+    .reduce((sum, other) => sum + other.value, 0);
+  let highest = Math.floor((register.get(setting.maximum)?.value ?? Number.NaN) - others);
+  if (withinMaximum(at(highest), id)) return highest;
+  let low = entry.value;
+  if (!withinMaximum(at(low), id)) return Number.NaN;
+  while (highest - low > 1) {
+    const middle = Math.floor((low + highest) / 2);
+    if (withinMaximum(at(middle), id)) low = middle;
+    else highest = middle;
+  }
+  return low;
+}
+
 const MiB = 1024 * 1024;
 /**
  * Tags a package's target-release stage tries: `v<version>` and `<version>`, or one
  * `<name>@<version>` in a monorepo (`packageTags`, src/evidence/upstream-github.ts:508).
  */
 export const UPSTREAM_TAG_CANDIDATES = 2;
-/**
- * The slowest OSV `v1/query` response measured for #467, which sizes the advisory ceiling. It is a
- * measurement, not a register entry, so check:limits cannot see that the ceiling depends on it: the
- * ceiling's description names it, and src/budget.test.ts pins the value it gives.
- */
-const SLOWEST_OSV_RESPONSE_MS = 541;
-/**
- * The upstream read throughput measured on the #462 uv PRs (#467), 0.64 MB/s, which sizes the
- * upstream byte ceiling. Like SLOWEST_OSV_RESPONSE_MS, it is a measurement that check:limits cannot
- * see; the ceiling's description names it, and src/budget.test.ts pins the value it gives.
- */
-const UPSTREAM_THROUGHPUT_BYTES_PER_SECOND = 640_000;
 
+/**
+ * Structural maxima of the fixed strings T5 writes into decision units (src/units.ts) and of
+ * the defaults a parsed config adds (src/config.ts). src/units.test.ts pins each one against the
+ * code it comes from, so a new category, reason or action text fails that test until this
+ * changes with it.
+ */
+export const UNIT_TEXT = Object.freeze({
+  /** Evidence categories one change may carry: 3 required, installScript, 4 optional signals. */
+  categories: 8,
+  categoryBytes: 13,
+  /** Evidence reasons (EVIDENCE_REASONS) and the longest of them. */
+  reasons: 10,
+  reasonBytes: 11,
+  /** JSON.stringify of all ten reasons, the longest reason list a limit can carry. */
+  reasonsJsonBytes: 115,
+  statusBytes: 11,
+  ecosystemBytes: 7,
+  kindBytes: 12,
+  groupingReasonBytes: 23,
+  nextActionBytes: 110,
+  /** The longest reachability outcome, or `missing` when none is recorded. */
+  outcomeBytes: 11,
+  sideBytes: 4,
+  /** A UTF-16 code unit is at most 3 UTF-8 bytes; a JSON escape of `"` or `\\` is 2. */
+  utf8BytesPerCodeUnit: 3,
+  /** Number.MAX_SAFE_INTEGER has 16 digits. */
+  safeIntegerDigits: 16,
+  shaHexDigits: 40,
+  /** String bytes and values a parsed config adds as defaults beyond its own text. */
+  configDefaultBytes: 199,
+  configDefaultEntries: 28,
+});
+
+/**
+ * The most relationship limits T5 can write: a change not grouped with one of k changed direct
+ * anchors gets one limit per other anchor and side (src/units.ts, excludeAnchor), at most
+ * 2 (n − k)(k − 1) over n changes, which is largest with k in the middle of n.
+ */
+export const maxRelationshipLimits = (changes: number): number =>
+  2 * Math.floor((changes - 1) / 2) * Math.ceil((changes - 1) / 2);
+
+/**
+ * String bytes T5 derives beyond copies of packet strings (src/units.ts): per member and
+ * evidence category, the link and source ids, the member id, category, second status, reason
+ * and signal, and the coverage limits written twice; per member, its id in members, memberIds
+ * and the unit id; per unit, the unit id's fixed fields, ecosystem, kind, anchor and its
+ * grouping text; every relationship limit; and the frame of every ambiguous-anchor limit.
+ */
+export function unitDerivedBytes(
+  changes: number,
+  relationships: number,
+  idCodeUnits: number,
+  identityBytes: number,
+): number {
+  const t = UNIT_TEXT;
+  const id = Math.min(identityBytes, t.utf8BytesPerCodeUnit * idCodeUnits);
+  const coverageLimit = id + t.categoryBytes + t.statusBytes + t.reasonBytes + 13;
+  const perCategory =
+    2 * (id + t.categoryBytes + 7) +
+    id +
+    2 * t.categoryBytes +
+    t.statusBytes +
+    t.reasonBytes +
+    2 * t.reasons * coverageLimit;
+  const perMember = 3 * id + t.ecosystemBytes + 3;
+  const perUnit =
+    2 * identityBytes +
+    2 * id +
+    2 * t.ecosystemBytes +
+    2 * t.kindBytes +
+    t.groupingReasonBytes +
+    t.nextActionBytes +
+    2 * t.safeIntegerDigits +
+    2 * t.shaHexDigits +
+    27;
+  const relationshipLimit = 2 * id + t.sideBytes + t.outcomeBytes + t.reasonsJsonBytes + 29;
+  const ambiguousFrame = 2 * id + 30;
+  return (
+    changes * (t.categories * perCategory + perMember + perUnit) +
+    maxRelationshipLimits(changes) * relationshipLimit +
+    relationships * ambiguousFrame
+  );
+}
+
+/**
+ * Values T5 derives beyond copies of packet values: per member and category, the link and
+ * source records with their scalars and both coverage-limit lists; per member, its members
+ * record and memberIds entry; per unit, the unit record and its fields; every proof and verdict
+ * key; and every relationship and ambiguous-anchor limit.
+ */
+export function unitDerivedEntries(
+  changes: number,
+  relationships: number,
+  reachability: number,
+): number {
+  const t = UNIT_TEXT;
+  const perCategory = 13 + 2 * t.reasons;
+  const perMember = 7;
+  const perUnit = 18;
+  return (
+    changes * (t.categories * perCategory + perMember + perUnit) +
+    relationships +
+    reachability +
+    maxRelationshipLimits(changes) +
+    relationships
+  );
+}
 const sum = (...values: number[]): number => values.reduce((total, value) => total + value, 0);
+
+/**
+ * The largest reply body a completion budget allows: each completion token at most
+ * `limit:analysis.maxTokenEscapedBytes` of JSON-escaped content, plus the envelope allowance.
+ * `limit:analysis.responseBytes` derives from it, and preparation checks caller limits against
+ * it (src/analysis/projection.ts), so the formula is written once.
+ */
+export const replyBytesFor = (
+  completionTokens: number,
+  maxTokenEscapedBytes: number,
+  responseEnvelopeBytes: number,
+): number => completionTokens * maxTokenEscapedBytes + responseEnvelopeBytes;
+
+/**
+ * The old-generation heap a runner with `memory` bytes leaves the reviewer: its memory less the
+ * young generation, the off-heap buffers, the runtime baseline and what the runner OS and agent
+ * keep, rounded down to whole MiB, since --max-old-space-size takes whole MiB.
+ * `limit:runner.heapBytes` applies it to the smallest runner; the action's relaunch
+ * (src/relaunch.ts) applies it to the runner it is on, so the formula is written once and the
+ * relaunch sets exactly the heap the caps are sized for.
+ */
+export const heapBytesFor = (
+  memory: number,
+  youngGeneration: number,
+  offHeap: number,
+  baseline: number,
+  reserved: number,
+): number => Math.floor((memory - youngGeneration - offHeap - baseline - reserved) / MiB) * MiB;
+
+/**
+ * The largest packet whose heap fits in both phases (`limit:packet.bytes`): in analysis beside
+ * the model replies and the unit expansion, and in evidence beside the retained evidence and the
+ * responses in flight at their parse peak. Each phase is rounded down and the smaller is kept.
+ */
+export const packetBytesFor = (
+  heap: number,
+  replies: number,
+  expansion: number,
+  perPacketByte: number,
+  retained: number,
+  readsInFlight: number,
+  responseBytes: number,
+  perResponseByte: number,
+  evidencePerPacketByte: number,
+): number =>
+  Math.min(
+    Math.floor((heap - replies - expansion) / perPacketByte),
+    Math.floor(
+      (heap - retained - readsInFlight * responseBytes * perResponseByte) / evidencePerPacketByte,
+    ),
+  );
+
+/**
+ * Sequential publication requests the publication reserve allows (src/comments.ts:329-365): the
+ * comment selection, its re-read, the publication gate, the write and the gate after it.
+ */
+const PUBLICATION_REQUESTS = 5;
+
 const copy = (value: number): number => value;
 
 /** What the audit (L7) found for an entry; a field it has not filled stays PENDING_AUDIT. */
@@ -287,6 +630,65 @@ function derived<const Id extends string>(
     basis: { kind: 'derived', inputs, formula, description },
     test: audit.test ?? PENDING_AUDIT,
   } as const;
+}
+
+/** The 2026-11-27 approval of the L11 recommendations (#383), which admitted these settings. */
+const L11_APPROVAL = 'approved by the maintainer on 2026-11-27 (L11, #383)';
+
+/**
+ * An adopter setting (SPEC-limit-register section 5): `value` is its default, today's value, and
+ * the bounds name register entries. L12 (#384) adds the setting to the config contract, the
+ * schema and the parser; until then every run uses the default.
+ */
+function configured<const Id extends string>(
+  id: Id,
+  value: number,
+  unit: LimitUnit,
+  setting: Omit<LimitSetting, 'default'>,
+  bears: string,
+  audit: Required<Omit<Audit, 'note'>>,
+) {
+  return {
+    id,
+    value,
+    unit,
+    protects: audit.protects,
+    effect: audit.effect,
+    basis: { kind: 'config', bears, approved: L11_APPROVAL },
+    configurable: { ...setting, default: value },
+    test: audit.test,
+  } as const;
+}
+
+/**
+ * A Q10 byte share or retained cap (L11, Q10(a), #383): an adopter setting whose default is
+ * today's value, under the joint hard maximum `limit:runner.maxEvidenceRetainedBytes`.
+ */
+function retainedSetting<const Id extends string>(
+  id: Id,
+  setting: string,
+  value: number,
+  unit: LimitUnit,
+  audit: Audit,
+  minimum?: string,
+) {
+  return configured(
+    id,
+    value,
+    unit,
+    {
+      setting,
+      maximum: 'runner.maxEvidenceRetainedBytes',
+      joint: true,
+      ...(minimum === undefined ? {} : { minimum }),
+    },
+    "The adopter: a larger value reads or keeps more of that reader's evidence and spends more evidence-phase heap, which lowers limit:packet.bytes. Section 5 admitted the byte shares and retained caps as configuration on 2026-11-27 (L11, Q10(a), #383).",
+    {
+      protects: audit.protects ?? PENDING_AUDIT,
+      effect: audit.effect ?? PENDING_AUDIT,
+      test: audit.test ?? PENDING_AUDIT,
+    },
+  );
 }
 
 /** Research shares that scale with the change; each maps to the allocation entry that caps it. */
@@ -648,17 +1050,383 @@ function allScaledShareEntries() {
   );
 }
 
+/**
+ * The evidence the readers keep in the evidence phase (Q10, #383): the thirteen byte shares and
+ * retained caps Q10 makes configuration, the research readers' retained cap, and the trusted
+ * config.
+ */
+export const Q10_RETAINED_INPUTS = [
+  'evidence.allocation.transport.snapshot.maxTotalBytes',
+  'evidence.allocation.session.maxTotalBytes',
+  'evidence.allocation.registry.maxTotalBytes',
+  'evidence.allocation.advisory.maxTotalBytes',
+  'evidence.allocation.signals.readers.malware.maxTotalBytes',
+  'evidence.allocation.signals.readers.publishTimes.maxTotalBytes',
+  'evidence.allocation.signals.readers.registry.maxTotalBytes',
+  'evidence.allocation.signals.readers.upstream.maxTotalBytes',
+  'w2.session.maxRetainedBytes',
+  'w2.npm.maxRetainedBytes',
+  'w2.actions.maxRetainedBytes',
+  'w2.uv.maxRetainedBytes',
+  'w2.graph.maxRetainedBytes',
+  'research.maxRetainedBytes',
+  'config.maxBytes',
+] as const;
+
 const DEFINITIONS = [
   {
     id: 'packet.bytes',
-    value: 1_048_576,
     unit: 'bytes',
     protects:
       'An untrusted review packet of unbounded size would make validation and the analysis projection unbounded in memory and CPU; the serialized size is measured and rejected above the cap.',
     effect:
       'The whole packet is rejected with category budget on field packet, and no partial packet is returned. Optional evidence is dropped first so the assembled packet can fit.',
-    basis: { kind: 'unjustified', note: 'awaiting L8 measurement' },
+    basis: {
+      kind: 'derived',
+      inputs: [
+        'runner.heapBytes',
+        'analysis.replyHeapBytes',
+        'runner.unitExpansionHeapBytes',
+        'runner.heapBytesPerPacketByte',
+        'runner.evidenceRetainedHeapBytes',
+        'evidence.readsInFlight',
+        'evidence.envelope.maxResponseBytes',
+        'runner.heapBytesPerEvidenceByte',
+        'runner.evidenceHeapBytesPerPacketByte',
+      ],
+      formula: packetBytesFor,
+      description:
+        'The largest packet whose heap fits in both phases, the smaller of two values. Analysis: (limit:runner.heapBytes − limit:analysis.replyHeapBytes − limit:runner.unitExpansionHeapBytes) ÷ limit:runner.heapBytesPerPacketByte; the concurrent model replies and the decision-unit expansion at its structural maximum come off first, and the snapshot tree, research cache and npm inventory are released before analysis (src/pipeline.ts), so no evidence state is held beside them. Evidence: (limit:runner.heapBytes − limit:runner.evidenceRetainedHeapBytes − limit:evidence.readsInFlight × limit:evidence.envelope.maxResponseBytes × limit:runner.heapBytesPerEvidenceByte) ÷ limit:runner.evidenceHeapBytesPerPacketByte; the evidence the readers keep at the Q10 settings and the responses in flight at their parse peak come off first. Each is rounded down. The packet is never sent to the model whole, so runner heap is its only real limit. Approved by the maintainer on 2026-11-27 (L11, #383); the expansion, the released state and the evidence-phase bound on 2026-11-28.',
+    },
     test: 'src/schema.test.ts > enforces the exact serialized packet budget including multibyte text',
+  },
+  {
+    id: 'runner.heapBytesPerPacketByte',
+    value: 19,
+    unit: 'bytes',
+    protects:
+      'States how much heap a serialized packet byte costs at peak, through validation, revalidation, the analysis projection and render, on the densest valid packet shape, so limit:packet.bytes can be sized from runner heap.',
+    basis: {
+      kind: 'measured',
+      command: 'npm run measure:heap',
+      corpus:
+        'the invented large-inventory npm packet (93 members plus 2 same-named nested copies) in its value-dense shape, every 64-hex id shortened to the shortest distinct hex string (731,507 bytes), and the same packet with its member records repeated 4 times (2,939,271 bytes), on Node 24.22.3 (V8 13.6) with a 1 MiB semi space. The plain shape, with 64-hex ids, gives 15.71 in the same run (1,043,616 to 4,179,981 bytes, 31 to 78 MiB)',
+      statistic:
+        'the growth in the smallest --max-old-space-size at which validation, revalidation, analysis with a stub model and render complete (29 MiB to 68 MiB), plus 1 MiB of bisection resolution, divided by the growth in serialized packet bytes (2,207,764): 18.998, rounded up to 19.00. The larger of the two shapes is kept. The sampled peak heapUsed is not used: it moves with garbage-collection timing',
+      headroom:
+        'none: a platform property, not a demand; the added 1 MiB makes it an upper bound, and the margin lies in limit:analysis.replyHeapBytes, which assumes every reply in flight is a hostile body of the full reply cap',
+      measured: '2026-11-28',
+    },
+    effect:
+      'Not enforced. limit:packet.bytes divides the heap left beside the model replies and the unit expansion by it; a larger value lowers the packet cap.',
+    test: 'src/limits.test.ts > the heap inputs of packet.bytes keep their sources and formula',
+  },
+  {
+    id: 'runner.unitExpansionHeapBytes',
+    value: 108_351_425,
+    unit: 'bytes',
+    protects:
+      'States the heap the decision-unit expansion (src/units.ts) takes at its structural maximum, beyond what the packet costs per byte, so limit:packet.bytes can set it aside.',
+    basis: {
+      kind: 'measured',
+      command: 'npm run measure:heap',
+      corpus:
+        'the largest-expansion packet the parity builders reach (tests/parity/heap-shapes.ts): the large-inventory scenario at limit:packet.changes changes (124 npm members plus 4 others, 2,889,936 bytes), 63 of the npm transitive updates made direct anchors and the other 61 each proving a path from one, every anchor scope verdict failed for all ten reasons, every evidence entry partial for all ten reasons and every change id padded to limit:packet.idCodeUnits with a three-byte character: 7,564 relationship limits of the structural 8,064, through validation, revalidation, analysis with a stub model (16 calls) and render, first with the projection caps lifted and again within the derived caps, where it also completes at 161 MiB; on Node 24.22.3 (V8 13.6) with a 1 MiB semi space',
+      statistic:
+        'the smallest --max-old-space-size at which it completes (161 MiB) less that of the large plain packet (31 MiB), plus 1 MiB of bisection resolution, less the growth in packet bytes (1,846,320) at the plain rate of 15.71: 108,351,424.08 bytes, rounded up. The projection-findings estimate on branch -l11-packet was about 106 MB ±20%',
+      headroom:
+        'none: a platform property, not a demand. The packet reaches 7,564 of the 8,064 relationship limits the counts allow (its four non-npm changes cannot be anchors), so the structural maximum is about 7% above it in that term',
+      measured: '2026-11-28',
+    },
+    effect:
+      'Not enforced. limit:packet.bytes subtracts it from the analysis-phase heap; a larger value lowers the packet cap.',
+    test: 'src/limits.test.ts > packet.bytes is the packet that fits the runner heap beside the model replies',
+  },
+  {
+    id: 'runner.heapBytesPerEvidenceByte',
+    value: 59,
+    unit: 'bytes',
+    protects:
+      'States how much heap one evidence response byte costs at peak while a reader decodes, parses and copies it, so the evidence-phase heap can bound the response cap.',
+    basis: {
+      kind: 'measured',
+      command: 'npm run measure:heap',
+      corpus:
+        'one invented response body of exactly limit:evidence.envelope.maxResponseBytes (1,048,576 bytes), opening with a CJK string so the decoded text is two-byte, in three shapes (empty arrays, empty objects, arrays nested to limit:research.maxJsonDepth), through the real read path of six readers with a stub fetch: the GitHub transport (src/runtime.ts), the W2 GitHub read session (src/github-read.ts), the GitHub advisory and OSV queries (src/evidence/advisory-read.ts), PyPI JSON metadata (src/evidence/policy-signals-read.ts) and npm registry documents (src/evidence/npm-registry.ts); on Node 24.22.3 (V8 13.6) with a 1 MiB semi space',
+      statistic:
+        'per reader, the smallest --max-old-space-size at which the read completes for the worst shape less that for a two-element body, plus 1 MiB of bisection resolution, divided by the body bytes; the largest reader is kept: OSV, nested arrays, 71 − 13 + 1 = 59 MiB per MiB (transport 32, session 33, GitHub advisories 57, PyPI 58, npm 41). The advisory and signal readers copy the parsed value (copyAdvisoryData), which roughly doubles the parse heap',
+      headroom:
+        'none: a platform property, not a demand; the added 1 MiB makes it an upper bound of the bisection, not a midpoint',
+      measured: '2026-11-28',
+    },
+    effect:
+      'Not enforced. limit:runner.maxEvidenceResponseBytes and the evidence-phase heap divide by it; a larger value lowers the response cap maximum.',
+    test: 'src/limits.test.ts > the evidence-phase heap inputs keep their sources and formula',
+  },
+  {
+    id: 'runner.evidenceHeapBytesPerPacketByte',
+    value: 14.7,
+    unit: 'bytes',
+    protects:
+      "States how much heap a serialized packet byte costs at peak in the evidence phase, through assembly's serialization, T4 validation and research's revalidation, with no analysis.",
+    basis: {
+      kind: 'measured',
+      command: 'npm run measure:heap',
+      corpus:
+        'the invented large-inventory npm packet (93 members plus 2 same-named nested copies, 1,043,616 bytes) and the same packet with its member records repeated 16 times (16,737,105 bytes), run by measure.ts with PHASE=evidence, on Node 24.22.3 (V8 13.6) with a 1 MiB semi space',
+      statistic:
+        'the growth in the smallest --max-old-space-size at which the evidence-phase path completes (30 MiB to 249 MiB), plus 1 MiB of bisection resolution, divided by the growth in serialized packet bytes (15,693,489): 14.6995, rounded up to 14.70. Revalidation builds a second packet beside the validated one, so the evidence phase holds two packets, not the 2.62 an earlier trace estimated',
+      headroom: 'none: a platform property, not a demand; the added 1 MiB makes it an upper bound',
+      measured: '2026-11-28',
+    },
+    effect:
+      'Not enforced. limit:runner.evidenceHeapBytes subtracts the packet at this rate; a larger value lowers the evidence-phase heap.',
+    test: 'src/limits.test.ts > the evidence-phase heap inputs keep their sources and formula',
+  },
+  {
+    id: 'runner.evidenceHeapBytes',
+    unit: 'bytes',
+    protects:
+      'Bounds the heap the evidence phase may give to responses in flight and retained evidence, after the packet and the state that stays reachable into analysis.',
+    effect:
+      'Not enforced: limit:runner.maxEvidenceResponseBytes divides it; it is the heap left for responses in flight beside the packet and the retained evidence.',
+    basis: {
+      kind: 'derived',
+      inputs: [
+        'runner.heapBytes',
+        'packet.bytes',
+        'runner.evidenceHeapBytesPerPacketByte',
+        'runner.evidenceRetainedHeapBytes',
+      ],
+      formula: (heap, packet, perPacketByte, retained) =>
+        Math.floor(heap - packet * perPacketByte - retained),
+      description:
+        "The evidence phase's share of the heap. Evidence and research run before analysis, and research readers are locals of runResearch, closed in its finally (src/research.ts:452-459), so the heap is shared by phase. The packet is held at its evidence-phase rate (limit:runner.evidenceHeapBytesPerPacketByte × limit:packet.bytes). The evidence the readers keep, the trusted config among it, is held through the whole phase at limit:runner.evidenceRetainedHeapBytes; what is left is the heap for responses in flight. Approved by the maintainer on 2026-11-27 (L11, Q3(a), #383); the retained rate on 2026-11-28.",
+    },
+    test: 'src/limits.test.ts > the evidence-phase heap inputs keep their sources and formula',
+  },
+  {
+    id: 'runner.maxEvidenceResponseBytes',
+    unit: 'bytes',
+    protects:
+      'Keeps an adopter setting of the response cap from letting the responses in flight exhaust the evidence-phase heap.',
+    effect:
+      'Not enforced by the reviewer yet: L12 makes the config parser reject a larger response cap. check:limits evaluates the register at this value.',
+    basis: {
+      kind: 'derived',
+      inputs: [
+        'runner.evidenceHeapBytes',
+        'evidence.readsInFlight',
+        'runner.heapBytesPerEvidenceByte',
+      ],
+      formula: (heap, inFlight, perByte) => Math.floor(heap / (inFlight * perByte)),
+      description:
+        'The hard maximum of limit:evidence.envelope.maxResponseBytes: limit:runner.evidenceHeapBytes ÷ (limit:evidence.readsInFlight × limit:runner.heapBytesPerEvidenceByte), rounded down. The evidence the readers keep is already set aside in limit:runner.evidenceHeapBytes. Approved by the maintainer on 2026-11-27 (L11, Q3(a), #383).',
+    },
+    test: 'none: the hard maximum of an adopter setting the parser does not read yet (L12, #384); src/limits.test.ts pins its formula',
+  },
+  {
+    id: 'runner.heapBytesPerRetainedByte',
+    value: 27.47,
+    unit: 'bytes',
+    protects:
+      'States how much heap one retained evidence byte holds after its parse, as readers charge it (the UTF-8 length of its JSON), so the evidence the readers keep can be sized from runner heap apart from the transient parse peak of the response in flight.',
+    basis: {
+      kind: 'measured',
+      command: 'npm run measure:heap',
+      corpus:
+        'values of exactly 1 MiB of retained JSON bytes each (Buffer.byteLength(JSON.stringify(value)), as src/evidence/npm.ts and src/evidence/policy-signals-read.ts charge them), each parsed from its own text, structured-cloned and deeply frozen as src/evidence/npm-graph.ts keeps its result, with the text and the parsed original dropped (scripts/measure-heap/retained.ts), in three shapes (empty arrays, empty objects, arrays nested to limit:research.maxJsonDepth); on Node 24.22.3 (V8 13.6) with a 1 MiB semi space',
+      statistic:
+        'per shape, the growth in the smallest --max-old-space-size from one value held to 16 held at once, plus 1 MiB of bisection resolution, divided by the 15 MiB of added retained bytes; the largest shape is kept: nested arrays, (476 − 65 + 1) ÷ 15 = 27.467, rounded up to 27.47 (empty arrays 13.4, empty objects 21.4). The difference leaves out the parse peak of the last value, which limit:runner.heapBytesPerEvidenceByte covers',
+      headroom:
+        'none: a platform property, not a demand; the added 1 MiB makes it an upper bound. A reader keeps a typed result, not arbitrary JSON, so a structural bound per reader could be lower',
+      measured: '2026-11-28',
+    },
+    effect:
+      'Not enforced. limit:runner.evidenceRetainedHeapBytes multiplies the retained state by it; a larger value leaves less evidence-phase heap.',
+    test: 'src/limits.test.ts > the evidence retained state is sized at the retained rate',
+  },
+  {
+    id: 'runner.evidenceRetainedHeapBytes',
+    unit: 'bytes',
+    protects:
+      'States the heap the evidence the readers keep may hold at once in the evidence phase, at the Q10 defaults, so the joint maximum of those caps can be checked against runner heap.',
+    effect:
+      'Not enforced. limit:packet.bytes and limit:runner.evidenceHeapBytes subtract it from the evidence-phase heap; a larger retained state lowers the packet cap.',
+    basis: {
+      kind: 'derived',
+      inputs: [...Q10_RETAINED_INPUTS, 'runner.heapBytesPerRetainedByte'],
+      formula: (...values) => {
+        const rate = values.at(-1) ?? 0;
+        return Math.ceil(values.slice(0, -1).reduce((sum, value) => sum + value, 0) * rate);
+      },
+      description:
+        'The retained state at limit:runner.heapBytesPerRetainedByte: the thirteen Q10 byte shares and retained caps (the snapshot, session, registry and advisory byte shares, the malware, publish-time, registry and upstream signal-reader shares, and the session, npm, actions, uv and graph retained caps), limit:research.maxRetainedBytes, and the trusted config (limit:config.maxBytes), held through the whole phase. The byte shares stand for what their readers keep from the bytes they read; the research shares are also inside limit:research.maxRetainedBytes, so the sum is an upper bound. Q10(a) approved by the maintainer on 2026-11-27, #383.',
+    },
+    test: 'src/limits.test.ts > the evidence retained state is sized at the retained rate',
+  },
+  {
+    id: 'runner.maxEvidenceRetainedBytes',
+    unit: 'bytes',
+    protects:
+      'Keeps adopter settings of the byte shares and retained caps from letting the evidence the readers keep exhaust the evidence-phase heap.',
+    effect:
+      'Not enforced by the reviewer yet: L12 makes the config parser reject settings whose sum passes it. check:limits evaluates the register at it.',
+    basis: {
+      kind: 'derived',
+      inputs: [
+        'runner.heapBytes',
+        'packet.bytes',
+        'runner.evidenceHeapBytesPerPacketByte',
+        'evidence.readsInFlight',
+        'evidence.envelope.maxResponseBytes',
+        'runner.heapBytesPerEvidenceByte',
+        'runner.heapBytesPerRetainedByte',
+        'research.maxRetainedBytes',
+        'config.maxBytes',
+      ],
+      formula: (
+        heap,
+        packet,
+        perPacketByte,
+        inFlight,
+        response,
+        perResponseByte,
+        perRetained,
+        research,
+        config,
+      ) =>
+        Math.floor(
+          (heap - packet * perPacketByte - inFlight * response * perResponseByte) / perRetained,
+        ) -
+        research -
+        config,
+      description:
+        'The joint hard maximum of the thirteen Q10 byte shares and retained caps: the evidence-phase heap left beside the packet at its evidence-phase rate and the responses in flight at their parse peak, at limit:runner.heapBytesPerRetainedByte, less limit:research.maxRetainedBytes and limit:config.maxBytes, which are held beside them, rounded down. limit:packet.bytes takes the evidence-phase heap the defaults leave, so a setting raised above its default lowers the packet cap rather than passing this maximum. Q10(a) approved by the maintainer on 2026-11-27, #383.',
+    },
+    test: 'none: the joint hard maximum of adopter settings the parser does not read yet (L12, #384); src/limits.test.ts pins its formula',
+  },
+  {
+    id: 'runner.memoryBytes',
+    value: 8_000_000_000,
+    unit: 'bytes',
+    protects:
+      'Records the memory of the smallest runner the reviewer supports: the standard GitHub-hosted Linux runner for private repositories (ubuntu-latest, 2 CPUs and 8 GB).',
+    basis: {
+      kind: 'external',
+      url: 'https://docs.github.com/en/actions/reference/runners/github-hosted-runners',
+      checked: '2026-11-27',
+      platformValue: 8_000_000_000,
+      margin:
+        'none, and 8 GB is read as decimal gigabytes, the smaller of its two readings. The action sizes its heap from the memory of the runner it is on (src/relaunch.ts); this entry fixes the caps every runner must honour',
+    },
+    effect:
+      'Not enforced: limit:runner.heapBytes is derived from it, and through it every cap sized from runner heap.',
+    test: 'src/limits.test.ts > the runner heap derives from runner memory less what is not old generation',
+  },
+  {
+    id: 'runner.youngGenerationBytes',
+    value: 201_326_592,
+    unit: 'bytes',
+    protects:
+      "Records the young generation V8 reserves beside the old generation, which the runner's memory must also hold.",
+    basis: {
+      kind: 'external',
+      url: 'https://github.com/nodejs/node/blob/v24.22.3/deps/v8/src/heap/heap.cc#L317-L320',
+      checked: '2026-11-28',
+      platformValue: 201_326_592,
+      margin:
+        'none. The young generation is (2 semispaces + 1 new large-object space) × the semispace (heap.cc#L314-L320, kNewLargeObjectSpaceToSemiSpaceRatio = 1 at heap.h#L317). With only --max-old-space-size given, the semispace is DefaultMaxSemiSpaceSize (heap.cc#L4949-L4951): scavenger_max_new_space_capacity_mb (32, flag-definitions.h#L923) × MB × kPointerMultiplier, which is kTaggedSize / 4 = 2 without pointer compression (heap.h#L303), so 64 MiB, and 3 × 64 MiB = 201,326,592 bytes',
+    },
+    effect: 'Not enforced: limit:runner.heapBytes subtracts it.',
+    test: 'src/limits.test.ts > the runner heap derives from runner memory less what is not old generation',
+  },
+  {
+    id: 'runner.offHeapBytes',
+    unit: 'bytes',
+    protects:
+      'Counts the buffers the reviewer keeps outside the V8 heap, which take runner memory but not old generation.',
+    effect: 'Not enforced: limit:runner.heapBytes subtracts it.',
+    basis: {
+      kind: 'derived',
+      inputs: [
+        'research.cache.maxTotalBytes',
+        'evidence.readsInFlight',
+        'evidence.envelope.maxResponseBytes',
+        'snapshot.maxBlobBytes',
+        'w2.session.maxFileBytes',
+        'context.maxSourceFileBytes',
+        'analysis.maxConcurrentCalls',
+        'analysis.responseBytes',
+      ],
+      formula: (cache, inFlight, response, blob, file, source, calls, reply) =>
+        cache + inFlight * 2 * (response + Math.max(blob, file, source)) + calls * 2 * reply,
+      description:
+        'Every off-heap buffer the register bounds, summed over both phases because an ArrayBuffer is freed only by a later collection: the research cache bodies (limit:research.cache.maxTotalBytes, Uint8Array, src/evidence/research-cache.ts:106); for each evidence read in flight (limit:evidence.readsInFlight), its body chunks and their concatenation (2 × limit:evidence.envelope.maxResponseBytes, for example src/github-read.ts:412) and the largest decoded file with its copy (2 × the largest of limit:snapshot.maxBlobBytes, src/snapshot.ts:119; limit:w2.session.maxFileBytes; limit:context.maxSourceFileBytes, src/context.ts:494); and for each model call in flight, its reply chunks and their concatenation (2 × limit:analysis.responseBytes, src/analysis/mistral.ts:199-211). Approved by the maintainer on 2026-11-27 (L11, #383).',
+    },
+    test: 'src/limits.test.ts > the runner heap derives from runner memory less what is not old generation',
+  },
+  {
+    id: 'runner.baselineBytes',
+    value: 178_040_832,
+    unit: 'bytes',
+    protects:
+      "Records the memory the reviewer's two Node processes take beyond their heaps: the relaunching parent and the action's code, isolate and native runtime.",
+    basis: {
+      kind: 'measured',
+      command: 'npm run probe:runtime-baseline',
+      corpus:
+        '5 runs of the built action bundle with no workflow environment, so it relaunches, runs its startup self-check and fetch, and exits 78 at the missing runtime inputs; Node 24.22.3 on Linux x64',
+      statistic:
+        'the largest parent plus child peak resident set (process.resourceUsage().maxRSS) over the runs: 89,210,880 + 88,829,952 = 178,040,832 bytes (the 5 runs span 177.0 to 178.0 MB). Each process counts its whole resident set, including the few MB of heap the self-check uses',
+      headroom:
+        'none: a platform property, not a demand; counting each whole resident set overstates what lies outside the heap',
+      measured: '2026-11-28',
+    },
+    effect: 'Not enforced: limit:runner.heapBytes subtracts it.',
+    test: 'tests/probe-runtime-baseline/core.test.ts > the baseline is the largest parent plus child peak resident set',
+  },
+  {
+    id: 'runner.systemReservedBytes',
+    value: 1_072_902_144,
+    unit: 'bytes',
+    protects:
+      "Reserves the runner memory the runner's OS, services and runner agent keep, which the reviewer cannot use.",
+    basis: {
+      kind: 'measured',
+      command: 'npm run probe:runner-memory',
+      corpus:
+        'one run on a GitHub-hosted ubuntu-latest runner on 2026-11-28: Actions run 46102933198, job 140849238342, runner image 20261122.9.1, Node v24.22.3, no cgroup memory limit (process.constrainedMemory() unconstrained). The repository is public, so the job ran on the public 4-CPU, 16 GB runner (MemTotal 16,759,431,168), not the private-repository 8 GB runner limit:runner.memoryBytes describes',
+      statistic:
+        'MemTotal − MemAvailable at job start, from /proc/meminfo: 16,759,431,168 − 15,686,529,024 = 1,072,902,144 bytes. It includes the runner agent (Runner.Listener 99,885,056 and Runner.Worker 131,256,320 bytes resident) and the OS, services and page cache the kernel does not count as available. It is applied as an absolute reserve to the 8 GB runner: OS and agent memory does not scale with the memory size, and a run in a private repository would confirm it',
+      headroom:
+        'none: a platform property, not a demand; MemAvailable excludes reclaimable cache the kernel could free, so the reserve overstates what the reviewer cannot use',
+      measured: '2026-11-28',
+    },
+    effect: 'Not enforced: limit:runner.heapBytes subtracts it.',
+    test: 'src/limits.test.ts > the runner heap derives from runner memory less what is not old generation',
+  },
+  {
+    id: 'runner.heapBytes',
+    unit: 'bytes',
+    protects:
+      'Bounds the old-generation heap the reviewer may plan for on the smallest runner; past it the process aborts out of memory and the job fails with no comment update.',
+    effect:
+      'The action relaunches itself with --max-old-space-size from the same formula and the memory of the runner it is on (src/relaunch.ts), so on the smallest runner the heap is this value. Every cap sized from runner heap is derived from it, by phase.',
+    basis: {
+      kind: 'derived',
+      inputs: [
+        'runner.memoryBytes',
+        'runner.youngGenerationBytes',
+        'runner.offHeapBytes',
+        'runner.baselineBytes',
+        'runner.systemReservedBytes',
+      ],
+      formula: heapBytesFor,
+      description:
+        'The smallest runner\'s memory (limit:runner.memoryBytes) less what is not old generation: the young generation (limit:runner.youngGenerationBytes), the off-heap buffers (limit:runner.offHeapBytes), the runtime baseline (limit:runner.baselineBytes) and what the runner OS and agent keep (limit:runner.systemReservedBytes). Approved by the maintainer on 2026-11-28 ("Raise heap to runner memory", L11, #383).',
+    },
+    test: 'src/relaunch.test.ts > sizes the heap with the register formula and the runner memory',
   },
   {
     id: 'packet.changes',
@@ -690,18 +1458,27 @@ const DEFINITIONS = [
       'Finding count comes from untrusted input; an unbounded list would let validation and linking work grow without limit.',
     effect:
       'Overflow rejects the whole packet with budget on findings; findings are never deleted to fit.',
-    basis: { kind: 'unjustified', note: 'awaiting L8 measurement' },
+    basis: {
+      kind: 'safety',
+      reason:
+        'The largest legitimate use measured is 192 findings for the 105 members of #276 (https://github.com/andrewpucci/dependency-update-advisor/issues/350#issuecomment-6940522903); scaled to limit:packet.changes members that is about 234, so 512 leaves about 2× headroom. Above the cap, schema validation and finding-to-change linking work grow with the count of untrusted records, and limit:research.maxFindings copies this value, so a larger cap also lets one advisory reader retain and return more findings before it stops with budget. Approved by the maintainer on 2026-11-27, #383.',
+    },
     test: 'src/schema.test.ts > accepts 512 findings and rejects the overflow record',
   },
   {
     id: 'packet.relationships',
-    value: 256,
     unit: 'count',
     protects:
       'Relationship proofs come from collector output and their linking work grows with their count; an unbounded set would grow the proof graph without limit.',
     effect:
       'Overflow rejects the packet with budget on relationships. The assembler drops optional proofs before this check runs.',
-    basis: { kind: 'unjustified', note: 'awaiting L8 measurement' },
+    basis: {
+      kind: 'derived',
+      inputs: ['packet.changes'],
+      formula: (changes) => 2 * changes,
+      description:
+        'At most two proofs per member, the claimed anchor and one more to evidence ambiguity (docs/specs/SPEC-reachability-evidence.md, Bounds), over at most limit:packet.changes members, so twice the change cap holds every proof the collectors emit. Approved by the maintainer on 2026-11-27, #383.',
+    },
     test: 'src/schema.test.ts > accepts 256 distinct proofs and rejects the overflow proof',
   },
   {
@@ -723,7 +1500,11 @@ const DEFINITIONS = [
       "A relationship path's instance count comes from untrusted input; an unbounded path would make path walks grow without limit.",
     effect:
       'A path over 32 instances rejects the packet with budget on relationships. The graph collectors separately stop with path_limit and do not expand the path.',
-    basis: { kind: 'unjustified', note: 'awaiting L8 measurement' },
+    basis: {
+      kind: 'safety',
+      reason:
+        "The largest legitimate path observed is 7 instances: the shortest path from a direct dependency to each installed package, counting both ends, over every package in each of the 6 committed versions of this repository's package-lock.json (346 to 360 packages, resolved by nearest node_modules lookup, 2026-11-27). That is npm only and one repository; no uv lock is committed and the demand corpus records no path lengths. 32 is more than 4× that. Above the cap, schema validation and the unit-forming path walk grow with each proof's length, and every instance record counts against limit:packet.bytes: limit:packet.relationships proofs of 32 instances are already 8,192 instance records. A longer path is not lost silently: the npm and uv collectors stop with path_limit and leave the member standalone with that reason. Approved by the maintainer on 2026-11-27, #383.",
+    },
     test: 'src/schema.test.ts > enforces the 32-instance path ceiling',
   },
   {
@@ -734,7 +1515,11 @@ const DEFINITIONS = [
       'IDs and package names come from untrusted registry and repository input; an oversized ID would inflate every record that repeats it and the packet bytes budget.',
     effect:
       'An over-long ID rejects the packet with budget on the field; the code-unit count is checked inside text().',
-    basis: { kind: 'unjustified', note: 'no recorded reason' },
+    basis: {
+      kind: 'safety',
+      reason:
+        'npm documents a package name maximum of 214 characters, including the scope (https://docs.npmjs.com/cli/v11/configuring-npm/package-json, checked 2026-11-27), and synthetic ids are a short kind prefix plus a 64-character SHA-256 hex digest, under 100 code units (for example src/evidence/npm.ts and src/evidence/actions.ts). 256 sits above both. Above it, one oversized id is repeated in every record that cites it, inflating the packet against limit:packet.bytes; limit:context.maxIdCodeUnits copies this value. Approved by the maintainer on 2026-11-27, #383.',
+    },
     test: 'src/schema.test.ts > enforces 256-code-unit IDs and 1024-byte identity strings',
   },
   {
@@ -744,18 +1529,27 @@ const DEFINITIONS = [
     protects:
       'Other identity strings such as versions, refs and paths come from untrusted input; an oversized byte length would inflate records and the packet bytes budget.',
     effect: 'An identity string over the byte cap rejects the packet with budget on the field.',
-    basis: { kind: 'unjustified', note: 'no recorded reason' },
+    basis: {
+      kind: 'safety',
+      reason:
+        'node-semver rejects a version string longer than MAX_LENGTH, 256 (https://raw.githubusercontent.com/npm/node-semver/main/internal/constants.js, checked 2026-11-27), so 1,024 bytes is 4× the longest version npm accepts. Git refs and lockfile and repository paths have no documented maximum below Linux PATH_MAX (4,096 bytes), so for them the cap is a sanity bound, not a platform figure. Above it, one identity string repeated in records inflates the packet against limit:packet.bytes; limit:context.maxPathBytes and limit:dependabot.maxPathBytes copy this value. The same cap also bounds versioned advisory URLs (src/evidence/advisory-read.ts), where a long URL can reach it and the target is reported unsupported; for URLs it can bind, and moving that use to its own entry is left to a separate change. Approved by the maintainer on 2026-11-27, #383.',
+    },
     test: 'src/schema.test.ts > enforces 256-code-unit IDs and 1024-byte identity strings',
   },
   {
     id: 'packet.textBytes',
-    value: 2_048,
     unit: 'bytes',
     protects:
       'Rationale, title and upstream excerpt text come from untrusted advisory and registry input; unbounded text would dominate the packet bytes budget and the comment.',
     effect:
       'Over-long text rejects the packet with budget on the field. Upstream and policy readers stop adding text at the cap before the packet check.',
-    basis: { kind: 'unjustified', note: 'awaiting L8 measurement' },
+    basis: {
+      kind: 'derived',
+      inputs: ['analysis.unitBytes', 'packet.listEntries'],
+      formula: (unitBytes, listEntries) => Math.floor(unitBytes / listEntries),
+      description:
+        "A list of limit:packet.listEntries text fields, each at this cap, fits one unit's attributable byte budget, limit:analysis.unitBytes, so one unit's longest list of excerpts cannot alone exceed the unit cap. Approved by the maintainer on 2026-11-27, #383.",
+    },
     test: 'src/schema.test.ts > enforces text and reference-list bounds independently of the packet size',
   },
   {
@@ -766,18 +1560,27 @@ const DEFINITIONS = [
       'Reference, reason and member lists come from untrusted input; an unbounded list multiplies per-entry checks and the packet bytes budget.',
     effect:
       'A list over 32 entries rejects the packet with budget on that field. The npm and Actions readers split larger member lists into several sources instead.',
-    basis: { kind: 'unjustified', note: 'awaiting L8 measurement' },
+    basis: {
+      kind: 'safety',
+      reason:
+        'Splitting means no legitimate member is dropped at any value: the npm, Actions and uv readers split a longer member list into several sources (src/evidence/npm.ts, src/evidence/actions.ts, src/evidence/uv-output.ts). Other lists stop at the cap visibly, with budget or a truncated flag, and never silently. Above it, every list multiplies per-entry checks and its entries count against limit:packet.bytes. Approved by the maintainer on 2026-11-27, #383.',
+    },
     test: 'src/schema.test.ts > enforces text and reference-list bounds independently of the packet size',
   },
   {
     id: 'packet.contextBytes',
-    value: 65_536,
     unit: 'bytes',
     protects:
       'Source context is serialized into every packet and read from repository files; an unbounded context would grow the packet and the analysis input without limit.',
     effect:
       'A context over the byte cap rejects the packet with budget on context; no partial context is kept.',
-    basis: { kind: 'unjustified', note: 'awaiting L8 measurement' },
+    basis: {
+      kind: 'derived',
+      inputs: ['analysis.unitBytes'],
+      formula: copy,
+      description:
+        "The whole source context is sent with the analysis input, so it must fit one unit's attributable byte budget, limit:analysis.unitBytes. Approved by the maintainer on 2026-11-27, #383.",
+    },
     test: 'src/schema.test.ts > enforces exactly 65536 serialized context bytes across 128 dependencies',
   },
   {
@@ -864,14 +1667,86 @@ const DEFINITIONS = [
       test: 'src/runtime.test.ts > refuses a freshness read after the job window without a request',
     },
   ),
-  unjustified('job.freshnessAllowance', 45_000, 'milliseconds', {
-    protects:
-      "Reserves time at the end of the job window for the three sequential freshness reads, so the final re-verification finishes before the runner's timeout.",
-    effect:
-      'Analysis must end 45,000 ms before the window end, since the analysis deadline is started + JOB_WINDOW_MS - FRESHNESS_ALLOWANCE_MS.',
-    note: 'awaiting L8 measurement',
-    test: 'src/pipeline.test.ts > ends analysis job.freshnessAllowance before the job window closes',
-  }),
+  derived(
+    'job.freshnessAllowance',
+    'milliseconds',
+    ['freshness.readsPerCheck', 'github.requestTimeoutMs'],
+    (reads, requestMs) => reads * requestMs,
+    "The final freshness check's sequential reads, each allowed the GitHub request timeout: limit:freshness.readsPerCheck × limit:github.requestTimeoutMs. Approved by the maintainer on 2026-11-27 (L11, #383).",
+    {
+      protects:
+        "Reserves time at the end of the job window for the three sequential freshness reads, so the final re-verification finishes before the runner's timeout.",
+      effect:
+        'Analysis must end this long before the window end, since the analysis deadline is started + JOB_WINDOW_MS - FRESHNESS_ALLOWANCE_MS.',
+      test: 'src/pipeline.test.ts > ends analysis job.freshnessAllowance before the job window closes',
+    },
+  ),
+  derived(
+    'freshness.readsPerCheck',
+    'count',
+    [],
+    () => 3,
+    'A freshness recheck reads the workflow run, the pull request and the base-to-head comparison, one after another, from fixed call sites (reverifyReviewBinding, src/event.ts). Approved by the maintainer on 2026-11-27 (L11, #383).',
+    {
+      protects:
+        "Counts the GitHub reads of one freshness recheck, so the freshness share and the evidence deadline's hard maximum reserve them.",
+      effect:
+        'Not enforced: it sizes limit:evidence.allocation.transport.freshness.maxRequests and limit:job.maxEvidenceDeadlineMs.',
+      test: 'src/event.test.ts > a freshness recheck makes exactly freshness.readsPerCheck GitHub reads',
+    },
+  ),
+  derived(
+    'freshness.startupReads',
+    'count',
+    [],
+    () => 1,
+    'Startup reads the workflow file once to resolve the workflow identity (resolveWorkflow, src/runtime.ts), a fixed call site. Approved by the maintainer on 2026-11-27 (L11, #383).',
+    {
+      protects: 'Counts the freshness reads startup makes, so the freshness share reserves them.',
+      effect: 'Not enforced: it sizes limit:evidence.allocation.transport.freshness.maxRequests.',
+      test: 'src/runtime.test.ts > startup resolves its workflow with exactly freshness.startupReads freshness reads',
+    },
+  ),
+  derived(
+    'freshness.entryReads',
+    'count',
+    [],
+    () => 4,
+    'Event verification reads the workflow, the run, the pull request and the base-to-head comparison once each (verifyCiEvent, src/event.ts); its replay read goes to the claim store, not GitHub. Approved by the maintainer on 2026-11-27 (L11, #383).',
+    {
+      protects:
+        'Counts the GitHub reads of event verification, so the freshness share reserves them.',
+      effect: 'Not enforced: it sizes limit:evidence.allocation.transport.freshness.maxRequests.',
+      test: 'src/event.test.ts > entry verification makes exactly freshness.entryReads GitHub reads',
+    },
+  ),
+  derived(
+    'freshness.checksPerRun',
+    'count',
+    [],
+    () => 4,
+    'The pipeline rechecks freshness at entry, before research, before the model and before the handoff (src/pipeline.ts), fixed call sites with no loop. Approved by the maintainer on 2026-11-27 (L11, #383).',
+    {
+      protects:
+        'Counts the freshness rechecks one run makes, so the freshness share reserves their reads.',
+      effect: 'Not enforced: it sizes limit:evidence.allocation.transport.freshness.maxRequests.',
+      test: 'src/pipeline.test.ts > a full run makes freshness.checksPerRun freshness checks',
+    },
+  ),
+  derived(
+    'evidence.readsInFlight',
+    'count',
+    [],
+    () => 1,
+    'Evidence responses one run holds in flight at once. Every evidence read is awaited before the next starts: the collectors run in turn (src/packet.ts:97-99), the research stages in turn (src/research.ts:395-421), each reader refuses a second read while one is pending (for example src/github-read.ts:534-538 and src/evidence/advisory-read.ts:783-792), and no evidence code calls Promise.all; only analysis batches run concurrently (src/analysis/batches.ts). Approved by the maintainer on 2026-11-27 (L11, #383).',
+    {
+      protects:
+        'Counts the response bodies the evidence phase parses at once, so the per-response heap bound multiplies by it.',
+      effect:
+        'Not enforced: it divides the evidence-phase heap for limit:runner.maxEvidenceResponseBytes.',
+      test: 'src/pipeline.test.ts > a full run has at most evidence.readsInFlight evidence responses in flight',
+    },
+  ),
   // Evidence read envelope and its reader shares, from budget.ts.
   derived(
     'evidence.envelope.maxRequests',
@@ -894,14 +1769,20 @@ const DEFINITIONS = [
       test: 'none: sum of the six reader shares (src/budget.ts:24, built from src/budget.ts:39-90); each reader stops at its own share (for example src/github-read.ts:396), and only budget.test.ts:53-54 and research.test.ts:414 read the total',
     },
   ),
-  unjustified('evidence.envelope.maxResponseBytes', MiB, 'bytes', {
-    protects:
-      'A response body is buffered before its size is checked, so one oversized response could exhaust runner memory; the cap bounds each response.',
-    effect:
-      'A response over the cap fails only its own read with budget and its body is cancelled; other reads continue.',
-    note: 'awaiting L8 measurement',
-    test: 'src/evidence/npm-registry.test.ts > a response exactly at the envelope per-response cap reads; one byte more fails only that read',
-  }),
+  configured(
+    'evidence.envelope.maxResponseBytes',
+    MiB,
+    'bytes',
+    { setting: 'limits.evidenceResponseBytes', maximum: 'runner.maxEvidenceResponseBytes' },
+    'The adopter: a larger cap reads larger legitimate responses (such as the compare page of #472) and spends more runner heap per read and a longer request timeout. Section 5 admitted the response cap as configuration on 2026-11-27 (L11, Q3(a), #383).',
+    {
+      protects:
+        'A response body is buffered before its size is checked, so one oversized response could exhaust runner memory; the cap bounds each response.',
+      effect:
+        'A response over the cap fails only its own read with budget and its body is cancelled; other reads continue.',
+      test: 'src/evidence/npm-registry.test.ts > a response exactly at the envelope per-response cap reads; one byte more fails only that read',
+    },
+  ),
   derived(
     'evidence.envelope.maxTotalBytes',
     'bytes',
@@ -923,22 +1804,61 @@ const DEFINITIONS = [
       test: "none: derived sum of the six share byte caps (src/budget.ts:23-29); no code compares against the envelope's maxTotalBytes itself (src/budget.ts:26 defines it, src/research.ts:99 uses each share's maxTotalBytes, and each share is enforced by its reader, e.g. src/evidence/npm-registry.ts:247).",
     },
   ),
-  unjustified('evidence.envelope.requestTimeoutMs', 15_000, 'milliseconds', {
-    protects:
-      'One stalled request must not hold the job until the runner kills it; the timeout frees the time for the reads that follow, including freshness reads.',
-    effect:
-      'The request is aborted with the fixed timeout reason and its reader stops with that reason, keeping the evidence it already collected.',
-    test: 'src/runtime.test.ts > times a freshness read made %s out at the smaller of the request timeout and the time left',
-    note: 'awaiting L8 measurement',
-  }),
-  unjustified('evidence.envelope.totalTimeoutMs', 240_000, 'milliseconds', {
-    protects:
-      "The shared evidence deadline keeps every pre-analysis read inside the job window, so analysis and the final freshness check keep their time before the runner's timeout.",
-    effect:
-      "Once the time is spent, a reader's next request is refused with budget or cut off with timeout, and the evidence already collected is kept.",
-    test: 'src/runtime.test.ts > limits a late request to the time left in the total deadline',
-    note: 'awaiting L8 measurement',
-  }),
+  derived(
+    'evidence.envelope.requestTimeoutMs',
+    'milliseconds',
+    [
+      'github.processingTimeoutMs',
+      'evidence.envelope.maxResponseBytes',
+      'upstream.throughputBytesPerSecond',
+    ],
+    (processingMs, responseBytes, throughput) =>
+      processingMs + Math.ceil((responseBytes * 1000) / throughput),
+    "GitHub's processing timeout, limit:github.processingTimeoutMs, plus the time to read a body at the response cap, limit:evidence.envelope.maxResponseBytes, at the measured upstream throughput, limit:upstream.throughputBytesPerSecond, rounded up to the millisecond. A request that GitHub still processes is never cut off, and its largest admissible body has time to arrive. npm, OSV and PyPI document no server timeout, so their reads share GitHub's figure. The cap is the input, so the timeout follows it (L11, Q3(a)). Approved by the maintainer on 2026-11-27 (L11, #383).",
+    {
+      protects:
+        'One stalled request must not hold the job until the runner kills it; the timeout frees the time for the reads that follow, including freshness reads.',
+      effect:
+        'The request is aborted with the fixed timeout reason and its reader stops with that reason, keeping the evidence it already collected.',
+      test: 'src/runtime.test.ts > times a freshness read made %s out at the smaller of the request timeout and the time left',
+    },
+  ),
+  configured(
+    'evidence.envelope.totalTimeoutMs',
+    240_000,
+    'milliseconds',
+    { setting: 'limits.evidenceDeadlineMs', maximum: 'job.maxEvidenceDeadlineMs' },
+    'The adopter: a longer deadline buys research coverage with run time, and a shorter one fails research sooner. Section 5 admitted the evidence deadline as configuration on 2026-11-17, with the job budget.',
+    {
+      protects:
+        "The shared evidence deadline keeps every pre-analysis read inside the job window, so analysis and the final freshness check keep their time before the runner's timeout.",
+      effect:
+        "Once the time is spent, a reader's next request is refused with budget or cut off with timeout, and the evidence already collected is kept.",
+      test: 'src/runtime.test.ts > limits a late request to the time left in the total deadline',
+    },
+  ),
+  derived(
+    'job.maxEvidenceDeadlineMs',
+    'milliseconds',
+    [
+      'job.window',
+      'freshness.readsPerCheck',
+      'github.requestTimeoutMs',
+      'analysis.requestTimeoutMs',
+      'analysis.publicationReserveMs',
+      'job.freshnessAllowance',
+    ],
+    (window, recheckReads, requestMs, modelCallMs, publicationMs, freshnessMs) =>
+      window - recheckReads * requestMs - modelCallMs - publicationMs - freshnessMs,
+    'The latest the evidence deadline may fall so one full model call still fits: limit:job.window less what must follow evidence, which is the before-model recheck (limit:freshness.readsPerCheck sequential reads of limit:github.requestTimeoutMs, exempt from the evidence deadline), one model call (limit:analysis.requestTimeoutMs), the publication reserve (limit:analysis.publicationReserveMs) and the final freshness allowance (limit:job.freshnessAllowance). Approved by the maintainer on 2026-11-27 (L11, Q4(a), #383).',
+    {
+      protects:
+        'Keeps an adopter setting of the evidence deadline from taking the time analysis needs for one model call, the recheck before it, publication, and the final freshness check.',
+      effect:
+        'Not enforced by the reviewer yet: L12 makes the config parser reject a larger evidence deadline. check:limits evaluates the register at this value.',
+      test: 'none: the hard maximum of an adopter setting the parser does not read yet (L12, #384); src/limits.test.ts pins its formula',
+    },
+  ),
   derived(
     'evidence.allocation.transport.maxRequests',
     'count',
@@ -973,52 +1893,99 @@ const DEFINITIONS = [
       test: 'none: sum of the snapshot and freshness byte shares; runtime.ts caps each share separately (src/runtime.ts:211 uses limits.maxTotalBytes of the share), and budget.test.ts:65-67 only asserts the sum',
     },
   ),
-  unjustified('evidence.allocation.transport.snapshot.maxRequests', 200, 'count', {
-    protects:
-      'Caps snapshot reads (repository, commit, trees, blobs) so a heavy snapshot cannot use the freshness share or the GitHub rate limit.',
-    effect: 'The read past the share is refused with budget before any request is sent.',
-    test: 'src/runtime.test.ts > an exhausted snapshot share cannot starve freshness reads, and the reverse',
-    note: 'awaiting L8 measurement',
-  }),
-  unjustified('evidence.allocation.transport.snapshot.maxTotalBytes', 9 * MiB, 'bytes', {
-    protects:
-      'Caps snapshot response bytes so a heavy snapshot cannot use the freshness bytes or runner memory.',
-    effect:
-      "A read that would pass the share's remaining bytes returns budget and is not returned as available; the freshness share is unaffected.",
-    test: "src/runtime.test.ts > stops a %s read at that share's byte limit and leaves the other share alone",
-    note: 'awaiting L8 measurement',
-  }),
-  unjustified('evidence.allocation.transport.freshness.maxRequests', 24, 'count', {
-    protects:
-      'Reserves requests for freshness checks (workflow, run, PR, comparison) so a heavy snapshot cannot prevent the checks that keep a finished review valid.',
-    effect:
-      'The request past the share is refused with budget and no request is sent; a failed freshness read is an internal failure, never a stale head.',
-    test: 'src/runtime.test.ts > an exhausted snapshot share cannot starve freshness reads, and the reverse',
-    note: 'awaiting L8 measurement',
-  }),
-  unjustified('evidence.allocation.transport.freshness.maxTotalBytes', 3 * MiB, 'bytes', {
-    protects:
-      'Reserves response bytes for freshness checks so a heavy snapshot cannot starve the checks that keep a finished review valid.',
-    effect:
-      "A read that would pass the share's remaining bytes returns budget; the snapshot share is unaffected.",
-    test: "src/runtime.test.ts > stops a %s read at that share's byte limit and leaves the other share alone",
-    note: 'awaiting L8 measurement',
-  }),
-  unjustified('evidence.allocation.session.maxRequests', 160, 'count', {
-    protects:
-      'Caps requests of the GitHub evidence session reader so one review cannot exceed the GitHub rate limit or the evidence time.',
-    effect:
-      'The request past the cap returns budget and no request is sent; other readers are not borrowed from.',
-    note: 'awaiting L8 measurement',
-    test: 'src/github-read.test.ts > the session stops at exactly evidence.allocation.session.maxRequests requests',
-  }),
-  unjustified('evidence.allocation.session.maxTotalBytes', 12 * MiB, 'bytes', {
-    protects: 'Caps response bytes of the GitHub evidence session reader against runner memory.',
-    effect:
-      "A response past the share's remaining bytes returns budget and the reader stops; other shares are unaffected.",
-    note: 'awaiting L8 measurement',
-    test: 'src/github-read.test.ts > the session refuses the read that passes evidence.allocation.session.maxTotalBytes',
-  }),
+  configured(
+    'evidence.allocation.transport.snapshot.maxRequests',
+    200,
+    'count',
+    {
+      setting: 'limits.githubRequests.snapshot',
+      maximum: 'github.token.requestCapMax',
+      joint: true,
+    },
+    "The adopter: snapshot reads spend the adopter's GITHUB_TOKEN quota, and tree reads grow with path depth (src/snapshot.ts), so no structural bound exists. It extends section 5's GitHub request cap (L11, Q6(a)).",
+    {
+      protects:
+        'Caps snapshot reads (repository, commit, trees, blobs) so a heavy snapshot cannot use the freshness share or the GitHub rate limit.',
+      effect: 'The read past the share is refused with budget before any request is sent.',
+      test: 'src/runtime.test.ts > an exhausted snapshot share cannot starve freshness reads, and the reverse',
+    },
+  ),
+  retainedSetting(
+    'evidence.allocation.transport.snapshot.maxTotalBytes',
+    'limits.snapshotBytes',
+    9 * MiB,
+    'bytes',
+    {
+      protects:
+        'Caps snapshot response bytes so a heavy snapshot cannot use the freshness bytes or runner memory.',
+      effect:
+        "A read that would pass the share's remaining bytes returns budget and is not returned as available; the freshness share is unaffected.",
+      test: "src/runtime.test.ts > stops a %s read at that share's byte limit and leaves the other share alone",
+    },
+  ),
+  derived(
+    'evidence.allocation.transport.freshness.maxRequests',
+    'count',
+    [
+      'freshness.startupReads',
+      'freshness.entryReads',
+      'freshness.checksPerRun',
+      'freshness.readsPerCheck',
+    ],
+    (startup, entry, checks, perCheck) => startup + entry + checks * perCheck,
+    'Every freshness read one run makes: limit:freshness.startupReads at startup, limit:freshness.entryReads to verify the event, and limit:freshness.checksPerRun rechecks of limit:freshness.readsPerCheck reads each. A failed freshness read is an internal failure, never a stale head, so the share lets every one of them run. Each count comes from fixed call sites and is pinned by a test. Approved by the maintainer on 2026-11-27 (L11, #383).',
+    {
+      protects:
+        'Reserves requests for freshness checks (workflow, run, PR, comparison) so a heavy snapshot cannot prevent the checks that keep a finished review valid.',
+      effect:
+        'The request past the share is refused with budget and no request is sent; a failed freshness read is an internal failure, never a stale head.',
+      test: 'src/runtime.test.ts > an exhausted snapshot share cannot starve freshness reads, and the reverse',
+    },
+  ),
+  derived(
+    'evidence.allocation.transport.freshness.maxTotalBytes',
+    'bytes',
+    ['evidence.allocation.transport.freshness.maxRequests', 'github.maxResponseBytes'],
+    (requests, responseBytes) => requests * responseBytes,
+    'Every freshness read may return a response at the cap, limit:github.maxResponseBytes, and a freshness read that runs out fails the job closed, so the share holds limit:evidence.allocation.transport.freshness.maxRequests full responses. Approved by the maintainer on 2026-11-27 (L11, #383).',
+    {
+      protects:
+        'Reserves response bytes for freshness checks so a heavy snapshot cannot starve the checks that keep a finished review valid.',
+      effect:
+        "A read that would pass the share's remaining bytes returns budget; the snapshot share is unaffected.",
+      test: "src/runtime.test.ts > stops a %s read at that share's byte limit and leaves the other share alone",
+    },
+  ),
+  configured(
+    'evidence.allocation.session.maxRequests',
+    160,
+    'count',
+    {
+      setting: 'limits.githubRequests.session',
+      maximum: 'github.token.requestCapMax',
+      joint: true,
+    },
+    "The adopter: session reads spend the adopter's GITHUB_TOKEN quota, and each file read costs a commit, one tree per path segment and a blob (src/github-read.ts), so no structural bound exists. It extends section 5's GitHub request cap (L11, Q6(a)) and must leave room for limit:w2.session.maxPages file-list pages.",
+    {
+      protects:
+        'Caps requests of the GitHub evidence session reader so one review cannot exceed the GitHub rate limit or the evidence time.',
+      effect:
+        'The request past the cap returns budget and no request is sent; other readers are not borrowed from.',
+      test: 'src/github-read.test.ts > the session stops at exactly evidence.allocation.session.maxRequests requests',
+    },
+  ),
+  retainedSetting(
+    'evidence.allocation.session.maxTotalBytes',
+    'limits.sessionBytes',
+    12 * MiB,
+    'bytes',
+    {
+      protects: 'Caps response bytes of the GitHub evidence session reader against runner memory.',
+      effect:
+        "A response past the share's remaining bytes returns budget and the reader stops; other shares are unaffected.",
+      test: 'src/github-read.test.ts > the session refuses the read that passes evidence.allocation.session.maxTotalBytes',
+    },
+  ),
   {
     id: 'evidence.allocation.registry.maxRequests',
     value: 640,
@@ -1062,14 +2029,21 @@ const DEFINITIONS = [
       test: 'src/budget.test.ts > the collection registry share scales with npm members and stops at its ceiling',
     },
   ),
-  unjustified('evidence.allocation.registry.maxTotalBytes', 4 * MiB, 'bytes', {
-    protects:
-      'Caps response bytes of npm registry detail reads so they cannot exhaust runner memory or the envelope.',
-    effect:
-      "A response past the share's remaining bytes returns budget and the reader stops; other shares are unaffected.",
-    note: 'awaiting L8 measurement',
-    test: 'src/evidence/npm-registry.test.ts > the registry byte share allows exactly its total and refuses the read that exceeds it',
-  }),
+  retainedSetting(
+    'evidence.allocation.registry.maxTotalBytes',
+    'limits.registryBytes',
+    4 * MiB,
+    'bytes',
+    {
+      protects:
+        'Caps response bytes of npm registry detail reads so they cannot exhaust runner memory or the envelope.',
+      effect:
+        "A response past the share's remaining bytes returns budget and the reader stops; other shares are unaffected.",
+      test: 'src/evidence/npm-registry.test.ts > the registry byte share allows exactly its total and refuses the read that exceeds it',
+    },
+    // The reader refuses a share below one response (src/evidence/npm-registry.ts:76).
+    'evidence.envelope.maxResponseBytes',
+  ),
   unjustified('evidence.allocation.upstream.maxRequests', 240, 'count', {
     protects:
       'Caps upstream research requests (GitHub and registry lookups) that scale with the changed group, so a large group cannot take the shared evidence time or the GitHub rate limit.',
@@ -1081,9 +2055,9 @@ const DEFINITIONS = [
   derived(
     'evidence.allocation.upstream.maxTotalBytes',
     'bytes',
-    ['evidence.envelope.totalTimeoutMs'],
-    (totalMs) => Math.floor(((totalMs / 1000) * UPSTREAM_THROUGHPUT_BYTES_PER_SECOND) / 2),
-    'Half of what the upstream reader can read in the evidence window at the measured upstream throughput (UPSTREAM_THROUGHPUT_BYTES_PER_SECOND, 640,000 bytes/s on the #462 uv PRs): limit:evidence.envelope.totalTimeoutMs ÷ 1,000 × 640,000 ÷ 2 = 240 × 640,000 ÷ 2 = 76,800,000 bytes, rounded down, about 120 s of upstream reads; the halving leaves a margin for slower responses. Research runs upstream, then advisories, then signals, one after another, on the one limit:evidence.envelope.totalTimeoutMs deadline: this ceiling and the advisory ceiling (limit:evidence.allocation.advisory.maxRequests) each take half the window at the measured throughput and latency, so together they use the whole window at worst, and signals relies on neither reaching its ceiling. With the derived base of about 29 MiB, the per-member rate reaches it at 62 members ((76,800,000 − 30,408,704) ÷ 750,000 ≈ 61.9). Approved by the maintainer on 2026-11-27, #467; derived rather than written as a value on review of #468.',
+    ['evidence.envelope.totalTimeoutMs', 'upstream.throughputBytesPerSecond'],
+    (totalMs, throughput) => Math.floor(((totalMs / 1000) * throughput) / 2),
+    'Half of what the upstream reader can read in the evidence window at the measured upstream throughput (limit:upstream.throughputBytesPerSecond, 640,000 bytes/s on the #462 uv PRs, reproduced by npm run probe:upstream-throughput): limit:evidence.envelope.totalTimeoutMs ÷ 1,000 × 640,000 ÷ 2 = 240 × 640,000 ÷ 2 = 76,800,000 bytes, rounded down, about 120 s of upstream reads; the halving leaves a margin for slower responses. Research runs upstream, then advisories, then signals, one after another, on the one limit:evidence.envelope.totalTimeoutMs deadline: this ceiling and the advisory ceiling (limit:evidence.allocation.advisory.maxRequests) each take half the window at the measured throughput and latency, so together they use the whole window at worst, and signals relies on neither reaching its ceiling. With the derived base of about 29 MiB, the per-member rate reaches it at 62 members ((76,800,000 − 30,408,704) ÷ 750,000 ≈ 61.9). Approved by the maintainer on 2026-11-27, #467; derived rather than written as a value on review of #468; the throughput became a register input with its probe command on 2026-11-27 (L11, #383). It follows the evidence deadline setting (L11, Q1).',
     {
       protects:
         'Caps response bytes of upstream research reads, the ceiling of the per-member upstream byte share, so they cannot take more of the evidence time or runner memory than the evidence window can read.',
@@ -1095,9 +2069,9 @@ const DEFINITIONS = [
   derived(
     'evidence.allocation.advisory.maxRequests',
     'count',
-    ['evidence.envelope.totalTimeoutMs'],
-    (totalMs) => Math.floor(totalMs / SLOWEST_OSV_RESPONSE_MS / 2),
-    'The evidence window, limit:evidence.envelope.totalTimeoutMs, divided by the slowest measured OSV response (SLOWEST_OSV_RESPONSE_MS, 541 ms), halved for margin and rounded down: 240,000 ÷ 541 = 443.6, halved 221.8, so 221 sequential lookups fit in half the window, about 120 s of OSV. Research runs upstream, then advisories, then signals, one after another, on the one limit:evidence.envelope.totalTimeoutMs deadline: this ceiling and the upstream byte ceiling (limit:evidence.allocation.upstream.maxTotalBytes) each take half the window at the measured throughput and latency, so together they use the whole window at worst, and signals relies on neither reaching its ceiling. Approved by the maintainer on 2026-11-27, #467.',
+    ['evidence.envelope.totalTimeoutMs', 'osv.slowestResponseMs'],
+    (totalMs, slowest) => Math.floor(totalMs / slowest / 2),
+    'The evidence window, limit:evidence.envelope.totalTimeoutMs, divided by the slowest measured OSV response (limit:osv.slowestResponseMs, 541 ms, reproduced by npm run probe:osv-latency), halved for margin and rounded down: 240,000 ÷ 541 = 443.6, halved 221.8, so 221 sequential lookups fit in half the window, about 120 s of OSV. Research runs upstream, then advisories, then signals, one after another, on the one limit:evidence.envelope.totalTimeoutMs deadline: this ceiling and the upstream byte ceiling (limit:evidence.allocation.upstream.maxTotalBytes) each take half the window at the measured throughput and latency, so together they use the whole window at worst, and signals relies on neither reaching its ceiling. Approved by the maintainer on 2026-11-27, #467; the latency became a register input with its probe command on 2026-11-27 (L11, #383). It follows the evidence deadline setting (L11, Q1).',
     {
       protects:
         'Caps advisory lookups, the ceiling of the per-member advisory share, so a large group cannot take more of the shared evidence time than its lookups can use.',
@@ -1106,13 +2080,18 @@ const DEFINITIONS = [
       test: 'src/evidence/advisory-read.test.ts > advisory reader spends exactly its request share and refuses the lookup past it',
     },
   ),
-  unjustified('evidence.allocation.advisory.maxTotalBytes', 5 * MiB, 'bytes', {
-    protects: 'Caps response bytes of advisory reads so they cannot exhaust runner memory.',
-    effect:
-      "A response past the share's remaining bytes is refused with budget and the advisory reader stops.",
-    note: 'awaiting L8 measurement',
-    test: 'src/evidence/advisory-read.test.ts > advisory reader accepts a byte share exactly and refuses the byte past it',
-  }),
+  retainedSetting(
+    'evidence.allocation.advisory.maxTotalBytes',
+    'limits.advisoryBytes',
+    5 * MiB,
+    'bytes',
+    {
+      protects: 'Caps response bytes of advisory reads so they cannot exhaust runner memory.',
+      effect:
+        "A response past the share's remaining bytes is refused with budget and the advisory reader stops.",
+      test: 'src/evidence/advisory-read.test.ts > advisory reader accepts a byte share exactly and refuses the byte past it',
+    },
+  ),
   derived(
     'evidence.allocation.signals.maxRequests',
     'count',
@@ -1165,12 +2144,17 @@ const DEFINITIONS = [
       test: 'src/evidence/advisory-read.test.ts > malware reader spends exactly its request share and refuses the lookup past it',
     },
   ),
-  unjustified('evidence.allocation.signals.readers.malware.maxTotalBytes', 1.5 * MiB, 'bytes', {
-    protects: 'Caps malware-signal response bytes so they cannot exhaust runner memory.',
-    effect: "A response past the share's remaining bytes returns budget and the reader stops.",
-    note: 'awaiting L8 measurement',
-    test: 'src/evidence/advisory-read.test.ts > malware reader accepts a byte share exactly and refuses the byte past it',
-  }),
+  retainedSetting(
+    'evidence.allocation.signals.readers.malware.maxTotalBytes',
+    'limits.malwareSignalBytes',
+    1.5 * MiB,
+    'bytes',
+    {
+      protects: 'Caps malware-signal response bytes so they cannot exhaust runner memory.',
+      effect: "A response past the share's remaining bytes returns budget and the reader stops.",
+      test: 'src/evidence/advisory-read.test.ts > malware reader accepts a byte share exactly and refuses the byte past it',
+    },
+  ),
   unjustified('advisory.discovery.pageSize', 50, 'count', {
     protects:
       'A stored-name discovery page of heavily advised packages fits the 1 MiB per-response cap (a 100-record pillow page did not).',
@@ -1287,14 +2271,14 @@ const DEFINITIONS = [
     note: 'awaiting L8 measurement',
     test: 'src/evidence/npm-publish-times.test.ts > the publish-time request share allows exactly its count and refuses the next lookup unsent',
   }),
-  unjustified(
+  retainedSetting(
     'evidence.allocation.signals.readers.publishTimes.maxTotalBytes',
+    'limits.publishTimeSignalBytes',
     1.5 * MiB,
     'bytes',
     {
       protects: 'Caps npm publish-time response bytes so they cannot exhaust runner memory.',
       effect: "A response past the share's remaining bytes returns budget and the reader stops.",
-      note: 'awaiting L8 measurement',
       test: 'src/evidence/npm-publish-times.test.ts > the publish-time byte share allows exactly its total and refuses the read that exceeds it',
     },
   ),
@@ -1302,15 +2286,19 @@ const DEFINITIONS = [
     protects:
       'Caps npm registry policy requests in the signals stage, separate from the W2 registry share, so the stage stays inside the envelope.',
     effect: 'The request past the cap returns budget and no request is sent.',
-    note: 'awaiting L8 measurement',
     test: 'src/evidence/npm-registry.test.ts > the signals registry request share allows exactly its count and refuses the next read unsent',
   }),
-  unjustified('evidence.allocation.signals.readers.registry.maxTotalBytes', 2 * MiB, 'bytes', {
-    protects: 'Caps npm registry policy response bytes so they cannot exhaust runner memory.',
-    effect: "A response past the share's remaining bytes returns budget and the reader stops.",
-    note: 'awaiting L8 measurement',
-    test: 'src/evidence/npm-registry.test.ts > the signals registry byte share allows exactly its total and refuses the read that exceeds it',
-  }),
+  retainedSetting(
+    'evidence.allocation.signals.readers.registry.maxTotalBytes',
+    'limits.registrySignalBytes',
+    2 * MiB,
+    'bytes',
+    {
+      protects: 'Caps npm registry policy response bytes so they cannot exhaust runner memory.',
+      effect: "A response past the share's remaining bytes returns budget and the reader stops.",
+      test: 'src/evidence/npm-registry.test.ts > the signals registry byte share allows exactly its total and refuses the read that exceeds it',
+    },
+  ),
   derived(
     'evidence.allocation.signals.readers.metadata.maxRequests',
     'count',
@@ -1350,13 +2338,21 @@ const DEFINITIONS = [
     note: 'awaiting L8 measurement',
     test: 'src/evidence/upstream-read.test.ts > signals upstream reader spends exactly its request share and refuses the request past it',
   }),
-  unjustified('evidence.allocation.signals.readers.upstream.maxTotalBytes', 0.5 * MiB, 'bytes', {
-    protects: 'Caps GitHub Actions upstream response bytes so they cannot exhaust runner memory.',
-    effect:
-      "A response past the share's remaining bytes is refused with budget and the upstream reader stops.",
-    note: 'awaiting L8 measurement',
-    test: 'src/evidence/upstream-read.test.ts > signals upstream reader accepts a byte share exactly and refuses the byte past it',
-  }),
+  retainedSetting(
+    'evidence.allocation.signals.readers.upstream.maxTotalBytes',
+    'limits.upstreamSignalBytes',
+    // One response at the cap must fit the share (the #467 floor rule, src/budget.ts:265), so the
+    // default is the response cap, not the 0.5 MiB it was (L11, Q11(a), #383).
+    MiB,
+    'bytes',
+    {
+      protects: 'Caps GitHub Actions upstream response bytes so they cannot exhaust runner memory.',
+      effect:
+        "A response past the share's remaining bytes is refused with budget and the upstream reader stops.",
+      test: 'src/evidence/upstream-read.test.ts > signals upstream reader accepts a byte share exactly and refuses the byte past it',
+    },
+    'evidence.envelope.maxResponseBytes',
+  ),
   // Research cache, from budget.ts.
   derived(
     'research.cache.maxEntryBytes',
@@ -1406,22 +2402,34 @@ const DEFINITIONS = [
       test: 'src/github-read.test.ts > requires final metadata to complete discovery within %s requests',
     },
   ),
-  unjustified('w2.session.maxPages', 10, 'count', {
-    protects:
-      "Bounds PR-file listing requests to 10 pages (1,000 rows at GitHub's 100-per-page size), so a PR's file list cannot drive unbounded paging.",
-    effect:
-      'Requesting a page beyond the cap throws budget before dispatch, discovery is partial with reason budget, and rows already read are kept.',
-    note: 'awaiting L8 measurement',
-    test: 'src/github-read.test.ts > discovery reads exactly w2.session.maxPages pages and keeps the rows it read',
-  }),
-  unjustified('w2.session.maxFiles', 1_000, 'count', {
-    protects:
-      'Caps PR-file rows examined per session, so an oversized file list cannot make the reader parse and retain unbounded rows.',
-    effect:
-      'Examining one row beyond the cap throws budget, discovery is partial with reason budget, and the earlier rows are retained.',
-    test: 'src/github-read.test.ts > accepts exact file entry count and rejects one beyond %s',
-    note: 'awaiting L8 measurement',
-  }),
+  derived(
+    'w2.session.maxPages',
+    'count',
+    ['github.treeMaxFiles', 'github.pageSize'],
+    (files, pageSize) => Math.ceil(files / pageSize),
+    'Enough pages for every row GitHub lists: limit:github.treeMaxFiles files at limit:github.pageSize per page, rounded up. GitHub stops the list there, so a further page can never hold a row. Approved by the maintainer on 2026-11-27 (L11, #383).',
+    {
+      protects:
+        "Bounds PR-file listing requests to the pages GitHub's file list can fill, so a PR's file list cannot drive unbounded paging.",
+      effect:
+        'Requesting a page beyond the cap throws budget before dispatch, discovery is partial with reason budget, and rows already read are kept.',
+      test: 'src/github-read.test.ts > discovery reads exactly w2.session.maxPages pages and keeps the rows it read',
+    },
+  ),
+  derived(
+    'w2.session.maxFiles',
+    'count',
+    ['github.treeMaxFiles'],
+    copy,
+    'The rows GitHub lists for a pull request, limit:github.treeMaxFiles; a longer list is already truncated by GitHub, and the reader marks it so. Approved by the maintainer on 2026-11-27 (L11, #383).',
+    {
+      protects:
+        'Caps PR-file rows examined per session, so an oversized file list cannot make the reader parse and retain unbounded rows.',
+      effect:
+        'Examining one row beyond the cap throws budget, discovery is partial with reason budget, and the earlier rows are retained.',
+      test: 'src/github-read.test.ts > accepts exact file entry count and rejects one beyond %s',
+    },
+  ),
   unjustified('w2.session.maxJsonEntries', 200_000, 'count', {
     protects:
       'Caps JSON properties and array elements across examined GitHub responses, so a hostile or very large response cannot make the reader walk unbounded structure (memory and CPU).',
@@ -1466,14 +2474,19 @@ const DEFINITIONS = [
       test: 'src/github-read.test.ts > counts UTF-8 streamed bytes at exact %s boundary',
     },
   ),
-  unjustified('w2.session.maxRetainedBytes', 2_000_000, 'bytes', {
-    protects:
-      'Caps cumulative UTF-8 bytes of results the session keeps in memory, so repeated or large results cannot grow retained memory without bound.',
-    effect:
-      'A single retained result that does not fit throws budget and marks the session stopped; a collection that overflows keeps the prefix that fits and reports budget.',
-    test: 'src/github-read.test.ts > retained results share a cumulative byte budget with exact UTF-8 accounting',
-    note: 'awaiting L8 measurement',
-  }),
+  retainedSetting(
+    'w2.session.maxRetainedBytes',
+    'limits.sessionRetainedBytes',
+    2_000_000,
+    'bytes',
+    {
+      protects:
+        'Caps cumulative UTF-8 bytes of results the session keeps in memory, so repeated or large results cannot grow retained memory without bound.',
+      effect:
+        'A single retained result that does not fit throws budget and marks the session stopped; a collection that overflows keeps the prefix that fits and reports budget.',
+      test: 'src/github-read.test.ts > retained results share a cumulative byte budget with exact UTF-8 accounting',
+    },
+  ),
   derived(
     'w2.session.requestTimeoutMs',
     'milliseconds',
@@ -1488,22 +2501,35 @@ const DEFINITIONS = [
       test: 'src/github-read.test.ts > aborts an in-flight request at its deadline and rejects late success',
     },
   ),
-  unjustified('w2.npm.maxFileBytes', 500_000, 'bytes', {
-    protects:
-      'Caps the decoded bytes of one PR-controlled package-lock.json before JSON parsing, so a huge lockfile cannot make the npm reader parse unbounded data (memory and CPU).',
-    effect:
-      'A file over the cap is refused with budget before parsing, so the inventory is not claimed complete.',
-    note: 'awaiting L8 measurement',
-    test: 'src/evidence/npm.test.ts > the file byte cap admits a lockfile of exactly the registered size and refuses one byte more',
-  }),
-  unjustified('w2.npm.maxJsonDepth', 32, 'count', {
+  derived(
+    'w2.npm.maxFileBytes',
+    'bytes',
+    ['w2.session.maxFileBytes'],
+    copy,
+    'A package-lock.json may be as large as any file the session reader returns, as a uv.lock may (#462). Approved by the maintainer on 2026-11-27 (L11, #383).',
+    {
+      protects:
+        'Caps the decoded bytes of one PR-controlled package-lock.json before JSON parsing, so a huge lockfile cannot make the npm reader parse unbounded data (memory and CPU).',
+      effect:
+        'A file over the cap is refused with budget before parsing, so the inventory is not claimed complete.',
+      test: 'src/evidence/npm.test.ts > the file byte cap admits a lockfile of exactly the registered size and refuses one byte more',
+    },
+  ),
+  {
+    id: 'w2.npm.maxJsonDepth',
+    value: 32,
+    unit: 'count',
     protects:
       'Caps nesting depth of PR-controlled package-lock.json input, so deeply nested JSON cannot exhaust the stack or CPU in the depth walk and parser.',
+    basis: {
+      kind: 'safety',
+      reason:
+        'Largest legitimate use: package-lock.json v3 nests five levels (packages, a package path, a field such as dependencies, and its entries); the npm/cli lockfile read on 2026-11-27 nests five. Harm: the reader walks the parsed value and serializes what it keeps, and JSON.stringify overflows the call stack at about 4,166 levels of nested arrays (measured on 2026-11-27 under Node 22). The cap sits far between the two. Approved by the maintainer on 2026-11-27 (L11, #383).',
+    },
     effect:
       'Depth over the cap throws budget: the input envelope is reported invalid with no reads, and a parsed file yields a budget gap.',
     test: 'src/evidence/npm.test.ts > counts the input envelope as depth 1 like parsed files',
-    note: 'no recorded reason',
-  }),
+  },
   unjustified('w2.npm.maxJsonEntries', 100_000, 'count', {
     protects:
       'Caps cumulative JSON entries across PR-controlled lockfiles, so many or wide objects cannot drive unbounded parse and walk work.',
@@ -1512,30 +2538,45 @@ const DEFINITIONS = [
     note: 'awaiting L8 measurement',
     test: 'src/evidence/npm.test.ts > the cumulative JSON entry cap admits exactly the registered count and refuses one more',
   }),
-  unjustified('w2.npm.maxRoots', 10, 'count', {
-    protects:
-      'Caps the number of changed npm roots read in one run, so a PR touching many package directories cannot multiply lockfile reads beyond the session budget.',
-    effect:
-      'Roots past the cap are not read; a budget gap is recorded for the whole inventory and the first sorted roots are kept.',
-    note: 'awaiting L8 measurement',
-    test: 'src/evidence/npm.test.ts > the changed npm root cap reads exactly the registered number of roots and records a budget gap for the rest',
-  }),
-  unjustified('w2.npm.maxRetainedBytes', 2_000_000, 'bytes', {
+  configured(
+    'w2.npm.maxRoots',
+    10,
+    'count',
+    { setting: 'limits.coverage.npmRoots', maximum: 'dependabot.maxRoots' },
+    "The adopter: each changed npm root costs lockfile reads on both sides from the session's GitHub requests, so a larger setting buys coverage of more package directories with quota and time. Coverage bound category (L11, Q9(a)); its hard maximum is the roots dependabot.yml may name.",
+    {
+      protects:
+        'Caps the number of changed npm roots read in one run, so a PR touching many package directories cannot multiply lockfile reads beyond the session budget.',
+      effect:
+        'Roots past the cap are not read; a budget gap is recorded for the whole inventory and the first sorted roots are kept.',
+      test: 'src/evidence/npm.test.ts > the changed npm root cap reads exactly the registered number of roots and records a budget gap for the rest',
+    },
+  ),
+  retainedSetting('w2.npm.maxRetainedBytes', 'limits.npmRetainedBytes', 2_000_000, 'bytes', {
     protects:
       'Caps the serialized npm inventory bytes kept in memory and handed to the graph stage.',
     effect:
       'The inventory is trimmed to the longest prefix that fits with a budget gap; if no prefix fits the result is unavailable with reason budget.',
-    note: 'awaiting L8 measurement',
     test: 'src/evidence/npm.test.ts > the retained inventory cap keeps a whole inventory at its exact serialized size and trims one byte under it',
   }),
-  unjustified('w2.actions.maxFileBytes', 100_000, 'bytes', {
+  {
+    id: 'w2.actions.maxFileBytes',
+    value: 500_000,
+    unit: 'bytes',
     protects:
       'Caps the bytes of one PR-controlled workflow file before YAML parsing, so a huge workflow cannot make the YAML parser run unbounded (memory and CPU).',
+    basis: {
+      kind: 'external',
+      url: 'https://docs.github.com/en/actions/reference/limits',
+      checked: '2026-11-27',
+      platformValue: 500_000,
+      margin:
+        'none: "Workflow file size: 500 KB per file; larger files won\'t start runs." GitHub writes KB, so this reads it as the smaller 500,000 bytes, the safe reading; a workflow larger than GitHub runs is not a legitimate input. It must stay at most limit:w2.session.maxFileBytes, which src/limits.test.ts checks. Approved by the maintainer on 2026-11-27 (L11, #383).',
+    },
     effect:
       'The workflow read returns unavailable with reason budget before decoding, so no jobs from that file are parsed.',
     test: 'src/evidence/actions-yaml.test.ts > enforces byte, node, nesting and occurrence limits with fatal UTF-8 decoding',
-    note: 'awaiting L8 measurement',
-  }),
+  },
   unjustified('w2.actions.maxWorkflows', 20, 'count', {
     protects:
       'Caps workflow files read per run, so a PR touching many workflows cannot multiply session reads beyond the request and time budgets.',
@@ -1552,14 +2593,21 @@ const DEFINITIONS = [
     test: 'src/evidence/actions-yaml.test.ts > counts cumulative nodes and UTF-8 bytes at exact boundaries and bounds deeply nested flow input before composition',
     note: 'awaiting L8 measurement',
   }),
-  unjustified('w2.actions.maxYamlDepth', 32, 'count', {
+  {
+    id: 'w2.actions.maxYamlDepth',
+    value: 32,
+    unit: 'count',
     protects:
       'Caps YAML nesting depth before composition, so deeply nested input cannot exhaust the recursion stack or CPU in the composer.',
+    basis: {
+      kind: 'safety',
+      reason:
+        'Largest legitimate use: a workflow nests about six levels (jobs.<id>.steps[].with.<input>); four large public workflows read on 2026-11-27 (microsoft/vscode pr.yml, nodejs/node test-linux.yml, pytorch/pytorch pull.yml, home-assistant/core ci.yaml) nest five or six. Harm: composition recurses at least once per level, and the yaml library overflows the call stack at about 1,024 levels of nested flow collections (measured on 2026-11-27 under Node 22). The cap is checked before composition and sits far between the two. Approved by the maintainer on 2026-11-27 (L11, #383).',
+    },
     effect:
       'Exceeding the depth throws budget and the workflow read is unavailable with reason budget.',
     test: 'src/evidence/actions-yaml.test.ts > counts cumulative nodes and UTF-8 bytes at exact boundaries and bounds deeply nested flow input before composition',
-    note: 'no recorded reason',
-  }),
+  },
   unjustified('w2.actions.maxAliasExpansions', 100, 'count', {
     protects:
       'Caps alias expansions in one YAML document, so anchors and aliases cannot amplify the composed graph beyond the node budget.',
@@ -1576,13 +2624,18 @@ const DEFINITIONS = [
     test: 'src/evidence/actions.test.ts > occurrence and alias budgets accumulate across base/head files',
     note: 'awaiting L8 measurement',
   }),
-  unjustified('w2.actions.maxRetainedBytes', 2_000_000, 'bytes', {
-    protects: 'Caps the serialized actions inventory bytes kept in memory.',
-    effect:
-      'The inventory is trimmed to the longest prefix that fits with a budget gap; if no prefix fits the result is unavailable with reason budget.',
-    test: 'src/evidence/actions.test.ts > retention bounds preserve explicit incompleteness, valid packet references and a detached immutable result',
-    note: 'awaiting L8 measurement',
-  }),
+  retainedSetting(
+    'w2.actions.maxRetainedBytes',
+    'limits.actionsRetainedBytes',
+    2_000_000,
+    'bytes',
+    {
+      protects: 'Caps the serialized actions inventory bytes kept in memory.',
+      effect:
+        'The inventory is trimmed to the longest prefix that fits with a budget gap; if no prefix fits the result is unavailable with reason budget.',
+      test: 'src/evidence/actions.test.ts > retention bounds preserve explicit incompleteness, valid packet references and a detached immutable result',
+    },
+  ),
   derived(
     'w2.uv.maxFileBytes',
     'bytes',
@@ -1597,13 +2650,20 @@ const DEFINITIONS = [
       test: 'src/evidence/uv.test.ts > enforces file, edge, marker and selected-root caps at boundaries',
     },
   ),
-  unjustified('w2.uv.maxTomlDepth', 32, 'count', {
+  {
+    id: 'w2.uv.maxTomlDepth',
+    value: 32,
+    unit: 'count',
     protects:
       'Caps TOML nesting depth in PR-controlled files, so recursive inline parsing cannot exhaust the stack.',
+    basis: {
+      kind: 'safety',
+      reason:
+        'Largest legitimate use: a uv.lock nests eight levels of tables and arrays (package, its wheels or dependencies, an entry, its fields); four public uv.lock files read on 2026-11-27 (astral-sh/uv, pydantic/pydantic, fastapi/fastapi, apache/airflow) nest eight. Harm: TOML parsing recurses per level, and smol-toml overflows the call stack at about 3,328 levels of nested inline arrays when its own depth guard is off (measured on 2026-11-27 under Node 22); the cap is also the depth guard the parser is given. Approved by the maintainer on 2026-11-27 (L11, #383).',
+    },
     effect: 'Exceeding the depth throws budget for that file and the side yields a budget gap.',
     test: 'src/evidence/uv.test.ts > enforces exact/over %s through the real collector across both sides',
-    note: 'no recorded reason',
-  }),
+  },
   unjustified('w2.uv.maxTomlEntries', 100_000, 'count', {
     protects:
       'Caps cumulative TOML object properties and array elements across all uv files, so ignored fields cannot drive unbounded parse work.',
@@ -1611,63 +2671,121 @@ const DEFINITIONS = [
     test: 'src/evidence/uv.test.ts > enforces exact/over %s through the real collector across both sides',
     note: 'awaiting L8 measurement',
   }),
-  unjustified('w2.uv.maxPackages', 1_000, 'count', {
-    protects:
-      'Caps cumulative attempted package entries across uv.lock files, so a very large lock cannot drive unbounded parse and graph work.',
-    effect: 'Debiting past the cap throws budget and the file yields a budget gap.',
-    test: 'src/evidence/uv.test.ts > enforces exact/over %s through the real collector across both sides',
-    note: 'awaiting L8 measurement',
-  }),
-  unjustified('w2.uv.maxDeclarations', 1_000, 'count', {
-    protects:
-      'Caps cumulative requirement declarations from manifests and lock requires-dist items, bounding requirement parsing work.',
-    effect: 'Debiting past the cap throws budget and the side yields a budget gap.',
-    test: 'src/evidence/uv.test.ts > enforces exact/over %s through the real collector across both sides',
-    note: 'awaiting L8 measurement',
-  }),
-  unjustified('w2.uv.maxEdges', 1_000, 'count', {
-    protects: 'Caps cumulative dependency edges parsed from uv.lock, bounding graph input size.',
-    effect: 'Debiting past the cap throws budget and the head side yields a budget gap.',
-    test: 'src/evidence/uv.test.ts > enforces file, edge, marker and selected-root caps at boundaries',
-    note: 'awaiting L8 measurement',
-  }),
-  unjustified('w2.uv.maxStringBytes', 4_096, 'bytes', {
+  derived(
+    'w2.uv.maxPackages',
+    'count',
+    ['w2.uv.maxRoots', 'w2.uv.maxFileBytes', 'uv.minRecordBytes'],
+    (roots, fileBytes, recordBytes) => Math.floor((2 * roots * fileBytes) / recordBytes),
+    'As many package entries as the uv.lock files one run reads can hold: 2 sides (base and head) × limit:w2.uv.maxRoots lockfiles of at most limit:w2.uv.maxFileBytes, over the smallest array element the parser counts, limit:uv.minRecordBytes, rounded down. The count is cumulative across files and sides, so a fixed number bound legitimate PRs (one 600-package uv.lock read on base and head passes 1,000); bytes bound the input first. It follows the uv root setting (L11, Q1(a)). Approved by the maintainer on 2026-11-27 (L11, #383).',
+    {
+      protects:
+        'Caps cumulative attempted package entries across uv.lock files, so a very large lock cannot drive unbounded parse and graph work.',
+      effect: 'Debiting past the cap throws budget and the file yields a budget gap.',
+      test: 'src/evidence/uv.test.ts > enforces exact/over %s through the real collector across both sides',
+    },
+  ),
+  derived(
+    'w2.uv.maxDeclarations',
+    'count',
+    ['w2.uv.maxRoots', 'w2.uv.maxFileBytes', 'uv.minRecordBytes'],
+    (roots, fileBytes, recordBytes) => Math.floor((2 * 2 * roots * fileBytes) / recordBytes),
+    'As many requirement declarations as the files one run reads can hold: 2 sides (base and head) × limit:w2.uv.maxRoots roots × 2 files (pyproject.toml and the uv.lock requires-dist lists) of at most limit:w2.uv.maxFileBytes, over the smallest array element the parser counts, limit:uv.minRecordBytes, rounded down. The count is cumulative, so bytes bound the input first. It follows the uv root setting (L11, Q1(a)). Approved by the maintainer on 2026-11-27 (L11, #383).',
+    {
+      protects:
+        'Caps cumulative requirement declarations from manifests and lock requires-dist items, bounding requirement parsing work.',
+      effect: 'Debiting past the cap throws budget and the side yields a budget gap.',
+      test: 'src/evidence/uv.test.ts > enforces exact/over %s through the real collector across both sides',
+    },
+  ),
+  derived(
+    'w2.uv.maxEdges',
+    'count',
+    ['w2.uv.maxRoots', 'w2.uv.maxFileBytes', 'uv.minRecordBytes'],
+    (roots, fileBytes, recordBytes) => Math.floor((2 * roots * fileBytes) / recordBytes),
+    'As many dependency edges as the uv.lock files one run reads can hold: 2 sides (base and head) × limit:w2.uv.maxRoots lockfiles of at most limit:w2.uv.maxFileBytes, over the smallest array element the parser counts, limit:uv.minRecordBytes, rounded down. The count is cumulative, so bytes bound the input first. It follows the uv root setting (L11, Q1(a)). Approved by the maintainer on 2026-11-27 (L11, #383).',
+    {
+      protects: 'Caps cumulative dependency edges parsed from uv.lock, bounding graph input size.',
+      effect: 'Debiting past the cap throws budget and the head side yields a budget gap.',
+      test: 'src/evidence/uv.test.ts > enforces file, edge, marker and selected-root caps at boundaries',
+    },
+  ),
+  derived(
+    'uv.minRecordBytes',
+    'bytes',
+    [],
+    () => Buffer.byteLength('1,'),
+    'The fewest bytes one counted record can take in a uv file: the uv parsers debit every element of a package, dependency or requires-dist array before they check it (src/evidence/uv-lock.ts, src/evidence/uv-manifest.ts), and the shortest TOML array element is a one-digit value and its comma. Approved by the maintainer on 2026-11-27 (L11, #383).',
+    {
+      protects:
+        'Sizes the uv package, declaration and edge counts from the file bytes, so the count bounds never sit below what the bytes admit.',
+      effect:
+        'Not enforced: it is the divisor of limit:w2.uv.maxPackages, limit:w2.uv.maxDeclarations and limit:w2.uv.maxEdges.',
+      test: 'src/evidence/uv-lock.test.ts > every array element counts as one record, so a record can be as small as uv.minRecordBytes',
+    },
+  ),
+  {
+    id: 'w2.uv.maxStringBytes',
+    value: 4_096,
+    unit: 'bytes',
     protects:
       'Caps each TOML key or string value and requirement text, so one very long string cannot drive unbounded decode and identity work.',
+    basis: {
+      kind: 'safety',
+      reason:
+        'Largest legitimate use: requirement, marker and artifact URL strings run to hundreds of bytes; the longest string in four public uv.lock files read on 2026-11-27 is 463 bytes (a resolution marker). Harm: each string is decoded, normalized and, for a requirement, tokenized and kept, so without a per-string cap one string could be the whole file (limit:w2.uv.maxFileBytes) and multiply that work for every entry that names it. Approved by the maintainer on 2026-11-27 (L11, #383).',
+    },
     effect: 'A string over the cap throws budget for that entry, which becomes a budget gap.',
     test: 'src/evidence/uv.test.ts > enforces exact/over %s through the real collector across both sides',
-    note: 'awaiting L8 measurement',
-  }),
-  unjustified('w2.uv.maxRequirementTokens', 200, 'count', {
+  },
+  {
+    id: 'w2.uv.maxRequirementTokens',
+    value: 200,
+    unit: 'count',
     protects:
       'Caps lexical tokens per requirement, so one pathological requirement string cannot drive unbounded tokenization.',
+    basis: {
+      kind: 'safety',
+      reason:
+        'Largest legitimate use: the longest requirement in four public uv.lock files read on 2026-11-27, a dependency with a four-way platform marker, needs 71 tokens, and the longest requires-dist entry 23. Harm: tokenizing and parsing a requirement is linear in its tokens, and without this cap a string at limit:w2.uv.maxStringBytes would yield up to about 2,000 tokens, each parsed again for every side and root that reads it. Approved by the maintainer on 2026-11-27 (L11, #383).',
+    },
     effect:
       'Exceeding the token cap throws budget for that requirement, which becomes a budget gap.',
     test: 'src/evidence/uv.test.ts > enforces exact/over %s through the real collector across both sides',
-    note: 'awaiting L8 measurement',
-  }),
-  unjustified('w2.uv.maxMarkerDepth', 16, 'count', {
+  },
+  {
+    id: 'w2.uv.maxMarkerDepth',
+    value: 16,
+    unit: 'count',
     protects:
       'Caps parenthesis nesting in requirement environment markers, so nested markers cannot drive unbounded recursion.',
+    basis: {
+      kind: 'safety',
+      reason:
+        'Largest legitimate use: uv writes markers as a disjunction of conjunctions, one level of parentheses; across the 1,546 requires-dist entries and 378 dependency markers of four public uv.lock files read on 2026-11-27 the deepest nests one. Harm: the marker parser recurses once per parenthesis, and plain recursion overflows the call stack at about 9,640 frames (measured on 2026-11-27 under Node 22). Approved by the maintainer on 2026-11-27 (L11, #383).',
+    },
     effect:
       'Exceeding the nesting depth throws budget for that requirement, which becomes a budget gap.',
     test: 'src/evidence/uv.test.ts > enforces file, edge, marker and selected-root caps at boundaries',
-    note: 'no recorded reason',
-  }),
-  unjustified('w2.uv.maxRoots', 20, 'count', {
-    protects:
-      'Caps the number of selected uv roots read, so many changed directories cannot multiply file reads beyond the session budget.',
-    effect:
-      'Configured roots above the cap make the input invalid (src/evidence/uv.ts:173); discovered roots past the cap are not read and each adds a budget gap.',
-    test: 'src/evidence/uv.test.ts > enforces file, edge, marker and selected-root caps at boundaries',
-    note: 'awaiting L8 measurement',
-  }),
-  unjustified('w2.uv.maxRetainedBytes', 1_000_000, 'bytes', {
+  },
+  configured(
+    'w2.uv.maxRoots',
+    20,
+    'count',
+    { setting: 'limits.coverage.uvRoots', maximum: 'dependabot.maxRoots' },
+    "The adopter: each selected uv root costs pyproject.toml and uv.lock reads on both sides from the session's GitHub requests, so a larger setting buys coverage of more Python projects with quota and time. Coverage bound category (L11, Q9(a)); its hard maximum is the roots dependabot.yml may name.",
+    {
+      protects:
+        'Caps the number of selected uv roots read, so many changed directories cannot multiply file reads beyond the session budget.',
+      effect:
+        'Configured roots above the cap make the input invalid (src/evidence/uv.ts:173); discovered roots past the cap are not read and each adds a budget gap.',
+      test: 'src/evidence/uv.test.ts > enforces file, edge, marker and selected-root caps at boundaries',
+    },
+  ),
+  retainedSetting('w2.uv.maxRetainedBytes', 'limits.uvRetainedBytes', 1_000_000, 'bytes', {
     protects: 'Caps serialized uv metadata bytes kept in memory and handed to the graph stage.',
     effect:
       'The metadata is trimmed to the longest fitting root prefix with explicit budget gaps; if no prefix fits the result is unavailable with reason budget.',
     test: 'src/evidence/uv.test.ts > retention keeps a deterministic root prefix and every omitted file scope visible',
-    note: 'awaiting L8 measurement',
   }),
   unjustified('w2.graph.maxGraphWork', 500_000, 'count', {
     protects:
@@ -1677,13 +2795,12 @@ const DEFINITIONS = [
     test: 'src/evidence/uv-paths.test.ts > optional proof-work exhaustion retains the entire usable inventory and an explicit limit',
     note: 'awaiting L8 measurement',
   }),
-  unjustified('w2.graph.maxRetainedBytes', 2_000_000, 'bytes', {
+  retainedSetting('w2.graph.maxRetainedBytes', 'limits.graphRetainedBytes', 2_000_000, 'bytes', {
     protects:
       "Caps serialized bytes of the graph stage's input and output, so inventories and proofs cannot grow retained memory without bound.",
     effect:
       'Input over the cap throws budget; an output that cannot fit is unavailable with reason budget; optional proofs are dropped first and scope records kept.',
     test: 'src/evidence/npm-graph.test.ts > second proofs are dropped after pair verdicts, and core overflow still fails the result',
-    note: 'awaiting L8 measurement',
   }),
   derived(
     'w2.registry.maxRequests',
@@ -1734,13 +2851,20 @@ const DEFINITIONS = [
     note: 'awaiting L8 measurement',
     test: 'src/evidence/npm-registry.test.ts > registry JSON entries at the cap parse and one more entry is a budget failure',
   }),
-  unjustified('w2.registry.maxJsonDepth', 32, 'count', {
+  {
+    id: 'w2.registry.maxJsonDepth',
+    value: 32,
+    unit: 'count',
     protects:
       'Caps nesting depth in registry documents, so deep JSON cannot exhaust the stack or CPU in the walker.',
+    basis: {
+      kind: 'safety',
+      reason:
+        'Largest legitimate use: an npm version document nests about four levels; the next, typescript, react, @babel/core and eslint version documents read from registry.npmjs.org on 2026-11-27 nest four. Harm: the reader walks the parsed value and serializes what it keeps, and JSON.stringify overflows the call stack at about 4,166 levels of nested arrays (measured on 2026-11-27 under Node 22). The cap sits far between the two. Approved by the maintainer on 2026-11-27 (L11, #383).',
+    },
     effect: 'Exceeding the depth throws budget and the read is unavailable with reason budget.',
-    note: 'no recorded reason',
     test: 'src/evidence/npm-registry.test.ts > registry JSON nesting at the depth cap parses and one level deeper is a budget failure',
-  }),
+  },
   derived(
     'w2.registry.requestTimeoutMs',
     'milliseconds',
@@ -1835,14 +2959,36 @@ const DEFINITIONS = [
     note: 'awaiting L8 measurement',
     test: 'src/snapshot.test.ts > a link target at snapshot.maxBlobBytes is read and one byte more is refused unfetched',
   }),
-  unjustified('snapshot.maxTreeEntries', 10_000, 'count', {
-    protects:
-      'The total number of tree entries listed from GitHub is bounded, so a very large repository cannot make the snapshot listing unbounded (memory and requests).',
-    effect:
-      'Once the running count exceeds the cap, the listing throws Unavailable with the default reason unknown, and the snapshot is reported unusable.',
-    note: 'awaiting L8 measurement',
-    test: 'src/snapshot.test.ts > a listing at snapshot.maxTreeEntries is read and one more entry is refused',
-  }),
+  derived(
+    'snapshot.maxTreeEntries',
+    'count',
+    ['evidence.allocation.transport.snapshot.maxTotalBytes', 'snapshot.minTreeEntryBytes'],
+    (bytes, entryBytes) => Math.floor(bytes / entryBytes),
+    'As many tree entries as the snapshot byte share, limit:evidence.allocation.transport.snapshot.maxTotalBytes, can carry at the smallest entry the snapshot accepts, limit:snapshot.minTreeEntryBytes, rounded down. GitHub documents no entry limit for a non-recursive tree, and the bytes bound the listing first, so the count never cuts a listing the share admits. It follows the snapshot byte setting (L11, Q1(a)). Approved by the maintainer on 2026-11-27 (L11, Q7(a), #383).',
+    {
+      protects:
+        'The total number of tree entries listed from GitHub is bounded, so a very large repository cannot make the snapshot listing unbounded (memory and requests).',
+      effect:
+        'Once the running count exceeds the cap, the listing throws Unavailable with the default reason unknown, and the snapshot is reported unusable.',
+      test: 'src/snapshot.test.ts > a listing at snapshot.maxTreeEntries is read and one more entry is refused',
+    },
+  ),
+  derived(
+    'snapshot.minTreeEntryBytes',
+    'bytes',
+    [],
+    () =>
+      Buffer.byteLength(
+        JSON.stringify({ path: 'a', mode: '040000', type: 'tree', sha: '0'.repeat(40) }),
+      ) + 1,
+    'The serialized size of the smallest tree entry the snapshot accepts (classifyEntry, src/snapshot.ts): a one-character path, a six-character mode, the four-character type tree, a 40-character sha and no optional field, plus the comma that separates it from the next entry. Approved by the maintainer on 2026-11-27 (L11, Q7(a), #383).',
+    {
+      protects:
+        'Sizes limit:snapshot.maxTreeEntries from the snapshot byte share, so the count bound never sits below what the bytes admit.',
+      effect: 'Not enforced: it is the divisor of limit:snapshot.maxTreeEntries.',
+      test: 'src/snapshot.test.ts > the smallest tree entry the snapshot accepts serializes to snapshot.minTreeEntryBytes',
+    },
+  ),
   // GitHub reads, from runtime.ts. Each mirrors the evidence share it is read from.
   derived(
     'github.snapshot.maxRequests',
@@ -2042,14 +3188,20 @@ const DEFINITIONS = [
     note: 'awaiting L8 measurement',
     test: 'src/config.test.ts > the excerpt file cap admits exactly the registered count and rejects one more',
   }),
-  unjustified('context.maxTrackedPathEntries', 10_000, 'count', {
-    protects:
-      'The tracked-file inventory is streamed one entry at a time, and the cap stops the scan on an arbitrarily large repository.',
-    effect:
-      'On the 10,001st inventory entry the scan stops with reason inventory-limit and the iterator is closed. Facts already found and partial status are kept.',
-    test: 'src/context.test.ts > inventory budget bounds %i records including duplicates',
-    note: 'awaiting L8 measurement',
-  }),
+  derived(
+    'context.maxTrackedPathEntries',
+    'count',
+    ['snapshot.maxTreeEntries'],
+    copy,
+    'The tracked-file inventory is the snapshot listing, so it can hold no more entries than the listing: a copy of limit:snapshot.maxTreeEntries. Approved by the maintainer on 2026-11-27 (L11, #383).',
+    {
+      protects:
+        'The tracked-file inventory is streamed one entry at a time, and the cap stops the scan on an arbitrarily large repository.',
+      effect:
+        'On the entry past the cap the scan stops with reason inventory-limit and the iterator is closed. Facts already found and partial status are kept.',
+      test: 'src/context.test.ts > inventory budget bounds %i records including duplicates',
+    },
+  ),
   unjustified('context.maxSourceFileBytes', 65_536, 'bytes', {
     protects:
       'A source file is read into memory, so each read is capped at 65,536 bytes plus one probe byte.',
@@ -2253,14 +3405,58 @@ const DEFINITIONS = [
     test: 'src/analysis/mistral.test.ts > clips the per-request limit independently of the caller deadline',
     note: 'awaiting L8 measurement',
   }),
-  unjustified('analysis.responseBytes', 12_648_448, 'bytes', {
+  derived(
+    'analysis.responseBytes',
+    'bytes',
+    [
+      'analysis.completionTokens',
+      'analysis.maxTokenEscapedBytes',
+      'analysis.responseEnvelopeBytes',
+    ],
+    replyBytesFor,
+    'The largest legal reply: limit:analysis.completionTokens tokens of at most limit:analysis.maxTokenEscapedBytes JSON-escaped bytes each, plus limit:analysis.responseEnvelopeBytes for the envelope. The reader counts the raw UTF-8 body, in which the content is one JSON string, so the token bound is already in escaped bytes and no escape multiplier applies.',
+    {
+      protects:
+        'The reply body read is capped so a runaway or hostile response cannot exhaust memory. The cap is sized to hold the largest legal reply.',
+      effect:
+        'A reply body over the cap fails the whole call as response-size. No assessments are kept.',
+      test: 'src/analysis/mistral.test.ts > admits a valid stop at the full token-byte, escaping and envelope allowance, but rejects one extra observed byte',
+    },
+  ),
+  {
+    id: 'runner.heapBytesPerReplyByte',
+    value: 41.44,
+    unit: 'bytes',
     protects:
-      'The reply body read is capped so a runaway or hostile response cannot exhaust memory. The cap is sized to hold the largest legal reply.',
+      'States how much heap one reply byte in flight can cost at peak, while the reply is read, parsed and copied, so the heap left for the packet can be computed.',
+    basis: {
+      kind: 'measured',
+      command: 'npm run measure:heap',
+      corpus:
+        'crafted reply bodies of limit:analysis.responseBytes (16,842,752 bytes) of empty arrays, empty objects and arrays nested 32 deep, for both calls of an invented 12-member npm packet (255,932 bytes, two batches, limit:analysis.maxConcurrentCalls in flight), on Node 24.22.3 (V8 13.6) with a 1 MiB semi space',
+      statistic:
+        'the smallest --max-old-space-size at which the review completes with the worst shape (nested arrays, 1,335 MiB; flat 895, objects 1,152), less that packet at limit:runner.heapBytesPerPacketByte, divided by the reply bytes in flight (2 × 16,842,718): 41.435, rounded up to 41.44. The process baseline stays in it. At the former 12,648,448-byte cap the same shape needed 1,016 MiB, 41.95 per byte',
+      headroom:
+        'none at the measured shape; every reply in flight is assumed to be a hostile body of the full reply cap, which no valid reply reaches',
+      measured: '2026-11-27',
+    },
     effect:
-      'A reply body over the cap fails the whole call as response-size. No assessments are kept.',
-    test: 'src/analysis/mistral.test.ts > admits a valid stop at the full token-byte, escaping and envelope allowance, but rejects one extra observed byte',
-    note: 'awaiting L8 measurement',
-  }),
+      'Not enforced. limit:analysis.replyHeapBytes multiplies it by the reply bytes in flight.',
+    test: 'src/limits.test.ts > the heap inputs of packet.bytes keep their sources and formula',
+  },
+  derived(
+    'analysis.replyHeapBytes',
+    'bytes',
+    ['analysis.maxConcurrentCalls', 'analysis.responseBytes', 'runner.heapBytesPerReplyByte'],
+    (calls, bytes, perByte) => Math.ceil(calls * bytes * perByte),
+    'The heap the model replies can hold at peak: limit:analysis.maxConcurrentCalls replies of limit:analysis.responseBytes in flight at once, at limit:runner.heapBytesPerReplyByte each, rounded up. Its measurement includes the process baseline, so limit:packet.bytes needs no separate term for it.',
+    {
+      protects:
+        'Reserves the runner heap the concurrent model replies can take, so the packet cap leaves room for them.',
+      effect: 'Not enforced. limit:packet.bytes subtracts it from limit:runner.heapBytes.',
+      test: 'src/limits.test.ts > the heap inputs of packet.bytes keep their sources and formula',
+    },
+  ),
   unjustified('analysis.textBytes', 1_024, 'bytes', {
     protects:
       'Each model text field (reason, impact, action, rationale) is capped at 1,024 UTF-8 bytes, which the spec states as concise per-unit advice. This is a design choice; the downstream comment body is separately checked.',
@@ -2325,14 +3521,20 @@ const DEFINITIONS = [
     note: 'awaiting L8 measurement',
     test: 'src/analysis/batches.test.ts > no call dispatches at or after the registered analysis time cap from the start',
   }),
-  unjustified('analysis.publicationReserveMs', 60_000, 'milliseconds', {
-    protects:
-      'Publication needs time after analysis. Without a reserve, a call could consume the whole deadline and leave nothing to publish.',
-    effect:
-      'Analysis calls are cut at the caller deadline minus 60 s, which leaves the reserve for publication.',
-    test: 'src/analysis/batches.test.ts > a call ended by the deadline timer records the elapsed time at the cutoff',
-    note: 'awaiting L8 measurement',
-  }),
+  derived(
+    'analysis.publicationReserveMs',
+    'milliseconds',
+    ['github.requestTimeoutMs'],
+    (requestMs) => PUBLICATION_REQUESTS * requestMs,
+    'Five sequential publication requests (src/comments.ts:329-365: the comment selection, its re-read, the publication gate before the write, the write and the gate after it), each allowed the GitHub request timeout: 5 × limit:github.requestTimeoutMs. Each gate also re-verifies the binding through its own reads (src/comments.ts:246-261), so the count is final only once publication is wired (D4). Approved by the maintainer on 2026-11-27 (L11, #383).',
+    {
+      protects:
+        'Publication needs time after analysis. Without a reserve, a call could consume the whole deadline and leave nothing to publish.',
+      effect:
+        'Analysis calls are cut at the caller deadline less this reserve, which leaves the reserve for publication.',
+      test: 'src/analysis/batches.test.ts > a call ended by the deadline timer records the elapsed time at the cutoff',
+    },
+  ),
   unjustified('analysis.maxContentChunks', 64, 'count', {
     protects:
       "A reply's content array is capped at 64 chunks, so chunk iteration over untrusted provider output stays bounded.",
@@ -2387,7 +3589,7 @@ const DEFINITIONS = [
     value: 30_000,
     unit: 'milliseconds',
     protects:
-      'Keeps the large-inventory reporting and parity tests from failing by chance on a slow CI runner, while still ending a build or render that hangs.',
+      'Keeps the large-inventory reporting and parity tests, and the schema test that fills a packet to limit:packet.bytes, from failing by chance on a slow CI runner, while still ending a build or render that hangs.',
     basis: {
       kind: 'safety',
       reason:
@@ -2395,7 +3597,7 @@ const DEFINITIONS = [
     },
     effect:
       "A reporting or parity test past the allowance fails under vitest's timeout behavior, as any timed-out test does.",
-    test: 'none: a test-runner allowance for src/reporting.test.ts and tests/parity/large-inventory.test.ts, which no application code reads',
+    test: 'none: a test-runner allowance for src/reporting.test.ts, tests/parity/large-inventory.test.ts and the exact packet budget test in src/schema.test.ts, which no application code reads',
   },
   {
     id: 'tests.largeInventoryPacketHeadroomBytes',
@@ -2409,10 +3611,11 @@ const DEFINITIONS = [
         'npx vp test --run tests/parity/large-inventory.test.ts -t "builds 93", reading Buffer.byteLength(JSON.stringify(packet)) of the scenario packet',
       corpus:
         'the synthetic large inventory: 93 npm members plus 2 same-named nested copies, with C6 and C7 batched source text',
-      statistic: 'exact packet bytes: 1,043,616 of the 1,048,576-byte cap, 4,960 bytes under it',
+      statistic:
+        'exact packet bytes: 1,043,616, unchanged since 2026-11-26, now about 45.8 MB under the heap-derived limit:packet.bytes',
       headroom:
-        '864 bytes between the measured 4,960-byte margin and this 4,096-byte floor, room for a short wording change',
-      measured: '2026-11-26',
+        'the 4,096-byte floor set under the former 1 MiB cap, kept: with the cap derived from heap the floor no longer binds, and the test now fails only if the scenario packet grows to within it of the cap',
+      measured: '2026-11-27',
     },
     effect:
       'The large-inventory parity test fails when that packet comes within this many bytes of the packet cap.',
@@ -2459,13 +3662,6 @@ const DEFINITIONS = [
     note: 'no recorded reason',
     test: 'src/evidence/policy-signals-npm.test.ts > a maintainer list at the registered cap is kept and one more is unchecked for budget',
   }),
-  unjustified('pipeline.ownershipWatchMs', 2_000, 'milliseconds', {
-    protects:
-      'A lost claim must stop a pending request within the watch interval, and the code requires that interval to be shorter than any request timeout, so lost work does not keep running (work after ownership is lost).',
-    effect: 'Each tick checks ownership; when ownership is lost the pending request is aborted.',
-    note: 'no recorded reason',
-    test: 'src/pipeline.test.ts > checks ownership every pipeline.ownershipWatchMs while a request is pending',
-  }),
   unjustified('research.maxTagCandidates', 100, 'count', {
     protects:
       'Release and tag candidates from untrusted upstream data are bounded, so tag matching cannot grow requests or CPU without limit (requests and CPU).',
@@ -2510,17 +3706,58 @@ const DEFINITIONS = [
     },
   ),
   derived(
-    'analysis.projectionBytes',
+    'analysis.unitDerivedBytes',
     'bytes',
-    ['packet.bytes'],
-    (bytes) => 8 * bytes,
-    "The analysis projection's input budget is eight times the packet's byte cap.",
+    ['packet.changes', 'packet.relationships', 'packet.idCodeUnits', 'packet.identityBytes'],
+    unitDerivedBytes,
+    'The string bytes the T5 unit expansion can add beyond copies of packet strings, fixed by the count caps: unitDerivedBytes in src/limits.ts, whose fixed text sizes (UNIT_TEXT) src/units.test.ts pins against src/units.ts, src/schema.ts and src/config.ts. Each id counts at most min(limit:packet.identityBytes, 3 × limit:packet.idCodeUnits) bytes, JSON-escaped or not; the relationship limits number at most 2 (n − k)(k − 1) for n = limit:packet.changes. Approved by the maintainer on 2026-11-28 (L11, #383).',
     {
       protects:
-        'Input work during snapshot (the parsed reply or inventory and its detached copy) is capped at eight packet-byte caps, so crafted JSON cannot allocate without bound.',
+        'Bounds what the decision-unit expansion adds to the snapshot input, so the projection caps can be derived from it.',
+      effect: 'Not enforced: limit:analysis.projectionBytes adds it.',
+      test: 'src/units.test.ts > the unit expansion of the largest-expansion packet stays inside its structural bound',
+    },
+  ),
+  derived(
+    'analysis.unitDerivedEntries',
+    'count',
+    ['packet.changes', 'packet.relationships', 'packet.reachability'],
+    unitDerivedEntries,
+    'The values the T5 unit expansion can add beyond copies of packet values, fixed by the count caps: unitDerivedEntries in src/limits.ts. Approved by the maintainer on 2026-11-28 (L11, #383).',
+    {
+      protects:
+        'Bounds what the decision-unit expansion adds to the values the snapshot visits, so the entry cap can be derived from it.',
+      effect: 'Not enforced: limit:analysis.projectionEntries adds it.',
+      test: 'src/units.test.ts > the unit expansion of the largest-expansion packet stays inside its structural bound',
+    },
+  ),
+  derived(
+    'analysis.projectionBytes',
+    'bytes',
+    ['packet.bytes', 'analysis.unitDerivedBytes', 'config.maxBytes'],
+    (packet, units, config) => 3 * packet + units + config + UNIT_TEXT.configDefaultBytes,
+    "The string bytes one run input can hold (src/analysis/projection.ts:154; src/analysis/batches.ts:62): the packet's own strings (at most limit:packet.bytes), their copies in the units, at most limit:packet.bytes again plus once more for proof keys JSON-escaped inside ambiguous-anchor limits, so 3 × limit:packet.bytes; the derived unit strings (limit:analysis.unitDerivedBytes); and the config, whose strings come from at most limit:config.maxBytes of text plus its defaults (UNIT_TEXT.configDefaultBytes). Approved by the maintainer on 2026-11-28 (L11, #383).",
+    {
+      protects:
+        'Input work during snapshot (the run input: the accepted packet, its T5 unit expansion and the config, and their detached copy) is capped in string bytes, so crafted input cannot allocate without bound.',
       effect:
-        'Exceeding the byte budget throws a budget error and no snapshot or batch is produced. Nothing partial is kept.',
-      test: 'src/analysis/projection.test.ts > the snapshot byte budget admits exactly eight packet caps of input and refuses one byte more',
+        'Exceeding the byte budget throws a budget error and no snapshot or batch is produced. Nothing partial is kept. Every packet T4 accepts fits under it.',
+      test: 'src/analysis/projection.test.ts > a packet near its caps with the largest unit expansion passes the projection',
+    },
+  ),
+  derived(
+    'analysis.projectionEntries',
+    'count',
+    ['packet.bytes', 'analysis.unitDerivedEntries', 'config.maxBytes'],
+    (packet, units, config) =>
+      packet + units + Math.ceil(config / 2) + UNIT_TEXT.configDefaultEntries,
+    'The values one run input can hold: every packet value takes at least 2 serialized bytes with its separator, so the packet and its copies in the units hold at most limit:packet.bytes values together; the derived unit values (limit:analysis.unitDerivedEntries); and the config, at most half its limit:config.maxBytes of text plus its defaults (UNIT_TEXT.configDefaultEntries). Approved by the maintainer on 2026-11-28 (L11, #383).',
+    {
+      protects:
+        'Input work during snapshot is capped in values visited (strings, numbers, arrays and objects), so crafted input cannot make the detached copy visit an unbounded number of values.',
+      effect:
+        'Exceeding the entry budget, or an array or object with more entries than remain, throws a budget error and no snapshot or batch is produced. Nothing partial is kept. Every packet T4 accepts fits under it.',
+      test: 'src/analysis/projection.test.ts > a packet near its caps with the largest unit expansion passes the projection',
     },
   ),
   unjustified('analysis.maxProjectionDepth', 64, 'count', {
@@ -2530,14 +3767,29 @@ const DEFINITIONS = [
     note: 'no recorded reason',
     test: 'src/analysis/projection.test.ts > the snapshot depth cap admits a leaf at the registered depth and refuses one level deeper',
   }),
-  unjustified('analysis.maxTokenCodeUnits', 128, 'code units', {
+  {
+    id: 'analysis.maxTokenEscapedBytes',
+    value: 1_024,
+    unit: 'bytes',
     protects:
-      'Sets the assumed code units per token in the reply-byte formula (completionTokens * 128 * 6 plus the envelope), so the reply byte cap covers the largest legal reply.',
+      'Bounds the reply bytes one completion token can add: the longest vocabulary token of the models `mistral-large-latest` may point to, measured after JSON string escaping, so the reply byte cap covers the largest legal reply.',
+    basis: {
+      kind: 'external',
+      url: 'https://huggingface.co/mistralai/Mistral-Large-4-1T-A52B/blob/6c0166e17ab8a3d504ff1553804abec9fb0993dc/tekken.json',
+      checked: '2026-11-27',
+      platformValue: 1_024,
+      margin:
+        "none: the larger of the two tokenizers the undocumented alias may name. Mistral Large 4 (tekken.json v15 at 6c0166e17ab8a3d504ff1553804abec9fb0993dc, 203,800 vocab tokens) has a 1,024-byte token of 1,024 spaces (rank 128398): 1,024 bytes raw, 1,024 UTF-16 code units, 1,024 bytes JSON-escaped. Mistral Large 3 (mistralai/Mistral-Large-3-675B-Instruct-2512, tekken.json v13 at 51330c9da67945183568346369a07be224e5e1b0, 130,072 vocab tokens) tops out at 76 (rank 98679, 76 '-'). Special tokens, measured from token_str, reach 18 bytes. Escaped bytes are UTF-8 bytes of JSON.stringify of the decoded token, so a provider that writes non-ASCII as \\u escapes could exceed this; the probe also reports that form.",
+      probe: {
+        command: 'npm run probe:token-length',
+        repositoryType:
+          'public, organization-owned, huggingface.co model repositories; the file path is the argument',
+      },
+    },
     effect:
-      'Caller limits whose responseBytes is below the formula fail preparation as budget (projection.ts:132-137). A reply over responseBytes fails as response-size at runtime.',
+      'Caller limits whose responseBytes is below the reply formula fail preparation as budget (src/analysis/projection.ts). A reply over limit:analysis.responseBytes fails as response-size at runtime.',
     test: 'src/analysis/bounds.test.ts > every declared resource limit rejects larger, unsafe, fractional and incompatible values before a usable handle',
-    note: 'no recorded reason',
-  }),
+  },
   unjustified('analysis.responseEnvelopeBytes', 65_536, 'bytes', {
     protects:
       "Allowance for the reply's JSON envelope on top of the token text, so a maximal valid reply is not rejected as oversize.",
@@ -2560,22 +3812,104 @@ const DEFINITIONS = [
       test: 'src/evidence/advisories.test.ts > accepts exactly advisories.maxLookups public identities and refuses one more',
     },
   ),
-  unjustified('npm.maxIntegrityCodeUnits', 1_024, 'code units', {
+  {
+    id: 'npm.maxIntegrityCodeUnits',
+    value: 1_024,
+    unit: 'code units',
     protects:
       'The integrity string from the untrusted npm registry is bounded before the hash parser splits and matches it, so the parse cannot do unbounded work (CPU).',
+    basis: {
+      kind: 'safety',
+      reason:
+        'Largest legitimate use: an SRI string is the algorithm prefix and a base64 digest, 95 code units for sha512 and about 140 with a second hash; the longest of the npm/cli lockfile read on 2026-11-27 is 95. Harm: the hash parser splits and matches the untrusted string, and without this cap the string could be a whole registry response (limit:w2.registry.maxResponseBytes). Approved by the maintainer on 2026-11-27 (L11, #383).',
+    },
     effect:
       "A longer integrity string fails the registry document with reason malformed, so the package's registry evidence is unavailable.",
-    note: 'no recorded reason',
     test: 'src/evidence/npm-registry.test.ts > an integrity string at the code-unit cap binds and one more code unit is malformed',
-  }),
-  unjustified('github.compareMaxFiles', 300, 'count', {
+  },
+  {
+    id: 'github.compareMaxFiles',
+    value: 300,
+    unit: 'count',
     protects:
       'A compare response with the cap or more changed files may be incomplete, so the list is marked truncated instead of being treated as complete (evidence completeness).',
+    basis: {
+      kind: 'external',
+      url: 'https://docs.github.com/en/rest/commits/commits#compare-two-commits',
+      checked: '2026-11-27',
+      platformValue: 300,
+      margin:
+        'none: the response "includes up to 300 changed files for the entire comparison", so a list of that length may be cut and is marked truncated. Approved by the maintainer on 2026-11-27 (L11, #383).',
+    },
     effect:
       'At or above the cap, filesComplete is false and the reason truncated is recorded; the patches already read are kept.',
-    note: 'no recorded reason',
     test: 'src/evidence/upstream-github.test.ts > a comparison keeps its file list complete below the register file cap and truncates at it',
-  }),
+  },
+  {
+    id: 'github.processingTimeoutMs',
+    value: 10_000,
+    unit: 'milliseconds',
+    protects:
+      'Records how long GitHub processes one REST request before it terminates it with a timeout response, the floor below which the reviewer would cut off a request GitHub still answers.',
+    basis: {
+      kind: 'external',
+      url: 'https://docs.github.com/en/rest/using-the-rest-api/troubleshooting-the-rest-api#timeouts',
+      checked: '2026-11-27',
+      platformValue: 10_000,
+      margin:
+        'none: "If GitHub takes more than 10 seconds to process an API request, GitHub will terminate the request and you will receive a timeout response." GitHub reserves the right to change the window. The GraphQL API documents the same 10-second processing timeout. It covers processing before the response, not the body transfer, which limit:evidence.envelope.requestTimeoutMs adds.',
+    },
+    effect:
+      'Not enforced by the reviewer; limit:evidence.envelope.requestTimeoutMs derives from it.',
+    test: 'none: platform figure; src/limits.test.ts pins how limit:evidence.envelope.requestTimeoutMs derives from it',
+  },
+  {
+    id: 'upstream.throughputBytesPerSecond',
+    value: 640_000,
+    // The register has no rate unit: the value is bytes per second, as its id says.
+    unit: 'bytes',
+    protects:
+      'Records the read throughput of upstream research reads (GitHub releases and PyPI JSON), in bytes per second, so the request timeout and the upstream byte ceiling can be sized in time.',
+    basis: {
+      kind: 'external',
+      url: 'https://github.com/andrewpucci/dependency-update-advisor/pull/468',
+      checked: '2026-11-27',
+      platformValue: 640_000,
+      margin:
+        'none: a measured platform property, not demand (L11, E4, approved 2026-11-27). Bytes per second over the upstream reads of the #462 uv PRs, measured for #467 and stated in #468 as 0.64 MB/s. npm run probe:upstream-throughput reproduces it: it reads each named GitHub releases page and PyPI project one after another and reports the total body bytes over the total wall time, rounded down. The derived ceilings carry their own margin (the upstream byte ceiling takes half the window).',
+      probe: {
+        command: 'npm run probe:upstream-throughput',
+        repositoryType:
+          'public, organization- and user-owned, github.com and pypi.org; the arguments name the upstream projects of the #462 uv members',
+      },
+    },
+    effect:
+      'Not enforced; limit:evidence.envelope.requestTimeoutMs and limit:evidence.allocation.upstream.maxTotalBytes derive from it. A lower figure gives a longer timeout and a smaller upstream byte ceiling.',
+    test: 'tests/probe-research-timing/core.test.ts > throughput is the successful bytes over their summed wall time, rounded down',
+  },
+  {
+    id: 'osv.slowestResponseMs',
+    value: 541,
+    unit: 'milliseconds',
+    protects:
+      'Records the slowest OSV v1/query response, so the advisory request ceiling can be sized in time.',
+    basis: {
+      kind: 'external',
+      url: 'https://github.com/andrewpucci/dependency-update-advisor/pull/468',
+      checked: '2026-11-27',
+      platformValue: 541,
+      margin:
+        'none: a measured platform property, not demand (L11, E4, approved 2026-11-27). The slowest OSV response measured for #467 and stated in #468. npm run probe:osv-latency reproduces it: it queries each named package version one after another and reports the slowest successful response, rounded up. The advisory ceiling carries its own margin (it takes half the window).',
+      probe: {
+        command: 'npm run probe:osv-latency',
+        repositoryType:
+          'public, api.osv.dev; the arguments name the package versions of the #462 uv members',
+      },
+    },
+    effect:
+      'Not enforced; limit:evidence.allocation.advisory.maxRequests derives from it. A slower figure gives fewer advisory lookups.',
+    test: 'tests/probe-research-timing/core.test.ts > the slowest response is the longest successful read, rounded up',
+  },
   {
     id: 'github.pageSize',
     value: 100,
@@ -2630,6 +3964,20 @@ const DEFINITIONS = [
       'Not enforced yet; L12 makes it the hard maximum of the GitHub request cap. Research already follows the quota GitHub reports at run time.',
     test: 'none: platform figure; L12 makes it the hard maximum of the GitHub request cap',
   },
+  derived(
+    'github.token.requestCapMax',
+    'count',
+    ['github.token.restRequestsPerHour', 'evidence.allocation.transport.freshness.maxRequests'],
+    (perHour, freshness) => perHour - freshness,
+    "The joint hard maximum of the GitHub request cap's settings: the documented GITHUB_TOKEN quota, limit:github.token.restRequestsPerHour, less the freshness reads every run makes, limit:evidence.allocation.transport.freshness.maxRequests, so the settings together never spend the reads a review needs to stay valid. It bounds only GitHub reads: limit:research.githubQuota.researchCeiling also counts other hosts, so it cannot serve. Approved by the maintainer on 2026-11-27 (L11, Q6(a), #383).",
+    {
+      protects:
+        "Keeps the adopter's GitHub request settings, together, inside one hour of the GITHUB_TOKEN quota with the freshness reads reserved.",
+      effect:
+        'Not enforced by the reviewer yet: L12 makes the config parser reject settings whose sum is larger. check:limits checks the defaults against it.',
+      test: 'none: the joint hard maximum of adopter settings the parser does not read yet (L12, #384); src/limits.test.ts pins its formula',
+    },
+  ),
   {
     id: 'github.hostedJobMaxMinutes',
     value: 360,
@@ -2648,14 +3996,20 @@ const DEFINITIONS = [
       'Not enforced yet; L13 makes it the hard maximum of the job budget input. Each workflow sets its own timeout-minutes far below it.',
     test: 'none: platform figure; L12 and L13 make it the hard maximum of the job budget',
   },
-  unjustified('upstream.releasePageSize', 64, 'count', {
-    protects:
-      'The start size of the release page-size ladder is bounded, so a release page that does not fit the response cap is halved and retried instead of failing outright (response size and memory).',
-    effect:
-      'A page that does not fit halves and is retried at the same offset; a single release over the cap fails with reason budget.',
-    test: 'src/evidence/upstream-releases.test.ts > halves the page until it fits and keeps reading from the same release',
-    note: 'no recorded reason',
-  }),
+  derived(
+    'upstream.releasePageSize',
+    'count',
+    ['github.pageSize'],
+    copy,
+    'The release ladder starts at GitHub\'s per_page maximum for listing releases, limit:github.pageSize (https://docs.github.com/en/rest/releases/releases#list-releases, "max 100"), as the compare ladder does (#471), so releases that fit read in the fewest pages. Approved by the maintainer on 2026-11-27 (L11, #383).',
+    {
+      protects:
+        'The start size of the release page-size ladder is bounded, so a release page that does not fit the response cap is halved and retried instead of failing outright (response size and memory).',
+      effect:
+        'A page that does not fit halves and is retried at the same offset; a single release over the cap fails with reason budget.',
+      test: 'src/evidence/upstream-releases.test.ts > halves the page until it fits and keeps reading from the same release',
+    },
+  ),
   derived(
     'upstream.comparePageSize',
     'count',

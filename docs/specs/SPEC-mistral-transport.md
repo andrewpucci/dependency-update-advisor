@@ -99,8 +99,9 @@ authoritative PR decision and independently retain deterministic findings.
 The alias/projection and validation details live in `projection.ts` and
 `validation.ts`; neither depends on Mistral SDK types. Input-copy work is
 bounded separately to `limit:analysis.maxProjectionDepth` levels,
-`limit:packet.bytes` entries, and `limit:analysis.projectionBytes` of string
-values for the accepted packet plus T5 expansion. Reply-copy entries/string
+`limit:analysis.projectionEntries` values, and `limit:analysis.projectionBytes`
+of string values for the accepted packet plus T5 expansion. Neither budget
+derives from `limit:packet.bytes`. Reply-copy entries/string
 bytes are bounded by the selected response ceiling. These are work/retention
 limits, not expanded T4/C2 wire allowances or measured performance thresholds.
 
@@ -156,8 +157,8 @@ remain the final verification commands. Default tests use only invented
 files/HTTP data and mocked Mistral; no credential or paid request is needed.
 The full-response boundary fixture admits exactly
 `limit:analysis.responseBytes`, including the recorded completion-byte
-allowance, worst-case JSON escaping and metadata.
-That synthetic allowance is not a universal tokenizer guarantee.
+allowance, the escaped token bytes and metadata.
+That allowance holds for the recorded tokenizers, not every tokenizer.
 
 M2 must separately prove packing, concurrency, request counts, recursive length
 splits, every-unit accounting, and PR aggregation. O1/W1/W2 must prove rendering,
@@ -518,8 +519,11 @@ so these facts were observed on 2026-11-12 and may change:
    75 tokens per second, a reply that uses the full cap at its 2026-11-12
    value takes about 230 s. The observed-bytes
    ceiling `limit:analysis.responseBytes` follows the stated formula:
-   `limit:analysis.completionTokens` times `limit:analysis.maxTokenCodeUnits`
-   times 6, plus `limit:analysis.responseEnvelopeBytes`. Each remains clipped
+   `limit:analysis.completionTokens` times
+   `limit:analysis.maxTokenEscapedBytes`, plus
+   `limit:analysis.responseEnvelopeBytes`. The token bound is the longest
+   vocabulary token after JSON string escaping, so no separate escape
+   multiplier applies (L11, #383). Each remains clipped
    to the caller's remaining analysis time, and M2's
    `limit:analysis.maxAnalysisMs` analysis maximum, `limit:analysis.maxCalls`
    call cap, and `limit:analysis.maxConcurrentCalls` concurrency do not change.
@@ -743,25 +747,24 @@ are proposed. M2/W2 still choose their cumulative budgets and publication reserv
 
 ### Initial resource ceilings
 
-| Limit                                              | Proposed value                                                             | Reason                                                                                                                 |
-| -------------------------------------------------- | -------------------------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------- |
-| Units per prepared batch                           | `limit:analysis.maxUnits`                                                  | Small ordered batches; a proven group remains one unit with all its members.                                           |
-| Members/sources/findings retained locally          | T4's `limit:packet.changes`/`limit:packet.sources`/`limit:packet.findings` | Preserve the accepted inventory and required findings; no new larger input allowance.                                  |
-| Upstream excerpt UTF-8 bytes                       | `limit:analysis.sourceBytes` per source                                    | No larger than T4 text; retain truncation metadata.                                                                    |
-| Repository source excerpt                          | C2's existing `limit:context.maxSourceExcerptCodeUnits`                    | Only already eligible C2 text; its `limit:context.maxSourceContextBytes` total context cap still applies.              |
-| Serialized projected unit bytes                    | `limit:analysis.unitBytes`                                                 | Reject a unit whose required structure cannot fit; never remove members/findings.                                      |
-| Final serialized HTTP request bytes                | `limit:analysis.requestBytes`                                              | Includes fixed prompts, model/options, JSON string escaping, and envelope.                                             |
-| Completion tokens                                  | `limit:analysis.completionTokens`                                          | Reasoning tokens count against it; live replies used 4.1k-8.0k (2026-11-12).                                           |
-| Per-request timeout                                | `limit:analysis.requestTimeoutMs` maximum                                  | Live replies took 58-101 s; clipped to the caller's remaining analysis time.                                           |
-| Inner content allowance                            | `limit:analysis.maxTokenCodeUnits` code units per completion token         | Conservative planning allowance, not a documented guarantee for every model/tokenizer.                                 |
-| Outer JSON escaping multiplier                     | 6                                                                          | Allows byte-to-`\uXXXX` expansion when content is encoded inside the response envelope.                                |
-| Provider envelope allowance                        | `limit:analysis.responseEnvelopeBytes`                                     | Bounded metadata overhead beyond generated content.                                                                    |
-| Observed response bytes                            | `limit:analysis.responseBytes`                                             | Completion tokens × content allowance × escaping multiplier + envelope allowance; input C2/T4 limits remain unchanged. |
-| Model reason/rationale/action/impact text          | `limit:analysis.textBytes` each                                            | Concise per-unit advice; nonempty when required.                                                                       |
-| Feature text                                       | `limit:analysis.featureBytes`                                              | At most one capability per unit.                                                                                       |
-| Follow-up description                              | `limit:analysis.followupBytes`                                             | Does not expand the baseline's 280-character bound.                                                                    |
-| Follow-ups, remediation steps, validation steps    | `limit:analysis.steps` each                                                | Concrete bounded lists; mandatory nonempty lists where required.                                                       |
-| Blockers, finding references, references per claim | `limit:analysis.references` each                                           | Model explains a bounded subset; all deterministic findings remain outside model ownership.                            |
+| Limit                                              | Proposed value                                                             | Reason                                                                                                    |
+| -------------------------------------------------- | -------------------------------------------------------------------------- | --------------------------------------------------------------------------------------------------------- |
+| Units per prepared batch                           | `limit:analysis.maxUnits`                                                  | Small ordered batches; a proven group remains one unit with all its members.                              |
+| Members/sources/findings retained locally          | T4's `limit:packet.changes`/`limit:packet.sources`/`limit:packet.findings` | Preserve the accepted inventory and required findings; no new larger input allowance.                     |
+| Upstream excerpt UTF-8 bytes                       | `limit:analysis.sourceBytes` per source                                    | No larger than T4 text; retain truncation metadata.                                                       |
+| Repository source excerpt                          | C2's existing `limit:context.maxSourceExcerptCodeUnits`                    | Only already eligible C2 text; its `limit:context.maxSourceContextBytes` total context cap still applies. |
+| Serialized projected unit bytes                    | `limit:analysis.unitBytes`                                                 | Reject a unit whose required structure cannot fit; never remove members/findings.                         |
+| Final serialized HTTP request bytes                | `limit:analysis.requestBytes`                                              | Includes fixed prompts, model/options, JSON string escaping, and envelope.                                |
+| Completion tokens                                  | `limit:analysis.completionTokens`                                          | Reasoning tokens count against it; live replies used 4.1k-8.0k (2026-11-12).                              |
+| Per-request timeout                                | `limit:analysis.requestTimeoutMs` maximum                                  | Live replies took 58-101 s; clipped to the caller's remaining analysis time.                              |
+| Content allowance per completion token             | `limit:analysis.maxTokenEscapedBytes` bytes                                | Longest vocabulary token after JSON string escaping, over the tokenizers `mistral-large-latest` may name. |
+| Provider envelope allowance                        | `limit:analysis.responseEnvelopeBytes`                                     | Bounded metadata overhead beyond generated content.                                                       |
+| Observed response bytes                            | `limit:analysis.responseBytes`                                             | Completion tokens × escaped bytes per token + envelope allowance; input C2/T4 limits remain unchanged.    |
+| Model reason/rationale/action/impact text          | `limit:analysis.textBytes` each                                            | Concise per-unit advice; nonempty when required.                                                          |
+| Feature text                                       | `limit:analysis.featureBytes`                                              | At most one capability per unit.                                                                          |
+| Follow-up description                              | `limit:analysis.followupBytes`                                             | Does not expand the baseline's 280-character bound.                                                       |
+| Follow-ups, remediation steps, validation steps    | `limit:analysis.steps` each                                                | Concrete bounded lists; mandatory nonempty lists where required.                                          |
+| Blockers, finding references, references per claim | `limit:analysis.references` each                                           | Model explains a bounded subset; all deterministic findings remain outside model ownership.               |
 
 Apply lower caller-supplied limits when valid; reject larger, non-finite,
 fractional, unsafe, or incompatible values before I/O. The response cap must
@@ -771,12 +774,15 @@ fully serialized unit with its attributable source/context records. Count
 deduplicated shared records once in the full batch and in every owning unit's
 individual budget. No initial packing or retry logic is added to M1.
 
-The response allowance intentionally exceeds T4's input-packet byte ceiling:
-the provider nests a JSON document as an escaped string and adds metadata.
-It does not enlarge any T4 or C2 input. The spike must record whether its
-observed outputs challenge the allowance; a different allowance needs review.
+The response allowance is sized from the reply, not from T4's input-packet
+byte ceiling: the provider nests a JSON document as an escaped string and adds
+metadata. It does not enlarge any T4 or C2 input. The heap the concurrent
+replies can hold, `limit:analysis.replyHeapBytes`, is instead subtracted from
+the runner heap that `limit:packet.bytes` is derived from. The spike must
+record whether its observed outputs challenge the allowance; a different
+allowance needs review.
 Boundary fixtures prove acceptance within this recorded allowance, not a
-universal tokenizer maximum or that all eight rich assessments fit
+maximum for every tokenizer or that all eight rich assessments fit
 `limit:analysis.completionTokens` tokens.
 
 ### Local identity and aliases

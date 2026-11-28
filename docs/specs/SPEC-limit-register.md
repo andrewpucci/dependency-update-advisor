@@ -116,6 +116,9 @@ One module, `src/limits.ts`, defines every limit. Each entry has:
   - `safety`: why this number protects the named resource. For a guard on
     untrusted input, that is the margin above the largest legitimate value
     observed and below the point where harm begins;
+  - `config`: an adopter setting that section 5 admits. The value is its
+    default, and the basis names who bears the trade-off and the approval
+    that admitted it. The entry's `configurable` field holds the rest;
   - `unjustified`: an explicit, visible marker for a value with no basis yet,
     with a pending note. It exists only during migration, and none may
     remain after phase 2.
@@ -125,7 +128,18 @@ One module, `src/limits.ts`, defines every limit. Each entry has:
 - `test`: the test that pins the at-limit and over-limit behavior, or `none`
   with a reason.
 - `configurable`: absent, or the adopter setting with its default and hard
-  maximum (section 5).
+  maximum (section 5). It is set exactly when the basis is `config`. The hard
+  maximum, and a hard minimum where one exists, name register entries rather
+  than numbers, so a bound derived from other entries moves with them. A
+  joint maximum bounds the sum of every setting that names it.
+
+Amended (L11): the `config` kind and the shape of `configurable` were
+approved by the maintainer on 2026-11-27
+([#383](https://github.com/andrewpucci/dependency-update-advisor/issues/383)),
+with the configurable categories in section 5. L12
+([#384](https://github.com/andrewpucci/dependency-update-advisor/issues/384))
+adds each setting to the config contract, the published schema, and the
+parser; until then a run uses the default.
 
 Dependents come from the `derived` formulas, so the register can list every
 entry that a change would move.
@@ -204,6 +218,23 @@ covers everything else. They fail when:
 - **Tests:** an entry names a test that doesn't exist.
 - **Migration:** after phase 2, any entry is still `unjustified`.
 
+**Register scope** (L11, Q5 and Q25; approved by the maintainer on
+2026-11-27,
+[#383](https://github.com/andrewpucci/dependency-update-advisor/issues/383)).
+Two kinds of value sit outside the register's basis rule, because no adopter
+bears them and no outside constraint bounds them:
+
+- repository tooling policy, such as this repository's own CI and probe
+  timeouts and check:limits settings;
+- an internal constant whose only rule is an invariant against a register
+  entry, such as the pipeline's ownership watch interval, which must stay
+  below every request timeout while the claim store has no production
+  backend.
+
+Each one stays a named constant beside the code that reads it, with a
+lint exception that gives its reason and a test that pins its invariant.
+Revisit the ownership watch interval when the claim store has a backend.
+
 Small values such as 1, 2, and 15 also appear in specs with unrelated
 meanings. The plan measures how many spec lines the check matches before
 choosing how to scope it, so the allowlist stays reviewable.
@@ -253,6 +284,18 @@ separate decision.
 Under the review-config spec's boundaries, adding a configurable category is
 Ask-first.
 
+**Derived entries follow the settings they derive from** (L11, Q1; approved
+by the maintainer on 2026-11-27,
+[#383](https://github.com/andrewpucci/dependency-update-advisor/issues/383)).
+An entry derived from an adopter setting takes the value its formula gives
+at the run's setting, not at the setting's hard maximum. The register shows
+each derived value at the defaults. `npm run check:limits` evaluates the
+register at the defaults and again with each setting at its hard maximum,
+and fails when a setting leaves its bounds or a derived value is not finite.
+A freshness allowance stays never configurable in its own right, but it may
+follow a setting it derives from. L12 adds the run-time code path that
+builds the register at the adopter's settings.
+
 The user approved these as adopter configuration on 2026-11-17. Each keeps
 today's value as its default, and each needs a cited hard maximum before
 phase 3:
@@ -269,10 +312,169 @@ phase 3:
   provider's maximum output tokens.
 - **Job budget and evidence deadline:** `limit:job.budget` and
   `limit:evidence.envelope.totalTimeoutMs`. Hard maximum: the
-  `limit:github.hostedJobMaxMinutes` hosted-job limit. This needs a new
+  `limit:github.hostedJobMaxMinutes` hosted-job limit for the job budget.
+  This needs a new
   reusable-workflow
   input, because `timeout-minutes` lives in the shared workflow. The pipeline
   must derive its job window from that input.
+  - Amended (L11, Q4(a); approved by the maintainer on 2026-11-27,
+    [#383](https://github.com/andrewpucci/dependency-update-advisor/issues/383)):
+    the evidence deadline's hard maximum is
+    `limit:job.maxEvidenceDeadlineMs`, derived from the job window less what
+    must follow evidence: the before-model recheck, one model call, the
+    publication reserve, and the final freshness allowance. The hosted-job
+    limit bounds it only through the job budget. So an adopter's deadline
+    always leaves analysis time for one full model call.
+
+These were approved as adopter configuration on 2026-11-27 (L11,
+[#383](https://github.com/andrewpucci/dependency-update-advisor/issues/383)),
+each with today's value as its default and the hard maximum named here:
+
+- **GitHub request cap, extended** (Q6(a)): the snapshot, session, and
+  signals-upstream request shares join the research requests in the GitHub
+  request cap. Tree reads grow with path depth, so these shares have no
+  structural bound. Hard maximum, joint over every share in the cap:
+  `limit:github.token.requestCapMax`, the documented `GITHUB_TOKEN` rate
+  limit less the freshness reads every run makes. It counts GitHub reads
+  only, so `limit:research.githubQuota.researchCeiling`, which sums every
+  host, cannot serve as it.
+- **Coverage bounds** (Q9(a)): limits that bound how much of a change the
+  reviewer covers, where the adopter bears the coverage they give up and
+  the quota and time a larger setting spends: `limit:w2.npm.maxRoots`,
+  `limit:w2.uv.maxRoots`, `limit:w2.actions.maxWorkflows`,
+  `limit:research.maxTagCandidates`, `limit:context.maxSourceFileBytes`, and
+  `limit:context.maxTotalSourceReadBytes`. Each keeps today's value as its
+  default; each register entry names its hard maximum. The npm and uv root
+  counts are bounded by the roots Dependabot's file may name,
+  `limit:dependabot.maxRoots`.
+- **Response cap** (Q3(a)): `limit:evidence.envelope.maxResponseBytes`. It
+  is a parse-safety bound on untrusted responses, which the list above bars;
+  this amendment admits it by name, because the cap binds legitimate
+  responses (such as the compare page of
+  [#472](https://github.com/andrewpucci/dependency-update-advisor/issues/472))
+  and no constraint gives its value. Hard maximum: the runner heap divided
+  by the responses in flight at once times their parse amplification, pinned
+  by a structural test. The request timeout derives from the cap, not the
+  reverse. Revisit this when #472 lands.
+  - Amended (L11; approved by the maintainer on 2026-11-27,
+    [#383](https://github.com/andrewpucci/dependency-update-advisor/issues/383)):
+    the runner heap here is the evidence phase's share,
+    `limit:runner.evidenceHeapBytes`, and the hard maximum is
+    `limit:runner.maxEvidenceResponseBytes`: that share divided by
+    `limit:evidence.readsInFlight` times the measured
+    `limit:runner.heapBytesPerEvidenceByte`. A structural test pins the
+    responses in flight.
+
+#### Runner heap by phase
+
+Amended (L11; approved by the maintainer on 2026-11-27,
+[#383](https://github.com/andrewpucci/dependency-update-advisor/issues/383)).
+A review runs in two heap phases. Snapshot, collection and research make up
+the evidence phase. Model analysis and rendering make up the analysis phase,
+which starts only once research has returned. Research readers are locals of
+research that close when it ends, and cached research bodies are byte arrays
+outside the V8 heap. Each phase gets the whole of `limit:runner.heapBytes`
+less what it holds, so the two phases' budgets are not added together.
+
+- **Analysis phase:** the model replies in flight
+  (`limit:analysis.replyHeapBytes`), the decision-unit expansion
+  (`limit:runner.unitExpansionHeapBytes`), and the packet at its analysis rate
+  (`limit:runner.heapBytesPerPacketByte`). That rate is measured on the
+  densest valid packet shape. `limit:packet.bytes` is derived from this phase.
+- **Evidence phase:** the packet at its evidence rate
+  (`limit:runner.evidenceHeapBytesPerPacketByte`), which covers assembly,
+  validation and revalidation, plus the responses being parsed and the
+  evidence readers retain (`limit:runner.evidenceRetainedHeapBytes`).
+  `limit:runner.evidenceHeapBytes` is what is left for responses in flight.
+- **State that spans both phases** counts in each phase's budget. The
+  pipeline releases the snapshot tree, the research cache and the npm
+  inventory once research returns, before analysis starts, so they count in
+  the evidence phase only.
+- Each rate is measured with its own probe (`npm run measure:heap`), never
+  borrowed from the other phase.
+
+Amended (L11; approved by the maintainer on 2026-11-28, "Raise heap to
+runner memory",
+[#383](https://github.com/andrewpucci/dependency-update-advisor/issues/383)).
+The heap is no longer V8's default. `limit:runner.heapBytes` is the smallest
+runner's memory less what is not old generation:
+
+- the young generation;
+- the off-heap buffers the register bounds;
+- the runtime baseline, measured with a recorded command;
+- what the runner OS and agent keep.
+
+The result is rounded down to whole MiB, because `--max-old-space-size` takes
+whole MiB. The relaunch then sets exactly the heap the caps are sized for.
+
+The action relaunches itself once with an old-generation size from the same
+formula, using the memory of the runner it runs on: the cgroup limit when one
+is set, otherwise physical memory. A relaunched process never relaunches
+again.
+
+The relaunch fails closed. The action stops with a fixed error message and
+exit code 80, and never runs at V8's default heap, in each of these cases:
+
+- the child process cannot be started;
+- the runner's memory leaves no heap for the review;
+- the process that runs the review has a V8 heap limit below
+  `limit:runner.heapBytes` plus `limit:runner.youngGenerationBytes`. This
+  covers both the relaunched child and a process started with its own
+  old-generation size.
+
+A runner therefore needs at least `limit:runner.memoryBytes` of memory, the
+smallest supported runner's. A smaller runner stops with exit code 80. This
+includes GitHub-hosted `macos-latest` (7 GB), which is not supported.
+
+#### Projection caps
+
+Amended (L11; approved by the maintainer on 2026-11-28,
+[#383](https://github.com/andrewpucci/dependency-update-advisor/issues/383)).
+`limit:analysis.projectionBytes` and `limit:analysis.projectionEntries` are
+derived, not chosen. They are the packet, its copies in the decision units,
+the strings and values the unit expansion derives (fixed by the packet's
+count caps), and the config. Every packet T4 accepts then passes the
+projection. A structural test pins the fixed unit text sizes to the code that
+writes them.
+
+#### Hard maxima that move with their setting
+
+Amended (L11; approved by the maintainer on 2026-11-28,
+[#383](https://github.com/andrewpucci/dependency-update-advisor/issues/383)).
+A hard maximum is read from the register evaluated at the settings. When it
+falls as its own setting rises, the hard maximum is the largest setting that
+still holds. The response cap's maximum behaves this way, because a larger cap
+adds off-heap buffers. `npm run check:limits` evaluates the register there.
+
+#### Retained evidence
+
+Amended (L11, Q10(a); approved by the maintainer on 2026-11-27,
+[#383](https://github.com/andrewpucci/dependency-update-advisor/issues/383)).
+The evidence the readers keep after a parse is priced at its own measured
+rate (`limit:runner.heapBytesPerRetainedByte`), not at the parse peak. Only the
+responses in flight are priced at the parse peak
+(`limit:runner.heapBytesPerEvidenceByte`).
+
+- The thirteen byte shares and retained caps Q10 names are adopter settings.
+  Their defaults are today's values, under one joint hard maximum
+  (`limit:runner.maxEvidenceRetainedBytes`). The registry byte share and the
+  signals upstream reader's byte share
+  (`limit:evidence.allocation.signals.readers.upstream.maxTotalBytes`) have a
+  hard minimum of the response cap, so one response at the cap always fits.
+  The upstream share is the one exception to "default equals today's value":
+  its default rises to the response cap (L11, Q11(a)).
+- They are held beside `limit:research.maxRetainedBytes` and the trusted
+  config for the whole evidence phase. Together these make up
+  `limit:runner.evidenceRetainedHeapBytes`.
+- `limit:packet.bytes` is the smaller of its analysis-phase and
+  evidence-phase values. The evidence phase binds on the smallest runner, so
+  the packet cap takes the heap the defaults leave. A setting raised above its
+  default would lower the packet cap. The joint maximum and the response cap's
+  hard maximum are therefore their defaults until the heap is shared out
+  differently.
+- A demand measurement (`npm run measure:demand`) holds `limit:packet.bytes`
+  at its production value. Its scaled read budget would otherwise spend the
+  packet's heap.
 
 ### 6. Changing a limit
 

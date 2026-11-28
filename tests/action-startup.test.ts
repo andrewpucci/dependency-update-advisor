@@ -15,6 +15,9 @@ import { fileURLToPath } from 'node:url';
 import { afterAll, beforeAll, expect, test } from 'vite-plus/test';
 import { eventFile, mockGithub } from './parity/startup-github.js';
 import { upstreamScenario } from './parity/upstream.js';
+import { BINARY_BYTES } from '../src/format.js';
+import { limit } from '../src/limits.js';
+import { HEAP_EXIT_CODE } from '../src/relaunch.js';
 
 const repo = fileURLToPath(new URL('..', import.meta.url));
 const entry = '.github/actions/dependabot-review/dist/index.js';
@@ -166,9 +169,27 @@ test('starts on Node.js 24 without a TypeScript loader or installed dependencies
 });
 
 test('starts with filesystem reads limited to the checkout and never prints environment secrets', () => {
-  const result = start(['--permission', `--allow-fs-read=${shipped}`]);
+  // The permission model forbids the relaunch's child process, so the old-generation size is
+  // given directly; the action checks its heap limit and runs without relaunching.
+  const oldSpace = Math.ceil(limit('runner.heapBytes') / BINARY_BYTES.MiB);
+  const result = start([
+    '--permission',
+    `--allow-fs-read=${shipped}`,
+    `--max-old-space-size=${oldSpace}`,
+  ]);
   expect(result.stderr).toBe('dependabot-review: runtime configuration invalid; no review ran.\n');
   expect(result.status).toBe(78);
+  expect(result.stdout + result.stderr).not.toContain(sentinel);
+});
+
+test('shipped action stops with a clear error when it cannot relaunch with the runner heap', () => {
+  // Without permission to start a child process the relaunch cannot spawn, and the action must
+  // not fall back to V8's default heap.
+  const result = start(['--permission', `--allow-fs-read=${shipped}`]);
+  expect(result.stderr).toBe(
+    'dependabot-review: Node could not be relaunched with the runner heap; no review ran.\n',
+  );
+  expect(result.status).toBe(HEAP_EXIT_CODE);
   expect(result.stdout + result.stderr).not.toContain(sentinel);
 });
 

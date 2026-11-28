@@ -1,3 +1,4 @@
+import { limit } from '../limits.js';
 import { validateReviewPacket } from '../schema.js';
 import { formDecisionUnits } from '../units.js';
 import { expect, test } from 'vite-plus/test';
@@ -191,9 +192,17 @@ test('every declared resource limit rejects larger, unsafe, fractional and incom
       limits: { ...ANALYSIS_LIMITS, responseBytes: ANALYSIS_LIMITS.responseBytes - 1 },
     }).kind,
   ).toBe('invalid');
+  // One completion token needs one token's escaped bytes plus the envelope allowance.
+  const oneToken = limit('analysis.maxTokenEscapedBytes') + limit('analysis.responseEnvelopeBytes');
+  expect(
+    prepareAnalysisBatch({
+      ...input,
+      limits: { ...ANALYSIS_LIMITS, completionTokens: 1, responseBytes: oneToken - 1 },
+    }).kind,
+  ).toBe('invalid');
   const lower = prepareAnalysisBatch({
     ...input,
-    limits: { ...ANALYSIS_LIMITS, completionTokens: 1, responseBytes: 128 * 6 + 65536 },
+    limits: { ...ANALYSIS_LIMITS, completionTokens: 1, responseBytes: oneToken },
   });
   expect(lower.kind).toBe('prepared');
   if (lower.kind !== 'prepared') throw new Error('fixture');
@@ -275,9 +284,10 @@ test('budgets fit a reasoning-model reply and keep the response ceiling tied to 
   expect(ANALYSIS_LIMITS).toMatchObject({
     completionTokens: 16_384,
     requestTimeoutMs: 240_000,
-    responseBytes: 12_648_448,
+    responseBytes: 16_842_752,
   });
-  expect(ANALYSIS_LIMITS.responseBytes).toBe(ANALYSIS_LIMITS.completionTokens * 128 * 6 + 65_536);
+  // The token bound is already in JSON-escaped bytes, so no escape multiplier applies.
+  expect(ANALYSIS_LIMITS.responseBytes).toBe(ANALYSIS_LIMITS.completionTokens * 1_024 + 65_536);
   // Every input bound is unchanged.
   expect(ANALYSIS_LIMITS).toMatchObject({
     maxUnits: 8,

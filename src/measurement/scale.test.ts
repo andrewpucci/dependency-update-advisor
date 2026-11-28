@@ -55,8 +55,14 @@ test('derives the PyPI metadata ceilings from the packet change limit, scaled on
 });
 
 test('recomputes derived entries from the scaled inputs', () => {
+  // The freshness reads are a structural count of fixed call sites, which no run exceeds, so only
+  // the snapshot share scales in the transport total.
+  expect(valueAt(10, 'evidence.allocation.transport.maxRequests')).toBe(
+    10 * (REGISTER.get('evidence.allocation.transport.snapshot.maxRequests')?.value ?? 0) +
+      (REGISTER.get('evidence.allocation.transport.freshness.maxRequests')?.value ?? 0),
+  );
   for (const id of [
-    'evidence.allocation.transport.maxRequests',
+    'evidence.allocation.transport.maxTotalBytes',
     'evidence.allocation.signals.maxTotalBytes',
     'evidence.envelope.maxTotalBytes',
     // The retained-byte cap copies the research cache total (#467), so it scales through it.
@@ -78,8 +84,27 @@ test('the advisory ceiling follows the scaled evidence deadline', () => {
 });
 
 test('leaves limits outside the read budget unchanged', () => {
-  for (const id of ['packet.bytes', 'w2.npm.maxFileBytes', 'research.maxWork', 'job.budget'])
+  for (const id of [
+    'packet.bytes',
+    'w2.npm.maxFileBytes',
+    'research.maxWork',
+    'job.budget',
+    'runner.heapBytesPerPacketByte',
+    'runner.unitExpansionHeapBytes',
+    'analysis.replyHeapBytes',
+  ])
     expect(valueAt(10, id), id).toBe(REGISTER.get(id)?.value);
+});
+
+test('the packet byte limit stays at its production value while the heap terms scale', () => {
+  // The off-heap buffers and the retained evidence grow with the read budget, which would lower
+  // the packet cap; a demand run holds it, so it admits every packet production admits.
+  const scaled = buildRegister(scaledDefinitions(REGISTER, 10));
+  const at = (id: string) => scaled.get(id)?.value ?? 0;
+  for (const id of ['runner.offHeapBytes', 'runner.evidenceRetainedHeapBytes'])
+    expect(at(id), id).toBeGreaterThan(REGISTER.get(id)?.value ?? 0);
+  expect(at('packet.bytes')).toBe(REGISTER.get('packet.bytes')?.value);
+  expect(at('analysis.projectionBytes')).toBe(REGISTER.get('analysis.projectionBytes')?.value);
 });
 
 test('rejects a scale that is not a positive integer', () => {

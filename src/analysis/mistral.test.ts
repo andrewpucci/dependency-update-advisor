@@ -4,6 +4,7 @@ import {
   analysisScenario,
   preparedAnalysis,
 } from '../../tests/parity/analysis.js';
+import { limit } from '../limits.js';
 import { validateReviewPacket } from '../schema.js';
 import { formDecisionUnits } from '../units.js';
 import { ANALYSIS_LIMITS, prepareAnalysisBatch, type PreparedAnalysisBatch } from './contract.js';
@@ -427,12 +428,12 @@ test('keeps cancellation ownership when the caller mutates its options after dis
 
 test('admits a valid stop at the full token-byte, escaping and envelope allowance, but rejects one extra observed byte', async () => {
   const { batch } = await preparedAnalysis();
-  const document = JSON.stringify(analysisDocument(batch));
-  const content = document.padEnd(ANALYSIS_LIMITS.completionTokens * 128, ' ');
-  const escaped = Array.from(
-    content,
-    (character) => '\\u' + character.charCodeAt(0).toString(16).padStart(4, '0'),
-  ).join('');
+  // Every completion token at its longest escaped length: the document, escaped once as the
+  // content string, padded with spaces to completionTokens × maxTokenEscapedBytes bytes.
+  const document = JSON.stringify(JSON.stringify(analysisDocument(batch))).slice(1, -1);
+  const contentBytes = ANALYSIS_LIMITS.completionTokens * limit('analysis.maxTokenEscapedBytes');
+  const escaped = document + ' '.repeat(contentBytes - Buffer.byteLength(document));
+  expect(Buffer.byteLength(escaped)).toBe(contentBytes);
   const prefix =
     '{"choices":[{"index":0,"finish_reason":"stop","message":{"role":"assistant","content":"' +
     escaped +

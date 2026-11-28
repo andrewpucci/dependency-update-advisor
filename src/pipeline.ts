@@ -35,10 +35,17 @@ import {
   type ReviewOutcomeKind,
 } from './review.js';
 import { withTrustedSnapshot, type SnapshotReads } from './snapshot.js';
-import { limit } from './limits.js';
 
-/** How often a pending request is checked against ownership; shorter than any request timeout. */
-const OWNERSHIP_WATCH_MS = limit('pipeline.ownershipWatchMs');
+/**
+ * How often a pending request is checked against ownership. Its only rule is to stay shorter than
+ * any request timeout, so lost work stops before a request it started could finish; no adopter
+ * bears it and the claim store has no production backend to bound it. It is an internal constant
+ * outside the limit register (SPEC-limit-register section 4, register scope, approved 2026-11-27,
+ * #383); src/pipeline.test.ts pins it below `limit:github.requestTimeoutMs`. Revisit it when the
+ * claim store has a backend.
+ */
+// oxlint-disable-next-line limits/no-literal-limit -- an internal constant outside the register (see above)
+export const OWNERSHIP_WATCH_MS = 2_000;
 
 export type PipelineInput = Readonly<{
   /** The trusted workflow_run event with its expected repository and workflow. */
@@ -431,26 +438,28 @@ async function evaluateEvidence(
           baseSha: binding.baseSha,
           contextRevision: trusted.contextRevision,
         };
-        const assembled = await inStage('packet', () =>
-          assembleReviewPacket({
-            trusted: base,
-            collectContext: (changes) =>
-              inStage('snapshot', () => trusted.collectContext(dependencyIdentities(changes))),
-            isCurrent,
-            openSession: async () => {
-              const opened = await openEvidenceSession({
-                binding,
-                fetch: input.githubFetch,
-                now: input.now,
-                deadline: evidenceDeadline,
-              });
-              evidenceSession = opened.kind;
-              if (opened.kind !== 'ready') throw new Error('no evidence session');
-              return opened.session;
-            },
-            collectors,
-            inventorySource: null,
-          }),
+        let assembled: Awaited<ReturnType<typeof assembleReviewPacket>> | undefined = await inStage(
+          'packet',
+          () =>
+            assembleReviewPacket({
+              trusted: base,
+              collectContext: (changes) =>
+                inStage('snapshot', () => trusted.collectContext(dependencyIdentities(changes))),
+              isCurrent,
+              openSession: async () => {
+                const opened = await openEvidenceSession({
+                  binding,
+                  fetch: input.githubFetch,
+                  now: input.now,
+                  deadline: evidenceDeadline,
+                });
+                evidenceSession = opened.kind;
+                if (opened.kind !== 'ready') throw new Error('no evidence session');
+                return opened.session;
+              },
+              collectors,
+              inventorySource: null,
+            }),
         );
         if (assembled.kind === 'context-failure')
           // A consumer configuration fault stops the review; a failed or limited read is incomplete.
@@ -472,23 +481,35 @@ async function evaluateEvidence(
         // Public research is only worth starting while this attempt still owns the current head.
         const beforeResearch = await recheck();
         if (beforeResearch !== 'current') return halted(beforeResearch);
-        const researched = await inStage('research', () =>
-          runResearch({
-            packet: assembled.packet,
-            trusted: { ...base, context: assembled.packet.context as never },
-            npmInventory: npmInventory as never,
-            comparison: null,
-            fetch: input.publicFetch,
-            cache: researchCache,
-            now: input.now,
-            deadline: evidenceDeadline,
-            evaluationTime: input.evaluationTime,
-            ...(input.wallNow ? { wallNow: input.wallNow } : {}),
-            signal,
-          }),
-        );
+        const { droppedOptional } = assembled;
+        // Research builds the packet analysis reads (src/research.ts), so the assembled packet is
+        // held only by research's input, and both are dropped once research returns: the analysis
+        // phase holds one packet, as limit:packet.bytes assumes (SPEC-limit-register section 5,
+        // heap by phase). Each is cleared explicitly, since a suspended async function can keep a
+        // local alive past its last use.
+        let research: (() => ReturnType<typeof runResearch>) | undefined = runResearch.bind(null, {
+          packet: assembled.packet,
+          trusted: { ...base, context: assembled.packet.context as never },
+          npmInventory: npmInventory as never,
+          comparison: null,
+          fetch: input.publicFetch,
+          cache: researchCache,
+          now: input.now,
+          deadline: evidenceDeadline,
+          evaluationTime: input.evaluationTime,
+          ...(input.wallNow ? { wallNow: input.wallNow } : {}),
+          signal,
+        });
+        assembled = undefined;
+        const researched = await inStage('research', research);
+        research = undefined;
         if (researched.kind !== 'ready')
           return { kind: 'internal-failure', stage: 'research', body: null };
+        // Evidence state analysis never reads is dropped first, so the analysis phase holds only
+        // the packet and the model replies (SPEC-limit-register section 5, heap by phase).
+        trusted.release();
+        researchCache.clear();
+        npmInventory = null;
         // The model is only called while the attempt is still the owner's.
         const beforeModel = await recheck();
         if (beforeModel !== 'current') return halted(beforeModel);
@@ -507,7 +528,7 @@ async function evaluateEvidence(
             model: input.model,
           }),
         );
-        return assessedOutcome(reviewed, assembled.droppedOptional);
+        return assessedOutcome(reviewed, droppedOptional);
       },
     );
   } catch (error) {

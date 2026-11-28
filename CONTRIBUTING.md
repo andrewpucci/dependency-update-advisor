@@ -221,3 +221,107 @@ REST status of both 200 and 404 for one tag is reported as `tagRestConflict`,
 which leaves the run incomplete rather than showing a batch gap. A
 run stopped by the request cap or a request error still writes what it
 measured, with `stopped` saying why.
+
+### Research timing probes
+
+Two register inputs are measured platform figures, not demand: the slowest
+OSV response (`limit:osv.slowestResponseMs`) and the upstream read throughput
+(`limit:upstream.throughputBytesPerSecond`). Reproduce them with:
+
+```sh
+npm run probe:osv-latency -- <ecosystem>:<name>@<version> ...
+GITHUB_TOKEN=<read token> npm run probe:upstream-throughput -- github:<owner>/<repo> pypi:<name> ...
+```
+
+Each probe reads every target once, one after another, as research does, and
+makes no write. It prints one JSON line of counts and the figure, with no
+target name, URL, or token. Name the upstream projects and package versions of
+the uv PRs the entry cites, and record a new run on the entry's issue before
+changing its value.
+
+### Heap measurement
+
+`limit:packet.bytes` is derived from runner heap, from two measured inputs.
+Re-measure them on Node 24, the action's runtime, with:
+
+```sh
+npm run measure:heap
+```
+
+It builds invented packets through the parity collectors, makes no network
+request, and takes several minutes. Each figure is the smallest
+`--max-old-space-size` at which one packet completes validation,
+revalidation, analysis with a stub model, and render in its own process. The
+report gives `heapBytesPerPacketByte` for
+`limit:runner.heapBytesPerPacketByte` and `replyHeapBytesPerByte` for
+`limit:runner.heapBytesPerReplyByte`, measured with hostile replies of the
+current `limit:analysis.responseBytes`. Re-measure after a change to the
+validation, analysis or render path, and record the new values with the
+date.
+
+The same run measures the evidence phase. Its `evidence` block gives
+`heapBytesPerPacketByte` for `limit:runner.evidenceHeapBytesPerPacketByte`,
+covering the packet through validation and revalidation only. It gives
+`heapBytesPerResponseByte` for `limit:runner.heapBytesPerEvidenceByte`: one
+response body at `limit:evidence.envelope.maxResponseBytes` pushed through
+each evidence reader's parse path, with the largest reader kept. Re-measure
+after a change to an evidence reader's read, parse or copy path.
+
+### Runner memory
+
+The action relaunches itself once (`src/relaunch.ts`) with
+`--max-old-space-size` derived from the memory of the runner it runs on. That
+memory is the cgroup limit when one is set, otherwise physical memory. The
+same formula with the smallest runner's memory gives `limit:runner.heapBytes`.
+Every cap sized from runner heap derives from that entry. The formula
+subtracts four things that are not old generation:
+
+- the young generation (`limit:runner.youngGenerationBytes`), from the V8
+  source;
+- the off-heap buffers the register bounds (`limit:runner.offHeapBytes`);
+- the runtime baseline (`limit:runner.baselineBytes`). Re-measure it on Linux
+  and Node 24 after `npm run build` with:
+
+  ```sh
+  npm run probe:runtime-baseline
+  ```
+
+- what the runner OS and agent keep (`limit:runner.systemReservedBytes`).
+  Only the runner can measure it. Run this as a step of a job on a
+  GitHub-hosted `ubuntu-latest` runner, before anything else in the job:
+
+  ```sh
+  npm run probe:runner-memory
+  ```
+
+  Record its `reservedBytes` (MemTotal − MemAvailable), the runner image and
+  the runner processes' resident sets on the entry's issue. The recorded value
+  comes from a public repository's 16 GB runner and is applied as an absolute
+  reserve to the private 8 GB runner, because OS and agent memory does not
+  grow with the runner's memory. A run in a private repository would confirm
+  it. A run on any other machine, including a Mac, measures a different
+  machine.
+
+The relaunch fails closed. If the child process cannot be started, the
+runner's memory leaves no heap, or the running process's V8 heap limit is
+below `limit:runner.heapBytes` plus the young generation, the action prints a
+fixed `dependabot-review: … no review ran.` line and exits with code 80. It
+never falls back to V8's default heap. Runners need at least
+`limit:runner.memoryBytes` of memory. GitHub-hosted `macos-latest` (7 GB) is
+below that and is not supported. To run the action under Node's permission
+model, which forbids child processes, pass `--max-old-space-size` yourself;
+the action then checks its heap limit and runs without relaunching.
+
+### Token-length probe
+
+`limit:analysis.maxTokenEscapedBytes` is the longest vocabulary token of the
+models `mistral-large-latest` may name. Download each model's `tekken.json`
+from Hugging Face at a pinned commit and run:
+
+```sh
+npm run probe:token-length -- <tekken.json> [<tekken.json> ...]
+```
+
+For each file it prints the longest token in raw bytes, decoded UTF-16 code
+units, JSON-escaped bytes, and bytes with every non-ASCII code unit escaped,
+each with its rank. Record the file's commit with the value.

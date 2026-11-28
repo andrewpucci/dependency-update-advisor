@@ -1245,3 +1245,85 @@ test('a model-only hold with another missing unit cannot become a verified block
   expect(result.outcome).toEqual({ kind: 'decision_incomplete' });
   expect(result.counts).toMatchObject({ assessedUnits: 1, unresolvedUnits: 1 });
 });
+
+test('the fixed unit text sizes the projection bound uses match the code they come from', async () => {
+  const { EVIDENCE_CATEGORIES, EVIDENCE_REASONS, REACHABILITY_OUTCOMES } =
+    await import('./schema.js');
+  const { GROUPING_ACTIONS } = await import('./units.js');
+  const { UNIT_TEXT } = await import('./limits.js');
+  const longest = (values: readonly string[]) =>
+    Math.max(...values.map((value) => Buffer.byteLength(value)));
+  expect(UNIT_TEXT.categories).toBe(EVIDENCE_CATEGORIES.length);
+  expect(UNIT_TEXT.categoryBytes).toBe(longest(EVIDENCE_CATEGORIES));
+  expect(UNIT_TEXT.reasons).toBe(EVIDENCE_REASONS.length);
+  expect(UNIT_TEXT.reasonBytes).toBe(longest(EVIDENCE_REASONS));
+  expect(UNIT_TEXT.reasonsJsonBytes).toBe(Buffer.byteLength(JSON.stringify(EVIDENCE_REASONS)));
+  expect(UNIT_TEXT.statusBytes).toBe(longest(['available', 'partial', 'unavailable']));
+  expect(UNIT_TEXT.ecosystemBytes).toBe(longest(['npm', 'actions', 'uv']));
+  expect(UNIT_TEXT.kindBytes).toBe(longest(['standalone', 'direct_group']));
+  expect(UNIT_TEXT.groupingReasonBytes).toBe(longest(Object.keys(GROUPING_ACTIONS)));
+  expect(UNIT_TEXT.nextActionBytes).toBe(longest(Object.values(GROUPING_ACTIONS)));
+  // excludeAnchor writes `missing` when no verdict names the pair.
+  expect(UNIT_TEXT.outcomeBytes).toBe(longest([...REACHABILITY_OUTCOMES, 'missing']));
+  expect(UNIT_TEXT.sideBytes).toBe(longest(['base', 'head']));
+  expect(UNIT_TEXT.safeIntegerDigits).toBe(String(Number.MAX_SAFE_INTEGER).length);
+  // A parsed minimal config: what defaults add beyond the config text.
+  const config = parseReviewConfig(
+    JSON.stringify({ version: 1, analysis: { provider: 'mistral', model: 'm' } }),
+  );
+  const counted = { bytes: 0, entries: 0 };
+  const walk = (value: unknown): void => {
+    counted.entries++;
+    if (typeof value === 'string') counted.bytes += Buffer.byteLength(value);
+    else if (value && typeof value === 'object')
+      for (const child of Object.values(value)) walk(child);
+  };
+  walk(config);
+  expect(UNIT_TEXT.configDefaultBytes).toBe(counted.bytes);
+  expect(UNIT_TEXT.configDefaultEntries).toBe(counted.entries);
+});
+
+test('the unit expansion of the largest-expansion packet stays inside its structural bound', async () => {
+  const { expansionPacket } = await import('../tests/parity/expansion-packet.js');
+  const { limit, maxRelationshipLimits, unitDerivedBytes, unitDerivedEntries, UNIT_TEXT } =
+    await import('./limits.js');
+  const { packet, config } = await expansionPacket();
+  const inventory = formDecisionUnits(packet);
+  const packetBytes = Buffer.byteLength(JSON.stringify(packet));
+  const counted = { bytes: 0, entries: 0 };
+  const walk = (value: unknown): void => {
+    counted.entries++;
+    if (typeof value === 'string') counted.bytes += Buffer.byteLength(value);
+    else if (value && typeof value === 'object')
+      for (const child of Object.values(value)) walk(child);
+  };
+  walk({ inventory, config });
+  const limits = inventory.units.flatMap((unit) => unit.relationshipLimits);
+  expect(packet.changes).toHaveLength(limit('packet.changes'));
+  expect(limits.length).toBeGreaterThan(0);
+  expect(limits.length).toBeLessThanOrEqual(maxRelationshipLimits(packet.changes.length));
+  // The bound at this packet's own size and counts, as the projection caps apply it at the caps.
+  const bytes =
+    3 * packetBytes +
+    unitDerivedBytes(
+      packet.changes.length,
+      packet.relationships.length,
+      limit('packet.idCodeUnits'),
+      limit('packet.identityBytes'),
+    ) +
+    limit('config.maxBytes') +
+    UNIT_TEXT.configDefaultBytes;
+  const entries =
+    packetBytes +
+    unitDerivedEntries(
+      packet.changes.length,
+      packet.relationships.length,
+      packet.reachability.length,
+    ) +
+    Math.ceil(limit('config.maxBytes') / 2) +
+    UNIT_TEXT.configDefaultEntries;
+  expect(counted.bytes).toBeLessThanOrEqual(bytes);
+  expect(counted.entries).toBeLessThanOrEqual(entries);
+  // Most of the unit strings are derived ones the bound must cover, not packet copies.
+  expect(counted.bytes).toBeGreaterThan(5 * packetBytes);
+}, 120_000);

@@ -182,7 +182,7 @@ export type RelationshipProof = {
   side: 'base' | 'head';
   sourceId: string;
 } & ({ ecosystem: 'npm'; path: NpmSide[] } | { ecosystem: 'uv'; path: UvSide[] });
-const REACHABILITY_OUTCOMES = [
+export const REACHABILITY_OUTCOMES = [
   'unreachable',
   'unknown',
   'unsupported',
@@ -795,6 +795,12 @@ function npmSide(value: unknown, field: Field = 'changes'): NpmSide {
 }
 const REQUIRED_EVIDENCE = ['upstream', 'vulnerability', 'malware'] as const;
 const OPTIONAL_SIGNALS = ['publishTime', 'deprecation', 'trust', 'publisher'] as const;
+/** Every evidence category a change can carry; UNIT_TEXT in src/limits.ts is pinned to it. */
+export const EVIDENCE_CATEGORIES: readonly string[] = [
+  ...REQUIRED_EVIDENCE,
+  'installScript',
+  ...OPTIONAL_SIGNALS,
+];
 function evidence(value: unknown, ecosystem: Ecosystem): Record<string, ChangeEvidence> {
   const required =
     ecosystem === 'npm' ? [...REQUIRED_EVIDENCE, 'installScript'] : [...REQUIRED_EVIDENCE];

@@ -488,7 +488,7 @@ describe('waiting for a GitHub rate-limit reset', () => {
     kind: 'github',
     repository: 'fixture/action',
     resource: 'releases',
-    perPage: 16,
+    perPage: 25,
     page,
   });
   const limited = (retryAfter: string) =>
@@ -609,7 +609,7 @@ test('a GitHub rate limit when no time is left ends rate_limit with its retry ti
     kind: 'github',
     repository: 'fixture/action',
     resource: 'releases',
-    perPage: 16,
+    perPage: 25,
     page: 1,
   };
   const result = await opened.reader.read(releases);
@@ -626,7 +626,7 @@ describe('waiting is bounded per reader, by time, by abort, and to GitHub', () =
     kind: 'github',
     repository: 'fixture/action',
     resource: 'releases',
-    perPage: 16,
+    perPage: 25,
     page,
   });
   const limited = (retryAfter: string) =>

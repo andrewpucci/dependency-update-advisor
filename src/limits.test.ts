@@ -11,9 +11,20 @@ import {
   dependents,
   limit,
   limitEntry,
+  settingProblems,
+  replyBytesFor,
+  hardMaximum,
+  heapBytesFor,
+  maxRelationshipLimits,
+  unitDerivedBytes,
+  UNIT_TEXT,
+  Q10_RETAINED_INPUTS,
   type LimitDefinition,
   type LimitId,
 } from './limits.js';
+
+/** V8's maximum string length on 64-bit platforms, (1 << 29) - 24 code units. */
+const V8_MAX_STRING_LENGTH = 536_870_888;
 
 const unjustified = (id: string, value: number): LimitDefinition => ({
   id,
@@ -49,10 +60,85 @@ test('PACKET_LIMITS is a frozen view of the register with the same values and ke
   expect(packetIds).toHaveLength(14);
 });
 
-test('checkRegister names an entry whose basis kind is not one of the five', () => {
+test('checkRegister names an entry whose basis kind is not one of the six', () => {
   const guessed = { ...unjustified('guessed', 1), basis: { kind: 'guess', note: 'x' } };
   expect(checkRegister([guessed])).toEqual([expect.stringMatching(/guessed/)]);
   expect(checkRegister([{ ...guessed, basis: { kind: 'safety', reason: 'x' } }])).toEqual([]);
+});
+
+const setting = (
+  id: string,
+  value: number,
+  maximum: string,
+  extra: Partial<NonNullable<LimitDefinition['configurable']>> = {},
+): LimitDefinition => ({
+  ...unjustified(id, value),
+  basis: { kind: 'config', bears: 'the adopter', approved: 'test' },
+  configurable: { setting: `limits.${id}`, default: value, maximum, ...extra },
+});
+
+test('a config entry needs its setting, a default equal to its value and defined bounds', () => {
+  const max = unjustified('max', 10);
+  expect(checkRegister([setting('a', 4, 'max'), max])).toEqual([]);
+  expect(checkRegister([{ ...setting('a', 4, 'max'), configurable: undefined }, max])).toEqual([
+    expect.stringMatching(/a: a config entry needs configurable/),
+  ]);
+  expect(checkRegister([{ ...setting('a', 4, 'max'), value: 5 }, max])).toEqual([
+    expect.stringMatching(/a: the setting default must equal value/),
+  ]);
+  expect(checkRegister([setting('a', 4, 'missing')])).toEqual([
+    expect.stringMatching(/a: setting bound "missing" is not defined/),
+  ]);
+  expect(
+    checkRegister([
+      { ...unjustified('b', 1), configurable: setting('a', 1, 'max').configurable },
+      max,
+    ]),
+  ).toEqual([expect.stringMatching(/b: only a config entry may set configurable/)]);
+});
+
+test('a register built at a setting moves the entries derived from it, and only settings move', () => {
+  const definitions = [
+    setting('a', 4, 'max'),
+    unjustified('max', 10),
+    derived('b', ['a'], (a) => a * 3),
+  ];
+  expect(buildRegister(definitions).get('b')?.value).toBe(12);
+  expect(buildRegister(definitions, new Map([['a', 7]])).get('b')?.value).toBe(21);
+  expect(() => buildRegister(definitions, new Map([['max', 7]]))).toThrow(
+    /max: not an adopter setting/,
+  );
+});
+
+test('settingProblems checks every setting at the defaults and at its hard maximum', () => {
+  const within = buildRegister([setting('a', 4, 'max'), unjustified('max', 10)]);
+  expect(settingProblems(within)).toEqual([]);
+  const above = buildRegister([setting('a', 12, 'max'), unjustified('max', 10)]);
+  expect(settingProblems(above)).toContain('a: above its hard maximum at the defaults');
+  const below = buildRegister([
+    setting('a', 4, 'max', { minimum: 'min' }),
+    unjustified('max', 10),
+    unjustified('min', 5),
+  ]);
+  expect(settingProblems(below)).toContain('a: below its hard minimum at the defaults');
+  const joint = buildRegister([
+    setting('a', 6, 'max', { joint: true }),
+    setting('b', 6, 'max', { joint: true }),
+    unjustified('max', 10),
+  ]);
+  expect(settingProblems(joint)).toContain(
+    'max: the settings it bounds sum past it at the defaults',
+  );
+  // The maximum of one setting may derive from another; raising that one can push it out.
+  const coupled = buildRegister([
+    setting('a', 4, 'room'),
+    setting('b', 4, 'limit'),
+    unjustified('limit', 10),
+    derived('room', ['b'], (b) => 12 - b),
+  ]);
+  expect(settingProblems(coupled)).toEqual([
+    'a: above its hard maximum with b at its hard maximum',
+  ]);
 });
 
 test('a derived input that names no entry is reported with both ids and blocks the build', () => {
@@ -103,7 +189,7 @@ test('derived limits are wired to the entries they sum or copy', () => {
   expect(dependents(REGISTER, 'evidence.allocation.registry.maxTotalBytes')).toEqual(
     expect.arrayContaining(['evidence.envelope.maxTotalBytes', 'research.cache.maxTotalBytes']),
   );
-  expect(dependents(REGISTER, 'job.budget')).toEqual(['job.window']);
+  expect(dependents(REGISTER, 'job.budget')).toEqual(['job.maxEvidenceDeadlineMs', 'job.window']);
 });
 
 test('the job budget is derived from the dependabot review workflow timeout', () => {
@@ -146,15 +232,332 @@ test('copies wired: the source-root and candidate bounds are one entry each, rea
 
 test('moved limits that mirror a packet bound are derived from it', () => {
   expect(dependents(REGISTER, 'packet.changes')).toContain('advisories.maxLookups');
-  expect(dependents(REGISTER, 'packet.bytes')).toContain('analysis.projectionBytes');
   expect(dependents(REGISTER, 'packet.findings')).toContain('research.maxFindings');
   expect(limit('advisories.maxLookups')).toBe(2 * PACKET_LIMITS.changes);
-  expect(limit('analysis.projectionBytes')).toBe(8 * PACKET_LIMITS.bytes);
   expect(limit('research.maxFindings')).toBe(PACKET_LIMITS.findings);
 });
 
-test('RELEASE_PAGE_SIZES halves from the register value down to 1 and is frozen', () => {
-  expect(RELEASE_PAGE_SIZES).toEqual([64, 32, 16, 8, 4, 2, 1]);
+test('derived packet bounds keep their formulas and the values they had as fixed numbers', () => {
+  const cases: [LimitId, LimitId[], number, number][] = [
+    ['packet.relationships', ['packet.changes'], 2 * limit('packet.changes'), 256],
+    [
+      'packet.textBytes',
+      ['analysis.unitBytes', 'packet.listEntries'],
+      Math.floor(limit('analysis.unitBytes') / limit('packet.listEntries')),
+      2_048,
+    ],
+    ['packet.contextBytes', ['analysis.unitBytes'], limit('analysis.unitBytes'), 65_536],
+  ];
+  for (const [id, inputs, expected, previous] of cases) {
+    const { basis } = limitEntry(id);
+    expect(basis, id).toMatchObject({ kind: 'derived', inputs });
+    if (basis.kind !== 'derived') continue;
+    expect(basis.formula(...inputs.map((input) => limit(input))), id).toBe(expected);
+    expect(limit(id), id).toBe(expected);
+    expect(limit(id), id).toBe(previous);
+    for (const input of inputs) expect(dependents(REGISTER, input), id).toContain(id);
+  }
+  // The formulas, not the current inputs, are pinned: a moved input moves the bound.
+  const relationships = limitEntry('packet.relationships').basis;
+  const textBytes = limitEntry('packet.textBytes').basis;
+  if (relationships.kind !== 'derived' || textBytes.kind !== 'derived') throw new Error('derived');
+  expect(relationships.formula(100)).toBe(200);
+  expect(textBytes.formula(65_536, 30)).toBe(2_184);
+});
+
+test('the heap inputs of packet.bytes keep their sources and formula', () => {
+  expect(limitEntry('runner.heapBytes').basis).toMatchObject({ kind: 'derived' });
+  for (const id of ['runner.heapBytesPerPacketByte', 'runner.heapBytesPerReplyByte'] as const)
+    expect(limitEntry(id).basis, id).toMatchObject({
+      kind: 'measured',
+      command: 'npm run measure:heap',
+    });
+  const inputs: LimitId[] = [
+    'analysis.maxConcurrentCalls',
+    'analysis.responseBytes',
+    'runner.heapBytesPerReplyByte',
+  ];
+  const { basis } = limitEntry('analysis.replyHeapBytes');
+  expect(basis).toMatchObject({ kind: 'derived', inputs });
+  if (basis.kind !== 'derived') throw new Error('derived');
+  const [calls, bytes, perByte] = inputs.map((id) => limit(id));
+  expect(limit('analysis.replyHeapBytes')).toBe(Math.ceil(calls * bytes * perByte));
+  // The formula, not the current inputs, is pinned: a reply cap or concurrency change moves it.
+  expect(basis.formula(2, 10, 1.25)).toBe(25);
+  expect(basis.formula(2, 10, 1.26)).toBe(26);
+  for (const input of inputs)
+    expect(dependents(REGISTER, input)).toContain('analysis.replyHeapBytes');
+});
+
+test('the evidence-phase heap inputs keep their sources and formula', () => {
+  for (const id of [
+    'runner.heapBytesPerEvidenceByte',
+    'runner.evidenceHeapBytesPerPacketByte',
+  ] as const)
+    expect(limitEntry(id).basis, id).toMatchObject({
+      kind: 'measured',
+      command: 'npm run measure:heap',
+    });
+  const heap = limitEntry('runner.evidenceHeapBytes').basis;
+  expect(heap).toMatchObject({
+    kind: 'derived',
+    inputs: [
+      'runner.heapBytes',
+      'packet.bytes',
+      'runner.evidenceHeapBytesPerPacketByte',
+      'runner.evidenceRetainedHeapBytes',
+    ],
+  });
+  if (heap.kind !== 'derived') throw new Error('derived');
+  // H − packet × rate − the retained evidence: the heap left for responses in flight.
+  expect(heap.formula(1000, 10, 2, 30)).toBe(1000 - 20 - 30);
+  const cap = limitEntry('runner.maxEvidenceResponseBytes').basis;
+  expect(cap).toMatchObject({
+    kind: 'derived',
+    inputs: [
+      'runner.evidenceHeapBytes',
+      'evidence.readsInFlight',
+      'runner.heapBytesPerEvidenceByte',
+    ],
+  });
+  if (cap.kind !== 'derived') throw new Error('derived');
+  expect(cap.formula(1000, 2, 3)).toBe(166);
+  expect(limitEntry('evidence.envelope.maxResponseBytes').configurable).toMatchObject({
+    maximum: 'runner.maxEvidenceResponseBytes',
+  });
+  expect(limit('evidence.envelope.maxResponseBytes')).toBeLessThanOrEqual(
+    limit('runner.maxEvidenceResponseBytes'),
+  );
+  // The packet cap takes the evidence-phase heap the defaults leave, so the response cap's hard
+  // maximum is its default: a larger cap would lower limit:packet.bytes, not fit beside it.
+  expect(limit('runner.maxEvidenceResponseBytes')).toBe(
+    limit('evidence.envelope.maxResponseBytes'),
+  );
+  expect(hardMaximum(REGISTER, 'evidence.envelope.maxResponseBytes')).toBe(
+    limit('evidence.envelope.maxResponseBytes'),
+  );
+});
+
+test('the Q10 byte shares and retained caps are settings under one joint heap maximum', () => {
+  const members = Q10_RETAINED_INPUTS.filter(
+    (id) => id !== 'research.maxRetainedBytes' && id !== 'config.maxBytes',
+  );
+  expect(members).toHaveLength(13);
+  for (const id of members)
+    expect(limitEntry(id).configurable, id).toMatchObject({
+      maximum: 'runner.maxEvidenceRetainedBytes',
+      joint: true,
+    });
+  for (const id of [
+    'evidence.allocation.registry.maxTotalBytes',
+    'evidence.allocation.signals.readers.upstream.maxTotalBytes',
+  ] as const)
+    expect(limitEntry(id).configurable, id).toMatchObject({
+      minimum: 'evidence.envelope.maxResponseBytes',
+    });
+  // Q11(a): the upstream share's default rises to one response at the cap.
+  expect(limit('evidence.allocation.signals.readers.upstream.maxTotalBytes')).toBe(
+    limit('evidence.envelope.maxResponseBytes'),
+  );
+  const { basis } = limitEntry('runner.maxEvidenceRetainedBytes');
+  if (basis.kind !== 'derived') throw new Error('derived');
+  // (H − packet × rate − reads × response × parse rate) ÷ retained rate − research − config.
+  expect(basis.formula(1000, 10, 2, 1, 4, 5, 2, 100, 50)).toBe(
+    Math.floor((1000 - 20 - 20) / 2) - 150,
+  );
+  // The defaults fit under it, with the packet at its value.
+  const total = members.reduce((sum, id) => sum + limit(id), 0);
+  expect(total).toBeLessThanOrEqual(limit('runner.maxEvidenceRetainedBytes'));
+  expect(settingProblems(REGISTER)).toEqual([]);
+});
+
+test('the evidence retained state is sized at the retained rate', () => {
+  expect(limitEntry('runner.heapBytesPerRetainedByte').basis).toMatchObject({
+    kind: 'measured',
+    command: 'npm run measure:heap',
+  });
+  // What a reader keeps costs less per byte than the parse that produced it.
+  expect(limit('runner.heapBytesPerRetainedByte')).toBeLessThan(
+    limit('runner.heapBytesPerEvidenceByte'),
+  );
+  const { basis } = limitEntry('runner.evidenceRetainedHeapBytes');
+  expect(basis).toMatchObject({
+    kind: 'derived',
+    inputs: [...Q10_RETAINED_INPUTS, 'runner.heapBytesPerRetainedByte'],
+  });
+  if (basis.kind !== 'derived') throw new Error('derived');
+  expect(basis.formula(1, 2, 3, 2.5)).toBe(15);
+  expect(Q10_RETAINED_INPUTS).toHaveLength(15);
+  const retained = Q10_RETAINED_INPUTS.reduce((sum, id) => sum + limit(id), 0);
+  expect(limit('runner.evidenceRetainedHeapBytes')).toBe(
+    Math.ceil(retained * limit('runner.heapBytesPerRetainedByte')),
+  );
+});
+
+test('the runner heap derives from runner memory less what is not old generation', () => {
+  const inputs: LimitId[] = [
+    'runner.memoryBytes',
+    'runner.youngGenerationBytes',
+    'runner.offHeapBytes',
+    'runner.baselineBytes',
+    'runner.systemReservedBytes',
+  ];
+  const { basis } = limitEntry('runner.heapBytes');
+  expect(basis).toMatchObject({ kind: 'derived', inputs });
+  if (basis.kind !== 'derived') throw new Error('derived');
+  // In whole MiB, since --max-old-space-size takes whole MiB.
+  const MiB = 1024 * 1024;
+  expect(basis.formula(100 * MiB, 10 * MiB, 20 * MiB, 5 * MiB, 15 * MiB)).toBe(50 * MiB);
+  expect(basis.formula(100 * MiB + 7, 10, 20, 5, 15)).toBe(99 * MiB);
+  expect(limit('runner.heapBytes')).toBe(
+    heapBytesFor(...(inputs.map((id) => limit(id)) as [number, number, number, number, number])),
+  );
+  expect(limitEntry('runner.memoryBytes').basis).toMatchObject({ kind: 'external' });
+  expect(limitEntry('runner.youngGenerationBytes').basis).toMatchObject({
+    kind: 'external',
+    platformValue: 3 * 64 * 1024 * 1024,
+  });
+  expect(limitEntry('runner.baselineBytes').basis).toMatchObject({
+    kind: 'measured',
+    command: 'npm run probe:runtime-baseline',
+  });
+  // The off-heap buffers: the research cache, two copies of each read in flight and its largest
+  // decoded file, and two copies of each model reply in flight.
+  expect(limit('runner.offHeapBytes')).toBe(
+    limit('research.cache.maxTotalBytes') +
+      limit('evidence.readsInFlight') *
+        2 *
+        (limit('evidence.envelope.maxResponseBytes') +
+          Math.max(
+            limit('snapshot.maxBlobBytes'),
+            limit('w2.session.maxFileBytes'),
+            limit('context.maxSourceFileBytes'),
+          )) +
+      limit('analysis.maxConcurrentCalls') * 2 * limit('analysis.responseBytes'),
+  );
+  // The OS and agent reserve is MemTotal − MemAvailable recorded on a GitHub-hosted runner.
+  expect(limitEntry('runner.systemReservedBytes').basis).toMatchObject({
+    kind: 'measured',
+    command: 'npm run probe:runner-memory',
+  });
+  // The reviewer plans for more old generation than the 2 GiB V8 would give the smallest runner.
+  expect(limit('runner.heapBytes')).toBeGreaterThan(2 * 1024 ** 3);
+});
+
+test('packet.bytes is the packet that fits the runner heap beside the model replies', () => {
+  const inputs: LimitId[] = [
+    'runner.heapBytes',
+    'analysis.replyHeapBytes',
+    'runner.unitExpansionHeapBytes',
+    'runner.heapBytesPerPacketByte',
+    'runner.evidenceRetainedHeapBytes',
+    'evidence.readsInFlight',
+    'evidence.envelope.maxResponseBytes',
+    'runner.heapBytesPerEvidenceByte',
+    'runner.evidenceHeapBytesPerPacketByte',
+  ];
+  const { basis } = limitEntry('packet.bytes');
+  expect(basis).toMatchObject({ kind: 'derived', inputs });
+  if (basis.kind !== 'derived') throw new Error('derived');
+  const [heap, replies, expansion, perByte, retained, reads, response, perResponse, evidenceRate] =
+    inputs.map((id) => limit(id)) as [
+      number,
+      number,
+      number,
+      number,
+      number,
+      number,
+      number,
+      number,
+      number,
+    ];
+  const responses = reads * response * perResponse;
+  expect(limit('packet.bytes')).toBe(
+    Math.min(
+      Math.floor((heap - replies - expansion) / perByte),
+      Math.floor((heap - retained - responses) / evidenceRate),
+    ),
+  );
+  // In each phase the packet's own heap and what is held beside it stay inside the heap.
+  expect(limit('packet.bytes') * perByte + replies + expansion).toBeLessThanOrEqual(heap);
+  expect(limit('packet.bytes') * evidenceRate + retained + responses).toBeLessThanOrEqual(heap);
+  // One byte more passes the binding phase.
+  expect(
+    (limit('packet.bytes') + 1) * perByte + replies + expansion > heap ||
+      (limit('packet.bytes') + 1) * evidenceRate + retained + responses > heap,
+  ).toBe(true);
+  // Each phase can bind.
+  expect(basis.formula(1_000, 100, 300, 3, 0, 0, 0, 0, 1)).toBe(200);
+  expect(basis.formula(1_000, 0, 0, 1, 400, 1, 10, 10, 2)).toBe(250);
+  expect(limitEntry('runner.unitExpansionHeapBytes').basis).toMatchObject({
+    kind: 'measured',
+    command: 'npm run measure:heap',
+  });
+  for (const input of ['analysis.responseBytes', 'analysis.maxConcurrentCalls'] as const)
+    expect(dependents(REGISTER, input)).toContain('packet.bytes');
+  // The snapshot budgets follow the packet cap and the unit expansion's structural bound.
+  expect(limit('analysis.projectionBytes')).toBe(
+    3 * limit('packet.bytes') +
+      limit('analysis.unitDerivedBytes') +
+      limit('config.maxBytes') +
+      UNIT_TEXT.configDefaultBytes,
+  );
+  expect(limit('analysis.projectionEntries')).toBe(
+    limit('packet.bytes') +
+      limit('analysis.unitDerivedEntries') +
+      Math.ceil(limit('config.maxBytes') / 2) +
+      UNIT_TEXT.configDefaultEntries,
+  );
+  expect(limit('analysis.unitDerivedBytes')).toBe(
+    unitDerivedBytes(
+      limit('packet.changes'),
+      limit('packet.relationships'),
+      limit('packet.idCodeUnits'),
+      limit('packet.identityBytes'),
+    ),
+  );
+  expect(maxRelationshipLimits(128)).toBe(8_064);
+  expect(limit('analysis.projectionBytes')).toBeLessThanOrEqual(V8_MAX_STRING_LENGTH);
+});
+
+test('the reply cap is the token budget in escaped bytes plus the envelope, with no escape multiplier', () => {
+  const inputs: LimitId[] = [
+    'analysis.completionTokens',
+    'analysis.maxTokenEscapedBytes',
+    'analysis.responseEnvelopeBytes',
+  ];
+  expect(limitEntry('analysis.responseBytes').basis).toMatchObject({ kind: 'derived', inputs });
+  expect(limit('analysis.responseBytes')).toBe(
+    replyBytesFor(...(inputs.map((id) => limit(id)) as [number, number, number])),
+  );
+  expect(limit('analysis.responseBytes')).toBe(16_384 * 1_024 + 65_536);
+  expect(limitEntry('analysis.maxTokenEscapedBytes').basis).toMatchObject({
+    kind: 'external',
+    platformValue: 1_024,
+    probe: { command: 'npm run probe:token-length' },
+  });
+});
+
+test('safety packet bounds keep their values and state a reason', () => {
+  const values: [LimitId, number][] = [
+    ['packet.findings', 512],
+    ['packet.pathInstances', 32],
+    ['packet.idCodeUnits', 256],
+    ['packet.identityBytes', 1_024],
+    ['packet.listEntries', 32],
+  ];
+  for (const [id, value] of values) {
+    const { basis } = limitEntry(id);
+    expect(basis, id).toMatchObject({ kind: 'safety', reason: expect.any(String) });
+    expect(limit(id), id).toBe(value);
+  }
+});
+
+test('RELEASE_PAGE_SIZES is a divisor chain from the register value down to 1 and is frozen', () => {
+  expect(RELEASE_PAGE_SIZES).toEqual([100, 50, 25, 5, 1]);
+  for (const [i, size] of RELEASE_PAGE_SIZES.slice(1).entries())
+    expect(RELEASE_PAGE_SIZES[i] % size).toBe(0);
+  expect(RELEASE_PAGE_SIZES[0]).toBe(limit('upstream.releasePageSize'));
   expect(Object.isFrozen(RELEASE_PAGE_SIZES)).toBe(true);
 });
 
@@ -319,4 +722,146 @@ test("the comment cap is derived from GitHub's byte limit so any body within it 
       repositoryType: 'private, user-owned, github.com',
     },
   });
+});
+
+test('the evidence timeouts derive from the GitHub processing timeout, the cap and the probes', () => {
+  expect(limitEntry('github.processingTimeoutMs').basis).toMatchObject({
+    kind: 'external',
+    platformValue: 10_000,
+  });
+  for (const [id, command] of [
+    ['upstream.throughputBytesPerSecond', 'npm run probe:upstream-throughput'],
+    ['osv.slowestResponseMs', 'npm run probe:osv-latency'],
+  ] as const)
+    expect(limitEntry(id).basis).toMatchObject({ kind: 'external', probe: { command } });
+  expect(limit('evidence.envelope.requestTimeoutMs')).toBe(
+    limit('github.processingTimeoutMs') +
+      Math.ceil(
+        (limit('evidence.envelope.maxResponseBytes') * 1000) /
+          limit('upstream.throughputBytesPerSecond'),
+      ),
+  );
+  expect(limit('evidence.envelope.requestTimeoutMs')).toBe(11_639);
+  expect(limit('github.requestTimeoutMs')).toBe(limit('evidence.envelope.requestTimeoutMs'));
+  expect(limit('evidence.allocation.advisory.maxRequests')).toBe(221);
+  expect(limit('evidence.allocation.upstream.maxTotalBytes')).toBe(76_800_000);
+});
+
+test('the evidence deadline is an adopter setting whose hard maximum leaves one model call', () => {
+  const deadline = limitEntry('evidence.envelope.totalTimeoutMs');
+  expect(deadline.basis.kind).toBe('config');
+  expect(deadline.configurable).toMatchObject({
+    default: 240_000,
+    maximum: 'job.maxEvidenceDeadlineMs',
+  });
+  expect(limit('job.maxEvidenceDeadlineMs')).toBe(
+    limit('job.window') -
+      limit('freshness.readsPerCheck') * limit('github.requestTimeoutMs') -
+      limit('analysis.requestTimeoutMs') -
+      limit('analysis.publicationReserveMs') -
+      limit('job.freshnessAllowance'),
+  );
+  expect(limit('evidence.envelope.totalTimeoutMs')).toBeLessThanOrEqual(
+    limit('job.maxEvidenceDeadlineMs'),
+  );
+  // The freshness allowance and the publication reserve are sequential GitHub requests at the
+  // request timeout, so the hard maximum follows that timeout (L11, #383).
+  expect(limit('job.freshnessAllowance')).toBe(
+    limit('freshness.readsPerCheck') * limit('github.requestTimeoutMs'),
+  );
+  expect(limit('analysis.publicationReserveMs')).toBe(5 * limit('github.requestTimeoutMs'));
+  expect(limit('job.maxEvidenceDeadlineMs')).toBe(471_971);
+  // The window-derived research ceilings follow the setting (L11, Q1(a)).
+  const definitions = [...REGISTER.values()].map(({ value, ...entry }): LimitDefinition =>
+    entry.basis.kind === 'derived' ? entry : { ...entry, value },
+  );
+  const longer = buildRegister(
+    definitions,
+    new Map([['evidence.envelope.totalTimeoutMs', 2 * limit('evidence.envelope.totalTimeoutMs')]]),
+  );
+  expect(longer.get('evidence.allocation.advisory.maxRequests')?.value).toBe(443);
+  expect(longer.get('evidence.allocation.upstream.maxTotalBytes')?.value).toBe(153_600_000);
+  expect(settingProblems(REGISTER)).toEqual([]);
+});
+
+test('the GitHub read shares keep their sources and formulas', () => {
+  expect(limit('evidence.allocation.transport.freshness.maxRequests')).toBe(
+    limit('freshness.startupReads') +
+      limit('freshness.entryReads') +
+      limit('freshness.checksPerRun') * limit('freshness.readsPerCheck'),
+  );
+  expect(limit('evidence.allocation.transport.freshness.maxRequests')).toBe(17);
+  expect(limit('evidence.allocation.transport.freshness.maxTotalBytes')).toBe(
+    17 * limit('github.maxResponseBytes'),
+  );
+  expect(limit('github.token.requestCapMax')).toBe(
+    limit('github.token.restRequestsPerHour') -
+      limit('evidence.allocation.transport.freshness.maxRequests'),
+  );
+  for (const id of ['evidence.allocation.transport.snapshot.maxRequests'] as const)
+    expect(limitEntry(id).configurable, id).toMatchObject({
+      maximum: 'github.token.requestCapMax',
+      joint: true,
+    });
+  expect(limitEntry('github.compareMaxFiles').basis).toMatchObject({
+    kind: 'external',
+    platformValue: 300,
+  });
+  expect(limit('upstream.releasePageSize')).toBe(limit('github.pageSize'));
+  expect(limit('snapshot.maxTreeEntries')).toBe(
+    Math.floor(
+      limit('evidence.allocation.transport.snapshot.maxTotalBytes') /
+        limit('snapshot.minTreeEntryBytes'),
+    ),
+  );
+  expect(limit('snapshot.minTreeEntryBytes')).toBe(92);
+  expect(limit('snapshot.maxTreeEntries')).toBe(102_578);
+});
+
+test('the session reads follow GitHub file-list limits, and workflow files stay within them', () => {
+  expect(limit('w2.session.maxPages')).toBe(
+    Math.ceil(limit('github.treeMaxFiles') / limit('github.pageSize')),
+  );
+  expect(limit('w2.session.maxPages')).toBe(30);
+  expect(limit('w2.session.maxFiles')).toBe(limit('github.treeMaxFiles'));
+  expect(limitEntry('w2.actions.maxFileBytes').basis).toMatchObject({
+    kind: 'external',
+    platformValue: 500_000,
+  });
+  // A workflow file is read by the session reader, so its cap may not exceed the session's.
+  expect(limit('w2.actions.maxFileBytes')).toBeLessThanOrEqual(limit('w2.session.maxFileBytes'));
+  expect(limitEntry('evidence.allocation.session.maxRequests').configurable).toMatchObject({
+    maximum: 'github.token.requestCapMax',
+    joint: true,
+  });
+  // The session share must still hold every file-list page.
+  expect(limit('evidence.allocation.session.maxRequests')).toBeGreaterThan(
+    limit('w2.session.maxPages'),
+  );
+  expect(limitEntry('w2.actions.maxYamlDepth').basis.kind).toBe('safety');
+});
+
+test('the uv and npm collection bounds keep their sources and formulas', () => {
+  const lockBytes = 2 * limit('w2.uv.maxRoots') * limit('w2.uv.maxFileBytes');
+  expect(limit('w2.uv.maxPackages')).toBe(Math.floor(lockBytes / limit('uv.minRecordBytes')));
+  expect(limit('w2.uv.maxEdges')).toBe(Math.floor(lockBytes / limit('uv.minRecordBytes')));
+  expect(limit('w2.uv.maxDeclarations')).toBe(
+    Math.floor((2 * lockBytes) / limit('uv.minRecordBytes')),
+  );
+  expect(limit('w2.uv.maxPackages')).toBe(10_000_000);
+  expect(limit('w2.npm.maxFileBytes')).toBe(limit('w2.session.maxFileBytes'));
+  for (const id of ['w2.npm.maxRoots', 'w2.uv.maxRoots'] as const) {
+    expect(limitEntry(id).configurable, id).toMatchObject({ maximum: 'dependabot.maxRoots' });
+    expect(limit(id), id).toBeLessThanOrEqual(limit('dependabot.maxRoots'));
+  }
+  for (const id of [
+    'w2.npm.maxJsonDepth',
+    'w2.registry.maxJsonDepth',
+    'w2.uv.maxTomlDepth',
+    'w2.uv.maxMarkerDepth',
+    'w2.uv.maxStringBytes',
+    'w2.uv.maxRequirementTokens',
+    'npm.maxIntegrityCodeUnits',
+  ] as const)
+    expect(limitEntry(id).basis.kind, id).toBe('safety');
 });
