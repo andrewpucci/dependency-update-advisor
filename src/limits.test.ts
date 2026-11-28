@@ -18,6 +18,7 @@ import {
   maxRelationshipLimits,
   unitDerivedBytes,
   UNIT_TEXT,
+  Q10_RETAINED_INPUTS,
   type LimitDefinition,
   type LimitId,
 } from './limits.js';
@@ -338,6 +339,29 @@ test('the evidence-phase heap inputs keep their sources and formula', () => {
   const highest = hardMaximum(REGISTER, 'evidence.envelope.maxResponseBytes');
   expect(highest).toBeGreaterThanOrEqual(limit('evidence.envelope.maxResponseBytes'));
   expect(highest).toBeLessThan(limit('runner.maxEvidenceResponseBytes'));
+});
+
+test('the evidence retained state is sized at the retained rate', () => {
+  expect(limitEntry('runner.heapBytesPerRetainedByte').basis).toMatchObject({
+    kind: 'measured',
+    command: 'npm run measure:heap',
+  });
+  // What a reader keeps costs less per byte than the parse that produced it.
+  expect(limit('runner.heapBytesPerRetainedByte')).toBeLessThan(
+    limit('runner.heapBytesPerEvidenceByte'),
+  );
+  const { basis } = limitEntry('runner.evidenceRetainedHeapBytes');
+  expect(basis).toMatchObject({
+    kind: 'derived',
+    inputs: [...Q10_RETAINED_INPUTS, 'runner.heapBytesPerRetainedByte'],
+  });
+  if (basis.kind !== 'derived') throw new Error('derived');
+  expect(basis.formula(1, 2, 3, 2.5)).toBe(15);
+  expect(Q10_RETAINED_INPUTS).toHaveLength(15);
+  const retained = Q10_RETAINED_INPUTS.reduce((sum, id) => sum + limit(id), 0);
+  expect(limit('runner.evidenceRetainedHeapBytes')).toBe(
+    Math.ceil(retained * limit('runner.heapBytesPerRetainedByte')),
+  );
 });
 
 test('the runner heap derives from runner memory less what is not old generation', () => {

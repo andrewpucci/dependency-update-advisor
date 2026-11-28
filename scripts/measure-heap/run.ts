@@ -23,13 +23,17 @@
  *   `limit:runner.heapBytesPerPacketByte` keeps the larger of the two.
  * - `limit:runner.unitExpansionHeapBytes`: the largest-expansion packet (124 members in the
  *   expansion shape, tests/parity/heap-shapes.ts) less the large packet and its own bytes at the
- *   plain rate, plus 1 MiB of resolution, with the projection caps lifted.
+ *   plain rate, plus 1 MiB of resolution, within the derived projection caps.
  * - `limit:runner.evidenceHeapBytesPerPacketByte`: the same growth with PHASE=evidence, which stops
  *   after revalidation, from the large packet to it repeated 16 times, plus 1 MiB of resolution.
  * - `limit:runner.heapBytesPerEvidenceByte`: one response body of exactly
  *   `limit:evidence.envelope.maxResponseBytes` through each reader's parse path (evidence.ts), the
  *   worst of three shapes less a two-element body, plus 1 MiB of resolution, per body byte; the
  *   largest reader is kept.
+ * - `limit:runner.heapBytesPerRetainedByte`: what a reader keeps after a parse (retained.ts), as
+ *   the growth from one value of 1 MiB retained JSON bytes to 16 held at once, plus 1 MiB of
+ *   resolution, per retained byte, for the same three shapes; the largest shape is kept. The
+ *   difference leaves out the transient parse peak, which the response rate above covers.
  *
  * The shapes run in parallel, one process each; the whole probe takes several minutes. Run it on
  * Node 24, the action's runtime.
@@ -65,22 +69,21 @@ const REPEATS = '4';
 const EVIDENCE_REPEATS = '16';
 const READERS = ['transport', 'session', 'advisory', 'osv', 'pypi', 'npm'] as const;
 const READER_SHAPES = ['flat', 'objects', 'nested'] as const;
+/** Retained values held at once in the larger retained run; each is 1 MiB (retained.ts). */
+const RETAINED_COUNT = '16';
 /** At most this many bisections run at once, one Node process each. */
 const PARALLEL = availableParallelism();
 /** Twelve members give 16 units, two batches of `limit:analysis.maxUnits`; checked below. */
 const TWO_BATCH_MEMBERS = '12';
 /** 124 npm members give limit:packet.changes changes with the scenario's fixed four; checked below. */
 const EXPANSION_MEMBERS = '124';
-/** Room for the repeated packet's records; only written register values can be overridden. */
+/**
+ * Room for the repeated packet's records; only written register values can be overridden. The
+ * projection caps are derived from the packet counts (limit:analysis.projectionBytes), so they
+ * follow these.
+ */
 const overridesFor = (repeats: string) =>
-  [
-    'packet.changes',
-    'packet.sources',
-    'packet.findings',
-    'analysis.maxCalls',
-    'analysis.projectionBytes',
-    'analysis.projectionEntries',
-  ]
+  ['packet.changes', 'packet.sources', 'packet.findings', 'analysis.maxCalls']
     .map((id) => `${id}=${limit(id as Parameters<typeof limit>[0]) * Number(repeats) * 2}`)
     .join(',');
 const REPEATED_OVERRIDES = overridesFor(REPEATS);
@@ -187,18 +190,14 @@ try {
   node([join(HERE, 'packet.ts'), denseLarge, LARGE_MEMBERS, '1', 'dense']);
   node([join(HERE, 'packet.ts'), denseRepeated, LARGE_MEMBERS, REPEATS, 'dense']);
   // The largest decision-unit expansion, at limit:packet.changes changes. The projection caps
-  // are lifted for it, since they are derived from this figure (limit:analysis.projectionBytes).
+  // are derived from its structural bound (limit:analysis.projectionBytes), so it passes them.
   const expansion = join(dir, 'expansion.json');
   const built = JSON.parse(
     node([join(HERE, 'packet.ts'), expansion, EXPANSION_MEMBERS, '1', 'expansion']),
   ) as { changes: number };
   if (built.changes !== limit('packet.changes'))
     throw new Error(`the expansion packet has ${built.changes} changes`);
-  const expansionOverrides = {
-    HEAP_LIMIT_OVERRIDES: ['analysis.projectionBytes', 'analysis.projectionEntries']
-      .map((id) => `${id}=${limit('runner.heapBytes')}`)
-      .join(','),
-  };
+  const expansionOverrides = {};
   const shapeRuns = {
     denseLarge: describe(denseLarge),
     denseRepeated: describe(denseRepeated, overrides),
@@ -230,9 +229,14 @@ try {
     HEAP_LIMIT_OVERRIDES: overridesFor(EVIDENCE_REPEATS),
   };
   const evidenceRepeatedBytes = describe(evidenceRepeated, evidenceOverrides).packetBytes;
-  const [evidenceLarge = 0, evidenceRepeatedMib = 0, ...readerMib] = await pool([
+  const [evidenceLarge = 0, evidenceRepeatedMib = 0, ...measuredMib] = await pool([
     () => minimumOldSpace(large, { PHASE: 'evidence' }),
     () => minimumOldSpace(evidenceRepeated, evidenceOverrides),
+    ...READER_SHAPES.flatMap((shape) =>
+      ['1', RETAINED_COUNT].map(
+        (count) => () => minimumOldSpace(`${shape} ${count}`, {}, 'retained.ts'),
+      ),
+    ),
     ...READERS.flatMap((reader) =>
       ['empty', ...READER_SHAPES].map(
         (shape) => () => minimumOldSpace(`${reader} ${shape}`, {}, 'evidence.ts'),
@@ -245,6 +249,20 @@ try {
   const evidencePerPacketByte =
     ((evidenceRepeatedMib - evidenceLarge) * BINARY_BYTES.MiB + resolution) /
     (evidenceRepeatedBytes - runs.large.packetBytes);
+  const retainedMib = measuredMib.slice(0, READER_SHAPES.length * 2);
+  const readerMib = measuredMib.slice(READER_SHAPES.length * 2);
+  const retained = READER_SHAPES.map((shape, i) => {
+    const one = retainedMib[2 * i] ?? 0;
+    const many = retainedMib[2 * i + 1] ?? 0;
+    return {
+      shape,
+      minimumOldSpaceMiB: { 1: one, [RETAINED_COUNT]: many },
+      perRetainedByte:
+        ((many - one) * BINARY_BYTES.MiB + resolution) /
+        ((Number(RETAINED_COUNT) - 1) * BINARY_BYTES.MiB),
+    };
+  });
+  const worstRetained = retained.reduce((a, b) => (b.perRetainedByte > a.perRetainedByte ? b : a));
   const responseBytes = limit('evidence.envelope.maxResponseBytes');
   const perReader = READERS.map((reader, r) => {
     const row = readerMib.slice(
@@ -300,6 +318,9 @@ try {
           readers: perReader,
           worstReader: worstReader.reader,
           heapBytesPerResponseByte: worstReader.perResponseByte,
+          retained,
+          worstRetainedShape: worstRetained.shape,
+          heapBytesPerRetainedByte: worstRetained.perRetainedByte,
         },
       },
       null,
