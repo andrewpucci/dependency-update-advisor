@@ -225,7 +225,9 @@ test('copies wired: a packet copy is a derived mirror of its packet entry', () =
 
 test('copies wired: the source-root and candidate bounds are one entry each, read by config and context', () => {
   expect(limit('context.maxSourceRoots')).toBe(16);
-  expect(limit('context.maxSourceCandidates')).toBe(128);
+  expect(limit('context.maxSourceCandidates')).toBe(
+    limit('evidence.allocation.transport.snapshot.maxRequests') - limit('snapshot.fixedReads'),
+  );
   expect(dependents(REGISTER, 'context.maxSourceRoots')).toEqual([]);
   expect(dependents(REGISTER, 'context.maxSourceCandidates')).toEqual([]);
   for (const file of ['src/config.ts', 'src/context.ts']) {

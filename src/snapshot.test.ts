@@ -1000,3 +1000,45 @@ test('a released snapshot drops its tree, and a later tree read is unavailable',
   expect(result.value.before).toMatchObject({ kind: 'roots' });
   expect(result.value.after).not.toMatchObject({ kind: 'roots' });
 });
+
+test('excerpt files at context.maxSourceCandidates and the fixed reads fill the snapshot request share exactly', async () => {
+  const excerpts = Array.from(
+    { length: limit('context.maxSourceCandidates') },
+    (_, index) => `src/file-${index}.ts`,
+  );
+  const blobOf = (index: number) => index.toString(16).padStart(40, '7');
+  const reader = reads(
+    [
+      ...configTree,
+      entry('.github/dependabot.yml', '100644', dependabotBlob),
+      entry('src', '040000', 'f'.repeat(40), 'tree'),
+      ...excerpts.map((path, index) => entry(path, '100644', blobOf(index))),
+    ],
+    {
+      [configBlob]: JSON.stringify({
+        version: 1,
+        context: { sendSourceExcerptsToModel: true, sourceRoots: ['src'], excerptFiles: excerpts },
+      }),
+      [dependabotBlob]: 'version: 2\nupdates: []\n',
+      ...Object.fromEntries(
+        excerpts.map((_, index) => [blobOf(index), 'import examplePackage from "example-package";']),
+      ),
+    },
+  );
+
+  const result = await withTrustedSnapshot(
+    { repository, reads: reader, temporaryRoot: tempRoot() },
+    async (snapshot) => {
+      await snapshot.dependabotRoots();
+      return snapshot.collectContext([{ id: 'unit-1', name: 'example-package' }]);
+    },
+  );
+
+  expect(result).toMatchObject({ kind: 'ready', value: { ok: true } });
+  const excerptReads = reader.calls.filter((call) =>
+    excerpts.some((_, index) => call === `blob:${blobOf(index)}`),
+  );
+  expect(excerptReads).toHaveLength(excerpts.length);
+  expect(reader.calls.length - excerptReads.length).toBe(limit('snapshot.fixedReads'));
+  expect(reader.calls).toHaveLength(limit('evidence.allocation.transport.snapshot.maxRequests'));
+});

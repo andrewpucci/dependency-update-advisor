@@ -435,18 +435,20 @@ describe('adversarial document agreement', () => {
         version: 1,
         context: { [field]: value },
       });
-    const limit = field === 'sourceRoots' ? 16 : 128;
+    const count = limit(
+      field === 'sourceRoots' ? 'context.maxSourceRoots' : 'context.maxSourceCandidates',
+    );
     add(
       `${field} exact count`,
       {
         version: 1,
-        context: { [field]: Array.from({ length: limit }, (_, index) => `src/file-${index}.ts`) },
+        context: { [field]: Array.from({ length: count }, (_, index) => `src/file-${index}.ts`) },
       },
       true,
     );
     add(`${field} count overflow`, {
       version: 1,
-      context: { [field]: Array.from({ length: limit + 1 }, (_, index) => `src/file-${index}.ts`) },
+      context: { [field]: Array.from({ length: count + 1 }, (_, index) => `src/file-${index}.ts`) },
     });
   }
   add(

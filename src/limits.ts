@@ -3040,6 +3040,19 @@ const DEFINITIONS = [
     test: 'src/snapshot.test.ts > a link target at snapshot.maxBlobBytes is read and one byte more is refused unfetched',
   }),
   derived(
+    'snapshot.fixedReads',
+    'count',
+    [],
+    () => 7,
+    'The snapshot reads a run with excerpt files makes besides the excerpt blobs, from fixed call sites (withTrustedSnapshot, src/snapshot.ts): the repository, the default-branch commit, the root listing, the .github listing, the config blob, the Dependabot file blob, and the listing of one top-level source root, the shallowest place an excerpt file can sit, since it must lie under a root. Approved by the maintainer on 2026-11-27 (L11, Q20(a), #383).',
+    {
+      protects:
+        'Counts the snapshot reads that are not excerpt blobs, so the excerpt file cap leaves them room in the snapshot request share.',
+      effect: 'Not enforced: it is subtracted in limit:context.maxSourceCandidates.',
+      test: 'src/snapshot.test.ts > excerpt files at context.maxSourceCandidates and the fixed reads fill the snapshot request share exactly',
+    },
+  ),
+  derived(
     'snapshot.maxTreeEntries',
     'count',
     ['evidence.allocation.transport.snapshot.maxTotalBytes', 'snapshot.minTreeEntryBytes'],
@@ -3260,14 +3273,20 @@ const DEFINITIONS = [
     note: 'no recorded reason',
     test: 'src/config.test.ts > the source root cap admits exactly the registered count and rejects one more',
   }),
-  unjustified('context.maxSourceCandidates', 128, 'count', {
-    protects:
-      'Each excerpt file is stat-checked and matched against the tracked inventory, so the number of excerpt files is capped.',
-    effect:
-      'More than 128 excerptFiles fails config validation. The runtime candidate-limit (src/context.ts:586-590) would stop scanning with reason candidate-limit, but validated config keeps the selected set at 128 or fewer, so that branch cannot trigger.',
-    note: 'awaiting L8 measurement',
-    test: 'src/config.test.ts > the excerpt file cap admits exactly the registered count and rejects one more',
-  }),
+  derived(
+    'context.maxSourceCandidates',
+    'count',
+    ['evidence.allocation.transport.snapshot.maxRequests', 'snapshot.fixedReads'],
+    (requests, fixed) => requests - fixed,
+    'Each excerpt file costs one blob read from the snapshot request share, so the cap is the share less the reads every snapshot with excerpt files makes besides them (limit:snapshot.fixedReads): limit:evidence.allocation.transport.snapshot.maxRequests − limit:snapshot.fixedReads. In the shallowest layout every validated excerpt file can then be read; a deeper layout spends tree reads from the same share and ends partial with budget. It follows the snapshot request setting (L11, Q1(a)). Approved by the maintainer on 2026-11-27 (L11, Q20(a), #383).',
+    {
+      protects:
+        'Each excerpt file is stat-checked and matched against the tracked inventory, so the number of excerpt files is capped.',
+      effect:
+        'More excerptFiles than the cap fails config validation. The runtime candidate-limit (src/context.ts) would stop scanning with reason candidate-limit, but validated config keeps the selected set at the cap or fewer, so that branch cannot trigger.',
+      test: 'src/config.test.ts > the excerpt file cap admits exactly the registered count and rejects one more',
+    },
+  ),
   derived(
     'context.maxTrackedPathEntries',
     'count',

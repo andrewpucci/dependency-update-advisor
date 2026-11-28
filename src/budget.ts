@@ -34,8 +34,9 @@ export const EVIDENCE_READ_ENVELOPE = Object.freeze({
  * incomplete with a `budget` reason; no reader borrows from another.
  */
 export const EVIDENCE_READ_ALLOCATION = Object.freeze({
-  // The snapshot covers C1's 128 excerpt files with their directories; freshness reads are
-  // reserved separately so a heavy snapshot can never starve the checks that keep a result valid.
+  // The snapshot share sizes C1's excerpt file cap (one blob read each, beside the snapshot's fixed
+  // reads); freshness reads are reserved separately so a heavy snapshot can never starve the checks
+  // that keep a result valid.
   transport: Object.freeze({
     maxRequests: limit('evidence.allocation.transport.maxRequests'),
     maxTotalBytes: limit('evidence.allocation.transport.maxTotalBytes'),
