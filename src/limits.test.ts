@@ -871,7 +871,8 @@ test('the uv and npm collection bounds keep their sources and formulas', () => {
 });
 
 test('the research and signal bounds keep their sources and formulas', () => {
-  // Every tag candidate can cost an upstream request, so the coverage setting stays under them.
+  // The coverage setting's hard maximum is the upstream request ceiling (Q9(a)); a listed release
+  // outside the range costs no request beyond its page, so it is not a per-candidate bound.
   expect(limitEntry('research.maxTagCandidates').configurable).toMatchObject({
     maximum: 'evidence.allocation.upstream.maxRequests',
   });
