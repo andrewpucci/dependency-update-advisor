@@ -42,6 +42,14 @@ export function nestedArrays(depth: number): unknown[] {
   return value;
 }
 
+/** The nesting bisection starts from, 1 Mi levels, far past where any call overflows. */
+export const BISECTION_LIMIT = BINARY_BYTES.MiB;
+
+/** Flow sequences nested `depth` levels deep under one key, as YAML text: `updates: [[]]` is 2. */
+export function nestedFlowSequences(depth: number): string {
+  return `updates: ${'['.repeat(depth)}${']'.repeat(depth)}\n`;
+}
+
 /** Whether `call` completes on `value`; a stack overflow (RangeError) is false, anything else throws. */
 function completes(call: (value: unknown) => unknown, value: unknown): boolean {
   try {
@@ -60,7 +68,7 @@ function completes(call: (value: unknown) => unknown, value: unknown): boolean {
  */
 export function overflowDepth(
   call: (value: unknown) => unknown,
-  limit = BINARY_BYTES.MiB,
+  limit = BISECTION_LIMIT,
 ): number | null {
   if (completes(call, nestedArrays(limit))) return null;
   let low = 0;

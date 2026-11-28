@@ -28,6 +28,13 @@ Amendment approved 2026-10-11:
   `limit:config.maxReleaseAgeDays` that defaults to 1.
 - Treat `maliciousPackage` as a fixed hold, not a configurable rule.
 
+Amended (L11, E18 and Q24(b); approved by the maintainer on 2026-11-27,
+[#383](https://github.com/andrewpucci/dependency-update-advisor/issues/383)):
+`limit:config.maxReleaseAgeDays` is no longer a policy ceiling. No platform or
+Dependabot document gives one, so the window's only maximum is structural: the
+days ECMAScript time values span on each side of the epoch, past which the
+window cannot end at a time a `Date` can represent.
+
 The [C3 policy contract](SPEC-advisory-policy.md) defines applicability, and
 issue #49 implements the parser and schema amendment under parent #7.
 C1 now accepts all ten rules and the release-age field.

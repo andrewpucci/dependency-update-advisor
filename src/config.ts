@@ -126,7 +126,9 @@ function invalidPolicy(policy: unknown): string | undefined {
   if (
     Object.hasOwn(policy, 'minimumReleaseAgeDays') &&
     (typeof policy.minimumReleaseAgeDays !== 'number' ||
-      !Number.isInteger(policy.minimumReleaseAgeDays) ||
+      // No policy maximum (SPEC-limit-register section 5, L11 Q24(b)); the window must still end
+      // at a time a Date can represent, which also keeps its milliseconds a safe integer.
+      !Number.isSafeInteger(policy.minimumReleaseAgeDays) ||
       policy.minimumReleaseAgeDays < 1 ||
       policy.minimumReleaseAgeDays > limit('config.maxReleaseAgeDays'))
   )

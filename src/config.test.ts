@@ -6,6 +6,7 @@ import { Ajv } from 'ajv';
 import { afterEach, describe, expect, test, vi } from 'vite-plus/test';
 import { DEFAULT_VERDICTS, loadTrustedReviewConfig, parseReviewConfig } from './config.js';
 import { limit } from './limits.js';
+import { MS_PER_DAY } from './format.js';
 
 const schema = JSON.parse(
   readFileSync(new URL('../schemas/review-config-v1.json', import.meta.url), 'utf8'),
@@ -435,18 +436,20 @@ describe('adversarial document agreement', () => {
         version: 1,
         context: { [field]: value },
       });
-    const limit = field === 'sourceRoots' ? 16 : 128;
+    const count = limit(
+      field === 'sourceRoots' ? 'context.maxSourceRoots' : 'context.maxSourceCandidates',
+    );
     add(
       `${field} exact count`,
       {
         version: 1,
-        context: { [field]: Array.from({ length: limit }, (_, index) => `src/file-${index}.ts`) },
+        context: { [field]: Array.from({ length: count }, (_, index) => `src/file-${index}.ts`) },
       },
       true,
     );
     add(`${field} count overflow`, {
       version: 1,
-      context: { [field]: Array.from({ length: limit + 1 }, (_, index) => `src/file-${index}.ts`) },
+      context: { [field]: Array.from({ length: count + 1 }, (_, index) => `src/file-${index}.ts`) },
     });
   }
   add(
@@ -621,7 +624,7 @@ describe('loader refusal and read budgets', () => {
 });
 
 describe('C3 configuration amendment', () => {
-  test.each([0, 31, 1.5, '1', null, false, {}, []].map((value) => ({ value })))(
+  test.each([0, -1, 1.5, '1', null, false, {}, []].map((value) => ({ value })))(
     'rejects window $value in parser and schema',
     ({ value: minimumReleaseAgeDays }) => {
       const document = { version: 1, policy: { minimumReleaseAgeDays } };
@@ -633,13 +636,34 @@ describe('C3 configuration amendment', () => {
     },
   );
 
-  test.each([1, 30])('retains an explicit %i day window', (minimumReleaseAgeDays) => {
+  test.each([1, 30, 365, 100_000])('retains an explicit %i day window', (minimumReleaseAgeDays) => {
     const document = { version: 1, policy: { minimumReleaseAgeDays } };
     const result = parseReviewConfig(JSON.stringify(document));
     if (!result.ok) throw new Error('expected valid configuration');
     expect(validateSchema(document)).toBe(true);
     expect(result.config.policy.minimumReleaseAgeDays).toBe(minimumReleaseAgeDays);
     expect(result.minimumReleaseAgeDaysExplicit).toBe(true);
+  });
+
+  test('the release-age window admits config.maxReleaseAgeDays and rejects one more day in parser and schema', () => {
+    const days = limit('config.maxReleaseAgeDays');
+    // The bound is the ECMAScript time range: its last millisecond is a valid Date, the next is not.
+    expect(Number.isNaN(new Date(days * MS_PER_DAY).getTime())).toBe(false);
+    expect(Number.isNaN(new Date(days * MS_PER_DAY + 1).getTime())).toBe(true);
+    expect(Number.isSafeInteger(days * MS_PER_DAY)).toBe(true);
+    const at = (minimumReleaseAgeDays: number) => ({
+      version: 1,
+      policy: { minimumReleaseAgeDays },
+    });
+    expect(parseReviewConfig(JSON.stringify(at(days))).ok).toBe(true);
+    expect(validateSchema(at(days))).toBe(true);
+    for (const value of [days + 1, Number.MAX_SAFE_INTEGER + 1]) {
+      expect(parseReviewConfig(JSON.stringify(at(value)))).toMatchObject({
+        ok: false,
+        error: { field: 'policy.minimumReleaseAgeDays' },
+      });
+      expect(validateSchema(at(value))).toBe(false);
+    }
   });
 
   test('defaults the window without making it explicit and freezes shared defaults', () => {

@@ -180,8 +180,10 @@ test.each([
     encode(`version: 2\nupdates: []\n#${'x'.repeat(DEPENDABOT_ROOT_LIMITS.maxFileBytes)}\n`),
   ],
   [
-    'an alias',
-    encode('version: 2\nx: &a ["/"]\nupdates:\n  - package-ecosystem: npm\n    directories: *a\n'),
+    'aliases',
+    encode(
+      `version: 2\nx: &a ["/"]\nupdates:\n${Array.from({ length: DEPENDABOT_ROOT_LIMITS.maxAliasExpansions + 1 }, () => '  - package-ecosystem: npm\n    directories: *a\n').join('')}`,
+    ),
   ],
   [
     'YAML nodes in an ignored key',
@@ -226,6 +228,54 @@ test('limits the roots per ecosystem after deduplication', () => {
   ).toMatchObject({ npm: { kind: 'roots' } });
 });
 
+test('expands aliases up to the alias cap and refuses one more', () => {
+  const at = (count: number) =>
+    encode(
+      `version: 2\nx: &a ["/web"]\nupdates:\n${Array.from({ length: count }, () => '  - package-ecosystem: npm\n    directories: *a\n').join('')}`,
+    );
+  expect(parseDependabotRoots(at(DEPENDABOT_ROOT_LIMITS.maxAliasExpansions))).toEqual({
+    kind: 'roots',
+    npm: { kind: 'roots', roots: ['web'] },
+    uv: { kind: 'roots', roots: [] },
+  });
+  expect(parseDependabotRoots(at(DEPENDABOT_ROOT_LIMITS.maxAliasExpansions + 1))).toEqual({
+    kind: 'unavailable',
+    reason: 'budget',
+  });
+  expect(
+    parseDependabotRoots(
+      encode(
+        'version: 2\nbase: &b {directory: "/"}\nupdates:\n  - <<: *b\n    package-ecosystem: npm\n',
+      ),
+    ),
+  ).toEqual({ kind: 'unavailable', reason: 'unsupported' });
+});
+
+test.each([
+  [
+    'a numeric key',
+    'version: 2\n1: ignored\nupdates:\n  - package-ecosystem: npm\n    directory: "/web"\n',
+  ],
+  [
+    'a null key',
+    'version: 2\n? null\n: ignored\nupdates:\n  - package-ecosystem: npm\n    directory: "/web"\n',
+  ],
+  [
+    'a literal merge key',
+    'version: 2\n<<: {x: 1}\nupdates:\n  - package-ecosystem: npm\n    directory: "/web"\n',
+  ],
+  [
+    'a literal merge key in an entry',
+    'version: 2\nupdates:\n  - package-ecosystem: npm\n    <<: [1]\n    directory: "/web"\n',
+  ],
+])('ignores %s as toJS did, instead of failing the file', (_label, text) => {
+  expect(parseDependabotRoots(encode(text))).toEqual({
+    kind: 'roots',
+    npm: { kind: 'roots', roots: ['web'] },
+    uv: { kind: 'roots', roots: [] },
+  });
+});
+
 test('returns a deeply frozen result', () => {
   const result = parseDependabotRoots(encode(file(update('npm', '/a'))));
   if (result.kind !== 'roots' || result.npm.kind !== 'roots') throw new Error('fixture must parse');
@@ -239,7 +289,7 @@ test('exposes the parsing limits', () => {
     maxFileBytes: 65_536,
     maxYamlNodes: 20_000,
     maxYamlDepth: 16,
-    maxAliasExpansions: 0,
+    maxAliasExpansions: limit('w2.actions.maxAliasExpansions'),
     maxUpdates: 256,
     maxRoots: 256,
   });

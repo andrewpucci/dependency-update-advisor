@@ -73,7 +73,7 @@ src/packet.ts or coordinator  → passes roots and configRevision to N1/U2
    A missing tree listing, failed blob read, size mismatch, cancellation, or
    exhausted budget is `unavailable` with the transport's reason.
 3. **Bounded parsing.** Enforce limits before and during parsing: a byte cap,
-   a YAML node cap, a depth cap, zero alias expansions, and a cap on update
+   a YAML node cap, a depth cap, an alias expansion cap, and a cap on update
    entries. An oversized file is detected from the tree entry size and is not
    fetched. Any limit breach is `budget`. Invalid UTF-8 or YAML is
    `malformed`.
@@ -88,6 +88,17 @@ src/packet.ts or coordinator  → passes roots and configRevision to N1/U2
    formatting; see the
    [YAML node budget amendment](SPEC-actions-inventory.md#yaml-node-budget-amendment).
    Commas, indicators, and entries are free, and the byte cap still bounds work.
+
+   Amended (L11, D11 and Q23(b); approved by the maintainer on 2026-11-27,
+   [#383](https://github.com/andrewpucci/dependency-update-advisor/issues/383)):
+   aliases are no longer refused outright. GitHub does not document whether
+   Dependabot accepts YAML anchors, so refusing them could reject a legitimate
+   config. Aliases expand as in workflow files, up to
+   `limit:dependabot.maxAliasExpansions`, a copy of
+   `limit:w2.actions.maxAliasExpansions`. The expanded document is charged
+   to a node budget of its own at the node cap. A merge through an alias
+   (`<<: *name`) is `unsupported`; a literal `<<` key and a non-string key are
+   ignored, as YAML's own conversion ignored them before.
 
 4. **Narrow extraction.** Require `version: 2` and an `updates` sequence. From
    each entry, read only `package-ecosystem` and either `directory` (string)
@@ -165,7 +176,7 @@ placed in an ignored key.
 | Both file names absent                                                                           | `absent`; no blob read                                                    |
 | Both names present, symlink, or directory                                                        | `unsupported`; no flattened target                                        |
 | Failed listing or blob read, size mismatch, cancellation                                         | `unavailable` with reason; never `absent` or empty roots                  |
-| Over byte cap (by tree size), node cap, depth cap, any alias                                     | `budget`; oversized file not fetched                                      |
+| Over byte cap (by tree size), node cap, depth cap, alias cap                                     | `budget`; oversized file not fetched                                      |
 | Invalid UTF-8 or YAML, wrong `version`, mistyped required key                                    | `malformed`                                                               |
 | Glob in an `npm` directory with valid `uv` roots                                                 | npm `unsupported`; uv roots still usable                                  |
 | `..`, backslash, control character, or a directory one byte over `limit:dependabot.maxPathBytes` | That ecosystem `malformed`                                                |

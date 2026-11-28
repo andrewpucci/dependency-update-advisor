@@ -58,7 +58,7 @@ jobs:
           script: |
             const body = JSON.parse(process.env.REPORT_JSON);
             const marker = '<!-- complexity-report -->';
-            if (typeof body !== 'string' || !body.startsWith(marker) || body.length > 60000) {
+            if (typeof body !== 'string' || !body.startsWith(marker) || body.length > 87381) {
               throw new Error('Invalid complexity report');
             }
             const { owner, repo } = context.repo;

@@ -1,6 +1,6 @@
-import { Composer, Parser, visit, isMap, isSeq } from 'yaml';
+import { Composer, Parser, isMap, isSeq } from 'yaml';
 import type { RepositoryIdentity } from './event.js';
-import { preflight, YamlFailure } from './evidence/actions-yaml.js';
+import { expand, preflight, YamlFailure } from './evidence/actions-yaml.js';
 import { limit } from './limits.js';
 import type { EvidenceReason } from './schema.js';
 
@@ -107,12 +107,13 @@ export function parseDependabotRoots(bytes: Uint8Array): DependabotRoots {
     if (bytes.byteLength > DEPENDABOT_ROOT_LIMITS.maxFileBytes) fail('budget');
     const text = new TextDecoder('utf-8', { fatal: true }).decode(bytes);
     const budget = { nodes: 0, aliases: 0, occurrences: 0 };
+    const limits = { ...DEPENDABOT_ROOT_LIMITS, maxOccurrences: 0 };
     const tokens = [];
     let documentTokens = 0;
     for (const token of new Parser().parse(text)) {
       // Only one document is accepted, so stop before inspecting or composing a second.
       if (token.type === 'document' && ++documentTokens > 1) fail('malformed');
-      preflight(token, { ...DEPENDABOT_ROOT_LIMITS, maxOccurrences: 0 }, budget);
+      preflight(token, limits, budget);
       tokens.push(token);
     }
     const documents = [
@@ -132,12 +133,18 @@ export function parseDependabotRoots(bytes: Uint8Array): DependabotRoots {
     const [document] = documents;
     if (document.errors.length > 0 || document.warnings.length > 0 || !document.contents)
       fail('malformed');
-    // Zero alias expansions are allowed, so any alias is a budget breach rather than data to expand.
-    visit(document, {
-      Alias: () => fail('budget'),
-    });
     if (!isMap(document.contents) && !isSeq(document.contents)) fail('malformed');
-    return extract(document.toJS({ mapAsMap: true }));
+    // Aliases expand as in workflow files. The composed nodes get a budget of their own at the
+    // node cap, so the cap still bounds the source's nodes and an expansion cannot pass it.
+    // Keys are read leniently, as toJS read them: extract looks up only the keys it knows.
+    return extract(
+      expand(
+        document.contents,
+        limits,
+        { nodes: 0, aliases: 0, occurrences: 0 },
+        { lenientKeys: true },
+      ),
+    );
   } catch (error) {
     const reason = error instanceof YamlFailure ? error.reason : 'malformed';
     return Object.freeze({ kind: 'unavailable', reason });

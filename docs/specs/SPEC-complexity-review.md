@@ -59,7 +59,18 @@ suppressions must not hide complexity scores.
 
 Show at most `limit:complexity.maxListedFindings` regression rows, ordered by
 descending score, and state when the list is truncated. The comment job must
-reject reports exceeding 60,000 characters.
+reject reports longer than `limit:complexity.maxCommentCodeUnits` UTF-16 code
+units.
+
+Amended (L11, E19 and Q26(a); approved by the maintainer on 2026-11-27,
+[#383](https://github.com/andrewpucci/dependency-update-advisor/issues/383)):
+the comment cap is a copy of the reviewer's comment cap,
+`limit:comment.maxBodyCodeUnits`, which is sized from GitHub's probed comment
+limit. It replaces a fixed character count that no constraint gave. The
+workflow repeats it as
+a literal, and `npm run check:limits` checks that literal against the register.
+`limit:complexity.maxListedFindings` is derived from it: as many rows of the
+widest kind as fit beside the report's fixed text, pinned by a render test.
 
 ## Workflow and boundaries
 

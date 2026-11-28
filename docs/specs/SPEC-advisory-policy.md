@@ -53,6 +53,11 @@ prove the policy invariants without claiming those integrations are complete.
   `limit:config.maxReleaseAgeDays` that defaults to 1. `maliciousPackage` is
   not a configuration key; a present `policy.verdicts.maliciousPackage` is an
   unknown field and fails validation. No other configuration field changes.
+  - Amended (L11, E18 and Q24(b); approved by the maintainer on 2026-11-27,
+    [#383](https://github.com/andrewpucci/dependency-update-advisor/issues/383)):
+    `limit:config.maxReleaseAgeDays` is no longer a policy ceiling. Its only
+    maximum is structural: the days ECMAScript time values span on each side
+    of the epoch.
 - The caller supplies the review evaluation time with the normalized input.
   C3 never reads the clock, so release-age matching stays deterministic.
 - The [B1 baseline](../../tests/parity/README.md) identifies the immutable

@@ -527,6 +527,18 @@ export function unitDerivedEntries(
     relationships
   );
 }
+/**
+ * The fixed text of the complexity report (scripts/complexity/report.mjs `render`), in UTF-16
+ * code units, with every number at its widest: 16 digits, the length of Number.MAX_SAFE_INTEGER,
+ * and the mean at 16 digits and two decimals, and each SHA at 64 hex digits (SHA-256 git).
+ * `rowFixedCodeUnits` is one regression row and its line break beside its two cells (line, score
+ * and base score included); `reportFixedCodeUnits` is the rest of a truncated report with
+ * regressions. scripts/complexity/report.test.mjs pins both to the renderer.
+ */
+export const COMPLEXITY_REPORT_TEXT = Object.freeze({
+  rowFixedCodeUnits: 89,
+  reportFixedCodeUnits: 785,
+});
 const sum = (...values: number[]): number => values.reduce((total, value) => total + value, 0);
 
 /**
@@ -606,19 +618,6 @@ function unjustified<const Id extends string>(
     effect: audit.effect ?? PENDING_AUDIT,
     basis: { kind: 'unjustified', note: audit.note ?? PENDING_AUDIT },
     test: audit.test ?? PENDING_AUDIT,
-  } as const;
-}
-
-/** A workflow job's `timeout-minutes`; the workflow file is checked by check:limits, not by a test. */
-function unjustifiedWorkflow<const Id extends string>(id: Id, value: number, audit: Audit = {}) {
-  return {
-    id,
-    value,
-    unit: 'minutes',
-    protects: audit.protects ?? PENDING_AUDIT,
-    effect: audit.effect ?? PENDING_AUDIT,
-    basis: { kind: 'unjustified', note: audit.note ?? PENDING_AUDIT },
-    test: audit.test ?? 'none: checked against the workflow file by check:limits (L6)',
   } as const;
 }
 
@@ -1621,31 +1620,23 @@ const DEFINITIONS = [
     test: 'src/schema.test.ts > enforces the context fact count independently of excerpt and packet bounds',
   },
   // Workflow timeouts, copied from the YAML `timeout-minutes` of each job.
-  unjustifiedWorkflow('workflow.dependabotReview.review.timeoutMinutes', 15, {
-    protects:
-      "The runner kills the review job at its timeout-minutes, so the pipeline's deadlines must finish inside that wall-clock limit.",
-    effect:
-      'The runner cancels the job when the timeout passes; the pipeline derives its job budget from this value, so its deadlines are set to end before it.',
-    note: 'awaiting L8 measurement',
-  }),
-  unjustifiedWorkflow('workflow.ci.quality.timeoutMinutes', 10, {
-    protects:
-      'The runner kills a hung CI quality job at this timeout, so one stuck job cannot hold a runner indefinitely.',
-    effect: 'The runner cancels the job at the timeout; no application code reads this value.',
-    note: 'awaiting L8 measurement',
-  }),
-  unjustifiedWorkflow('workflow.complexity.report.timeoutMinutes', 10, {
-    protects:
-      'The runner kills the complexity report job at this timeout, bounding a hung report run.',
-    effect: 'The runner cancels the job at the timeout; no application code reads this value.',
-    note: 'awaiting L8 measurement',
-  }),
-  unjustifiedWorkflow('workflow.complexity.comment.timeoutMinutes', 5, {
-    protects:
-      'The runner kills the complexity comment job at this timeout, bounding a hung comment run.',
-    effect: 'The runner cancels the job at the timeout; no application code reads this value.',
-    note: 'awaiting L8 measurement',
-  }),
+  configured(
+    'workflow.dependabotReview.review.timeoutMinutes',
+    15,
+    'minutes',
+    {
+      setting: 'reusable-workflow input timeout-minutes (L13, provisional)',
+      maximum: 'github.hostedJobMaxMinutes',
+    },
+    "The adopter: a longer job spends more of their Actions minutes and leaves a PR waiting longer for its review, and a shorter one leaves less time for evidence and analysis. Section 5 admitted the job budget as configuration on 2026-11-17 through a reusable-workflow input (L13); its hard maximum is GitHub's hosted-job limit.",
+    {
+      protects:
+        "The runner kills the review job at its timeout-minutes, so the pipeline's deadlines must finish inside that wall-clock limit.",
+      effect:
+        'The runner cancels the job when the timeout passes; the pipeline derives its job budget from this value, so its deadlines are set to end before it.',
+      test: 'none: checked against the workflow file by check:limits (L6); the workflow input that sets it lands with L13',
+    },
+  ),
   // Job timing, from budget.ts.
   derived(
     'job.budget',
@@ -1666,7 +1657,7 @@ const DEFINITIONS = [
       "The pipeline clock starts at runStartup, after the runner has spent time on the app-token step, action download, Node load and self-check; this allowance keeps the window inside the runner's timeout.",
     effect:
       'Shortens the job window by 60,000 ms, so the analysis and freshness deadlines move earlier; it converts no outcome to success.',
-    note: 'awaiting L8 measurement',
+    note: "stopped (L11, D9 and Q22(b), #383): the approved option anchors the job window at the runner's job start, read once at startup, and deletes this entry. Implemented, it relocates the chosen margin rather than removing it. GitHub gives a job's start only as a wall-clock started_at, to the second, in the run's jobs listing, which names the job only by its runner_name; the window is kept on the monotonic clock (src/startup.ts), so the anchor must convert GitHub's clock to the runner's. That conversion is off by the clock skew between GitHub and the runner, which no GitHub document bounds, so keeping the window inside the runner's timeout would need a new chosen skew allowance. The run's run_started_at, already read during event verification, is earlier than the job start by the queue time, which is also unbounded. Value unchanged; a basis needs a maintainer decision on the skew",
     test: 'none: subtracted only inside job.window (src/budget.ts:9 and :15); the window is enforced by src/runtime.ts:187, covered by the existing test in src/runtime.test.ts:267, and the analysis deadline at src/pipeline.ts:500 is pinned by the existing deadline tests',
   }),
   derived(
@@ -3257,15 +3248,15 @@ const DEFINITIONS = [
       'Each configured root is walked with lstat and matched against the inventory, so an unbounded root list would make config validation and path checks unbounded.',
     effect:
       'A config with more than 16 sourceRoots fails validation (field context.sourceRoots, category config), so the config is rejected.',
-    note: 'no recorded reason',
+    note: 'stopped (L11, Q19(a), #383): the approved basis is a copy of limit:snapshot.maxTreeEntries (102,578), which must move together with limit:config.maxBytes, and that entry stops: a JSON config holding 102,578 roots does not fit today\'s 16,384-byte cap (the smallest root, `"a",`, is 4 bytes, so at most about 4,090 roots fit, and 102,579 roots need at least 410,316 bytes for the over-cap boundary test). Raising the root cap alone would admit a count no valid config can reach. Value unchanged',
     test: 'src/config.test.ts > the source root cap admits exactly the registered count and rejects one more',
   }),
   unjustified('context.maxSourceCandidates', 128, 'count', {
     protects:
       'Each excerpt file is stat-checked and matched against the tracked inventory, so the number of excerpt files is capped.',
     effect:
-      'More than 128 excerptFiles fails config validation. The runtime candidate-limit (src/context.ts:586-590) would stop scanning with reason candidate-limit, but validated config keeps the selected set at 128 or fewer, so that branch cannot trigger.',
-    note: 'awaiting L8 measurement',
+      'More than 128 excerptFiles fails config validation. The runtime candidate-limit (src/context.ts) would stop scanning with reason candidate-limit, but validated config keeps the selected set at 128 or fewer, so that branch cannot trigger.',
+    note: 'stopped (L11, Q20(a), #383): the approved basis is the snapshot request share (limit:evidence.allocation.transport.snapshot.maxRequests, 200) less the fixed snapshot reads. The fixed reads are 7 (repository, commit, root listing, .github listing, config blob, Dependabot blob, one source-root listing) only in the shallowest layout: one excerpt directory and a config that is not a link. Each further directory an excerpt path passes through costs one more tree read, and each config link one more blob read, so at 200 − 7 = 193 excerpt files split across src/ and src/lib/ the snapshot needs 201 reads. Running out of the share inside collectContext makes the whole snapshot unavailable, which the pipeline reports as internal-failure at snapshot, and SPEC-source-context promises no partial result with budget for it. Tree reads grow with path depth, so no structural count of fixed reads holds for every layout. Today 128 leaves 72 reads for directories and links. Value unchanged',
     test: 'src/config.test.ts > the excerpt file cap admits exactly the registered count and rejects one more',
   }),
   derived(
@@ -3282,29 +3273,37 @@ const DEFINITIONS = [
       test: 'src/context.test.ts > inventory budget bounds %i records including duplicates',
     },
   ),
-  unjustified('context.maxSourceFileBytes', 65_536, 'bytes', {
-    protects:
-      'A source file is read into memory, so each read is capped at 65,536 bytes plus one probe byte.',
-    effect:
-      'A file over the cap is not used: reason file-byte-limit is recorded, no facts come from it, status is partial, and other files are still scanned.',
-    test: 'src/context.test.ts > file cap distinguishes complete exact-boundary content from an overflow',
-    note: 'awaiting L8 measurement',
-  }),
-  unjustified('context.maxTotalSourceReadBytes', MiB, 'bytes', {
-    protects:
-      'Total content read per run is capped, so many medium files cannot together read an unbounded amount.',
-    effect:
-      'When the 1 MiB budget is spent, later files are not read. Reason total-read-limit is recorded and collection stops; facts already found are kept (partial).',
-    test: 'src/context.test.ts > total returned bytes, including overflow probes, never exceed one MiB',
-    note: 'awaiting L8 measurement',
-  }),
-  unjustified('context.generatedMarkerScanLines', 20, 'count', {
-    protects:
-      "Limits generated-file detection to a file's head, where generators write their markers, so a marker deep in a source file does not exclude it.",
-    effect: 'A generated marker after line 20 is ignored, and the file stays eligible.',
-    note: 'no recorded reason',
-    test: 'src/context.test.ts > the generated-marker window covers exactly the registered number of leading lines',
-  }),
+  configured(
+    'context.maxSourceFileBytes',
+    65_536,
+    'bytes',
+    { setting: 'limits.coverage.sourceFileBytes', maximum: 'snapshot.maxBlobBytes' },
+    'The adopter: a larger setting reads longer source files for facts, at the cost of snapshot bytes and heap per file; a smaller one leaves more files unused with file-byte-limit. Coverage bound category (L11, Q9(a)); its hard maximum is the largest blob the snapshot fetches, since a source file arrives as one blob.',
+    {
+      protects:
+        'A source file is read into memory, so each read is capped at 65,536 bytes plus one probe byte.',
+      effect:
+        'A file over the cap is not used: reason file-byte-limit is recorded, no facts come from it, status is partial, and other files are still scanned.',
+      test: 'src/context.test.ts > file cap distinguishes complete exact-boundary content from an overflow',
+    },
+  ),
+  configured(
+    'context.maxTotalSourceReadBytes',
+    MiB,
+    'bytes',
+    {
+      setting: 'limits.coverage.sourceReadBytes',
+      maximum: 'evidence.allocation.transport.snapshot.maxTotalBytes',
+    },
+    'The adopter: a larger setting reads more source files for facts, at the cost of snapshot bytes; a smaller one stops collection earlier with total-read-limit. Coverage bound category (L11, Q9(a)); its hard maximum is the snapshot byte share, through which every source byte is read.',
+    {
+      protects:
+        'Total content read per run is capped, so many medium files cannot together read an unbounded amount.',
+      effect:
+        'When the 1 MiB budget is spent, later files are not read. Reason total-read-limit is recorded and collection stops; facts already found are kept (partial).',
+      test: 'src/context.test.ts > total returned bytes, including overflow probes, never exceed one MiB',
+    },
+  ),
   // Dependabot roots, from dependabot-roots.ts.
   unjustified('dependabot.maxFileBytes', 65_536, 'bytes', {
     protects:
@@ -3312,36 +3311,50 @@ const DEFINITIONS = [
     effect:
       'A file over 65,536 bytes is not parsed. The whole file is unavailable with reason budget, and no roots are kept.',
     test: 'src/dependabot-roots.test.ts > accepts values exactly at each limit',
-    note: 'awaiting L8 measurement',
+    note: 'stopped (L11, card, #383): the approved basis is safety, which needs the cap above the largest legitimate config. It is not: among the largest dependabot.yml files GitHub code search returned on 2026-11-28 (14 files above 40,000 bytes, of which 8 are Dependabot version-2 configs), 3 configs are 68,918, 71,729 and 82,528 bytes (14, 4 and 200 update entries), and each fails here with budget today. No document gives a Dependabot file size limit, and no larger value has an approved basis. Value unchanged',
   }),
   unjustified('dependabot.maxYamlNodes', 20_000, 'count', {
     protects:
       'The count of YAML nodes is capped before composition, so untrusted config cannot force unbounded parser work.',
     effect: 'Exceeding 20,000 nodes fails the whole file with budget, and no roots are read.',
-    note: 'awaiting L8 measurement',
+    note: 'stopped (L11, card and Q8(a), #383): the approved basis is safety, which merges only with its largest legitimate use and its harm. The largest legitimate use is recorded: among the largest dependabot.yml files GitHub code search returned on 2026-11-28 (14 files above 40,000 bytes, of which 8 are Dependabot version-2 configs), the most structural nodes the preflight counts is 5,353; the composed document is charged to its own budget at the same cap. The harm point is not: no bench of YAML composition cost per node exists for this parser (w2.actions.maxYamlNodes waits on the same bench). Value unchanged',
     test: 'src/dependabot-roots.test.ts > the YAML node cap admits exactly the registered node count and refuses one node more',
   }),
-  unjustified('dependabot.maxYamlDepth', 16, 'count', {
+  {
+    id: 'dependabot.maxYamlDepth',
+    value: 16,
+    unit: 'count',
     protects:
       'YAML nesting is capped, so the parse and compose cannot recurse without bound on untrusted input.',
+    basis: {
+      kind: 'safety',
+      reason:
+        'Largest legitimate use: a Dependabot config nests about five collections (updates, an entry, its directories, ignore or groups lists); the largest dependabot.yml files GitHub code search returned on 2026-11-28 (14 files above 40,000 bytes, of which 8 are Dependabot version-2 configs) nest at most 6 levels as the preflight counts them. Harm: the parse and compose of the yaml library, with the options of this reader, overflow the call stack at 776 levels of nested flow sequences in a fresh process (npm run probe:json-depth -- overflow, yamlCompose, on 2026-11-28 under Node 24.22.3, the runtime of the action); the library reports the overflow as a document error, so the file would fail as malformed rather than crash. The cap is checked before composition and sits far between the two. Approved by the maintainer on 2026-11-27 (L11, #383).',
+    },
     effect: 'Nesting deeper than 16 fails the whole file with budget, and no roots are read.',
     test: 'src/dependabot-roots.test.ts > reports exceeding the limit on %s as budget',
-    note: 'no recorded reason',
-  }),
-  unjustified('dependabot.maxAliasExpansions', 0, 'count', {
-    protects:
-      'YAML aliases are refused, so untrusted input cannot expand shared nodes into a much larger structure.',
-    effect: 'Any alias fails the whole file with budget, and no roots are read.',
-    test: 'src/dependabot-roots.test.ts > reports exceeding the limit on %s as budget',
-    note: 'no recorded reason',
-  }),
+  },
+  derived(
+    'dependabot.maxAliasExpansions',
+    'count',
+    ['w2.actions.maxAliasExpansions'],
+    copy,
+    "Dependabot's documentation says nothing on YAML anchors, and Dependabot's own parser change to accept them (dependabot-core PR #9653) was still open when checked on 2026-11-28, so whether GitHub accepts them is in doubt; refusing every alias could then reject a legitimate config. The same parser and expansion read workflow files, so the cap copies limit:w2.actions.maxAliasExpansions, and the composed document, aliases expanded, is charged to a node budget of its own at limit:dependabot.maxYamlNodes, so an expansion cannot pass the node cap. The copied entry is itself still unjustified (its Q8 check is pending), so this cap inherits that gap: it is grounded only once limit:w2.actions.maxAliasExpansions is. Approved by the maintainer on 2026-11-27 (L11, D11 and Q23(b), #383).",
+    {
+      protects:
+        'Caps alias expansions in the Dependabot config, so anchors and aliases cannot amplify the composed document beyond the node budget.',
+      effect:
+        'The alias that exceeds the cap fails the whole file with budget, and no roots are read. A merge through an alias (<<: *name) fails it as unsupported; a literal << key, like any key the reader does not use, is ignored.',
+      test: 'src/dependabot-roots.test.ts > expands aliases up to the alias cap and refuses one more',
+    },
+  ),
   unjustified('dependabot.maxUpdates', 256, 'count', {
     protects:
       'Each update entry is a Dependabot job definition, and the count is capped so the root scan stays bounded.',
     effect:
       'More than 256 update entries fail the whole file with budget before any entry is read.',
     test: 'src/dependabot-roots.test.ts > accepts values exactly at each limit',
-    note: 'awaiting L8 measurement',
+    note: 'stopped (L11, card, #383): the approved basis is safety. The largest legitimate use is recorded: among the largest dependabot.yml files GitHub code search returned on 2026-11-28 (14 files above 40,000 bytes, of which 8 are Dependabot version-2 configs), the most update entries is 200, in an 82,528-byte config that limit:dependabot.maxFileBytes already refuses. No harm point is recorded: an entry is read by a fixed loop over a list the byte and node caps already bound, and no bench shows a count where the loop harms memory or CPU. Value unchanged',
   }),
   unjustified('dependabot.maxRoots', 256, 'count', {
     protects:
@@ -3349,7 +3362,7 @@ const DEFINITIONS = [
     effect:
       'More than 256 distinct roots for one ecosystem makes only that ecosystem unavailable with reason budget. The other ecosystem is unaffected, and no partial list is returned.',
     test: 'src/dependabot-roots.test.ts > limits the roots per ecosystem after deduplication',
-    note: 'awaiting L8 measurement',
+    note: 'stopped (L11, card, #383): the approved basis is safety. The largest legitimate use is recorded: among the largest dependabot.yml files GitHub code search returned on 2026-11-28 (14 files above 40,000 bytes, of which 8 are Dependabot version-2 configs), the most distinct npm roots in one config is 207, and the most for any ecosystem 385 (an ecosystem this reader ignores). No harm point is recorded: the collectors read at most limit:w2.npm.maxRoots and limit:w2.uv.maxRoots of these roots, so a longer list costs only its strings, which the byte cap bounds. Value unchanged',
   }),
   derived(
     'dependabot.maxPathBytes',
@@ -3372,7 +3385,7 @@ const DEFINITIONS = [
     effect:
       "A file over the cap throws 'event too large' and startup fails; no partial text is returned.",
     test: 'src/startup.test.ts > reads an event file of %s as bounded text only when it is valid',
-    note: 'awaiting L8 measurement',
+    note: "stopped (L11, E16, #383): the approved basis is external, GitHub's 25 MB webhook payload cap (docs.github.com webhooks#payload-cap), read as 25,000,000 bytes. The register does not hold the parsed event: runStartup parses it and the pipeline keeps it in its input for the whole run, in both heap phases, and no register entry counts it. At 25,000,000 bytes and limit:runner.heapBytesPerRetainedByte (27.47) it would hold about 686,750,000 bytes of heap (about 28,804,383 today), which would lower limit:packet.bytes from 148,312,300 to 101,594,613 (evidence phase; the analysis phase would fall from 256,206,191 to 220,061,454), and its parse peak at limit:runner.heapBytesPerEvidenceByte would be about 1,475,000,000 bytes. Raising the cap needs the event counted in the heap phases, or released after verification, which no approved change covers. Value unchanged",
   }),
   // Configuration file and validator bounds, from config.ts.
   unjustified('config.maxBytes', 16_384, 'bytes', {
@@ -3381,24 +3394,37 @@ const DEFINITIONS = [
     effect:
       'A file over the cap fails with category size before parsing; no default configuration is substituted.',
     test: 'src/config.test.ts > accepts the exact byte limit and rejects overflow',
-    note: 'awaiting L8 measurement',
+    note: 'stopped (L11, Q19(a) and E17, #383): the approved basis is derived, the largest valid config, (roots + candidates) × (limit:context.maxPathBytes × e + 3) + skeleton. The escape factor is bounded: JSON writes any character in at most 6 bytes (a \\u escape), so e ≤ 6. What has no bound is the whitespace JSON allows between tokens, which the formula does not count and the parser does not limit, so the largest valid config is unbounded; no approved option fixes a whitespace allowance. Even at e = 1 and no skeleton or whitespace, the Q19(a) root cap (limit:snapshot.maxTreeEntries, 102,578) and limit:context.maxSourceCandidates (193) give 102,771 × 1,027 = 105,545,817 bytes. The config is retained through the evidence phase at limit:runner.heapBytesPerRetainedByte (27.47), so limit:runner.evidenceRetainedHeapBytes would rise from 4,130,139,553 to 7,029,033,078 bytes, above limit:runner.heapBytes (6,372,196,352), and limit:packet.bytes would fall from 148,312,300 to −48,891,341; it stays positive only below about 79,382,630 config bytes. At e = 6 the same lists give 102,771 × 6,147 = 631,733,337 bytes. Q19(b), a safety cap sized against heap, was not approved. A new basis needs a maintainer decision. Value unchanged',
   }),
-  unjustified('config.maxModelCodeUnits', 128, 'code units', {
+  {
+    id: 'config.maxModelCodeUnits',
+    value: 128,
+    unit: 'code units',
     protects:
       'The configured model ID is passed to the analysis provider request; an unbounded string could flow into it, and the cap with the ASCII pattern keeps it a valid identifier.',
     effect:
       'A model over 128 code units, or one that fails the pattern, fails the config with field analysis.model.',
-    note: 'no recorded reason',
     test: 'src/config.test.ts > the model cap admits exactly the registered code units and rejects one more',
-  }),
-  unjustified('config.maxReleaseAgeDays', 30, 'count', {
-    protects:
-      "A mistyped release-age window (say 365) would hold every update as too new for a year; the range keeps an adopter's setting to plausible windows.",
-    effect:
-      'A window below 1 or above 30 fails the config with field policy.minimumReleaseAgeDays.',
-    test: 'src/config.test.ts > rejects window $value in parser and schema',
-    note: 'no recorded reason',
-  }),
+    basis: {
+      kind: 'safety',
+      reason:
+        'Largest legitimate use: Mistral documents no model id length; the longest of the 59 API ids on its models overview (docs.mistral.ai/getting-started/models/models_overview, read on 2026-11-28), retired ones included, is 37 characters. Harm above: the cap is reserved, one byte per character, in limit:analysis.fixedRequestBytes of every analysis request, so each unit of cap comes out of limit:analysis.unitBytes for every unit; an unbounded id would also flow unchecked into the provider request. 128 keeps every documented id with room for longer names while reserving 128 bytes per request. Approved by the maintainer on 2026-11-27 (L11, #383).',
+    },
+  },
+  derived(
+    'config.maxReleaseAgeDays',
+    'count',
+    [],
+    () => 100_000_000,
+    'ECMAScript time values span exactly 100,000,000 days on each side of the epoch (8.64 × 10^15 ms; ECMA-262, Time Values and Time Range): a Date past them is invalid. A structural property of the runtime, not a policy cap. It bounds policy.minimumReleaseAgeDays, whose window must end at a representable time, and 100,000,000 × 86,400,000 ms stays below Number.MAX_SAFE_INTEGER, so the recheck time is exact. Approved by the maintainer on 2026-11-27 (L11, E18 and Q24(b), #383).',
+    {
+      protects:
+        'Keeps the release-age window inside the times a Date can represent, so the recheck time it gives is a real, exact time.',
+      effect:
+        'A policy.minimumReleaseAgeDays above it fails the config with field policy.minimumReleaseAgeDays, in the parser and the schema.',
+      test: 'src/config.test.ts > the release-age window admits config.maxReleaseAgeDays and rejects one more day in parser and schema',
+    },
+  ),
   // Comment bodies, from comments.ts.
   {
     id: 'github.comment.maxBodyBytes',
@@ -3774,46 +3800,101 @@ const DEFINITIONS = [
     test: 'src/analysis/mistral.test.ts > rejects %s',
   },
   // Complexity report, from scripts/complexity/report.mjs.
-  unjustified('complexity.threshold', 15, 'count', {
+  {
+    id: 'complexity.threshold',
+    value: 15,
+    unit: 'count',
     protects:
       "Flags new or worsened functions too complex to review reliably, the advisory gate the maintainer's review rules name.",
     effect:
       'Functions above the threshold that are new or worse are listed as advisory; nothing fails.',
     test: 'scripts/complexity/report.test.mjs > reports only new or worse functions above 15, matching duplicates by rank',
-    note: 'no recorded reason',
-  }),
-  unjustified('complexity.gitMaxBufferBytes', 32 * MiB, 'bytes', {
+    basis: {
+      kind: 'external',
+      url: 'https://biomejs.dev/linter/rules/no-excessive-cognitive-complexity',
+      checked: '2026-11-28',
+      platformValue: 15,
+      margin:
+        "none: the report flags what Biome's port of the SonarJS cognitive-complexity rule would flag at its documented default ('The default is 15'), so the advisory matches the tool convention",
+    },
+  },
+  {
+    id: 'complexity.gitMaxBufferBytes',
+    value: 32 * MiB,
+    unit: 'bytes',
     protects:
       "git output is buffered in memory by execFileSync; without a cap a large ls-tree or show would grow the script's memory without limit.",
     effect:
       'Output over the cap makes execFileSync throw, so the run fails and produces no report for that revision.',
-    note: 'awaiting L8 measurement',
     test: 'none: the buffer for git output in the advisory complexity report; a run over it fails the report job, which never gates a merge',
-  }),
-  unjustified('complexity.cellInputCodeUnits', 160, 'code units', {
+    basis: {
+      kind: 'safety',
+      reason:
+        'Largest legitimate use: the report buffers one git ls-tree listing and one git show of a source file at a time; at this commit the largest file it reads is 280,793 bytes (src/limits.ts) and the src and scripts listing is 18,272 bytes, so the cap is over 100 times either. Harm: execFileSync keeps the whole output and decodes it to a string, so an unbounded buffer would take heap at GB scale on a huge blob, where the report process would run out of memory. Approved by the maintainer on 2026-11-27 (L11, #383).',
+    },
+  },
+  {
+    id: 'complexity.cellInputCodeUnits',
+    value: 160,
+    unit: 'code units',
     protects:
       'Function names and paths come from the reviewed PR; unbounded cells would inflate the comment past its body ceiling.',
     effect:
       'Each value is cut to the input cap before escaping, so a long name shows truncated with no error.',
-    note: 'no recorded reason',
     test: 'none: a display truncation in the advisory complexity report table, which never gates a merge',
-  }),
-  unjustified('complexity.cellOutputCodeUnits', 200, 'code units', {
+    basis: {
+      kind: 'safety',
+      reason:
+        'Largest legitimate use: function names and paths under 100 code units; at this commit the longest path the report lists is 74 and the longest function name about 30. Harm: escaping is linear in the input, and a name or path is bounded only by limit:complexity.gitMaxBufferBytes, so the input cut bounds the escape work per cell to 160 characters. It does not bound the output: an escaped character takes up to 6 code units, so 34 of them already fill the 200-unit output cap, which limit:complexity.cellOutputCodeUnits then cuts. Approved by the maintainer on 2026-11-27 (L11, #383).',
+    },
+  },
+  {
+    id: 'complexity.cellOutputCodeUnits',
+    value: 200,
+    unit: 'code units',
     protects:
       'Escaped cell text can grow well past its input length, so an output cap keeps each cell bounded in the comment.',
     effect:
       'Escaped text is cut to the output cap, then a trailing partial entity is removed, so no broken entity is shown.',
-    note: 'no recorded reason',
     test: 'none: a display truncation in the advisory complexity report table, which never gates a merge',
-  }),
-  unjustified('complexity.maxListedFindings', 100, 'count', {
-    protects:
-      'The regression table lists at most this many rows so the comment stays within its body ceiling; the total count is still reported.',
-    effect:
-      "The table shows the first 100 rows and the line 'Showing the first 100 of N findings'.",
-    note: 'no recorded reason',
-    test: 'none: a display cap in the advisory complexity report, which says how many findings it omitted and never gates a merge',
-  }),
+    basis: {
+      kind: 'safety',
+      reason:
+        'Largest legitimate use: a legitimate name or path escapes to about its own length (under 100 code units), since only & < > | ` and line breaks are escaped. Harm: each row holds two cells, and limit:complexity.maxListedFindings divides the comment cap by the widest row, so every unit of output cap costs listed rows; 200 keeps legitimate cells whole and lists 177 rows. Approved by the maintainer on 2026-11-27 (L11, #383).',
+    },
+  },
+  derived(
+    'complexity.maxCommentCodeUnits',
+    'code units',
+    ['comment.maxBodyCodeUnits'],
+    copy,
+    "The complexity report is posted as a PR comment, so it has the reviewer's comment cap, limit:comment.maxBodyCodeUnits, the worst-case code units of GitHub's probed comment limit. The comment job's literal check in .github/workflows/complexity.yml repeats it, and check:limits compares the two. Approved by the maintainer on 2026-11-27 (L11, E19 and Q26(a), #383).",
+    {
+      protects:
+        'Keeps the complexity comment within GitHub’s comment body limit, so the comment job never posts a body GitHub would reject.',
+      effect:
+        'The comment job throws Invalid complexity report for a longer body and posts nothing; the job summary still has the report. Known gap: the comment job receives the body JSON-encoded in one environment variable (REPORT_JSON, .github/workflows/complexity.yml), and Linux caps one environment string at 131,072 bytes (MAX_ARG_STRLEN, 32 pages of 4,096), name and terminator included, so at most 131,059 bytes of encoded body. A body at this cap can encode to 262,143 bytes when every code unit is a non-ASCII BMP character (3 UTF-8 bytes), or 174,762 when every one is a quote or backslash JSON escapes; then the github-script step fails to launch with E2BIG and no comment is posted, which the advisory job tolerates. An all-ASCII body without quotes or backslashes fits. Passing the body as a file needs an artifact upload and download between the jobs, which is not done here.',
+      test: 'scripts/complexity/report.test.mjs > a report at complexity.maxListedFindings rows of the widest kind fits complexity.maxCommentCodeUnits',
+    },
+  ),
+  derived(
+    'complexity.maxListedFindings',
+    'count',
+    ['complexity.maxCommentCodeUnits', 'complexity.cellOutputCodeUnits'],
+    (comment, cell) =>
+      Math.floor(
+        (comment - COMPLEXITY_REPORT_TEXT.reportFixedCodeUnits) /
+          (2 * cell + COMPLEXITY_REPORT_TEXT.rowFixedCodeUnits),
+      ),
+    'As many rows of the widest kind as fit in the comment beside the report’s fixed text: (limit:complexity.maxCommentCodeUnits − COMPLEXITY_REPORT_TEXT.reportFixedCodeUnits) ÷ (2 × limit:complexity.cellOutputCodeUnits + COMPLEXITY_REPORT_TEXT.rowFixedCodeUnits), rounded down, with every number at 16 digits. Approved by the maintainer on 2026-11-27 (L11, E19 and Q26(a), #383).',
+    {
+      protects:
+        'The regression table lists at most this many rows so the comment stays within its body ceiling; the total count is still reported.',
+      effect:
+        "The table shows the first rows up to the cap and the line 'Showing the first N of M findings'.",
+      test: 'scripts/complexity/report.test.mjs > a report at complexity.maxListedFindings rows of the widest kind fits complexity.maxCommentCodeUnits',
+    },
+  ),
   {
     id: 'tests.largeInventoryRenderTimeoutMs',
     value: 30_000,
@@ -3852,14 +3933,20 @@ const DEFINITIONS = [
     test: 'tests/parity/large-inventory.test.ts > builds 93 members plus two same-named nested copies as standalone npm units',
   },
   // The demand measurement runs one whole review per test, from scripts/measure-demand.
-  unjustified('measureDemand.testTimeoutMs', 900_000, 'milliseconds', {
-    protects:
-      'A hung review run inside the demand measurement would otherwise run indefinitely; the timeout ends that test. It equals the 15-minute review job limit.',
-    effect:
-      "A test past the timeout fails under vitest's timeout behavior, which is not read in this repo.",
-    note: 'awaiting L8 measurement',
-    test: 'none: the timeout of the manual demand measurement, which needs a live token and is not part of npm test',
-  }),
+  derived(
+    'measureDemand.testTimeoutMs',
+    'milliseconds',
+    ['job.budget'],
+    copy,
+    'Each demand test runs one whole review, which the runner allows at most limit:job.budget, so the test timeout copies it. Approved by the maintainer on 2026-11-27 (L11, #383).',
+    {
+      protects:
+        'A hung review run inside the demand measurement would otherwise run indefinitely; the timeout ends that test at the review job limit.',
+      effect:
+        "A test past the timeout fails under vitest's timeout behavior, which is not read in this repo.",
+      test: 'none: the timeout of the manual demand measurement, which needs a live token and is not part of npm test',
+    },
+  ),
   {
     id: 'measureDemand.quotaTraceValueUnits',
     value: 32,
@@ -4292,31 +4379,35 @@ const DEFINITIONS = [
     note: 'awaiting L8 measurement',
     test: 'none: a multiplier inside the corroboration reservation at src/evidence/uv-corroboration.ts:326; the sum is spent against the graph work budget, which graphWork enforces (src/evidence/uv-input.ts:59-61, left < 0 throws budget) with the limit w2.graph.maxGraphWork (src/collection.ts:60)',
   }),
-  unjustified('handoff.maxTraces', 32, 'count', {
+  {
+    id: 'handoff.maxTraces',
+    value: 32,
+    unit: 'count',
     protects:
       'The rehearsal sink is a local, bounded record of runs; an unbounded trace list would grow memory with each run.',
     effect:
       'The 33rd record is refused: record returns false and no trace is kept; existing traces are kept.',
     test: 'src/handoff.test.ts > bounds the rehearsal trace at 32 records and refuses the next',
-    note: 'no recorded reason',
-  }),
-  unjustified('startup.maxReportedDurationMs', 999_999, 'milliseconds', {
-    protects:
-      'Keeps the one-line stderr timing summary bounded: an injected or faulty clock cannot lengthen the line, since each call prints at most six digits.',
-    effect:
-      'A duration above the cap prints as the cap in the stderr timing line; the carried timing data is not clamped.',
-    test: 'src/startup.test.ts > prints bounded timing for %s',
-    note: 'reason stated in SPEC-review-orchestration.md (Bounds): the largest six-digit value, above the 600,000 ms analysis maximum',
-  }),
-  // Spec values at or below this floor are not checked by check:limits, from scripts/limits/check.ts.
-  unjustified('checkLimits.specValueFloor', 64, 'count', {
-    protects:
-      'Keeps the spec allowlist reviewable: register values of 64 or less match about 800 unrelated spec lines, so check:limits checks only larger values.',
-    effect:
-      'Spec lines with register values at or below 64 are not checked; larger values must be allowlisted by trimmed text.',
-    note: 'no recorded reason',
-    test: 'tests/limits/check-limits.test.ts > a register value at the spec floor, or a non-whole number, is not a problem',
-  }),
+    basis: {
+      kind: 'safety',
+      reason:
+        'Largest legitimate use: one trace per run; startup creates one rehearsal sink and the pipeline records one handoff into it (src/startup.ts, src/pipeline.ts). Harm above: each trace keeps one comment body of up to limit:comment.maxBodyCodeUnits UTF-16 code units, about 174,762 bytes of heap as a two-byte string, outside the heap the register shares out, so the list must stay bounded if a sink is ever reused; 32 traces hold at most about 5.6 MB, under 0.1% of limit:runner.heapBytes. Approved by the maintainer on 2026-11-27 (L11, #383).',
+    },
+  },
+  derived(
+    'startup.maxReportedDurationMs',
+    'milliseconds',
+    ['job.budget'],
+    (budget) => 10 ** String(Math.trunc(budget)).length - 1,
+    'No call lasts longer than the job, so a production duration is at most limit:job.budget; the cap is the largest number with as many digits, 10^digits(limit:job.budget) − 1. The line then prints every real duration exactly and no injected clock can make it longer. It follows the job budget setting (L11, Q1(a)). Approved by the maintainer on 2026-11-27 (L11, #383).',
+    {
+      protects:
+        'Keeps the one-line stderr timing summary bounded: an injected or faulty clock cannot lengthen the line, since each call prints at most as many digits as the job budget has.',
+      effect:
+        'A duration above the cap prints as the cap in the stderr timing line; the carried timing data is not clamped.',
+      test: 'src/startup.test.ts > prints bounded timing for %s',
+    },
+  ),
   derived(
     'research.githubQuota.researchCeiling',
     'count',
@@ -4516,15 +4607,6 @@ const DEFINITIONS = [
       'Agreement queries carry at most this many candidates each, and the cost sweep halves down from this value to one.',
     test: 'tests/measure-batching/probe.test.ts > tag queries carry at most the register maximum, and one more candidate starts a second query',
   },
-  // The probe's runner is a single vitest test (scripts/measure-batching/vitest.config.mjs).
-  unjustified('probe.batching.testTimeoutMs', 900_000, 'milliseconds', {
-    protects:
-      'A hung GitHub request inside the batching probe would otherwise run indefinitely, since the probe sets no per-request timeout; the timeout ends that test.',
-    effect:
-      "A run past the timeout fails under vitest's timeout behavior and writes no report; the measured part is lost.",
-    note: 'kept at the demand measurement value it reused before #440; awaiting the C3 probe run (#390), whose duration would give a measured basis',
-    test: 'none: the timeout of the manual batching probe, which needs a live token and is not part of npm test',
-  }),
   ...allScaledShareEntries(),
 ] as const satisfies readonly LimitDefinition[];
 

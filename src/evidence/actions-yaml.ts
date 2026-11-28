@@ -1,4 +1,14 @@
-import { Composer, Parser, isAlias, isMap, isNode, isScalar, isSeq, type Node } from 'yaml';
+import {
+  Composer,
+  Parser,
+  isAlias,
+  isMap,
+  isNode,
+  isScalar,
+  isSeq,
+  type Node,
+  type Pair,
+} from 'yaml';
 import type { EvidenceReason } from '../schema.js';
 import { limit } from '../limits.js';
 
@@ -111,7 +121,28 @@ function aliases(root: Node) {
 type Value = string | number | boolean | null | Map<string, Value> | Value[];
 type Entry = { node: Node | null; depth: number; assign: (v: Value) => void };
 type Frame = Entry | { leave: Node };
-function queueCollection(node: Node, frame: Entry, stack: Frame[]) {
+/**
+ * How strictly `expand` reads map keys. Workflow files refuse a key that is not a string and any
+ * merge key. A lenient reader, which looks up only the keys it knows, skips a non-string key and a
+ * literal `<<` key as plain data, as YAML's own toJS did, and still refuses a merge through an
+ * alias as unsupported.
+ */
+export type ExpandOptions = Readonly<{ lenientKeys?: boolean }>;
+
+function keyOf(pair: Pair, options: ExpandOptions): string | undefined {
+  const key = isScalar(pair.key) ? pair.key.value : undefined;
+  if (options.lenientKeys === true) {
+    if (typeof key !== 'string') return undefined;
+    if (key !== '<<') return key;
+    need(!isAlias(pair.value), 'unsupported');
+    return undefined;
+  }
+  need(typeof key === 'string');
+  need(key !== '<<', 'unsupported');
+  return key;
+}
+
+function queueCollection(node: Node, frame: Entry, stack: Frame[], options: ExpandOptions) {
   const depth = frame.depth + 1;
   if (isSeq(node)) {
     const out: Value[] = [];
@@ -133,9 +164,8 @@ function queueCollection(node: Node, frame: Entry, stack: Frame[]) {
     frame.assign(out);
     for (let i = node.items.length - 1; i >= 0; i--) {
       const pair = node.items[i];
-      need(isScalar(pair.key) && typeof pair.key.value === 'string');
-      const key = pair.key.value;
-      need(key !== '<<', 'unsupported');
+      const key = keyOf(pair, options);
+      if (key === undefined) continue;
       need(pair.value === null || isNode(pair.value));
       stack.push({
         node: pair.value,
@@ -147,7 +177,17 @@ function queueCollection(node: Node, frame: Entry, stack: Frame[]) {
     }
   }
 }
-function expand(root: Node, limits: YamlLimits, budget: YamlBudget): Value {
+/**
+ * Composes a parsed document into plain values, expanding each alias against
+ * `limits.maxAliasExpansions` and charging every composed node to the node budget; map keys are
+ * read as `options` says.
+ */
+export function expand(
+  root: Node,
+  limits: YamlLimits,
+  budget: YamlBudget,
+  options: ExpandOptions = {},
+): Value {
   const targets = aliases(root),
     active = new Set<Node>();
   let result: Value = null;
@@ -183,7 +223,7 @@ function expand(root: Node, limits: YamlLimits, budget: YamlBudget): Value {
       need(depth < limits.maxYamlDepth, 'budget');
       active.add(node);
       stack.push({ leave: node });
-      queueCollection(node, frame, stack);
+      queueCollection(node, frame, stack, options);
     }
   }
   return result;
