@@ -22,7 +22,11 @@ export type DecisionBriefInput = Readonly<{
   retryAfter?: string | null;
 }>;
 export type DecisionBriefResult =
-  | Readonly<{ ok: true; body: string }>
+  /**
+   * `summary` is set only when the required content did not fit the comment: the body is then the
+   * decision digest, and the summary holds the full review for the run's step summary.
+   */
+  | Readonly<{ ok: true; body: string; summary?: string }>
   | Readonly<{ ok: false; category: 'input' | 'reference' | 'content' | 'size' }>;
 
 /** Renderer-owned constant; describes shared defaults, not a consumer's settings. */
@@ -478,12 +482,49 @@ function consistentReview(input: DecisionBriefInput): boolean {
   );
 }
 
+/** What one decision unit's digest line counts (SPEC-decision-brief, decision digest). */
+export type DigestEntry = Readonly<{
+  unresolved: boolean;
+  blockers: number;
+  followups: number;
+  members: number;
+  /** The unit's first member's packet change id. */
+  id: string;
+}>;
+
+/**
+ * One decision-digest line. The digest sits in a fenced code block, where GitHub writes no link,
+ * mention, reference or HTML, so an id needs no Markdown escape and costs at most its own code
+ * units; a line starts with its position, so it can never close the fence. Only `<!--` is broken,
+ * so an id can never repeat a managed-comment marker.
+ */
+export function digestLine(position: number, entry: DigestEntry): string {
+  const state = entry.unresolved ? 'unresolved' : 'assessed';
+  return `${position}. ${state}; ${plural(entry.blockers, 'blocker')}; ${plural(entry.followups, 'follow-up')}; ${plural(entry.members, 'changed update')}: ${entry.id.replaceAll('<!--', '<\u200b!--')}`;
+}
+
+/** The decision digest that replaces required content too long for the comment. */
+function digestLines(entries: readonly DigestEntry[]): string[] {
+  return [
+    '',
+    '## Decision digest',
+    '',
+    "The full review is longer than one comment allows, so it is in this run's step summary. Every decision unit is listed here with its blockers and follow-ups, by its first changed update.",
+    '',
+    '```text',
+    ...entries.map((entry, index) => digestLine(index + 1, entry)),
+    '```',
+  ];
+}
+
 function fitComment(
   head: string[],
   assessments: string[],
   requiredFollowups: string[],
   optional: string[][],
+  digest: Readonly<{ head: string[]; entries: readonly DigestEntry[] }>,
 ): DecisionBriefResult {
+  const full = [...head, ...assessments, ...requiredFollowups, ...optional.flat()].join('\n');
   const sections = [assessments, ...optional];
   let omitted = false;
   for (;;) {
@@ -496,10 +537,39 @@ function fitComment(
     ].join('\n');
     if (body.length <= limit('comment.maxBodyCodeUnits')) return { ok: true, body };
     const last = sections.findLastIndex((section) => section.length > 0);
-    if (last < 0) return { ok: false, category: 'size' };
+    if (last < 0) break;
     sections[last] = [];
     omitted = true;
   }
+  // Required content never fits by dropping it: the comment keeps the decision and one digest line
+  // per unit, and the full review goes to the step summary, whose own cap it must fit.
+  const body = [...digest.head, ...digestLines(digest.entries)].join('\n');
+  if (
+    body.length > limit('comment.maxBodyCodeUnits') ||
+    Buffer.byteLength(full) > limit('github.stepSummary.maxBytes')
+  )
+    return { ok: false, category: 'size' };
+  return { ok: true, body, summary: full };
+}
+
+/** Each unit's digest counts: its Reasons-not-to-merge lines and its follow-up entries. */
+function digestEntries(r: Review): DigestEntry[] {
+  return r.units.map((unit, index) => {
+    const record = r.input.records[index];
+    const evaluation = r.summary.units[index];
+    const findingHolds = r.holds.filter((hold) => hold.unit === evaluation).length;
+    const modelHolds = r.modelHolds.filter(
+      (hold) => hold.unit === unit && !hold.rule?.findingId,
+    ).length;
+    const gaps = record.assessment ? evaluation.gaps.length : 0;
+    return {
+      unresolved: record.state.state !== 'assessed',
+      blockers: findingHolds + modelHolds,
+      followups: gaps + (record.assessment?.followups.length ?? 0),
+      members: unit.memberCount,
+      id: unit.memberIds[0] ?? '',
+    };
+  });
 }
 
 type Summary = DecisionCoverage['policyProvenance']['assessments'];
@@ -1140,10 +1210,13 @@ function renderNonempty(input: DecisionBriefInput, binding: ReviewBinding): Deci
     ...coverageLines(r),
     ...findingLines(r),
   ];
-  return fitComment(head, assessmentLines(r), followupLines(r), [
-    ...capabilitySections(r),
-    ...uncheckedSections(r),
-  ]);
+  return fitComment(
+    head,
+    assessmentLines(r),
+    followupLines(r),
+    [...capabilitySections(r), ...uncheckedSections(r)],
+    { head: headerLines(r), entries: digestEntries(r) },
+  );
 }
 
 /** Render an attributed review body; publication readiness is decided by the caller. */

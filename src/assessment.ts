@@ -95,6 +95,11 @@ export async function assessReviewPacket(input: AssessmentInput): Promise<Assess
 export type ReviewResult = Readonly<{
   /** A comment-ready body, present only when the renderer accepted a valid assessment. */
   body: string | null;
+  /**
+   * The full review for the run's step summary, set only when the body is the decision digest
+   * because the required content did not fit the comment.
+   */
+  summary?: string;
   /** Set when the brief was too large to render, which is a limit, not a defect. */
   gaps?: readonly PacketGap[];
   /** M2's fixed integer diagnostics, present only after M2 returned an `ok` result. */
@@ -157,6 +162,7 @@ export async function reviewPacket(input: ReviewInput): Promise<ReviewResult> {
     return {
       kind: input.researchIncomplete ? 'incomplete-evidence' : assessed.kind,
       body: rendered.body,
+      ...(rendered.summary === undefined ? {} : { summary: rendered.summary }),
       analysisTiming: assessed.analysisTiming,
     };
   } catch {

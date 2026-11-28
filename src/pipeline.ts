@@ -105,6 +105,11 @@ type HandedOff = Readonly<{
   handoff: ReviewHandoff;
   /** A comment-ready body, only for a complete or accurately rendered incomplete review. */
   body: string | null;
+  /**
+   * The full review for the step summary, set only when `body` is the decision digest. Like the
+   * body, it is published only when publication is wired (D4).
+   */
+  summary?: string;
   recorded: boolean;
   /** Which freshness check failed and why; present only for a `freshness` internal failure. */
   detail?: FreshnessDetail;
@@ -116,6 +121,8 @@ type HandedOff = Readonly<{
 
 type OutcomeDetail = Readonly<{
   body: string | null;
+  /** The full review when `body` is the decision digest. */
+  summary?: string;
   /** Sources that gave no usable evidence, when no packet could be rendered. */
   gaps?: readonly PacketGap[];
   /** Optional evidence that fit the packet only after a conservative budget drop. */
@@ -342,6 +349,7 @@ function handedOff(
     kind: 'handed-off' as const,
     handoff,
     body: outcome.body,
+    ...(outcome.summary === undefined ? {} : { summary: outcome.summary }),
     recorded: sink.record(handoff, recordDetail, outcome.analysisTiming),
     ...(freshness ? { detail: freshness } : {}),
     ...(outcome.analysisTiming ? { analysisTiming: outcome.analysisTiming } : {}),
@@ -389,6 +397,7 @@ function assessedOutcome(
   return {
     kind: reviewed.kind,
     body: reviewed.body,
+    ...(reviewed.summary === undefined ? {} : { summary: reviewed.summary }),
     ...(reviewed.gaps ? { gaps: reviewed.gaps } : {}),
     droppedOptional,
     ...(reviewed.analysisTiming ? { analysisTiming: reviewed.analysisTiming } : {}),

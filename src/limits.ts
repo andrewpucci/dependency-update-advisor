@@ -3751,6 +3751,24 @@ const DEFINITIONS = [
       'A longer body is refused by GitHub with a 422; the reviewer never sends one, because its cap derives from this.',
     test: "src/limits.test.ts > the comment cap is derived from GitHub's byte limit so any body within it fits",
   },
+  {
+    id: 'github.stepSummary.maxBytes',
+    value: MiB,
+    unit: 'bytes',
+    protects:
+      "Records GitHub's limit on one step's job summary, which holds the full review when its required content does not fit the comment.",
+    basis: {
+      kind: 'external',
+      url: 'https://docs.github.com/en/actions/reference/workflows-and-actions/workflow-commands',
+      checked: '2026-11-28',
+      platformValue: MiB,
+      margin:
+        'none: "each step is restricted to a maximum size of 1MiB", read as 1,048,576 bytes; GitHub fails the upload of a larger summary. The renderer measures the summary in UTF-8 bytes against it. Approved by the maintainer on 2026-11-28 (L11, B1, #383).',
+    },
+    effect:
+      'A review whose full text is larger is not rendered: the renderer returns size, which W2 reports as render-size, and the prior comment is kept.',
+    test: 'src/reporting.test.ts > replaces required content too long for the comment with a digest and keeps the full review for the step summary',
+  },
   derived(
     'comment.maxBodyCodeUnits',
     'code units',
@@ -4010,7 +4028,7 @@ const DEFINITIONS = [
     basis: {
       kind: 'safety',
       reason:
-        'Parse safety on untrusted model output, which section 5 makes never configurable. Largest legitimate use: one concise paragraph per field, the spec\'s "concise per-unit advice", which the system prompt states as under 1,024 bytes. Harm above: blocker text (reason, impact, evidence claims, remediation and validation steps) renders in the Reasons-not-to-merge lines of the comment head, which fitComment (src/reporting.ts) never drops, so a longer field makes the run fail with category size sooner; assessment text renders in the sections fitComment drops, the assessments last. The cap alone does not keep the head inside limit:comment.maxBodyCodeUnits (87,381 code units): rendering the malware analysis parity scenario (tests/parity/analysis.ts) with its blocker filled to the caps, a blocker whose reason, impact, one evidence claim and limit:analysis.steps remediation and validation steps are each 1,024 ASCII bytes renders as an 18,830-code-unit line, so 5 such blockers overflow the comment (5 × 18,830 = 94,150) whatever else the head holds; with limit:analysis.references evidence claims at the cap one blocker is 52,868 code units and 2 overflow; text that escapes (each & renders as 5 code units) overflows with 1. Approved by the maintainer on 2026-11-27 (L11, #383).',
+        'Parse safety on untrusted model output, which section 5 makes never configurable. Largest legitimate use: one concise paragraph per field, the spec\'s "concise per-unit advice", which the system prompt states as under 1,024 bytes. Harm above: blocker text (reason, impact, evidence claims, remediation and validation steps) renders in the Reasons-not-to-merge lines of the comment head, which fitComment (src/reporting.ts) never drops, so a longer field makes the run fail with category size sooner; assessment text renders in the sections fitComment drops, the assessments last. The cap alone does not keep the head inside limit:comment.maxBodyCodeUnits (87,381 code units): rendering the malware analysis parity scenario (tests/parity/analysis.ts) with its blocker filled to the caps, a blocker whose reason, impact, one evidence claim and limit:analysis.steps remediation and validation steps are each 1,024 ASCII bytes renders as an 18,830-code-unit line, so 5 such blockers overflow the comment (5 × 18,830 = 94,150) whatever else the head holds; with limit:analysis.references evidence claims at the cap one blocker is 52,868 code units and 2 overflow; text that escapes (each & renders as 5 code units) overflows with 1. Approved by the maintainer on 2026-11-27 (L11, #383). Since 2026-11-28 (L11, B1, #383) a head too long for the comment renders as the decision digest, one line per unit with its blocker count, and the full review goes to the step summary (limit:github.stepSummary.maxBytes); only a full review above that fails with size.',
     },
     effect:
       'A field over the cap fails validation of the whole reply (category schema), and no assessment is kept.',
@@ -4031,22 +4049,36 @@ const DEFINITIONS = [
       'An over-cap feature fails validation of the whole reply (category schema), and no assessment is kept.',
     test: 'src/analysis/bounds.test.ts > capability feature, action and rationale use their own byte ceilings',
   },
-  unjustified('analysis.followupBytes', 280, 'bytes', {
+  {
+    id: 'analysis.followupBytes',
+    value: 280,
+    unit: 'bytes',
     protects:
       "Follow-up descriptions are capped at 280 bytes, which the spec says does not expand the baseline's 280-character bound.",
+    basis: {
+      kind: 'safety',
+      reason:
+        "Parse safety on untrusted model output, which section 5 makes never configurable. Largest legitimate use: one short follow-up sentence, the baseline's 280-character bound. Harm above: follow-ups are required content, so fitComment (src/reporting.ts) never drops them; limit:packet.changes units × limit:analysis.steps follow-ups × 280 bytes is 286,720 code units of description alone, above limit:comment.maxBodyCodeUnits (87,381). When required content does not fit, the comment carries the decision digest, one line per unit with its blocker and follow-up counts, at most about 50,000 code units at the change cap with ids at limit:packet.idCodeUnits (src/reporting.test.ts), and the full review goes to the step summary, limit:github.stepSummary.maxBytes. At the change cap with every follow-up unit at 8 follow-ups of 280 ASCII bytes, the comment is an 18,235-code-unit digest and the full review 364,664 bytes; with every character an & (5 code units escaped) the follow-up text alone is about 1.39 MB, above the step summary, so that run still fails with size (render-size). Approved by the maintainer on 2026-11-28 (L11, B1, #383).",
+    },
     effect:
       'An over-cap description fails validation of the whole reply (category schema), and no assessment is kept.',
     test: 'src/analysis/bounds.test.ts > follow-up descriptions and list lengths accept the byte ceiling and reject overflow',
-    note: 'stopped (L11, Q17, #383): the approved basis is safety, which holds only once a render test at the change limit passes or limit:analysis.steps is lowered for follow-ups. It does not pass: fitComment (src/reporting.ts) never drops required follow-ups, and limit:packet.changes (128) units × limit:analysis.steps (8) follow-ups × 280 bytes is 286,720 code units of description alone, above limit:comment.maxBodyCodeUnits (87,381), so a worst-case merge_with_followups run fails with size. No lowered step count was approved',
-  }),
-  unjustified('analysis.steps', 8, 'count', {
+  },
+  {
+    id: 'analysis.steps',
+    value: 8,
+    unit: 'count',
     protects:
       'Remediation, validation and follow-up lists are capped at 8 entries, which the spec states as concrete bounded lists. The list length bounds the output each assessment carries.',
+    basis: {
+      kind: 'safety',
+      reason:
+        "Parse safety on untrusted model output, as for limit:analysis.followupBytes. Largest legitimate use: a short ordered list of concrete steps, the spec's bounded lists. Harm above: each entry is required content the comment never drops, so a longer list makes more reviews too long for the comment; they then render as the decision digest with the full review in the step summary (limit:github.stepSummary.maxBytes), and only a full review above that fails with size. The figures at the change cap are those of limit:analysis.followupBytes. Approved by the maintainer on 2026-11-28 (L11, B1, #383).",
+    },
     effect:
       'A ninth entry fails validation of the whole reply (category schema), and no assessment is kept.',
     test: 'src/analysis/bounds.test.ts > blocker text, evidence claims and remediation/validation lists preserve their exact limits',
-    note: 'stopped (L11, Q17, #383): as limit:analysis.followupBytes. The safety reason needs the comment check at the change limit, which fails: 128 × 8 × 280 = 286,720 code units of required follow-ups against limit:comment.maxBodyCodeUnits (87,381). Lowering the follow-up count would be a new value no constraint has been approved for',
-  }),
+  },
   derived(
     'analysis.references',
     'count',

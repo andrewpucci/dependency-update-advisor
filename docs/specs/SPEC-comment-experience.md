@@ -266,6 +266,14 @@ below must confirm the implemented result before any re-pin.
    returns `size`. W2 reports `render-size`, a fail-closed outcome with the
    existing `brief`/`budget` gap; the trace and stderr stay redacted as W2
    specifies. No required text is shortened or truncated.
+   - Amended (L11, B1; approved by the maintainer on 2026-11-28,
+     [#383](https://github.com/andrewpucci/dependency-update-advisor/issues/383)):
+     a required body over the limit no longer returns `size`. It renders as
+     the decision digest of the
+     [decision brief spec](SPEC-decision-brief.md#rendering-contract), with the
+     full body for the step summary. `size` and `render-size` remain for a
+     digest over the comment limit or a full body over
+     `limit:github.stepSummary.maxBytes`.
 6. **No new disclosure channel.** Merged lines add no raw response, source
    excerpt, error text, credential, URL, or CI result to the comment, trace,
    or stderr. Package names stay escaped and autolink-neutralized.

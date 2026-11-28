@@ -134,6 +134,22 @@ is a planning choice.
    Measure the final escaped body, including metadata and omission note. If
    those required contents cannot fit, return failure; never truncate a
    required item or publish a body above the ceiling.
+   - Amended (L11, B1; approved by the maintainer on 2026-11-28,
+     [#383](https://github.com/andrewpucci/dependency-update-advisor/issues/383)):
+     required content is never dropped *silently*. When it cannot fit after
+     the optional material is omitted, the comment is the **decision
+     digest**: the opening (recommendation, next action, evidence
+     completeness and attribution), then one line per decision unit with its
+     position, whether it is unresolved, its blocker count, its follow-up
+     count, its changed-update count and its first changed update's packet
+     id. The lines sit in a fenced code block, so ids need no Markdown
+     escape; `<!--` is broken so an id cannot repeat a managed-comment
+     marker. The full body, with nothing omitted, is returned beside it as
+     the step summary, measured in UTF-8 bytes against
+     `limit:github.stepSummary.maxBytes`. Return failure only when the digest
+     does not fit the comment or the full body does not fit the step summary.
+     The step summary is written when publication is wired (D4), under the
+     same gates as the comment.
 
 **Comment Capacity Amendment companion (approved for planning, 2026-11-16):**
 [#348](https://github.com/andrewpucci/dependency-update-advisor/issues/348)

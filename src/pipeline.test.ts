@@ -1830,25 +1830,23 @@ test.each([
   expect(result.body?.length).toBeLessThanOrEqual(limit('comment.maxBodyCodeUnits'));
 });
 
-test('hands a group too large to render off as a failure that says so, never as a defect', async () => {
+test('hands a group too large for the comment off with its digest and the full review', async () => {
   // Model follow-ups are required and never merged, so these push the body over the limit. The
   // collection registry share scales with npm members, so a group this size keeps its
   // install-script evidence and renders fewer gaps: it takes 110 children, not 100, to overflow.
   const { input, sink } = await setup({ evidence: 'changes', children: 110, followupsPerUnit: 8 });
   const result = await runReview(input);
-  // The brief must not truncate a required unit, so it fails; the prior comment is preserved.
-  expect(result).toMatchObject({
-    kind: 'handed-off',
-    outcome: 'internal-failure',
-    body: null,
-    handoff: {
-      status: 'failure',
-      comment: 'none',
-      body: 'absent',
-      gaps: [{ source: 'brief', reason: 'budget' }],
-    },
-  });
-  expect(sink.traces()[0]).toMatchObject({ gaps: [{ source: 'brief', reason: 'budget' }] });
+  // The brief never truncates a required unit: the comment carries the decision digest, and the
+  // full review is handed off for the step summary (SPEC-decision-brief, decision digest).
+  if (result.kind !== 'handed-off') throw new Error(`expected a handoff, got ${result.kind}`);
+  expect(result.handoff).toMatchObject({ comment: 'eligible', body: 'present', gaps: [] });
+  expect(result.body).toContain('## Decision digest');
+  expect(result.body!.length).toBeLessThanOrEqual(limit('comment.maxBodyCodeUnits'));
+  expect(result.summary).toContain('## Non-blocking follow-ups');
+  expect(Buffer.byteLength(result.summary!)).toBeLessThanOrEqual(
+    limit('github.stepSummary.maxBytes'),
+  );
+  expect(sink.traces()[0]).toMatchObject({ body: 'present' });
 });
 
 test('starts no further public request once ownership is lost during a registry or research request', async () => {
