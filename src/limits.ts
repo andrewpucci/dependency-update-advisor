@@ -3423,7 +3423,7 @@ const DEFINITIONS = [
     effect:
       "A file over the cap throws 'event too large' and startup fails; no partial text is returned.",
     test: 'src/startup.test.ts > reads an event file of %s as bounded text only when it is valid',
-    note: 'awaiting L8 measurement',
+    note: "stopped (L11, E16, #383): the approved basis is external, GitHub's 25 MB webhook payload cap (docs.github.com webhooks#payload-cap), read as 25,000,000 bytes. The register does not hold the parsed event: runStartup parses it and the pipeline keeps it in its input for the whole run, in both heap phases, and no register entry counts it. At 25,000,000 bytes and limit:runner.heapBytesPerRetainedByte (27.47) it would hold about 686,750,000 bytes of heap (about 28,804,383 today), which would lower limit:packet.bytes from 148,312,300 to 101,594,613 (evidence phase; the analysis phase would fall from 256,206,191 to 220,061,454), and its parse peak at limit:runner.heapBytesPerEvidenceByte would be about 1,475,000,000 bytes. Raising the cap needs the event counted in the heap phases, or released after verification, which no approved change covers. Value unchanged",
   }),
   // Configuration file and validator bounds, from config.ts.
   unjustified('config.maxBytes', 16_384, 'bytes', {
