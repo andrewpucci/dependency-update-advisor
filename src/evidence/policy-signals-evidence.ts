@@ -8,7 +8,7 @@ import {
 } from '../schema.js';
 import type { Finding } from '../policy.js';
 import { advisoryCheck, AdvisoryFailure } from './advisory-read.js';
-import { limit } from '../limits.js';
+import { limit, SIGNAL_EXCERPT } from '../limits.js';
 import { UpstreamFailure } from './upstream-read.js';
 import type { Observation, PolicySignalInput, SignalEnrichment } from './policy-signals.js';
 
@@ -33,7 +33,7 @@ export function boundedReason(value: string): string {
     if (kept.length + point.length > REASON_CODE_UNITS) break;
     kept += point;
   }
-  return kept + ' [reason truncated]';
+  return kept + SIGNAL_EXCERPT.reasonMarker;
 }
 type KnownSignal = { url: string; value: unknown; reasons?: EvidenceReason[]; bothSides?: boolean };
 function signalSubject(change: PacketChange, side: 'base' | 'head') {

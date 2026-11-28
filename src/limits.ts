@@ -1382,6 +1382,22 @@ export const Q10_RETAINED_INPUTS = [
  */
 export const UPSTREAM_FIXED_ATTEMPTS = 10;
 
+/**
+ * The parts of a signal excerpt around untrusted registry text, in UTF-16 code units, pinned by
+ * the structural tests named on the entries that use them. A deprecation excerpt is
+ * JSON.stringify of {deprecated: {marker: 'deprecated', reason}}: 50 units around the reason (the
+ * PyPI yank marker is shorter), and a cut reason ends with the 19-unit marker. A publisher excerpt
+ * is JSON.stringify of {level: 'registry_reported', maintainers: {kind: 'known', value: names}}:
+ * 71 units around the names, and each name takes at least 4 (a one-character name, its quotes and
+ * its comma), the last one 3.
+ */
+export const SIGNAL_EXCERPT = Object.freeze({
+  reasonWrapperCodeUnits: 50,
+  reasonMarker: ' [reason truncated]',
+  maintainersWrapperCodeUnits: 71,
+  maintainerCodeUnits: 4,
+});
+
 const DEFINITIONS = [
   {
     id: 'packet.bytes',
@@ -4422,22 +4438,50 @@ const DEFINITIONS = [
     test: 'src/measurement/demand.test.ts > a quota trace reports an unexpected header value as invalid',
   },
   // Limits moved from call sites by the L5 register sweep (issue #377).
-  unjustified('signals.reasonCodeUnits', 350, 'code units', {
+  {
+    id: 'signals.reasonCodeUnits',
+    unit: 'code units',
     protects:
       "Registry deprecation text is untrusted; an unbounded reason would bloat the packet's text and the comment.",
     effect:
       "Longer text is cut at the cap without splitting a surrogate pair and marked '[reason truncated]'.",
+    basis: {
+      kind: 'derived',
+      inputs: ['packet.excerptCodeUnits'],
+      formula: (excerpt) =>
+        Math.floor(
+          (excerpt - SIGNAL_EXCERPT.reasonWrapperCodeUnits - SIGNAL_EXCERPT.reasonMarker.length) /
+            2,
+        ),
+      description:
+        "The longest reason whose deprecation excerpt always fits limit:packet.excerptCodeUnits, so a cut reason never loses its deprecation evidence as truncated. The excerpt is JSON.stringify of {deprecated: {marker, reason}} (src/evidence/policy-signals-npm.ts npmDeprecation, src/evidence/policy-signals-evidence.ts recordSignal): 50 code units around the reason, and a cut reason ends with the 19-unit ' [reason truncated]'. boundedReason replaces control characters and lone surrogates, so only a quote or a backslash escapes, each to 2 units. So ⌊(500 − 50 − 19) ÷ 2⌋ = 215: a reason of 215 quotes and the marker is a 499-unit excerpt, and 216 would be 501. The finding's rationale, 46 units and the cut reason, is at most 280 units and 710 UTF-8 bytes, inside limit:packet.textBytes. It follows the excerpt setting (Q27). Approved by the maintainer on 2026-11-28 (L11, item 6(a), #383).",
+      structuralTest:
+        'src/evidence/policy-signals-npm.test.ts > a deprecation reason of quotes cut at the cap keeps its excerpt inside the excerpt cap',
+    },
     test: 'src/evidence/policy-signals-npm.test.ts > a long deprecation reason never splits a surrogate pair',
-    note: "L11 (#383) recommended deriving it from limit:packet.textBytes as ⌊(2,048 − 19) ÷ 3⌋ = 676, but that bounds only the finding's text field. The reason also lands in the deprecation signal's source excerpt, JSON.stringify of {deprecated: {marker, reason}} (src/evidence/policy-signals-evidence.ts recordSignal), which must fit limit:packet.excerptCodeUnits (500) or the signal is dropped as truncated. At 676 a cut reason is 695 code units and its excerpt 745, so every long reason would lose its deprecation evidence; with 676 the test 'exact PyPI release evidence with an astral-heavy long reason passes T4 with earliest upload and yank findings' fails. The excerpt bounds a cut plain-text reason at 500 − 50 − 19 = 431 code units, and JSON escaping of quotes and backslashes doubles them, so even 350 can overflow it. The value stays until a derivation covers the excerpt path.",
-  }),
-  unjustified('signals.npmMaxMaintainers', 32, 'count', {
+  },
+  {
+    id: 'signals.npmMaxMaintainers',
+    unit: 'count',
     protects:
       'A registry response can list an unbounded number of maintainers; the cap stops an oversized list from entering the publisher facts.',
     effect:
-      'Above 32 maintainers, the maintainers check fails with budget and that observation is recorded as unchecked.',
-    note: 'no recorded reason',
+      'Above the cap, the maintainers check fails with budget and that observation is recorded as unchecked.',
+    basis: {
+      kind: 'derived',
+      inputs: ['packet.excerptCodeUnits'],
+      formula: (excerpt) =>
+        Math.floor(
+          (excerpt - SIGNAL_EXCERPT.maintainersWrapperCodeUnits + 1) /
+            SIGNAL_EXCERPT.maintainerCodeUnits,
+        ),
+      description:
+        "The longest maintainer list that could ever fit the publisher excerpt, so the cap never refuses a list the excerpt could record. The excerpt is JSON.stringify of {level: 'registry_reported', maintainers: {kind: 'known', value: names}} (src/evidence/policy-signals-npm.ts factSource): 71 code units around the names, each name at least 4 (a one-character name, its quotes and its comma) and the last 3. Names match [a-z\\d_.-]+, so nothing escapes. So ⌊(500 − 71 + 1) ÷ 4⌋ = 107. The cap counts the listed entries before deduplication, which only shrinks the list. A longer list of realistic names still overflows the excerpt and is recorded as truncated, a Q27 matter. Largest recorded use: 12 of 4,251 npm version documents in the L11 corpus run list more than 32 maintainers, at most 74. It follows the excerpt setting (Q27). Approved by the maintainer on 2026-11-28 (L11, item 7(a), #383).",
+      structuralTest:
+        'src/evidence/policy-signals-npm.test.ts > the publisher excerpt takes 71 code units around the maintainer names and 4 for each name',
+    },
     test: 'src/evidence/policy-signals-npm.test.ts > a maintainer list at the registered cap is kept and one more is unchecked for budget',
-  }),
+  },
   configured(
     'research.maxTagCandidates',
     100,
