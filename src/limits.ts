@@ -3332,13 +3332,6 @@ const DEFINITIONS = [
       test: 'src/context.test.ts > total returned bytes, including overflow probes, never exceed one MiB',
     },
   ),
-  unjustified('context.generatedMarkerScanLines', 20, 'count', {
-    protects:
-      "Limits generated-file detection to a file's head, where generators write their markers, so a marker deep in a source file does not exclude it.",
-    effect: 'A generated marker after line 20 is ignored, and the file stays eligible.',
-    note: 'no recorded reason',
-    test: 'src/context.test.ts > the generated-marker window covers exactly the registered number of leading lines',
-  }),
   // Dependabot roots, from dependabot-roots.ts.
   unjustified('dependabot.maxFileBytes', 65_536, 'bytes', {
     protects:
