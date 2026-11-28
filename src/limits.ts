@@ -3546,7 +3546,7 @@ const DEFINITIONS = [
     effect:
       'A reply that reaches the cap ends with finish_reason length and is reported truncated. The batch splits toward single units, and results from other batches are kept.',
     test: 'src/analysis/mistral.test.ts > admits a valid stop at the full token-byte, escaping and envelope allowance, but rejects one extra observed byte',
-    note: 'awaiting L8 measurement',
+    note: 'stopped (L11, Q14(a), #383): the approved basis is config with the hard maximum limit:analysis.model.contextTokens less the minimal request, about 258,437 tokens (262,144 − limit:analysis.fixedRequestBytes 3,702 − limit:analysis.model.templateTokens 5). The register cannot hold that maximum: at 258,437 tokens limit:analysis.requestBytes falls to 3,702, limit:analysis.unitBytes and limit:packet.textBytes to 0, and limit:analysis.responseBytes rises to 264,705,024 bytes, so limit:analysis.replyHeapBytes is 21,938,752,390 bytes, more than limit:runner.heapBytes (5,380,243,456 at that setting), and limit:packet.bytes goes negative (−877,203,177). Q14(a) also needs the section 5 amendment text, which the maintainer has not written. Value unchanged.',
   }),
   configured(
     'analysis.requestTimeoutMs',
@@ -3734,7 +3734,7 @@ const DEFINITIONS = [
     effect:
       'No new call starts while two are in flight. Final records do not depend on completion order.',
     test: 'src/analysis/batches.test.ts > completion order does not change dispatched batches, concurrency, or final states',
-    note: 'no recorded reason',
+    note: 'stopped (L11, #383): the approved basis is config with the hard maximum of limit:analysis.maxCalls, limit:analysis.maxCallsMax (240). The register cannot hold it: at 240 concurrent calls limit:analysis.replyHeapBytes is 167,511,274,292 bytes (about 167 GB) and limit:runner.offHeapBytes 8,192,301,056, so limit:runner.heapBytes goes negative (−1,645,215,744) and limit:packet.bytes with it (−8,908,675,867). No smaller hard maximum is approved. Value unchanged.',
   }),
   unjustified('analysis.maxAnalysisMs', 600_000, 'milliseconds', {
     protects:
@@ -4049,7 +4049,7 @@ const DEFINITIONS = [
     effect:
       'Caller limits whose responseBytes is below the formula fail preparation as budget (projection.ts:132-137). A reply over responseBytes fails as response-size at runtime (mistral.ts:350).',
     test: 'src/analysis/bounds.test.ts > every declared resource limit rejects larger, unsafe, fractional and incompatible values before a usable handle',
-    note: 'awaiting L8 measurement',
+    note: 'stopped (L11, #383): the approved basis is safety, whose largest legitimate use is the id, model, usage and choices metadata of a real Mistral reply. No reply is recorded in the repository (the replies in src/analysis/mistral.test.ts are synthetic), and this session has no Mistral key to record one, so the largest legitimate use cannot be checked offline. The harm above is measured by the register: every envelope byte is one more limit:analysis.responseBytes byte per call, carried into limit:analysis.replyHeapBytes. Value unchanged.',
   }),
   derived(
     'advisories.maxLookups',
