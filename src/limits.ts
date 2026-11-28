@@ -3718,7 +3718,7 @@ const DEFINITIONS = [
       setting: 'limits.coverage.tagCandidates',
       maximum: 'evidence.allocation.upstream.maxRequests',
     },
-    "The adopter: no registry or GitHub document bounds how many releases a repository has, so a larger setting buys coverage of longer release histories with quota, CPU and time. Coverage bound category (L11, Q9(a)); its hard maximum is the upstream request ceiling. That is not a per-candidate request bound: the range stage lists releases limit:upstream.releasePageSize (100) to a page, and a release outside the range costs no request beyond its page, so 240 requests could list about 24,000 candidates; only a release inside the range costs its tag, correspondence and recheck reads, and those stop once a member has limit:packet.listEntries range sources.",
+    'The adopter: no registry or GitHub document bounds how many releases a repository has, so a larger setting buys coverage of longer release histories with quota, CPU and time. Coverage bound category (L11, Q9(a)); its hard maximum is the upstream request ceiling. That is not a per-candidate request bound: the range stage lists releases limit:upstream.releasePageSize (100) to a page, and a release outside the range costs no request beyond its page, so 240 requests could list about 24,000 candidates; only a release inside the range costs its tag, correspondence and recheck reads, and those stop once a member has limit:packet.listEntries range sources.',
     {
       protects:
         'Release and tag candidates from untrusted upstream data are bounded, so tag matching cannot grow requests or CPU without limit (requests and CPU).',
