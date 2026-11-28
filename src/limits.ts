@@ -942,7 +942,11 @@ const DEFINITIONS = [
       'Not enforced by the reviewer yet: L12 makes the config parser reject a larger response cap. check:limits evaluates the register at this value.',
     basis: {
       kind: 'derived',
-      inputs: ['runner.evidenceHeapBytes', 'evidence.readsInFlight', 'runner.heapBytesPerEvidenceByte'],
+      inputs: [
+        'runner.evidenceHeapBytes',
+        'evidence.readsInFlight',
+        'runner.heapBytesPerEvidenceByte',
+      ],
       formula: (heap, inFlight, perByte) => Math.floor(heap / (inFlight * perByte)),
       description:
         'The hard maximum of limit:evidence.envelope.maxResponseBytes: limit:runner.evidenceHeapBytes ÷ (limit:evidence.readsInFlight × limit:runner.heapBytesPerEvidenceByte), rounded down. It does not yet reserve heap for the evidence the other readers retain, which the Q10 joint maximum is to bound. Approved by the maintainer on 2026-11-27 (L11, Q3(a), #383).',
@@ -1275,7 +1279,8 @@ const DEFINITIONS = [
     {
       protects:
         'Counts the response bodies the evidence phase parses at once, so the per-response heap bound multiplies by it.',
-      effect: 'Not enforced: it divides the evidence-phase heap for limit:runner.maxEvidenceResponseBytes.',
+      effect:
+        'Not enforced: it divides the evidence-phase heap for limit:runner.maxEvidenceResponseBytes.',
       test: 'src/pipeline.test.ts > a full run has at most evidence.readsInFlight evidence responses in flight',
     },
   ),

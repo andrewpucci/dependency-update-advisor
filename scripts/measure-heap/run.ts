@@ -200,7 +200,10 @@ try {
     (evidenceRepeatedBytes - runs.large.packetBytes);
   const responseBytes = limit('evidence.envelope.maxResponseBytes');
   const perReader = READERS.map((reader, r) => {
-    const row = readerMib.slice(r * (READER_SHAPES.length + 1), (r + 1) * (READER_SHAPES.length + 1));
+    const row = readerMib.slice(
+      r * (READER_SHAPES.length + 1),
+      (r + 1) * (READER_SHAPES.length + 1),
+    );
     const [empty = 0, ...shapes] = row;
     const mibByShape = Object.fromEntries(READER_SHAPES.map((shape, i) => [shape, shapes[i] ?? 0]));
     const worstMib = Math.max(...Object.values(mibByShape));

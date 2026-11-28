@@ -314,7 +314,11 @@ test('the evidence-phase heap inputs keep their sources and formula', () => {
   const cap = limitEntry('runner.maxEvidenceResponseBytes').basis;
   expect(cap).toMatchObject({
     kind: 'derived',
-    inputs: ['runner.evidenceHeapBytes', 'evidence.readsInFlight', 'runner.heapBytesPerEvidenceByte'],
+    inputs: [
+      'runner.evidenceHeapBytes',
+      'evidence.readsInFlight',
+      'runner.heapBytesPerEvidenceByte',
+    ],
   });
   if (cap.kind !== 'derived') throw new Error('derived');
   expect(cap.formula(1000, 2, 3)).toBe(166);

@@ -35,7 +35,9 @@ const load = async <T>(file: string): Promise<T> =>
 const { W2_EVIDENCE_LIMITS } = await load<typeof Collection>('src/collection.ts');
 const { createGithubReadSession } = await load<typeof GithubRead>('src/github-read.ts');
 const { createGithubTransport } = await load<typeof Runtime>('src/runtime.ts');
-const { createAdvisoryReader, createMalwareReader } = await load<typeof Advisory>('src/evidence/advisory-read.ts');
+const { createAdvisoryReader, createMalwareReader } = await load<typeof Advisory>(
+  'src/evidence/advisory-read.ts',
+);
 const { createPolicySignalReader } = await load<typeof PolicyRead>(
   'src/evidence/policy-signals-read.ts',
 );
@@ -105,8 +107,7 @@ const research = {
 };
 
 const reads: Record<string, () => Promise<unknown>> = {
-  transport: () =>
-    createGithubTransport({ token: 'stub', fetch, now }).readRepository(repository),
+  transport: () => createGithubTransport({ token: 'stub', fetch, now }).readRepository(repository),
   session: () =>
     createGithubReadSession(
       { binding, limits: { ...W2_EVIDENCE_LIMITS.session, totalTimeoutMs: WINDOW_MS } },
@@ -154,6 +155,7 @@ console.log(
     shape,
     url: urls[0],
     bodyBytes: body.byteLength,
-    result: (result as { kind?: string; status?: string }).kind ?? (result as { status?: string }).status,
+    result:
+      (result as { kind?: string; status?: string }).kind ?? (result as { status?: string }).status,
   }),
 );
