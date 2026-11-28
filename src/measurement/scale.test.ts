@@ -113,6 +113,12 @@ test('the packet byte limit stays at its production value while the heap terms s
     expect(at(id), id).toBeGreaterThan(REGISTER.get(id)?.value ?? 0);
   expect(at('packet.bytes')).toBe(REGISTER.get('packet.bytes')?.value);
   expect(at('analysis.projectionBytes')).toBe(REGISTER.get('analysis.projectionBytes')?.value);
+  // The config cap, a parse bound held beside the packet, stays too, though the blob one scaled
+  // response carries grows.
+  expect(at('snapshot.maxReadableBlobBytes')).toBeGreaterThan(
+    REGISTER.get('snapshot.maxReadableBlobBytes')?.value ?? 0,
+  );
+  expect(at('config.maxBytes')).toBe(REGISTER.get('config.maxBytes')?.value);
 });
 
 test('rejects a scale that is not a positive integer', () => {
