@@ -9,12 +9,16 @@ import { createHash } from 'node:crypto';
 import { join } from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import type * as Format from '../../src/format.js';
+import type * as Limits from '../../src/limits.js';
 
 const ROOT = fileURLToPath(new URL('../../', import.meta.url));
 // Loaded by path, not by a static import, so Node can run this file directly (see check.ts).
-const { ALIAS_RADIX, FORMAT_VERSION } = (await import(
+const { ALIAS_RADIX, DECIMAL_RADIX, FORMAT_VERSION } = (await import(
   pathToFileURL(join(ROOT, 'src/format.ts')).href
 )) as typeof Format;
+const { harmPoint } = (await import(
+  pathToFileURL(join(ROOT, 'src/limits.ts')).href
+)) as typeof Limits;
 
 /**
  * The counters `npm run probe:parse-cost -- harm` runs, in order; a register entry may cite only
@@ -313,4 +317,121 @@ export function timingSummary(timings: readonly number[]): { slowestMs: number; 
     slowestMs: sorted[sorted.length - 1] as number,
     medianMs: sorted[Math.floor(sorted.length / 2)] as number,
   };
+}
+
+/** One timed size as measure.ts prints it. */
+export type TimedPoint = {
+  counter: string;
+  shape: string;
+  bytes: number;
+  units: number;
+  slowestMs: number;
+  medianMs: number;
+};
+
+/** A size combined over invocations: the slowest run of any, and how far the invocations differ. */
+export type CombinedPoint = TimedPoint & { invocations: number; spread: number };
+
+/**
+ * Each size's slowest run across separate invocations of measure.ts, which a harm point uses, and
+ * the spread: the slowest invocation's slowest run over the fastest invocation's. The median is
+ * the largest of the invocations' medians. Every invocation must time the same sizes.
+ */
+export function combineInvocations(
+  invocations: readonly (readonly TimedPoint[])[],
+): CombinedPoint[] {
+  const [first] = invocations;
+  if (first === undefined) throw new Error('no invocations');
+  return first.map((point, index) => {
+    const same = invocations.map((points) => points[index]);
+    if (
+      same.some(
+        (p) => p?.shape !== point.shape || p.bytes !== point.bytes || p.units !== point.units,
+      )
+    )
+      throw new Error('the invocations timed different sizes');
+    const slowest = same.map((p) => (p as TimedPoint).slowestMs);
+    return {
+      ...point,
+      slowestMs: Math.max(...slowest),
+      medianMs: Math.max(...same.map((p) => (p as TimedPoint).medianMs)),
+      invocations: invocations.length,
+      spread: Math.max(...slowest) / Math.min(...slowest),
+    };
+  });
+}
+
+/* oxlint-disable no-magic-numbers, limits/no-literal-limit -- measurement rounding, not a limit */
+/** The digits a rounding first trims to, so binary noise cannot add a step. */
+const NOISE_DIGITS = 6;
+
+/** `value` rounded up to `figures` significant figures. */
+export function roundUpSignificant(value: number, figures: number): number {
+  if (!(value > 0)) throw new Error('only a positive value rounds');
+  const scale = DECIMAL_RADIX ** (Math.floor(Math.log10(value)) - figures + 1);
+  // Rounded to a few more digits first, so binary noise cannot add a step.
+  return Number(
+    (Math.ceil(Number((value / scale).toFixed(NOISE_DIGITS))) * scale).toPrecision(figures),
+  );
+}
+
+/** The least-squares slope of log time on log count: the exponent the cost grows by. */
+export function fitExponent(units: readonly number[], slowestMs: readonly number[]): number {
+  const xs = units.map(Math.log);
+  const ys = slowestMs.map(Math.log);
+  const mean = (values: number[]) => values.reduce((sum, value) => sum + value, 0) / values.length;
+  const mx = mean(xs);
+  const my = mean(ys);
+  const covariance = xs.reduce((sum, x, index) => sum + (x - mx) * ((ys[index] as number) - my), 0);
+  const variance = xs.reduce((sum, x) => sum + (x - mx) ** 2, 0);
+  return covariance / variance;
+}
+
+/**
+ * The rounding rule of a harm fit, the one the register's figures follow: the per-unit cost is
+ * rounded up to COST_FIGURES significant figures, and the exponent up to EXPONENT_DECIMALS
+ * decimals and to at least 1, since a fit below linear would extrapolate a later harm point.
+ */
+const COST_FIGURES = 4;
+const EXPONENT_DECIMALS = 2;
+/* oxlint-enable no-magic-numbers, limits/no-literal-limit */
+export const HARM_FIT_ROUNDING = Object.freeze({
+  costFigures: COST_FIGURES,
+  exponentDecimals: EXPONENT_DECIMALS,
+});
+
+export type HarmFit = {
+  /** The largest count timed, the curve's anchor. */
+  count: number;
+  /** The slowest run at that count, over the count, rounded up. */
+  msPerUnit: number;
+  /** The fitted exponent, rounded up, at least 1. */
+  exponent: number;
+  /** The fitted exponent before rounding. */
+  fitted: number;
+  /** The harm point at `deadlineMs` (harmPoint in src/limits.ts). */
+  harm: number;
+  /** How far beyond the largest count timed the harm point lies: harm ÷ count. */
+  extrapolation: number;
+};
+
+/** The harm point of one shape's series of timings, at the evidence deadline `deadlineMs`. */
+export function harmFit(
+  units: readonly number[],
+  slowestMs: readonly number[],
+  deadlineMs: number,
+): HarmFit {
+  const count = units.at(-1) as number;
+  const fitted = fitExponent(units, slowestMs);
+  const decimals = DECIMAL_RADIX ** HARM_FIT_ROUNDING.exponentDecimals;
+  const exponent = Math.max(
+    1,
+    Math.ceil(Number((fitted * decimals).toFixed(NOISE_DIGITS))) / decimals,
+  );
+  const msPerUnit = roundUpSignificant(
+    (slowestMs.at(-1) as number) / count,
+    HARM_FIT_ROUNDING.costFigures,
+  );
+  const harm = harmPoint(deadlineMs, msPerUnit, count, exponent);
+  return { count, msPerUnit, exponent, fitted, harm, extrapolation: harm / count };
 }

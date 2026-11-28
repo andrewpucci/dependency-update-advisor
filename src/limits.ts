@@ -1009,6 +1009,30 @@ const PUBLICATION_REQUESTS = 5;
 
 const copy = (value: number): number => value;
 
+/** The share of the evidence deadline at which a parse or work count does harm (L11, Q8(a)). */
+export const HARM_DEADLINE_SHARE = 4;
+/** The allowance of #467 for a hosted runner slower than the machine that measured the cost. */
+export const HARM_SLOWER_RUNNER = 10;
+
+/**
+ * The CPU harm point of a parse or work counter (L11, follow-up to Q8(a), approved 2026-11-28,
+ * #383): the count at which the slowest run, on a runner HARM_SLOWER_RUNNER times slower, takes
+ * 1 / HARM_DEADLINE_SHARE of the evidence deadline, on the measured cost curve
+ * time = msPerUnit × count × (units ÷ count)^exponent through the probe's largest count, rounded
+ * down. npm run probe:parse-cost -- harm prints the same figure from its own timings.
+ */
+export const harmPoint = (
+  deadlineMs: number,
+  msPerUnit: number,
+  count: number,
+  exponent: number,
+): number =>
+  Math.floor(
+    count *
+      (deadlineMs / HARM_DEADLINE_SHARE / HARM_SLOWER_RUNNER / (msPerUnit * count)) **
+        (1 / exponent),
+  );
+
 /** GitHub wraps blob content at 60 base64 characters (the Get a blob response, docs.github.com). */
 const BLOB_BASE64_LINE = 60;
 /**
