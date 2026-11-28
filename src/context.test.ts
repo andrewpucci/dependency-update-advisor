@@ -1170,8 +1170,9 @@ test('the serialized context cap admits a context of exactly the cap and drops t
   };
   const empty = await probe([]);
   expect(empty.result).toMatchObject({ ok: true });
-  // The reservation of the widest identities fits, so the budget refusal before reading is not
-  // reachable through identities alone.
+  // The reservation of the widest identities fits, so no input reaches the budget refusal before
+  // reading (src/context.ts:312) at the register values.
+  expect(empty.largest).toBe(102_556);
   expect(empty.largest).toBeLessThan(cap);
   const one = await probe([0]);
   const fact = one.largest - empty.largest;

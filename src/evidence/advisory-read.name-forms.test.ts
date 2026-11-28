@@ -861,6 +861,33 @@ test('a discovery page over the response cap is retried at the same cursor at th
   stuck.close();
   expect(sizes(always.requests).map(([size]) => Number(size))).toEqual([...DISCOVERY_PAGE_SIZES]);
 });
+test('a discovery page over the response cap behind a cursor is resent smaller at that cursor', async () => {
+  const big = Response.json(['x'.repeat(400)]);
+  const half = String(Number(PAGE_SIZE) / 2);
+  const server = github((u) => {
+    if (!isDiscovery(u)) return Response.json([]);
+    const after = u.searchParams.get('after');
+    if (after === null) {
+      // The first page fits; its next link carries the cursor GitHub returned.
+      const next = new URL(u);
+      next.searchParams.set('after', 'Y3Vyc29yOjI');
+      return Response.json([], { headers: { link: `<${next.href}>; rel="next"` } });
+    }
+    return u.searchParams.get('per_page') === PAGE_SIZE ? big.clone() : Response.json([]);
+  });
+  const reader = ready(createAdvisoryReader, server.fetch, { maxResponseBytes: 200 });
+  expect(await reader.read(tj)).toMatchObject({ complete: true });
+  reader.close();
+  expect(
+    server
+      .discovery()
+      .map((u) => [new URL(u).searchParams.get('per_page'), new URL(u).searchParams.get('after')]),
+  ).toEqual([
+    [PAGE_SIZE, null],
+    [PAGE_SIZE, 'Y3Vyc29yOjI'],
+    [half, 'Y3Vyc29yOjI'],
+  ]);
+});
 test('an error body over the response cap fails discovery with budget and is not resent', async () => {
   const server = github((u) =>
     isDiscovery(u)

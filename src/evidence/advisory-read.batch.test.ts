@@ -9,7 +9,7 @@ import {
   type AdvisoryTarget,
   type QueryKind,
 } from './advisory-read.js';
-import { BATCH_URL_BYTES } from './batches.js';
+import { BATCH_PAGE_SIZES, BATCH_URL_BYTES } from './batches.js';
 import { limit } from '../limits.js';
 import { PACKET_LIMITS } from '../schema.js';
 
@@ -352,6 +352,38 @@ test('a record on the second page of a batch is attributed', async () => {
     records: [{ id: hit.ghsa_id }],
   });
   reader.close();
+});
+test('a batch page over the response cap is resent at the same cursor down the batch ladder', async () => {
+  const hit = record('reviewed', ['npm', 'widget', '< 2.0.0']);
+  const oversized = () =>
+    new Response(`[${' '.repeat(limits.maxResponseBytes)}]`, {
+      headers: { 'content-type': 'application/json' },
+    });
+  const sizes = (requests: string[]) =>
+    requests.map((u) => Number(new URL(u).searchParams.get('per_page')));
+  // Over the cap at the first two sizes; the third answers.
+  const fake = server((u) =>
+    !isBatch(u)
+      ? undefined
+      : Number(u.searchParams.get('per_page')) > BATCH_PAGE_SIZES[2]
+        ? oversized()
+        : Response.json([hit]),
+  );
+  const reader = ready('reviewed', fake.fetch);
+  expect(await reader.settle(npmTargets)).toBe(npmTargets.length);
+  expect(sizes(fake.batches())).toEqual(BATCH_PAGE_SIZES.slice(0, 3));
+  expect(await reader.read(npmTargets[0])).toMatchObject({
+    batched: true,
+    records: [{ id: hit.ghsa_id }],
+  });
+  reader.close();
+  // Over the cap at every size: the batch tries the whole ladder, then its targets fall back.
+  const stuck = server((u) => (isBatch(u) ? oversized() : Response.json([])));
+  const fallback = ready('reviewed', stuck.fetch);
+  expect(await fallback.settle(npmTargets)).toBe(0);
+  expect(sizes(stuck.batches())).toEqual([...BATCH_PAGE_SIZES]);
+  expect(await fallback.read(npmTargets[0])).not.toHaveProperty('batched');
+  fallback.close();
 });
 test('a withdrawn batch record is attributed as withdrawn', async () => {
   const hit = {

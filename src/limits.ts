@@ -3220,7 +3220,7 @@ const DEFINITIONS = [
       protects:
         'The packet rejects a context whose serialized JSON exceeds limit:packet.contextBytes (budget), so the collector must stop before that point.',
       effect:
-        'An empty context over the cap fails with category budget (src/context.ts:312); at the identity caps the widest empty context fits below it. During collection the fact that would overflow is dropped with reason context-byte-limit and collection stops, keeping facts already added (partial).',
+        'The empty-context check (src/context.ts:312) fails a context with category budget when its widest reservation is over the cap, but at limit:context.maxDependencies identities of limit:context.maxIdCodeUnits that reservation is 102,556 bytes, below the cap, so no input reaches it at the register values; the test pins that margin. During collection the fact that would overflow is dropped with reason context-byte-limit and collection stops, keeping facts already added (partial).',
       test: 'src/context.test.ts > the serialized context cap admits a context of exactly the cap and drops the fact one byte past it',
     },
   ),
