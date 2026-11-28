@@ -3339,7 +3339,7 @@ const DEFINITIONS = [
     'count',
     ['w2.actions.maxAliasExpansions'],
     copy,
-    "Dependabot's documentation says nothing on YAML anchors, and Dependabot's own parser change to accept them (dependabot-core PR #9653) was still open when checked on 2026-11-28, so whether GitHub accepts them is in doubt; refusing every alias could then reject a legitimate config. The same parser and expansion read workflow files, so the cap copies limit:w2.actions.maxAliasExpansions, and the composed document, aliases expanded, is charged to a node budget of its own at limit:dependabot.maxYamlNodes, so an expansion cannot pass the node cap. Approved by the maintainer on 2026-11-27 (L11, D11 and Q23(b), #383).",
+    "Dependabot's documentation says nothing on YAML anchors, and Dependabot's own parser change to accept them (dependabot-core PR #9653) was still open when checked on 2026-11-28, so whether GitHub accepts them is in doubt; refusing every alias could then reject a legitimate config. The same parser and expansion read workflow files, so the cap copies limit:w2.actions.maxAliasExpansions, and the composed document, aliases expanded, is charged to a node budget of its own at limit:dependabot.maxYamlNodes, so an expansion cannot pass the node cap. The copied entry is itself still unjustified (its Q8 check is pending), so this cap inherits that gap: it is grounded only once limit:w2.actions.maxAliasExpansions is. Approved by the maintainer on 2026-11-27 (L11, D11 and Q23(b), #383).",
     {
       protects:
         'Caps alias expansions in the Dependabot config, so anchors and aliases cannot amplify the composed document beyond the node budget.',
