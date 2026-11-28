@@ -2666,7 +2666,7 @@ const DEFINITIONS = [
     basis: {
       kind: 'safety',
       reason:
-        'Largest legitimate use: a workflow nests about six levels (jobs.<id>.steps[].with.<input>); four large public workflows read on 2026-11-27 (microsoft/vscode pr.yml, nodejs/node test-linux.yml, pytorch/pytorch pull.yml, home-assistant/core ci.yaml) nest five or six. Harm: composition recurses at least once per level, and the yaml library overflows the call stack at about 1,024 levels of nested flow collections (measured on 2026-11-27 under Node 22). The cap is checked before composition and sits far between the two. Approved by the maintainer on 2026-11-27 (L11, #383).',
+        'Largest legitimate use: a workflow nests about six levels (jobs.<id>.steps[].with.<input>); four large public workflows read on 2026-11-27 (microsoft/vscode pr.yml, nodejs/node test-linux.yml, pytorch/pytorch pull.yml, home-assistant/core ci.yaml) nest five or six. Harm: the parse and compose of the yaml library, with the options of this reader, overflow the call stack at 776 levels of nested flow sequences in a fresh process (npm run probe:json-depth -- overflow, yamlCompose, on 2026-11-28 under Node 24.22.3, the runtime of the action); the library reports the overflow as a document error, so the workflow would fail as malformed rather than crash. The cap is checked before composition and sits far between the two. Approved by the maintainer on 2026-11-27 (L11, #383).',
     },
     effect:
       'Exceeding the depth throws budget and the workflow read is unavailable with reason budget.',
