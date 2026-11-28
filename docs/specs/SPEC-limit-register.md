@@ -365,6 +365,13 @@ each with today's value as its default and the hard maximum named here:
   default; each register entry names its hard maximum. The npm and uv root
   counts are bounded by the roots Dependabot's file may name,
   `limit:dependabot.maxRoots`.
+  - Amended (L11, item 4(a); approved by the maintainer on 2026-11-28,
+    [#383](https://github.com/andrewpucci/dependency-update-advisor/issues/383)):
+    `limit:advisory.discovery.spellingCeiling` joins the coverage bounds,
+    with today's value as its default. Its hard maximum,
+    `limit:advisory.discovery.spellingCeilingMax`, is the largest power of
+    three whose spellings of the shortest name fit the advisory request
+    share for both query kinds.
 - **Units per model call** (Q16(a)): `limit:analysis.maxUnits`. The adopter
   bears the call count and cost a smaller batch spends, and the truncation
   risk of a larger one. Hard maximum: `limit:packet.changes`, since a unit

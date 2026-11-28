@@ -852,6 +852,30 @@ export function floorPacket(changes: number, listEntries: number) {
 }
 
 /**
+ * Fixed text of a stored-name discovery URL (githubUrl in src/evidence/advisory-read.ts) for pip
+ * with no spelling, at the longer query kind (`type=reviewed`) and the register page size; each
+ * further spelling after the first adds its `,`, which URLSearchParams writes as `%2C`.
+ * src/evidence/advisory-read.name-forms.test.ts pins both against githubUrl.
+ */
+export const DISCOVERY_URL_TEXT = Object.freeze({ fixedBytes: 83, separatorBytes: 3 });
+/** PEP 503 separators (`-`, `_`, `.`) and the two discovery query kinds (reviewed, malware). */
+const PIP_SEPARATOR_COUNT = 3;
+const DISCOVERY_QUERY_KINDS = 2;
+
+/**
+ * Discovery requests for every spelling of the shortest PyPI name with `separators` separators
+ * (one character per part, 2n + 1 characters), for both query kinds, under a first-URL room of
+ * `room` bytes past the fixed text.
+ */
+export const spellingRequests = (separators: number, room: number): number => {
+  const perUrl = Math.floor(
+    (room + DISCOVERY_URL_TEXT.separatorBytes) /
+      (2 * separators + 1 + DISCOVERY_URL_TEXT.separatorBytes),
+  );
+  return DISCOVERY_QUERY_KINDS * Math.ceil(PIP_SEPARATOR_COUNT ** separators / perUrl);
+};
+
+/**
  * Sequential publication requests the publication reserve allows (src/comments.ts:329-365): the
  * comment selection, its re-read, the publication gate, the write and the gate after it.
  */
@@ -2498,14 +2522,44 @@ const DEFINITIONS = [
     note: 'stopped (L11, Q12(a), #383): the approved basis is external, the most bytes an `after` cursor GitHub returned adds to a query URL, from npm run probe:batching, which now reports it as longest.cursorHeadroomBytes. The C3 run of 2026-11-26 predates that field, and the probe needs a GitHub token and the corpus targets file, neither of which this session has, so the probed value is unknown and 256 stays. Run the probe and set the value it reports, with no margin',
     test: 'src/evidence/advisory-read.name-forms.test.ts > discovery fills a request up to exactly the cursor headroom under the cap',
   }),
-  unjustified('advisory.discovery.spellingCeiling', 243, 'count', {
-    protects:
-      'A pip name with many separators cannot fan out into an unbounded number of discovery requests.',
-    effect:
-      'A name with more spellings (more than 5 separators) is unsupported before any request.',
-    note: 'stopped (L11, E8 and Q8(a), #383). The safety check fails: npm run probe:name-separators over the PyPI simple index (951,539 project names, 2026-11-28) finds 6,089 names (0.64%) with more than 5 separators, up to 28, so 243 binds legitimate names. The fallback E8(b), 81, has no derivation at the new limit:advisory.discovery.urlBytes: under its 5,438-byte first-URL room, one request holds every spelling of a 5-separator name up to 19 characters and of a 4-separator name up to 63, so the largest spelling count that always fits depends on name length, and no register entry bounds a PyPI name length except limit:packet.idCodeUnits (256), which would give 9. 81 came from corpus name lengths, which are measured demand. A new basis needs a maintainer decision',
-    test: 'src/evidence/advisory-read.name-forms.test.ts > a name over the spelling ceiling sends no request',
-  }),
+  configured(
+    'advisory.discovery.spellingCeiling',
+    243,
+    'count',
+    { setting: 'limits.coverage.pipSpellings', maximum: 'advisory.discovery.spellingCeilingMax' },
+    'The adopter: a PyPI name with n separators has 3^n spellings, every one a discovery query, so a larger setting covers names with more separators at the cost of the shared advisory request share (limit:evidence.allocation.advisory.maxRequests) and the time it takes; names past it stay unsupported. npm run probe:name-separators over the PyPI simple index (951,539 names, 2026-11-28) found 6,089 (0.64%) with more than 5 separators, up to 28, so the default of 243 (3^5) leaves them unsupported. Coverage bound category (L11, Q9(a)); approved as configuration on 2026-11-28 (L11, item 4(a), #383).',
+    {
+      protects:
+        'A pip name with many separators cannot fan out into an unbounded number of discovery requests.',
+      effect:
+        'A name with more spellings than the setting (more than 5 separators at the default) is unsupported before any request.',
+      test: 'src/evidence/advisory-read.name-forms.test.ts > a name over the spelling ceiling sends no request',
+    },
+    L11_STOPS_APPROVAL,
+  ),
+  derived(
+    'advisory.discovery.spellingCeilingMax',
+    'count',
+    [
+      'advisory.discovery.urlBytes',
+      'advisory.discovery.cursorHeadroomBytes',
+      'evidence.allocation.advisory.maxRequests',
+    ],
+    (urlBytes, headroom, requests) => {
+      const room = urlBytes - headroom - DISCOVERY_URL_TEXT.fixedBytes;
+      let separators = 0;
+      while (spellingRequests(separators + 1, room) <= requests) separators += 1;
+      return PIP_SEPARATOR_COUNT ** separators;
+    },
+    'The hard maximum of limit:advisory.discovery.spellingCeiling: the largest 3^n for which every spelling of the shortest name with n separators (one character per part), for both query kinds, fits the advisory request share, limit:evidence.allocation.advisory.maxRequests. Each first URL has limit:advisory.discovery.urlBytes less limit:advisory.discovery.cursorHeadroomBytes less the fixed URL text (DISCOVERY_URL_TEXT, 83 bytes) of room, 5,355 bytes at the defaults, and each spelling takes 2n + 1 bytes and its 3-byte encoded comma (spellingRequests). At the defaults n = 9 needs 162 requests and n = 10 needs 530, against 221, so the maximum is 3^9 = 19,683. Longer names need more requests, so the maximum covers only the shortest names in full; a setting at it can spend the whole advisory share on one target. It follows the request share and URL settings. Approved by the maintainer on 2026-11-28 (L11, item 4(a), #383).',
+    {
+      protects:
+        'Keeps an adopter setting of the spelling ceiling from fanning one name out past the advisory request share.',
+      effect:
+        'Not enforced by the reviewer yet: L12 makes the config parser reject a larger ceiling. check:limits evaluates the register at this value.',
+      test: 'src/evidence/advisory-read.name-forms.test.ts > the spelling ceiling maximum is the largest power of three whose shortest spellings fit the advisory share',
+    },
+  ),
   // Request batching values, approved by the user on 2026-11-26 from the C3 probe run (#390).
   {
     id: 'advisory.batch.maxTargets',

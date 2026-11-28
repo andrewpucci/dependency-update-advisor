@@ -1,12 +1,14 @@
 import { readFileSync } from 'node:fs';
-import { expect, test } from 'vite-plus/test';
+import { describe, expect, test } from 'vite-plus/test';
 import {
   createAdvisoryReader,
   createMalwareReader,
   DISCOVERY_PAGE_SIZES,
+  discoveryUrls,
+  githubUrl,
 } from './advisory-read.js';
 import { createResearchCache } from './research-cache.js';
-import { limit } from '../limits.js';
+import { DISCOVERY_URL_TEXT, limit, spellingRequests } from '../limits.js';
 
 const limits = {
   maxRequests: 20,
@@ -901,3 +903,53 @@ test('an error body over the response cap fails discovery with budget and is not
     PAGE_SIZE,
   ]);
 });
+
+// Filling the n = 9 URLs takes longer than the default test timeout.
+describe(
+  'spelling ceiling maximum',
+  { timeout: limit('tests.largeInventoryRenderTimeoutMs') },
+  () => {
+    test('the spelling ceiling maximum is the largest power of three whose shortest spellings fit the advisory share', () => {
+      const pageSize = String(limit('advisory.discovery.pageSize'));
+      // The fixed URL text the derivation uses is githubUrl's, at the longer query kind.
+      expect(githubUrl('pip', [], 'reviewed', pageSize).length).toBe(DISCOVERY_URL_TEXT.fixedBytes);
+      expect(githubUrl('pip', [], 'malware', pageSize).length).toBeLessThan(
+        DISCOVERY_URL_TEXT.fixedBytes,
+      );
+      expect(githubUrl('pip', ['a', 'b'], 'reviewed', pageSize).length).toBe(
+        DISCOVERY_URL_TEXT.fixedBytes + 2 + DISCOVERY_URL_TEXT.separatorBytes,
+      );
+      // Every spelling of the shortest name with n separators, as pipSpellings forms them.
+      const spellings = (separators: number) => {
+        let forms = ['a'];
+        for (let index = 0; index < separators; index++)
+          forms = forms.flatMap((form) =>
+            ['-', '_', '.'].map((separator) => `${form}${separator}a`),
+          );
+        return forms;
+      };
+      const requests = (separators: number) =>
+        (['reviewed', 'malware'] as const).reduce(
+          (total, kind) => total + discoveryUrls('pip', spellings(separators), kind).length,
+          0,
+        );
+      const room =
+        limit('advisory.discovery.urlBytes') -
+        limit('advisory.discovery.cursorHeadroomBytes') -
+        DISCOVERY_URL_TEXT.fixedBytes;
+      // The real URL fill makes exactly the requests the derivation counts.
+      // (n = 10 has 59,049 spellings, too slow to fill here; its count is the same formula.)
+      for (const separators of [5, 9])
+        expect(requests(separators)).toBe(spellingRequests(separators, room));
+      expect(requests(9)).toBe(162);
+      expect(spellingRequests(10, room)).toBe(530);
+      const share = limit('evidence.allocation.advisory.maxRequests');
+      expect(requests(9)).toBeLessThanOrEqual(share);
+      expect(spellingRequests(10, room)).toBeGreaterThan(share);
+      expect(limit('advisory.discovery.spellingCeilingMax')).toBe(3 ** 9);
+      expect(limit('advisory.discovery.spellingCeiling')).toBeLessThanOrEqual(
+        limit('advisory.discovery.spellingCeilingMax'),
+      );
+    });
+  },
+);
