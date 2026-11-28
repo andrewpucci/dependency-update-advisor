@@ -3188,14 +3188,20 @@ const DEFINITIONS = [
     note: 'awaiting L8 measurement',
     test: 'src/config.test.ts > the excerpt file cap admits exactly the registered count and rejects one more',
   }),
-  unjustified('context.maxTrackedPathEntries', 10_000, 'count', {
-    protects:
-      'The tracked-file inventory is streamed one entry at a time, and the cap stops the scan on an arbitrarily large repository.',
-    effect:
-      'On the 10,001st inventory entry the scan stops with reason inventory-limit and the iterator is closed. Facts already found and partial status are kept.',
-    test: 'src/context.test.ts > inventory budget bounds %i records including duplicates',
-    note: 'awaiting L8 measurement',
-  }),
+  derived(
+    'context.maxTrackedPathEntries',
+    'count',
+    ['snapshot.maxTreeEntries'],
+    copy,
+    'The tracked-file inventory is the snapshot listing, so it can hold no more entries than the listing: a copy of limit:snapshot.maxTreeEntries. Approved by the maintainer on 2026-11-27 (L11, #383).',
+    {
+      protects:
+        'The tracked-file inventory is streamed one entry at a time, and the cap stops the scan on an arbitrarily large repository.',
+      effect:
+        'On the entry past the cap the scan stops with reason inventory-limit and the iterator is closed. Facts already found and partial status are kept.',
+      test: 'src/context.test.ts > inventory budget bounds %i records including duplicates',
+    },
+  ),
   unjustified('context.maxSourceFileBytes', 65_536, 'bytes', {
     protects:
       'A source file is read into memory, so each read is capped at 65,536 bytes plus one probe byte.',
