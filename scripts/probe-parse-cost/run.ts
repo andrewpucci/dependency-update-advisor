@@ -5,6 +5,7 @@
  *   npm run probe:parse-cost -- harm [counter ...]
  *   npm run probe:parse-cost -- use <corpus directory>
  *   npm run probe:parse-cost -- heap
+ *   npm run probe:parse-cost -- event
  *
  * `harm` runs each counter (all by default) in its own Node process, measure.ts with the flags it
  * needs: the reader on an input that fills the reader's byte cap with the densest form of the
@@ -23,6 +24,11 @@
  * parse allocates (an upper bound on its peak: the young generation is sized so no collection runs
  * during one parse) and the heap still held after a full collection with the result kept, which
  * shows whether the parse is transient.
+ *
+ * `event` (L11, item 11 review follow-up) parses a webhook-shaped event of exactly
+ * limit:startup.maxEventBytes in each dense shape and prints, per shape, the heap its decoded text
+ * takes, the heap JSON.parse allocates on top of it (sized as for `heap`), their sum, the heap still
+ * held after a full collection with the result kept, and the parse time.
  */
 import { execFileSync } from 'node:child_process';
 import { join } from 'node:path';
@@ -51,7 +57,7 @@ const LIFTED_DEPENDABOT = ['maxFileBytes', 'maxYamlNodes', 'maxUpdates', 'maxRoo
   .join(',');
 
 const USAGE =
-  'usage: npm run probe:parse-cost -- harm [counter ...]\n       npm run probe:parse-cost -- use <corpus directory>\n       npm run probe:parse-cost -- heap';
+  'usage: npm run probe:parse-cost -- harm [counter ...]\n       npm run probe:parse-cost -- use <corpus directory>\n       npm run probe:parse-cost -- heap\n       npm run probe:parse-cost -- event';
 /** A young generation no single parse fills, so the heap after it counts all it allocated. */
 const HEAP_FLAGS = ['--min-semi-space-size=1024', '--max-semi-space-size=1024'];
 
@@ -83,6 +89,10 @@ if (mode === 'harm') {
   measure(['use', rest[0] as string]);
 } else if (mode === 'heap' && rest.length === 0) {
   measure(['heap'], false);
+} else if (mode === 'event' && rest.length === 0) {
+  // One process per shape, so no shape's garbage is counted in the next.
+  for (const shape of ['numbers', 'objects', 'arrays', 'strings', 'keyed'])
+    measure(['event', shape], false);
 } else {
   console.error(USAGE);
   process.exit(1);

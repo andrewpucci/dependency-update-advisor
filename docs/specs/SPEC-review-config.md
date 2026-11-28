@@ -267,7 +267,7 @@ used as the protection for payloads; [GitHub does not guarantee that redaction](
    any number of roots is accepted, and the schema sets no `maxItems` for
    `context.sourceRoots`. `limit:config.maxBytes` becomes a parse bound and
    never an adopter setting: the largest legitimate config is about 594 KB,
-   and the packet cap stays positive below about 78.5 MB of config. Since
+   and the packet cap stays positive below about 77.6 MB of config. Since
    the item 9 review follow-up (2026-11-28) it copies
    `limit:snapshot.maxReadableBlobBytes`, the largest blob one GitHub blob
    response carries base64 (about 760,700 bytes, below

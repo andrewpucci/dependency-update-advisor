@@ -442,7 +442,8 @@ test('the runner heap derives from runner memory less what is not old generation
     command: 'npm run probe:runtime-baseline',
   });
   // The off-heap buffers: the research cache, two copies of each read in flight and its largest
-  // decoded file, two copies of each model reply in flight, and the event read buffer (L11, 11).
+  // decoded file, two copies of each model reply in flight, the event read buffer (L11, 11) and
+  // the event's decoded text, which V8 keeps as an external string (its review follow-up).
   expect(limit('runner.offHeapBytes')).toBe(
     limit('research.cache.maxTotalBytes') +
       limit('evidence.readsInFlight') *
@@ -454,7 +455,7 @@ test('the runner heap derives from runner memory less what is not old generation
             limit('context.maxSourceFileBytes'),
           )) +
       limit('analysis.maxConcurrentCalls') * 2 * limit('analysis.responseBytes') +
-      limit('startup.maxEventBytes') +
+      2 * limit('startup.maxEventBytes') +
       1,
   );
   // The OS and agent reserve is MemTotal − MemAvailable recorded on a GitHub-hosted runner.
@@ -1034,8 +1035,9 @@ test('no heap setting at its hard maximum takes packet.bytes below its floor', (
   // takes it below the floor.
   const cases: [LimitId, LimitId, number][] = [
     ['analysis.maxConcurrentCalls', 'analysis.maxConcurrentCallsMax', 8],
-    // 71,091 before the 25,000,001-byte event buffer was counted off heap (L11, item 11).
-    ['analysis.completionTokens', 'analysis.completionTokensMax', 70_807],
+    // 71,091 before the 25,000,001-byte event buffer was counted off heap (L11, item 11), 70,807
+    // before its decoded text was (the item 11 review follow-up).
+    ['analysis.completionTokens', 'analysis.completionTokensMax', 70_535],
   ];
   for (const [id, maximum, value] of cases) {
     expect(limitEntry(id).configurable, id).toMatchObject({ maximum });
@@ -1044,8 +1046,8 @@ test('no heap setting at its hard maximum takes packet.bytes below its floor', (
     expect(at(id, value).get('packet.bytes')?.value, id).toBeGreaterThanOrEqual(floor);
     expect(at(id, value + 1).get('packet.bytes')?.value, id).toBeLessThan(floor);
   }
-  // At 8 calls the packet cap is 23,820,778 bytes; at 9 it is negative.
-  expect(at('analysis.maxConcurrentCalls', 8).get('packet.bytes')?.value).toBe(23_820_778);
+  // At 8 calls the packet cap is 22,496,261 bytes; at 9 it is negative.
+  expect(at('analysis.maxConcurrentCalls', 8).get('packet.bytes')?.value).toBe(22_496_261);
   // The concurrency maximum never passes the calls a run may make.
   expect(limit('analysis.maxConcurrentCallsMax')).toBeLessThanOrEqual(limit('analysis.maxCalls'));
   // The token maximum never passes the Q14(a) bound, the context less the smallest request.
@@ -1062,8 +1064,9 @@ test('no heap setting at its hard maximum takes packet.bytes below its floor', (
   const defaults = members.reduce((total, id) => total + limit(id), 0);
   // 126,100,507 at the 16 KiB config cap; the 1 MiB cap (L11, item 9) took 1,032,192 more and
   // the event buffer counted off heap (L11, item 11) 916,121 more, and the config cap at one blob
-  // response's decoded bytes (760,689, the item 9 review follow-up) gives 287,887 back.
-  expect(limit('runner.maxEvidenceRetainedBytes')).toBe(124_440_081);
+  // response's decoded bytes (760,689, the item 9 review follow-up) gave 287,887 back, and the
+  // event's decoded text counted off heap (the item 11 review follow-up) takes 916,120.
+  expect(limit('runner.maxEvidenceRetainedBytes')).toBe(123_523_961);
   expect(limit('runner.maxEvidenceRetainedBytes')).toBeGreaterThan(defaults);
   const share = 'evidence.allocation.session.maxTotalBytes';
   const raised = hardMaximum(REGISTER, share);

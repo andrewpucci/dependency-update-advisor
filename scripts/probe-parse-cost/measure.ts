@@ -712,7 +712,89 @@ function heapOf(): void {
   }
 }
 
+/** The densest forms of a JSON event: the elements a parse makes the most heap for per byte. */
+const EVENT_SHAPES = {
+  numbers: '0',
+  objects: '{}',
+  arrays: '[]',
+  strings: '""',
+  keyed: '{"a":0}',
+} as const;
+
+/**
+ * One webhook-shaped event of exactly `bytes` bytes, `{"action":"completed","padding":[...]}`,
+ * its padding the densest form of `shape`, filled to the byte with trailing spaces.
+ */
+function eventDocument(shape: keyof typeof EVENT_SHAPES, bytes: number): string {
+  const head = '{"action":"completed","padding":[';
+  const tail = ']}';
+  const element = EVENT_SHAPES[shape];
+  const count = Math.floor((bytes - head.length - tail.length + 1) / (element.length + 1));
+  const body = Array.from({ length: count }, () => element).join(',');
+  const text = head + body + tail;
+  return text + ' '.repeat(bytes - text.length);
+}
+
+/**
+ * The event parse at limit:startup.maxEventBytes (L11, item 11 review follow-up), for one dense shape:
+ * the heap the decoded text takes and what JSON.parse allocates on top of it (an upper bound on
+ * its peak, with the young generation sized so no collection runs during it), what stays held
+ * after a full collection with the result kept, and the slowest and median of RUNS parses.
+ */
+function eventHeapOf(shape: keyof typeof EVENT_SHAPES): void {
+  const cap = limit('startup.maxEventBytes');
+  const used = () => process.memoryUsage().heapUsed;
+  const external = () => process.memoryUsage().external;
+  {
+    // The file's bytes, off the V8 heap as readBoundedEvent's buffer is, then its decoded text.
+    const bytes = encode(eventDocument(shape, cap));
+    collect();
+    collect();
+    const empty = used(),
+      emptyExternal = external();
+    const text = new TextDecoder('utf-8', { fatal: true }).decode(bytes);
+    // An ASCII text may be held outside the V8 heap, as an external string.
+    const textBytes = used() - empty;
+    const textExternalBytes = external() - emptyExternal;
+    collect();
+    collect();
+    const before = used();
+    const result: unknown = JSON.parse(text);
+    const allocatedBytes = used() - before;
+    collect();
+    collect();
+    const retainedBytes = used() - before;
+    const elements = (result as { padding: unknown[] }).padding.length;
+    const timings = Array.from({ length: RUNS }, () => {
+      const start = performance.now();
+      JSON.parse(text);
+      return performance.now() - start;
+    });
+    console.log(
+      JSON.stringify({
+        node: process.version,
+        reader: 'event',
+        shape,
+        bytes: bytes.byteLength,
+        textBytes,
+        textExternalBytes,
+        allocatedBytes,
+        peakBytes: textBytes + allocatedBytes,
+        retainedBytes,
+        elements,
+        ...core.timingSummary(timings),
+      }),
+    );
+  }
+}
+
 const [counter, corpus] = process.argv.slice(2);
+if (counter === 'event') {
+  if (!corpus || !(corpus in EVENT_SHAPES))
+    throw new Error(`usage: measure.ts event <${Object.keys(EVENT_SHAPES).join('|')}>`);
+  eventHeapOf(corpus as keyof typeof EVENT_SHAPES);
+  process.exit(0);
+}
 if (counter === 'heap') {
   heapOf();
   process.exit(0);

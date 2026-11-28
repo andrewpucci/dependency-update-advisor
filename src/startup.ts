@@ -88,13 +88,25 @@ export type StartupDependencies = Readonly<{
   sink?: RehearsalSink;
 }>;
 
+/**
+ * Reads the event file whole into a buffer sized from its own length, one probe byte past it and
+ * never past the cap plus that byte, so an ordinary event allocates only its own size. A file over
+ * the cap, or one that grew past its stated length while read, fails closed.
+ */
 export async function readBoundedEvent(path: string): Promise<string> {
   const handle = await fs.open(path, 'r');
   try {
-    const buffer = Buffer.alloc(MAX_EVENT_BYTES + 1);
-    const { bytesRead } = await handle.read(buffer, 0, buffer.length, 0);
-    if (bytesRead > MAX_EVENT_BYTES) throw new Error('event too large');
-    return new TextDecoder('utf-8', { fatal: true }).decode(buffer.subarray(0, bytesRead));
+    const { size } = await handle.stat();
+    const buffer = Buffer.alloc(Math.min(size, MAX_EVENT_BYTES) + 1);
+    let length = 0;
+    for (;;) {
+      const { bytesRead } = await handle.read(buffer, length, buffer.length - length, length);
+      if (bytesRead === 0) break;
+      length += bytesRead;
+      if (length > MAX_EVENT_BYTES) throw new Error('event too large');
+      if (length === buffer.length) throw new Error('event changed while read');
+    }
+    return new TextDecoder('utf-8', { fatal: true }).decode(buffer.subarray(0, length));
   } finally {
     await handle.close();
   }

@@ -483,6 +483,18 @@ parse peak falls at startup, before either phase holds anything, inside
 webhook payload cap as an `external` value. The read buffer, the cap plus one
 probe byte, is outside the V8 heap and counts in `limit:runner.offHeapBytes`.
 
+Amended (L11, item 11 review follow-up, 2026-11-28,
+[#383](https://github.com/andrewpucci/dependency-update-advisor/issues/383)).
+The read buffer is sized from the file, one probe byte past its length and at
+most the cap plus that byte, so the off-heap term keeps its worst case; a file
+that grows past its stated length while read fails closed. A recorded probe,
+`npm run probe:parse-cost -- event`, replaces the parse-peak estimate: an event
+at the cap in its densest shape allocates at most about 533 MB of heap. It
+also shows that V8 keeps an ASCII event's decoded text outside its heap, as an
+external string, so `limit:runner.offHeapBytes` counts the cap a second time
+for it. A test reads, parses and verifies an event one byte under the cap end
+to end.
+
 #### Projection caps
 
 Amended (L11; approved by the maintainer on 2026-11-28,
