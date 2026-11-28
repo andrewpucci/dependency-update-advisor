@@ -3349,22 +3349,29 @@ const DEFINITIONS = [
     effect:
       'A file over 65,536 bytes is not parsed. The whole file is unavailable with reason budget, and no roots are kept.',
     test: 'src/dependabot-roots.test.ts > accepts values exactly at each limit',
-    note: 'awaiting L8 measurement',
+    note: 'stopped (L11, card, #383): the approved basis is safety, which needs the cap above the largest legitimate config. It is not: among the largest dependabot.yml files GitHub code search returned on 2026-11-28 (14 files above 40,000 bytes, of which 8 are Dependabot version-2 configs), 3 configs are 68,918, 71,729 and 82,528 bytes (14, 4 and 200 update entries), and each fails here with budget today. No document gives a Dependabot file size limit, and no larger value has an approved basis. Value unchanged',
   }),
   unjustified('dependabot.maxYamlNodes', 20_000, 'count', {
     protects:
       'The count of YAML nodes is capped before composition, so untrusted config cannot force unbounded parser work.',
     effect: 'Exceeding 20,000 nodes fails the whole file with budget, and no roots are read.',
-    note: 'awaiting L8 measurement',
+    note: 'stopped (L11, card and Q8(a), #383): the approved basis is safety, which merges only with its largest legitimate use and its harm. The largest legitimate use is recorded: among the largest dependabot.yml files GitHub code search returned on 2026-11-28 (14 files above 40,000 bytes, of which 8 are Dependabot version-2 configs), the most structural nodes the preflight counts is 5,353; the composed document is charged to its own budget at the same cap. The harm point is not: no bench of YAML composition cost per node exists for this parser (w2.actions.maxYamlNodes waits on the same bench). Value unchanged',
     test: 'src/dependabot-roots.test.ts > the YAML node cap admits exactly the registered node count and refuses one node more',
   }),
-  unjustified('dependabot.maxYamlDepth', 16, 'count', {
+  {
+    id: 'dependabot.maxYamlDepth',
+    value: 16,
+    unit: 'count',
     protects:
       'YAML nesting is capped, so the parse and compose cannot recurse without bound on untrusted input.',
+    basis: {
+      kind: 'safety',
+      reason:
+        'Largest legitimate use: a Dependabot config nests about five collections (updates, an entry, its directories, ignore or groups lists); the largest dependabot.yml files GitHub code search returned on 2026-11-28 (14 files above 40,000 bytes, of which 8 are Dependabot version-2 configs) nest at most 6 levels as the preflight counts them. Harm: the same yaml parser and composer overflow the call stack at about 1,024 levels of nested flow collections (measured on 2026-11-27 under Node 22, as for limit:w2.actions.maxYamlDepth). The cap is checked before composition and sits far between the two. Approved by the maintainer on 2026-11-27 (L11, #383).',
+    },
     effect: 'Nesting deeper than 16 fails the whole file with budget, and no roots are read.',
     test: 'src/dependabot-roots.test.ts > reports exceeding the limit on %s as budget',
-    note: 'no recorded reason',
-  }),
+  },
   unjustified('dependabot.maxAliasExpansions', 0, 'count', {
     protects:
       'YAML aliases are refused, so untrusted input cannot expand shared nodes into a much larger structure.',
@@ -3378,7 +3385,7 @@ const DEFINITIONS = [
     effect:
       'More than 256 update entries fail the whole file with budget before any entry is read.',
     test: 'src/dependabot-roots.test.ts > accepts values exactly at each limit',
-    note: 'awaiting L8 measurement',
+    note: 'stopped (L11, card, #383): the approved basis is safety. The largest legitimate use is recorded: among the largest dependabot.yml files GitHub code search returned on 2026-11-28 (14 files above 40,000 bytes, of which 8 are Dependabot version-2 configs), the most update entries is 200, in an 82,528-byte config that limit:dependabot.maxFileBytes already refuses. No harm point is recorded: an entry is read by a fixed loop over a list the byte and node caps already bound, and no bench shows a count where the loop harms memory or CPU. Value unchanged',
   }),
   unjustified('dependabot.maxRoots', 256, 'count', {
     protects:
@@ -3386,7 +3393,7 @@ const DEFINITIONS = [
     effect:
       'More than 256 distinct roots for one ecosystem makes only that ecosystem unavailable with reason budget. The other ecosystem is unaffected, and no partial list is returned.',
     test: 'src/dependabot-roots.test.ts > limits the roots per ecosystem after deduplication',
-    note: 'awaiting L8 measurement',
+    note: 'stopped (L11, card, #383): the approved basis is safety. The largest legitimate use is recorded: among the largest dependabot.yml files GitHub code search returned on 2026-11-28 (14 files above 40,000 bytes, of which 8 are Dependabot version-2 configs), the most distinct npm roots in one config is 207, and the most for any ecosystem 385 (an ecosystem this reader ignores). No harm point is recorded: the collectors read at most limit:w2.npm.maxRoots and limit:w2.uv.maxRoots of these roots, so a longer list costs only its strings, which the byte cap bounds. Value unchanged',
   }),
   derived(
     'dependabot.maxPathBytes',
