@@ -868,6 +868,88 @@ const DEFINITIONS = [
     test: 'src/limits.test.ts > the heap inputs of packet.bytes keep their sources and formula',
   },
   {
+    id: 'runner.heapBytesPerEvidenceByte',
+    value: 59,
+    unit: 'bytes',
+    protects:
+      'States how much heap one evidence response byte costs at peak while a reader decodes, parses and copies it, so the evidence-phase heap can bound the response cap.',
+    basis: {
+      kind: 'measured',
+      command: 'npm run measure:heap',
+      corpus:
+        'one invented response body of exactly limit:evidence.envelope.maxResponseBytes (1,048,576 bytes), opening with a CJK string so the decoded text is two-byte, in three shapes (empty arrays, empty objects, arrays nested to limit:research.maxJsonDepth), through the real read path of six readers with a stub fetch: the GitHub transport (src/runtime.ts), the W2 GitHub read session (src/github-read.ts), the GitHub advisory and OSV queries (src/evidence/advisory-read.ts), PyPI JSON metadata (src/evidence/policy-signals-read.ts) and npm registry documents (src/evidence/npm-registry.ts); on Node 24.22.3 (V8 13.6) with a 1 MiB semi space',
+      statistic:
+        'per reader, the smallest --max-old-space-size at which the read completes for the worst shape less that for a two-element body, plus 1 MiB of bisection resolution, divided by the body bytes; the largest reader is kept: OSV, nested arrays, 71 − 13 + 1 = 59 MiB per MiB (transport 32, session 33, GitHub advisories 57, PyPI 58, npm 41). The advisory and signal readers copy the parsed value (copyAdvisoryData), which roughly doubles the parse heap',
+      headroom:
+        'none: a platform property, not a demand; the added 1 MiB makes it an upper bound of the bisection, not a midpoint',
+      measured: '2026-11-28',
+    },
+    effect:
+      'Not enforced. limit:runner.maxEvidenceResponseBytes and the evidence-phase heap divide by it; a larger value lowers the response cap maximum.',
+    test: 'src/limits.test.ts > the evidence-phase heap inputs keep their sources and formula',
+  },
+  {
+    id: 'runner.evidenceHeapBytesPerPacketByte',
+    value: 14.7,
+    unit: 'bytes',
+    protects:
+      "States how much heap a serialized packet byte costs at peak in the evidence phase, through assembly's serialization, T4 validation and research's revalidation, with no analysis.",
+    basis: {
+      kind: 'measured',
+      command: 'npm run measure:heap',
+      corpus:
+        'the invented large-inventory npm packet (93 members plus 2 same-named nested copies, 1,043,616 bytes) and the same packet with its member records repeated 16 times (16,737,105 bytes), run by measure.ts with PHASE=evidence, on Node 24.22.3 (V8 13.6) with a 1 MiB semi space',
+      statistic:
+        'the growth in the smallest --max-old-space-size at which the evidence-phase path completes (30 MiB to 249 MiB), plus 1 MiB of bisection resolution, divided by the growth in serialized packet bytes (15,693,489): 14.6995, rounded up to 14.70. Revalidation builds a second packet beside the validated one, so the evidence phase holds two packets, not the 2.62 an earlier trace estimated',
+      headroom: 'none: a platform property, not a demand; the added 1 MiB makes it an upper bound',
+      measured: '2026-11-28',
+    },
+    effect:
+      'Not enforced. limit:runner.evidenceHeapBytes subtracts the packet at this rate; a larger value lowers the evidence-phase heap.',
+    test: 'src/limits.test.ts > the evidence-phase heap inputs keep their sources and formula',
+  },
+  {
+    id: 'runner.evidenceHeapBytes',
+    unit: 'bytes',
+    protects:
+      'Bounds the heap the evidence phase may give to responses in flight and retained evidence, after the packet and the state that stays reachable into analysis.',
+    effect:
+      'Not enforced: limit:runner.maxEvidenceResponseBytes divides it; it is the budget the byte shares and retained caps must fit once they are configuration (Q10).',
+    basis: {
+      kind: 'derived',
+      inputs: [
+        'runner.oldGenerationBytes',
+        'packet.bytes',
+        'runner.evidenceHeapBytesPerPacketByte',
+        'config.maxBytes',
+        'evidence.allocation.transport.snapshot.maxTotalBytes',
+        'w2.npm.maxRetainedBytes',
+        'runner.heapBytesPerEvidenceByte',
+      ],
+      formula: (heap, packet, perPacketByte, config, snapshot, npm, perEvidenceByte) =>
+        Math.floor(heap - packet * perPacketByte - (config + snapshot + npm) * perEvidenceByte),
+      description:
+        "The evidence phase's share of the heap. Evidence and research run before analysis, and research readers are locals of runResearch, closed in its finally (src/research.ts:452-459), so the heap is shared by phase. The packet is held at its evidence-phase rate (limit:runner.evidenceHeapBytesPerPacketByte × limit:packet.bytes). State that stays reachable into analysis is counted in both phases: the trusted config (src/pipeline.ts:506, at most limit:config.maxBytes), the snapshot tree (src/snapshot.ts:553-579, parsed from at most limit:evidence.allocation.transport.snapshot.maxTotalBytes) and the npm inventory (src/pipeline.ts:411, 431, at most limit:w2.npm.maxRetainedBytes), each at limit:runner.heapBytesPerEvidenceByte. Approved by the maintainer on 2026-11-27 (L11, Q3(a), #383).",
+    },
+    test: 'src/limits.test.ts > the evidence-phase heap inputs keep their sources and formula',
+  },
+  {
+    id: 'runner.maxEvidenceResponseBytes',
+    unit: 'bytes',
+    protects:
+      'Keeps an adopter setting of the response cap from letting the responses in flight exhaust the evidence-phase heap.',
+    effect:
+      'Not enforced by the reviewer yet: L12 makes the config parser reject a larger response cap. check:limits evaluates the register at this value.',
+    basis: {
+      kind: 'derived',
+      inputs: ['runner.evidenceHeapBytes', 'evidence.readsInFlight', 'runner.heapBytesPerEvidenceByte'],
+      formula: (heap, inFlight, perByte) => Math.floor(heap / (inFlight * perByte)),
+      description:
+        'The hard maximum of limit:evidence.envelope.maxResponseBytes: limit:runner.evidenceHeapBytes ÷ (limit:evidence.readsInFlight × limit:runner.heapBytesPerEvidenceByte), rounded down. It does not yet reserve heap for the evidence the other readers retain, which the Q10 joint maximum is to bound. Approved by the maintainer on 2026-11-27 (L11, Q3(a), #383).',
+    },
+    test: 'none: the hard maximum of an adopter setting the parser does not read yet (L12, #384); src/limits.test.ts pins its formula',
+  },
+  {
     id: 'runner.oldGenerationBytes',
     value: 2_147_483_648,
     unit: 'bytes',
@@ -1184,6 +1266,19 @@ const DEFINITIONS = [
       test: 'src/pipeline.test.ts > a full run makes freshness.checksPerRun freshness checks',
     },
   ),
+  derived(
+    'evidence.readsInFlight',
+    'count',
+    [],
+    () => 1,
+    'Evidence responses one run holds in flight at once. Every evidence read is awaited before the next starts: the collectors run in turn (src/packet.ts:97-99), the research stages in turn (src/research.ts:395-421), each reader refuses a second read while one is pending (for example src/github-read.ts:534-538 and src/evidence/advisory-read.ts:783-792), and no evidence code calls Promise.all; only analysis batches run concurrently (src/analysis/batches.ts). Approved by the maintainer on 2026-11-27 (L11, #383).',
+    {
+      protects:
+        'Counts the response bodies the evidence phase parses at once, so the per-response heap bound multiplies by it.',
+      effect: 'Not enforced: it divides the evidence-phase heap for limit:runner.maxEvidenceResponseBytes.',
+      test: 'src/pipeline.test.ts > a full run has at most evidence.readsInFlight evidence responses in flight',
+    },
+  ),
   // Evidence read envelope and its reader shares, from budget.ts.
   derived(
     'evidence.envelope.maxRequests',
@@ -1206,14 +1301,20 @@ const DEFINITIONS = [
       test: 'none: sum of the six reader shares (src/budget.ts:24, built from src/budget.ts:39-90); each reader stops at its own share (for example src/github-read.ts:396), and only budget.test.ts:53-54 and research.test.ts:414 read the total',
     },
   ),
-  unjustified('evidence.envelope.maxResponseBytes', MiB, 'bytes', {
-    protects:
-      'A response body is buffered before its size is checked, so one oversized response could exhaust runner memory; the cap bounds each response.',
-    effect:
-      'A response over the cap fails only its own read with budget and its body is cancelled; other reads continue.',
-    note: 'awaiting L8 measurement',
-    test: 'src/evidence/npm-registry.test.ts > a response exactly at the envelope per-response cap reads; one byte more fails only that read',
-  }),
+  configured(
+    'evidence.envelope.maxResponseBytes',
+    MiB,
+    'bytes',
+    { setting: 'limits.evidenceResponseBytes', maximum: 'runner.maxEvidenceResponseBytes' },
+    'The adopter: a larger cap reads larger legitimate responses (such as the compare page of #472) and spends more runner heap per read and a longer request timeout. Section 5 admitted the response cap as configuration on 2026-11-27 (L11, Q3(a), #383).',
+    {
+      protects:
+        'A response body is buffered before its size is checked, so one oversized response could exhaust runner memory; the cap bounds each response.',
+      effect:
+        'A response over the cap fails only its own read with budget and its body is cancelled; other reads continue.',
+      test: 'src/evidence/npm-registry.test.ts > a response exactly at the envelope per-response cap reads; one byte more fails only that read',
+    },
+  ),
   derived(
     'evidence.envelope.maxTotalBytes',
     'bytes',

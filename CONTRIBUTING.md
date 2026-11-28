@@ -259,6 +259,14 @@ current `limit:analysis.responseBytes`. Re-measure after a change to the
 validation, analysis or render path, and record the new values with the
 date.
 
+The same run measures the evidence phase. Its `evidence` block gives
+`heapBytesPerPacketByte` for `limit:runner.evidenceHeapBytesPerPacketByte`,
+covering the packet through validation and revalidation only. It gives
+`heapBytesPerResponseByte` for `limit:runner.heapBytesPerEvidenceByte`: one
+response body at `limit:evidence.envelope.maxResponseBytes` pushed through
+each evidence reader's parse path, with the largest reader kept. Re-measure
+after a change to an evidence reader's read, parse or copy path.
+
 ### Token-length probe
 
 `limit:analysis.maxTokenEscapedBytes` is the longest vocabulary token of the

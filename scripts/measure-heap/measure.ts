@@ -2,6 +2,8 @@
  * One heap measurement for the heap probe (run.ts starts it with the flags it needs): the peak
  * heap of one packet through T4 validation, revalidation, analysis with a stub model, and render.
  * Usage: measure.ts <packet.json>, with --expose-gc and the hooks in register.mjs. With
+ * PHASE=evidence it stops after revalidation, the packet's evidence-phase path: assembly's
+ * serialization, T4 validation and research's revalidation, with no analysis. With
  * RESP=flat|objects|nested, every model reply is a body of exactly `limit:analysis.responseBytes`
  * in that JSON shape instead of a valid document, which bounds what one reply can hold.
  */
@@ -175,14 +177,18 @@ const { config, validated } = await stage('validate', () =>
 );
 dump = null;
 const researched = await stage('revalidate', () => reconcile(validated, expected));
-const reviewed = await stage('assessAndRender', () =>
-  assess(
-    researched.packet,
-    config,
-    { evaluatedAt, signalAttempts },
-    body ? craftedModel : stubModel,
-  ),
-);
+// PHASE=evidence stops where analysis would start: the evidence phase ends with revalidation.
+const reviewed =
+  process.env.PHASE === 'evidence'
+    ? { kind: researched.packet === null ? 'none' : 'revalidated', analysisTiming: null }
+    : await stage('assessAndRender', () =>
+        assess(
+          researched.packet,
+          config,
+          { evaluatedAt, signalAttempts },
+          body ? craftedModel : stubModel,
+        ),
+      );
 clearInterval(timer);
 const peakDelta = peak - base;
 console.log(

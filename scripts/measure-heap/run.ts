@@ -19,12 +19,19 @@
  *   arrays) is kept. The remainder includes the process baseline, so the formula needs no
  *   separate term for it.
  *
+ * - `limit:runner.evidenceHeapBytesPerPacketByte`: the same growth with PHASE=evidence, which stops
+ *   after revalidation, from the large packet to it repeated 16 times, plus 1 MiB of resolution.
+ * - `limit:runner.heapBytesPerEvidenceByte`: one response body of exactly
+ *   `limit:evidence.envelope.maxResponseBytes` through each reader's parse path (evidence.ts), the
+ *   worst of three shapes less a two-element body, plus 1 MiB of resolution, per body byte; the
+ *   largest reader is kept.
+ *
  * The shapes run in parallel, one process each; the whole probe takes several minutes. Run it on
  * Node 24, the action's runtime.
  */
 import { execFileSync, spawn } from 'node:child_process';
 import { mkdtempSync, rmSync } from 'node:fs';
-import { tmpdir } from 'node:os';
+import { availableParallelism, tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import type * as Format from '../../src/format.js';
@@ -49,19 +56,41 @@ const FLAGS = [
 const SHAPES = ['flat', 'objects', 'nested'] as const;
 const LARGE_MEMBERS = '93';
 const REPEATS = '4';
+/** The evidence-phase packet is repeated more, so one MiB of bisection is a smaller share. */
+const EVIDENCE_REPEATS = '16';
+const READERS = ['transport', 'session', 'advisory', 'osv', 'pypi', 'npm'] as const;
+const READER_SHAPES = ['flat', 'objects', 'nested'] as const;
+/** At most this many bisections run at once, one Node process each. */
+const PARALLEL = availableParallelism();
 /** Twelve members give 16 units, two batches of `limit:analysis.maxUnits`; checked below. */
 const TWO_BATCH_MEMBERS = '12';
 /** Room for the repeated packet's records; only written register values can be overridden. */
-const REPEATED_OVERRIDES = [
-  'packet.changes',
-  'packet.sources',
-  'packet.findings',
-  'analysis.maxCalls',
-  'analysis.projectionBytes',
-  'analysis.projectionEntries',
-]
-  .map((id) => `${id}=${limit(id as Parameters<typeof limit>[0]) * Number(REPEATS) * 2}`)
-  .join(',');
+const overridesFor = (repeats: string) =>
+  [
+    'packet.changes',
+    'packet.sources',
+    'packet.findings',
+    'analysis.maxCalls',
+    'analysis.projectionBytes',
+    'analysis.projectionEntries',
+  ]
+    .map((id) => `${id}=${limit(id as Parameters<typeof limit>[0]) * Number(repeats) * 2}`)
+    .join(',');
+const REPEATED_OVERRIDES = overridesFor(REPEATS);
+
+/** Runs the tasks with at most PARALLEL in flight, keeping their order. */
+async function pool<T>(tasks: (() => Promise<T>)[]): Promise<T[]> {
+  const results: T[] = [];
+  let next = 0;
+  const worker = async () => {
+    while (next < tasks.length) {
+      const index = next++;
+      results[index] = await (tasks[index] as () => Promise<T>)();
+    }
+  };
+  await Promise.all(Array.from({ length: PARALLEL }, worker));
+  return results;
+}
 
 const node = (args: string[]) =>
   execFileSync(process.execPath, [...FLAGS, ...args], { cwd: ROOT, encoding: 'utf8' });
@@ -76,11 +105,16 @@ const describe = (file: string, env: NodeJS.ProcessEnv = {}): Run =>
     }),
   ) as Run;
 
-function completes(file: string, env: NodeJS.ProcessEnv, mib: number): Promise<boolean> {
+function completes(
+  file: string,
+  env: NodeJS.ProcessEnv,
+  mib: number,
+  script = 'measure.ts',
+): Promise<boolean> {
   return new Promise((done) => {
     spawn(
       process.execPath,
-      [`--max-old-space-size=${mib}`, ...FLAGS, join(HERE, 'measure.ts'), file],
+      [`--max-old-space-size=${mib}`, ...FLAGS, join(HERE, script), ...file.split(' ')],
       {
         cwd: ROOT,
         env: { ...process.env, ...env },
@@ -91,13 +125,18 @@ function completes(file: string, env: NodeJS.ProcessEnv, mib: number): Promise<b
 }
 
 /** The smallest --max-old-space-size, in MiB, at which the run completes. */
-async function minimumOldSpace(file: string, env: NodeJS.ProcessEnv = {}): Promise<number> {
+async function minimumOldSpace(
+  file: string,
+  env: NodeJS.ProcessEnv = {},
+  script = 'measure.ts',
+): Promise<number> {
   let low = 0;
   let high = limit('runner.oldGenerationBytes') / BINARY_BYTES.MiB;
-  if (!(await completes(file, env, high))) throw new Error(`${file} fails at the heap limit`);
+  if (!(await completes(file, env, high, script)))
+    throw new Error(`${file} fails at the heap limit`);
   while (high - low > 1) {
     const middle = Math.floor((low + high) / 2);
-    if (await completes(file, env, middle)) high = middle;
+    if (await completes(file, env, middle, script)) high = middle;
     else low = middle;
   }
   return high;
@@ -134,6 +173,46 @@ try {
   const perPacketByte =
     ((mib.repeated - mib.large) * BINARY_BYTES.MiB) /
     (runs.repeated.packetBytes - runs.large.packetBytes);
+
+  // The evidence phase: the packet through assembly's serialization, validation and
+  // revalidation only, and one response body at the cap through each reader's parse path.
+  const evidenceRepeated = join(dir, 'evidence-repeated.json');
+  node([join(HERE, 'packet.ts'), evidenceRepeated, LARGE_MEMBERS, EVIDENCE_REPEATS]);
+  const evidenceOverrides = {
+    PHASE: 'evidence',
+    HEAP_LIMIT_OVERRIDES: overridesFor(EVIDENCE_REPEATS),
+  };
+  const evidenceRepeatedBytes = describe(evidenceRepeated, evidenceOverrides).packetBytes;
+  const [evidenceLarge = 0, evidenceRepeatedMib = 0, ...readerMib] = await pool([
+    () => minimumOldSpace(large, { PHASE: 'evidence' }),
+    () => minimumOldSpace(evidenceRepeated, evidenceOverrides),
+    ...READERS.flatMap((reader) =>
+      ['empty', ...READER_SHAPES].map(
+        (shape) => () => minimumOldSpace(`${reader} ${shape}`, {}, 'evidence.ts'),
+      ),
+    ),
+  ]);
+  // Bisection finds each minimum to within 1 MiB, so a difference of two is low by under 1 MiB;
+  // both evidence-phase figures add that 1 MiB, an upper bound rather than a midpoint.
+  const resolution = BINARY_BYTES.MiB;
+  const evidencePerPacketByte =
+    ((evidenceRepeatedMib - evidenceLarge) * BINARY_BYTES.MiB + resolution) /
+    (evidenceRepeatedBytes - runs.large.packetBytes);
+  const responseBytes = limit('evidence.envelope.maxResponseBytes');
+  const perReader = READERS.map((reader, r) => {
+    const row = readerMib.slice(r * (READER_SHAPES.length + 1), (r + 1) * (READER_SHAPES.length + 1));
+    const [empty = 0, ...shapes] = row;
+    const mibByShape = Object.fromEntries(READER_SHAPES.map((shape, i) => [shape, shapes[i] ?? 0]));
+    const worstMib = Math.max(...Object.values(mibByShape));
+    // A shape no heavier than the two-element body never reached the parse.
+    if (worstMib <= empty) throw new Error(`${reader}: the body at the cap was not parsed`);
+    return {
+      reader,
+      minimumOldSpaceMiB: { empty, ...mibByShape },
+      perResponseByte: ((worstMib - empty) * BINARY_BYTES.MiB + resolution) / responseBytes,
+    };
+  });
+  const worstReader = perReader.reduce((a, b) => (b.perResponseByte > a.perResponseByte ? b : a));
   const worst = replies.reduce((a, b) => (b.mib > a.mib ? b : a));
   const replyHeap = worst.mib * BINARY_BYTES.MiB - perPacketByte * runs.twoBatch.packetBytes;
   const inFlight = worst.respBytes * limit('analysis.maxConcurrentCalls');
@@ -149,6 +228,15 @@ try {
         worstShape: worst.shape,
         replyHeapBytes: replyHeap,
         replyHeapBytesPerByte: replyHeap / inFlight,
+        evidence: {
+          minimumOldSpaceMiB: { large: evidenceLarge, repeated: evidenceRepeatedMib },
+          packetBytes: { large: runs.large.packetBytes, repeated: evidenceRepeatedBytes },
+          heapBytesPerPacketByte: evidencePerPacketByte,
+          responseBytes,
+          readers: perReader,
+          worstReader: worstReader.reader,
+          heapBytesPerResponseByte: worstReader.perResponseByte,
+        },
       },
       null,
       2,

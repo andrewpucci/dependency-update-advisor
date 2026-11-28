@@ -355,8 +355,43 @@ each with today's value as its default and the hard maximum named here:
   and no constraint gives its value. Hard maximum: the runner heap divided
   by the responses in flight at once times their parse amplification, pinned
   by a structural test. The request timeout derives from the cap, not the
-  reverse. Revisit this when #472 lands. The register entry stays
-  `unjustified` until the runner-heap entry it needs is in the register.
+  reverse. Revisit this when #472 lands.
+  - Amended (L11; approved by the maintainer on 2026-11-27,
+    [#383](https://github.com/andrewpucci/dependency-update-advisor/issues/383)):
+    the runner heap here is the evidence phase's share,
+    `limit:runner.evidenceHeapBytes`, and the hard maximum is
+    `limit:runner.maxEvidenceResponseBytes`: that share divided by
+    `limit:evidence.readsInFlight` times the measured
+    `limit:runner.heapBytesPerEvidenceByte`. A structural test pins the
+    responses in flight.
+
+#### Runner heap by phase
+
+Amended (L11; approved by the maintainer on 2026-11-27,
+[#383](https://github.com/andrewpucci/dependency-update-advisor/issues/383)).
+A review runs in two heap phases. Snapshot, collection and research make up
+the evidence phase. Model analysis and rendering make up the analysis phase,
+which starts only once research has returned. Research readers are locals of
+research that close when it ends, and cached research bodies are byte arrays
+outside the V8 heap. Each phase gets the whole of
+`limit:runner.oldGenerationBytes` less what it holds, so the two phases'
+budgets are not added together.
+
+- **Analysis phase:** the model replies in flight
+  (`limit:analysis.replyHeapBytes`) and the packet at its analysis rate
+  (`limit:runner.heapBytesPerPacketByte`). `limit:packet.bytes` is derived
+  from this phase.
+- **Evidence phase:** the packet at its evidence rate
+  (`limit:runner.evidenceHeapBytesPerPacketByte`), which covers assembly,
+  validation and revalidation, plus the responses being parsed and the
+  evidence readers retain. `limit:runner.evidenceHeapBytes` is what is left
+  for responses and retained evidence.
+- **State that spans both phases** counts in each phase's budget. This is
+  state that stays reachable from evidence into analysis: the trusted config,
+  the snapshot tree and the npm inventory. Each is bounded by the register
+  entry its derivation names.
+- Each rate is measured with its own probe (`npm run measure:heap`), never
+  borrowed from the other phase.
 
 ### 6. Changing a limit
 

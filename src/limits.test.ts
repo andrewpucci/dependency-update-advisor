@@ -286,6 +286,46 @@ test('the heap inputs of packet.bytes keep their sources and formula', () => {
     expect(dependents(REGISTER, input)).toContain('analysis.replyHeapBytes');
 });
 
+test('the evidence-phase heap inputs keep their sources and formula', () => {
+  for (const id of [
+    'runner.heapBytesPerEvidenceByte',
+    'runner.evidenceHeapBytesPerPacketByte',
+  ] as const)
+    expect(limitEntry(id).basis, id).toMatchObject({
+      kind: 'measured',
+      command: 'npm run measure:heap',
+    });
+  const heap = limitEntry('runner.evidenceHeapBytes').basis;
+  expect(heap).toMatchObject({
+    kind: 'derived',
+    inputs: [
+      'runner.oldGenerationBytes',
+      'packet.bytes',
+      'runner.evidenceHeapBytesPerPacketByte',
+      'config.maxBytes',
+      'evidence.allocation.transport.snapshot.maxTotalBytes',
+      'w2.npm.maxRetainedBytes',
+      'runner.heapBytesPerEvidenceByte',
+    ],
+  });
+  if (heap.kind !== 'derived') throw new Error('derived');
+  // H − packet × rate − (state reachable into analysis) × evidence rate.
+  expect(heap.formula(1000, 10, 2, 1, 2, 3, 5)).toBe(1000 - 20 - 30);
+  const cap = limitEntry('runner.maxEvidenceResponseBytes').basis;
+  expect(cap).toMatchObject({
+    kind: 'derived',
+    inputs: ['runner.evidenceHeapBytes', 'evidence.readsInFlight', 'runner.heapBytesPerEvidenceByte'],
+  });
+  if (cap.kind !== 'derived') throw new Error('derived');
+  expect(cap.formula(1000, 2, 3)).toBe(166);
+  expect(limitEntry('evidence.envelope.maxResponseBytes').configurable).toMatchObject({
+    maximum: 'runner.maxEvidenceResponseBytes',
+  });
+  expect(limit('evidence.envelope.maxResponseBytes')).toBeLessThanOrEqual(
+    limit('runner.maxEvidenceResponseBytes'),
+  );
+});
+
 test('packet.bytes is the packet that fits the runner heap beside the model replies', () => {
   const inputs: LimitId[] = [
     'runner.oldGenerationBytes',

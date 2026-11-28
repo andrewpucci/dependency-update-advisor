@@ -478,6 +478,76 @@ test('a full run makes freshness.checksPerRun freshness checks', async () => {
   expect(checks - 1).toBe(limit('freshness.checksPerRun'));
 });
 
+test('a full run has at most evidence.readsInFlight evidence responses in flight', async () => {
+  const { input, modelCalls, githubCalls, publicCalls } = await setup({ evidence: 'changes' });
+  let live = 0;
+  let most = 0;
+  const begin = () => {
+    live += 1;
+    most = Math.max(most, live);
+  };
+  // A response is in flight from its request until its body is read to the end or cancelled.
+  const tracked =
+    (fetch: PipelineInput['githubFetch']): PipelineInput['githubFetch'] =>
+    async (url, init) => {
+      begin();
+      const response = await fetch(url, init);
+      let open = true;
+      const end = () => {
+        if (open) live -= 1;
+        open = false;
+      };
+      if (!response.body) {
+        end();
+        return response;
+      }
+      const reader = response.body.getReader();
+      const body = new ReadableStream<Uint8Array>({
+        async pull(controller) {
+          const chunk = await reader.read();
+          if (chunk.done) {
+            end();
+            controller.close();
+          } else controller.enqueue(chunk.value);
+        },
+        cancel(reason) {
+          end();
+          return reader.cancel(reason);
+        },
+      });
+      return new Response(body, { status: response.status, headers: response.headers });
+    };
+  // Snapshot and event reads return parsed values, so each is in flight while it is awaited.
+  const awaited = <T extends object>(reads: T): T =>
+    Object.fromEntries(
+      Object.entries(reads).map(([name, read]) => [
+        name,
+        typeof read === 'function'
+          ? async (...args: unknown[]) => {
+              begin();
+              try {
+                return await (read as (...a: unknown[]) => Promise<unknown>)(...args);
+              } finally {
+                live -= 1;
+              }
+            }
+          : read,
+      ]),
+    ) as T;
+  const result = await runReview({
+    ...input,
+    githubFetch: tracked(input.githubFetch),
+    publicFetch: tracked(input.publicFetch),
+    snapshotReads: awaited(input.snapshotReads),
+    eventReads: awaited(input.eventReads),
+  });
+  expect(result.kind).toBe('handed-off');
+  expect(modelCalls.length).toBeGreaterThan(0);
+  expect(githubCalls.length + publicCalls.length).toBeGreaterThan(1);
+  expect(live).toBe(0);
+  expect(most).toBe(limit('evidence.readsInFlight'));
+});
+
 test('hands off a model failure as a status-only failure with no body', async () => {
   const { input, sink } = await setup({ evidence: 'changes', model: failingModel('transport') });
   const result = await runReview(input);
