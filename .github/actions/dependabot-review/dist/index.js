@@ -401,6 +401,247 @@ const heapBytesFor = (memory, youngGeneration, offHeap, baseline, reserved) => M
 * responses in flight at their parse peak. Each phase is rounded down and the smaller is kept.
 */
 const packetBytesFor = (heap, replies, expansion, perPacketByte, retained, readsInFlight, responseBytes, perResponseByte, evidencePerPacketByte) => Math.min(Math.floor((heap - replies - expansion) / perPacketByte), Math.floor((heap - retained - readsInFlight * responseBytes * perResponseByte) / evidencePerPacketByte));
+/** The heap the model replies hold at peak: `calls` replies of `bytes` at `perByte`, rounded up. */
+const replyHeapBytesFor = (calls, bytes, perByte) => Math.ceil(calls * bytes * perByte);
+/**
+* limit:packet.bytes with `calls` model replies of `reply` bytes in flight in place of the
+* register's: the replies' off-heap copies (2 each, as limit:runner.offHeapBytes counts them) move
+* limit:runner.heapBytes, and their parse peak moves limit:analysis.replyHeapBytes. Every other
+* input keeps its register value, so this is the packet cap a run at that setting gets.
+*/
+function packetBytesWithReplies(h, calls, reply) {
+	const offHeap = h.offHeap - h.calls * 2 * h.reply + calls * 2 * reply;
+	const heap = heapBytesFor(h.memory, h.youngGeneration, offHeap, h.baseline, h.reserved);
+	return packetBytesFor(heap, replyHeapBytesFor(calls, reply, h.perReplyByte), h.expansion, h.perPacketByte, h.retained, h.readsInFlight, h.response, h.perResponseByte, h.evidencePerPacketByte);
+}
+/** The register ids PacketHeapInputs reads, in its field order. */
+const PACKET_HEAP_INPUTS = [
+	"runner.memoryBytes",
+	"runner.youngGenerationBytes",
+	"runner.offHeapBytes",
+	"runner.baselineBytes",
+	"runner.systemReservedBytes",
+	"analysis.maxConcurrentCalls",
+	"analysis.responseBytes",
+	"runner.heapBytesPerReplyByte",
+	"runner.unitExpansionHeapBytes",
+	"runner.heapBytesPerPacketByte",
+	"runner.evidenceRetainedHeapBytes",
+	"evidence.readsInFlight",
+	"evidence.envelope.maxResponseBytes",
+	"runner.heapBytesPerEvidenceByte",
+	"runner.evidenceHeapBytesPerPacketByte"
+];
+const packetHeapInputs = (values) => {
+	const [memory = 0, youngGeneration = 0, offHeap = 0, baseline = 0, reserved = 0, calls = 0, reply = 0, perReplyByte = 0, expansion = 0, perPacketByte = 0, retained = 0, readsInFlight = 0, response = 0, perResponseByte = 0, evidencePerPacketByte = 0] = values;
+	return {
+		memory,
+		youngGeneration,
+		offHeap,
+		baseline,
+		reserved,
+		calls,
+		reply,
+		perReplyByte,
+		expansion,
+		perPacketByte,
+		retained,
+		readsInFlight,
+		response,
+		perResponseByte,
+		evidencePerPacketByte
+	};
+};
+/**
+* The largest whole value in [1, `ceiling`] at which `packet` (decreasing in it) is at least
+* `floor`, or 0 when none is (SPEC-limit-register section 5, the floor rule, L11 A1, #383).
+*/
+function largestAtFloor(ceiling, floor, packet) {
+	if (ceiling < 1 || packet(1) < floor) return 0;
+	let low = 1;
+	let high = Math.floor(ceiling);
+	if (packet(high) >= floor) return high;
+	while (high - low > 1) {
+		const middle = Math.floor((low + high) / 2);
+		if (packet(middle) >= floor) low = middle;
+		else high = middle;
+	}
+	return low;
+}
+/**
+* Printable ASCII a packet id may hold with no JSON escape: 0x20 to 0x7E less `"` and `\`, the
+* one-byte characters T4's text check admits (src/schema.ts `text`).
+*/
+const FLOOR_ID_ALPHABET = Array.from({ length: 95 }, (_, index) => String.fromCharCode(32 + index)).filter((character) => character !== "\"" && character !== "\\");
+/** The `index`th shortest distinct string over FLOOR_ID_ALPHABET (bijective base 93). */
+function shortestId(index) {
+	let rest = index + 1;
+	let id = "";
+	while (rest > 0) {
+		rest -= 1;
+		id = `${FLOOR_ID_ALPHABET[rest % FLOOR_ID_ALPHABET.length] ?? ""}${id}`;
+		rest = Math.floor(rest / FLOOR_ID_ALPHABET.length);
+	}
+	return id;
+}
+const FLOOR_SHA = "0".repeat(40);
+/**
+* The smallest review packet T4 accepts with `changes` changes (limit:packet.floorBytes), and the
+* trusted snapshot it validates against: every change an npm declaration addition, which carries
+* no evidence category, with the shortest distinct id and name; one root `package.json` head
+* source per limit:packet.listEntries members; the inventory source; every binding string at its
+* shortest valid length and every number 1; context disabled; no finding, relationship or
+* reachability verdict. src/schema.test.ts validates it and pins its bytes.
+*/
+function floorPacket(changes, listEntries) {
+	const repository = {
+		id: 1,
+		owner: "a",
+		name: "a"
+	};
+	const binding = {
+		repository,
+		workflow: {
+			id: 1,
+			path: "a"
+		},
+		runId: 1,
+		runAttempt: 1,
+		pullNumber: 1,
+		headRepository: repository,
+		headSha: FLOOR_SHA,
+		baseRef: "a",
+		baseSha: FLOOR_SHA,
+		mergeBaseSha: FLOOR_SHA,
+		actorId: 1,
+		conclusion: "success",
+		identity: [
+			1,
+			1,
+			1,
+			1,
+			1,
+			FLOOR_SHA
+		]
+	};
+	const ids = Array.from({ length: changes }, (_, index) => shortestId(index));
+	const groups = Array.from({ length: Math.ceil(changes / listEntries) }, (_, index) => ids.slice(index * listEntries, (index + 1) * listEntries));
+	const inventoryId = shortestId(0);
+	const fileIds = groups.map((_, index) => shortestId(index + 1));
+	const contextRevision = {
+		repository,
+		sha: FLOOR_SHA
+	};
+	const context = {
+		ok: true,
+		status: "disabled",
+		dependencies: [],
+		reasons: []
+	};
+	const absent = {
+		status: "not_applicable",
+		reasons: [],
+		sourceIds: [inventoryId]
+	};
+	return {
+		packet: {
+			version: 1,
+			binding,
+			baseSha: FLOOR_SHA,
+			contextRevision,
+			coverage: {
+				npm: {
+					status: "complete",
+					reasons: [],
+					sourceIds: [inventoryId]
+				},
+				actions: absent,
+				uv: absent
+			},
+			changes: ids.map((id, index) => ({
+				id,
+				ecosystem: "npm",
+				basis: "declaration",
+				kind: "addition",
+				role: "direct",
+				evidence: {},
+				from: null,
+				to: {
+					root: ".",
+					name: id,
+					specifiers: { dependencies: "" },
+					sourceId: fileIds[Math.floor(index / listEntries)]
+				}
+			})),
+			sources: [{
+				id: inventoryId,
+				kind: "file-list",
+				ecosystems: [
+					"npm",
+					"actions",
+					"uv"
+				],
+				memberIds: [],
+				status: "available",
+				reasons: [],
+				provenance: {
+					kind: "inventory",
+					repository,
+					baseSha: FLOOR_SHA,
+					headSha: FLOOR_SHA,
+					absentEcosystems: ["actions", "uv"]
+				}
+			}, ...groups.map((members, index) => ({
+				id: fileIds[index],
+				kind: "file",
+				ecosystems: ["npm"],
+				memberIds: members,
+				status: "available",
+				reasons: [],
+				provenance: {
+					kind: "file",
+					revision: "head",
+					repository,
+					sha: FLOOR_SHA,
+					path: "package.json"
+				}
+			}))],
+			findings: [],
+			relationships: [],
+			reachability: [],
+			retryAfter: null,
+			context
+		},
+		expected: {
+			binding,
+			baseSha: FLOOR_SHA,
+			contextRevision,
+			context
+		}
+	};
+}
+/**
+* Fixed text of a stored-name discovery URL (githubUrl in src/evidence/advisory-read.ts) for pip
+* with no spelling, at the longer query kind (`type=reviewed`) and the register page size; each
+* further spelling after the first adds its `,`, which URLSearchParams writes as `%2C`.
+* src/evidence/advisory-read.name-forms.test.ts pins both against githubUrl.
+*/
+const DISCOVERY_URL_TEXT = Object.freeze({
+	fixedBytes: 83,
+	separatorBytes: 3
+});
+/** PEP 503 separators (`-`, `_`, `.`) and the two discovery query kinds (reviewed, malware). */
+const PIP_SEPARATOR_COUNT = 3;
+const DISCOVERY_QUERY_KINDS = 2;
+/**
+* Discovery requests for every spelling of the shortest PyPI name with `separators` separators
+* (one character per part, 2n + 1 characters), for both query kinds, under a first-URL room of
+* `room` bytes past the fixed text.
+*/
+const spellingRequests = (separators, room) => {
+	const perUrl = Math.floor((room + DISCOVERY_URL_TEXT.separatorBytes) / (2 * separators + 1 + DISCOVERY_URL_TEXT.separatorBytes));
+	return DISCOVERY_QUERY_KINDS * Math.ceil(PIP_SEPARATOR_COUNT ** separators / perUrl);
+};
 /**
 * Sequential publication requests the publication reserve allows (src/comments.ts:329-365): the
 * comment selection, its re-read, the publication gate, the write and the gate after it.
@@ -440,12 +681,14 @@ function derived(id, unit, inputs, formula, description, audit = {}) {
 }
 /** The 2026-11-27 approval of the L11 recommendations (#383), which admitted these settings. */
 const L11_APPROVAL = "approved by the maintainer on 2026-11-27 (L11, #383)";
+/** The 2026-11-28 approval of the decisions for the stopped L11 entries (#383). */
+const L11_STOPS_APPROVAL = "approved by the maintainer on 2026-11-28 (L11, decisions for the stopped entries, #383)";
 /**
 * An adopter setting (SPEC-limit-register section 5): `value` is its default, today's value, and
 * the bounds name register entries. L12 (#384) adds the setting to the config contract, the
 * schema and the parser; until then every run uses the default.
 */
-function configured(id, value, unit, setting, bears, audit) {
+function configured(id, value, unit, setting, bears, audit, approved = L11_APPROVAL) {
 	return {
 		id,
 		value,
@@ -455,7 +698,7 @@ function configured(id, value, unit, setting, bears, audit) {
 		basis: {
 			kind: "config",
 			bears,
-			approved: L11_APPROVAL
+			approved
 		},
 		configurable: {
 			...setting,
@@ -776,6 +1019,33 @@ const Q10_RETAINED_INPUTS = [
 	"research.maxRetainedBytes",
 	"config.maxBytes"
 ];
+/**
+* The attempts one upstream member records outside the range scan, at most: 2 metadata reads and
+* the metadata fallback record, 2 release tag candidates, the comparison and its final recheck,
+* and 3 changelog paths. Pinned by the structural test named on research.maxAttempts.
+*/
+const UPSTREAM_FIXED_ATTEMPTS = 10;
+/**
+* The parts of a signal excerpt around untrusted registry text, in UTF-16 code units, pinned by
+* the structural tests named on the entries that use them. A deprecation excerpt is
+* JSON.stringify of {deprecated: {marker: 'deprecated', reason}}: 50 units around the reason (the
+* PyPI yank marker is shorter), and a cut reason ends with the 19-unit marker. A publisher excerpt
+* is JSON.stringify of {level: 'registry_reported', maintainers: {kind: 'known', value: names}}:
+* 71 units around the names, and each name takes at least 4 (a one-character name, its quotes and
+* its comma), the last one 3.
+*/
+const SIGNAL_EXCERPT = Object.freeze({
+	reasonWrapperCodeUnits: 50,
+	reasonMarker: " [reason truncated]",
+	maintainersWrapperCodeUnits: 71,
+	maintainerCodeUnits: 4
+});
+/**
+* The snapshot reads made before any excerpt blob in the shallowest layout: repository, commit,
+* root listing, .github listing, config blob, Dependabot blob, and one source-root listing.
+* Pinned by the structural test named on context.maxSourceCandidates.
+*/
+const SNAPSHOT_FIXED_READS = 7;
 const DEFINITIONS = [
 	{
 		id: "packet.bytes",
@@ -799,6 +1069,20 @@ const DEFINITIONS = [
 			description: "The largest packet whose heap fits in both phases, the smaller of two values. Analysis: (limit:runner.heapBytes − limit:analysis.replyHeapBytes − limit:runner.unitExpansionHeapBytes) ÷ limit:runner.heapBytesPerPacketByte; the concurrent model replies and the decision-unit expansion at its structural maximum come off first, and the snapshot tree, research cache and npm inventory are released before analysis (src/pipeline.ts), so no evidence state is held beside them. Evidence: (limit:runner.heapBytes − limit:runner.evidenceRetainedHeapBytes − limit:evidence.readsInFlight × limit:evidence.envelope.maxResponseBytes × limit:runner.heapBytesPerEvidenceByte) ÷ limit:runner.evidenceHeapBytesPerPacketByte; the evidence the readers keep at the Q10 settings and the responses in flight at their parse peak come off first. Each is rounded down. The packet is never sent to the model whole, so runner heap is its only real limit. Approved by the maintainer on 2026-11-27 (L11, #383); the expansion, the released state and the evidence-phase bound on 2026-11-28."
 		},
 		test: "src/schema.test.ts > enforces the exact serialized packet budget including multibyte text"
+	},
+	{
+		id: "packet.floorBytes",
+		unit: "bytes",
+		protects: "States the smallest packet a valid change at limit:packet.changes changes can produce, so an adopter setting that spends heap can never take limit:packet.bytes below what any review at the change cap needs.",
+		effect: "Not enforced at run time. check:limits rejects a register whose limit:packet.bytes falls below it at the defaults or with any setting at its hard maximum, and each heap-spending setting's hard maximum is the largest value at which limit:packet.bytes stays at or above it; L12 makes the config parser apply the same check at the adopter's settings.",
+		basis: {
+			kind: "derived",
+			inputs: ["packet.changes", "packet.listEntries"],
+			formula: (changes, listEntries) => Buffer.byteLength(JSON.stringify(floorPacket(changes, listEntries).packet)),
+			description: "The serialized bytes of the smallest packet T4 accepts with limit:packet.changes changes and no optional evidence (floorPacket in src/limits.ts): every change an npm declaration addition, the change kind with no evidence category, with the shortest distinct ids and names over the 93 printable ASCII characters JSON writes unescaped; one root package.json head source per limit:packet.listEntries members and the inventory source; every binding string at its shortest valid length; context disabled; no finding, relationship or reachability verdict. Below it no valid change at the change cap can produce any packet, so it is a structural floor, not demand. A heap-spending setting's hard maximum is the largest value at which limit:packet.bytes stays at or above it (SPEC-limit-register section 5). Approved by the maintainer on 2026-11-28 (L11, A1, #383).",
+			structuralTest: "src/schema.test.ts > the packet floor is the smallest packet T4 accepts at the change cap"
+		},
+		test: "src/limits.test.ts > no heap setting at its hard maximum takes packet.bytes below its floor"
 	},
 	{
 		id: "runner.heapBytesPerPacketByte",
@@ -940,7 +1224,7 @@ const DEFINITIONS = [
 			kind: "derived",
 			inputs: [
 				"runner.heapBytes",
-				"packet.bytes",
+				"packet.floorBytes",
 				"runner.evidenceHeapBytesPerPacketByte",
 				"evidence.readsInFlight",
 				"evidence.envelope.maxResponseBytes",
@@ -949,8 +1233,8 @@ const DEFINITIONS = [
 				"research.maxRetainedBytes",
 				"config.maxBytes"
 			],
-			formula: (heap, packet, perPacketByte, inFlight, response, perResponseByte, perRetained, research, config) => Math.floor((heap - packet * perPacketByte - inFlight * response * perResponseByte) / perRetained) - research - config,
-			description: "The joint hard maximum of the thirteen Q10 byte shares and retained caps: the evidence-phase heap left beside the packet at its evidence-phase rate and the responses in flight at their parse peak, at limit:runner.heapBytesPerRetainedByte, less limit:research.maxRetainedBytes and limit:config.maxBytes, which are held beside them, rounded down. limit:packet.bytes takes the evidence-phase heap the defaults leave, so a setting raised above its default lowers the packet cap rather than passing this maximum. Q10(a) approved by the maintainer on 2026-11-27, #383."
+			formula: (heap, floor, perPacketByte, inFlight, response, perResponseByte, perRetained, research, config) => Math.floor((heap - floor * perPacketByte - inFlight * response * perResponseByte) / perRetained) - research - config,
+			description: "The joint hard maximum of the thirteen Q10 byte shares and retained caps: the evidence-phase heap left beside a packet at its structural floor (limit:packet.floorBytes) at its evidence-phase rate and the responses in flight at their parse peak, at limit:runner.heapBytesPerRetainedByte, less limit:research.maxRetainedBytes and limit:config.maxBytes, which are held beside them, rounded down. limit:packet.bytes takes the evidence-phase heap the settings leave, so a setting raised above its default lowers the packet cap, and at this maximum the packet cap is the floor (the floor rule, SPEC-limit-register section 5). Q10(a) approved by the maintainer on 2026-11-27, #383; the floor in place of today's packet cap, which left the maximum equal to the sum of the defaults, on 2026-11-28 (L11, A1)."
 		},
 		test: "none: the joint hard maximum of adopter settings the parser does not read yet (L12, #384); src/limits.test.ts pins its formula"
 	},
@@ -999,10 +1283,11 @@ const DEFINITIONS = [
 				"w2.session.maxFileBytes",
 				"context.maxSourceFileBytes",
 				"analysis.maxConcurrentCalls",
-				"analysis.responseBytes"
+				"analysis.responseBytes",
+				"startup.maxEventBytes"
 			],
-			formula: (cache, inFlight, response, blob, file, source, calls, reply) => cache + inFlight * 2 * (response + Math.max(blob, file, source)) + calls * 2 * reply,
-			description: "Every off-heap buffer the register bounds, summed over both phases because an ArrayBuffer is freed only by a later collection: the research cache bodies (limit:research.cache.maxTotalBytes, Uint8Array, src/evidence/research-cache.ts:106); for each evidence read in flight (limit:evidence.readsInFlight), its body chunks and their concatenation (2 × limit:evidence.envelope.maxResponseBytes, for example src/github-read.ts:412) and the largest decoded file with its copy (2 × the largest of limit:snapshot.maxBlobBytes, src/snapshot.ts:119; limit:w2.session.maxFileBytes; limit:context.maxSourceFileBytes, src/context.ts:494); and for each model call in flight, its reply chunks and their concatenation (2 × limit:analysis.responseBytes, src/analysis/mistral.ts:199-211). Approved by the maintainer on 2026-11-27 (L11, #383)."
+			formula: (cache, inFlight, response, blob, file, source, calls, reply, event) => cache + inFlight * 2 * (response + Math.max(blob, file, source)) + calls * 2 * reply + event + 1,
+			description: "Every off-heap buffer the register bounds, summed over both phases because an ArrayBuffer is freed only by a later collection: the research cache bodies (limit:research.cache.maxTotalBytes, Uint8Array, src/evidence/research-cache.ts:106); for each evidence read in flight (limit:evidence.readsInFlight), its body chunks and their concatenation (2 × limit:evidence.envelope.maxResponseBytes, for example src/github-read.ts:412) and the largest decoded file with its copy (2 × the largest of limit:snapshot.maxBlobBytes, src/snapshot.ts:119; limit:w2.session.maxFileBytes; limit:context.maxSourceFileBytes, src/context.ts:494); and for each model call in flight, its reply chunks and their concatenation (2 × limit:analysis.responseBytes, src/analysis/mistral.ts:199-211); and the event read buffer, limit:startup.maxEventBytes plus one probe byte (src/startup.ts readBoundedEvent), added by L11 item 11(b) on 2026-11-28. Approved by the maintainer on 2026-11-27 (L11, #383)."
 		},
 		test: "src/limits.test.ts > the runner heap derives from runner memory less what is not old generation"
 	},
@@ -1216,23 +1501,39 @@ const DEFINITIONS = [
 		},
 		test: "src/schema.test.ts > enforces the context fact count independently of excerpt and packet bounds"
 	},
-	configured("workflow.dependabotReview.review.timeoutMinutes", 15, "minutes", {
+	configured("workflow.dependabotReview.review.steps.1.timeoutMinutes", 15, "minutes", {
 		setting: "reusable-workflow input timeout-minutes (L13, provisional)",
-		maximum: "github.hostedJobMaxMinutes"
-	}, "The adopter: a longer job spends more of their Actions minutes and leaves a PR waiting longer for its review, and a shorter one leaves less time for evidence and analysis. Section 5 admitted the job budget as configuration on 2026-11-17 through a reusable-workflow input (L13); its hard maximum is GitHub's hosted-job limit.", {
-		protects: "The runner kills the review job at its timeout-minutes, so the pipeline's deadlines must finish inside that wall-clock limit.",
-		effect: "The runner cancels the job when the timeout passes; the pipeline derives its job budget from this value, so its deadlines are set to end before it.",
-		test: "none: checked against the workflow file by check:limits (L6); the workflow input that sets it lands with L13"
+		maximum: "job.reviewStepMaxMinutes"
+	}, "The adopter: a longer review spends more of their Actions minutes and leaves a PR waiting longer for its review, and a shorter one leaves less time for evidence and analysis. Section 5 admitted the job budget as configuration on 2026-11-17 through a reusable-workflow input (L13). Since L11 item 10 the timeout is on the review step, which the runner times from the step's own start, after the action download and the app-token step; its hard maximum is GitHub's hosted-job limit less the time before the step.", {
+		protects: "The runner kills the review step at its timeout-minutes, timed from the step's start, so the pipeline's deadlines must finish inside that wall-clock limit.",
+		effect: "The runner cancels the step when the timeout passes; the pipeline derives its job budget from this value, so its deadlines are set to end before it.",
+		test: "tests/reusable-workflow.test.ts > R10 bounds execution without concurrency or ignored failures"
+	}, L11_STOPS_APPROVAL),
+	unjustified("job.preStepAllowance", 6e4, "milliseconds", {
+		protects: "The job's timeout counts the action download and the app-token step before the review step starts, so it must exceed the review step's timeout by that time, or the runner could end the job before the step's own timeout.",
+		effect: "Adds whole minutes to the job's timeout-minutes above the review step's; it shortens no deadline and converts no outcome to success. A pre-step time above it lets the job timeout end the review step early, which fails closed.",
+		note: "chosen: the user chose 60,000 on 2026-11-11 (SPEC-review-orchestration Amendment 3, item 2) for everything before runStartup; L11 item 10(b) (2026-11-28) moved the review's timeout onto its step, so the part before the step, the action download and the app-token step, now counts only against the job timeout. No GitHub document bounds the download, and the app-token step has no timeout of its own, so the value stays chosen.",
+		test: "tests/reusable-workflow.test.ts > R10 bounds execution without concurrency or ignored failures"
 	}),
-	derived("job.budget", "milliseconds", ["workflow.dependabotReview.review.timeoutMinutes"], (minutes) => minutes * 6e4, "The runner's wall-clock limit is the reusable workflow's timeout-minutes, in milliseconds.", {
-		protects: "The runner's wall-clock limit for the review job; every pipeline deadline is measured against it.",
+	derived("job.reviewStepMaxMinutes", "minutes", ["github.hostedJobMaxMinutes", "job.preStepAllowance"], (hosted, preStep) => hosted - Math.ceil(preStep / 6e4), "The longest review step a hosted job can hold: GitHub's hosted-job limit less the whole minutes allowed before the step (limit:job.preStepAllowance). Approved by the maintainer on 2026-11-28 (L11, item 10(b), #383).", {
+		protects: "Keeps the adopter's review-step timeout, with the minutes before the step, inside GitHub's hosted-job limit.",
+		effect: "Not enforced: check:limits evaluates the register with the step timeout at this value; the workflow input that sets it lands with L13.",
+		test: "none: the hard maximum of a setting the workflow does not read yet (L13); check:limits evaluates it"
+	}),
+	derived("workflow.dependabotReview.review.timeoutMinutes", "minutes", ["workflow.dependabotReview.review.steps.1.timeoutMinutes", "job.preStepAllowance"], (step, preStep) => step + Math.ceil(preStep / 6e4), "The job's timeout: the review step's timeout and the whole minutes allowed before the step, the action download and the app-token step (limit:job.preStepAllowance), so the runner ends the job no earlier than the step's own timeout. Approved by the maintainer on 2026-11-28 (L11, item 10(b), #383).", {
+		protects: "The runner kills the job at its timeout-minutes, timed from the job's start, so the job must outlast the steps before the review and the review step's own timeout.",
+		effect: "The runner cancels the job when the timeout passes; the review step ends first at its own timeout unless the time before it passes limit:job.preStepAllowance.",
+		test: "tests/reusable-workflow.test.ts > R10 bounds execution without concurrency or ignored failures"
+	}),
+	derived("job.budget", "milliseconds", ["workflow.dependabotReview.review.steps.1.timeoutMinutes"], (minutes) => minutes * 6e4, "The runner's wall-clock limit for the review is the review step's timeout-minutes, in milliseconds, timed from the step's start (L11, item 10(b)).", {
+		protects: "The runner's wall-clock limit for the review step; every pipeline deadline is measured against it.",
 		effect: "Not reached directly; it is the input to job.window, which sets the pipeline's deadlines.",
 		test: "none: derived into job.window; no code compares against job.budget itself. JOB_BUDGET_MS (src/budget.ts:4) is read only by budget.test.ts, and job.window (src/budget.ts:15) is compared in src/runtime.ts:187 (now - started >= window) and used as the analysis deadline in src/pipeline.ts:500"
 	}),
 	unjustified("job.preStartupAllowance", 6e4, "milliseconds", {
-		protects: "The pipeline clock starts at runStartup, after the runner has spent time on the app-token step, action download, Node load and self-check; this allowance keeps the window inside the runner's timeout.",
+		protects: "The pipeline clock starts at runStartup, after the review step has spent time on Node load, the relaunch and the self-check; this allowance keeps the window inside the step's timeout.",
 		effect: "Shortens the job window by 60,000 ms, so the analysis and freshness deadlines move earlier; it converts no outcome to success.",
-		note: "stopped (L11, D9 and Q22(b), #383): the approved option anchors the job window at the runner's job start, read once at startup, and deletes this entry. Implemented, it relocates the chosen margin rather than removing it. GitHub gives a job's start only as a wall-clock started_at, to the second, in the run's jobs listing, which names the job only by its runner_name; the window is kept on the monotonic clock (src/startup.ts), so the anchor must convert GitHub's clock to the runner's. That conversion is off by the clock skew between GitHub and the runner, which no GitHub document bounds, so keeping the window inside the runner's timeout would need a new chosen skew allowance. The run's run_started_at, already read during event verification, is earlier than the job start by the queue time, which is also unbounded. Value unchanged; a basis needs a maintainer decision on the skew",
+		note: "pending a hosted-runner run (L11, item 10(b), approved by the maintainer on 2026-11-28, #383): the review's timeout is now on its step (limit:workflow.dependabotReview.review.steps.1.timeoutMinutes), which the runner times from the step's own start, so the action download and the app-token step no longer count against it (they moved to limit:job.preStepAllowance). What remains is the in-step time before runStartup takes the job start: Node load, the relaunch and the self-check, a platform property. The recorded command is npm run probe:runtime-baseline, after npm run build, inside a workflow step on the smallest supported hosted runner (ubuntu-latest, 2 CPUs); it reports startupMs, the slowest of 5 runs from the parent's process start to the relaunched child's exit, which follows right after the job start. It has not been run: the proposal expects it to free about 55 s of the 60,000. The value stays the user's 2026-11-11 choice until that run gives a basis",
 		test: "none: subtracted only inside job.window (src/budget.ts:9 and :15); the window is enforced by src/runtime.ts:187, covered by the existing test in src/runtime.test.ts:267, and the analysis deadline at src/pipeline.ts:500 is pinned by the existing deadline tests"
 	}),
 	derived("job.window", "milliseconds", ["job.budget", "job.preStartupAllowance"], (budget, preStartup) => budget - preStartup, "The job window is the runner budget less the time spent before startup.", {
@@ -1499,11 +1800,27 @@ const DEFINITIONS = [
 		note: "stopped (L11, Q12(a), #383): the approved basis is external, the most bytes an `after` cursor GitHub returned adds to a query URL, from npm run probe:batching, which now reports it as longest.cursorHeadroomBytes. The C3 run of 2026-11-26 predates that field, and the probe needs a GitHub token and the corpus targets file, neither of which this session has, so the probed value is unknown and 256 stays. Run the probe and set the value it reports, with no margin",
 		test: "src/evidence/advisory-read.name-forms.test.ts > discovery fills a request up to exactly the cursor headroom under the cap"
 	}),
-	unjustified("advisory.discovery.spellingCeiling", 243, "count", {
+	configured("advisory.discovery.spellingCeiling", 243, "count", {
+		setting: "limits.coverage.pipSpellings",
+		maximum: "advisory.discovery.spellingCeilingMax"
+	}, "The adopter: a PyPI name with n separators has 3^n spellings, every one a discovery query, so a larger setting covers names with more separators at the cost of the shared advisory request share (limit:evidence.allocation.advisory.maxRequests) and the time it takes; names past it stay unsupported. npm run probe:name-separators over the PyPI simple index (951,539 names, 2026-11-28) found 6,089 (0.64%) with more than 5 separators, up to 28, so the default of 243 (3^5) leaves them unsupported. Coverage bound category (L11, Q9(a)); approved as configuration on 2026-11-28 (L11, item 4(a), #383).", {
 		protects: "A pip name with many separators cannot fan out into an unbounded number of discovery requests.",
-		effect: "A name with more spellings (more than 5 separators) is unsupported before any request.",
-		note: "stopped (L11, E8 and Q8(a), #383). The safety check fails: npm run probe:name-separators over the PyPI simple index (951,539 project names, 2026-11-28) finds 6,089 names (0.64%) with more than 5 separators, up to 28, so 243 binds legitimate names. The fallback E8(b), 81, has no derivation at the new limit:advisory.discovery.urlBytes: under its 5,438-byte first-URL room, one request holds every spelling of a 5-separator name up to 19 characters and of a 4-separator name up to 63, so the largest spelling count that always fits depends on name length, and no register entry bounds a PyPI name length except limit:packet.idCodeUnits (256), which would give 9. 81 came from corpus name lengths, which are measured demand. A new basis needs a maintainer decision",
+		effect: "A name with more spellings than the setting (more than 5 separators at the default) is unsupported before any request.",
 		test: "src/evidence/advisory-read.name-forms.test.ts > a name over the spelling ceiling sends no request"
+	}, L11_STOPS_APPROVAL),
+	derived("advisory.discovery.spellingCeilingMax", "count", [
+		"advisory.discovery.urlBytes",
+		"advisory.discovery.cursorHeadroomBytes",
+		"evidence.allocation.advisory.maxRequests"
+	], (urlBytes, headroom, requests) => {
+		const room = urlBytes - headroom - DISCOVERY_URL_TEXT.fixedBytes;
+		let separators = 0;
+		while (spellingRequests(separators + 1, room) <= requests) separators += 1;
+		return PIP_SEPARATOR_COUNT ** separators;
+	}, "The hard maximum of limit:advisory.discovery.spellingCeiling: the largest 3^n for which every spelling of the shortest name with n separators (one character per part), for both query kinds, fits the advisory request share, limit:evidence.allocation.advisory.maxRequests. Each first URL has limit:advisory.discovery.urlBytes less limit:advisory.discovery.cursorHeadroomBytes less the fixed URL text (DISCOVERY_URL_TEXT, 83 bytes) of room, 5,355 bytes at the defaults, and each spelling takes 2n + 1 bytes and its 3-byte encoded comma (spellingRequests). At the defaults n = 9 needs 162 requests and n = 10 needs 530, against 221, so the maximum is 3^9 = 19,683. Longer names need more requests, so the maximum covers only the shortest names in full; a setting at it can spend the whole advisory share on one target. It follows the request share and URL settings. Approved by the maintainer on 2026-11-28 (L11, item 4(a), #383).", {
+		protects: "Keeps an adopter setting of the spelling ceiling from fanning one name out past the advisory request share.",
+		effect: "Not enforced by the reviewer yet: L12 makes the config parser reject a larger ceiling. check:limits evaluates the register at this value.",
+		test: "src/evidence/advisory-read.name-forms.test.ts > the spelling ceiling maximum is the largest power of three whose shortest spellings fit the advisory share"
 	}),
 	{
 		id: "advisory.batch.maxTargets",
@@ -2027,7 +2344,7 @@ const DEFINITIONS = [
 	}),
 	derived("context.maxSourceContextBytes", "bytes", ["packet.contextBytes"], copy, "The serialized source-context cap mirrors the packet's context byte cap.", {
 		protects: "The packet rejects a context whose serialized JSON exceeds limit:packet.contextBytes (budget), so the collector must stop before that point.",
-		effect: "The empty-context check (src/context.ts:312) fails a context with category budget when its widest reservation is over the cap, but at limit:context.maxDependencies identities of limit:context.maxIdCodeUnits that reservation is 102,556 bytes, below the cap, so no input reaches it at the register values; the test pins that margin. During collection the fact that would overflow is dropped with reason context-byte-limit and collection stops, keeping facts already added (partial).",
+		effect: "The empty-context check (src/context.ts:319) fails a context with category budget when its widest reservation is over the cap, but at limit:context.maxDependencies identities of limit:context.maxIdCodeUnits that reservation is 103,717 bytes (102,556 before the L11 budget reason, item 8), below the cap, so no input reaches it at the register values; the test pins that margin. During collection the fact that would overflow is dropped with reason context-byte-limit and collection stops, keeping facts already added (partial).",
 		test: "src/context.test.ts > the serialized context cap admits a context of exactly the cap and drops the fact one byte past it"
 	}),
 	derived("context.maxSourceExcerptCodeUnits", "code units", ["packet.excerptCodeUnits"], copy, "The excerpt cap mirrors the packet's excerpt code-unit cap.", {
@@ -2040,18 +2357,20 @@ const DEFINITIONS = [
 		effect: "The 21st fact for a dependency is not added. Reason fact-limit is recorded, status is partial, and the first 20 facts are kept.",
 		test: "src/context.test.ts > line and fact caps retain identity, complete characters, and visible limits"
 	}),
-	unjustified("context.maxSourceRoots", 16, "count", {
-		protects: "Each configured root is walked with lstat and matched against the inventory, so an unbounded root list would make config validation and path checks unbounded.",
-		effect: "A config with more than 16 sourceRoots fails validation (field context.sourceRoots, category config), so the config is rejected.",
-		note: "stopped (L11, Q19(a), #383): the approved basis is a copy of limit:snapshot.maxTreeEntries (102,578), which must move together with limit:config.maxBytes, and that entry stops: a JSON config holding 102,578 roots does not fit today's 16,384-byte cap (the smallest root, `\"a\",`, is 4 bytes, so at most about 4,090 roots fit, and 102,579 roots need at least 410,316 bytes for the over-cap boundary test). Raising the root cap alone would admit a count no valid config can reach. Value unchanged",
-		test: "src/config.test.ts > the source root cap admits exactly the registered count and rejects one more"
-	}),
-	unjustified("context.maxSourceCandidates", 128, "count", {
-		protects: "Each excerpt file is stat-checked and matched against the tracked inventory, so the number of excerpt files is capped.",
-		effect: "More than 128 excerptFiles fails config validation. The runtime candidate-limit (src/context.ts) would stop scanning with reason candidate-limit, but validated config keeps the selected set at 128 or fewer, so that branch cannot trigger.",
-		note: "stopped (L11, Q20(a), #383): the approved basis is the snapshot request share (limit:evidence.allocation.transport.snapshot.maxRequests, 200) less the fixed snapshot reads. The fixed reads are 7 (repository, commit, root listing, .github listing, config blob, Dependabot blob, one source-root listing) only in the shallowest layout: one excerpt directory and a config that is not a link. Each further directory an excerpt path passes through costs one more tree read, and each config link one more blob read, so at 200 − 7 = 193 excerpt files split across src/ and src/lib/ the snapshot needs 201 reads. Running out of the share inside collectContext makes the whole snapshot unavailable, which the pipeline reports as internal-failure at snapshot, and SPEC-source-context promises no partial result with budget for it. Tree reads grow with path depth, so no structural count of fixed reads holds for every layout. Today 128 leaves 72 reads for directories and links. Value unchanged",
+	{
+		id: "context.maxSourceCandidates",
+		unit: "count",
+		protects: "Each excerpt file is stat-checked, matched against the tracked inventory and read with one blob request, so the number of excerpt files is capped.",
+		effect: "More excerptFiles than the cap fails config validation. The runtime candidate-limit (src/context.ts) would stop scanning with reason candidate-limit, but validated config keeps the selected set at the cap or fewer, so that branch cannot trigger. A layout whose directories need more reads than the snapshot share holds stops reading where the share runs out and reports budget, keeping the context already read (partial).",
+		basis: {
+			kind: "derived",
+			inputs: ["evidence.allocation.transport.snapshot.maxRequests"],
+			formula: (requests) => requests - 7,
+			description: `The excerpt files whose blobs the snapshot request share can read after its ${7} fixed reads in the shallowest layout: the repository, the commit, the root listing, the .github listing, the config blob, the Dependabot blob and one source-root listing (src/snapshot.ts). So 200 − ${7} = 193; it follows the snapshot share setting. A deeper layout costs one more tree read for each directory on an excerpt path, and a config link one more blob read; when the share runs out inside collectContext the snapshot stops reading, keeps what it read, and reports budget for every configured path not yet read, never missing-source (SPEC-source-context, Amended L11), so no count of excerpt files can make the snapshot unavailable. Approved by the maintainer on 2026-11-28 (L11, item 8(a), #383).`,
+			structuralTest: "src/snapshot.test.ts > a single-directory layout reads exactly the snapshot share for the excerpt file cap"
+		},
 		test: "src/config.test.ts > the excerpt file cap admits exactly the registered count and rejects one more"
-	}),
+	},
 	derived("context.maxTrackedPathEntries", "count", ["snapshot.maxTreeEntries"], copy, "The tracked-file inventory is the snapshot listing, so it can hold no more entries than the listing: a copy of limit:snapshot.maxTreeEntries. Approved by the maintainer on 2026-11-27 (L11, #383).", {
 		protects: "The tracked-file inventory is streamed one entry at a time, and the cap stops the scan on an arbitrarily large repository.",
 		effect: "On the entry past the cap the scan stops with reason inventory-limit and the iterator is closed. Facts already found and partial status are kept.",
@@ -2073,11 +2392,10 @@ const DEFINITIONS = [
 		effect: "When the 1 MiB budget is spent, later files are not read. Reason total-read-limit is recorded and collection stops; facts already found are kept (partial).",
 		test: "src/context.test.ts > total returned bytes, including overflow probes, never exceed one MiB"
 	}),
-	unjustified("dependabot.maxFileBytes", 65536, "bytes", {
+	derived("dependabot.maxFileBytes", "bytes", ["snapshot.maxBlobBytes"], copy, "The Dependabot config is a blob the snapshot reads, so it can be no larger than limit:snapshot.maxBlobBytes, the largest blob the reader fetches; under the approved base64 rule a blob response holds about 760,700 decoded bytes, which binds first. No document gives a Dependabot file size limit, and the file is controlled by the PR, so this is a parse bound and never an adopter setting. It covers the largest recorded legitimate configs (68,918, 71,729 and 82,528 bytes, among the largest dependabot.yml files GitHub code search returned on 2026-11-28), which the earlier 65,536 refused. The parse is transient: at the cap, with the other Dependabot caps of the register, each of the three crafted shapes (densest nodes, updates and roots) is refused with budget at its count cap, after the parser has built the whole document; one parse allocates at most 918,691,592 bytes of heap (an upper bound on its peak, measured with a 1 GiB young generation so no collection runs during it), and after a full collection with the result kept at most 60,928 bytes stay held; the slowest of 5 parses takes 2,646 ms, inside the CPU harm point of limit:dependabot.maxYamlNodes (npm run probe:parse-cost -- heap, on 2026-11-28 under Node 24.22.3). The parse runs in the snapshot, before any evidence is retained, inside limit:runner.heapBytes. Approved by the maintainer on 2026-11-28 (L11, item 12(a), #383).", {
 		protects: "The Dependabot config is parsed in memory, so its size is capped before any YAML parsing.",
-		effect: "A file over 65,536 bytes is not parsed. The whole file is unavailable with reason budget, and no roots are kept.",
-		test: "src/dependabot-roots.test.ts > accepts values exactly at each limit",
-		note: "stopped (L11, card, #383): the approved basis is safety, which needs the cap above the largest legitimate config. It is not: among the largest dependabot.yml files GitHub code search returned on 2026-11-28 (14 files above 40,000 bytes, of which 8 are Dependabot version-2 configs), 3 configs are 68,918, 71,729 and 82,528 bytes (14, 4 and 200 update entries), and each fails here with budget today. No document gives a Dependabot file size limit, and no larger value has an approved basis. Value unchanged"
+		effect: "A file over the cap is not parsed. The whole file is unavailable with reason budget, and no roots are kept.",
+		test: "src/dependabot-roots.test.ts > accepts values exactly at each limit"
 	}),
 	{
 		id: "dependabot.maxYamlNodes",
@@ -2137,18 +2455,33 @@ const DEFINITIONS = [
 		effect: "A path over 1,024 bytes marks only its ecosystem malformed. The other ecosystem stays usable, and no truncated path enters roots.",
 		test: "src/dependabot-roots.test.ts > accepts values exactly at each limit"
 	}),
-	unjustified("startup.maxEventBytes", MiB, "bytes", {
+	{
+		id: "startup.maxEventBytes",
+		value: 25e6,
+		unit: "bytes",
 		protects: "The event file is read whole into a buffer before validation; an oversized file would allocate unbounded memory at startup.",
 		effect: "A file over the cap throws 'event too large' and startup fails; no partial text is returned.",
 		test: "src/startup.test.ts > reads an event file of %s as bounded text only when it is valid",
-		note: "stopped (L11, E16, #383): the approved basis is external, GitHub's 25 MB webhook payload cap (docs.github.com webhooks#payload-cap), read as 25,000,000 bytes. The register does not hold the parsed event: runStartup parses it and the pipeline keeps it in its input for the whole run, in both heap phases, and no register entry counts it. At 25,000,000 bytes and limit:runner.heapBytesPerRetainedByte (27.47) it would hold about 686,750,000 bytes of heap (about 28,804,383 today), which would lower limit:packet.bytes from 148,312,300 to 101,594,613 (evidence phase; the analysis phase would fall from 256,206,191 to 220,061,454), and its parse peak at limit:runner.heapBytesPerEvidenceByte would be about 1,475,000,000 bytes. Raising the cap needs the event counted in the heap phases, or released after verification, which no approved change covers. Value unchanged"
-	}),
-	unjustified("config.maxBytes", 16384, "bytes", {
+		basis: {
+			kind: "external",
+			url: "https://docs.github.com/en/webhooks/webhook-events-and-payloads#payload-cap",
+			checked: "2026-11-28",
+			platformValue: 25e6,
+			margin: "none: \"Payloads are capped at 25 MB\", read as decimal megabytes, the smaller reading; GitHub delivers no larger payload. Since L11 item 11(b) (approved by the maintainer on 2026-11-28, #383) the parsed event is held only for verification (holdEvent, src/pipeline.ts) and is unreachable before the first tree read, so no heap phase holds it and limit:packet.bytes does not count it; its parse peak, about 1,475,000,000 bytes at limit:runner.heapBytesPerEvidenceByte, falls at startup, when nothing else is held, inside limit:runner.heapBytes. The read buffer, the cap plus one byte (src/startup.ts readBoundedEvent), is off the V8 heap and counted in limit:runner.offHeapBytes"
+		}
+	},
+	{
+		id: "config.maxBytes",
+		value: MiB,
+		unit: "bytes",
 		protects: "The configuration file is read from the checked-out repository, which can be large or hostile; reading it without a cap allocates unbounded memory before parsing.",
 		effect: "A file over the cap fails with category size before parsing; no default configuration is substituted.",
 		test: "src/config.test.ts > accepts the exact byte limit and rejects overflow",
-		note: "stopped (L11, Q19(a) and E17, #383): the approved basis is derived, the largest valid config, (roots + candidates) × (limit:context.maxPathBytes × e + 3) + skeleton. The escape factor is bounded: JSON writes any character in at most 6 bytes (a \\u escape), so e ≤ 6. What has no bound is the whitespace JSON allows between tokens, which the formula does not count and the parser does not limit, so the largest valid config is unbounded; no approved option fixes a whitespace allowance. Even at e = 1 and no skeleton or whitespace, the Q19(a) root cap (limit:snapshot.maxTreeEntries, 102,578) and limit:context.maxSourceCandidates (193) give 102,771 × 1,027 = 105,545,817 bytes. The config is retained through the evidence phase at limit:runner.heapBytesPerRetainedByte (27.47), so limit:runner.evidenceRetainedHeapBytes would rise from 4,130,139,553 to 7,029,033,078 bytes, above limit:runner.heapBytes (6,372,196,352), and limit:packet.bytes would fall from 148,312,300 to −48,891,341; it stays positive only below about 79,382,630 config bytes. At e = 6 the same lists give 102,771 × 6,147 = 631,733,337 bytes. Q19(b), a safety cap sized against heap, was not approved. A new basis needs a maintainer decision. Value unchanged"
-	}),
+		basis: {
+			kind: "safety",
+			reason: "A parse bound, so never an adopter setting. Largest legitimate use: about 594 KB, a config listing 385 source roots (the largest recorded Dependabot directory list) and limit:context.maxSourceCandidates excerpt paths, each at limit:context.maxPathBytes and written compactly: 578 × 1,027 = 593,606 bytes and the skeleton. The root count has no bound of its own (L11, item 9), and JSON allows unbounded whitespace, so no derivation gives the largest valid config. Harm: the config is retained through the evidence phase at limit:runner.heapBytesPerRetainedByte and counted in limit:analysis.projectionBytes, so each byte lowers limit:packet.bytes by about 1.87 bytes: 1,048,576 takes 1,928,865 from it against the 16,384 cap (146,383,435 when decided; 144,671,474 once the event buffer of L11 item 11 is counted off heap) and 1,032,192 from limit:runner.maxEvidenceRetainedBytes; it stays positive below 79,382,631 config bytes and at or above limit:packet.floorBytes below 79,368,155 (78,466,511 and 78,452,034 with the event buffer counted). 1 MiB sits between the two, the size of limit:snapshot.maxBlobBytes, the largest blob the snapshot reads. Under the approved base64 rule a blob response holds about 760,700 decoded bytes, so a config larger than that is refused at its blob read (budget), which makes the snapshot unavailable, before this cap is reached. Approved by the maintainer on 2026-11-28 (L11, item 9(a), #383)."
+		}
+	},
 	{
 		id: "config.maxModelCodeUnits",
 		value: 128,
@@ -2184,6 +2517,21 @@ const DEFINITIONS = [
 		},
 		effect: "A longer body is refused by GitHub with a 422; the reviewer never sends one, because its cap derives from this.",
 		test: "src/limits.test.ts > the comment cap is derived from GitHub's byte limit so any body within it fits"
+	},
+	{
+		id: "github.stepSummary.maxBytes",
+		value: MiB,
+		unit: "bytes",
+		protects: "Records GitHub's limit on one step's job summary, which holds the full review when its required content does not fit the comment.",
+		basis: {
+			kind: "external",
+			url: "https://docs.github.com/en/actions/reference/workflows-and-actions/workflow-commands",
+			checked: "2026-11-28",
+			platformValue: MiB,
+			margin: "none: \"each step is restricted to a maximum size of 1MiB\", read as 1,048,576 bytes; GitHub fails the upload of a larger summary. The renderer measures the summary in UTF-8 bytes against it. Approved by the maintainer on 2026-11-28 (L11, B1, #383)."
+		},
+		effect: "A review whose full text is larger is not rendered: the renderer returns size, which W2 reports as render-size, and the prior comment is kept.",
+		test: "src/reporting.test.ts > replaces required content too long for the comment with a digest and keeps the full review for the step summary"
 	},
 	derived("comment.maxBodyCodeUnits", "code units", ["github.comment.maxBodyBytes"], (bytes) => Math.floor(bytes / 3), "GitHub's byte limit divided by three, rounded down: one UTF-16 code unit is at most three UTF-8 bytes, so a body within this many code units never exceeds GitHub's limit, whatever its text.", {
 		protects: "The comment body must fit GitHub's comment limit before the write; the renderer rejects oversize bodies instead of truncating them.",
@@ -2252,11 +2600,30 @@ const DEFINITIONS = [
 		effect: "A body over the cap is refused with budget at preparation (invalid, not attempted) and again before fetch (failed, not attempted). No call is made.",
 		test: "src/analysis/projection.test.ts > enforces the final escaped UTF-8 request boundary, and truncates only source text"
 	}),
-	unjustified("analysis.completionTokens", 16384, "tokens", {
+	configured("analysis.completionTokens", 16384, "tokens", {
+		setting: "limits.analysisCompletionTokens",
+		maximum: "analysis.completionTokensMax"
+	}, "The adopter: the model is consumer configuration, so a larger budget lets a model that reasons at length finish a reply, at the cost of output per call they pay for, a smaller request (limit:analysis.requestBytes), and the heap a reply of limit:analysis.responseBytes takes in flight, which lowers limit:packet.bytes. Section 5 admitted completion tokens as configuration on 2026-11-17; its hard maximum is the floor rule (L11, Q14(a) and A1, approved 2026-11-28, #383).", {
 		protects: "max_tokens caps the output one call may produce, which bounds output cost per call and sizes the reply-byte formula. The spec records that reasoning tokens count against this budget.",
 		effect: "A reply that reaches the cap ends with finish_reason length and is reported truncated. The batch splits toward single units, and results from other batches are kept.",
-		test: "src/analysis/mistral.test.ts > admits a valid stop at the full token-byte, escaping and envelope allowance, but rejects one extra observed byte",
-		note: "stopped (L11, Q14(a), #383): the approved basis is config with the hard maximum limit:analysis.model.contextTokens less the minimal request, about 258,437 tokens (262,144 − limit:analysis.fixedRequestBytes 3,702 − limit:analysis.model.templateTokens 5). The register cannot hold that maximum: at 258,437 tokens limit:analysis.requestBytes falls to 3,702, limit:analysis.unitBytes and limit:packet.textBytes to 0, and limit:analysis.responseBytes rises to 264,705,024 bytes, so limit:analysis.replyHeapBytes is 21,938,752,390 bytes, more than limit:runner.heapBytes (5,380,243,456 at that setting), and limit:packet.bytes goes negative (−877,203,177). Q14(a) also needs the section 5 amendment text, which the maintainer has not written. Value unchanged."
+		test: "src/analysis/mistral.test.ts > admits a valid stop at the full token-byte, escaping and envelope allowance, but rejects one extra observed byte"
+	}, L11_STOPS_APPROVAL),
+	derived("analysis.completionTokensMax", "tokens", [
+		...PACKET_HEAP_INPUTS,
+		"packet.floorBytes",
+		"analysis.maxTokenEscapedBytes",
+		"analysis.responseEnvelopeBytes",
+		"analysis.model.contextTokens",
+		"analysis.fixedRequestBytes",
+		"analysis.model.templateTokens"
+	], (...values) => {
+		const heap = packetHeapInputs(values);
+		const [floor = 0, tokenBytes = 0, envelope = 0, context = 0, fixed = 0, template = 0] = values.slice(PACKET_HEAP_INPUTS.length);
+		return largestAtFloor(context - fixed - template, floor, (tokens) => packetBytesWithReplies(heap, heap.calls, replyBytesFor(tokens, tokenBytes, envelope)));
+	}, "The hard maximum of limit:analysis.completionTokens: the largest token budget at which limit:packet.bytes stays at or above limit:packet.floorBytes, with every other setting at its default (the floor rule, SPEC-limit-register section 5). A larger budget raises limit:analysis.responseBytes (replyBytesFor), so each reply in flight holds more heap (limit:analysis.replyHeapBytes) and more off-heap memory (limit:runner.offHeapBytes, which lowers limit:runner.heapBytes). It never passes the Q14(a) bound, limit:analysis.model.contextTokens less the smallest request (limit:analysis.fixedRequestBytes) and limit:analysis.model.templateTokens. Approved by the maintainer on 2026-11-28 (L11, Q14(a) and A1, #383).", {
+		protects: "Keeps an adopter setting of the completion budget from taking the packet cap below its structural floor.",
+		effect: "Not enforced by the reviewer yet: L12 makes the config parser reject a larger budget. check:limits evaluates the register at this value.",
+		test: "src/limits.test.ts > no heap setting at its hard maximum takes packet.bytes below its floor"
 	}),
 	configured("analysis.requestTimeoutMs", 24e4, "milliseconds", {
 		setting: "limits.analysisRequestTimeoutMs",
@@ -2307,7 +2674,7 @@ const DEFINITIONS = [
 		"analysis.maxConcurrentCalls",
 		"analysis.responseBytes",
 		"runner.heapBytesPerReplyByte"
-	], (calls, bytes, perByte) => Math.ceil(calls * bytes * perByte), "The heap the model replies can hold at peak: limit:analysis.maxConcurrentCalls replies of limit:analysis.responseBytes in flight at once, at limit:runner.heapBytesPerReplyByte each, rounded up. Its measurement includes the process baseline, so limit:packet.bytes needs no separate term for it.", {
+	], replyHeapBytesFor, "The heap the model replies can hold at peak: limit:analysis.maxConcurrentCalls replies of limit:analysis.responseBytes in flight at once, at limit:runner.heapBytesPerReplyByte each, rounded up. Its measurement includes the process baseline, so limit:packet.bytes needs no separate term for it.", {
 		protects: "Reserves the runner heap the concurrent model replies can take, so the packet cap leaves room for them.",
 		effect: "Not enforced. limit:packet.bytes subtracts it from limit:runner.heapBytes.",
 		test: "src/limits.test.ts > the heap inputs of packet.bytes keep their sources and formula"
@@ -2319,7 +2686,7 @@ const DEFINITIONS = [
 		protects: "Each model text field (reason, impact, action, rationale) is capped at 1,024 UTF-8 bytes, which the spec states as concise per-unit advice. The downstream comment body is separately checked.",
 		basis: {
 			kind: "safety",
-			reason: "Parse safety on untrusted model output, which section 5 makes never configurable. Largest legitimate use: one concise paragraph per field, the spec's \"concise per-unit advice\", which the system prompt states as under 1,024 bytes. Harm above: blocker text (reason, impact, evidence claims, remediation and validation steps) renders in the Reasons-not-to-merge lines of the comment head, which fitComment (src/reporting.ts) never drops, so a longer field makes the run fail with category size sooner; assessment text renders in the sections fitComment drops, the assessments last. The cap alone does not keep the head inside limit:comment.maxBodyCodeUnits (87,381 code units): rendering the malware analysis parity scenario (tests/parity/analysis.ts) with its blocker filled to the caps, a blocker whose reason, impact, one evidence claim and limit:analysis.steps remediation and validation steps are each 1,024 ASCII bytes renders as an 18,830-code-unit line, so 5 such blockers overflow the comment (5 × 18,830 = 94,150) whatever else the head holds; with limit:analysis.references evidence claims at the cap one blocker is 52,868 code units and 2 overflow; text that escapes (each & renders as 5 code units) overflows with 1. Approved by the maintainer on 2026-11-27 (L11, #383)."
+			reason: "Parse safety on untrusted model output, which section 5 makes never configurable. Largest legitimate use: one concise paragraph per field, the spec's \"concise per-unit advice\", which the system prompt states as under 1,024 bytes. Harm above: blocker text (reason, impact, evidence claims, remediation and validation steps) renders in the Reasons-not-to-merge lines of the comment head, which fitComment (src/reporting.ts) never drops, so a longer field makes the run fail with category size sooner; assessment text renders in the sections fitComment drops, the assessments last. The cap alone does not keep the head inside limit:comment.maxBodyCodeUnits (87,381 code units): rendering the malware analysis parity scenario (tests/parity/analysis.ts) with its blocker filled to the caps, a blocker whose reason, impact, one evidence claim and limit:analysis.steps remediation and validation steps are each 1,024 ASCII bytes renders as an 18,830-code-unit line, so 5 such blockers overflow the comment (5 × 18,830 = 94,150) whatever else the head holds; with limit:analysis.references evidence claims at the cap one blocker is 52,868 code units and 2 overflow; text that escapes (each & renders as 5 code units) overflows with 1. Approved by the maintainer on 2026-11-27 (L11, #383). Since 2026-11-28 (L11, B1, #383) a head too long for the comment renders as the decision digest, one line per unit with its blocker count, and the full review goes to the step summary (limit:github.stepSummary.maxBytes); only a full review above that fails with size."
 		},
 		effect: "A field over the cap fails validation of the whole reply (category schema), and no assessment is kept.",
 		test: "src/analysis/bounds.test.ts > reason text counts UTF-8 bytes at the exact boundary for %j"
@@ -2336,18 +2703,30 @@ const DEFINITIONS = [
 		effect: "An over-cap feature fails validation of the whole reply (category schema), and no assessment is kept.",
 		test: "src/analysis/bounds.test.ts > capability feature, action and rationale use their own byte ceilings"
 	},
-	unjustified("analysis.followupBytes", 280, "bytes", {
+	{
+		id: "analysis.followupBytes",
+		value: 280,
+		unit: "bytes",
 		protects: "Follow-up descriptions are capped at 280 bytes, which the spec says does not expand the baseline's 280-character bound.",
+		basis: {
+			kind: "safety",
+			reason: "Parse safety on untrusted model output, which section 5 makes never configurable. Largest legitimate use: one short follow-up sentence, the baseline's 280-character bound. Harm above: follow-ups are required content, so fitComment (src/reporting.ts) never drops them; limit:packet.changes units × limit:analysis.steps follow-ups × 280 bytes is 286,720 code units of description alone, above limit:comment.maxBodyCodeUnits (87,381). When required content does not fit, the comment carries the decision digest, one line per unit with its blocker and follow-up counts, at most about 50,000 code units at the change cap with ids at limit:packet.idCodeUnits (src/reporting.test.ts), and the full review goes to the step summary, limit:github.stepSummary.maxBytes. At the change cap with every follow-up unit at 8 follow-ups of 280 ASCII bytes, the comment is an 18,235-code-unit digest and the full review 364,664 bytes; with every character an & (5 code units escaped) the follow-up text alone is about 1.39 MB, above the step summary, so that run still fails with size (render-size). Approved by the maintainer on 2026-11-28 (L11, B1, #383)."
+		},
 		effect: "An over-cap description fails validation of the whole reply (category schema), and no assessment is kept.",
-		test: "src/analysis/bounds.test.ts > follow-up descriptions and list lengths accept the byte ceiling and reject overflow",
-		note: "stopped (L11, Q17, #383): the approved basis is safety, which holds only once a render test at the change limit passes or limit:analysis.steps is lowered for follow-ups. It does not pass: fitComment (src/reporting.ts) never drops required follow-ups, and limit:packet.changes (128) units × limit:analysis.steps (8) follow-ups × 280 bytes is 286,720 code units of description alone, above limit:comment.maxBodyCodeUnits (87,381), so a worst-case merge_with_followups run fails with size. No lowered step count was approved"
-	}),
-	unjustified("analysis.steps", 8, "count", {
+		test: "src/analysis/bounds.test.ts > follow-up descriptions and list lengths accept the byte ceiling and reject overflow"
+	},
+	{
+		id: "analysis.steps",
+		value: 8,
+		unit: "count",
 		protects: "Remediation, validation and follow-up lists are capped at 8 entries, which the spec states as concrete bounded lists. The list length bounds the output each assessment carries.",
+		basis: {
+			kind: "safety",
+			reason: "Parse safety on untrusted model output, as for limit:analysis.followupBytes. Largest legitimate use: a short ordered list of concrete steps, the spec's bounded lists. Harm above: each entry is required content the comment never drops, so a longer list makes more reviews too long for the comment; they then render as the decision digest with the full review in the step summary (limit:github.stepSummary.maxBytes), and only a full review above that fails with size. The figures at the change cap are those of limit:analysis.followupBytes. Approved by the maintainer on 2026-11-28 (L11, B1, #383)."
+		},
 		effect: "A ninth entry fails validation of the whole reply (category schema), and no assessment is kept.",
-		test: "src/analysis/bounds.test.ts > blocker text, evidence claims and remediation/validation lists preserve their exact limits",
-		note: "stopped (L11, Q17, #383): as limit:analysis.followupBytes. The safety reason needs the comment check at the change limit, which fails: 128 × 8 × 280 = 286,720 code units of required follow-ups against limit:comment.maxBodyCodeUnits (87,381). Lowering the follow-up count would be a new value no constraint has been approved for"
-	}),
+		test: "src/analysis/bounds.test.ts > blocker text, evidence claims and remediation/validation lists preserve their exact limits"
+	},
 	derived("analysis.references", "count", ["packet.listEntries"], copy, "A claim cannot usefully cite more entries than a packet list carries, so the evidence, blocker, finding and reference lists of a reply copy limit:packet.listEntries. Approved by the maintainer on 2026-11-27 (L11, #383).", {
 		protects: "Evidence and reference lists per claim are capped at the packet list size, the count the prompt states, so one claim cannot carry unbounded references.",
 		effect: "A list past the cap fails validation of the whole reply (category schema), and no assessment is kept.",
@@ -2375,16 +2754,31 @@ const DEFINITIONS = [
 		effect: "Not enforced by the reviewer yet: L12 makes the config parser reject a larger call cap. check:limits evaluates the register at this value.",
 		test: "src/analysis/batches.test.ts > splitting every batch down to single units makes 2 × units − batches calls"
 	},
-	unjustified("analysis.maxConcurrentCalls", 2, "count", {
-		protects: "Provider calls in flight are capped at two per run, the concurrency the spec reserves. No provider or platform limit is cited, so the harm is not established.",
-		effect: "No new call starts while two are in flight. Final records do not depend on completion order.",
-		test: "src/analysis/batches.test.ts > completion order does not change dispatched batches, concurrency, or final states",
-		note: "stopped (L11, #383): the approved basis is config with the hard maximum of limit:analysis.maxCalls, limit:analysis.maxCallsMax (240). The register cannot hold it: at 240 concurrent calls limit:analysis.replyHeapBytes is 167,511,274,292 bytes (about 167 GB) and limit:runner.offHeapBytes 8,192,301,056, so limit:runner.heapBytes goes negative (−1,645,215,744) and limit:packet.bytes with it (−8,908,675,867). No smaller hard maximum is approved. Value unchanged."
+	configured("analysis.maxConcurrentCalls", 2, "count", {
+		setting: "limits.analysisMaxConcurrentCalls",
+		maximum: "analysis.maxConcurrentCallsMax"
+	}, "The adopter: the model is consumer configuration, so more calls in flight finish a run sooner on a provider that allows them, at the cost of the heap each reply in flight takes, which lowers limit:packet.bytes. Section 5 admitted concurrency as configuration on 2026-11-17; its hard maximum is the floor rule (L11, A1, approved 2026-11-28, #383).", {
+		protects: "Provider calls in flight are capped, so the replies held at once stay inside the heap the packet cap leaves.",
+		effect: "No new call starts while this many are in flight. Final records do not depend on completion order.",
+		test: "src/analysis/batches.test.ts > completion order does not change dispatched batches, concurrency, or final states"
+	}, L11_STOPS_APPROVAL),
+	derived("analysis.maxConcurrentCallsMax", "count", [
+		...PACKET_HEAP_INPUTS,
+		"packet.floorBytes",
+		"analysis.maxCalls"
+	], (...values) => {
+		const heap = packetHeapInputs(values);
+		const [floor = 0, maxCalls = 0] = values.slice(PACKET_HEAP_INPUTS.length);
+		return largestAtFloor(maxCalls, floor, (calls) => packetBytesWithReplies(heap, calls, heap.reply));
+	}, "The hard maximum of limit:analysis.maxConcurrentCalls: the largest number of calls in flight at which limit:packet.bytes stays at or above limit:packet.floorBytes, with every other setting at its default (the floor rule, SPEC-limit-register section 5), and never more than the calls a run may make, limit:analysis.maxCalls. Each call in flight holds a reply of limit:analysis.responseBytes at its parse peak (limit:analysis.replyHeapBytes) and two off-heap copies of it (limit:runner.offHeapBytes, which lowers limit:runner.heapBytes). Approved by the maintainer on 2026-11-28 (L11, A1, #383).", {
+		protects: "Keeps an adopter setting of the call concurrency from taking the packet cap below its structural floor.",
+		effect: "Not enforced by the reviewer yet: L12 makes the config parser reject a larger concurrency. check:limits evaluates the register at this value.",
+		test: "src/limits.test.ts > no heap setting at its hard maximum takes packet.bytes below its floor"
 	}),
 	unjustified("analysis.maxAnalysisMs", 6e5, "milliseconds", {
 		protects: "Analysis time is capped at the spec's 600 s maximum, so the stage cannot outlast the job's time budget.",
 		effect: "The effective deadline is the earlier of the caller deadline minus the reserve and start plus 600 s. No call dispatches at or after it; in-flight calls end with deadline.",
-		note: "stopped (L11, Q17(a), #383): the approved basis is config with the hard maximum window − freshness − publication − evidence deadline − recheck, limit:job.maxAnalysisTimeMs, which is 471,971 ms at the defaults (840,000 − 240,000 − 34,917 − 58,195 − 34,917), below this default of 600,000. A default above its own hard maximum fails section 5 and check:limits, and no approved change lowers the default or moves the maximum",
+		note: "stopped (L11, Q17(a), #383): the approved basis is config with the hard maximum window − freshness − publication − evidence deadline − recheck, limit:job.maxAnalysisTimeMs, which is 471,971 ms at the defaults (840,000 − 240,000 − 34,917 − 58,195 − 34,917), below this default of 600,000. A default above its own hard maximum fails section 5 and check:limits, and no approved change lowers the default or moves the maximum. Stopped again (L11, item 2, 2026-11-28): the approved fix, a default equal to that maximum, 471,971, fails check:limits once implemented. The maximum falls as the evidence deadline rises: with limit:evidence.envelope.totalTimeoutMs at its own hard maximum (limit:job.maxEvidenceDeadlineMs, 471,971), limit:job.maxAnalysisTimeMs is 240,000, the one model call that maximum leaves, so a fixed default of 471,971 is 231,971 above its hard maximum there (\"analysis.maxAnalysisMs: above its hard maximum with evidence.envelope.totalTimeoutMs at its hard maximum\"). A default that holds at every other setting's maximum would be 240,000, a new value no option named. Value unchanged",
 		test: "src/analysis/batches.test.ts > no call dispatches at or after the registered analysis time cap from the start"
 	}),
 	derived("analysis.publicationReserveMs", "milliseconds", ["github.requestTimeoutMs"], (requestMs) => PUBLICATION_REQUESTS * requestMs, "Five sequential publication requests (src/comments.ts:329-365: the comment selection, its re-read, the publication gate before the write, the write and the gate after it), each allowed the GitHub request timeout: 5 × limit:github.requestTimeoutMs. Each gate also re-verifies the binding through its own reads (src/comments.ts:246-261), so the count is final only once publication is wired (D4). Approved by the maintainer on 2026-11-27 (L11, #383).", {
@@ -2510,18 +2904,34 @@ const DEFINITIONS = [
 		effect: "A trace header value that is longer, or is not lowercase letters, digits, and underscores, is reported as 'invalid'.",
 		test: "src/measurement/demand.test.ts > a quota trace reports an unexpected header value as invalid"
 	},
-	unjustified("signals.reasonCodeUnits", 350, "code units", {
+	{
+		id: "signals.reasonCodeUnits",
+		unit: "code units",
 		protects: "Registry deprecation text is untrusted; an unbounded reason would bloat the packet's text and the comment.",
 		effect: "Longer text is cut at the cap without splitting a surrogate pair and marked '[reason truncated]'.",
-		test: "src/evidence/policy-signals-npm.test.ts > a long deprecation reason never splits a surrogate pair",
-		note: "L11 (#383) recommended deriving it from limit:packet.textBytes as ⌊(2,048 − 19) ÷ 3⌋ = 676, but that bounds only the finding's text field. The reason also lands in the deprecation signal's source excerpt, JSON.stringify of {deprecated: {marker, reason}} (src/evidence/policy-signals-evidence.ts recordSignal), which must fit limit:packet.excerptCodeUnits (500) or the signal is dropped as truncated. At 676 a cut reason is 695 code units and its excerpt 745, so every long reason would lose its deprecation evidence; with 676 the test 'exact PyPI release evidence with an astral-heavy long reason passes T4 with earliest upload and yank findings' fails. The excerpt bounds a cut plain-text reason at 500 − 50 − 19 = 431 code units, and JSON escaping of quotes and backslashes doubles them, so even 350 can overflow it. The value stays until a derivation covers the excerpt path."
-	}),
-	unjustified("signals.npmMaxMaintainers", 32, "count", {
+		basis: {
+			kind: "derived",
+			inputs: ["packet.excerptCodeUnits"],
+			formula: (excerpt) => Math.floor((excerpt - SIGNAL_EXCERPT.reasonWrapperCodeUnits - SIGNAL_EXCERPT.reasonMarker.length) / 2),
+			description: "The longest reason whose deprecation excerpt always fits limit:packet.excerptCodeUnits, so a cut reason never loses its deprecation evidence as truncated. The excerpt is JSON.stringify of {deprecated: {marker, reason}} (src/evidence/policy-signals-npm.ts npmDeprecation, src/evidence/policy-signals-evidence.ts recordSignal): 50 code units around the reason, and a cut reason ends with the 19-unit ' [reason truncated]'. boundedReason replaces control characters and lone surrogates, so only a quote or a backslash escapes, each to 2 units. So ⌊(500 − 50 − 19) ÷ 2⌋ = 215: a reason of 215 quotes and the marker is a 499-unit excerpt, and 216 would be 501. The finding's rationale, 46 units and the cut reason, is at most 280 units and 710 UTF-8 bytes, inside limit:packet.textBytes. It follows the excerpt setting (Q27). Approved by the maintainer on 2026-11-28 (L11, item 6(a), #383).",
+			structuralTest: "src/evidence/policy-signals-npm.test.ts > a deprecation reason of quotes cut at the cap keeps its excerpt inside the excerpt cap"
+		},
+		test: "src/evidence/policy-signals-npm.test.ts > a long deprecation reason never splits a surrogate pair"
+	},
+	{
+		id: "signals.npmMaxMaintainers",
+		unit: "count",
 		protects: "A registry response can list an unbounded number of maintainers; the cap stops an oversized list from entering the publisher facts.",
-		effect: "Above 32 maintainers, the maintainers check fails with budget and that observation is recorded as unchecked.",
-		note: "no recorded reason",
+		effect: "Above the cap, the maintainers check fails with budget and that observation is recorded as unchecked.",
+		basis: {
+			kind: "derived",
+			inputs: ["packet.excerptCodeUnits"],
+			formula: (excerpt) => Math.floor((excerpt - SIGNAL_EXCERPT.maintainersWrapperCodeUnits + 1) / SIGNAL_EXCERPT.maintainerCodeUnits),
+			description: "The longest maintainer list that could ever fit the publisher excerpt, so the cap never refuses a list the excerpt could record. The excerpt is JSON.stringify of {level: 'registry_reported', maintainers: {kind: 'known', value: names}} (src/evidence/policy-signals-npm.ts factSource): 71 code units around the names, each name at least 4 (a one-character name, its quotes and its comma) and the last 3. Names match [a-z\\d_.-]+, so nothing escapes. So ⌊(500 − 71 + 1) ÷ 4⌋ = 107. The cap counts the listed entries before deduplication, which only shrinks the list. A longer list of realistic names still overflows the excerpt and is recorded as truncated, a Q27 matter. Largest recorded use: 12 of 4,251 npm version documents in the L11 corpus run list more than 32 maintainers, at most 74. It follows the excerpt setting (Q27). Approved by the maintainer on 2026-11-28 (L11, item 7(a), #383).",
+			structuralTest: "src/evidence/policy-signals-npm.test.ts > the publisher excerpt takes 71 code units around the maintainer names and 4 for each name"
+		},
 		test: "src/evidence/policy-signals-npm.test.ts > a maintainer list at the registered cap is kept and one more is unchecked for budget"
-	}),
+	},
 	configured("research.maxTagCandidates", 100, "count", {
 		setting: "limits.coverage.tagCandidates",
 		maximum: "evidence.allocation.upstream.maxRequests"
@@ -2548,12 +2958,20 @@ const DEFINITIONS = [
 		note: "stopped (L11, Q8(a), #383): the approved basis is safety, which merges only with its largest legitimate use and its harm. The harm is measured: the costliest unit is a copied entry, the reader's own work counter. As a reader parses and copies a response of empty objects, the costliest of three shapes per entry, doubling around limit:evidence.envelope.maxResponseBytes from 87,382 to 1,398,102 units, the slowest of 5 runs takes 74.7 to 2,292 ms, each doubling multiplying it by 2.46, 2.20, 2.50 and 2.27 (npm run probe:parse-cost -- harm research, on 2026-11-28 under Node 24.22.3); the cost grows a little faster than the count, as the count to the power 1.23 fitted over the series, so on that curve, with the allowance of #467 for a runner 10 times slower, harm begins near 3.0 million units, a quarter of limit:evidence.envelope.totalTimeoutMs, below the cap of 5,000,000. The largest legitimate use is not: a reader's work counts the entries it copies, the bytes of the manifests it decodes, the bytes of every cached response it reuses and one unit per release it scans, and no recorded run gives their sum (the #462 measurement recorded entries, not work). It needs a live run (npm run measure:demand with the work reported). Value unchanged",
 		test: "src/research.test.ts > the upstream reader spends exactly research.maxWork units and refuses the next one"
 	}),
-	unjustified("research.maxAttempts", 512, "count", {
+	{
+		id: "research.maxAttempts",
+		unit: "count",
 		protects: "The number of attempt records one enrichment can carry is bounded, so the output built from them stays within memory and output size (memory).",
 		effect: "Output with more attempts than the cap fails the enrichment with reason budget.",
-		note: "L11 (#383) recommended deriving it as a structural per-member attempt count (at least 6) × limit:packet.changes, at least 768, but the per-member count is not a fixed number: the range stage records one attempt per release it scans, up to limit:research.maxTagCandidates (100), plus a summary (src/evidence/upstream-range.ts), so a member can record at least 101 attempts, bounded by that setting. 512 already binds legitimate use: R1 #276 recorded 594 attempts for 105 members. A derivation needs limit:research.maxTagCandidates as an input, at least 101 × 128 ≈ 13,000, which the approval did not name, so the value stays until one is approved.",
+		basis: {
+			kind: "derived",
+			inputs: ["packet.changes", "research.maxTagCandidates"],
+			formula: (changes, candidates) => changes * (candidates + 1 + 10),
+			description: `The most attempts the members of one packet can record: limit:packet.changes members, each at most limit:research.maxTagCandidates range attempts (one per release the scan reads, src/evidence/upstream-range.ts), 1 range summary or stop, and ${10} fixed attempts outside the scan: 2 metadata reads (base and head) and the metadata fallback record (src/evidence/upstream.ts), 2 release tag candidates (src/evidence/upstream-github.ts, packageTags), the comparison and its final tag recheck, and 3 changelog paths (src/evidence/upstream-range.ts). An Actions member records fewer: 2 mappings, 1 release-notes failure, 4 ref rechecks and 1 comparison. So 128 × (100 + 1 + ${10}) = 14,208 at the defaults; it follows both settings. R1 #276 recorded 594 attempts for 105 members, which the earlier 512 refused. Approved by the maintainer on 2026-11-28 (L11, item 5(a), #383). The L11 proposal estimated 6 fixed attempts (13,696); the structural test counts ${10}. The attempts' bytes are still bounded by limit:research.maxRetainedBytes and limit:packet.bytes in the same check.`,
+			structuralTest: "src/evidence/upstream.test.ts > a package member records at most research.maxTagCandidates + 1 + the fixed attempts"
+		},
 		test: "src/evidence/upstream.test.ts > upstream bounds keep exactly research.maxAttempts attempts and refuse one more"
-	}),
+	},
 	derived("research.maxFindings", "count", ["packet.findings"], copy, "The research finding cap mirrors the packet's finding cap, since research findings land in the packet.", {
 		protects: "Research findings land in the packet, so the research finding cap mirrors the packet findings cap and bounds packet size (packet size).",
 		effect: "Advisory findings past the cap fail the reader with reason budget.",
@@ -12522,6 +12940,7 @@ async function reverifyReviewBinding(value, reads) {
 // src/schema.ts
 const PACKET_LIMITS = Object.freeze({
 	bytes: limit("packet.bytes"),
+	floorBytes: limit("packet.floorBytes"),
 	changes: limit("packet.changes"),
 	sources: limit("packet.sources"),
 	findings: limit("packet.findings"),
@@ -12745,7 +13164,8 @@ const CONTEXT_REASONS = [
 	"total-read-limit",
 	"excerpt-limit",
 	"fact-limit",
-	"context-byte-limit"
+	"context-byte-limit",
+	"budget"
 ];
 function context(value) {
 	const r = object$3(value, [
@@ -17428,7 +17848,7 @@ function boundedReason(value) {
 		if (kept.length + point.length > REASON_CODE_UNITS) break;
 		kept += point;
 	}
-	return kept + " [reason truncated]";
+	return kept + SIGNAL_EXCERPT.reasonMarker;
 }
 function signalSubject(change, side) {
 	const instance = side === "base" ? change.from : change.to;
@@ -24380,6 +24800,7 @@ function validPath$1(value, exactFile) {
 	}) || exactFile && /[*?[\]{}]/u.test(value)) return false;
 	return value.split("/").every((segment) => segment.length > 0 && !segment.startsWith("."));
 }
+/** Paths valid for their field; a list longer than `limit` is invalid (roots have none, L11). */
 function validPaths(value, limit, exactFile) {
 	return Array.isArray(value) && value.length <= limit && value.every((path) => validPath$1(path, exactFile)) && (!exactFile || new Set(value).size === value.length);
 }
@@ -24394,7 +24815,7 @@ function invalidContext(context) {
 		"sendSourceExcerptsToModel",
 		"excerptFiles"
 	])) return "context";
-	if (Object.hasOwn(context, "sourceRoots") && !validPaths(context.sourceRoots, limit("context.maxSourceRoots"), false)) return "context.sourceRoots";
+	if (Object.hasOwn(context, "sourceRoots") && !validPaths(context.sourceRoots, Number.POSITIVE_INFINITY, false)) return "context.sourceRoots";
 	if (Object.hasOwn(context, "sendSourceExcerptsToModel") && typeof context.sendSourceExcerptsToModel !== "boolean") return "context.sendSourceExcerptsToModel";
 	if (Object.hasOwn(context, "excerptFiles") && !validPaths(context.excerptFiles, limit("context.maxSourceCandidates"), true)) return "context.excerptFiles";
 }
@@ -26647,7 +27068,35 @@ function consistentInventoryGaps(input) {
 function consistentReview(input) {
 	return consistentOutcome(input) && consistentCounts(input) && consistentUnits(input) && consistentInventoryGaps(input);
 }
-function fitComment(head, assessments, requiredFollowups, optional) {
+/**
+* One decision-digest line. The digest sits in a fenced code block, where GitHub writes no link,
+* mention, reference or HTML, so an id needs no Markdown escape and costs at most its own code
+* units; a line starts with its position, so it can never close the fence. Only `<!--` is broken,
+* so an id can never repeat a managed-comment marker.
+*/
+function digestLine(position, entry) {
+	return `${position}. ${entry.unresolved ? "unresolved" : "assessed"}; ${plural(entry.blockers, "blocker")}; ${plural(entry.followups, "follow-up")}; ${plural(entry.members, "changed update")}: ${entry.id.replaceAll("<!--", "<​!--")}`;
+}
+/** The decision digest that replaces required content too long for the comment. */
+function digestLines(entries) {
+	return [
+		"",
+		"## Decision digest",
+		"",
+		"The full review is longer than one comment allows, so it is in this run's step summary. Every decision unit is listed here with its blockers and follow-ups, by its first changed update.",
+		"",
+		"```text",
+		...entries.map((entry, index) => digestLine(index + 1, entry)),
+		"```"
+	];
+}
+function fitComment(head, assessments, requiredFollowups, optional, digest) {
+	const full = [
+		...head,
+		...assessments,
+		...requiredFollowups,
+		...optional.flat()
+	].join("\n");
 	const sections = [assessments, ...optional];
 	let omitted = false;
 	for (;;) {
@@ -26663,13 +27112,37 @@ function fitComment(head, assessments, requiredFollowups, optional) {
 			body
 		};
 		const last = sections.findLastIndex((section) => section.length > 0);
-		if (last < 0) return {
-			ok: false,
-			category: "size"
-		};
+		if (last < 0) break;
 		sections[last] = [];
 		omitted = true;
 	}
+	const body = [...digest.head, ...digestLines(digest.entries)].join("\n");
+	if (body.length > limit("comment.maxBodyCodeUnits") || Buffer.byteLength(full) > limit("github.stepSummary.maxBytes")) return {
+		ok: false,
+		category: "size"
+	};
+	return {
+		ok: true,
+		body,
+		summary: full
+	};
+}
+/** Each unit's digest counts: its Reasons-not-to-merge lines and its follow-up entries. */
+function digestEntries(r) {
+	return r.units.map((unit, index) => {
+		const record = r.input.records[index];
+		const evaluation = r.summary.units[index];
+		const findingHolds = r.holds.filter((hold) => hold.unit === evaluation).length;
+		const modelHolds = r.modelHolds.filter((hold) => hold.unit === unit && !hold.rule?.findingId).length;
+		const gaps = record.assessment ? evaluation.gaps.length : 0;
+		return {
+			unresolved: record.state.state !== "assessed",
+			blockers: findingHolds + modelHolds,
+			followups: gaps + (record.assessment?.followups.length ?? 0),
+			members: unit.memberCount,
+			id: unit.memberIds[0] ?? ""
+		};
+	});
 }
 function collectHolds(input, units, summary) {
 	const modelHolds = input.records.flatMap((record, index) => record.assessment?.blockers.map((blocker) => ({
@@ -27136,7 +27609,10 @@ function renderNonempty(input, binding) {
 		...queueLines(r),
 		...coverageLines(r),
 		...findingLines(r)
-	], assessmentLines(r), followupLines(r), [...capabilitySections(r), ...uncheckedSections(r)]);
+	], assessmentLines(r), followupLines(r), [...capabilitySections(r), ...uncheckedSections(r)], {
+		head: headerLines(r),
+		entries: digestEntries(r)
+	});
 }
 /** Render an attributed review body; publication readiness is decided by the caller. */
 function renderDecisionBrief(input) {
@@ -27282,6 +27758,7 @@ async function reviewPacket(input) {
 		return {
 			kind: input.researchIncomplete ? "incomplete-evidence" : assessed.kind,
 			body: rendered.body,
+			...rendered.summary === void 0 ? {} : { summary: rendered.summary },
 			analysisTiming: assessed.analysisTiming
 		};
 	} catch {
@@ -34621,7 +35098,6 @@ async function runResearch(input) {
 const MAX_CONTEXT_DEPENDENCIES = limit("context.maxDependencies");
 const MAX_CONTEXT_ID_CODE_UNITS = limit("context.maxIdCodeUnits");
 const MAX_CONTEXT_PATH_BYTES = limit("context.maxPathBytes");
-const MAX_SOURCE_ROOTS = limit("context.maxSourceRoots");
 const MAX_SOURCE_CONTEXT_BYTES = limit("context.maxSourceContextBytes");
 const MAX_TRACKED_PATH_ENTRIES = limit("context.maxTrackedPathEntries");
 const MAX_SOURCE_CANDIDATES = limit("context.maxSourceCandidates");
@@ -34642,7 +35118,8 @@ const REASONS = [
 	"total-read-limit",
 	"excerpt-limit",
 	"fact-limit",
-	"context-byte-limit"
+	"context-byte-limit",
+	"budget"
 ];
 function failure(category, field = "$") {
 	return {
@@ -34740,7 +35217,7 @@ function validDependencies(dependencies) {
 	return true;
 }
 function validateContextConfig(context, visibility) {
-	if (!Array.isArray(context.sourceRoots) || context.sourceRoots.length > MAX_SOURCE_ROOTS) return failure("config", "context.sourceRoots");
+	if (!Array.isArray(context.sourceRoots)) return failure("config", "context.sourceRoots");
 	if (!Array.isArray(context.excerptFiles) || context.excerptFiles.length > MAX_SOURCE_CANDIDATES || new Set(context.excerptFiles).size !== context.excerptFiles.length) return failure("config", "context.excerptFiles");
 	if (typeof context.sendSourceExcerptsToModel !== "boolean") return failure("config", "context.sendSourceExcerptsToModel");
 	const roots = [...context.sourceRoots];
@@ -34754,7 +35231,7 @@ function validateContextConfig(context, visibility) {
 		files
 	};
 }
-async function checkConfiguredPaths(checkoutRoot, roots, files) {
+async function checkConfiguredPaths(checkoutRoot, roots, files, unread) {
 	const existingRoots = [], existingFiles = [];
 	const reasons = [];
 	for (const [paths, directory, field, existing] of [[
@@ -34770,8 +35247,9 @@ async function checkConfiguredPaths(checkoutRoot, roots, files) {
 	]]) for (const path of paths) {
 		const checked = await checkPath(checkoutRoot, path, directory, field);
 		if (!checked.ok) return checked;
-		if (checked.exists) existing.push(path);
-		else if (!reasons.includes("missing-source")) reasons.push("missing-source");
+		const reason = unread.has(path) ? "budget" : "missing-source";
+		if (checked.exists && !(unread.has(path) && !directory)) existing.push(path);
+		else if (!reasons.includes(reason)) reasons.push(reason);
 	}
 	return {
 		ok: true,
@@ -34805,7 +35283,7 @@ async function validateSourceContextInput(input) {
 		ok: true,
 		state: "disabled"
 	};
-	const checked = await checkConfiguredPaths(checkoutRoot, roots, files);
+	const checked = await checkConfiguredPaths(checkoutRoot, roots, files, input.unread ?? /* @__PURE__ */ new Set());
 	if (!checked.ok) return checked;
 	const { existingRoots, existingFiles, reasons } = checked;
 	if (!context.sendSourceExcerptsToModel) return {
@@ -35180,6 +35658,19 @@ var Unavailable = class extends Error {
 		this.reason = reason;
 	}
 };
+/**
+* Runs one read step; true when it stopped because the snapshot's read share ran out. Any other
+* failure still makes the snapshot unavailable.
+*/
+async function shareStop(step) {
+	try {
+		await step();
+		return false;
+	} catch (error) {
+		if (error instanceof Unavailable && error.reason === "budget") return true;
+		throw error;
+	}
+}
 function available(value) {
 	return {
 		kind: "available",
@@ -35454,9 +35945,9 @@ var Materializer = class {
 	* C2 reads at most its aggregate budget. Local placeholders preserve its limit result without
 	* downloading a source blob that C2 would never inspect.
 	*/
-	async materializeSourceFiles(paths) {
+	async materializeSourceFiles(paths, unread) {
 		let remaining = MAX_TOTAL_SOURCE_READ_BYTES;
-		for (const path of paths) {
+		for (const [index, path] of paths.entries()) {
 			if (remaining === 0) return;
 			const entry = await this.tree.get(path);
 			if (!entry || entry.kind !== "file") continue;
@@ -35465,7 +35956,10 @@ var Materializer = class {
 				await this.materialize(path, "limit-placeholder", { limit: remaining });
 				return;
 			}
-			await this.materialize(path, "payload", { limit: MAX_SOURCE_FILE_BYTES });
+			if (await shareStop(() => this.materialize(path, "payload", { limit: MAX_SOURCE_FILE_BYTES }))) {
+				for (const rest of paths.slice(index)) unread.add(rest);
+				return;
+			}
 			remaining -= sourceReadBytes;
 		}
 	}
@@ -35588,7 +36082,13 @@ async function withTrustedSnapshot(request, use) {
 			release: () => tree.release(),
 			collectContext: async (dependencies) => {
 				try {
-					for (const path of [...config.config.context.sourceRoots, ...config.config.context.excerptFiles]) await materializer.materializePrefixes(path);
+					const unread = /* @__PURE__ */ new Set();
+					const configured = [...config.config.context.sourceRoots, ...config.config.context.excerptFiles];
+					for (const [index, path] of configured.entries()) {
+						if (!await shareStop(() => materializer.materializePrefixes(path))) continue;
+						for (const rest of configured.slice(index)) unread.add(rest);
+						break;
+					}
 					active();
 					const files = inventory(tree);
 					const input = {
@@ -35596,7 +36096,8 @@ async function withTrustedSnapshot(request, use) {
 						checkoutRoot: snapshotRoot,
 						visibility: repository.value.visibility,
 						dependencies,
-						trackedFiles: trackedFiles(files)
+						trackedFiles: trackedFiles(files),
+						unread
 					};
 					const validation = await validateSourceContextInput(input);
 					if (!validation.ok || validation.state !== "ready") return collectSourceContext(input);
@@ -35605,7 +36106,7 @@ async function withTrustedSnapshot(request, use) {
 						trackedFiles: trackedFiles(files)
 					});
 					if (!candidates.ok) return candidates;
-					await materializer.materializeSourceFiles(candidates.paths);
+					await materializer.materializeSourceFiles(candidates.paths, unread);
 					active();
 					return await collectSourceContext({
 						...input,
@@ -35682,9 +36183,29 @@ function dependencyIdentities(changes) {
 * collect and research evidence, assess, and record a redacted publication handoff. Nothing is
 * published; the App token never enters this function.
 */
+const HELD_EVENTS = /* @__PURE__ */ new WeakSet();
+/**
+* Holds a raw event for one handoff to verification, so nothing that keeps the pipeline input,
+* such as the startup frame, holds the parsed event through the evidence phase (L11, item 11):
+* only the bounded binding verification returns outlives it.
+*/
+function holdEvent(event) {
+	let held = { value: event };
+	const holder = Object.freeze({ take: () => {
+		if (!held) throw new Error("event already taken");
+		const { value } = held;
+		held = null;
+		return value;
+	} });
+	HELD_EVENTS.add(holder);
+	return holder;
+}
+function takeEvent(event) {
+	return typeof event === "object" && event !== null && HELD_EVENTS.has(event) ? event.take() : event;
+}
 async function runReview(input) {
 	const started = input.jobStartedAt ?? input.now();
-	const verified = await verifyCiEvent(input.event, input.eventReads);
+	const verified = await verifyCiEvent(takeEvent(input.event), input.eventReads);
 	if (verified.kind === "skip") return {
 		kind: "skipped",
 		reason: verified.reason
@@ -35815,6 +36336,7 @@ function handedOff(sink, outcome, handoff) {
 		kind: "handed-off",
 		handoff,
 		body: outcome.body,
+		...outcome.summary === void 0 ? {} : { summary: outcome.summary },
 		recorded: sink.record(handoff, recordDetail, outcome.analysisTiming),
 		...freshness ? { detail: freshness } : {},
 		...outcome.analysisTiming ? { analysisTiming: outcome.analysisTiming } : {}
@@ -35858,6 +36380,7 @@ function assessedOutcome(reviewed, droppedOptional) {
 	return {
 		kind: reviewed.kind,
 		body: reviewed.body,
+		...reviewed.summary === void 0 ? {} : { summary: reviewed.summary },
 		...reviewed.gaps ? { gaps: reviewed.gaps } : {},
 		droppedOptional,
 		...reviewed.analysisTiming ? { analysisTiming: reviewed.analysisTiming } : {}
@@ -36310,10 +36833,10 @@ async function runStartup(writeError, environment = process.env, dependencies = 
 	try {
 		const eventPath = environment.GITHUB_EVENT_PATH;
 		const eventName = environment.GITHUB_EVENT_NAME;
-		let payload;
+		let event;
 		try {
 			if (!eventPath || !eventName) throw new Error("no event");
-			payload = JSON.parse(await dependencies.readEvent(eventPath));
+			event = holdEvent(JSON.parse(await dependencies.readEvent(eventPath)));
 		} catch {
 			writeError("dependabot-review: event unavailable; no review ran.");
 			return NOT_WIRED_EXIT_CODE;
@@ -36333,14 +36856,14 @@ async function runStartup(writeError, environment = process.env, dependencies = 
 		if (!sink) throw new Error("sink");
 		const claims = dependencies.claims ?? createTestClaimStore();
 		writeError(rehearsalLine(await runReview({
-			event: {
+			event: holdEvent({
 				eventName,
-				payload,
+				payload: event.take(),
 				expected: {
 					repository: runtime.repository,
 					workflow
 				}
-			},
+			}),
 			repository: runtime.repository,
 			llmApiKey: runtime.llmApiKey,
 			eventReads: createEventReads(transport, claims),
