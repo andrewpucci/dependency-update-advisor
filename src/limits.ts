@@ -3719,7 +3719,10 @@ const DEFINITIONS = [
     'research.maxTagCandidates',
     100,
     'count',
-    { setting: 'limits.coverage.tagCandidates', maximum: 'evidence.allocation.upstream.maxRequests' },
+    {
+      setting: 'limits.coverage.tagCandidates',
+      maximum: 'evidence.allocation.upstream.maxRequests',
+    },
     'The adopter: each release scanned in a range and each tag candidate tried costs upstream requests, and no registry or GitHub document bounds how many releases a repository has, so a larger setting buys coverage of longer release histories with quota and time. Coverage bound category (L11, Q9(a)); its hard maximum is the upstream request ceiling, since every candidate past it would be refused for budget anyway.',
     {
       protects:
@@ -3738,7 +3741,7 @@ const DEFINITIONS = [
     basis: {
       kind: 'safety',
       reason:
-        "Largest legitimate use: one level. A release tag is a lightweight ref to a commit (depth 0) or an annotated tag object whose target is the commit (depth 1); a longer chain needs a tag object that tags another tag object, which release tooling does not create. Harm: each level is one more charged GitHub read of up to a full response (src/evidence/upstream-github.ts:116-125), on the shared GITHUB_TOKEN quota, and the release stage reserves the depth for both candidate tags in limit:research.share.upstream.bytes.base; a cycle is already refused by the seen set, so the cap bounds the reads of a long acyclic chain an untrusted repository can build. The cap sits above the one level with room for unusual tooling. Approved by the maintainer on 2026-11-27 (L11, #383).",
+        'Largest legitimate use: one level. A release tag is a lightweight ref to a commit (depth 0) or an annotated tag object whose target is the commit (depth 1); a longer chain needs a tag object that tags another tag object, which release tooling does not create. Harm: each level is one more charged GitHub read of up to a full response (src/evidence/upstream-github.ts:116-125), on the shared GITHUB_TOKEN quota, and the release stage reserves the depth for both candidate tags in limit:research.share.upstream.bytes.base; a cycle is already refused by the seen set, so the cap bounds the reads of a long acyclic chain an untrusted repository can build. The cap sits above the one level with room for unusual tooling. Approved by the maintainer on 2026-11-27 (L11, #383).',
     },
     effect: 'A chain deeper than the cap fails with reason budget.',
     test: 'src/evidence/upstream-github.test.ts > annotated tag chains resolve up to the register depth and fail one tag deeper',
