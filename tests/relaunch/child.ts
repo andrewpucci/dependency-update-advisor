@@ -1,6 +1,6 @@
 // A stand-in for the action entry (src/index.ts) for src/relaunch.test.ts: it relaunches with the
-// memory FIXTURE_MEMORY gives, then the process that runs reports what it ran with and exits
-// with FIXTURE_EXIT.
+// memory FIXTURE_MEMORY gives and requires the heap FIXTURE_REQUIRED names, then the process that
+// runs reports what it ran with and exits with FIXTURE_EXIT.
 import { getHeapStatistics } from 'node:v8';
 import { exitAs, relaunch } from '../../src/relaunch.js';
 
@@ -10,6 +10,7 @@ const launched = await relaunch({
   argv: process.argv,
   env: process.env,
   memory: Number(process.env.FIXTURE_MEMORY),
+  requiredHeapBytes: Number(process.env.FIXTURE_REQUIRED),
 });
 if (launched.kind === 'run') {
   process.stdout.write(

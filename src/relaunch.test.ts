@@ -4,7 +4,14 @@ import { fileURLToPath, pathToFileURL } from 'node:url';
 import { expect, test, vi } from 'vite-plus/test';
 import { BINARY_BYTES } from './format.js';
 import { heapBytesFor, limit } from './limits.js';
-import { oldSpaceMiB, relaunch, RELAUNCHED_ENV, runnerMemory } from './relaunch.js';
+import {
+  exitAs,
+  HEAP_EXIT_CODE,
+  oldSpaceMiB,
+  relaunch,
+  RELAUNCHED_ENV,
+  runnerMemory,
+} from './relaunch.js';
 
 /** The runner memory whose derived heap is exactly `mib` MiB. */
 const memoryFor = (mib: number) =>
@@ -30,7 +37,7 @@ test('sizes the heap with the register formula and the runner memory', () => {
       limit('runner.systemReservedBytes'),
     ),
   ).toBe(limit('runner.heapBytes'));
-  // A runner with no memory left for a heap keeps V8's default.
+  // A runner with no memory left for a heap has nothing to size; the relaunch then fails closed.
   expect(oldSpaceMiB(memoryFor(0))).toBeNull();
 });
 
@@ -74,17 +81,79 @@ test('passes argv, env and streams through, and resolves with the child exit', a
 
 test('never relaunches a relaunched process or one with an old-generation size', async () => {
   const spawn = vi.fn();
-  const base = { execPath: '/node', argv: ['/node', '/a.js'], memory: memoryFor(300), spawn };
+  const base = {
+    execPath: '/node',
+    argv: ['/node', '/a.js'],
+    memory: memoryFor(300),
+    spawn,
+    requiredHeapBytes: 100,
+    heapLimit: () => 100,
+  };
   expect(await relaunch({ ...base, execArgv: [], env: { [RELAUNCHED_ENV]: '300' } })).toEqual({
     kind: 'run',
   });
   expect(await relaunch({ ...base, execArgv: ['--max-old-space-size=100'], env: {} })).toEqual({
     kind: 'run',
   });
-  expect(await relaunch({ ...base, execArgv: [], env: {}, memory: memoryFor(0) })).toEqual({
-    kind: 'run',
+  // A runner that leaves no heap stops the action rather than run it at V8's default.
+  expect(await relaunch({ ...base, execArgv: [], env: {}, memory: memoryFor(0) })).toMatchObject({
+    kind: 'failed',
   });
   expect(spawn).not.toHaveBeenCalled();
+});
+
+test('fails closed when the child cannot be spawned', async () => {
+  const base = {
+    execPath: '/node',
+    execArgv: [],
+    argv: ['/node', '/a.js'],
+    env: {},
+    memory: memoryFor(300),
+    signals: new EventEmitter() as never,
+  };
+  const thrown = await relaunch({
+    ...base,
+    spawn: () => {
+      throw new Error('EAGAIN');
+    },
+  });
+  const child = fakeChild();
+  const emitting = relaunch({ ...base, spawn: () => child });
+  child.emit('error', new Error('ENOENT'));
+  for (const result of [thrown, await emitting]) {
+    expect(result).toEqual({
+      kind: 'failed',
+      message:
+        'dependabot-review: Node could not be relaunched with the runner heap; no review ran.',
+    });
+    // The action stops with a clear error and its own exit code; no error text is echoed.
+    const lines: string[] = [];
+    const before = process.exitCode;
+    exitAs(result as Extract<typeof result, { kind: 'failed' }>, (line) => lines.push(line));
+    expect(process.exitCode).toBe(HEAP_EXIT_CODE);
+    process.exitCode = before;
+    expect(lines).toEqual([
+      'dependabot-review: Node could not be relaunched with the runner heap; no review ran.',
+    ]);
+  }
+});
+
+test('fails closed when the heap limit is below runner.heapBytes', async () => {
+  const base = { execPath: '/node', argv: ['/node', '/a.js'], memory: memoryFor(300) };
+  const required = limit('runner.heapBytes');
+  // The relaunched child, or a process given its own old-generation size, checks its limit.
+  for (const run of [
+    { execArgv: [], env: { [RELAUNCHED_ENV]: '300' } },
+    { execArgv: ['--max-old-space-size=100'], env: {} },
+  ]) {
+    expect(await relaunch({ ...base, ...run, heapLimit: () => required - 1 })).toEqual({
+      kind: 'failed',
+      message: `dependabot-review: the Node heap limit is ${required - 1} bytes, below the ${required} bytes the review's limits assume (limit:runner.heapBytes); no review ran.`,
+    });
+    expect(await relaunch({ ...base, ...run, heapLimit: () => required })).toEqual({
+      kind: 'run',
+    });
+  }
 });
 
 test('relaunches once with the derived old-generation size and passes the exit code through', () => {
@@ -97,7 +166,12 @@ test('relaunches once with the derived old-generation size and passes the exit c
     ['--experimental-transform-types', '--no-warnings', '--import', hooks, child, 'arg'],
     {
       encoding: 'utf8',
-      env: { ...process.env, FIXTURE_MEMORY: String(memoryFor(300)), FIXTURE_EXIT: '7' },
+      env: {
+        ...process.env,
+        FIXTURE_MEMORY: String(memoryFor(300)),
+        FIXTURE_REQUIRED: String(300 * BINARY_BYTES.MiB),
+        FIXTURE_EXIT: '7',
+      },
     },
   );
   expect(result.status).toBe(7);
@@ -117,5 +191,33 @@ test('relaunches once with the derived old-generation size and passes the exit c
   expect(ran.heapLimit).toBeGreaterThanOrEqual(300 * BINARY_BYTES.MiB);
   expect(ran.heapLimit).toBeLessThanOrEqual(
     300 * BINARY_BYTES.MiB + limit('runner.youngGenerationBytes'),
+  );
+}, 60_000);
+
+test('a relaunched child whose heap limit is below the required heap stops with a clear error', () => {
+  const child = fileURLToPath(new URL('../tests/relaunch/child.ts', import.meta.url));
+  const hooks = pathToFileURL(
+    fileURLToPath(new URL('../scripts/measure-heap/register.mjs', import.meta.url)),
+  ).href;
+  // The child gets 300 MiB of old generation; one byte more than its V8 limit allows is required.
+  const required = 300 * BINARY_BYTES.MiB + limit('runner.youngGenerationBytes') + 1;
+  const result = spawnSync(
+    process.execPath,
+    ['--experimental-transform-types', '--no-warnings', '--import', hooks, child],
+    {
+      encoding: 'utf8',
+      env: {
+        ...process.env,
+        FIXTURE_MEMORY: String(memoryFor(300)),
+        FIXTURE_REQUIRED: String(required),
+        FIXTURE_EXIT: '0',
+      },
+    },
+  );
+  // The child stopped before running anything, and the parent passed its exit through.
+  expect(result.stdout).toBe('');
+  expect(result.status).toBe(HEAP_EXIT_CODE);
+  expect(result.stderr).toMatch(
+    new RegExp(`the Node heap limit is \\d+ bytes, below the ${required} bytes`),
   );
 }, 60_000);
