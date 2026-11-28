@@ -519,12 +519,24 @@ adds off-heap buffers. `npm run check:limits` evaluates the register there.
 
 Amended (L11, A1; approved by the maintainer on 2026-11-28,
 [#383](https://github.com/andrewpucci/dependency-update-advisor/issues/383)).
-`limit:packet.floorBytes` is the smallest packet T4 accepts with
-`limit:packet.changes` changes and no optional evidence. It is derived and
-pinned by an offline test that builds and validates that packet. Below it, no
-valid change at the change cap can produce any packet, so it is a structural
-floor, not demand.
+`limit:packet.floorBytes` is the largest required-only packet T4 accepts with
+`limit:packet.changes` changes, so any valid PR at the change cap fits. It is
+derived and pinned by an offline test that builds and validates that packet.
+Below it, some valid change at the change cap cannot produce its packet, so it
+is a structural floor, not demand.
 
+- Amended (L11, A1 review follow-up, 2026-11-28): the floor was first the
+  smallest valid packet, about 27 KB. It is now the largest. Every change is
+  an update with both sides and only its required evidence categories, each
+  unavailable for every reason. Every id, path, version and identity is at
+  `limit:packet.idCodeUnits` or `limit:packet.identityBytes`, and so are the
+  binding's strings.
+- The uv shape binds, at about 16.7 MB: its extras and groups each hold
+  `limit:packet.listEntries` names. For context, the npm shape is about
+  4.2 MB and the Actions shape about 3.4 MB. The proposal's estimate of 1 to
+  10 MB was not part of the definition. The test fails if any field of the
+  floor packet can grow by one character or entry and still be accepted, so a
+  cap that grows without the floor following is caught.
 - A setting that spends heap has a hard maximum: the largest value at which
   `limit:packet.bytes` stays at or above `limit:packet.floorBytes`, with the
   other settings at their defaults. This replaces the Q14(a) text, which was

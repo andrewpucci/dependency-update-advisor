@@ -730,91 +730,208 @@ function largestAtFloor(ceiling: number, floor: number, packet: (value: number) 
 }
 
 /**
- * Printable ASCII a packet id may hold with no JSON escape: 0x20 to 0x7E less `"` and `\`, the
- * one-byte characters T4's text check admits (src/schema.ts `text`).
+ * The reasons T4 admits for an unavailable evidence category (EVIDENCE_REASONS in src/schema.ts,
+ * which imports this module; src/schema.test.ts checks the two match).
  */
-const FLOOR_ID_ALPHABET = Array.from({ length: 95 }, (_, index) =>
-  String.fromCharCode(32 + index),
-).filter((character) => character !== '"' && character !== '\\');
+export const FLOOR_EVIDENCE_REASONS = Object.freeze([
+  'permission',
+  'rate_limit',
+  'timeout',
+  'missing',
+  'malformed',
+  'unsupported',
+  'truncated',
+  'budget',
+  'conflict',
+  'unknown',
+] as const);
 
-/** The `index`th shortest distinct string over FLOOR_ID_ALPHABET (bijective base 93). */
-function shortestId(index: number): string {
-  let rest = index + 1;
-  let id = '';
-  while (rest > 0) {
-    rest -= 1;
-    id = `${FLOOR_ID_ALPHABET[rest % FLOOR_ID_ALPHABET.length] ?? ''}${id}`;
-    rest = Math.floor(rest / FLOOR_ID_ALPHABET.length);
-  }
-  return id;
-}
+/** The ecosystems a floor packet can take; limit:packet.floorBytes is the largest of them. */
+export const FLOOR_SHAPES = Object.freeze(['npm', 'actions', 'uv'] as const);
+export type FloorShape = (typeof FLOOR_SHAPES)[number];
+/** The required-field caps a floor packet fills (limit:packet.floorBytes's inputs). */
+export type FloorCaps = Readonly<{ listEntries: number; idCodeUnits: number; identityBytes: number }>;
 
 const FLOOR_SHA = '0'.repeat(40);
+/** The largest number a packet id field admits (positiveId in src/event.ts). */
+const FLOOR_NUMBER = Number.MAX_SAFE_INTEGER;
+/** The longest CI conclusion the binding admits (CONCLUSIONS in src/event.ts). */
+const FLOOR_CONCLUSION = 'startup_failure';
+/** The first of the 20,000 three-byte CJK characters floorId writes. */
+const FLOOR_CJK_FIRST = 0x4e00;
+const FLOOR_CJK_COUNT = 20_000;
+/** The uv ids floorId draws per change: the change, its two file sources and two name lists. */
+const FLOOR_ID_STRIDE = 8;
+/** The registry identity's fixed prefix. */
+const FLOOR_REGISTRY = 'https://a/';
+const FLOOR_LIST_STRIDE = 100;
 
 /**
- * The smallest review packet T4 accepts with `changes` changes (limit:packet.floorBytes), and the
- * trusted snapshot it validates against: every change an npm declaration addition, which carries
- * no evidence category, with the shortest distinct id and name; one root `package.json` head
- * source per limit:packet.listEntries members; the inventory source; every binding string at its
- * shortest valid length and every number 1; context disabled; no finding, relationship or
- * reachability verdict. src/schema.test.ts validates it and pins its bytes.
+ * `units` code units of three-byte text, the most bytes an id serializes to under the code-unit
+ * cap; its first two characters keep it distinct for each `index` below 20,000 squared.
  */
-export function floorPacket(changes: number, listEntries: number) {
-  const repository = { id: 1, owner: 'a', name: 'a' };
+function floorId(index: number, units: number): string {
+  const tag = String.fromCharCode(
+    FLOOR_CJK_FIRST + (index % FLOOR_CJK_COUNT),
+    FLOOR_CJK_FIRST + Math.floor(index / FLOOR_CJK_COUNT),
+  );
+  return `${tag}${'中'.repeat(units)}`.slice(0, units);
+}
+
+/** `"` written `bytes` times: one byte the cap counts, two serialized, the most T4 admits. */
+function quoted(bytes: number): string {
+  return '"'.repeat(Math.max(0, bytes));
+}
+
+/** `prefix` padded with `"` to `bytes`. */
+function padded(prefix: string, bytes: number): string {
+  return `${prefix}${quoted(bytes - prefix.length)}`;
+}
+
+/**
+ * The largest review packet T4 accepts with `changes` changes of one `shape` and no optional
+ * evidence (limit:packet.floorBytes), and the trusted snapshot it validates against. Every
+ * required field sits at its cap: each change an update with both sides, its required evidence
+ * categories unavailable for every reason, its own base and head file source, and every id, path
+ * and identity at limit:packet.idCodeUnits or limit:packet.identityBytes in the characters that
+ * serialize longest; uv carries its extras and groups at limit:packet.listEntries; the binding's
+ * strings at their caps and its numbers at the largest safe integer; context disabled; no
+ * finding, relationship or reachability verdict. src/schema.test.ts validates it and pins its
+ * bytes.
+ */
+export function floorPacket(changes: number, caps: FloorCaps, shape: FloorShape = 'uv') {
+  const { listEntries, idCodeUnits, identityBytes } = caps;
+  const repository = {
+    id: FLOOR_NUMBER,
+    owner: 'a'.repeat(identityBytes),
+    name: 'a'.repeat(identityBytes),
+  };
   const binding = {
     repository,
-    workflow: { id: 1, path: 'a' },
-    runId: 1,
-    runAttempt: 1,
-    pullNumber: 1,
+    workflow: { id: FLOOR_NUMBER, path: quoted(identityBytes) },
+    runId: FLOOR_NUMBER,
+    runAttempt: FLOOR_NUMBER,
+    pullNumber: FLOOR_NUMBER,
     headRepository: repository,
     headSha: FLOOR_SHA,
-    baseRef: 'a',
+    baseRef: quoted(identityBytes),
     baseSha: FLOOR_SHA,
     mergeBaseSha: FLOOR_SHA,
-    actorId: 1,
-    conclusion: 'success',
-    identity: [1, 1, 1, 1, 1, FLOOR_SHA],
+    actorId: FLOOR_NUMBER,
+    conclusion: FLOOR_CONCLUSION,
+    identity: [FLOOR_NUMBER, FLOOR_NUMBER, FLOOR_NUMBER, FLOOR_NUMBER, FLOOR_NUMBER, FLOOR_SHA],
   };
-  const ids = Array.from({ length: changes }, (_, index) => shortestId(index));
-  const groups = Array.from({ length: Math.ceil(changes / listEntries) }, (_, index) =>
-    ids.slice(index * listEntries, (index + 1) * listEntries),
+  const id = (index: number) => floorId(index, idCodeUnits);
+  const inventoryId = id(changes * FLOOR_ID_STRIDE);
+  const categories =
+    shape === 'npm'
+      ? ['upstream', 'vulnerability', 'malware', 'installScript']
+      : ['upstream', 'vulnerability', 'malware'];
+  const evidence = Object.fromEntries(
+    categories.map((key) => [
+      key,
+      { status: 'unavailable', reasons: [...FLOOR_EVIDENCE_REASONS], sourceIds: [] },
+    ]),
   );
-  const inventoryId = shortestId(0);
-  const fileIds = groups.map((_, index) => shortestId(index + 1));
+  const registry = { kind: 'registry', identity: padded(FLOOR_REGISTRY, identityBytes) };
+  const files: Record<string, unknown>[] = [];
+  const side = (index: number, salt: number, changeId: string) => {
+    const sourceId = id(index * FLOOR_ID_STRIDE + 1 + salt);
+    const version = `${quoted(identityBytes - 1)}${salt}`;
+    let path: string;
+    let fields: Record<string, unknown>;
+    if (shape === 'actions') {
+      const prefix = `.github/workflows/w${index}-${salt}`;
+      path = `${padded(prefix, identityBytes - '.yml'.length)}.yml`;
+      fields = {
+        workflow: path,
+        jobId: id(index * FLOOR_ID_STRIDE + 3),
+        stepIndex: FLOOR_NUMBER,
+        action: `a/${'中'.repeat(idCodeUnits - 2)}`,
+        ref: version,
+        refKind: 'tag',
+      };
+    } else if (shape === 'npm') {
+      const root = padded(`r${index}-${salt}/`, identityBytes - '/package-lock.json'.length);
+      path = `${root}/package-lock.json`;
+      fields = {
+        root,
+        name: id(index * FLOOR_ID_STRIDE + 3),
+        lockPath: version,
+        version,
+        source: registry,
+      };
+    } else {
+      const root = padded(`r${index}-${salt}/`, identityBytes - '/pyproject.toml'.length);
+      path = `${root}/pyproject.toml`;
+      const list = (kind: number) =>
+        Array.from({ length: listEntries }, (_, entry) =>
+          id((index * FLOOR_LIST_STRIDE + entry) * FLOOR_ID_STRIDE + kind),
+        ).sort();
+      fields = {
+        root,
+        name: `a${index}-${'b'.repeat(idCodeUnits - String(index).length - 2)}`,
+        version,
+        source: registry,
+        marker: quoted(identityBytes),
+        extras: list(6),
+        groups: list(7),
+      };
+    }
+    files.push({
+      id: sourceId,
+      kind: 'file',
+      ecosystems: [shape],
+      memberIds: [changeId],
+      status: 'available',
+      reasons: [],
+      provenance: {
+        kind: 'file',
+        revision: salt === 0 ? 'base' : 'head',
+        repository,
+        sha: FLOOR_SHA,
+        path,
+      },
+    });
+    return { ...fields, sourceId };
+  };
+  const packetChanges = Array.from({ length: changes }, (_, index) => {
+    const changeId = id(index * FLOOR_ID_STRIDE);
+    return {
+      id: changeId,
+      ecosystem: shape,
+      kind: 'update',
+      role: 'direct',
+      ...(shape === 'npm' ? { directRoles: ['production', 'development', 'peer', 'optional'] } : {}),
+      evidence,
+      from: side(index, 0, changeId),
+      to: side(index, 1, changeId),
+    };
+  });
+  const coverage = Object.fromEntries(
+    FLOOR_SHAPES.map((ecosystem) => [
+      ecosystem,
+      {
+        status: ecosystem === shape ? 'complete' : 'not_applicable',
+        reasons: [],
+        sourceIds: [inventoryId],
+      },
+    ]),
+  );
   const contextRevision = { repository, sha: FLOOR_SHA };
   const context = { ok: true, status: 'disabled', dependencies: [], reasons: [] };
-  const absent = { status: 'not_applicable', reasons: [], sourceIds: [inventoryId] };
   const packet = {
     version: 1,
     binding,
     baseSha: FLOOR_SHA,
     contextRevision,
-    coverage: {
-      npm: { status: 'complete', reasons: [], sourceIds: [inventoryId] },
-      actions: absent,
-      uv: absent,
-    },
-    changes: ids.map((id, index) => ({
-      id,
-      ecosystem: 'npm',
-      basis: 'declaration',
-      kind: 'addition',
-      role: 'direct',
-      evidence: {},
-      from: null,
-      to: {
-        root: '.',
-        name: id,
-        specifiers: { dependencies: '' },
-        sourceId: fileIds[Math.floor(index / listEntries)],
-      },
-    })),
+    coverage,
+    changes: packetChanges,
     sources: [
       {
         id: inventoryId,
         kind: 'file-list',
-        ecosystems: ['npm', 'actions', 'uv'],
+        ecosystems: [...FLOOR_SHAPES],
         memberIds: [],
         status: 'available',
         reasons: [],
@@ -823,24 +940,10 @@ export function floorPacket(changes: number, listEntries: number) {
           repository,
           baseSha: FLOOR_SHA,
           headSha: FLOOR_SHA,
-          absentEcosystems: ['actions', 'uv'],
+          absentEcosystems: FLOOR_SHAPES.filter((ecosystem) => ecosystem !== shape),
         },
       },
-      ...groups.map((members, index) => ({
-        id: fileIds[index],
-        kind: 'file',
-        ecosystems: ['npm'],
-        memberIds: members,
-        status: 'available',
-        reasons: [],
-        provenance: {
-          kind: 'file',
-          revision: 'head',
-          repository,
-          sha: FLOOR_SHA,
-          path: 'package.json',
-        },
-      })),
+      ...files,
     ],
     findings: [],
     relationships: [],
@@ -849,6 +952,23 @@ export function floorPacket(changes: number, listEntries: number) {
     context,
   };
   return { packet, expected: { binding, baseSha: FLOOR_SHA, contextRevision, context } };
+}
+
+const floorCache = new Map<string, number>();
+
+/** The serialized bytes of the largest floor packet over FLOOR_SHAPES (limit:packet.floorBytes). */
+export function floorBytes(changes: number, caps: FloorCaps): number {
+  const key = JSON.stringify([changes, caps.listEntries, caps.idCodeUnits, caps.identityBytes]);
+  let bytes = floorCache.get(key);
+  if (bytes === undefined) {
+    bytes = Math.max(
+      ...FLOOR_SHAPES.map((shape) =>
+        Buffer.byteLength(JSON.stringify(floorPacket(changes, caps, shape).packet)),
+      ),
+    );
+    floorCache.set(key, bytes);
+  }
+  return bytes;
 }
 
 /**
@@ -1459,18 +1579,18 @@ const DEFINITIONS = [
     id: 'packet.floorBytes',
     unit: 'bytes',
     protects:
-      'States the smallest packet a valid change at limit:packet.changes changes can produce, so an adopter setting that spends heap can never take limit:packet.bytes below what any review at the change cap needs.',
+      'States the largest packet a valid change set at limit:packet.changes changes needs with no optional evidence, so an adopter setting that spends heap can never take limit:packet.bytes below what any review at the change cap needs.',
     effect:
       "Not enforced at run time. check:limits rejects a register whose limit:packet.bytes falls below it at the defaults or with any setting at its hard maximum, and each heap-spending setting's hard maximum is the largest value at which limit:packet.bytes stays at or above it; L12 makes the config parser apply the same check at the adopter's settings.",
     basis: {
       kind: 'derived',
-      inputs: ['packet.changes', 'packet.listEntries'],
-      formula: (changes, listEntries) =>
-        Buffer.byteLength(JSON.stringify(floorPacket(changes, listEntries).packet)),
+      inputs: ['packet.changes', 'packet.listEntries', 'packet.idCodeUnits', 'packet.identityBytes'],
+      formula: (changes, listEntries, idCodeUnits, identityBytes) =>
+        floorBytes(changes, { listEntries, idCodeUnits, identityBytes }),
       description:
-        "The serialized bytes of the smallest packet T4 accepts with limit:packet.changes changes and no optional evidence (floorPacket in src/limits.ts): every change an npm declaration addition, the change kind with no evidence category, with the shortest distinct ids and names over the 93 printable ASCII characters JSON writes unescaped; one root package.json head source per limit:packet.listEntries members and the inventory source; every binding string at its shortest valid length; context disabled; no finding, relationship or reachability verdict. Below it no valid change at the change cap can produce any packet, so it is a structural floor, not demand. A heap-spending setting's hard maximum is the largest value at which limit:packet.bytes stays at or above it (SPEC-limit-register section 5). Approved by the maintainer on 2026-11-28 (L11, A1, #383).",
+        "The serialized bytes of the largest required-only packet T4 accepts with limit:packet.changes changes (floorPacket and floorBytes in src/limits.ts), so any valid PR at the change cap fits. Each change is an update with both sides and only its required evidence categories, each unavailable for all ten reasons; each side has its own base or head file source; every id, name, path, version, marker and identity sits at limit:packet.idCodeUnits or limit:packet.identityBytes in the characters that serialize longest (three-byte text under the code-unit cap, an escaped quote elsewhere); the binding's strings sit at their caps and its numbers at the largest safe integer; context is disabled; there is no finding, relationship or reachability verdict. The floor is the largest of the three ecosystem shapes, and uv binds: its extras and groups at limit:packet.listEntries each make it about 16.7 MB at the change cap, against about 4.2 MB for npm and 3.4 MB for Actions. The proposal's estimate of 1 to 10 MB was not part of the definition. Below the floor some valid change at the change cap cannot produce its packet, so it is a structural floor, not demand. A heap-spending setting's hard maximum is the largest value at which limit:packet.bytes stays at or above it (SPEC-limit-register section 5). Approved by the maintainer on 2026-11-28 (L11, A1, #383).",
       structuralTest:
-        'src/schema.test.ts > the packet floor is the smallest packet T4 accepts at the change cap',
+        'src/schema.test.ts > the packet floor is the largest required-only packet T4 accepts at the change cap',
     },
     test: 'src/limits.test.ts > no heap setting at its hard maximum takes packet.bytes below its floor',
   },

@@ -1028,7 +1028,7 @@ test('no heap setting at its hard maximum takes packet.bytes below its floor', (
   const floor = limit('packet.floorBytes');
   expect(limitEntry('packet.floorBytes').basis).toMatchObject({
     kind: 'derived',
-    inputs: ['packet.changes', 'packet.listEntries'],
+    inputs: ['packet.changes', 'packet.listEntries', 'packet.idCodeUnits', 'packet.identityBytes'],
   });
   expect(floor).toBeLessThanOrEqual(limit('packet.bytes'));
   // Each heap maximum is the largest value at which the packet cap holds the floor, and one more
@@ -1036,8 +1036,9 @@ test('no heap setting at its hard maximum takes packet.bytes below its floor', (
   const cases: [LimitId, LimitId, number][] = [
     ['analysis.maxConcurrentCalls', 'analysis.maxConcurrentCallsMax', 8],
     // 71,091 before the 25,000,001-byte event buffer was counted off heap (L11, item 11), 70,807
-    // before its decoded text was (the item 11 review follow-up).
-    ['analysis.completionTokens', 'analysis.completionTokensMax', 70_535],
+    // before its decoded text was (the item 11 review follow-up), and 70,535 beside the smallest
+    // valid packet (27,052 bytes) rather than the largest required-only one (the A1 follow-up).
+    ['analysis.completionTokens', 'analysis.completionTokensMax', 66_974],
   ];
   for (const [id, maximum, value] of cases) {
     expect(limitEntry(id).configurable, id).toMatchObject({ maximum });
@@ -1066,7 +1067,9 @@ test('no heap setting at its hard maximum takes packet.bytes below its floor', (
   // the event buffer counted off heap (L11, item 11) 916,121 more, and the config cap at one blob
   // response's decoded bytes (760,689, the item 9 review follow-up) gave 287,887 back, and the
   // event's decoded text counted off heap (the item 11 review follow-up) takes 916,120.
-  expect(limit('runner.maxEvidenceRetainedBytes')).toBe(123_523_961);
+  // The floor at the largest required-only packet rather than the smallest valid one (the A1
+  // follow-up) takes 8,926,825.
+  expect(limit('runner.maxEvidenceRetainedBytes')).toBe(114_597_136);
   expect(limit('runner.maxEvidenceRetainedBytes')).toBeGreaterThan(defaults);
   const share = 'evidence.allocation.session.maxTotalBytes';
   const raised = hardMaximum(REGISTER, share);
