@@ -213,7 +213,9 @@ test.each([
 });
 
 /** Runs the real npm signal stage with the proposed version's registry document rewritten. */
-async function proposedSignals(rewrite: (data: Record<string, unknown>) => Record<string, unknown>) {
+async function proposedSignals(
+  rewrite: (data: Record<string, unknown>) => Record<string, unknown>,
+) {
   const f = await upstreamScenario();
   const ur = createUpstreamReader(upstreamTestLimits, { now: () => 0, fetch: f.fetch });
   if (ur.kind !== 'ready') throw new Error('reader');
@@ -264,12 +266,12 @@ async function proposedSignals(rewrite: (data: Record<string, unknown>) => Recor
 const excerpts = (out: Awaited<ReturnType<typeof proposedSignals>>, kind: string, key: string) => [
   ...new Set(
     out.sources.flatMap((s) =>
-    s.kind === kind &&
-    s.provenance.kind === 'upstream' &&
-    s.provenance.subjects.some((subject) => subject.side === 'head') &&
-    s.provenance.excerpt.includes(key)
-      ? [s.provenance.excerpt]
-      : [],
+      s.kind === kind &&
+      s.provenance.kind === 'upstream' &&
+      s.provenance.subjects.some((subject) => subject.side === 'head') &&
+      s.provenance.excerpt.includes(key)
+        ? [s.provenance.excerpt]
+        : [],
     ),
   ),
 ];

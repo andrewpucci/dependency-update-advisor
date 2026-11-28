@@ -768,17 +768,21 @@ test('the raw event is unreachable once verification is done, before the first t
   } as typeof JSON.parse;
   let reachable: boolean | undefined;
   try {
-    const { code } = await start(github, {}, {
-      fetch: async (url, init) => {
-        if (reachable === undefined && url.includes('/git/trees/')) {
-          // A new task, so the WeakRef's creation no longer keeps its target alive.
-          await new Promise((resolve) => setTimeout(resolve, 0));
-          gc();
-          reachable = parsed?.deref() !== undefined;
-        }
-        return github.fetch(url, init);
+    const { code } = await start(
+      github,
+      {},
+      {
+        fetch: async (url, init) => {
+          if (reachable === undefined && url.includes('/git/trees/')) {
+            // A new task, so the WeakRef's creation no longer keeps its target alive.
+            await new Promise((resolve) => setTimeout(resolve, 0));
+            gc();
+            reachable = parsed?.deref() !== undefined;
+          }
+          return github.fetch(url, init);
+        },
       },
-    });
+    );
     expect(code).toBe(NOT_WIRED_EXIT_CODE);
   } finally {
     JSON.parse = parse;

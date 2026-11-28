@@ -3447,12 +3447,11 @@ test('the irreducible boundary is a full review larger than the step summary', a
     );
   // At the change cap, every follow-up unit at limit:analysis.steps follow-ups: too long for the
   // comment, it renders as the decision digest with the full review beside it.
-  const plain = await render(
-    (index, name) =>
-      `Follow-up ${index} for ${name}: ${'Confirm the recorded evidence with a fresh lookup. '.repeat(6)}`.slice(
-        0,
-        270,
-      ),
+  const plain = await render((index, name) =>
+    `Follow-up ${index} for ${name}: ${'Confirm the recorded evidence with a fresh lookup. '.repeat(6)}`.slice(
+      0,
+      270,
+    ),
   );
   expect(plain).toMatchObject({ ok: true, summary: expect.any(String) });
   // Follow-ups at the byte cap whose every character escapes to five code units (`&amp;`) make a
@@ -3580,8 +3579,14 @@ test('replaces required content too long for the comment with a digest and keeps
   const lines = body.split('```text\n')[1].split('\n```')[0].split('\n');
   expect(lines).toHaveLength(units.length);
   const records = scenario.render.records;
-  const counted = lines.reduce((total, line) => total + Number(/; (\d+) follow-ups?;/u.exec(line)?.[1]), 0);
-  const followups = records.reduce((total, record) => total + (record.assessment?.followups.length ?? 0), 0);
+  const counted = lines.reduce(
+    (total, line) => total + Number(/; (\d+) follow-ups?;/u.exec(line)?.[1]),
+    0,
+  );
+  const followups = records.reduce(
+    (total, record) => total + (record.assessment?.followups.length ?? 0),
+    0,
+  );
   expect(followups).toBe(71 * limit('analysis.steps'));
   expect(counted).toBeGreaterThanOrEqual(followups);
   for (const [index, unit] of units.entries())

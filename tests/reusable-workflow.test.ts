@@ -167,9 +167,7 @@ test('R10 bounds execution without concurrency or ignored failures', () => {
   expect(review.steps[1]['timeout-minutes']).toBe(step);
   expect(review.steps[1]['timeout-minutes']).toBe(15);
   expect(review.steps[0]['timeout-minutes']).toBeUndefined();
-  expect(review['timeout-minutes']).toBe(
-    step + Math.ceil(limit('job.preStepAllowance') / 60_000),
-  );
+  expect(review['timeout-minutes']).toBe(step + Math.ceil(limit('job.preStepAllowance') / 60_000));
   expect(limit('job.budget')).toBe(step * 60_000);
   expect(workflow.concurrency).toBeUndefined();
   expect(review.concurrency).toBeUndefined();

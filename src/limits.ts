@@ -1438,7 +1438,7 @@ const DEFINITIONS = [
     protects:
       'States the smallest packet a valid change at limit:packet.changes changes can produce, so an adopter setting that spends heap can never take limit:packet.bytes below what any review at the change cap needs.',
     effect:
-      'Not enforced at run time. check:limits rejects a register whose limit:packet.bytes falls below it at the defaults or with any setting at its hard maximum, and each heap-spending setting\'s hard maximum is the largest value at which limit:packet.bytes stays at or above it; L12 makes the config parser apply the same check at the adopter\'s settings.',
+      "Not enforced at run time. check:limits rejects a register whose limit:packet.bytes falls below it at the defaults or with any setting at its hard maximum, and each heap-spending setting's hard maximum is the largest value at which limit:packet.bytes stays at or above it; L12 makes the config parser apply the same check at the adopter's settings.",
     basis: {
       kind: 'derived',
       inputs: ['packet.changes', 'packet.listEntries'],
@@ -3830,7 +3830,7 @@ const DEFINITIONS = [
       checked: '2026-11-28',
       platformValue: 25_000_000,
       margin:
-        "none: \"Payloads are capped at 25 MB\", read as decimal megabytes, the smaller reading; GitHub delivers no larger payload. Since L11 item 11(b) (approved by the maintainer on 2026-11-28, #383) the parsed event is held only for verification (holdEvent, src/pipeline.ts) and is unreachable before the first tree read, so no heap phase holds it and limit:packet.bytes does not count it; its parse peak, about 1,475,000,000 bytes at limit:runner.heapBytesPerEvidenceByte, falls at startup, when nothing else is held, inside limit:runner.heapBytes. The read buffer, the cap plus one byte (src/startup.ts readBoundedEvent), is off the V8 heap and counted in limit:runner.offHeapBytes",
+        'none: "Payloads are capped at 25 MB", read as decimal megabytes, the smaller reading; GitHub delivers no larger payload. Since L11 item 11(b) (approved by the maintainer on 2026-11-28, #383) the parsed event is held only for verification (holdEvent, src/pipeline.ts) and is unreachable before the first tree read, so no heap phase holds it and limit:packet.bytes does not count it; its parse peak, about 1,475,000,000 bytes at limit:runner.heapBytesPerEvidenceByte, falls at startup, when nothing else is held, inside limit:runner.heapBytes. The read buffer, the cap plus one byte (src/startup.ts readBoundedEvent), is off the V8 heap and counted in limit:runner.offHeapBytes',
     },
   },
   // Configuration file and validator bounds, from config.ts.

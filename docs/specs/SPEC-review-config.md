@@ -269,6 +269,7 @@ used as the protection for payloads; [GitHub does not guarantee that redaction](
    size of `limit:snapshot.maxBlobBytes`, a parse bound and never an adopter
    setting: the largest legitimate config is about 594 KB, and the packet cap
    stays positive below about 79.4 MB of config.
+
 5. Allow local overrides of only the ten named advisory verdict rules above.
    Apply an override before combining independent findings. Local policy can
    be more or less restrictive than the default, but cannot delete findings,

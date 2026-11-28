@@ -289,6 +289,7 @@ not rely on the exact-shape test (Requirement 5) to catch its defect.
     download and the app-token step. The reviewer step's keys are `uses`,
     `timeout-minutes`, and `with`; item 5 and the expected workflow above are
     narrowed accordingly.
+
 11. **Publication point.** The SHA callers pin is a commit whose push-to-`main`
     CI run passed (A1 requirement 5). The exact SHA, commands, and outcomes
     are recorded on #25. The workflow cannot contain its own SHA.

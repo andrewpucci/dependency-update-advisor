@@ -136,7 +136,7 @@ is a planning choice.
    required item or publish a body above the ceiling.
    - Amended (L11, B1; approved by the maintainer on 2026-11-28,
      [#383](https://github.com/andrewpucci/dependency-update-advisor/issues/383)):
-     required content is never dropped *silently*. When it cannot fit after
+     required content is never dropped _silently_. When it cannot fit after
      the optional material is omitted, the comment is the **decision
      digest**: the opening (recommendation, next action, evidence
      completeness and attribution), then one line per decision unit with its

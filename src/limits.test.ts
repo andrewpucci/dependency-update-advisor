@@ -1066,9 +1066,13 @@ test('no heap setting at its hard maximum takes packet.bytes below its floor', (
   // check:limits reports a register whose packet cap falls below the floor.
   const below = buildRegister(
     definitions.map((entry) =>
-      entry.id === 'runner.unitExpansionHeapBytes' ? { ...entry, value: limit('runner.heapBytes') } : entry,
+      entry.id === 'runner.unitExpansionHeapBytes'
+        ? { ...entry, value: limit('runner.heapBytes') }
+        : entry,
     ),
   );
-  expect(settingProblems(below)).toContain('packet.bytes: below limit:packet.floorBytes at the defaults');
+  expect(settingProblems(below)).toContain(
+    'packet.bytes: below limit:packet.floorBytes at the defaults',
+  );
   expect(settingProblems(REGISTER)).toEqual([]);
 });

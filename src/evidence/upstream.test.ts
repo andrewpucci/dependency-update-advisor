@@ -505,7 +505,10 @@ test('a package member records at most research.maxTagCandidates + 1 + the fixed
       return Response.json({}, { status: 404 });
     },
   );
-  const result = await enrichUpstream(await fixture(3, { maxRequests: 200, maxTagCandidates: candidates, maxAttempts: 1000 }), { reader: r.reader });
+  const result = await enrichUpstream(
+    await fixture(3, { maxRequests: 200, maxTagCandidates: candidates, maxAttempts: 1000 }),
+    { reader: r.reader },
+  );
   r.reader.close();
   if (result.kind !== 'enriched') throw new Error('enrichment');
   const stages = result.attempts.filter((a) => a.memberId === member.id).map((a) => a.stage);

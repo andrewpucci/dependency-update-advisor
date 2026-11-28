@@ -549,7 +549,10 @@ test('lists only the directories on configured paths, so repository size cannot 
     (snapshot) => snapshot.collectContext([{ id: 'unit-1', name: 'example-package' }]),
   );
 
-  (await import('node:fs')).writeFileSync('/tmp/claude-0/-home-user/763b32b3-7484-52a2-b84a-49921b64c703/scratchpad/l11s/r8.json', JSON.stringify({ result, calls: reader.calls.length, first: reader.calls.slice(0, 10) }));
+  (await import('node:fs')).writeFileSync(
+    '/tmp/claude-0/-home-user/763b32b3-7484-52a2-b84a-49921b64c703/scratchpad/l11s/r8.json',
+    JSON.stringify({ result, calls: reader.calls.length, first: reader.calls.slice(0, 10) }),
+  );
   expect(result).toMatchObject({ kind: 'ready', value: { ok: true, status: 'available' } });
   expect(reader.calls).not.toContain(`tree:${bigTree}`);
 });
@@ -583,7 +586,10 @@ test("gives an oversized excerpt C2's per-file limit without fetching its bytes"
 });
 
 test("gives an oversized config C1's size failure without fetching its bytes", async () => {
-  const reader = reads([configTree[0], { ...configTree[1], size: limit('config.maxBytes') + 1 }], {});
+  const reader = reads(
+    [configTree[0], { ...configTree[1], size: limit('config.maxBytes') + 1 }],
+    {},
+  );
 
   const result = await withTrustedSnapshot(
     { repository, reads: reader, temporaryRoot: tempRoot() },
@@ -783,7 +789,10 @@ test('reports a .github submodule as unsupported, never absent', async () => {
 
 test('rejects an oversized file from its tree size without fetching it', async () => {
   const reader = dependabotReader([
-    { ...entry('.github/dependabot.yml', '100644', dependabotBlob), size: limit('dependabot.maxFileBytes') + 1 },
+    {
+      ...entry('.github/dependabot.yml', '100644', dependabotBlob),
+      size: limit('dependabot.maxFileBytes') + 1,
+    },
   ]);
   await expect(roots(reader)).resolves.toEqual({
     kind: 'ready',
