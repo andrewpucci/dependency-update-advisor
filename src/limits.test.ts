@@ -885,8 +885,17 @@ test('the research and signal bounds keep their sources and formulas', () => {
     'evidence.allocation.signals.readers.registry.maxRequests',
   ] as const)
     expect(limit(id), id).toBe(2 * limit('packet.changes'));
-  expect(limit('evidence.allocation.signals.maxRequests')).toBe(1_040);
-  expect(limit('research.githubQuota.researchCeiling')).toBe(1_501);
+  const readers = ['malware', 'publishTimes', 'registry', 'metadata', 'upstream'] as const;
+  const signals = readers.reduce(
+    (total, reader) => total + limit(`evidence.allocation.signals.readers.${reader}.maxRequests`),
+    0,
+  );
+  expect(limit('evidence.allocation.signals.maxRequests')).toBe(signals);
+  expect(limit('research.githubQuota.researchCeiling')).toBe(
+    limit('evidence.allocation.upstream.maxRequests') +
+      limit('evidence.allocation.advisory.maxRequests') +
+      signals,
+  );
   for (const id of ['research.maxJsonDepth', 'research.maxTagDepth'] as const)
     expect(limitEntry(id).basis.kind, id).toBe('safety');
 });
