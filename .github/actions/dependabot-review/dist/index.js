@@ -648,6 +648,28 @@ const spellingRequests = (separators, room) => {
 */
 const PUBLICATION_REQUESTS = 5;
 const copy = (value) => value;
+/** GitHub wraps blob content at 60 base64 characters (the Get a blob response, docs.github.com). */
+const BLOB_BASE64_LINE = 60;
+/**
+* The JSON bytes GitHub's Get a blob response spends on `n` decoded bytes beyond its envelope: the
+* base64 text, 4 characters per 3 bytes, and an escaped line break (`\n`, 2 bytes) per line of
+* BLOB_BASE64_LINE characters, the last line counted whole.
+*/
+const blobContentBytes = (decoded) => {
+	const text = 4 * Math.ceil(decoded / 3);
+	return text + 2 * Math.ceil(text / BLOB_BASE64_LINE);
+};
+/**
+* The most decoded bytes one Get a blob response of at most `responseBytes`, with an envelope of
+* `envelopeBytes`, can carry: the largest n with envelope + blobContentBytes(n) <= response. About
+* (response - envelope) × 45 / 62, since 45 bytes take one 60-character line and its `\n`.
+*/
+const blobDecodedCapacity = (responseBytes, envelopeBytes) => {
+	const room = responseBytes - envelopeBytes;
+	let decoded = Math.max(0, Math.floor(room * 45 / 62) - 64);
+	while (blobContentBytes(decoded + 1) <= room) decoded += 1;
+	return decoded;
+};
 /** A hand-picked value with no recorded basis yet; `note` says what would supply one. */
 function unjustified(id, value, unit, audit = {}) {
 	return {
@@ -1286,8 +1308,8 @@ const DEFINITIONS = [
 				"analysis.responseBytes",
 				"startup.maxEventBytes"
 			],
-			formula: (cache, inFlight, response, blob, file, source, calls, reply, event) => cache + inFlight * 2 * (response + Math.max(blob, file, source)) + calls * 2 * reply + event + 1,
-			description: "Every off-heap buffer the register bounds, summed over both phases because an ArrayBuffer is freed only by a later collection: the research cache bodies (limit:research.cache.maxTotalBytes, Uint8Array, src/evidence/research-cache.ts:106); for each evidence read in flight (limit:evidence.readsInFlight), its body chunks and their concatenation (2 × limit:evidence.envelope.maxResponseBytes, for example src/github-read.ts:412) and the largest decoded file with its copy (2 × the largest of limit:snapshot.maxBlobBytes, src/snapshot.ts:119; limit:w2.session.maxFileBytes; limit:context.maxSourceFileBytes, src/context.ts:494); and for each model call in flight, its reply chunks and their concatenation (2 × limit:analysis.responseBytes, src/analysis/mistral.ts:199-211); and the event read buffer, limit:startup.maxEventBytes plus one probe byte (src/startup.ts readBoundedEvent), added by L11 item 11(b) on 2026-11-28. Approved by the maintainer on 2026-11-27 (L11, #383)."
+			formula: (cache, inFlight, response, blob, file, source, calls, reply, event) => cache + inFlight * 2 * (response + Math.max(blob, file, source)) + calls * 2 * reply + 2 * event + 1,
+			description: "Every off-heap buffer the register bounds, summed over both phases because an ArrayBuffer is freed only by a later collection: the research cache bodies (limit:research.cache.maxTotalBytes, Uint8Array, src/evidence/research-cache.ts:106); for each evidence read in flight (limit:evidence.readsInFlight), its body chunks and their concatenation (2 × limit:evidence.envelope.maxResponseBytes, for example src/github-read.ts:412) and the largest decoded file with its copy (2 × the largest of limit:snapshot.maxBlobBytes, src/snapshot.ts:119; limit:w2.session.maxFileBytes; limit:context.maxSourceFileBytes, src/context.ts:494); and for each model call in flight, its reply chunks and their concatenation (2 × limit:analysis.responseBytes, src/analysis/mistral.ts:199-211); and the event read buffer, at most limit:startup.maxEventBytes plus one probe byte (src/startup.ts readBoundedEvent, sized from the file since the item 11 review follow-up), added by L11 item 11(b) on 2026-11-28, and its decoded text, limit:startup.maxEventBytes more, which V8 keeps outside its heap as an external string when the event is ASCII (npm run probe:parse-cost -- event, textExternalBytes 25,000,000 on 2026-11-28 under Node 24.22.3), added by the item 11 review follow-up. Approved by the maintainer on 2026-11-27 (L11, #383)."
 		},
 		test: "src/limits.test.ts > the runner heap derives from runner memory less what is not old generation"
 	},
@@ -1509,20 +1531,53 @@ const DEFINITIONS = [
 		effect: "The runner cancels the step when the timeout passes; the pipeline derives its job budget from this value, so its deadlines are set to end before it.",
 		test: "tests/reusable-workflow.test.ts > R10 bounds execution without concurrency or ignored failures"
 	}, L11_STOPS_APPROVAL),
-	unjustified("job.preStepAllowance", 6e4, "milliseconds", {
-		protects: "The job's timeout counts the action download and the app-token step before the review step starts, so it must exceed the review step's timeout by that time, or the runner could end the job before the step's own timeout.",
-		effect: "Adds whole minutes to the job's timeout-minutes above the review step's; it shortens no deadline and converts no outcome to success. A pre-step time above it lets the job timeout end the review step early, which fails closed.",
-		note: "chosen: the user chose 60,000 on 2026-11-11 (SPEC-review-orchestration Amendment 3, item 2) for everything before runStartup; L11 item 10(b) (2026-11-28) moved the review's timeout onto its step, so the part before the step, the action download and the app-token step, now counts only against the job timeout. No GitHub document bounds the download, and the app-token step has no timeout of its own, so the value stays chosen.",
+	{
+		id: "appToken.maxRequests",
+		value: 12,
+		unit: "count",
+		protects: "Records how many GitHub requests the pinned app-token action can make in its main step, so that step can carry a timeout derived from the request timeout.",
+		basis: {
+			kind: "external",
+			url: "https://github.com/actions/create-github-app-token/blob/f418cff399f7aef4c2f0ad47e25ca7a6abbdd6fc/lib/main.js",
+			checked: "2026-11-28",
+			platformValue: 12,
+			margin: "none. At the pinned v3.4.0, main.js retries the token request with p-retry (retries: 3, so 4 attempts, only on a 5xx or network error); each attempt is GET /repos/{owner}/{repo}/installation through the @octokit/auth-app 8.3.1 hook (dist-src/hook.js), which repeats a JWT request once after a clock-skew 401, and POST /app/installations/{installation_id}/access_tokens on the plain request (dist-src/get-installation-authentication.js), which has no retry: 4 × (2 + 1) = 12. The post step's one DELETE /installation/token (lib/post.js) runs after the review step and is not counted here"
+		},
+		effect: "Not enforced: limit:workflow.dependabotReview.review.steps.0.timeoutMinutes is derived from it.",
+		test: "tests/reusable-workflow.test.ts > R10 bounds execution without concurrency or ignored failures"
+	},
+	{
+		id: "appToken.retryWaitMs",
+		value: 7e3,
+		unit: "milliseconds",
+		protects: "Records the waits between the pinned app-token action's token attempts, so that step's timeout covers them.",
+		basis: {
+			kind: "external",
+			url: "https://github.com/actions/create-github-app-token/blob/f418cff399f7aef4c2f0ad47e25ca7a6abbdd6fc/lib/main.js",
+			checked: "2026-11-28",
+			platformValue: 7e3,
+			margin: "none. main.js sets only retries: 3, so p-retry 8.0.1 (the version its package-lock.json resolves) waits minTimeout × factor^(n − 1) before retry n with its defaults minTimeout 1,000, factor 2 and randomize false: 1,000 + 2,000 + 4,000 = 7,000 ms"
+		},
+		effect: "Not enforced: limit:workflow.dependabotReview.review.steps.0.timeoutMinutes is derived from it.",
+		test: "tests/reusable-workflow.test.ts > R10 bounds execution without concurrency or ignored failures"
+	},
+	derived("workflow.dependabotReview.review.steps.0.timeoutMinutes", "minutes", [
+		"appToken.maxRequests",
+		"github.requestTimeoutMs",
+		"appToken.retryWaitMs"
+	], (requests, requestMs, waitMs) => Math.ceil((requests * requestMs + waitMs) / 6e4), "The app-token step's timeout: its requests (limit:appToken.maxRequests), each allowed the reviewer's own GitHub request timeout (limit:github.requestTimeoutMs), and the waits between its attempts (limit:appToken.retryWaitMs), rounded up to whole minutes: ⌈(12 × 11,639 + 7,000) ÷ 60,000⌉ = 3. The action sets no request timeout of its own, so the step timeout is what bounds it. Added by the L11 item 10 review follow-up (2026-11-28, #383) in place of job.preStepAllowance, the user's 2026-11-11 allowance, which is deleted.", {
+		protects: "The runner kills the app-token step at its timeout-minutes, so a stalled token request cannot spend the job timeout the review step needs.",
+		effect: "The runner cancels the step when the timeout passes; the job fails before the review starts, which fails closed.",
 		test: "tests/reusable-workflow.test.ts > R10 bounds execution without concurrency or ignored failures"
 	}),
-	derived("job.reviewStepMaxMinutes", "minutes", ["github.hostedJobMaxMinutes", "job.preStepAllowance"], (hosted, preStep) => hosted - Math.ceil(preStep / 6e4), "The longest review step a hosted job can hold: GitHub's hosted-job limit less the whole minutes allowed before the step (limit:job.preStepAllowance). Approved by the maintainer on 2026-11-28 (L11, item 10(b), #383).", {
-		protects: "Keeps the adopter's review-step timeout, with the minutes before the step, inside GitHub's hosted-job limit.",
+	derived("job.reviewStepMaxMinutes", "minutes", ["github.hostedJobMaxMinutes", "workflow.dependabotReview.review.steps.0.timeoutMinutes"], (hosted, appToken) => hosted - appToken, "The longest review step a hosted job can hold: GitHub's hosted-job limit less the app-token step's timeout (limit:workflow.dependabotReview.review.steps.0.timeoutMinutes). Approved by the maintainer on 2026-11-28 (L11, item 10(b), #383). Since the item 10 review follow-up (2026-11-28) the app-token step's timeout stands in place of job.preStepAllowance, which is deleted.", {
+		protects: "Keeps the adopter's review-step timeout, with the app-token step's, inside GitHub's hosted-job limit.",
 		effect: "Not enforced: check:limits evaluates the register with the step timeout at this value; the workflow input that sets it lands with L13.",
 		test: "none: the hard maximum of a setting the workflow does not read yet (L13); check:limits evaluates it"
 	}),
-	derived("workflow.dependabotReview.review.timeoutMinutes", "minutes", ["workflow.dependabotReview.review.steps.1.timeoutMinutes", "job.preStepAllowance"], (step, preStep) => step + Math.ceil(preStep / 6e4), "The job's timeout: the review step's timeout and the whole minutes allowed before the step, the action download and the app-token step (limit:job.preStepAllowance), so the runner ends the job no earlier than the step's own timeout. Approved by the maintainer on 2026-11-28 (L11, item 10(b), #383).", {
-		protects: "The runner kills the job at its timeout-minutes, timed from the job's start, so the job must outlast the steps before the review and the review step's own timeout.",
-		effect: "The runner cancels the job when the timeout passes; the review step ends first at its own timeout unless the time before it passes limit:job.preStepAllowance.",
+	derived("workflow.dependabotReview.review.timeoutMinutes", "minutes", ["workflow.dependabotReview.review.steps.0.timeoutMinutes", "workflow.dependabotReview.review.steps.1.timeoutMinutes"], (appToken, review) => appToken + review, "The job's timeout: the app-token step's timeout and the review step's, so the runner ends the job no earlier than either step's own timeout. The job setup (the action download) and the app-token post step's one revocation request are bounded by no register value; they run in the app-token step's minutes that step does not spend, and if they pass them the job timeout ends the review step early, which fails closed. Approved by the maintainer on 2026-11-28 (L11, item 10(b), #383). Since the item 10 review follow-up (2026-11-28) the app-token step's timeout stands in place of job.preStepAllowance, which is deleted.", {
+		protects: "The runner kills the job at its timeout-minutes, timed from the job's start, so the job must outlast both steps' own timeouts.",
+		effect: "The runner cancels the job when the timeout passes; the review step ends first at its own timeout unless the job setup, the app-token step and its post step together pass the app-token step's timeout.",
 		test: "tests/reusable-workflow.test.ts > R10 bounds execution without concurrency or ignored failures"
 	}),
 	derived("job.budget", "milliseconds", ["workflow.dependabotReview.review.steps.1.timeoutMinutes"], (minutes) => minutes * 6e4, "The runner's wall-clock limit for the review is the review step's timeout-minutes, in milliseconds, timed from the step's start (L11, item 10(b)).", {
@@ -1533,7 +1588,7 @@ const DEFINITIONS = [
 	unjustified("job.preStartupAllowance", 6e4, "milliseconds", {
 		protects: "The pipeline clock starts at runStartup, after the review step has spent time on Node load, the relaunch and the self-check; this allowance keeps the window inside the step's timeout.",
 		effect: "Shortens the job window by 60,000 ms, so the analysis and freshness deadlines move earlier; it converts no outcome to success.",
-		note: "pending a hosted-runner run (L11, item 10(b), approved by the maintainer on 2026-11-28, #383): the review's timeout is now on its step (limit:workflow.dependabotReview.review.steps.1.timeoutMinutes), which the runner times from the step's own start, so the action download and the app-token step no longer count against it (they moved to limit:job.preStepAllowance). What remains is the in-step time before runStartup takes the job start: Node load, the relaunch and the self-check, a platform property. The recorded command is npm run probe:runtime-baseline, after npm run build, inside a workflow step on the smallest supported hosted runner (ubuntu-latest, 2 CPUs); it reports startupMs, the slowest of 5 runs from the parent's process start to the relaunched child's exit, which follows right after the job start. It has not been run: the proposal expects it to free about 55 s of the 60,000. The value stays the user's 2026-11-11 choice until that run gives a basis",
+		note: "pending a hosted-runner run (L11, item 10(b), approved by the maintainer on 2026-11-28, #383): the review's timeout is now on its step (limit:workflow.dependabotReview.review.steps.1.timeoutMinutes), which the runner times from the step's own start, so the action download and the app-token step no longer count against it (they count against the job timeout, limit:workflow.dependabotReview.review.timeoutMinutes). What remains is the in-step time before runStartup takes the job start: Node load, the relaunch and the self-check, a platform property. The recorded command is npm run probe:runtime-baseline, after npm run build, inside a workflow step on the smallest supported hosted runner (ubuntu-latest, 2 CPUs); it reports startupMs, the slowest of 5 runs from the parent's process start to the relaunched child's exit, which follows right after the job start. It has not been run: the proposal expects it to free about 55 s of the 60,000. The value stays the user's 2026-11-11 choice until that run gives a basis",
 		test: "none: subtracted only inside job.window (src/budget.ts:9 and :15); the window is enforced by src/runtime.ts:187, covered by the existing test in src/runtime.test.ts:267, and the analysis deadline at src/pipeline.ts:500 is pinned by the existing deadline tests"
 	}),
 	derived("job.window", "milliseconds", ["job.budget", "job.preStartupAllowance"], (budget, preStartup) => budget - preStartup, "The job window is the runner budget less the time spent before startup.", {
@@ -2271,6 +2326,27 @@ const DEFINITIONS = [
 		},
 		test: "src/evidence/policy-signals.test.ts > optional attempt exhaustion keeps a bounded explained result and known deprecation findings"
 	},
+	{
+		id: "github.blobEnvelopeBytes",
+		value: 512,
+		unit: "bytes",
+		protects: "Bounds the JSON a Get a blob response spends outside its content, so the decoded bytes one response of limit:github.maxResponseBytes carries can be derived.",
+		basis: {
+			kind: "safety",
+			reason: "Largest legitimate use: the response holds sha, node_id, size, url, content and encoding (https://docs.github.com/en/rest/git/blobs#get-a-blob, read 2026-11-28), written compactly. Outside the content and the node id that is 75 bytes of keys and punctuation, a 40-character sha, at most 7 size digits for a blob the response cap admits, the 8 characters of base64, and a url of https://api.github.com/repos/{owner}/{repo}/git/blobs/{sha}, at most 220 bytes with GitHub's 39-character account and 100-character repository names: 350 bytes, which leaves 162 for the node id, more than either node id format GitHub writes. Harm: none at run time; a larger envelope would make a blob at limit:snapshot.maxReadableBlobBytes fail its response cap with budget, which stops the snapshot read share instead of giving the file's own size failure. No recorded blob response pins it yet (L11 item 9 and 12 review follow-up, 2026-11-28)."
+		},
+		effect: "Not enforced: limit:snapshot.maxReadableBlobBytes is derived from it, and through it the config and Dependabot file caps.",
+		test: "src/snapshot.test.ts > a blob at snapshot.maxReadableBlobBytes fits one GitHub blob response and one byte more does not"
+	},
+	derived("snapshot.maxReadableBlobBytes", "bytes", [
+		"snapshot.maxBlobBytes",
+		"github.maxResponseBytes",
+		"github.blobEnvelopeBytes"
+	], (blob, response, envelope) => Math.min(blob, blobDecodedCapacity(response, envelope)), "The largest file the snapshot can read in one blob response: the smaller of limit:snapshot.maxBlobBytes and the decoded bytes one response of limit:github.maxResponseBytes carries with an envelope of limit:github.blobEnvelopeBytes. GitHub returns blob content base64, wrapped at 60 characters, and each line break is written as an escaped \\n, so 45 decoded bytes cost 62 response bytes (blobDecodedCapacity in src/limits.ts): about (1,048,576 − 512) × 45 ÷ 62. A file between it and limit:snapshot.maxBlobBytes would pass the blob size check and then fail its response cap, which stops the snapshot read share; caps that copy it refuse such a file from its tree size instead. The base64 rule is from the L11 evidence proposal (2026-11-28, #383); added by the L11 item 9 and 12 review follow-up (2026-11-28).", {
+		protects: "Keeps the file caps of blobs the snapshot reads whole at what one blob response can carry, so an oversized file gets its own size failure.",
+		effect: "Not enforced directly: limit:config.maxBytes and limit:dependabot.maxFileBytes copy it.",
+		test: "src/snapshot.test.ts > a blob at snapshot.maxReadableBlobBytes fits one GitHub blob response and one byte more does not"
+	}),
 	unjustified("snapshot.maxBlobBytes", MiB, "bytes", {
 		protects: "A repository blob larger than the cap is refused before it is fetched, so one file cannot make the snapshot read unbounded bytes (memory and network).",
 		effect: "The blob is refused before fetching with reason budget; the snapshot read is reported unusable with that reason.",
@@ -2392,7 +2468,7 @@ const DEFINITIONS = [
 		effect: "When the 1 MiB budget is spent, later files are not read. Reason total-read-limit is recorded and collection stops; facts already found are kept (partial).",
 		test: "src/context.test.ts > total returned bytes, including overflow probes, never exceed one MiB"
 	}),
-	derived("dependabot.maxFileBytes", "bytes", ["snapshot.maxBlobBytes"], copy, "The Dependabot config is a blob the snapshot reads, so it can be no larger than limit:snapshot.maxBlobBytes, the largest blob the reader fetches; under the approved base64 rule a blob response holds about 760,700 decoded bytes, which binds first. No document gives a Dependabot file size limit, and the file is controlled by the PR, so this is a parse bound and never an adopter setting. It covers the largest recorded legitimate configs (68,918, 71,729 and 82,528 bytes, among the largest dependabot.yml files GitHub code search returned on 2026-11-28), which the earlier 65,536 refused. The parse is transient: at the cap, with the other Dependabot caps of the register, each of the three crafted shapes (densest nodes, updates and roots) is refused with budget at its count cap, after the parser has built the whole document; one parse allocates at most 918,691,592 bytes of heap (an upper bound on its peak, measured with a 1 GiB young generation so no collection runs during it), and after a full collection with the result kept at most 60,928 bytes stay held; the slowest of 5 parses takes 2,646 ms, inside the CPU harm point of limit:dependabot.maxYamlNodes (npm run probe:parse-cost -- heap, on 2026-11-28 under Node 24.22.3). The parse runs in the snapshot, before any evidence is retained, inside limit:runner.heapBytes. Approved by the maintainer on 2026-11-28 (L11, item 12(a), #383).", {
+	derived("dependabot.maxFileBytes", "bytes", ["snapshot.maxReadableBlobBytes"], copy, "The Dependabot config is a blob the snapshot reads, so it can be no larger than limit:snapshot.maxReadableBlobBytes, the largest blob one response carries under the base64 rule, which binds before limit:snapshot.maxBlobBytes; a larger file is refused from its tree size, unfetched, with budget, rather than stopping the snapshot read share at its blob response (L11 item 12 review follow-up, 2026-11-28; it was a copy of limit:snapshot.maxBlobBytes). No document gives a Dependabot file size limit, and the file is controlled by the PR, so this is a parse bound and never an adopter setting. It covers the largest recorded legitimate configs (68,918, 71,729 and 82,528 bytes, among the largest dependabot.yml files GitHub code search returned on 2026-11-28), which the earlier 65,536 refused. The parse is transient: at 1 MiB, above this cap, with the other Dependabot caps of the register, each of the three crafted shapes (densest nodes, updates and roots) is refused with budget at its count cap, after the parser has built the whole document; one parse allocates at most 918,691,592 bytes of heap (an upper bound on its peak, measured with a 1 GiB young generation so no collection runs during it), and after a full collection with the result kept at most 60,928 bytes stay held; the slowest of 5 parses takes 2,646 ms, inside the CPU harm point of limit:dependabot.maxYamlNodes (npm run probe:parse-cost -- heap, on 2026-11-28 under Node 24.22.3). The parse runs in the snapshot, before any evidence is retained, inside limit:runner.heapBytes. Approved by the maintainer on 2026-11-28 (L11, item 12(a), #383).", {
 		protects: "The Dependabot config is parsed in memory, so its size is capped before any YAML parsing.",
 		effect: "A file over the cap is not parsed. The whole file is unavailable with reason budget, and no roots are kept.",
 		test: "src/dependabot-roots.test.ts > accepts values exactly at each limit"
@@ -2467,21 +2543,14 @@ const DEFINITIONS = [
 			url: "https://docs.github.com/en/webhooks/webhook-events-and-payloads#payload-cap",
 			checked: "2026-11-28",
 			platformValue: 25e6,
-			margin: "none: \"Payloads are capped at 25 MB\", read as decimal megabytes, the smaller reading; GitHub delivers no larger payload. Since L11 item 11(b) (approved by the maintainer on 2026-11-28, #383) the parsed event is held only for verification (holdEvent, src/pipeline.ts) and is unreachable before the first tree read, so no heap phase holds it and limit:packet.bytes does not count it; its parse peak, about 1,475,000,000 bytes at limit:runner.heapBytesPerEvidenceByte, falls at startup, when nothing else is held, inside limit:runner.heapBytes. The read buffer, the cap plus one byte (src/startup.ts readBoundedEvent), is off the V8 heap and counted in limit:runner.offHeapBytes"
+			margin: "none: \"Payloads are capped at 25 MB\", read as decimal megabytes, the smaller reading; GitHub delivers no larger payload. Since L11 item 11(b) (approved by the maintainer on 2026-11-28, #383) the parsed event is held only for verification (holdEvent, src/pipeline.ts) and is unreachable before the first tree read, so no heap phase holds it and limit:packet.bytes does not count it; its parse peak falls at startup, when nothing else is held, inside limit:runner.heapBytes: JSON.parse of an event at the cap allocates at most 533,423,208 bytes of heap, for the densest of five shapes, an array of empty objects (numbers 100,005,064, arrays 333,354,360, strings 66,671,776, objects with one key 125,011,208), measured with a 1 GiB young generation so no collection runs during it, and the slowest of 5 parses takes 1,547 ms (npm run probe:parse-cost -- event, on 2026-11-28 under Node 24.22.3; it replaces the earlier estimate of about 1,475,000,000 at limit:runner.heapBytesPerEvidenceByte, item 11 review follow-up). The read buffer, sized from the file and at most the cap plus one byte (src/startup.ts readBoundedEvent), and the decoded text, an external string outside the V8 heap for an ASCII event, are counted in limit:runner.offHeapBytes"
 		}
 	},
-	{
-		id: "config.maxBytes",
-		value: MiB,
-		unit: "bytes",
+	derived("config.maxBytes", "bytes", ["snapshot.maxReadableBlobBytes"], copy, "The review config is a blob the snapshot reads, so it can be no larger than limit:snapshot.maxReadableBlobBytes, the largest blob one response carries under the base64 rule; a larger file gets the parser's size failure from its tree size, unfetched, rather than stopping the snapshot read share at its blob response (L11 item 9 review follow-up, 2026-11-28; it was a safety bound of 1 MiB, the size of limit:snapshot.maxBlobBytes, approved by the maintainer on 2026-11-28, L11 item 9(a), #383). A parse bound, so never an adopter setting. Largest legitimate use: about 594 KB, a config listing 385 source roots (the largest recorded Dependabot directory list) and limit:context.maxSourceCandidates excerpt paths, each at limit:context.maxPathBytes and written compactly: 578 × 1,027 = 593,606 bytes and the skeleton, inside this cap. The root count has no bound of its own (L11, item 9), and JSON allows unbounded whitespace, so no derivation gives the largest valid config. Harm: the config is retained through the evidence phase at limit:runner.heapBytesPerRetainedByte and counted in limit:analysis.projectionBytes, so each byte lowers limit:packet.bytes by about 1.87 bytes; it stays positive below about 77.6 MB of config, far above this cap.", {
 		protects: "The configuration file is read from the checked-out repository, which can be large or hostile; reading it without a cap allocates unbounded memory before parsing.",
 		effect: "A file over the cap fails with category size before parsing; no default configuration is substituted.",
-		test: "src/config.test.ts > accepts the exact byte limit and rejects overflow",
-		basis: {
-			kind: "safety",
-			reason: "A parse bound, so never an adopter setting. Largest legitimate use: about 594 KB, a config listing 385 source roots (the largest recorded Dependabot directory list) and limit:context.maxSourceCandidates excerpt paths, each at limit:context.maxPathBytes and written compactly: 578 × 1,027 = 593,606 bytes and the skeleton. The root count has no bound of its own (L11, item 9), and JSON allows unbounded whitespace, so no derivation gives the largest valid config. Harm: the config is retained through the evidence phase at limit:runner.heapBytesPerRetainedByte and counted in limit:analysis.projectionBytes, so each byte lowers limit:packet.bytes by about 1.87 bytes: 1,048,576 takes 1,928,865 from it against the 16,384 cap (146,383,435 when decided; 144,671,474 once the event buffer of L11 item 11 is counted off heap) and 1,032,192 from limit:runner.maxEvidenceRetainedBytes; it stays positive below 79,382,631 config bytes and at or above limit:packet.floorBytes below 79,368,155 (78,466,511 and 78,452,034 with the event buffer counted). 1 MiB sits between the two, the size of limit:snapshot.maxBlobBytes, the largest blob the snapshot reads. Under the approved base64 rule a blob response holds about 760,700 decoded bytes, so a config larger than that is refused at its blob read (budget), which makes the snapshot unavailable, before this cap is reached. Approved by the maintainer on 2026-11-28 (L11, item 9(a), #383)."
-		}
-	},
+		test: "src/config.test.ts > accepts the exact byte limit and rejects overflow"
+	}),
 	{
 		id: "config.maxModelCodeUnits",
 		value: 128,
@@ -2530,7 +2599,7 @@ const DEFINITIONS = [
 			platformValue: MiB,
 			margin: "none: \"each step is restricted to a maximum size of 1MiB\", read as 1,048,576 bytes; GitHub fails the upload of a larger summary. The renderer measures the summary in UTF-8 bytes against it. Approved by the maintainer on 2026-11-28 (L11, B1, #383)."
 		},
-		effect: "A review whose full text is larger is not rendered: the renderer returns size, which W2 reports as render-size, and the prior comment is kept.",
+		effect: "A review whose full text is larger is not rendered: the renderer returns size, which W2 reports as render-size, and the prior comment is kept. The digest replaces only the comment, so a full review over this cap still fails as size: at the caps, limit:packet.changes units × limit:analysis.steps follow-ups of limit:analysis.followupBytes, each byte escaped to at most 5 (&amp;), are 1,433,600 bytes alone, so the largest groups still fail closed (L11, item 1 review follow-up, 2026-11-28). Until D4 writes the summary, the handoff records its byte length and SHA-256.",
 		test: "src/reporting.test.ts > replaces required content too long for the comment with a digest and keeps the full review for the step summary"
 	},
 	derived("comment.maxBodyCodeUnits", "code units", ["github.comment.maxBodyBytes"], (bytes) => Math.floor(bytes / 3), "GitHub's byte limit divided by three, rounded down: one UTF-16 code unit is at most three UTF-8 bytes, so a body within this many code units never exceeds GitHub's limit, whatever its text.", {
@@ -2778,7 +2847,7 @@ const DEFINITIONS = [
 	unjustified("analysis.maxAnalysisMs", 6e5, "milliseconds", {
 		protects: "Analysis time is capped at the spec's 600 s maximum, so the stage cannot outlast the job's time budget.",
 		effect: "The effective deadline is the earlier of the caller deadline minus the reserve and start plus 600 s. No call dispatches at or after it; in-flight calls end with deadline.",
-		note: "stopped (L11, Q17(a), #383): the approved basis is config with the hard maximum window − freshness − publication − evidence deadline − recheck, limit:job.maxAnalysisTimeMs, which is 471,971 ms at the defaults (840,000 − 240,000 − 34,917 − 58,195 − 34,917), below this default of 600,000. A default above its own hard maximum fails section 5 and check:limits, and no approved change lowers the default or moves the maximum. Stopped again (L11, item 2, 2026-11-28): the approved fix, a default equal to that maximum, 471,971, fails check:limits once implemented. The maximum falls as the evidence deadline rises: with limit:evidence.envelope.totalTimeoutMs at its own hard maximum (limit:job.maxEvidenceDeadlineMs, 471,971), limit:job.maxAnalysisTimeMs is 240,000, the one model call that maximum leaves, so a fixed default of 471,971 is 231,971 above its hard maximum there (\"analysis.maxAnalysisMs: above its hard maximum with evidence.envelope.totalTimeoutMs at its hard maximum\"). A default that holds at every other setting's maximum would be 240,000, a new value no option named. Value unchanged",
+		note: "stopped (L11, Q17(a), #383): the approved basis is config with the hard maximum window − freshness − publication − evidence deadline − recheck, limit:job.maxAnalysisTimeMs, which is 471,971 ms at the defaults (840,000 − 240,000 − 34,917 − 58,195 − 34,917), below this default of 600,000. A default above its own hard maximum fails section 5 and check:limits, and no approved change lowers the default or moves the maximum. Stopped again (L11, item 2, 2026-11-28): the approved fix, a default equal to that maximum, 471,971, fails check:limits once implemented. The maximum falls as the evidence deadline rises: with limit:evidence.envelope.totalTimeoutMs at its own hard maximum (limit:job.maxEvidenceDeadlineMs, 471,971), limit:job.maxAnalysisTimeMs is 240,000, the one model call that maximum leaves, so a fixed default of 471,971 is 231,971 above its hard maximum there (\"analysis.maxAnalysisMs: above its hard maximum with evidence.envelope.totalTimeoutMs at its hard maximum\"). A default that holds at every other setting's maximum would be 240,000, a new value no option named. Making it a derived copy of limit:job.maxAnalysisTimeMs (471,971 at the defaults, 240,000 with the evidence deadline at its maximum) would meet the intent, a cap that never passes the job's own analysis bound, but it changes the approved basis from config to derived, so it needs the maintainer's OK first. Value unchanged",
 		test: "src/analysis/batches.test.ts > no call dispatches at or after the registered analysis time cap from the start"
 	}),
 	derived("analysis.publicationReserveMs", "milliseconds", ["github.requestTimeoutMs"], (requestMs) => PUBLICATION_REQUESTS * requestMs, "Five sequential publication requests (src/comments.ts:329-365: the comment selection, its re-read, the publication gate before the write, the write and the gate after it), each allowed the GitHub request timeout: 5 × limit:github.requestTimeoutMs. Each gate also re-verifies the binding through its own reads (src/comments.ts:246-261), so the count is final only once publication is wired (D4). Approved by the maintainer on 2026-11-27 (L11, #383).", {
@@ -2967,7 +3036,7 @@ const DEFINITIONS = [
 			kind: "derived",
 			inputs: ["packet.changes", "research.maxTagCandidates"],
 			formula: (changes, candidates) => changes * (candidates + 1 + 10),
-			description: `The most attempts the members of one packet can record: limit:packet.changes members, each at most limit:research.maxTagCandidates range attempts (one per release the scan reads, src/evidence/upstream-range.ts), 1 range summary or stop, and ${10} fixed attempts outside the scan: 2 metadata reads (base and head) and the metadata fallback record (src/evidence/upstream.ts), 2 release tag candidates (src/evidence/upstream-github.ts, packageTags), the comparison and its final tag recheck, and 3 changelog paths (src/evidence/upstream-range.ts). An Actions member records fewer: 2 mappings, 1 release-notes failure, 4 ref rechecks and 1 comparison. So 128 × (100 + 1 + ${10}) = 14,208 at the defaults; it follows both settings. R1 #276 recorded 594 attempts for 105 members, which the earlier 512 refused. Approved by the maintainer on 2026-11-28 (L11, item 5(a), #383). The L11 proposal estimated 6 fixed attempts (13,696); the structural test counts ${10}. The attempts' bytes are still bounded by limit:research.maxRetainedBytes and limit:packet.bytes in the same check.`,
+			description: `The most attempts the members of one packet can record: limit:packet.changes members, each at most limit:research.maxTagCandidates range attempts (one per release the scan reads, src/evidence/upstream-range.ts), 1 range summary or stop, and ${10} fixed attempts outside the scan: 2 metadata reads (base and head) and the metadata fallback record (src/evidence/upstream.ts), 2 release tag candidates (src/evidence/upstream-github.ts, packageTags), the comparison and its final tag recheck, and 3 changelog paths (src/evidence/upstream-range.ts). An Actions member records fewer: 2 mappings, 1 release-notes failure, 4 ref rechecks and 1 comparison. So 128 × (100 + 1 + ${10}) = 14,208 at the defaults; it follows both settings. R1 #276 recorded 594 attempts for 105 members, which the earlier 512 refused. Approved by the maintainer on 2026-11-28 (L11, item 5(a), #383). The L11 proposal estimated 6 fixed attempts (13,696); the structural test counts ${10}. The test drives one path, and it is the worst one because every recording site in src/evidence records at most a fixed number per member on any path, and that path reaches each at its most: metadataAttempt once per side (2) and the fallback record once (upstream.ts); the target release, one per packageTags candidate, which is at most 2, or 1 when the repository fails first (upstream-github.ts); the comparison, its exact comparison and final recheck (2), or 1 when it fails first; the range scan, one per release read, refused past limit:research.maxTagCandidates, and then its summary or its stop (1, upstream-range.ts); and the changelog, one per path, at most 3, or 1 when the repository fails first. researchAttempts copies each stage's attempts one for one, and skippedStages records only for stages that did not run, so a path that skips a stage records at most as many as one that runs and fails it: 4 skipped stages after missing metadata, 3 after the target release, 2 after the comparison or for a one-sided change, each no more than the attempts those stages record when they run and fail. A rollback only truncates. The attempts' bytes are still bounded by limit:research.maxRetainedBytes and limit:packet.bytes in the same check.`,
 			structuralTest: "src/evidence/upstream.test.ts > a package member records at most research.maxTagCandidates + 1 + the fixed attempts"
 		},
 		test: "src/evidence/upstream.test.ts > upstream bounds keep exactly research.maxAttempts attempts and refuse one more"
@@ -24685,6 +24754,12 @@ function countDroppedOptional(dropped) {
 		proof
 	});
 }
+function stepSummaryRecord(summary) {
+	return Object.freeze({
+		bytes: Buffer.byteLength(summary),
+		sha256: createHash("sha256").update(summary).digest("hex")
+	});
+}
 /** Maps an owned outcome to publication intent without receiving a write capability. */
 async function createReviewHandoff(claims, claim, kind, detail = {
 	body: false,
@@ -24701,7 +24776,8 @@ async function createReviewHandoff(claims, claim, kind, detail = {
 		comment: outcome.comment,
 		body: detail.body ? "present" : "absent",
 		gaps: copyGaps(detail.gaps),
-		droppedOptional: countDroppedOptional(detail.droppedOptional ?? [])
+		droppedOptional: countDroppedOptional(detail.droppedOptional ?? []),
+		...detail.summary === void 0 ? {} : { stepSummary: stepSummaryRecord(detail.summary) }
 	};
 	return {
 		kind: "ready",
@@ -24743,7 +24819,11 @@ function createRehearsalSink(appToken) {
 				comment: handoff.comment,
 				body: handoff.body,
 				gaps: copyGaps(handoff.gaps),
-				droppedOptional: handoff.droppedOptional
+				droppedOptional: handoff.droppedOptional,
+				...handoff.stepSummary ? { stepSummary: Object.freeze({
+					bytes: handoff.stepSummary.bytes,
+					sha256: handoff.stepSummary.sha256
+				}) } : {}
 			};
 			traces.push(Object.freeze({
 				kind: handoff.kind,
@@ -27775,8 +27855,8 @@ async function reviewPacket(input) {
 /** The runner's wall-clock limit for the job, mirroring the workflow's `timeout-minutes`. */
 const JOB_BUDGET_MS = limit("job.budget");
 /**
-* Time the runner spends before `runStartup` takes its job start: the app-token step, action
-* download, Node load, and self-check. It is an allowance, not a measurement.
+* Time the review step spends before `runStartup` takes its job start: Node load, the relaunch,
+* and the self-check. It is an allowance, not a measurement.
 */
 const PRE_STARTUP_ALLOWANCE_MS = limit("job.preStartupAllowance");
 /**
@@ -36313,6 +36393,7 @@ async function runReview(input) {
 			body: outcome.body !== null,
 			gaps: outcome.gaps ?? [],
 			droppedOptional: outcome.droppedOptional ?? [],
+			...outcome.summary === void 0 ? {} : { summary: outcome.summary },
 			...outcome.kind === "internal-failure" ? { stage: outcome.stage } : {}
 		});
 		if (handoff.kind !== "ready") return {
@@ -36767,13 +36848,25 @@ async function selfCheck() {
 	};
 }
 const MAX_EVENT_BYTES = limit("startup.maxEventBytes");
+/**
+* Reads the event file whole into a buffer sized from its own length, one probe byte past it and
+* never past the cap plus that byte, so an ordinary event allocates only its own size. A file over
+* the cap, or one that grew past its stated length while read, fails closed.
+*/
 async function readBoundedEvent(path) {
 	const handle = await fs.open(path, "r");
 	try {
-		const buffer = Buffer.alloc(MAX_EVENT_BYTES + 1);
-		const { bytesRead } = await handle.read(buffer, 0, buffer.length, 0);
-		if (bytesRead > MAX_EVENT_BYTES) throw new Error("event too large");
-		return new TextDecoder("utf-8", { fatal: true }).decode(buffer.subarray(0, bytesRead));
+		const { size } = await handle.stat();
+		const buffer = Buffer.alloc(Math.min(size, MAX_EVENT_BYTES) + 1);
+		let length = 0;
+		for (;;) {
+			const { bytesRead } = await handle.read(buffer, length, buffer.length - length, length);
+			if (bytesRead === 0) break;
+			length += bytesRead;
+			if (length > MAX_EVENT_BYTES) throw new Error("event too large");
+			if (length === buffer.length) throw new Error("event changed while read");
+		}
+		return new TextDecoder("utf-8", { fatal: true }).decode(buffer.subarray(0, length));
 	} finally {
 		await handle.close();
 	}
