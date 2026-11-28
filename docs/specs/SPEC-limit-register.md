@@ -218,6 +218,14 @@ covers everything else. They fail when:
 - **Tests:** an entry names a test that doesn't exist.
 - **Migration:** after phase 2, any entry is still `unjustified`.
 
+Amended (L11, item 9(a) follow-up, 2026-11-28,
+[#383](https://github.com/andrewpucci/dependency-update-advisor/issues/383)):
+when an approved amendment deletes a limit, the approved spec lines that cite
+it keep their wording. `scripts/limits/superseded-citations.json` lists each
+such line by its trimmed text, with the deleted id and the amendment that
+deleted it, and the citation check accepts that id on that line only. An entry
+is a problem when its id is back in the register or no doc line has its text.
+
 **Register scope** (L11, Q5 and Q25; approved by the maintainer on
 2026-11-27,
 [#383](https://github.com/andrewpucci/dependency-update-advisor/issues/383)).

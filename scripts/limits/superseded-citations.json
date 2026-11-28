@@ -1,0 +1,20 @@
+[
+  {
+    "file": "docs/specs/SPEC-config-parser.md",
+    "line": "| `context.sourceRoots`               | Array of at most `limit:context.maxSourceRoots` relative path strings                     | `[\"src\"]`                                                                       |",
+    "id": "context.maxSourceRoots",
+    "amendment": "Deleted by the L11 item 9(a) amendment below the table, approved by the maintainer on 2026-11-28, #383: any number of source roots is accepted."
+  },
+  {
+    "file": "docs/specs/SPEC-config-parser.md",
+    "line": "roots at `limit:context.maxSourceRoots` entries and one more; excerpt files",
+    "id": "context.maxSourceRoots",
+    "amendment": "Deleted by the L11 item 9(a) amendment under the field table, approved by the maintainer on 2026-11-28, #383: the fixture group has no root-count boundary left to test."
+  },
+  {
+    "file": "docs/specs/SPEC-review-config.md",
+    "line": "4. Allow at most `limit:context.maxSourceRoots` source roots. Roots must be",
+    "id": "context.maxSourceRoots",
+    "amendment": "Deleted by the L11 item 9(a) amendment under rule 4, approved by the maintainer on 2026-11-28, #383: any number of source roots is accepted."
+  }
+]

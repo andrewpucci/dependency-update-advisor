@@ -18,6 +18,12 @@ type Limit = Limits.Limit;
 
 export type SourceFile = { file: string; text: string };
 export type AllowedSpecLine = { file: string; line: string; values: number[]; reason: string };
+/**
+ * An approved spec line that cites a limit an amendment later deleted. The approved wording stays
+ * as it was; the amendment below it records the change (SPEC-limit-register section 4,
+ * the citations amendment).
+ */
+export type SupersededCitation = { file: string; line: string; id: string; amendment: string };
 
 /** Set to false when migration closes (L11); then every unjustified entry is a problem. */
 export const MIGRATION_OPEN = true;
@@ -331,18 +337,39 @@ export function schemaProblems(
   return problems;
 }
 
-/** Every `limit:<id>` citation in the docs must name an id in the register. */
+/**
+ * Every `limit:<id>` citation in the docs must name an id in the register, unless the line is an
+ * approved line listed as superseded for that id. A superseded entry is stale when its id is back
+ * in the register or no doc line has its text and citation.
+ */
 export function citationProblems(
   register: ReadonlyMap<string, Limit>,
   docs: readonly SourceFile[],
+  superseded: readonly SupersededCitation[] = [],
 ): string[] {
-  return docs.flatMap(({ file, text }) =>
-    [...text.matchAll(CITATION)].flatMap((match) => {
+  const listed = new Set(superseded.map((entry) => specKey(entry.file, `${entry.id} ${entry.line}`)));
+  const seen = new Set<string>();
+  const problems = docs.flatMap(({ file, text }) => {
+    const lines = text.split('\n');
+    return [...text.matchAll(CITATION)].flatMap((match) => {
       const id = match[1] ?? '';
       if (register.has(id)) return [];
-      return [`${file}:${lineOf(text, match.index ?? 0)}: limit:${id} is not in the register`];
-    }),
-  );
+      const at = lineOf(text, match.index ?? 0);
+      const key = specKey(file, `${id} ${(lines[at - 1] ?? '').trim()}`);
+      if (listed.has(key)) {
+        seen.add(key);
+        return [];
+      }
+      return [`${file}:${at}: limit:${id} is not in the register`];
+    });
+  });
+  for (const entry of superseded) {
+    if (register.has(entry.id))
+      problems.push(`${entry.file}: superseded citation limit:${entry.id} is in the register`);
+    else if (!seen.has(specKey(entry.file, `${entry.id} ${entry.line}`)))
+      problems.push(`${entry.file}: superseded citation matches no doc line: "${entry.line}"`);
+  }
+  return problems;
 }
 
 function testReferences(entry: Limit): string[] {
@@ -472,11 +499,14 @@ function main(): void {
   const allowlist = JSON.parse(
     readFileSync(join(ROOT, 'scripts/limits/spec-allowlist.json'), 'utf8'),
   ) as AllowedSpecLine[];
+  const superseded = JSON.parse(
+    readFileSync(join(ROOT, 'scripts/limits/superseded-citations.json'), 'utf8'),
+  ) as SupersededCitation[];
   const problems = [
     ...workflowProblems(REGISTER, workflows),
     ...workflowLiteralProblems(REGISTER, workflows),
     ...specProblems(REGISTER, floor, specs, allowlist),
-    ...citationProblems(REGISTER, docs),
+    ...citationProblems(REGISTER, docs, superseded),
     ...schemaProblems(REGISTER, schemas),
     ...testProblems(REGISTER, readRepoFile),
     ...migrationProblems(REGISTER, MIGRATION_OPEN, allowlist),
@@ -489,7 +519,7 @@ function main(): void {
     return;
   }
   console.log(
-    `check:limits passed: ${REGISTER.size} limits, ${specs.length} spec files, ${docs.length} docs, ${workflows.length} workflows, ${schemas.length} schemas, ${allowlist.length} allowlisted spec lines`,
+    `check:limits passed: ${REGISTER.size} limits, ${specs.length} spec files, ${docs.length} docs, ${workflows.length} workflows, ${schemas.length} schemas, ${allowlist.length} allowlisted spec lines, ${superseded.length} superseded citations`,
   );
 }
 

@@ -248,7 +248,7 @@ used as the protection for payloads; [GitHub does not guarantee that redaction](
    one; do not claim complete model-backed coverage. Each adopter may opt in
    to excerpts independently. Only a confirmed missing file uses defaults;
    a read error or invalid present file must not silently fall back.
-4. Allow at most `context.maxSourceRoots` source roots. Roots must be
+4. Allow at most `limit:context.maxSourceRoots` source roots. Roots must be
    normalized relative paths inside the trusted checkout; reject absolute paths,
    traversal, hidden or credential-like paths, and symlinks escaping the
    checkout. Config cannot expand the shared allowlist of source file types or
@@ -268,7 +268,9 @@ used as the protection for payloads; [GitHub does not guarantee that redaction](
    `context.sourceRoots`. `limit:config.maxBytes` becomes a safety bound the
    size of `limit:snapshot.maxBlobBytes`, a parse bound and never an adopter
    setting: the largest legitimate config is about 594 KB, and the packet cap
-   stays positive below about 79.4 MB of config.
+   stays positive below about 79.4 MB of config. The approved lines that cite
+   the deleted bound keep their wording; check:limits lists them as superseded
+   citations (`scripts/limits/superseded-citations.json`).
 
 5. Allow local overrides of only the ten named advisory verdict rules above.
    Apply an override before combining independent findings. Local policy can

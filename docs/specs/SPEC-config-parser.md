@@ -153,7 +153,7 @@ An optional field supplied as `null` is invalid, not equivalent to omission.
 | `analysis.provider`                 | Exactly `mistral`                                                                         | No implicit provider                                                            |
 | `analysis.model`                    | Nonempty bounded provider model ID                                                        | No implicit model                                                               |
 | `context`                           | Object with only the three fields below                                                   | Secure context defaults                                                         |
-| `context.sourceRoots`               | Array of at most `context.maxSourceRoots` relative path strings                           | `["src"]`                                                                       |
+| `context.sourceRoots`               | Array of at most `limit:context.maxSourceRoots` relative path strings                     | `["src"]`                                                                       |
 | `context.sendSourceExcerptsToModel` | Boolean                                                                                   | `false`                                                                         |
 | `context.excerptFiles`              | Array of at most `limit:context.maxSourceCandidates` distinct exact relative path strings | Empty allowlist                                                                 |
 | `policy`                            | Object containing only optional `verdicts` and `minimumReleaseAgeDays`                    | Shared policy defaults                                                          |
@@ -174,7 +174,9 @@ any number of roots is accepted, and the schema sets no `maxItems` for
 `context.sourceRoots`. `limit:config.maxBytes` becomes a safety bound the
 size of `limit:snapshot.maxBlobBytes`, a parse bound and never an adopter
 setting: the largest legitimate config is about 594 KB, and the packet cap
-stays positive below about 79.4 MB of config.
+stays positive below about 79.4 MB of config. The approved lines that cite
+the deleted bound keep their wording; check:limits lists them as superseded
+citations (`scripts/limits/superseded-citations.json`).
 
 Each named verdict accepts only `merge`, `merge_with_followups`, or
 `do_not_merge`. Preserve which rules were explicitly overridden so C3 can
@@ -275,7 +277,7 @@ Required fixture groups:
 - Missing, wrong-type, and unsupported versions; unknown fields at every
   nesting level; prototype-like names; invalid object and scalar types.
 - File sizes at and beyond `limit:config.maxBytes`, including multibyte text;
-  roots at `context.maxSourceRoots` entries and one more; excerpt files
+  roots at `limit:context.maxSourceRoots` entries and one more; excerpt files
   at `limit:context.maxSourceCandidates` entries and one more, and duplicates.
 - Supported and unsupported providers; missing provider or model; model IDs
   at proposed syntax/length boundaries; no fallback provider or model.
