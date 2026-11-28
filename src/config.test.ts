@@ -156,7 +156,7 @@ describe('v1 document contract', () => {
   );
 
   test('rejects oversize text before parsing', () => {
-    expect(parseReviewConfig('x'.repeat(16_385))).toMatchObject({
+    expect(parseReviewConfig('x'.repeat(limit('config.maxBytes') + 1))).toMatchObject({
       ok: false,
       error: { category: 'size' },
     });
@@ -284,7 +284,7 @@ describe('trusted configuration loading', () => {
 
   test('accepts the exact byte limit and rejects overflow', async () => {
     const minimal = '{"version":1}';
-    const root = await checkout(minimal.padEnd(16_384));
+    const root = await checkout(minimal.padEnd(limit('config.maxBytes')));
     expect(await loadTrustedReviewConfig(root)).toEqual(parseReviewConfig(minimal));
     await fs.appendFile(join(root, '.github/dependabot-review.json'), ' ');
     expect(await loadTrustedReviewConfig(root)).toMatchObject({
@@ -316,7 +316,7 @@ describe('bounded descriptor lifecycle', () => {
     async (kind) => {
       const content =
         kind === 'size'
-          ? Buffer.alloc(16_385, 32)
+          ? Buffer.alloc(limit('config.maxBytes') + 1, 32)
           : kind === 'encoding'
             ? Buffer.from([0x80])
             : Buffer.from('{');
@@ -436,9 +436,8 @@ describe('adversarial document agreement', () => {
         version: 1,
         context: { [field]: value },
       });
-    const count = limit(
-      field === 'sourceRoots' ? 'context.maxSourceRoots' : 'context.maxSourceCandidates',
-    );
+    if (field === 'sourceRoots') continue;
+    const count = limit('context.maxSourceCandidates');
     add(
       `${field} exact count`,
       {
@@ -538,8 +537,8 @@ describe('adversarial document agreement', () => {
 
   test('multibyte UTF-8 size counts bytes rather than characters', async () => {
     const unicodeJson = '{"version":1,"context":{"sourceRoots":["é"]}}';
-    const exact = unicodeJson.padEnd(16_384 - 1);
-    expect(Buffer.byteLength(exact)).toBe(16_384);
+    const exact = unicodeJson.padEnd(limit('config.maxBytes') - 1);
+    expect(Buffer.byteLength(exact)).toBe(limit('config.maxBytes'));
     expect(parseReviewConfig(exact).ok).toBe(true);
     const root = await checkout(exact);
     expect((await loadTrustedReviewConfig(root)).ok).toBe(true);
@@ -557,7 +556,7 @@ describe('adversarial document agreement', () => {
 
 describe('loader refusal and read budgets', () => {
   test('overflow reads consume only the detection byte and close', async () => {
-    const root = await checkout(Buffer.alloc(30_000, 32));
+    const root = await checkout(Buffer.alloc(limit('config.maxBytes') + 13_616, 32));
     const handle = await fs.open(join(root, '.github/dependabot-review.json'), 'r');
     const read = vi.spyOn(handle, 'read');
     const close = vi.spyOn(handle, 'close');
@@ -567,7 +566,7 @@ describe('loader refusal and read budgets', () => {
       error: { category: 'size' },
     });
     expect(read.mock.calls.reduce((total, [options]) => total + (options?.length ?? 0), 0)).toBe(
-      16_385,
+      limit('config.maxBytes') + 1,
     );
     expect(close).toHaveBeenCalledOnce();
   });
@@ -707,14 +706,13 @@ describe('registered configuration length bounds', () => {
     });
   });
 
-  test('the source root cap admits exactly the registered count and rejects one more', () => {
-    const cap = limit('context.maxSourceRoots');
+  test('source roots have no count of their own: 17 and 385 roots are accepted', () => {
+    // The 16-root cap is deleted (L11, item 9): a root only filters paths already listed.
     const roots = (count: number) => Array.from({ length: count }, (_, i) => `src/root-${i}`);
-    expect(parseReviewConfig(document({ sourceRoots: roots(cap) }))).toMatchObject({ ok: true });
-    expect(parseReviewConfig(document({ sourceRoots: roots(cap + 1) }))).toMatchObject({
-      ok: false,
-      error: { field: 'context.sourceRoots' },
-    });
+    for (const count of [17, 385])
+      expect(parseReviewConfig(document({ sourceRoots: roots(count) }))).toMatchObject({
+        ok: true,
+      });
   });
 
   test('the excerpt file cap admits exactly the registered count and rejects one more', () => {

@@ -210,7 +210,7 @@ test('only the unlisted line in a file with an allowlisted one is a problem', ()
 });
 
 test.each([
-  ['Parse at most 16 KiB of JSON.', 'config.maxBytes'],
+  ['Parse at most 1 MiB of JSON.', 'config.maxBytes'],
   ['An evidence response holds at most 1 MiB.', 'evidence.envelope.maxResponseBytes'],
   [
     'Each signals reader gets 1.5 MiB.',
@@ -347,7 +347,7 @@ test('a schema bound with no mapping, or a mapping to an unknown id, is a proble
 test('a mapping to a bound the schema lacks is a problem', () => {
   const extra = {
     ...MODEL_BOUND,
-    [`${SCHEMA}#/properties/gone/maxItems`]: 'context.maxSourceRoots',
+    [`${SCHEMA}#/properties/gone/maxItems`]: 'context.maxSourceCandidates',
   };
   expect(schemaProblems(REGISTER, [schemaWith(128)], extra)).toEqual([
     expect.stringContaining('names a bound the schema lacks'),

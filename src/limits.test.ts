@@ -226,14 +226,14 @@ test('copies wired: a packet copy is a derived mirror of its packet entry', () =
   }
 });
 
-test('copies wired: the source-root and candidate bounds are one entry each, read by config and context', () => {
-  expect(limit('context.maxSourceRoots')).toBe(16);
+test('copies wired: the candidate bound is one entry read by config and context, and roots have none', () => {
+  // The source-root count is deleted (L11, item 9): a root only filters paths already listed.
+  expect(REGISTER.has('context.maxSourceRoots' as LimitId)).toBe(false);
   expect(limit('context.maxSourceCandidates')).toBe(193);
-  expect(dependents(REGISTER, 'context.maxSourceRoots')).toEqual([]);
   expect(dependents(REGISTER, 'context.maxSourceCandidates')).toEqual([]);
   for (const file of ['src/config.ts', 'src/context.ts']) {
     const source = readFileSync(fileURLToPath(new URL(`../${file}`, import.meta.url)), 'utf8');
-    expect(source, file).toContain("limit('context.maxSourceRoots')");
+    expect(source, file).not.toContain('context.maxSourceRoots');
     expect(source, file).toContain("limit('context.maxSourceCandidates')");
   }
 });
@@ -1045,7 +1045,8 @@ test('no heap setting at its hard maximum takes packet.bytes below its floor', (
     (id) => id !== 'research.maxRetainedBytes' && id !== 'config.maxBytes',
   );
   const defaults = members.reduce((total, id) => total + limit(id), 0);
-  expect(limit('runner.maxEvidenceRetainedBytes')).toBe(126_100_507);
+  // 126,100,507 at the 16 KiB config cap; the 1 MiB cap (L11, item 9) takes 1,032,192 more.
+  expect(limit('runner.maxEvidenceRetainedBytes')).toBe(125_068_315);
   expect(limit('runner.maxEvidenceRetainedBytes')).toBeGreaterThan(defaults);
   const share = 'evidence.allocation.session.maxTotalBytes';
   const raised = hardMaximum(REGISTER, share);

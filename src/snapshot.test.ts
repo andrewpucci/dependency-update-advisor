@@ -583,7 +583,7 @@ test("gives an oversized excerpt C2's per-file limit without fetching its bytes"
 });
 
 test("gives an oversized config C1's size failure without fetching its bytes", async () => {
-  const reader = reads([configTree[0], { ...configTree[1], size: 16_385 }], {});
+  const reader = reads([configTree[0], { ...configTree[1], size: limit('config.maxBytes') + 1 }], {});
 
   const result = await withTrustedSnapshot(
     { repository, reads: reader, temporaryRoot: tempRoot() },

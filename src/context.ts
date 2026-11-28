@@ -7,7 +7,6 @@ import { limit } from './limits.js';
 const MAX_CONTEXT_DEPENDENCIES = limit('context.maxDependencies');
 const MAX_CONTEXT_ID_CODE_UNITS = limit('context.maxIdCodeUnits');
 const MAX_CONTEXT_PATH_BYTES = limit('context.maxPathBytes');
-const MAX_SOURCE_ROOTS = limit('context.maxSourceRoots');
 const MAX_SOURCE_CONTEXT_BYTES = limit('context.maxSourceContextBytes');
 const MAX_TRACKED_PATH_ENTRIES = limit('context.maxTrackedPathEntries');
 const MAX_SOURCE_CANDIDATES = limit('context.maxSourceCandidates');
@@ -243,8 +242,8 @@ function validateContextConfig(
   context: ReviewConfig['context'],
   visibility: unknown,
 ): SourceContextFailure | { ok: true; roots: string[]; files: string[] } {
-  if (!Array.isArray(context.sourceRoots) || context.sourceRoots.length > MAX_SOURCE_ROOTS)
-    return failure('config', 'context.sourceRoots');
+  // A root only filters paths already listed, so the root count has no bound of its own (L11).
+  if (!Array.isArray(context.sourceRoots)) return failure('config', 'context.sourceRoots');
   if (
     !Array.isArray(context.excerptFiles) ||
     context.excerptFiles.length > MAX_SOURCE_CANDIDATES ||

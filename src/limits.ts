@@ -3609,14 +3609,6 @@ const DEFINITIONS = [
       test: 'src/context.test.ts > line and fact caps retain identity, complete characters, and visible limits',
     },
   ),
-  unjustified('context.maxSourceRoots', 16, 'count', {
-    protects:
-      'Each configured root is walked with lstat and matched against the inventory, so an unbounded root list would make config validation and path checks unbounded.',
-    effect:
-      'A config with more than 16 sourceRoots fails validation (field context.sourceRoots, category config), so the config is rejected.',
-    note: 'stopped (L11, Q19(a), #383): the approved basis is a copy of limit:snapshot.maxTreeEntries (102,578), which must move together with limit:config.maxBytes, and that entry stops: a JSON config holding 102,578 roots does not fit today\'s 16,384-byte cap (the smallest root, `"a",`, is 4 bytes, so at most about 4,090 roots fit, and 102,579 roots need at least 410,316 bytes for the over-cap boundary test). Raising the root cap alone would admit a count no valid config can reach. Value unchanged',
-    test: 'src/config.test.ts > the source root cap admits exactly the registered count and rejects one more',
-  }),
   {
     id: 'context.maxSourceCandidates',
     unit: 'count',
@@ -3784,14 +3776,21 @@ const DEFINITIONS = [
     note: "stopped (L11, E16, #383): the approved basis is external, GitHub's 25 MB webhook payload cap (docs.github.com webhooks#payload-cap), read as 25,000,000 bytes. The register does not hold the parsed event: runStartup parses it and the pipeline keeps it in its input for the whole run, in both heap phases, and no register entry counts it. At 25,000,000 bytes and limit:runner.heapBytesPerRetainedByte (27.47) it would hold about 686,750,000 bytes of heap (about 28,804,383 today), which would lower limit:packet.bytes from 148,312,300 to 101,594,613 (evidence phase; the analysis phase would fall from 256,206,191 to 220,061,454), and its parse peak at limit:runner.heapBytesPerEvidenceByte would be about 1,475,000,000 bytes. Raising the cap needs the event counted in the heap phases, or released after verification, which no approved change covers. Value unchanged",
   }),
   // Configuration file and validator bounds, from config.ts.
-  unjustified('config.maxBytes', 16_384, 'bytes', {
+  {
+    id: 'config.maxBytes',
+    value: MiB,
+    unit: 'bytes',
     protects:
       'The configuration file is read from the checked-out repository, which can be large or hostile; reading it without a cap allocates unbounded memory before parsing.',
     effect:
       'A file over the cap fails with category size before parsing; no default configuration is substituted.',
     test: 'src/config.test.ts > accepts the exact byte limit and rejects overflow',
-    note: 'stopped (L11, Q19(a) and E17, #383): the approved basis is derived, the largest valid config, (roots + candidates) × (limit:context.maxPathBytes × e + 3) + skeleton. The escape factor is bounded: JSON writes any character in at most 6 bytes (a \\u escape), so e ≤ 6. What has no bound is the whitespace JSON allows between tokens, which the formula does not count and the parser does not limit, so the largest valid config is unbounded; no approved option fixes a whitespace allowance. Even at e = 1 and no skeleton or whitespace, the Q19(a) root cap (limit:snapshot.maxTreeEntries, 102,578) and limit:context.maxSourceCandidates (193) give 102,771 × 1,027 = 105,545,817 bytes. The config is retained through the evidence phase at limit:runner.heapBytesPerRetainedByte (27.47), so limit:runner.evidenceRetainedHeapBytes would rise from 4,130,139,553 to 7,029,033,078 bytes, above limit:runner.heapBytes (6,372,196,352), and limit:packet.bytes would fall from 148,312,300 to −48,891,341; it stays positive only below about 79,382,630 config bytes. At e = 6 the same lists give 102,771 × 6,147 = 631,733,337 bytes. Q19(b), a safety cap sized against heap, was not approved. A new basis needs a maintainer decision. Value unchanged',
-  }),
+    basis: {
+      kind: 'safety',
+      reason:
+        'A parse bound, so never an adopter setting. Largest legitimate use: about 594 KB, a config listing 385 source roots (the largest recorded Dependabot directory list) and limit:context.maxSourceCandidates excerpt paths, each at limit:context.maxPathBytes and written compactly: 578 × 1,027 = 593,606 bytes and the skeleton. The root count has no bound of its own (L11, item 9), and JSON allows unbounded whitespace, so no derivation gives the largest valid config. Harm: the config is retained through the evidence phase at limit:runner.heapBytesPerRetainedByte and counted in limit:analysis.projectionBytes, so each byte lowers limit:packet.bytes by about 1.87 bytes: at 1,048,576 it is 146,383,435 (−1,928,865 from the 16,384 cap) and limit:runner.maxEvidenceRetainedBytes 125,068,315 (−1,032,192); it stays positive below 79,382,631 config bytes and at or above limit:packet.floorBytes below 79,368,155. 1 MiB sits between the two, the size of limit:snapshot.maxBlobBytes, the largest blob the snapshot reads. Under the approved base64 rule a blob response holds about 760,700 decoded bytes, so a config larger than that is refused at its blob read (budget), which makes the snapshot unavailable, before this cap is reached. Approved by the maintainer on 2026-11-28 (L11, item 9(a), #383).',
+    },
+  },
   {
     id: 'config.maxModelCodeUnits',
     value: 128,
