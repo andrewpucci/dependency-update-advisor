@@ -571,6 +571,12 @@ export const packetBytesFor = (
     ),
   );
 
+/**
+ * Sequential publication requests the publication reserve allows (src/comments.ts:329-365): the
+ * comment selection, its re-read, the publication gate, the write and the gate after it.
+ */
+const PUBLICATION_REQUESTS = 5;
+
 const copy = (value: number): number => value;
 
 /** What the audit (L7) found for an entry; a field it has not filled stays PENDING_AUDIT. */
@@ -1661,14 +1667,20 @@ const DEFINITIONS = [
       test: 'src/runtime.test.ts > refuses a freshness read after the job window without a request',
     },
   ),
-  unjustified('job.freshnessAllowance', 45_000, 'milliseconds', {
-    protects:
-      "Reserves time at the end of the job window for the three sequential freshness reads, so the final re-verification finishes before the runner's timeout.",
-    effect:
-      'Analysis must end 45,000 ms before the window end, since the analysis deadline is started + JOB_WINDOW_MS - FRESHNESS_ALLOWANCE_MS.',
-    note: 'awaiting L8 measurement',
-    test: 'src/pipeline.test.ts > ends analysis job.freshnessAllowance before the job window closes',
-  }),
+  derived(
+    'job.freshnessAllowance',
+    'milliseconds',
+    ['freshness.readsPerCheck', 'github.requestTimeoutMs'],
+    (reads, requestMs) => reads * requestMs,
+    "The final freshness check's sequential reads, each allowed the GitHub request timeout: limit:freshness.readsPerCheck × limit:github.requestTimeoutMs. Approved by the maintainer on 2026-11-27 (L11, #383).",
+    {
+      protects:
+        "Reserves time at the end of the job window for the three sequential freshness reads, so the final re-verification finishes before the runner's timeout.",
+      effect:
+        'Analysis must end this long before the window end, since the analysis deadline is started + JOB_WINDOW_MS - FRESHNESS_ALLOWANCE_MS.',
+      test: 'src/pipeline.test.ts > ends analysis job.freshnessAllowance before the job window closes',
+    },
+  ),
   derived(
     'freshness.readsPerCheck',
     'count',
@@ -3500,14 +3512,20 @@ const DEFINITIONS = [
     note: 'awaiting L8 measurement',
     test: 'src/analysis/batches.test.ts > no call dispatches at or after the registered analysis time cap from the start',
   }),
-  unjustified('analysis.publicationReserveMs', 60_000, 'milliseconds', {
-    protects:
-      'Publication needs time after analysis. Without a reserve, a call could consume the whole deadline and leave nothing to publish.',
-    effect:
-      'Analysis calls are cut at the caller deadline minus 60 s, which leaves the reserve for publication.',
-    test: 'src/analysis/batches.test.ts > a call ended by the deadline timer records the elapsed time at the cutoff',
-    note: 'awaiting L8 measurement',
-  }),
+  derived(
+    'analysis.publicationReserveMs',
+    'milliseconds',
+    ['github.requestTimeoutMs'],
+    (requestMs) => PUBLICATION_REQUESTS * requestMs,
+    'Five sequential publication requests (src/comments.ts:329-365: the comment selection, its re-read, the publication gate before the write, the write and the gate after it), each allowed the GitHub request timeout: 5 × limit:github.requestTimeoutMs. Each gate also re-verifies the binding through its own reads (src/comments.ts:246-261), so the count is final only once publication is wired (D4). Approved by the maintainer on 2026-11-27 (L11, #383).',
+    {
+      protects:
+        'Publication needs time after analysis. Without a reserve, a call could consume the whole deadline and leave nothing to publish.',
+      effect:
+        'Analysis calls are cut at the caller deadline less this reserve, which leaves the reserve for publication.',
+      test: 'src/analysis/batches.test.ts > a call ended by the deadline timer records the elapsed time at the cutoff',
+    },
+  ),
   unjustified('analysis.maxContentChunks', 64, 'count', {
     protects:
       "A reply's content array is capped at 64 chunks, so chunk iteration over untrusted provider output stays bounded.",

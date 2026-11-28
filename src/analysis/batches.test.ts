@@ -373,7 +373,8 @@ test('expired budget does not dispatch and reports unattempted work', async () =
   const analyze = vi.fn();
   const result = await analyzeDecisionUnits(
     input,
-    { apiKey: 'test-key', deadlineMs: 60_000 },
+    // The caller deadline leaves nothing past the publication reserve.
+    { apiKey: 'test-key', deadlineMs: limit('analysis.publicationReserveMs') },
     { now: () => 0, analyze },
   );
   expect(result.ok).toBe(true);
@@ -831,10 +832,11 @@ test('a call ended by cancellation records the elapsed time at the cutoff', asyn
 test('a call ended by the deadline timer records the elapsed time at the cutoff', async () => {
   const { input } = await analysisScenario();
   let time = 0;
-  // The effective deadline is 60_005 - 60_000 (publication reserve) = 5 ms on the injected clock.
+  // The effective deadline is the caller deadline less the publication reserve: 5 ms on the
+  // injected clock.
   const result = await analyzeDecisionUnits(
     input,
-    { apiKey: 'test-key', deadlineMs: 60_005 },
+    { apiKey: 'test-key', deadlineMs: limit('analysis.publicationReserveMs') + 5 },
     {
       now: () => time,
       analyze: () => {

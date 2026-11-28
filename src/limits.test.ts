@@ -756,6 +756,13 @@ test('the evidence deadline is an adopter setting whose hard maximum leaves one 
   expect(limit('evidence.envelope.totalTimeoutMs')).toBeLessThanOrEqual(
     limit('job.maxEvidenceDeadlineMs'),
   );
+  // The freshness allowance and the publication reserve are sequential GitHub requests at the
+  // request timeout, so the hard maximum follows that timeout (L11, #383).
+  expect(limit('job.freshnessAllowance')).toBe(
+    limit('freshness.readsPerCheck') * limit('github.requestTimeoutMs'),
+  );
+  expect(limit('analysis.publicationReserveMs')).toBe(5 * limit('github.requestTimeoutMs'));
+  expect(limit('job.maxEvidenceDeadlineMs')).toBe(471_971);
   // The window-derived research ceilings follow the setting (L11, Q1(a)).
   const definitions = [...REGISTER.values()].map(({ value, ...entry }): LimitDefinition =>
     entry.basis.kind === 'derived' ? entry : { ...entry, value },
