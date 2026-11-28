@@ -19,6 +19,11 @@
  *   arrays) is kept. The remainder includes the process baseline, so the formula needs no
  *   separate term for it.
  *
+ * - The value-dense shape (every 64-hex id shortened) of the same two packets gives the dense rate;
+ *   `limit:runner.heapBytesPerPacketByte` keeps the larger of the two.
+ * - `limit:runner.unitExpansionHeapBytes`: the largest-expansion packet (124 members in the
+ *   expansion shape, tests/parity/heap-shapes.ts) less the large packet and its own bytes at the
+ *   plain rate, plus 1 MiB of resolution, with the projection caps lifted.
  * - `limit:runner.evidenceHeapBytesPerPacketByte`: the same growth with PHASE=evidence, which stops
  *   after revalidation, from the large packet to it repeated 16 times, plus 1 MiB of resolution.
  * - `limit:runner.heapBytesPerEvidenceByte`: one response body of exactly
@@ -64,6 +69,8 @@ const READER_SHAPES = ['flat', 'objects', 'nested'] as const;
 const PARALLEL = availableParallelism();
 /** Twelve members give 16 units, two batches of `limit:analysis.maxUnits`; checked below. */
 const TWO_BATCH_MEMBERS = '12';
+/** 124 npm members give limit:packet.changes changes with the scenario's fixed four; checked below. */
+const EXPANSION_MEMBERS = '124';
 /** Room for the repeated packet's records; only written register values can be overridden. */
 const overridesFor = (repeats: string) =>
   [
@@ -131,7 +138,7 @@ async function minimumOldSpace(
   script = 'measure.ts',
 ): Promise<number> {
   let low = 0;
-  let high = limit('runner.oldGenerationBytes') / BINARY_BYTES.MiB;
+  let high = Math.floor(limit('runner.heapBytes') / BINARY_BYTES.MiB);
   if (!(await completes(file, env, high, script)))
     throw new Error(`${file} fails at the heap limit`);
   while (high - low > 1) {
@@ -173,6 +180,46 @@ try {
   const perPacketByte =
     ((mib.repeated - mib.large) * BINARY_BYTES.MiB) /
     (runs.repeated.packetBytes - runs.large.packetBytes);
+
+  // The densest valid shape: the same packets with every 64-hex id shortened.
+  const denseLarge = join(dir, 'dense-large.json');
+  const denseRepeated = join(dir, 'dense-repeated.json');
+  node([join(HERE, 'packet.ts'), denseLarge, LARGE_MEMBERS, '1', 'dense']);
+  node([join(HERE, 'packet.ts'), denseRepeated, LARGE_MEMBERS, REPEATS, 'dense']);
+  // The largest decision-unit expansion, at limit:packet.changes changes. The projection caps
+  // are lifted for it, since they are derived from this figure (limit:analysis.projectionBytes).
+  const expansion = join(dir, 'expansion.json');
+  const built = JSON.parse(
+    node([join(HERE, 'packet.ts'), expansion, EXPANSION_MEMBERS, '1', 'expansion']),
+  ) as { changes: number };
+  if (built.changes !== limit('packet.changes'))
+    throw new Error(`the expansion packet has ${built.changes} changes`);
+  const expansionOverrides = {
+    HEAP_LIMIT_OVERRIDES: ['analysis.projectionBytes', 'analysis.projectionEntries']
+      .map((id) => `${id}=${limit('runner.heapBytes')}`)
+      .join(','),
+  };
+  const shapeRuns = {
+    denseLarge: describe(denseLarge),
+    denseRepeated: describe(denseRepeated, overrides),
+    expansion: describe(expansion, expansionOverrides),
+  };
+  if (shapeRuns.expansion.calls === null)
+    throw new Error(`the expansion packet stopped before analysis: ${shapeRuns.expansion.kind}`);
+  const [denseLargeMib = 0, denseRepeatedMib = 0, expansionMib = 0] = await pool([
+    () => minimumOldSpace(denseLarge),
+    () => minimumOldSpace(denseRepeated, overrides),
+    () => minimumOldSpace(expansion, expansionOverrides),
+  ]);
+  const densePerPacketByte =
+    ((denseRepeatedMib - denseLargeMib) * BINARY_BYTES.MiB) /
+    (shapeRuns.denseRepeated.packetBytes - shapeRuns.denseLarge.packetBytes);
+  // What the expansion packet needs beyond the large packet and its own bytes at the plain rate,
+  // plus 1 MiB of bisection resolution: the decision-unit expansion.
+  const expansionHeap =
+    (expansionMib - mib.large) * BINARY_BYTES.MiB +
+    BINARY_BYTES.MiB -
+    perPacketByte * (shapeRuns.expansion.packetBytes - runs.large.packetBytes);
 
   // The evidence phase: the packet through assembly's serialization, validation and
   // revalidation only, and one response body at the cap through each reader's parse path.
@@ -228,6 +275,20 @@ try {
         minimumOldSpaceMiB: { ...mib, ...Object.fromEntries(replies.map((r) => [r.shape, r.mib])) },
         packetBytes: Object.fromEntries(Object.entries(runs).map(([k, r]) => [k, r.packetBytes])),
         heapBytesPerPacketByte: perPacketByte,
+        dense: {
+          minimumOldSpaceMiB: { large: denseLargeMib, repeated: denseRepeatedMib },
+          packetBytes: {
+            large: shapeRuns.denseLarge.packetBytes,
+            repeated: shapeRuns.denseRepeated.packetBytes,
+          },
+          heapBytesPerPacketByte: densePerPacketByte,
+        },
+        expansion: {
+          minimumOldSpaceMiB: expansionMib,
+          packetBytes: shapeRuns.expansion.packetBytes,
+          calls: shapeRuns.expansion.calls,
+          heapBytes: expansionHeap,
+        },
         worstShape: worst.shape,
         replyHeapBytes: replyHeap,
         replyHeapBytesPerByte: replyHeap / inFlight,

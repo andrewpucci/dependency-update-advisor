@@ -68,6 +68,11 @@ export type TrustedSnapshot = Readonly<{
     dependencies: readonly { id: string; name: string }[],
   ) => Promise<SourceContextResult>;
   dependabotRoots: () => Promise<DependabotRootsOutcome>;
+  /**
+   * Drops the parsed tree once evidence is collected, so it is not held through analysis (the
+   * heap is shared by phase, SPEC-limit-register section 5). Any later tree read is unavailable.
+   */
+  release: () => void;
 }>;
 export type SnapshotRequest = Readonly<{
   repository: RepositoryIdentity;
@@ -247,6 +252,7 @@ class Tree {
   readonly entries = new Map<string, TreeEntry>();
   private readonly listings = new Map<string, Promise<void>>();
   private count = 0;
+  private released = false;
 
   constructor(
     private readonly rootSha: string,
@@ -254,7 +260,15 @@ class Tree {
     private readonly active: () => void,
   ) {}
 
+  /** Frees every entry; the tree can no longer be read. */
+  release(): void {
+    this.released = true;
+    this.entries.clear();
+    this.listings.clear();
+  }
+
   private list(directory: string, sha: string): Promise<void> {
+    if (this.released) throw new Unavailable();
     let listing = this.listings.get(directory);
     if (!listing) {
       listing = this.load(directory, sha);
@@ -577,6 +591,7 @@ export async function withTrustedSnapshot<T>(
       config,
       dependabotRoots: () =>
         readDependabotRoots(tree, materializer, snapshot.contextRevision, active),
+      release: () => tree.release(),
       collectContext: async (dependencies) => {
         try {
           for (const path of [

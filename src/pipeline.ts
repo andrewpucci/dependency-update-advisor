@@ -496,6 +496,11 @@ async function evaluateEvidence(
         );
         if (researched.kind !== 'ready')
           return { kind: 'internal-failure', stage: 'research', body: null };
+        // Evidence state analysis never reads is dropped first, so the analysis phase holds only
+        // the packet and the model replies (SPEC-limit-register section 5, heap by phase).
+        trusted.release();
+        researchCache.clear();
+        npmInventory = null;
         // The model is only called while the attempt is still the owner's.
         const beforeModel = await recheck();
         if (beforeModel !== 'current') return halted(beforeModel);

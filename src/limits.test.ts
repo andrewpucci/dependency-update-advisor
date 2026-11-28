@@ -13,6 +13,11 @@ import {
   limitEntry,
   settingProblems,
   replyBytesFor,
+  hardMaximum,
+  heapBytesFor,
+  maxRelationshipLimits,
+  unitDerivedBytes,
+  UNIT_TEXT,
   type LimitDefinition,
   type LimitId,
 } from './limits.js';
@@ -299,7 +304,7 @@ test('the evidence-phase heap inputs keep their sources and formula', () => {
   expect(heap).toMatchObject({
     kind: 'derived',
     inputs: [
-      'runner.oldGenerationBytes',
+      'runner.heapBytes',
       'packet.bytes',
       'runner.evidenceHeapBytesPerPacketByte',
       'config.maxBytes',
@@ -309,7 +314,7 @@ test('the evidence-phase heap inputs keep their sources and formula', () => {
     ],
   });
   if (heap.kind !== 'derived') throw new Error('derived');
-  // H − packet × rate − (state reachable into analysis) × evidence rate.
+  // H − packet × rate − (state held through the evidence phase) × evidence rate.
   expect(heap.formula(1000, 10, 2, 1, 2, 3, 5)).toBe(1000 - 20 - 30);
   const cap = limitEntry('runner.maxEvidenceResponseBytes').basis;
   expect(cap).toMatchObject({
@@ -328,29 +333,101 @@ test('the evidence-phase heap inputs keep their sources and formula', () => {
   expect(limit('evidence.envelope.maxResponseBytes')).toBeLessThanOrEqual(
     limit('runner.maxEvidenceResponseBytes'),
   );
+  // A larger cap adds off-heap buffers and so lowers its own maximum: the hard maximum is the
+  // largest cap that still holds.
+  const highest = hardMaximum(REGISTER, 'evidence.envelope.maxResponseBytes');
+  expect(highest).toBeGreaterThanOrEqual(limit('evidence.envelope.maxResponseBytes'));
+  expect(highest).toBeLessThan(limit('runner.maxEvidenceResponseBytes'));
+});
+
+test('the runner heap derives from runner memory less what is not old generation', () => {
+  const inputs: LimitId[] = [
+    'runner.memoryBytes',
+    'runner.youngGenerationBytes',
+    'runner.offHeapBytes',
+    'runner.baselineBytes',
+    'runner.systemReservedBytes',
+  ];
+  const { basis } = limitEntry('runner.heapBytes');
+  expect(basis).toMatchObject({ kind: 'derived', inputs });
+  if (basis.kind !== 'derived') throw new Error('derived');
+  expect(basis.formula(100, 10, 20, 5, 15)).toBe(50);
+  expect(limit('runner.heapBytes')).toBe(
+    heapBytesFor(...(inputs.map((id) => limit(id)) as [number, number, number, number, number])),
+  );
+  expect(limitEntry('runner.memoryBytes').basis).toMatchObject({ kind: 'external' });
+  expect(limitEntry('runner.youngGenerationBytes').basis).toMatchObject({
+    kind: 'external',
+    platformValue: 3 * 64 * 1024 * 1024,
+  });
+  expect(limitEntry('runner.baselineBytes').basis).toMatchObject({
+    kind: 'measured',
+    command: 'npm run probe:runtime-baseline',
+  });
+  // The off-heap buffers: the research cache, two copies of each read in flight and its largest
+  // decoded file, and two copies of each model reply in flight.
+  expect(limit('runner.offHeapBytes')).toBe(
+    limit('research.cache.maxTotalBytes') +
+      limit('evidence.readsInFlight') *
+        2 *
+        (limit('evidence.envelope.maxResponseBytes') +
+          Math.max(
+            limit('snapshot.maxBlobBytes'),
+            limit('w2.session.maxFileBytes'),
+            limit('context.maxSourceFileBytes'),
+          )) +
+      limit('analysis.maxConcurrentCalls') * 2 * limit('analysis.responseBytes'),
+  );
+  // Until the runner probe records the OS and agent reserve, its placeholder holds the heap at
+  // the old generation V8 already gives the smallest runner, so no cap moves on its account.
+  expect(limitEntry('runner.systemReservedBytes').basis.kind).toBe('unjustified');
+  expect(limit('runner.heapBytes')).toBe(limit('runner.oldGenerationBytes'));
 });
 
 test('packet.bytes is the packet that fits the runner heap beside the model replies', () => {
   const inputs: LimitId[] = [
-    'runner.oldGenerationBytes',
+    'runner.heapBytes',
     'analysis.replyHeapBytes',
+    'runner.unitExpansionHeapBytes',
     'runner.heapBytesPerPacketByte',
   ];
   const { basis } = limitEntry('packet.bytes');
   expect(basis).toMatchObject({ kind: 'derived', inputs });
   if (basis.kind !== 'derived') throw new Error('derived');
-  const [heap, replies, perByte] = inputs.map((id) => limit(id));
-  expect(limit('packet.bytes')).toBe(Math.floor((heap - replies) / perByte));
-  // The packet's own heap and the replies' heap together stay inside the runner heap.
-  expect(limit('packet.bytes') * perByte + replies).toBeLessThanOrEqual(heap);
-  expect((limit('packet.bytes') + 1) * perByte + replies).toBeGreaterThan(heap);
-  expect(basis.formula(1_000, 100, 3)).toBe(300);
+  const [heap, replies, expansion, perByte] = inputs.map((id) => limit(id));
+  expect(limit('packet.bytes')).toBe(Math.floor((heap - replies - expansion) / perByte));
+  // The packet's own heap, the unit expansion and the replies together stay inside the heap.
+  expect(limit('packet.bytes') * perByte + replies + expansion).toBeLessThanOrEqual(heap);
+  expect((limit('packet.bytes') + 1) * perByte + replies + expansion).toBeGreaterThan(heap);
+  expect(basis.formula(1_000, 100, 300, 3)).toBe(200);
+  expect(limitEntry('runner.unitExpansionHeapBytes').basis).toMatchObject({
+    kind: 'measured',
+    command: 'npm run measure:heap',
+  });
   for (const input of ['analysis.responseBytes', 'analysis.maxConcurrentCalls'] as const)
     expect(dependents(REGISTER, input)).toContain('packet.bytes');
-  // The snapshot budgets no longer follow the packet cap.
-  expect(dependents(REGISTER, 'packet.bytes')).not.toContain('analysis.projectionBytes');
-  expect(limit('analysis.projectionBytes')).toBe(8_388_608);
-  expect(limit('analysis.projectionEntries')).toBe(1_048_576);
+  // The snapshot budgets follow the packet cap and the unit expansion's structural bound.
+  expect(limit('analysis.projectionBytes')).toBe(
+    3 * limit('packet.bytes') +
+      limit('analysis.unitDerivedBytes') +
+      limit('config.maxBytes') +
+      UNIT_TEXT.configDefaultBytes,
+  );
+  expect(limit('analysis.projectionEntries')).toBe(
+    limit('packet.bytes') +
+      limit('analysis.unitDerivedEntries') +
+      Math.ceil(limit('config.maxBytes') / 2) +
+      UNIT_TEXT.configDefaultEntries,
+  );
+  expect(limit('analysis.unitDerivedBytes')).toBe(
+    unitDerivedBytes(
+      limit('packet.changes'),
+      limit('packet.relationships'),
+      limit('packet.idCodeUnits'),
+      limit('packet.identityBytes'),
+    ),
+  );
+  expect(maxRelationshipLimits(128)).toBe(8_064);
   expect(limit('analysis.projectionBytes')).toBeLessThanOrEqual(V8_MAX_STRING_LENGTH);
 });
 

@@ -14,6 +14,11 @@ export type ResearchCache = {
   /** Stores a 200 or 404 response if it fits; returns a Response the caller must use instead of `response`. */
   store(key: string, response: Response): Promise<Response>;
 };
+/** The run's own handle on its cache, which readers never receive. */
+export type OwnedResearchCache = ResearchCache & {
+  /** Drops every entry once research has returned, so none is held through analysis. */
+  clear(): void;
+};
 
 type Entry = { status: number; headers: [string, string][]; bytes: Uint8Array<ArrayBuffer> };
 
@@ -57,7 +62,7 @@ function passThrough(
   return new Response(stream, { status: response.status, headers: response.headers });
 }
 
-export function createResearchCache(options: ResearchCacheOptions): ResearchCache {
+export function createResearchCache(options: ResearchCacheOptions): OwnedResearchCache {
   const entries = new Map<string, Entry>();
   let totalBytes = 0;
 
@@ -74,6 +79,11 @@ export function createResearchCache(options: ResearchCacheOptions): ResearchCach
   }
 
   return {
+    clear() {
+      entries.clear();
+      totalBytes = 0;
+    },
+
     key(method, url, headers, body) {
       return JSON.stringify([method.toUpperCase(), url, normalizeHeaders(headers), body ?? null]);
     },

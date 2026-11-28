@@ -267,6 +267,38 @@ response body at `limit:evidence.envelope.maxResponseBytes` pushed through
 each evidence reader's parse path, with the largest reader kept. Re-measure
 after a change to an evidence reader's read, parse or copy path.
 
+### Runner memory
+
+The action relaunches itself once (`src/relaunch.ts`) with
+`--max-old-space-size` derived from the memory of the runner it runs on. That
+memory is the cgroup limit when one is set, otherwise physical memory. The
+same formula with the smallest runner's memory gives `limit:runner.heapBytes`.
+Every cap sized from runner heap derives from that entry. The formula
+subtracts four things that are not old generation:
+
+- the young generation (`limit:runner.youngGenerationBytes`), from the V8
+  source;
+- the off-heap buffers the register bounds (`limit:runner.offHeapBytes`);
+- the runtime baseline (`limit:runner.baselineBytes`). Re-measure it on Linux
+  and Node 24 after `npm run build` with:
+
+  ```sh
+  npm run probe:runtime-baseline
+  ```
+
+- what the runner OS and agent keep (`limit:runner.systemReservedBytes`).
+  Only the runner can measure it. Run this as a step of a job on a
+  GitHub-hosted `ubuntu-latest` runner in a private repository, before
+  anything else in the job:
+
+  ```sh
+  npm run probe:runner-memory
+  ```
+
+  Record its `reservedBytes` (MemTotal − MemAvailable) and the runner
+  processes' resident sets on the entry's issue. A run on any other machine,
+  including a Mac, measures a different machine.
+
 ### Token-length probe
 
 `limit:analysis.maxTokenEscapedBytes` is the longest vocabulary token of the

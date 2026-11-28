@@ -331,12 +331,29 @@ function settingProblemsAt(register: ReadonlyMap<string, Limit>, where: string):
   return problems;
 }
 
+/** Whether a setting's own bound holds in a register evaluated at the settings. */
+function withinMaximum(register: ReadonlyMap<string, Limit>, id: string): boolean {
+  const setting = register.get(id)?.configurable;
+  if (setting === undefined) return true;
+  const maximum = register.get(setting.maximum)?.value ?? Number.NaN;
+  const value =
+    setting.joint === true
+      ? [...register.values()]
+          .filter((other) => other.configurable?.maximum === setting.maximum)
+          .reduce((sum, other) => sum + other.value, 0)
+      : (register.get(id)?.value ?? Number.NaN);
+  return value <= maximum;
+}
+
 /**
  * Checks every adopter setting at its default and at its hard maximum (SPEC-limit-register
  * section 5, approved 2026-11-27, #383): each setting stays within its bounds, a joint maximum
  * holds over the sum of its settings, and every derived value stays finite. A setting is raised
  * alone, with the others at their defaults; a joint setting is raised to what its maximum leaves
- * after the others' defaults.
+ * after the others' defaults. A maximum is read from the register evaluated at the settings, so
+ * when it falls as its own setting rises (the response cap's heap maximum does, through the
+ * off-heap buffers), the hard maximum is the largest setting that still holds, found by
+ * bisection (approved 2026-11-28, #383).
  */
 export function settingProblems(register: ReadonlyMap<string, Limit>): string[] {
   // A built register carries each derived entry's resolved value; a definition must not.
@@ -346,21 +363,45 @@ export function settingProblems(register: ReadonlyMap<string, Limit>): string[] 
   const defaults = buildRegister(definitions);
   const problems = settingProblemsAt(defaults, 'at the defaults');
   for (const entry of defaults.values()) {
-    const setting = entry.configurable;
-    if (setting === undefined) continue;
-    const maximum = defaults.get(setting.maximum)?.value ?? Number.NaN;
-    const others = [...defaults.values()]
-      .filter(
-        (other) =>
-          setting.joint === true &&
-          other.id !== entry.id &&
-          other.configurable?.maximum === setting.maximum,
-      )
-      .reduce((sum, other) => sum + other.value, 0);
-    const raised = buildRegister(definitions, new Map([[entry.id, maximum - others]]));
+    if (entry.configurable === undefined) continue;
+    const highest = hardMaximum(defaults, entry.id);
+    if (!Number.isFinite(highest)) {
+      problems.push(`${entry.id}: no setting holds its hard maximum at the defaults`);
+      continue;
+    }
+    const raised = buildRegister(definitions, new Map([[entry.id, highest]]));
     problems.push(...settingProblemsAt(raised, `with ${entry.id} at its hard maximum`));
   }
   return problems;
+}
+
+/** The largest value a setting may take, other settings at their defaults; see settingProblems. */
+export function hardMaximum(register: ReadonlyMap<string, Limit>, id: string): number {
+  const definitions = [...register.values()].map(({ value, ...entry }): LimitDefinition =>
+    entry.basis.kind === 'derived' ? entry : { ...entry, value },
+  );
+  const entry = register.get(id);
+  const setting = entry?.configurable;
+  if (entry === undefined || setting === undefined) return Number.NaN;
+  const at = (value: number) => buildRegister(definitions, new Map([[id, value]]));
+  const others = [...register.values()]
+    .filter(
+      (other) =>
+        setting.joint === true &&
+        other.id !== id &&
+        other.configurable?.maximum === setting.maximum,
+    )
+    .reduce((sum, other) => sum + other.value, 0);
+  let highest = Math.floor((register.get(setting.maximum)?.value ?? Number.NaN) - others);
+  if (withinMaximum(at(highest), id)) return highest;
+  let low = entry.value;
+  if (!withinMaximum(at(low), id)) return Number.NaN;
+  while (highest - low > 1) {
+    const middle = Math.floor((low + highest) / 2);
+    if (withinMaximum(at(middle), id)) low = middle;
+    else highest = middle;
+  }
+  return low;
 }
 
 const MiB = 1024 * 1024;
@@ -369,6 +410,114 @@ const MiB = 1024 * 1024;
  * `<name>@<version>` in a monorepo (`packageTags`, src/evidence/upstream-github.ts:508).
  */
 export const UPSTREAM_TAG_CANDIDATES = 2;
+
+/**
+ * Structural maxima of the fixed strings T5 writes into decision units (src/units.ts) and of
+ * the defaults a parsed config adds (src/config.ts). src/units.test.ts pins each one against the
+ * code it comes from, so a new category, reason or action text fails that test until this
+ * changes with it.
+ */
+export const UNIT_TEXT = Object.freeze({
+  /** Evidence categories one change may carry: 3 required, installScript, 4 optional signals. */
+  categories: 8,
+  categoryBytes: 13,
+  /** Evidence reasons (EVIDENCE_REASONS) and the longest of them. */
+  reasons: 10,
+  reasonBytes: 11,
+  /** JSON.stringify of all ten reasons, the longest reason list a limit can carry. */
+  reasonsJsonBytes: 115,
+  statusBytes: 11,
+  ecosystemBytes: 7,
+  kindBytes: 12,
+  groupingReasonBytes: 23,
+  nextActionBytes: 110,
+  /** The longest reachability outcome, or `missing` when none is recorded. */
+  outcomeBytes: 11,
+  sideBytes: 4,
+  /** A UTF-16 code unit is at most 3 UTF-8 bytes; a JSON escape of `"` or `\\` is 2. */
+  utf8BytesPerCodeUnit: 3,
+  /** Number.MAX_SAFE_INTEGER has 16 digits. */
+  safeIntegerDigits: 16,
+  shaHexDigits: 40,
+  /** String bytes and values a parsed config adds as defaults beyond its own text. */
+  configDefaultBytes: 199,
+  configDefaultEntries: 28,
+});
+
+/**
+ * The most relationship limits T5 can write: a change not grouped with one of k changed direct
+ * anchors gets one limit per other anchor and side (src/units.ts, excludeAnchor), at most
+ * 2 (n − k)(k − 1) over n changes, which is largest with k in the middle of n.
+ */
+export const maxRelationshipLimits = (changes: number): number =>
+  2 * Math.floor((changes - 1) / 2) * Math.ceil((changes - 1) / 2);
+
+/**
+ * String bytes T5 derives beyond copies of packet strings (src/units.ts): per member and
+ * evidence category, the link and source ids, the member id, category, second status, reason
+ * and signal, and the coverage limits written twice; per member, its id in members, memberIds
+ * and the unit id; per unit, the unit id's fixed fields, ecosystem, kind, anchor and its
+ * grouping text; every relationship limit; and the frame of every ambiguous-anchor limit.
+ */
+export function unitDerivedBytes(
+  changes: number,
+  relationships: number,
+  idCodeUnits: number,
+  identityBytes: number,
+): number {
+  const t = UNIT_TEXT;
+  const id = Math.min(identityBytes, t.utf8BytesPerCodeUnit * idCodeUnits);
+  const coverageLimit = id + t.categoryBytes + t.statusBytes + t.reasonBytes + 13;
+  const perCategory =
+    2 * (id + t.categoryBytes + 7) +
+    id +
+    2 * t.categoryBytes +
+    t.statusBytes +
+    t.reasonBytes +
+    2 * t.reasons * coverageLimit;
+  const perMember = 3 * id + t.ecosystemBytes + 3;
+  const perUnit =
+    2 * identityBytes +
+    2 * id +
+    2 * t.ecosystemBytes +
+    2 * t.kindBytes +
+    t.groupingReasonBytes +
+    t.nextActionBytes +
+    2 * t.safeIntegerDigits +
+    2 * t.shaHexDigits +
+    27;
+  const relationshipLimit = 2 * id + t.sideBytes + t.outcomeBytes + t.reasonsJsonBytes + 29;
+  const ambiguousFrame = 2 * id + 30;
+  return (
+    changes * (t.categories * perCategory + perMember + perUnit) +
+    maxRelationshipLimits(changes) * relationshipLimit +
+    relationships * ambiguousFrame
+  );
+}
+
+/**
+ * Values T5 derives beyond copies of packet values: per member and category, the link and
+ * source records with their scalars and both coverage-limit lists; per member, its members
+ * record and memberIds entry; per unit, the unit record and its fields; every proof and verdict
+ * key; and every relationship and ambiguous-anchor limit.
+ */
+export function unitDerivedEntries(
+  changes: number,
+  relationships: number,
+  reachability: number,
+): number {
+  const t = UNIT_TEXT;
+  const perCategory = 13 + 2 * t.reasons;
+  const perMember = 7;
+  const perUnit = 18;
+  return (
+    changes * (t.categories * perCategory + perMember + perUnit) +
+    relationships +
+    reachability +
+    maxRelationshipLimits(changes) +
+    relationships
+  );
+}
 const sum = (...values: number[]): number => values.reduce((total, value) => total + value, 0);
 
 /**
@@ -382,6 +531,20 @@ export const replyBytesFor = (
   maxTokenEscapedBytes: number,
   responseEnvelopeBytes: number,
 ): number => completionTokens * maxTokenEscapedBytes + responseEnvelopeBytes;
+
+/**
+ * The old-generation heap a runner with `memory` bytes leaves the reviewer: its memory less the
+ * young generation, the off-heap buffers, the runtime baseline and what the runner OS and agent
+ * keep. `limit:runner.heapBytes` applies it to the smallest runner; the action's relaunch
+ * (src/relaunch.ts) applies it to the runner it is on, so the formula is written once.
+ */
+export const heapBytesFor = (
+  memory: number,
+  youngGeneration: number,
+  offHeap: number,
+  baseline: number,
+  reserved: number,
+): number => memory - youngGeneration - offHeap - baseline - reserved;
 
 const copy = (value: number): number => value;
 
@@ -836,36 +999,59 @@ const DEFINITIONS = [
     basis: {
       kind: 'derived',
       inputs: [
-        'runner.oldGenerationBytes',
+        'runner.heapBytes',
         'analysis.replyHeapBytes',
+        'runner.unitExpansionHeapBytes',
         'runner.heapBytesPerPacketByte',
       ],
-      formula: (heap, replies, perByte) => Math.floor((heap - replies) / perByte),
+      formula: (heap, replies, expansion, perByte) =>
+        Math.floor((heap - replies - expansion) / perByte),
       description:
-        'The largest packet whose heap fits beside the concurrent model replies: (limit:runner.oldGenerationBytes − limit:analysis.replyHeapBytes) ÷ limit:runner.heapBytesPerPacketByte, rounded down. The packet is never sent to the model whole, so runner heap is its only real limit. Approved by the maintainer on 2026-11-27 (L11, #383).',
+        'The largest packet whose analysis-phase heap fits: (limit:runner.heapBytes − limit:analysis.replyHeapBytes − limit:runner.unitExpansionHeapBytes) ÷ limit:runner.heapBytesPerPacketByte, rounded down. The concurrent model replies and the decision-unit expansion at its structural maximum come off first; the snapshot tree, research cache and npm inventory are released before analysis (src/pipeline.ts), so no evidence state is held beside them. The packet is never sent to the model whole, so runner heap is its only real limit. Approved by the maintainer on 2026-11-27 (L11, #383); the expansion and the released state on 2026-11-28.',
     },
     test: 'src/schema.test.ts > enforces the exact serialized packet budget including multibyte text',
   },
   {
     id: 'runner.heapBytesPerPacketByte',
-    value: 16.05,
+    value: 19,
     unit: 'bytes',
     protects:
-      'States how much heap a serialized packet byte costs at peak, through validation, revalidation, the analysis projection and render, so limit:packet.bytes can be sized from runner heap.',
+      'States how much heap a serialized packet byte costs at peak, through validation, revalidation, the analysis projection and render, on the densest valid packet shape, so limit:packet.bytes can be sized from runner heap.',
     basis: {
       kind: 'measured',
       command: 'npm run measure:heap',
       corpus:
-        'the invented large-inventory npm packet (93 members plus 2 same-named nested copies, 1,043,616 bytes) and the same packet with its member records repeated 4 times (4,179,981 bytes), on Node 24.22.3 (V8 13.6) with a 1 MiB semi space',
+        'the invented large-inventory npm packet (93 members plus 2 same-named nested copies) in its value-dense shape, every 64-hex id shortened to the shortest distinct hex string (731,507 bytes), and the same packet with its member records repeated 4 times (2,939,271 bytes), on Node 24.22.3 (V8 13.6) with a 1 MiB semi space. The plain shape, with 64-hex ids, gives 15.71 in the same run (1,043,616 to 4,179,981 bytes, 31 to 78 MiB)',
       statistic:
-        'the growth in the smallest --max-old-space-size at which validation, revalidation, analysis with a stub model and render complete (31 MiB to 79 MiB), divided by the growth in serialized packet bytes (3,136,365): 16.048, rounded up to 16.05. The sampled peak heapUsed is not used: it moved from 14.5 to 54.8 heap bytes per packet byte over identical runs, with garbage-collection timing',
+        'the growth in the smallest --max-old-space-size at which validation, revalidation, analysis with a stub model and render complete (29 MiB to 68 MiB), plus 1 MiB of bisection resolution, divided by the growth in serialized packet bytes (2,207,764): 18.998, rounded up to 19.00. The larger of the two shapes is kept. The sampled peak heapUsed is not used: it moves with garbage-collection timing',
       headroom:
-        'none: a platform property, not a demand; the margin lies in limit:analysis.replyHeapBytes, which assumes every reply in flight is a hostile body of the full reply cap',
-      measured: '2026-11-27',
+        'none: a platform property, not a demand; the added 1 MiB makes it an upper bound, and the margin lies in limit:analysis.replyHeapBytes, which assumes every reply in flight is a hostile body of the full reply cap',
+      measured: '2026-11-28',
     },
     effect:
-      'Not enforced. limit:packet.bytes divides the heap left beside the model replies by it; a larger value lowers the packet cap.',
+      'Not enforced. limit:packet.bytes divides the heap left beside the model replies and the unit expansion by it; a larger value lowers the packet cap.',
     test: 'src/limits.test.ts > the heap inputs of packet.bytes keep their sources and formula',
+  },
+  {
+    id: 'runner.unitExpansionHeapBytes',
+    value: 108_351_425,
+    unit: 'bytes',
+    protects:
+      'States the heap the decision-unit expansion (src/units.ts) takes at its structural maximum, beyond what the packet costs per byte, so limit:packet.bytes can set it aside.',
+    basis: {
+      kind: 'measured',
+      command: 'npm run measure:heap',
+      corpus:
+        'the largest-expansion packet the parity builders reach (tests/parity/heap-shapes.ts): the large-inventory scenario at limit:packet.changes changes (124 npm members plus 4 others, 2,889,936 bytes), 63 of the npm transitive updates made direct anchors and the other 61 each proving a path from one, every anchor scope verdict failed for all ten reasons, every evidence entry partial for all ten reasons and every change id padded to limit:packet.idCodeUnits with a three-byte character: 7,564 relationship limits of the structural 8,064, through validation, revalidation, analysis with a stub model (16 calls) and render, with the projection caps lifted; on Node 24.22.3 (V8 13.6) with a 1 MiB semi space',
+      statistic:
+        'the smallest --max-old-space-size at which it completes (161 MiB) less that of the large plain packet (31 MiB), plus 1 MiB of bisection resolution, less the growth in packet bytes (1,846,320) at the plain rate of 15.71: 108,351,424.08 bytes, rounded up. The projection-findings estimate on branch -l11-packet was about 106 MB ±20%',
+      headroom:
+        'none: a platform property, not a demand. The packet reaches 7,564 of the 8,064 relationship limits the counts allow (its four non-npm changes cannot be anchors), so the structural maximum is about 7% above it in that term',
+      measured: '2026-11-28',
+    },
+    effect:
+      'Not enforced. limit:packet.bytes subtracts it from the analysis-phase heap; a larger value lowers the packet cap.',
+    test: 'src/limits.test.ts > packet.bytes is the packet that fits the runner heap beside the model replies',
   },
   {
     id: 'runner.heapBytesPerEvidenceByte',
@@ -918,7 +1104,7 @@ const DEFINITIONS = [
     basis: {
       kind: 'derived',
       inputs: [
-        'runner.oldGenerationBytes',
+        'runner.heapBytes',
         'packet.bytes',
         'runner.evidenceHeapBytesPerPacketByte',
         'config.maxBytes',
@@ -929,7 +1115,7 @@ const DEFINITIONS = [
       formula: (heap, packet, perPacketByte, config, snapshot, npm, perEvidenceByte) =>
         Math.floor(heap - packet * perPacketByte - (config + snapshot + npm) * perEvidenceByte),
       description:
-        "The evidence phase's share of the heap. Evidence and research run before analysis, and research readers are locals of runResearch, closed in its finally (src/research.ts:452-459), so the heap is shared by phase. The packet is held at its evidence-phase rate (limit:runner.evidenceHeapBytesPerPacketByte × limit:packet.bytes). State that stays reachable into analysis is counted in both phases: the trusted config (src/pipeline.ts:506, at most limit:config.maxBytes), the snapshot tree (src/snapshot.ts:553-579, parsed from at most limit:evidence.allocation.transport.snapshot.maxTotalBytes) and the npm inventory (src/pipeline.ts:411, 431, at most limit:w2.npm.maxRetainedBytes), each at limit:runner.heapBytesPerEvidenceByte. Approved by the maintainer on 2026-11-27 (L11, Q3(a), #383).",
+        "The evidence phase's share of the heap. Evidence and research run before analysis, and research readers are locals of runResearch, closed in its finally (src/research.ts:452-459), so the heap is shared by phase. The packet is held at its evidence-phase rate (limit:runner.evidenceHeapBytesPerPacketByte × limit:packet.bytes). The trusted config (src/pipeline.ts, at most limit:config.maxBytes), the snapshot tree (src/snapshot.ts, parsed from at most limit:evidence.allocation.transport.snapshot.maxTotalBytes) and the npm inventory (src/pipeline.ts, at most limit:w2.npm.maxRetainedBytes) are held through the whole phase, each at limit:runner.heapBytesPerEvidenceByte; the tree and inventory are released before analysis. Approved by the maintainer on 2026-11-27 (L11, Q3(a), #383).",
     },
     test: 'src/limits.test.ts > the evidence-phase heap inputs keep their sources and formula',
   },
@@ -954,6 +1140,115 @@ const DEFINITIONS = [
     test: 'none: the hard maximum of an adopter setting the parser does not read yet (L12, #384); src/limits.test.ts pins its formula',
   },
   {
+    id: 'runner.memoryBytes',
+    value: 8_000_000_000,
+    unit: 'bytes',
+    protects:
+      'Records the memory of the smallest runner the reviewer supports: the standard GitHub-hosted Linux runner for private repositories (ubuntu-latest, 2 CPUs and 8 GB).',
+    basis: {
+      kind: 'external',
+      url: 'https://docs.github.com/en/actions/reference/runners/github-hosted-runners',
+      checked: '2026-11-27',
+      platformValue: 8_000_000_000,
+      margin:
+        'none, and 8 GB is read as decimal gigabytes, the smaller of its two readings. The action sizes its heap from the memory of the runner it is on (src/relaunch.ts); this entry fixes the caps every runner must honour',
+    },
+    effect:
+      'Not enforced: limit:runner.heapBytes is derived from it, and through it every cap sized from runner heap.',
+    test: 'src/limits.test.ts > the runner heap derives from runner memory less what is not old generation',
+  },
+  {
+    id: 'runner.youngGenerationBytes',
+    value: 201_326_592,
+    unit: 'bytes',
+    protects:
+      "Records the young generation V8 reserves beside the old generation, which the runner's memory must also hold.",
+    basis: {
+      kind: 'external',
+      url: 'https://github.com/nodejs/node/blob/v24.22.3/deps/v8/src/heap/heap.cc#L317-L320',
+      checked: '2026-11-28',
+      platformValue: 201_326_592,
+      margin:
+        'none. The young generation is (2 semispaces + 1 new large-object space) × the semispace (heap.cc#L314-L320, kNewLargeObjectSpaceToSemiSpaceRatio = 1 at heap.h#L317). With only --max-old-space-size given, the semispace is DefaultMaxSemiSpaceSize (heap.cc#L4949-L4951): scavenger_max_new_space_capacity_mb (32, flag-definitions.h#L923) × MB × kPointerMultiplier, which is kTaggedSize / 4 = 2 without pointer compression (heap.h#L303), so 64 MiB, and 3 × 64 MiB = 201,326,592 bytes',
+    },
+    effect: 'Not enforced: limit:runner.heapBytes subtracts it.',
+    test: 'src/limits.test.ts > the runner heap derives from runner memory less what is not old generation',
+  },
+  {
+    id: 'runner.offHeapBytes',
+    unit: 'bytes',
+    protects:
+      'Counts the buffers the reviewer keeps outside the V8 heap, which take runner memory but not old generation.',
+    effect: 'Not enforced: limit:runner.heapBytes subtracts it.',
+    basis: {
+      kind: 'derived',
+      inputs: [
+        'research.cache.maxTotalBytes',
+        'evidence.readsInFlight',
+        'evidence.envelope.maxResponseBytes',
+        'snapshot.maxBlobBytes',
+        'w2.session.maxFileBytes',
+        'context.maxSourceFileBytes',
+        'analysis.maxConcurrentCalls',
+        'analysis.responseBytes',
+      ],
+      formula: (cache, inFlight, response, blob, file, source, calls, reply) =>
+        cache + inFlight * 2 * (response + Math.max(blob, file, source)) + calls * 2 * reply,
+      description:
+        'Every off-heap buffer the register bounds, summed over both phases because an ArrayBuffer is freed only by a later collection: the research cache bodies (limit:research.cache.maxTotalBytes, Uint8Array, src/evidence/research-cache.ts:106); for each evidence read in flight (limit:evidence.readsInFlight), its body chunks and their concatenation (2 × limit:evidence.envelope.maxResponseBytes, for example src/github-read.ts:412) and the largest decoded file with its copy (2 × the largest of limit:snapshot.maxBlobBytes, src/snapshot.ts:119; limit:w2.session.maxFileBytes; limit:context.maxSourceFileBytes, src/context.ts:494); and for each model call in flight, its reply chunks and their concatenation (2 × limit:analysis.responseBytes, src/analysis/mistral.ts:199-211). Approved by the maintainer on 2026-11-27 (L11, #383).',
+    },
+    test: 'src/limits.test.ts > the runner heap derives from runner memory less what is not old generation',
+  },
+  {
+    id: 'runner.baselineBytes',
+    value: 178_040_832,
+    unit: 'bytes',
+    protects:
+      "Records the memory the reviewer's two Node processes take beyond their heaps: the relaunching parent and the action's code, isolate and native runtime.",
+    basis: {
+      kind: 'measured',
+      command: 'npm run probe:runtime-baseline',
+      corpus:
+        '5 runs of the built action bundle with no workflow environment, so it relaunches, runs its startup self-check and fetch, and exits 78 at the missing runtime inputs; Node 24.22.3 on Linux x64',
+      statistic:
+        'the largest parent plus child peak resident set (process.resourceUsage().maxRSS) over the runs: 89,210,880 + 88,829,952 = 178,040,832 bytes (the 5 runs span 177.0 to 178.0 MB). Each process counts its whole resident set, including the few MB of heap the self-check uses',
+      headroom:
+        'none: a platform property, not a demand; counting each whole resident set overstates what lies outside the heap',
+      measured: '2026-11-28',
+    },
+    effect: 'Not enforced: limit:runner.heapBytes subtracts it.',
+    test: 'tests/probe-runtime-baseline/core.test.ts > the baseline is the largest parent plus child peak resident set',
+  },
+  unjustified('runner.systemReservedBytes', 5_300_094_976, 'bytes', {
+    protects:
+      "Reserves the runner memory the runner's OS, services and runner agent keep, which the reviewer cannot use.",
+    effect: 'Not enforced: limit:runner.heapBytes subtracts it.',
+    note: "a placeholder, not a measurement: it holds limit:runner.heapBytes at limit:runner.oldGenerationBytes, the old generation V8 already gives the smallest runner, so no cap moves until the reserve is measured. Awaiting a run on a GitHub-hosted ubuntu-latest runner in a private repository that records MemTotal − MemAvailable at job start and the runner agent's resident set (CONTRIBUTING.md, Runner memory)",
+    test: 'src/limits.test.ts > the runner heap derives from runner memory less what is not old generation',
+  }),
+  {
+    id: 'runner.heapBytes',
+    unit: 'bytes',
+    protects:
+      'Bounds the old-generation heap the reviewer may plan for on the smallest runner; past it the process aborts out of memory and the job fails with no comment update.',
+    effect:
+      'The action relaunches itself with --max-old-space-size from the same formula and the memory of the runner it is on (src/relaunch.ts), so on the smallest runner the heap is this value. Every cap sized from runner heap is derived from it, by phase.',
+    basis: {
+      kind: 'derived',
+      inputs: [
+        'runner.memoryBytes',
+        'runner.youngGenerationBytes',
+        'runner.offHeapBytes',
+        'runner.baselineBytes',
+        'runner.systemReservedBytes',
+      ],
+      formula: heapBytesFor,
+      description:
+        'The smallest runner\'s memory (limit:runner.memoryBytes) less what is not old generation: the young generation (limit:runner.youngGenerationBytes), the off-heap buffers (limit:runner.offHeapBytes), the runtime baseline (limit:runner.baselineBytes) and what the runner OS and agent keep (limit:runner.systemReservedBytes). Approved by the maintainer on 2026-11-28 ("Raise heap to runner memory", L11, #383).',
+    },
+    test: 'src/relaunch.test.ts > relaunches once with the derived old-generation size and passes the exit code through',
+  },
+  {
     id: 'runner.oldGenerationBytes',
     value: 2_147_483_648,
     unit: 'bytes',
@@ -968,8 +1263,8 @@ const DEFINITIONS = [
         'none: it is the ceiling limit:packet.bytes is derived under. HeapSizeFromPhysicalMemory (heap.cc#L229-L243) takes a quarter of physical memory times kHeapLimitMultiplier, capped at MaxOldGenerationSize (heap.cc#L291-L310), which is V8HeapTrait::kMaxSize = 1024 MB × kHeapLimitMultiplier (deps/v8/src/heap/heap-controller.h#L18) and doubles only at 15 GB or more of physical memory. kHeapLimitMultiplier is kSystemPointerSize / 4 = 2 on 64-bit Linux (deps/v8/src/heap/heap.h#L307), so an 8 GB runner gets min(4 GiB, 2 GiB) = 2 GiB. The same lines are unchanged in v24.11.0, the oldest Node the package supports. Checked against the V8 source and in cgroups by the maintainer on 2026-11-27 (L11, #383).',
     },
     effect:
-      'Not enforced by the reviewer. limit:packet.bytes is derived so the largest packet and the concurrent model replies fit inside it.',
-    test: 'none: a platform figure no code reads; src/limits.test.ts pins how limit:packet.bytes derives from it',
+      'Not enforced by the reviewer. The action now sets its own old generation (limit:runner.heapBytes); this default stays only as the figure the placeholder limit:runner.systemReservedBytes holds that heap at, until the runner reserve is measured.',
+    test: 'src/limits.test.ts > the runner heap derives from runner memory less what is not old generation',
   },
   {
     id: 'packet.changes',
@@ -3184,22 +3479,61 @@ const DEFINITIONS = [
       test: 'src/evidence/advisory-read.test.ts > advisory findings accept the register cap exactly and refuse the finding past it',
     },
   ),
-  unjustified('analysis.projectionBytes', 8_388_608, 'bytes', {
-    protects:
-      'Input work during snapshot (the run input: the accepted packet, its T5 unit expansion and the config, and their detached copy) is capped in string bytes, so crafted input cannot allocate without bound.',
-    effect:
-      'Exceeding the byte budget throws a budget error and no snapshot or batch is produced. Nothing partial is kept.',
-    test: 'src/analysis/projection.test.ts > the snapshot byte budget admits exactly its registered string bytes of input and refuses one byte more',
-    note: 'kept at its former value, 8 × the old 1 MiB packet cap, when limit:packet.bytes became heap-derived (L11, #383); no recorded basis for how many string bytes the T5 expansion adds to a packet',
-  }),
-  unjustified('analysis.projectionEntries', 1_048_576, 'count', {
-    protects:
-      'Input work during snapshot is capped in values visited (strings, numbers, arrays and objects), so crafted input cannot make the detached copy visit an unbounded number of values.',
-    effect:
-      'Exceeding the entry budget, or an array or object with more entries than remain, throws a budget error and no snapshot or batch is produced. Nothing partial is kept.',
-    test: 'src/analysis/projection.test.ts > the snapshot entry budget admits exactly its registered count of values and refuses one more',
-    note: 'kept at its former value, the old 1 MiB packet cap read as a count, when limit:packet.bytes became heap-derived (L11, #383); no recorded basis for how many values a packet and its T5 expansion hold',
-  }),
+  derived(
+    'analysis.unitDerivedBytes',
+    'bytes',
+    ['packet.changes', 'packet.relationships', 'packet.idCodeUnits', 'packet.identityBytes'],
+    unitDerivedBytes,
+    'The string bytes the T5 unit expansion can add beyond copies of packet strings, fixed by the count caps: unitDerivedBytes in src/limits.ts, whose fixed text sizes (UNIT_TEXT) src/units.test.ts pins against src/units.ts, src/schema.ts and src/config.ts. Each id counts at most min(limit:packet.identityBytes, 3 × limit:packet.idCodeUnits) bytes, JSON-escaped or not; the relationship limits number at most 2 (n − k)(k − 1) for n = limit:packet.changes. Approved by the maintainer on 2026-11-28 (L11, #383).',
+    {
+      protects:
+        'Bounds what the decision-unit expansion adds to the snapshot input, so the projection caps can be derived from it.',
+      effect: 'Not enforced: limit:analysis.projectionBytes adds it.',
+      test: 'src/units.test.ts > the unit expansion of the largest-expansion packet stays inside its structural bound',
+    },
+  ),
+  derived(
+    'analysis.unitDerivedEntries',
+    'count',
+    ['packet.changes', 'packet.relationships', 'packet.reachability'],
+    unitDerivedEntries,
+    'The values the T5 unit expansion can add beyond copies of packet values, fixed by the count caps: unitDerivedEntries in src/limits.ts. Approved by the maintainer on 2026-11-28 (L11, #383).',
+    {
+      protects:
+        'Bounds what the decision-unit expansion adds to the values the snapshot visits, so the entry cap can be derived from it.',
+      effect: 'Not enforced: limit:analysis.projectionEntries adds it.',
+      test: 'src/units.test.ts > the unit expansion of the largest-expansion packet stays inside its structural bound',
+    },
+  ),
+  derived(
+    'analysis.projectionBytes',
+    'bytes',
+    ['packet.bytes', 'analysis.unitDerivedBytes', 'config.maxBytes'],
+    (packet, units, config) => 3 * packet + units + config + UNIT_TEXT.configDefaultBytes,
+    "The string bytes one run input can hold (src/analysis/projection.ts:154; src/analysis/batches.ts:62): the packet's own strings (at most limit:packet.bytes), their copies in the units, at most limit:packet.bytes again plus once more for proof keys JSON-escaped inside ambiguous-anchor limits, so 3 × limit:packet.bytes; the derived unit strings (limit:analysis.unitDerivedBytes); and the config, whose strings come from at most limit:config.maxBytes of text plus its defaults (UNIT_TEXT.configDefaultBytes). Approved by the maintainer on 2026-11-28 (L11, #383).",
+    {
+      protects:
+        'Input work during snapshot (the run input: the accepted packet, its T5 unit expansion and the config, and their detached copy) is capped in string bytes, so crafted input cannot allocate without bound.',
+      effect:
+        'Exceeding the byte budget throws a budget error and no snapshot or batch is produced. Nothing partial is kept. Every packet T4 accepts fits under it.',
+      test: 'src/analysis/projection.test.ts > a packet near its caps with the largest unit expansion passes the projection',
+    },
+  ),
+  derived(
+    'analysis.projectionEntries',
+    'count',
+    ['packet.bytes', 'analysis.unitDerivedEntries', 'config.maxBytes'],
+    (packet, units, config) =>
+      packet + units + Math.ceil(config / 2) + UNIT_TEXT.configDefaultEntries,
+    'The values one run input can hold: every packet value takes at least 2 serialized bytes with its separator, so the packet and its copies in the units hold at most limit:packet.bytes values together; the derived unit values (limit:analysis.unitDerivedEntries); and the config, at most half its limit:config.maxBytes of text plus its defaults (UNIT_TEXT.configDefaultEntries). Approved by the maintainer on 2026-11-28 (L11, #383).',
+    {
+      protects:
+        'Input work during snapshot is capped in values visited (strings, numbers, arrays and objects), so crafted input cannot make the detached copy visit an unbounded number of values.',
+      effect:
+        'Exceeding the entry budget, or an array or object with more entries than remain, throws a budget error and no snapshot or batch is produced. Nothing partial is kept. Every packet T4 accepts fits under it.',
+      test: 'src/analysis/projection.test.ts > a packet near its caps with the largest unit expansion passes the projection',
+    },
+  ),
   unjustified('analysis.maxProjectionDepth', 64, 'count', {
     protects:
       'Snapshot recursion depth is capped at 64, so deeply nested input cannot exhaust the call stack.',

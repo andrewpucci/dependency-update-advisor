@@ -373,25 +373,61 @@ A review runs in two heap phases. Snapshot, collection and research make up
 the evidence phase. Model analysis and rendering make up the analysis phase,
 which starts only once research has returned. Research readers are locals of
 research that close when it ends, and cached research bodies are byte arrays
-outside the V8 heap. Each phase gets the whole of
-`limit:runner.oldGenerationBytes` less what it holds, so the two phases'
-budgets are not added together.
+outside the V8 heap. Each phase gets the whole of `limit:runner.heapBytes`
+less what it holds, so the two phases' budgets are not added together.
 
 - **Analysis phase:** the model replies in flight
-  (`limit:analysis.replyHeapBytes`) and the packet at its analysis rate
-  (`limit:runner.heapBytesPerPacketByte`). `limit:packet.bytes` is derived
-  from this phase.
+  (`limit:analysis.replyHeapBytes`), the decision-unit expansion
+  (`limit:runner.unitExpansionHeapBytes`), and the packet at its analysis rate
+  (`limit:runner.heapBytesPerPacketByte`). That rate is measured on the
+  densest valid packet shape. `limit:packet.bytes` is derived from this phase.
 - **Evidence phase:** the packet at its evidence rate
   (`limit:runner.evidenceHeapBytesPerPacketByte`), which covers assembly,
   validation and revalidation, plus the responses being parsed and the
   evidence readers retain. `limit:runner.evidenceHeapBytes` is what is left
   for responses and retained evidence.
-- **State that spans both phases** counts in each phase's budget. This is
-  state that stays reachable from evidence into analysis: the trusted config,
-  the snapshot tree and the npm inventory. Each is bounded by the register
-  entry its derivation names.
+- **State that spans both phases** counts in each phase's budget. The
+  pipeline releases the snapshot tree, the research cache and the npm
+  inventory once research returns, before analysis starts, so they count in
+  the evidence phase only.
 - Each rate is measured with its own probe (`npm run measure:heap`), never
   borrowed from the other phase.
+
+Amended (L11; approved by the maintainer on 2026-11-28, "Raise heap to
+runner memory",
+[#383](https://github.com/andrewpucci/dependency-update-advisor/issues/383)).
+The heap is no longer V8's default. `limit:runner.heapBytes` is the smallest
+runner's memory less what is not old generation:
+
+- the young generation;
+- the off-heap buffers the register bounds;
+- the runtime baseline, measured with a recorded command;
+- what the runner OS and agent keep.
+
+The action relaunches itself once with an old-generation size from the same
+formula, using the memory of the runner it runs on: the cgroup limit when one
+is set, otherwise physical memory. A relaunched process never relaunches
+again.
+
+#### Projection caps
+
+Amended (L11; approved by the maintainer on 2026-11-28,
+[#383](https://github.com/andrewpucci/dependency-update-advisor/issues/383)).
+`limit:analysis.projectionBytes` and `limit:analysis.projectionEntries` are
+derived, not chosen. They are the packet, its copies in the decision units,
+the strings and values the unit expansion derives (fixed by the packet's
+count caps), and the config. Every packet T4 accepts then passes the
+projection. A structural test pins the fixed unit text sizes to the code that
+writes them.
+
+#### Hard maxima that move with their setting
+
+Amended (L11; approved by the maintainer on 2026-11-28,
+[#383](https://github.com/andrewpucci/dependency-update-advisor/issues/383)).
+A hard maximum is read from the register evaluated at the settings. When it
+falls as its own setting rises, the hard maximum is the largest setting that
+still holds. The response cap's maximum behaves this way, because a larger cap
+adds off-heap buffers. `npm run check:limits` evaluates the register there.
 
 ### 6. Changing a limit
 

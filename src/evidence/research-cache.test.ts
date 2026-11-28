@@ -131,3 +131,17 @@ test('stores entries up to exactly the register total and passes the next byte t
   expect((await returned.arrayBuffer()).byteLength).toBe(1);
   expect(cache.lookup(overTotal)).toBeUndefined();
 });
+
+test('clear drops every entry and frees the byte total for new entries', async () => {
+  const cache = createResearchCache(LIMITS);
+  const key = cache.key('GET', 'https://registry.npmjs.org/a');
+  await cache.store(key, new Response('x'.repeat(1024), { status: 200 }));
+  cache.clear();
+  expect(cache.lookup(key)).toBeUndefined();
+  // The whole total is free again: four entries at the entry cap fit.
+  for (const name of ['b', 'c', 'd', 'e']) {
+    const next = cache.key('GET', `https://registry.npmjs.org/${name}`);
+    await cache.store(next, new Response('x'.repeat(1024), { status: 200 }));
+    expect(cache.lookup(next)).toBeDefined();
+  }
+});

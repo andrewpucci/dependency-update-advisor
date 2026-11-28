@@ -356,17 +356,24 @@ test('the snapshot byte budget admits exactly its registered string bytes of inp
   // Multibyte text counts in UTF-8 bytes.
   expect(() => snapshotData('é'.repeat(cap / 2))).not.toThrow();
   expect(() => snapshotData('é'.repeat(cap / 2) + 'a')).toThrow('budget');
-});
+}, 120_000);
 
 test('the snapshot entry budget admits exactly its registered count of values and refuses one more', () => {
   const cap = limit('analysis.projectionEntries');
   const zeros = (length: number) => Array.from({ length }, () => 0);
-  // The array itself is one value, so it can hold one value fewer than the budget.
-  expect(() => snapshotData(zeros(cap - 1))).not.toThrow();
-  expect(() => snapshotData(zeros(cap))).toThrow('budget');
-  expect(() => snapshotData([zeros(cap - 2)])).not.toThrow();
-  expect(() => snapshotData([zeros(cap - 1)])).toThrow('budget');
-});
+  // V8 cannot enumerate one array of the cap's length, so the values are spread over shared
+  // rows: every visit counts, however often a row is referenced.
+  const row = zeros(1000);
+  const rows = Math.floor((cap - 2) / (row.length + 1));
+  /** An array of `rows` rows and one array of `rest` values: 2 + rows × 1001 + rest values. */
+  const spread = (rest: number) => [...Array.from({ length: rows }, () => row), zeros(rest)];
+  const rest = cap - 2 - rows * (row.length + 1);
+  expect(() => snapshotData(spread(rest))).not.toThrow();
+  expect(() => snapshotData(spread(rest + 1))).toThrow('budget');
+  // Each array is itself one value, so a row of 1000 needs 1001 of the budget.
+  expect(() => snapshotData(row, { entries: row.length + 1, bytes: 0 })).not.toThrow();
+  expect(() => snapshotData(row, { entries: row.length, bytes: 0 })).toThrow('budget');
+}, 120_000);
 
 test('the snapshot depth cap admits a leaf at the registered depth and refuses one level deeper', () => {
   const cap = limit('analysis.maxProjectionDepth');
@@ -378,3 +385,17 @@ test('the snapshot depth cap admits a leaf at the registered depth and refuses o
   expect(() => snapshotData(nested(cap))).not.toThrow();
   expect(() => snapshotData(nested(cap + 1))).toThrow('budget');
 });
+
+test('a packet near its caps with the largest unit expansion passes the projection', async () => {
+  const { expansionPacket } = await import('../../tests/parity/expansion-packet.js');
+  const { packet, config, evaluatedAt } = await expansionPacket();
+  const inventory = formDecisionUnits(packet);
+  const result = prepareAnalysisBatch({
+    inventory,
+    config,
+    evaluatedAt,
+    unitIds: inventory.units.slice(0, limit('analysis.maxUnits')).map((unit) => unit.id),
+    limits: ANALYSIS_LIMITS,
+  });
+  expect(result.kind).toBe('prepared');
+}, 120_000);

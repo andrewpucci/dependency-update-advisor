@@ -981,3 +981,22 @@ test('a link target at snapshot.maxBlobBytes is read and one byte more is refuse
   expect(pastLimit.calls).not.toContain(`blob:${linkBlob}`);
   expect(pastResult).toEqual({ kind: 'unavailable' });
 });
+
+test('a released snapshot drops its tree, and a later tree read is unavailable', async () => {
+  const reader = dependabotReader([entry('.github/dependabot.yml', '100644', dependabotBlob)]);
+  const result = await withTrustedSnapshot(
+    { repository, reads: reader, temporaryRoot: tempRoot() },
+    async (snapshot) => {
+      const before = await snapshot.dependabotRoots();
+      snapshot.release();
+      const after = await snapshot.dependabotRoots().then(
+        (outcome) => outcome,
+        (error: unknown) => ({ thrown: (error as Error).constructor.name }),
+      );
+      return { before, after };
+    },
+  );
+  if (result.kind !== 'ready') throw new Error(result.kind);
+  expect(result.value.before).toMatchObject({ kind: 'roots' });
+  expect(result.value.after).not.toMatchObject({ kind: 'roots' });
+});
