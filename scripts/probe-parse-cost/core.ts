@@ -5,6 +5,7 @@
  * it, and the summaries it prints. The runner in run.ts and the timed child in measure.ts do the
  * I/O; everything here takes values.
  */
+import { createHash } from 'node:crypto';
 import { join } from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import type * as Format from '../../src/format.js';
@@ -14,6 +15,73 @@ const ROOT = fileURLToPath(new URL('../../', import.meta.url));
 const { ALIAS_RADIX, FORMAT_VERSION } = (await import(
   pathToFileURL(join(ROOT, 'src/format.ts')).href
 )) as typeof Format;
+
+/**
+ * The counters `npm run probe:parse-cost -- harm` runs, in order; a register entry may cite only
+ * these (src/limits.test.ts checks it).
+ */
+export const COUNTERS = Object.freeze([
+  'session',
+  'registry',
+  'npm',
+  'research',
+  'toml',
+  'workflow-nodes',
+  'workflow-aliases',
+  'workflow-occurrences',
+  'dependabot-nodes',
+  'dependabot-updates',
+  'dependabot-roots',
+  'graph-npm',
+  'graph-uv',
+  'claims',
+] as const);
+export type Counter = (typeof COUNTERS)[number];
+
+/**
+ * The byte sizes a counter measures at: `cap` halved `below` times, then doubled up to `cap`
+ * doubled `above` times, so successive sizes double and the timings show how the cost grows.
+ */
+export function doublingSizes(cap: number, below: number, above: number): number[] {
+  return Array.from({ length: below + above + 1 }, (_, index) =>
+    Math.floor(cap * 2 ** (index - below)),
+  );
+}
+
+/**
+ * The id the npm graph stage gives the finding that records a member's search running out of work
+ * (`note` in src/evidence/npm-graph.ts), the one place that stage reports it without a reason field.
+ */
+export function npmBudgetFindingId(memberId: string): string {
+  const digest = createHash('sha256').update(JSON.stringify([memberId, 'budget'])).digest('hex');
+  return `npm:relationship:${digest}`;
+}
+
+/**
+ * Whether a graph stage result reports running out of work: an unavailable result with reason
+ * `budget`, or an inventory any of whose gaps, observations, verdicts or coverage gives `budget`
+ * as a reason, or which holds an npm budget finding. Any other result kind is not a completed
+ * stage either, so it throws.
+ */
+export function reportsBudget(result: unknown): boolean {
+  const record = result as { kind?: unknown; reason?: unknown };
+  if (record.kind === 'unavailable') {
+    if (record.reason === 'budget') return true;
+    throw new Error(`graph result unavailable: ${String(record.reason)}`);
+  }
+  if (record.kind !== 'inventory') throw new Error(`graph result ${String(record.kind)}`);
+  const pending: unknown[] = [result];
+  for (let item = pending.pop(); item !== undefined; item = pending.pop()) {
+    if (typeof item !== 'object' || item === null) continue;
+    const fields = item as { reason?: unknown; reasons?: unknown; id?: unknown; memberId?: unknown };
+    if (fields.reason === 'budget') return true;
+    if (typeof fields.memberId === 'string' && fields.id === npmBudgetFindingId(fields.memberId))
+      return true;
+    if (Array.isArray(fields.reasons) && fields.reasons.includes('budget')) return true;
+    for (const child of Object.values(item)) pending.push(child);
+  }
+  return false;
+}
 
 /** Entries as the JSON readers count them: the properties or elements of each object or array. */
 export function entryCount(value: unknown): number {
@@ -35,8 +103,13 @@ export function filled(head: string, unit: string, tail: string, bytes: number):
   return head + unit.repeat(count) + tail;
 }
 
-/** JSON shapes: elements that are empty arrays, or empty objects, the densest counted entries. */
-export const JSON_UNITS = Object.freeze({ flat: '[],', objects: '{},' });
+/**
+ * JSON shapes: elements that are numbers (`0,`, the most entries a byte can hold), empty arrays or
+ * empty objects. A container costs the walk more per entry than a number, so the containers give
+ * fewer entries but cost more each; the harm point takes whichever shape costs most per entry,
+ * since a form that costs less per entry would understate the harm.
+ */
+export const JSON_UNITS = Object.freeze({ numbers: '0,', flat: '[],', objects: '{},' });
 export type JsonShape = keyof typeof JSON_UNITS;
 
 /** A JSON array of one shape filling `bytes`; the last unit's comma is closed by a final `0`. */

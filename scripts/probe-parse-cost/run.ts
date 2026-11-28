@@ -19,6 +19,7 @@
 import { execFileSync } from 'node:child_process';
 import { join } from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
+import type * as Core from './core.js';
 
 const ROOT = fileURLToPath(new URL('../../', import.meta.url));
 const FLAGS = [
@@ -29,22 +30,11 @@ const FLAGS = [
   pathToFileURL(join(ROOT, 'scripts/measure-heap/register.mjs')).href,
 ];
 const MEASURE = join(ROOT, 'scripts/probe-parse-cost/measure.ts');
-const COUNTERS = [
-  'session',
-  'registry',
-  'npm',
-  'research',
-  'toml',
-  'workflow-nodes',
-  'workflow-aliases',
-  'workflow-occurrences',
-  'dependabot-nodes',
-  'dependabot-updates',
-  'dependabot-roots',
-  'graph-npm',
-  'graph-uv',
-  'claims',
-];
+// Loaded by path, not by a static import, so Node can run this file directly (see check.ts).
+const { COUNTERS } = (await import(
+  pathToFileURL(join(ROOT, 'scripts/probe-parse-cost/core.ts')).href
+)) as typeof Core;
+const counters: readonly string[] = COUNTERS;
 /** The register-read caps the Dependabot counters and corpus need lifted. */
 const LIFTED_DEPENDABOT = ['maxFileBytes', 'maxYamlNodes', 'maxUpdates', 'maxRoots']
   .map((key) => `dependabot.${key}=${Number.MAX_SAFE_INTEGER}`)
@@ -65,7 +55,7 @@ function measure(args: string[]): void {
 
 const [mode, ...rest] = process.argv.slice(2);
 if (mode === 'harm') {
-  const unknown = rest.filter((counter) => !COUNTERS.includes(counter));
+  const unknown = rest.filter((counter) => !counters.includes(counter));
   if (unknown.length > 0) {
     console.error(`unknown counter ${unknown.join(', ')}; one of ${COUNTERS.join(', ')}`);
     process.exit(1);

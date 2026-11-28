@@ -3,13 +3,17 @@ import { parse } from 'smol-toml';
 import { parse as parseYaml } from 'yaml';
 import {
   CLAIM_SHAPES,
+  COUNTERS,
   claimLine,
   dependabotDocument,
   doublingRatios,
+  doublingSizes,
   entryCount,
   filled,
   jsonDocument,
+  npmBudgetFindingId,
   npmProject,
+  reportsBudget,
   smallestPassing,
   summarizeCounts,
   timingSummary,
@@ -27,6 +31,8 @@ test('entries are counted as the JSON readers count them: each property or eleme
 test('a filled document repeats its unit as many times as fits, and never passes the budget', () => {
   expect(filled('[', 'a,', ']', 8)).toBe('[a,a,a,]');
   expect(() => filled('[', 'a,', ']', 3)).toThrow();
+  const numbers = jsonDocument('numbers', 1000);
+  expect(entryCount(JSON.parse(numbers))).toBe(Math.floor((1000 - 3) / 2) + 1);
   for (const shape of ['flat', 'objects'] as const) {
     const text = jsonDocument(shape, 1000);
     expect(text.length).toBeLessThanOrEqual(1000);
@@ -97,4 +103,26 @@ test('summaries give aggregates only', () => {
   expect(timingSummary([3, 1, 2])).toEqual({ slowestMs: 3, medianMs: 2 });
   expect(() => timingSummary([])).toThrow();
   expect(doublingRatios([1, 2, 6])).toEqual([2, 3]);
+});
+
+test('doubling sizes halve below the cap and double above it', () => {
+  expect(doublingSizes(1000, 2, 3)).toEqual([250, 500, 1000, 2000, 4000, 8000]);
+  expect(doublingSizes(1001, 1, 0)).toEqual([500, 1001]);
+});
+
+test('a graph result reports budget only through a reason, a reason list or a budget finding', () => {
+  expect(reportsBudget({ kind: 'unavailable', reason: 'budget' })).toBe(true);
+  expect(() => reportsBudget({ kind: 'unavailable', reason: 'malformed' })).toThrow();
+  expect(() => reportsBudget({ kind: 'roots' })).toThrow();
+  expect(reportsBudget({ kind: 'inventory', changes: [] })).toBe(false);
+  expect(reportsBudget({ kind: 'inventory', gaps: [{ reason: 'budget' }] })).toBe(true);
+  expect(reportsBudget({ kind: 'inventory', coverage: { reasons: ['budget'] } })).toBe(true);
+  expect(reportsBudget({ kind: 'inventory', notes: ['ran out of budget'] })).toBe(false);
+  const finding = { memberId: 'm', id: npmBudgetFindingId('m') };
+  expect(reportsBudget({ kind: 'inventory', findings: [finding] })).toBe(true);
+  expect(npmBudgetFindingId('m')).not.toBe(npmBudgetFindingId('n'));
+});
+
+test('the counters are distinct', () => {
+  expect(new Set(COUNTERS).size).toBe(COUNTERS.length);
 });
