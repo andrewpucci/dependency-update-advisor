@@ -956,6 +956,10 @@ them.
    values. The printer clamps any value above
    `limit:startup.maxReportedDurationMs` to that cap, so an injected clock
    cannot lengthen the line; the carried data is not clamped.
+   Amended (L11; approved by the maintainer on 2026-11-27,
+   [#383](https://github.com/andrewpucci/dependency-update-advisor/issues/383)):
+   no call outlasts the job, so the cap is the largest number with as many
+   digits as `limit:job.budget`, and it follows the job budget setting.
 6. **Fail-closed preservation.** Neither value changes an outcome, status,
    comment, freshness gate, claim, or write. If a finished assessment is then
    discarded, the reason and the timing are dropped with it, as Amendment 4

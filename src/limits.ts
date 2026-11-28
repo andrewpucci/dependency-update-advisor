@@ -4365,14 +4365,20 @@ const DEFINITIONS = [
         'Largest legitimate use: one trace per run; startup creates one rehearsal sink and the pipeline records one handoff into it (src/startup.ts, src/pipeline.ts). Harm above: each trace keeps one comment body of up to limit:comment.maxBodyCodeUnits UTF-16 code units, about 174,762 bytes of heap as a two-byte string, outside the heap the register shares out, so the list must stay bounded if a sink is ever reused; 32 traces hold at most about 5.6 MB, under 0.1% of limit:runner.heapBytes. Approved by the maintainer on 2026-11-27 (L11, #383).',
     },
   },
-  unjustified('startup.maxReportedDurationMs', 999_999, 'milliseconds', {
-    protects:
-      'Keeps the one-line stderr timing summary bounded: an injected or faulty clock cannot lengthen the line, since each call prints at most six digits.',
-    effect:
-      'A duration above the cap prints as the cap in the stderr timing line; the carried timing data is not clamped.',
-    test: 'src/startup.test.ts > prints bounded timing for %s',
-    note: 'reason stated in SPEC-review-orchestration.md (Bounds): the largest six-digit value, above the 600,000 ms analysis maximum',
-  }),
+  derived(
+    'startup.maxReportedDurationMs',
+    'milliseconds',
+    ['job.budget'],
+    (budget) => 10 ** String(Math.trunc(budget)).length - 1,
+    "No call lasts longer than the job, so a production duration is at most limit:job.budget; the cap is the largest number with as many digits, 10^digits(limit:job.budget) − 1. The line then prints every real duration exactly and no injected clock can make it longer. It follows the job budget setting (L11, Q1(a)). Approved by the maintainer on 2026-11-27 (L11, #383).",
+    {
+      protects:
+        'Keeps the one-line stderr timing summary bounded: an injected or faulty clock cannot lengthen the line, since each call prints at most as many digits as the job budget has.',
+      effect:
+        'A duration above the cap prints as the cap in the stderr timing line; the carried timing data is not clamped.',
+      test: 'src/startup.test.ts > prints bounded timing for %s',
+    },
+  ),
   // Spec values at or below this floor are not checked by check:limits, from scripts/limits/check.ts.
   unjustified('checkLimits.specValueFloor', 64, 'count', {
     protects:
