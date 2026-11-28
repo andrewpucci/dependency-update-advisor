@@ -3504,7 +3504,7 @@ const DEFINITIONS = [
       checked: '2026-11-27',
       platformValue: 262_144,
       margin:
-        "none: Mistral Large 3 (mistral-large-2512) documents a 256K context, read as 262,144 tokens; it is the smaller window `mistral-large-latest` can resolve to until its retirement on 2027-04-30 (Mistral Large 4 documents 1M). Mistral does not document what the alias names, so the smaller window is the one that holds for both. A consumer that configures a model with a smaller window gets a 400 at a request near the cap; a run-time read of the model's max_context_length is not implemented (L11, Q13(a), #383).",
+        "none: Mistral Large 3 (mistral-large-2512) documents a 256K context, read as 262,144 tokens (256 × 1,024). If 256K means 256,000, limit:analysis.requestBytes drops by 6,144 to 239,611, limit:analysis.unitBytes, limit:packet.contextBytes and limit:context.maxSourceContextBytes to 117,954, and limit:packet.textBytes and limit:analysis.sourceBytes to 3,686; a request between those caps could then be refused by Mistral with a 400. This is the smaller window `mistral-large-latest` can resolve to until its retirement on 2027-04-30 (Mistral Large 4 documents 1M). Mistral does not document what the alias names, so the smaller window is the one that holds for both. The template tokens beside it, limit:analysis.model.templateTokens, are read from the Hugging Face chat template of the open weights, not from Mistral's API; whether response_format json_object adds prompt tokens on Mistral's side is not covered. A consumer that configures a model with a smaller window gets a 400 at a request near the cap; a run-time read of the model's max_context_length is not implemented (L11, Q13(a), #383).",
     },
     effect: 'Not enforced: limit:analysis.requestBytes derives from it.',
     test: 'src/limits.test.ts > the analysis request and unit caps derive from the context window',
@@ -3521,7 +3521,7 @@ const DEFINITIONS = [
       checked: '2026-11-28',
       platformValue: 5,
       margin:
-        'none: for one system message, one user message and no tools, the template writes the begin-of-sequence token, [SYSTEM_PROMPT] and [/SYSTEM_PROMPT] around the system message, and [INST] and [/INST] around the user message: 5 tokens. A supplied system message replaces the default one, so no default prompt is added.',
+        'none: for one system message, one user message and no tools, the template writes the begin-of-sequence token, [SYSTEM_PROMPT] and [/SYSTEM_PROMPT] around the system message, and [INST] and [/INST] around the user message: 5 tokens. A supplied system message replaces the default one, so no default prompt is added. This is the open-weights template; that the Mistral API applies the same one, and whether response_format json_object adds prompt tokens, is not covered.',
     },
     effect: 'Not enforced: limit:analysis.requestBytes subtracts it.',
     test: 'src/limits.test.ts > the analysis request and unit caps derive from the context window',
