@@ -1021,7 +1021,10 @@ test('excerpt files at context.maxSourceCandidates and the fixed reads fill the 
       }),
       [dependabotBlob]: 'version: 2\nupdates: []\n',
       ...Object.fromEntries(
-        excerpts.map((_, index) => [blobOf(index), 'import examplePackage from "example-package";']),
+        excerpts.map((_, index) => [
+          blobOf(index),
+          'import examplePackage from "example-package";',
+        ]),
       ),
     },
   );

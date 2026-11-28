@@ -3261,7 +3261,7 @@ const DEFINITIONS = [
       'Each configured root is walked with lstat and matched against the inventory, so an unbounded root list would make config validation and path checks unbounded.',
     effect:
       'A config with more than 16 sourceRoots fails validation (field context.sourceRoots, category config), so the config is rejected.',
-    note: "stopped (L11, Q19(a), #383): the approved basis is a copy of limit:snapshot.maxTreeEntries (102,578), which must move together with limit:config.maxBytes, and that entry stops: a JSON config holding 102,578 roots does not fit today's 16,384-byte cap (the smallest root, `\"a\",`, is 4 bytes, so at most about 4,090 roots fit, and 102,579 roots need at least 410,316 bytes for the over-cap boundary test). Raising the root cap alone would admit a count no valid config can reach. Value unchanged",
+    note: 'stopped (L11, Q19(a), #383): the approved basis is a copy of limit:snapshot.maxTreeEntries (102,578), which must move together with limit:config.maxBytes, and that entry stops: a JSON config holding 102,578 roots does not fit today\'s 16,384-byte cap (the smallest root, `"a",`, is 4 bytes, so at most about 4,090 roots fit, and 102,579 roots need at least 410,316 bytes for the over-cap boundary test). Raising the root cap alone would admit a count no valid config can reach. Value unchanged',
     test: 'src/config.test.ts > the source root cap admits exactly the registered count and rejects one more',
   }),
   derived(
@@ -3314,7 +3314,7 @@ const DEFINITIONS = [
       setting: 'limits.coverage.sourceReadBytes',
       maximum: 'evidence.allocation.transport.snapshot.maxTotalBytes',
     },
-    "The adopter: a larger setting reads more source files for facts, at the cost of snapshot bytes; a smaller one stops collection earlier with total-read-limit. Coverage bound category (L11, Q9(a)); its hard maximum is the snapshot byte share, through which every source byte is read.",
+    'The adopter: a larger setting reads more source files for facts, at the cost of snapshot bytes; a smaller one stops collection earlier with total-read-limit. Coverage bound category (L11, Q9(a)); its hard maximum is the snapshot byte share, through which every source byte is read.',
     {
       protects:
         'Total content read per run is capped, so many medium files cannot together read an unbounded amount.',
@@ -4404,7 +4404,7 @@ const DEFINITIONS = [
     'milliseconds',
     ['job.budget'],
     (budget) => 10 ** String(Math.trunc(budget)).length - 1,
-    "No call lasts longer than the job, so a production duration is at most limit:job.budget; the cap is the largest number with as many digits, 10^digits(limit:job.budget) − 1. The line then prints every real duration exactly and no injected clock can make it longer. It follows the job budget setting (L11, Q1(a)). Approved by the maintainer on 2026-11-27 (L11, #383).",
+    'No call lasts longer than the job, so a production duration is at most limit:job.budget; the cap is the largest number with as many digits, 10^digits(limit:job.budget) − 1. The line then prints every real duration exactly and no injected clock can make it longer. It follows the job budget setting (L11, Q1(a)). Approved by the maintainer on 2026-11-27 (L11, #383).',
     {
       protects:
         'Keeps the one-line stderr timing summary bounded: an injected or faulty clock cannot lengthen the line, since each call prints at most as many digits as the job budget has.',

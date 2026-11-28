@@ -1116,14 +1116,17 @@ test.each([
   ['a markup comment', '<!--\n  auto-generated\n-->'],
   ['a shebang and blank lines', '#!/usr/bin/env node\n\n// This is a generated file.'],
   ['a long leading block', `${'// license line\n'.repeat(40)}// @generated`],
-])('a generated marker anywhere in the leading comment block excludes the file: %s', async (_label, head) => {
-  const root = await fixture();
-  await source(root, 'src/a.ts', `${head}\nimport value from "example-package";`);
-  expect(await collectSourceContext(enabled(root))).toMatchObject({
-    ok: true,
-    dependencies: [{ facts: [], reasons: expect.arrayContaining(['excluded-source']) }],
-  });
-});
+])(
+  'a generated marker anywhere in the leading comment block excludes the file: %s',
+  async (_label, head) => {
+    const root = await fixture();
+    await source(root, 'src/a.ts', `${head}\nimport value from "example-package";`);
+    expect(await collectSourceContext(enabled(root))).toMatchObject({
+      ok: true,
+      dependencies: [{ facts: [], reasons: expect.arrayContaining(['excluded-source']) }],
+    });
+  },
+);
 
 test.each([
   ['after the first code line', 'const filler = 1;\n// @generated'],

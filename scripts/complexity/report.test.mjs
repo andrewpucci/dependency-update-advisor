@@ -122,7 +122,8 @@ test('a report at complexity.maxListedFindings rows of the widest kind fits comp
   const report = render(head, base, 'a'.repeat(64), 'b'.repeat(64));
   const rows = report.split('\n').filter((line) => line.startsWith('| <code>'));
   assert.equal(rows.length, listed);
-  for (const row of rows) assert.equal(row.length + 1, 2 * cell + COMPLEXITY_REPORT_TEXT.rowFixedCodeUnits);
+  for (const row of rows)
+    assert.equal(row.length + 1, 2 * cell + COMPLEXITY_REPORT_TEXT.rowFixedCodeUnits);
   // The counts here have fewer digits than the 16 the constant allows: the function and over-threshold
   // counts and the finding count twice, the listed count, and the threshold.
   const short = (value) => digits - String(value).length;

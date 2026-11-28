@@ -166,7 +166,8 @@ export function workflowLiteralProblems(
 ): string[] {
   return literals.flatMap(({ file, pattern, id }): string[] => {
     const entry = register.get(id);
-    if (entry === undefined) return [`${file}: maps a literal to ${id}, which is not in the register`];
+    if (entry === undefined)
+      return [`${file}: maps a literal to ${id}, which is not in the register`];
     const workflow = workflows.find((candidate) => candidate.file === file);
     const matches = workflow ? [...workflow.text.matchAll(pattern)] : [];
     if (matches.length === 0) return [`${file}: no literal for ${id} matches ${String(pattern)}`];
