@@ -1960,11 +1960,6 @@ const DEFINITIONS = [
 		note: "awaiting L8 measurement",
 		test: "src/snapshot.test.ts > a link target at snapshot.maxBlobBytes is read and one byte more is refused unfetched"
 	}),
-	derived("snapshot.fixedReads", "count", [], () => 7, "The snapshot reads a run with excerpt files makes besides the excerpt blobs, from fixed call sites (withTrustedSnapshot, src/snapshot.ts): the repository, the default-branch commit, the root listing, the .github listing, the config blob, the Dependabot file blob, and the listing of one top-level source root, the shallowest place an excerpt file can sit, since it must lie under a root. Approved by the maintainer on 2026-11-27 (L11, Q20(a), #383).", {
-		protects: "Counts the snapshot reads that are not excerpt blobs, so the excerpt file cap leaves them room in the snapshot request share.",
-		effect: "Not enforced: it is subtracted in limit:context.maxSourceCandidates.",
-		test: "src/snapshot.test.ts > excerpt files at context.maxSourceCandidates and the fixed reads fill the snapshot request share exactly"
-	}),
 	derived("snapshot.maxTreeEntries", "count", ["evidence.allocation.transport.snapshot.maxTotalBytes", "snapshot.minTreeEntryBytes"], (bytes, entryBytes) => Math.floor(bytes / entryBytes), "As many tree entries as the snapshot byte share, limit:evidence.allocation.transport.snapshot.maxTotalBytes, can carry at the smallest entry the snapshot accepts, limit:snapshot.minTreeEntryBytes, rounded down. GitHub documents no entry limit for a non-recursive tree, and the bytes bound the listing first, so the count never cuts a listing the share admits. It follows the snapshot byte setting (L11, Q1(a)). Approved by the maintainer on 2026-11-27 (L11, Q7(a), #383).", {
 		protects: "The total number of tree entries listed from GitHub is bounded, so a very large repository cannot make the snapshot listing unbounded (memory and requests).",
 		effect: "Once the running count exceeds the cap, the listing throws Unavailable with the default reason unknown, and the snapshot is reported unusable.",
@@ -2051,9 +2046,10 @@ const DEFINITIONS = [
 		note: "stopped (L11, Q19(a), #383): the approved basis is a copy of limit:snapshot.maxTreeEntries (102,578), which must move together with limit:config.maxBytes, and that entry stops: a JSON config holding 102,578 roots does not fit today's 16,384-byte cap (the smallest root, `\"a\",`, is 4 bytes, so at most about 4,090 roots fit, and 102,579 roots need at least 410,316 bytes for the over-cap boundary test). Raising the root cap alone would admit a count no valid config can reach. Value unchanged",
 		test: "src/config.test.ts > the source root cap admits exactly the registered count and rejects one more"
 	}),
-	derived("context.maxSourceCandidates", "count", ["evidence.allocation.transport.snapshot.maxRequests", "snapshot.fixedReads"], (requests, fixed) => requests - fixed, "Each excerpt file costs one blob read from the snapshot request share, so the cap is the share less the reads every snapshot with excerpt files makes besides them (limit:snapshot.fixedReads): limit:evidence.allocation.transport.snapshot.maxRequests − limit:snapshot.fixedReads. In the shallowest layout every validated excerpt file can then be read; a deeper layout spends tree reads from the same share and ends partial with budget. It follows the snapshot request setting (L11, Q1(a)). Approved by the maintainer on 2026-11-27 (L11, Q20(a), #383).", {
+	unjustified("context.maxSourceCandidates", 128, "count", {
 		protects: "Each excerpt file is stat-checked and matched against the tracked inventory, so the number of excerpt files is capped.",
-		effect: "More excerptFiles than the cap fails config validation. The runtime candidate-limit (src/context.ts) would stop scanning with reason candidate-limit, but validated config keeps the selected set at the cap or fewer, so that branch cannot trigger.",
+		effect: "More than 128 excerptFiles fails config validation. The runtime candidate-limit (src/context.ts) would stop scanning with reason candidate-limit, but validated config keeps the selected set at 128 or fewer, so that branch cannot trigger.",
+		note: "stopped (L11, Q20(a), #383): the approved basis is the snapshot request share (limit:evidence.allocation.transport.snapshot.maxRequests, 200) less the fixed snapshot reads. The fixed reads are 7 (repository, commit, root listing, .github listing, config blob, Dependabot blob, one source-root listing) only in the shallowest layout: one excerpt directory and a config that is not a link. Each further directory an excerpt path passes through costs one more tree read, and each config link one more blob read, so at 200 − 7 = 193 excerpt files split across src/ and src/lib/ the snapshot needs 201 reads. Running out of the share inside collectContext makes the whole snapshot unavailable, which the pipeline reports as internal-failure at snapshot, and SPEC-source-context promises no partial result with budget for it. Tree reads grow with path depth, so no structural count of fixed reads holds for every layout. Today 128 leaves 72 reads for directories and links. Value unchanged",
 		test: "src/config.test.ts > the excerpt file cap admits exactly the registered count and rejects one more"
 	}),
 	derived("context.maxTrackedPathEntries", "count", ["snapshot.maxTreeEntries"], copy, "The tracked-file inventory is the snapshot listing, so it can hold no more entries than the listing: a copy of limit:snapshot.maxTreeEntries. Approved by the maintainer on 2026-11-27 (L11, #383).", {
@@ -2096,14 +2092,14 @@ const DEFINITIONS = [
 		protects: "YAML nesting is capped, so the parse and compose cannot recurse without bound on untrusted input.",
 		basis: {
 			kind: "safety",
-			reason: "Largest legitimate use: a Dependabot config nests about five collections (updates, an entry, its directories, ignore or groups lists); the largest dependabot.yml files GitHub code search returned on 2026-11-28 (14 files above 40,000 bytes, of which 8 are Dependabot version-2 configs) nest at most 6 levels as the preflight counts them. Harm: the same yaml parser and composer overflow the call stack at about 1,024 levels of nested flow collections (measured on 2026-11-27 under Node 22, as for limit:w2.actions.maxYamlDepth). The cap is checked before composition and sits far between the two. Approved by the maintainer on 2026-11-27 (L11, #383)."
+			reason: "Largest legitimate use: a Dependabot config nests about five collections (updates, an entry, its directories, ignore or groups lists); the largest dependabot.yml files GitHub code search returned on 2026-11-28 (14 files above 40,000 bytes, of which 8 are Dependabot version-2 configs) nest at most 6 levels as the preflight counts them. Harm: the parse and compose of the yaml library, with the options of this reader, overflow the call stack at 776 levels of nested flow sequences in a fresh process (npm run probe:json-depth -- overflow, yamlCompose, on 2026-11-28 under Node 24.22.3, the runtime of the action); the library reports the overflow as a document error, so the file would fail as malformed rather than crash. The cap is checked before composition and sits far between the two. Approved by the maintainer on 2026-11-27 (L11, #383)."
 		},
 		effect: "Nesting deeper than 16 fails the whole file with budget, and no roots are read.",
 		test: "src/dependabot-roots.test.ts > reports exceeding the limit on %s as budget"
 	},
-	derived("dependabot.maxAliasExpansions", "count", ["w2.actions.maxAliasExpansions"], copy, "Dependabot's documentation says nothing on YAML anchors, and Dependabot's own parser change to accept them (dependabot-core PR #9653) was still open when checked on 2026-11-28, so whether GitHub accepts them is in doubt; refusing every alias could then reject a legitimate config. The same parser and expansion read workflow files, so the cap copies limit:w2.actions.maxAliasExpansions, and the composed document, aliases expanded, is charged to a node budget of its own at limit:dependabot.maxYamlNodes, so an expansion cannot pass the node cap. Approved by the maintainer on 2026-11-27 (L11, D11 and Q23(b), #383).", {
+	derived("dependabot.maxAliasExpansions", "count", ["w2.actions.maxAliasExpansions"], copy, "Dependabot's documentation says nothing on YAML anchors, and Dependabot's own parser change to accept them (dependabot-core PR #9653) was still open when checked on 2026-11-28, so whether GitHub accepts them is in doubt; refusing every alias could then reject a legitimate config. The same parser and expansion read workflow files, so the cap copies limit:w2.actions.maxAliasExpansions, and the composed document, aliases expanded, is charged to a node budget of its own at limit:dependabot.maxYamlNodes, so an expansion cannot pass the node cap. The copied entry is itself still unjustified (its Q8 check is pending), so this cap inherits that gap: it is grounded only once limit:w2.actions.maxAliasExpansions is. Approved by the maintainer on 2026-11-27 (L11, D11 and Q23(b), #383).", {
 		protects: "Caps alias expansions in the Dependabot config, so anchors and aliases cannot amplify the composed document beyond the node budget.",
-		effect: "The alias that exceeds the cap fails the whole file with budget, and no roots are read. A merge key (<<) fails it as unsupported.",
+		effect: "The alias that exceeds the cap fails the whole file with budget, and no roots are read. A merge through an alias (<<: *name) fails it as unsupported; a literal << key, like any key the reader does not use, is ignored.",
 		test: "src/dependabot-roots.test.ts > expands aliases up to the alias cap and refuses one more"
 	}),
 	unjustified("dependabot.maxUpdates", 256, "count", {
@@ -2133,7 +2129,7 @@ const DEFINITIONS = [
 		protects: "The configuration file is read from the checked-out repository, which can be large or hostile; reading it without a cap allocates unbounded memory before parsing.",
 		effect: "A file over the cap fails with category size before parsing; no default configuration is substituted.",
 		test: "src/config.test.ts > accepts the exact byte limit and rejects overflow",
-		note: "stopped (L11, Q19(a) and E17, #383): the approved basis is derived, the largest valid config, (roots + candidates) × (limit:context.maxPathBytes × e + 3) + skeleton. That size has no bound unless an escape factor e is fixed: the parser puts no length on a path before limit:context.maxPathBytes, JSON lets any character be written as a 6-byte \\u escape, and whitespace between tokens is unlimited, so no structural test can fix e, and no approved option does. Even at e = 1 and no skeleton, the Q19(a) root cap (limit:snapshot.maxTreeEntries, 102,578) and limit:context.maxSourceCandidates (193) give 102,771 × 1,027 = 105,545,817 bytes. The config is retained through the evidence phase at limit:runner.heapBytesPerRetainedByte (27.47), so limit:runner.evidenceRetainedHeapBytes would rise from 4,130,139,553 to 7,029,033,078 bytes, above limit:runner.heapBytes (6,372,196,352), and limit:packet.bytes would fall from 148,312,300 to −48,891,341; it stays positive only below about 79,382,630 config bytes. Q19(b), a safety cap sized against heap, was not approved. A new basis needs a maintainer decision. Value unchanged"
+		note: "stopped (L11, Q19(a) and E17, #383): the approved basis is derived, the largest valid config, (roots + candidates) × (limit:context.maxPathBytes × e + 3) + skeleton. The escape factor is bounded: JSON writes any character in at most 6 bytes (a \\u escape), so e ≤ 6. What has no bound is the whitespace JSON allows between tokens, which the formula does not count and the parser does not limit, so the largest valid config is unbounded; no approved option fixes a whitespace allowance. Even at e = 1 and no skeleton or whitespace, the Q19(a) root cap (limit:snapshot.maxTreeEntries, 102,578) and limit:context.maxSourceCandidates (193) give 102,771 × 1,027 = 105,545,817 bytes. The config is retained through the evidence phase at limit:runner.heapBytesPerRetainedByte (27.47), so limit:runner.evidenceRetainedHeapBytes would rise from 4,130,139,553 to 7,029,033,078 bytes, above limit:runner.heapBytes (6,372,196,352), and limit:packet.bytes would fall from 148,312,300 to −48,891,341; it stays positive only below about 79,382,630 config bytes. At e = 6 the same lists give 102,771 × 6,147 = 631,733,337 bytes. Q19(b), a safety cap sized against heap, was not approved. A new basis needs a maintainer decision. Value unchanged"
 	}),
 	{
 		id: "config.maxModelCodeUnits",
@@ -2147,6 +2143,11 @@ const DEFINITIONS = [
 			reason: "Largest legitimate use: Mistral documents no model id length; the longest of the 59 API ids on its models overview (docs.mistral.ai/getting-started/models/models_overview, read on 2026-11-28), retired ones included, is 37 characters. Harm above: the cap is reserved, one byte per character, in limit:analysis.fixedRequestBytes of every analysis request, so each unit of cap comes out of limit:analysis.unitBytes for every unit; an unbounded id would also flow unchecked into the provider request. 128 keeps every documented id with room for longer names while reserving 128 bytes per request. Approved by the maintainer on 2026-11-27 (L11, #383)."
 		}
 	},
+	derived("config.maxReleaseAgeDays", "count", [], () => 1e8, "ECMAScript time values span exactly 100,000,000 days on each side of the epoch (8.64 × 10^15 ms; ECMA-262, Time Values and Time Range): a Date past them is invalid. A structural property of the runtime, not a policy cap. It bounds policy.minimumReleaseAgeDays, whose window must end at a representable time, and 100,000,000 × 86,400,000 ms stays below Number.MAX_SAFE_INTEGER, so the recheck time is exact. Approved by the maintainer on 2026-11-27 (L11, E18 and Q24(b), #383).", {
+		protects: "Keeps the release-age window inside the times a Date can represent, so the recheck time it gives is a real, exact time.",
+		effect: "A policy.minimumReleaseAgeDays above it fails the config with field policy.minimumReleaseAgeDays, in the parser and the schema.",
+		test: "src/config.test.ts > the release-age window admits config.maxReleaseAgeDays and rejects one more day in parser and schema"
+	}),
 	{
 		id: "github.comment.maxBodyBytes",
 		value: 262144,
@@ -2421,7 +2422,7 @@ const DEFINITIONS = [
 		test: "none: a display truncation in the advisory complexity report table, which never gates a merge",
 		basis: {
 			kind: "safety",
-			reason: "Largest legitimate use: function names and paths under 100 code units; at this commit the longest path the report lists is 74 and the longest function name about 30. Harm: escaping is linear in the input, and a name or path is bounded only by the git buffer, so the input cut bounds the escape work per cell before the output cut. 160 is above legitimate names and below where escaping every character could not already fill the output cap. Approved by the maintainer on 2026-11-27 (L11, #383)."
+			reason: "Largest legitimate use: function names and paths under 100 code units; at this commit the longest path the report lists is 74 and the longest function name about 30. Harm: escaping is linear in the input, and a name or path is bounded only by limit:complexity.gitMaxBufferBytes, so the input cut bounds the escape work per cell to 160 characters. It does not bound the output: an escaped character takes up to 6 code units, so 34 of them already fill the 200-unit output cap, which limit:complexity.cellOutputCodeUnits then cuts. Approved by the maintainer on 2026-11-27 (L11, #383)."
 		}
 	},
 	{
@@ -2438,7 +2439,7 @@ const DEFINITIONS = [
 	},
 	derived("complexity.maxCommentCodeUnits", "code units", ["comment.maxBodyCodeUnits"], copy, "The complexity report is posted as a PR comment, so it has the reviewer's comment cap, limit:comment.maxBodyCodeUnits, the worst-case code units of GitHub's probed comment limit. The comment job's literal check in .github/workflows/complexity.yml repeats it, and check:limits compares the two. Approved by the maintainer on 2026-11-27 (L11, E19 and Q26(a), #383).", {
 		protects: "Keeps the complexity comment within GitHub’s comment body limit, so the comment job never posts a body GitHub would reject.",
-		effect: "The comment job throws Invalid complexity report for a longer body and posts nothing; the job summary still has the report.",
+		effect: "The comment job throws Invalid complexity report for a longer body and posts nothing; the job summary still has the report. Known gap: the comment job receives the body JSON-encoded in one environment variable (REPORT_JSON, .github/workflows/complexity.yml), and Linux caps one environment string at 131,072 bytes (MAX_ARG_STRLEN, 32 pages of 4,096), name and terminator included, so at most 131,059 bytes of encoded body. A body at this cap can encode to 262,143 bytes when every code unit is a non-ASCII BMP character (3 UTF-8 bytes), or 174,762 when every one is a quote or backslash JSON escapes; then the github-script step fails to launch with E2BIG and no comment is posted, which the advisory job tolerates. An all-ASCII body without quotes or backslashes fits. Passing the body as a file needs an artifact upload and download between the jobs, which is not done here.",
 		test: "scripts/complexity/report.test.mjs > a report at complexity.maxListedFindings rows of the widest kind fits complexity.maxCommentCodeUnits"
 	}),
 	derived("complexity.maxListedFindings", "count", ["complexity.maxCommentCodeUnits", "complexity.cellOutputCodeUnits"], (comment, cell) => Math.floor((comment - COMPLEXITY_REPORT_TEXT.reportFixedCodeUnits) / (2 * cell + COMPLEXITY_REPORT_TEXT.rowFixedCodeUnits)), "As many rows of the widest kind as fit in the comment beside the report’s fixed text: (limit:complexity.maxCommentCodeUnits − COMPLEXITY_REPORT_TEXT.reportFixedCodeUnits) ÷ (2 × limit:complexity.cellOutputCodeUnits + COMPLEXITY_REPORT_TEXT.rowFixedCodeUnits), rounded down, with every number at 16 digits. Approved by the maintainer on 2026-11-27 (L11, E19 and Q26(a), #383).", {
@@ -11742,7 +11743,19 @@ function aliases$1(root) {
 	}
 	return targets;
 }
-function queueCollection(node, frame, stack) {
+function keyOf(pair, options) {
+	const key = (0, import_dist.isScalar)(pair.key) ? pair.key.value : void 0;
+	if (options.lenientKeys === true) {
+		if (typeof key !== "string") return void 0;
+		if (key !== "<<") return key;
+		need$5(!(0, import_dist.isAlias)(pair.value), "unsupported");
+		return;
+	}
+	need$5(typeof key === "string");
+	need$5(key !== "<<", "unsupported");
+	return key;
+}
+function queueCollection(node, frame, stack, options) {
 	const depth = frame.depth + 1;
 	if ((0, import_dist.isSeq)(node)) {
 		const out = [];
@@ -11764,9 +11777,8 @@ function queueCollection(node, frame, stack) {
 		frame.assign(out);
 		for (let i = node.items.length - 1; i >= 0; i--) {
 			const pair = node.items[i];
-			need$5((0, import_dist.isScalar)(pair.key) && typeof pair.key.value === "string");
-			const key = pair.key.value;
-			need$5(key !== "<<", "unsupported");
+			const key = keyOf(pair, options);
+			if (key === void 0) continue;
 			need$5(pair.value === null || (0, import_dist.isNode)(pair.value));
 			stack.push({
 				node: pair.value,
@@ -11780,10 +11792,10 @@ function queueCollection(node, frame, stack) {
 }
 /**
 * Composes a parsed document into plain values, expanding each alias against
-* `limits.maxAliasExpansions` and charging every composed node to the node budget; a merge key
-* (`<<`) is unsupported.
+* `limits.maxAliasExpansions` and charging every composed node to the node budget; map keys are
+* read as `options` says.
 */
-function expand$2(root, limits, budget) {
+function expand$2(root, limits, budget, options = {}) {
 	const targets = aliases$1(root), active = /* @__PURE__ */ new Set();
 	let result = null;
 	const stack = [{
@@ -11824,7 +11836,7 @@ function expand$2(root, limits, budget) {
 			need$5(depth < limits.maxYamlDepth, "budget");
 			active.add(node);
 			stack.push({ leave: node });
-			queueCollection(node, frame, stack);
+			queueCollection(node, frame, stack, options);
 		}
 	}
 	return result;
@@ -24364,7 +24376,7 @@ function invalidContext(context) {
 }
 function invalidPolicy(policy) {
 	if (!objectWithKeys(policy, ["verdicts", "minimumReleaseAgeDays"])) return "policy";
-	if (Object.hasOwn(policy, "minimumReleaseAgeDays") && (typeof policy.minimumReleaseAgeDays !== "number" || !Number.isSafeInteger(policy.minimumReleaseAgeDays) || policy.minimumReleaseAgeDays < 1)) return "policy.minimumReleaseAgeDays";
+	if (Object.hasOwn(policy, "minimumReleaseAgeDays") && (typeof policy.minimumReleaseAgeDays !== "number" || !Number.isSafeInteger(policy.minimumReleaseAgeDays) || policy.minimumReleaseAgeDays < 1 || policy.minimumReleaseAgeDays > limit("config.maxReleaseAgeDays"))) return "policy.minimumReleaseAgeDays";
 	if (Object.hasOwn(policy, "verdicts")) {
 		if (!objectWithKeys(policy.verdicts, Object.keys(DEFAULT_VERDICTS))) return "policy.verdicts";
 		for (const [rule, value] of Object.entries(policy.verdicts)) if (!VERDICTS.some((verdict) => verdict === value)) return `policy.verdicts.${rule}`;
@@ -27714,7 +27726,7 @@ function parseDependabotRoots(bytes) {
 			nodes: 0,
 			aliases: 0,
 			occurrences: 0
-		}));
+		}, { lenientKeys: true }));
 	} catch (error) {
 		const reason = error instanceof YamlFailure ? error.reason : "malformed";
 		return Object.freeze({
@@ -34876,27 +34888,44 @@ function suspiciousLine(line) {
 }
 const BLOCK_COMMENTS = [["/*", "*/"], ["<!--", "-->"]];
 /**
-* The file's leading comment block, where generators write their markers: every line before the
-* first one that is neither blank nor a comment. A comment is a `//` line, a `/* … *\/` or
-* `<!-- … -->` block, or a `#!` first line. Like Go's "Code generated … DO NOT EDIT." rule, it
-* has no line count; the file byte cap bounds it.
+* The comment text of a file's leading comment block, where generators write their markers:
+* everything before the first text that is neither whitespace nor a comment. A comment is a `//`
+* comment, a `/* … *\/` or `<!-- … -->` block (which may close and reopen on one line), or a `#!`
+* first line. Code after a closing comment ends the block, and that code is not part of it. Like
+* Go's "Code generated … DO NOT EDIT." rule, it has no line count; the file byte cap bounds it.
 */
 function leadingCommentBlock(lines) {
-	const block = [];
+	const comments = [];
 	let close;
 	for (const [index, line] of lines.entries()) {
-		const trimmed = line.trim();
-		if (close === void 0) {
+		let rest = line;
+		for (;;) {
+			if (close !== void 0) {
+				const end = rest.indexOf(close);
+				if (end === -1) {
+					comments.push(rest);
+					break;
+				}
+				comments.push(rest.slice(0, end));
+				rest = rest.slice(end + close.length);
+				close = void 0;
+			}
+			const trimmed = rest.trimStart();
+			if (trimmed === "") break;
+			if (trimmed.startsWith("//") || index === 0 && rest === line && trimmed.startsWith("#!")) {
+				comments.push(trimmed);
+				break;
+			}
 			const opener = BLOCK_COMMENTS.find(([open]) => trimmed.startsWith(open));
-			if (!(trimmed === "" || trimmed.startsWith("//") || index === 0 && trimmed.startsWith("#!")) && opener === void 0) break;
-			if (opener !== void 0 && !trimmed.slice(opener[0].length).includes(opener[1])) close = opener[1];
-		} else if (trimmed.includes(close)) close = void 0;
-		block.push(line);
+			if (opener === void 0) return comments;
+			rest = trimmed.slice(opener[0].length);
+			close = opener[1];
+		}
 	}
-	return block;
+	return comments;
 }
 function blockedFile(lines) {
-	if (leadingCommentBlock(lines).some((line) => /@generated|auto-generated|autogenerated|generated file/i.test(line))) return "excluded-source";
+	if (leadingCommentBlock(lines).some((comment) => /@generated|auto-generated|autogenerated|generated file/i.test(comment))) return "excluded-source";
 	if (lines.some((line) => /-----BEGIN(?: [A-Z0-9]+)* PRIVATE KEY-----/i.test(line) || sensitiveAssignments(line).some((value) => !value && line.trimEnd().endsWith("=") || [
 		"{",
 		"[",
