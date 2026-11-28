@@ -549,10 +549,6 @@ test('lists only the directories on configured paths, so repository size cannot 
     (snapshot) => snapshot.collectContext([{ id: 'unit-1', name: 'example-package' }]),
   );
 
-  (await import('node:fs')).writeFileSync(
-    '/tmp/claude-0/-home-user/763b32b3-7484-52a2-b84a-49921b64c703/scratchpad/l11s/r8.json',
-    JSON.stringify({ result, calls: reader.calls.length, first: reader.calls.slice(0, 10) }),
-  );
   expect(result).toMatchObject({ kind: 'ready', value: { ok: true, status: 'available' } });
   expect(reader.calls).not.toContain(`tree:${bigTree}`);
 });
