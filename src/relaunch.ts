@@ -38,7 +38,7 @@ export function oldSpaceMiB(memory: number): number | null {
     limit('runner.baselineBytes'),
     limit('runner.systemReservedBytes'),
   );
-  const mib = Math.floor(bytes / BINARY_BYTES.MiB);
+  const mib = bytes / BINARY_BYTES.MiB;
   return mib >= 1 ? mib : null;
 }
 
@@ -50,7 +50,7 @@ export type RelaunchProcess = Readonly<{
   env: NodeJS.ProcessEnv;
   memory: number;
   spawn?: Spawn;
-  /** The heap the caps are sized for; defaults to limit:runner.heapBytes. */
+  /** The old generation the caps are sized for; defaults to limit:runner.heapBytes. */
   requiredHeapBytes?: number;
   /** This process's V8 heap limit; defaults to v8.getHeapStatistics().heap_size_limit. */
   heapLimit?: () => number;
@@ -90,14 +90,17 @@ const failed = (why: string): Relaunch => ({
  * limit is below that heap.
  */
 export async function relaunch(current: RelaunchProcess): Promise<Relaunch> {
-  const required = current.requiredHeapBytes ?? limit('runner.heapBytes');
+  // V8's heap limit is the old generation plus the young generation, so the old generation the
+  // caps are sized for is compared with the limit less the young generation.
+  const required =
+    (current.requiredHeapBytes ?? limit('runner.heapBytes')) + limit('runner.youngGenerationBytes');
   const heapLimit = current.heapLimit ?? (() => getHeapStatistics().heap_size_limit);
   const verified = (): Relaunch => {
     const actual = heapLimit();
     return actual >= required
       ? { kind: 'run' }
       : failed(
-          `the Node heap limit is ${actual} bytes, below the ${required} bytes the review's limits assume (limit:runner.heapBytes)`,
+          `the Node heap limit is ${actual} bytes, below the ${required} bytes the review's limits assume (limit:runner.heapBytes plus limit:runner.youngGenerationBytes)`,
         );
   };
   if (current.env[RELAUNCHED_ENV] !== undefined) return verified();

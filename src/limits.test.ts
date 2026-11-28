@@ -397,7 +397,10 @@ test('the runner heap derives from runner memory less what is not old generation
   const { basis } = limitEntry('runner.heapBytes');
   expect(basis).toMatchObject({ kind: 'derived', inputs });
   if (basis.kind !== 'derived') throw new Error('derived');
-  expect(basis.formula(100, 10, 20, 5, 15)).toBe(50);
+  // In whole MiB, since --max-old-space-size takes whole MiB.
+  const MiB = 1024 * 1024;
+  expect(basis.formula(100 * MiB, 10 * MiB, 20 * MiB, 5 * MiB, 15 * MiB)).toBe(50 * MiB);
+  expect(basis.formula(100 * MiB + 7, 10, 20, 5, 15)).toBe(99 * MiB);
   expect(limit('runner.heapBytes')).toBe(
     heapBytesFor(...(inputs.map((id) => limit(id)) as [number, number, number, number, number])),
   );

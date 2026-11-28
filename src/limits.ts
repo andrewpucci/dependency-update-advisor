@@ -535,8 +535,10 @@ export const replyBytesFor = (
 /**
  * The old-generation heap a runner with `memory` bytes leaves the reviewer: its memory less the
  * young generation, the off-heap buffers, the runtime baseline and what the runner OS and agent
- * keep. `limit:runner.heapBytes` applies it to the smallest runner; the action's relaunch
- * (src/relaunch.ts) applies it to the runner it is on, so the formula is written once.
+ * keep, rounded down to whole MiB, since --max-old-space-size takes whole MiB.
+ * `limit:runner.heapBytes` applies it to the smallest runner; the action's relaunch
+ * (src/relaunch.ts) applies it to the runner it is on, so the formula is written once and the
+ * relaunch sets exactly the heap the caps are sized for.
  */
 export const heapBytesFor = (
   memory: number,
@@ -544,7 +546,7 @@ export const heapBytesFor = (
   offHeap: number,
   baseline: number,
   reserved: number,
-): number => memory - youngGeneration - offHeap - baseline - reserved;
+): number => Math.floor((memory - youngGeneration - offHeap - baseline - reserved) / MiB) * MiB;
 
 /**
  * The largest packet whose heap fits in both phases (`limit:packet.bytes`): in analysis beside

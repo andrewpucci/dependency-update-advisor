@@ -404,6 +404,9 @@ runner's memory less what is not old generation:
 - the runtime baseline, measured with a recorded command;
 - what the runner OS and agent keep.
 
+The result is rounded down to whole MiB, because `--max-old-space-size` takes
+whole MiB. The relaunch then sets exactly the heap the caps are sized for.
+
 The action relaunches itself once with an old-generation size from the same
 formula, using the memory of the runner it runs on: the cgroup limit when one
 is set, otherwise physical memory. A relaunched process never relaunches

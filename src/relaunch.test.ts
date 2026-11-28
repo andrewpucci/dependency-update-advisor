@@ -87,7 +87,7 @@ test('never relaunches a relaunched process or one with an old-generation size',
     memory: memoryFor(300),
     spawn,
     requiredHeapBytes: 100,
-    heapLimit: () => 100,
+    heapLimit: () => 100 + limit('runner.youngGenerationBytes'),
   };
   expect(await relaunch({ ...base, execArgv: [], env: { [RELAUNCHED_ENV]: '300' } })).toEqual({
     kind: 'run',
@@ -140,7 +140,8 @@ test('fails closed when the child cannot be spawned', async () => {
 
 test('fails closed when the heap limit is below runner.heapBytes', async () => {
   const base = { execPath: '/node', argv: ['/node', '/a.js'], memory: memoryFor(300) };
-  const required = limit('runner.heapBytes');
+  // V8's heap limit counts the young generation as well as the old generation the caps assume.
+  const required = limit('runner.heapBytes') + limit('runner.youngGenerationBytes');
   // The relaunched child, or a process given its own old-generation size, checks its limit.
   for (const run of [
     { execArgv: [], env: { [RELAUNCHED_ENV]: '300' } },
@@ -148,7 +149,7 @@ test('fails closed when the heap limit is below runner.heapBytes', async () => {
   ]) {
     expect(await relaunch({ ...base, ...run, heapLimit: () => required - 1 })).toEqual({
       kind: 'failed',
-      message: `dependabot-review: the Node heap limit is ${required - 1} bytes, below the ${required} bytes the review's limits assume (limit:runner.heapBytes); no review ran.`,
+      message: `dependabot-review: the Node heap limit is ${required - 1} bytes, below the ${required} bytes the review's limits assume (limit:runner.heapBytes plus limit:runner.youngGenerationBytes); no review ran.`,
     });
     expect(await relaunch({ ...base, ...run, heapLimit: () => required })).toEqual({
       kind: 'run',
@@ -199,8 +200,8 @@ test('a relaunched child whose heap limit is below the required heap stops with 
   const hooks = pathToFileURL(
     fileURLToPath(new URL('../scripts/measure-heap/register.mjs', import.meta.url)),
   ).href;
-  // The child gets 300 MiB of old generation; one byte more than its V8 limit allows is required.
-  const required = 300 * BINARY_BYTES.MiB + limit('runner.youngGenerationBytes') + 1;
+  // The child gets 300 MiB of old generation; one byte more is required.
+  const required = 300 * BINARY_BYTES.MiB + 1;
   const result = spawnSync(
     process.execPath,
     ['--experimental-transform-types', '--no-warnings', '--import', hooks, child],
@@ -218,6 +219,8 @@ test('a relaunched child whose heap limit is below the required heap stops with 
   expect(result.stdout).toBe('');
   expect(result.status).toBe(HEAP_EXIT_CODE);
   expect(result.stderr).toMatch(
-    new RegExp(`the Node heap limit is \\d+ bytes, below the ${required} bytes`),
+    new RegExp(
+      `the Node heap limit is \\d+ bytes, below the ${required + limit('runner.youngGenerationBytes')} bytes`,
+    ),
   );
 }, 60_000);
