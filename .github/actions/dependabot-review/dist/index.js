@@ -369,16 +369,23 @@ const replyBytesFor = (completionTokens, maxTokenEscapedBytes, responseEnvelopeB
 /**
 * The old-generation heap a runner with `memory` bytes leaves the reviewer: its memory less the
 * young generation, the off-heap buffers, the runtime baseline and what the runner OS and agent
-* keep. `limit:runner.heapBytes` applies it to the smallest runner; the action's relaunch
-* (src/relaunch.ts) applies it to the runner it is on, so the formula is written once.
+* keep, rounded down to whole MiB, since --max-old-space-size takes whole MiB.
+* `limit:runner.heapBytes` applies it to the smallest runner; the action's relaunch
+* (src/relaunch.ts) applies it to the runner it is on, so the formula is written once and the
+* relaunch sets exactly the heap the caps are sized for.
 */
-const heapBytesFor = (memory, youngGeneration, offHeap, baseline, reserved) => memory - youngGeneration - offHeap - baseline - reserved;
+const heapBytesFor = (memory, youngGeneration, offHeap, baseline, reserved) => Math.floor((memory - youngGeneration - offHeap - baseline - reserved) / MiB) * MiB;
 /**
 * The largest packet whose heap fits in both phases (`limit:packet.bytes`): in analysis beside
 * the model replies and the unit expansion, and in evidence beside the retained evidence and the
 * responses in flight at their parse peak. Each phase is rounded down and the smaller is kept.
 */
 const packetBytesFor = (heap, replies, expansion, perPacketByte, retained, readsInFlight, responseBytes, perResponseByte, evidencePerPacketByte) => Math.min(Math.floor((heap - replies - expansion) / perPacketByte), Math.floor((heap - retained - readsInFlight * responseBytes * perResponseByte) / evidencePerPacketByte));
+/**
+* Sequential publication requests the publication reserve allows (src/comments.ts:329-365): the
+* comment selection, its re-read, the publication gate, the write and the gate after it.
+*/
+const PUBLICATION_REQUESTS = 5;
 const copy = (value) => value;
 /** A hand-picked value with no recorded basis yet; `note` says what would supply one. */
 function unjustified(id, value, unit, audit = {}) {
@@ -1042,7 +1049,7 @@ const DEFINITIONS = [
 			formula: heapBytesFor,
 			description: "The smallest runner's memory (limit:runner.memoryBytes) less what is not old generation: the young generation (limit:runner.youngGenerationBytes), the off-heap buffers (limit:runner.offHeapBytes), the runtime baseline (limit:runner.baselineBytes) and what the runner OS and agent keep (limit:runner.systemReservedBytes). Approved by the maintainer on 2026-11-28 (\"Raise heap to runner memory\", L11, #383)."
 		},
-		test: "src/relaunch.test.ts > relaunches once with the derived old-generation size and passes the exit code through"
+		test: "src/relaunch.test.ts > sizes the heap with the register formula and the runner memory"
 	},
 	{
 		id: "packet.changes",
@@ -1239,10 +1246,9 @@ const DEFINITIONS = [
 		effect: "A freshness read started at or after the window is refused with budget and no request is sent; one still in flight is cut off with timeout.",
 		test: "src/runtime.test.ts > refuses a freshness read after the job window without a request"
 	}),
-	unjustified("job.freshnessAllowance", 45e3, "milliseconds", {
+	derived("job.freshnessAllowance", "milliseconds", ["freshness.readsPerCheck", "github.requestTimeoutMs"], (reads, requestMs) => reads * requestMs, "The final freshness check's sequential reads, each allowed the GitHub request timeout: limit:freshness.readsPerCheck × limit:github.requestTimeoutMs. Approved by the maintainer on 2026-11-27 (L11, #383).", {
 		protects: "Reserves time at the end of the job window for the three sequential freshness reads, so the final re-verification finishes before the runner's timeout.",
-		effect: "Analysis must end 45,000 ms before the window end, since the analysis deadline is started + JOB_WINDOW_MS - FRESHNESS_ALLOWANCE_MS.",
-		note: "awaiting L8 measurement",
+		effect: "Analysis must end this long before the window end, since the analysis deadline is started + JOB_WINDOW_MS - FRESHNESS_ALLOWANCE_MS.",
 		test: "src/pipeline.test.ts > ends analysis job.freshnessAllowance before the job window closes"
 	}),
 	derived("freshness.readsPerCheck", "count", [], () => 3, "A freshness recheck reads the workflow run, the pull request and the base-to-head comparison, one after another, from fixed call sites (reverifyReviewBinding, src/event.ts). Approved by the maintainer on 2026-11-27 (L11, #383).", {
@@ -1577,11 +1583,11 @@ const DEFINITIONS = [
 		note: "awaiting L8 measurement",
 		test: "src/evidence/upstream-read.test.ts > signals upstream reader spends exactly its request share and refuses the request past it"
 	}),
-	retainedSetting("evidence.allocation.signals.readers.upstream.maxTotalBytes", "limits.upstreamSignalBytes", .5 * MiB, "bytes", {
+	retainedSetting("evidence.allocation.signals.readers.upstream.maxTotalBytes", "limits.upstreamSignalBytes", MiB, "bytes", {
 		protects: "Caps GitHub Actions upstream response bytes so they cannot exhaust runner memory.",
 		effect: "A response past the share's remaining bytes is refused with budget and the upstream reader stops.",
 		test: "src/evidence/upstream-read.test.ts > signals upstream reader accepts a byte share exactly and refuses the byte past it"
-	}),
+	}, "evidence.envelope.maxResponseBytes"),
 	derived("research.cache.maxEntryBytes", "bytes", ["evidence.envelope.maxResponseBytes"], copy, "A cached entry is at most one response, so it is capped at the envelope's response cap.", {
 		protects: "One cached response cannot exceed the envelope's response cap, so a single body cannot fill the run's research cache (memory).",
 		effect: "A response over the cap is not stored, but the caller still receives all of its bytes.",
@@ -2029,11 +2035,10 @@ const DEFINITIONS = [
 		note: "awaiting L8 measurement",
 		test: "src/config.test.ts > the excerpt file cap admits exactly the registered count and rejects one more"
 	}),
-	unjustified("context.maxTrackedPathEntries", 1e4, "count", {
+	derived("context.maxTrackedPathEntries", "count", ["snapshot.maxTreeEntries"], copy, "The tracked-file inventory is the snapshot listing, so it can hold no more entries than the listing: a copy of limit:snapshot.maxTreeEntries. Approved by the maintainer on 2026-11-27 (L11, #383).", {
 		protects: "The tracked-file inventory is streamed one entry at a time, and the cap stops the scan on an arbitrarily large repository.",
-		effect: "On the 10,001st inventory entry the scan stops with reason inventory-limit and the iterator is closed. Facts already found and partial status are kept.",
-		test: "src/context.test.ts > inventory budget bounds %i records including duplicates",
-		note: "awaiting L8 measurement"
+		effect: "On the entry past the cap the scan stops with reason inventory-limit and the iterator is closed. Facts already found and partial status are kept.",
+		test: "src/context.test.ts > inventory budget bounds %i records including duplicates"
 	}),
 	unjustified("context.maxSourceFileBytes", 65536, "bytes", {
 		protects: "A source file is read into memory, so each read is capped at 65,536 bytes plus one probe byte.",
@@ -2260,11 +2265,10 @@ const DEFINITIONS = [
 		note: "awaiting L8 measurement",
 		test: "src/analysis/batches.test.ts > no call dispatches at or after the registered analysis time cap from the start"
 	}),
-	unjustified("analysis.publicationReserveMs", 6e4, "milliseconds", {
+	derived("analysis.publicationReserveMs", "milliseconds", ["github.requestTimeoutMs"], (requestMs) => PUBLICATION_REQUESTS * requestMs, "Five sequential publication requests (src/comments.ts:329-365: the comment selection, its re-read, the publication gate before the write, the write and the gate after it), each allowed the GitHub request timeout: 5 × limit:github.requestTimeoutMs. Each gate also re-verifies the binding through its own reads (src/comments.ts:246-261), so the count is final only once publication is wired (D4). Approved by the maintainer on 2026-11-27 (L11, #383).", {
 		protects: "Publication needs time after analysis. Without a reserve, a call could consume the whole deadline and leave nothing to publish.",
-		effect: "Analysis calls are cut at the caller deadline minus 60 s, which leaves the reserve for publication.",
-		test: "src/analysis/batches.test.ts > a call ended by the deadline timer records the elapsed time at the cutoff",
-		note: "awaiting L8 measurement"
+		effect: "Analysis calls are cut at the caller deadline less this reserve, which leaves the reserve for publication.",
+		test: "src/analysis/batches.test.ts > a call ended by the deadline timer records the elapsed time at the cutoff"
 	}),
 	unjustified("analysis.maxContentChunks", 64, "count", {
 		protects: "A reply's content array is capped at 64 chunks, so chunk iteration over untrusted provider output stays bounded.",
@@ -2508,7 +2512,7 @@ const DEFINITIONS = [
 		id: "upstream.throughputBytesPerSecond",
 		value: 64e4,
 		unit: "bytes",
-		protects: "Records the read throughput of upstream research reads (GitHub releases and PyPI JSON), so the request timeout and the upstream byte ceiling can be sized in time.",
+		protects: "Records the read throughput of upstream research reads (GitHub releases and PyPI JSON), in bytes per second, so the request timeout and the upstream byte ceiling can be sized in time.",
 		basis: {
 			kind: "external",
 			url: "https://github.com/andrewpucci/dependency-update-advisor/pull/468",
@@ -2827,6 +2831,8 @@ function limit(id) {
 */
 const RELAUNCHED_ENV = "DEPENDENCY_REVIEW_RELAUNCHED";
 const OLD_SPACE_FLAG = "--max-old-space-size";
+/** V8 reads `-` and `_` alike in its flag names, so either spelling sets the old generation. */
+const OLD_SPACE_FLAG_PATTERN = /^--max[-_]old[-_]space[-_]size(?:=|$)/u;
 const FORWARDED_SIGNALS = [
 	"SIGINT",
 	"SIGTERM",
@@ -2847,8 +2853,7 @@ function runnerMemory(total = totalmem(), constrained = process.constrainedMemor
 * runner's. Null when nothing is left for the heap; the relaunch then fails closed.
 */
 function oldSpaceMiB(memory) {
-	const bytes = heapBytesFor(memory, limit("runner.youngGenerationBytes"), limit("runner.offHeapBytes"), limit("runner.baselineBytes"), limit("runner.systemReservedBytes"));
-	const mib = Math.floor(bytes / BINARY_BYTES.MiB);
+	const mib = heapBytesFor(memory, limit("runner.youngGenerationBytes"), limit("runner.offHeapBytes"), limit("runner.baselineBytes"), limit("runner.systemReservedBytes")) / BINARY_BYTES.MiB;
 	return mib >= 1 ? mib : null;
 }
 /**
@@ -2869,14 +2874,14 @@ const failed$1 = (why) => ({
 * limit is below that heap.
 */
 async function relaunch(current) {
-	const required = current.requiredHeapBytes ?? limit("runner.heapBytes");
+	const required = (current.requiredHeapBytes ?? limit("runner.heapBytes")) + limit("runner.youngGenerationBytes");
 	const heapLimit = current.heapLimit ?? (() => getHeapStatistics().heap_size_limit);
 	const verified = () => {
 		const actual = heapLimit();
-		return actual >= required ? { kind: "run" } : failed$1(`the Node heap limit is ${actual} bytes, below the ${required} bytes the review's limits assume (limit:runner.heapBytes)`);
+		return actual >= required ? { kind: "run" } : failed$1(`the Node heap limit is ${actual} bytes, below the ${required} bytes the review's limits assume (limit:runner.heapBytes plus limit:runner.youngGenerationBytes)`);
 	};
 	if (current.env["DEPENDENCY_REVIEW_RELAUNCHED"] !== void 0) return verified();
-	if (current.execArgv.some((arg) => arg === OLD_SPACE_FLAG || arg.startsWith(`${OLD_SPACE_FLAG}=`))) return verified();
+	if (current.execArgv.some((arg) => OLD_SPACE_FLAG_PATTERN.test(arg))) return verified();
 	const mib = oldSpaceMiB(current.memory);
 	if (mib === null) return failed$1(`the runner's ${current.memory} bytes of memory leave no heap for the review`);
 	const spawn$1 = current.spawn ?? spawn;
@@ -2915,7 +2920,9 @@ async function relaunch(current) {
 	}
 	try {
 		return await new Promise((resolve) => {
-			child.once("error", () => resolve(failed$1("Node could not be relaunched with the runner heap")));
+			child.on("error", () => {
+				if (child.pid === void 0) resolve(failed$1("Node could not be relaunched with the runner heap"));
+			});
 			child.once("exit", (code, signal) => resolve({
 				kind: "exited",
 				code,
@@ -2925,6 +2932,7 @@ async function relaunch(current) {
 	} finally {
 		for (const signal of FORWARDED_SIGNALS) signals.off(signal, forward);
 		ipc?.off("message", down);
+		child.off("message", up);
 	}
 }
 /**
@@ -35610,7 +35618,7 @@ async function evaluateEvidence(input, binding, started, signal, state, recheck,
 				baseSha: binding.baseSha,
 				contextRevision: trusted.contextRevision
 			};
-			const assembled = await inStage("packet", () => assembleReviewPacket({
+			let assembled = await inStage("packet", () => assembleReviewPacket({
 				trusted: base,
 				collectContext: (changes) => inStage("snapshot", () => trusted.collectContext(dependencyIdentities(changes))),
 				isCurrent,
@@ -35651,7 +35659,8 @@ async function evaluateEvidence(input, binding, started, signal, state, recheck,
 			};
 			const beforeResearch = await recheck();
 			if (beforeResearch !== "current") return halted(beforeResearch);
-			const researched = await inStage("research", () => runResearch({
+			const { droppedOptional } = assembled;
+			let research = runResearch.bind(null, {
 				packet: assembled.packet,
 				trusted: {
 					...base,
@@ -35666,7 +35675,10 @@ async function evaluateEvidence(input, binding, started, signal, state, recheck,
 				evaluationTime: input.evaluationTime,
 				...input.wallNow ? { wallNow: input.wallNow } : {},
 				signal
-			}));
+			});
+			assembled = void 0;
+			const researched = await inStage("research", research);
+			research = void 0;
 			if (researched.kind !== "ready") return {
 				kind: "internal-failure",
 				stage: "research",
@@ -35687,7 +35699,7 @@ async function evaluateEvidence(input, binding, started, signal, state, recheck,
 				researchIncomplete: researched.unavailable.length > 0,
 				signal,
 				model: input.model
-			})), assembled.droppedOptional);
+			})), droppedOptional);
 		});
 	} catch (error) {
 		if (error instanceof StageFailure) {
