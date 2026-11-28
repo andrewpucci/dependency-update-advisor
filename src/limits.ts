@@ -3313,13 +3313,20 @@ const DEFINITIONS = [
     test: 'src/dependabot-roots.test.ts > accepts values exactly at each limit',
     note: 'stopped (L11, card, #383): the approved basis is safety, which needs the cap above the largest legitimate config. It is not: among the largest dependabot.yml files GitHub code search returned on 2026-11-28 (14 files above 40,000 bytes, of which 8 are Dependabot version-2 configs), 3 configs are 68,918, 71,729 and 82,528 bytes (14, 4 and 200 update entries), and each fails here with budget today. No document gives a Dependabot file size limit, and no larger value has an approved basis. Value unchanged',
   }),
-  unjustified('dependabot.maxYamlNodes', 20_000, 'count', {
+  {
+    id: 'dependabot.maxYamlNodes',
+    value: 20_000,
+    unit: 'count',
     protects:
       'The count of YAML nodes is capped before composition, so untrusted config cannot force unbounded parser work.',
+    basis: {
+      kind: 'safety',
+      reason:
+        'Largest legitimate use: among the largest dependabot.yml files GitHub code search returned on 2026-11-28 (14 files above 40,000 bytes, of which 8 are Dependabot version-2 configs), the most nodes the preflight counts is 5,353, and the most the composition charges to its own budget at the same cap is 3,348 (npm run probe:parse-cost -- use, over those files, on 2026-11-28). Harm: CPU. The reader parses, preflights, composes and expands a config at limit:w2.actions.maxFileBytes holding 249,993 preflight nodes in 1,530 ms, the slowest of 5 runs (npm run probe:parse-cost -- harm dependabot-nodes, on 2026-11-28 under Node 24.22.3, the runtime of the action); with the allowance of #467 for a runner 10 times slower, harm begins near 980,000 nodes, where one config would spend a quarter of limit:evidence.envelope.totalTimeoutMs on its parse alone. The parse is transient: the reader returns only the sorted root lists. The cap sits between the two. Approved by the maintainer on 2026-11-27 (L11, card and Q8(a), #383).',
+    },
     effect: 'Exceeding 20,000 nodes fails the whole file with budget, and no roots are read.',
-    note: 'stopped (L11, card and Q8(a), #383): the approved basis is safety, which merges only with its largest legitimate use and its harm. The largest legitimate use is recorded: among the largest dependabot.yml files GitHub code search returned on 2026-11-28 (14 files above 40,000 bytes, of which 8 are Dependabot version-2 configs), the most structural nodes the preflight counts is 5,353; the composed document is charged to its own budget at the same cap. The harm point is not: no bench of YAML composition cost per node exists for this parser (w2.actions.maxYamlNodes waits on the same bench). Value unchanged',
     test: 'src/dependabot-roots.test.ts > the YAML node cap admits exactly the registered node count and refuses one node more',
-  }),
+  },
   {
     id: 'dependabot.maxYamlDepth',
     value: 16,
@@ -3348,22 +3355,36 @@ const DEFINITIONS = [
       test: 'src/dependabot-roots.test.ts > expands aliases up to the alias cap and refuses one more',
     },
   ),
-  unjustified('dependabot.maxUpdates', 256, 'count', {
+  {
+    id: 'dependabot.maxUpdates',
+    value: 256,
+    unit: 'count',
     protects:
       'Each update entry is a Dependabot job definition, and the count is capped so the root scan stays bounded.',
+    basis: {
+      kind: 'safety',
+      reason:
+        'Largest legitimate use: among the largest dependabot.yml files GitHub code search returned on 2026-11-28 (14 files above 40,000 bytes, of which 8 are Dependabot version-2 configs), the most update entries is 200 (npm run probe:parse-cost -- use, over those files, on 2026-11-28), in an 82,528-byte config that limit:dependabot.maxFileBytes refuses today. Harm: CPU. The reader parses and reads a config at limit:w2.actions.maxFileBytes holding 12,819 npm update entries in 409 ms, the slowest of 5 runs (npm run probe:parse-cost -- harm dependabot-updates, on 2026-11-28 under Node 24.22.3, the runtime of the action); with the allowance of #467 for a runner 10 times slower, harm begins near 188,000 entries, where one config would spend a quarter of limit:evidence.envelope.totalTimeoutMs on its parse alone. The cap sits between the two. Approved by the maintainer on 2026-11-27 (L11, card and Q8(a), #383).',
+    },
     effect:
       'More than 256 update entries fail the whole file with budget before any entry is read.',
     test: 'src/dependabot-roots.test.ts > accepts values exactly at each limit',
-    note: 'stopped (L11, card, #383): the approved basis is safety. The largest legitimate use is recorded: among the largest dependabot.yml files GitHub code search returned on 2026-11-28 (14 files above 40,000 bytes, of which 8 are Dependabot version-2 configs), the most update entries is 200, in an 82,528-byte config that limit:dependabot.maxFileBytes already refuses. No harm point is recorded: an entry is read by a fixed loop over a list the byte and node caps already bound, and no bench shows a count where the loop harms memory or CPU. Value unchanged',
-  }),
-  unjustified('dependabot.maxRoots', 256, 'count', {
+  },
+  {
+    id: 'dependabot.maxRoots',
+    value: 256,
+    unit: 'count',
     protects:
       'Distinct roots per ecosystem are capped, so the root list handed to collectors stays bounded.',
+    basis: {
+      kind: 'safety',
+      reason:
+        'Largest legitimate use: among the largest dependabot.yml files GitHub code search returned on 2026-11-28 (14 files above 40,000 bytes, of which 8 are Dependabot version-2 configs), the most distinct npm roots in one config is 207 and the most uv roots 1 (npm run probe:parse-cost -- use, over those files, on 2026-11-28); a longer list for an ecosystem this reader ignores is never counted. Harm: CPU. The reader parses and reads a config at limit:w2.actions.maxFileBytes listing 91,320 distinct npm directories in 645 ms, the slowest of 5 runs (npm run probe:parse-cost -- harm dependabot-roots, on 2026-11-28 under Node 24.22.3, the runtime of the action); with the allowance of #467 for a runner 10 times slower, harm begins near 850,000 roots, where one config would spend a quarter of limit:evidence.envelope.totalTimeoutMs on its parse alone. The collectors read at most limit:w2.npm.maxRoots and limit:w2.uv.maxRoots of the list. The cap sits between the two. Approved by the maintainer on 2026-11-27 (L11, card and Q8(a), #383).',
+    },
     effect:
       'More than 256 distinct roots for one ecosystem makes only that ecosystem unavailable with reason budget. The other ecosystem is unaffected, and no partial list is returned.',
     test: 'src/dependabot-roots.test.ts > limits the roots per ecosystem after deduplication',
-    note: 'stopped (L11, card, #383): the approved basis is safety. The largest legitimate use is recorded: among the largest dependabot.yml files GitHub code search returned on 2026-11-28 (14 files above 40,000 bytes, of which 8 are Dependabot version-2 configs), the most distinct npm roots in one config is 207, and the most for any ecosystem 385 (an ecosystem this reader ignores). No harm point is recorded: the collectors read at most limit:w2.npm.maxRoots and limit:w2.uv.maxRoots of these roots, so a longer list costs only its strings, which the byte cap bounds. Value unchanged',
-  }),
+  },
   derived(
     'dependabot.maxPathBytes',
     'bytes',

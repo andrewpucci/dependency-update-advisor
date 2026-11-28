@@ -877,6 +877,22 @@ test('the uv and npm collection bounds keep their sources and formulas', () => {
     expect(limitEntry(id).basis.kind, id).toBe('safety');
 });
 
+test('the Q8(a) parse-count bounds whose check passed are safety and cite the parse-cost probe', () => {
+  // L11 Q8(a), #383: each cites its largest legitimate use and its harm from npm run probe:parse-cost.
+  for (const [id, counter] of [
+    ['dependabot.maxYamlNodes', 'dependabot-nodes'],
+    ['dependabot.maxUpdates', 'dependabot-updates'],
+    ['dependabot.maxRoots', 'dependabot-roots'],
+  ] as const) {
+    const { basis } = limitEntry(id);
+    expect(basis.kind, id).toBe('safety');
+    expect(basis.kind === 'safety' && basis.reason, id).toContain(
+      `npm run probe:parse-cost -- harm ${counter}`,
+    );
+    expect(basis.kind === 'safety' && basis.reason, id).toContain('npm run probe:parse-cost -- use');
+  }
+});
+
 test('the research and signal bounds keep their sources and formulas', () => {
   // The coverage setting's hard maximum is the upstream request ceiling (Q9(a)); a listed release
   // outside the range costs no request beyond its page, so it is not a per-candidate bound.
