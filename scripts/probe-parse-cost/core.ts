@@ -11,7 +11,9 @@ import type * as Format from '../../src/format.js';
 
 const ROOT = fileURLToPath(new URL('../../', import.meta.url));
 // Loaded by path, not by a static import, so Node can run this file directly (see check.ts).
-const { ALIAS_RADIX, FORMAT_VERSION } = (await import(pathToFileURL(join(ROOT, 'src/format.ts')).href)) as typeof Format;
+const { ALIAS_RADIX, FORMAT_VERSION } = (await import(
+  pathToFileURL(join(ROOT, 'src/format.ts')).href
+)) as typeof Format;
 
 /** Entries as the JSON readers count them: the properties or elements of each object or array. */
 export function entryCount(value: unknown): number {
@@ -158,7 +160,10 @@ export function npmProject(
         shape === 'chain' && i < count - 1,
         i === count - 1 ? lastVersion : '1.0.0',
       );
-    return { manifest: JSON.stringify(manifest), lock: JSON.stringify({ lockfileVersion: FORMAT_VERSION.npmLockfile, packages }) };
+    return {
+      manifest: JSON.stringify(manifest),
+      lock: JSON.stringify({ lockfileVersion: FORMAT_VERSION.npmLockfile, packages }),
+    };
   };
   // The largest count that fits, by bisection on the serialized size.
   let low = 1;
@@ -204,8 +209,7 @@ export type ClaimShape = (typeof CLAIM_SHAPES)[number];
 
 export function claimLine(shape: ClaimShape, length: number): string {
   const unit = { link: '[a](https://', bumps: '', plain: 'a' }[shape];
-  const text =
-    shape === 'bumps' ? `Bumps a from 1 to 1${'1'.repeat(length)}` : unit.repeat(length);
+  const text = shape === 'bumps' ? `Bumps a from 1 to 1${'1'.repeat(length)}` : unit.repeat(length);
   return text.slice(0, length);
 }
 

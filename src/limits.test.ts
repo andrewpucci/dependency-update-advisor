@@ -890,7 +890,9 @@ test('the Q8(a) parse-count bounds whose check passed are safety and cite the pa
     expect(basis.kind === 'safety' && basis.reason, id).toContain(
       `npm run probe:parse-cost -- harm ${counter}`,
     );
-    expect(basis.kind === 'safety' && basis.reason, id).toContain('npm run probe:parse-cost -- use');
+    expect(basis.kind === 'safety' && basis.reason, id).toContain(
+      'npm run probe:parse-cost -- use',
+    );
   }
 });
 

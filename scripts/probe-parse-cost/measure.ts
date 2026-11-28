@@ -45,12 +45,15 @@ const core = await load<typeof Core>('scripts/probe-parse-cost/core.ts');
 const { W2_EVIDENCE_LIMITS } = await load<typeof Collection>('src/collection.ts');
 const { parseDependabotRoots } = await load<typeof DependabotRoots>('src/dependabot-roots.ts');
 const { createGithubReadSession } = await load<typeof GithubRead>('src/github-read.ts');
-const { expand, preflight, readWorkflow } = await load<typeof ActionsYaml>('src/evidence/actions-yaml.ts');
+const { expand, preflight, readWorkflow } = await load<typeof ActionsYaml>(
+  'src/evidence/actions-yaml.ts',
+);
 const { collectNpmInventory } = await load<typeof Npm>('src/evidence/npm.ts');
 const { createNpmRegistryReader } = await load<typeof Registry>('src/evidence/npm-registry.ts');
 const { upstreamCopy } = await load<typeof UpstreamRead>('src/evidence/upstream-read.ts');
 const { readToml } = await load<typeof UvToml>('src/evidence/uv-toml.ts');
-const { BINARY_BYTES, DECIMAL_RADIX, DIGEST_BYTES, GIT_SHA_HEX_LENGTH, HTTP_STATUS } = await load<typeof Format>('src/format.ts');
+const { BINARY_BYTES, DECIMAL_RADIX, DIGEST_BYTES, GIT_SHA_HEX_LENGTH, HTTP_STATUS } =
+  await load<typeof Format>('src/format.ts');
 const { limit } = await load<typeof Limits>('src/limits.ts');
 const { binding, npmRequest } = await load<typeof Fixtures>('tests/parity/evidence-reads.ts');
 const { npmScenario } = await load<typeof NpmFixtures>('tests/parity/npm-inventory.ts');
@@ -108,7 +111,11 @@ async function uvGraphCases(): Promise<Case[]> {
   const cases: Case[] = [];
   const smallest = BINARY_BYTES.KiB * DECIMAL_RADIX;
   for (const shape of core.GRAPH_SHAPES) {
-    for (let bytes = W2_EVIDENCE_LIMITS.uv.maxFileBytes; bytes >= smallest; bytes = Math.floor(bytes / 2)) {
+    for (
+      let bytes = W2_EVIDENCE_LIMITS.uv.maxFileBytes;
+      bytes >= smallest;
+      bytes = Math.floor(bytes / 2)
+    ) {
       const base = core.uvProject(shape, bytes, '1');
       const head = core.uvProject(shape, bytes, '2');
       const input = await uvGraphFixture(
@@ -355,7 +362,8 @@ function dependabotCase(shape: Core.DependabotShape): Case[] {
   const text = core.dependabotDocument(shape, limit('w2.actions.maxFileBytes'));
   const bytes = encode(text);
   const parsed = parseDependabotRoots(bytes);
-  if (parsed.kind !== 'roots' || parsed.npm.kind !== 'roots') throw new Error(`dependabot ${shape}`);
+  if (parsed.kind !== 'roots' || parsed.npm.kind !== 'roots')
+    throw new Error(`dependabot ${shape}`);
   const units = {
     nodes: () => preflightNodes(text),
     updates: () => text.split('package-ecosystem').length - 1,
@@ -466,7 +474,10 @@ const groups: Record<string, (bytes: Buffer) => Record<string, number>> = {
       info?: { version?: unknown };
       releases?: Record<string, unknown>;
     };
-    const versions = [...Object.keys(document.releases ?? {}), String(document.info?.version ?? '')];
+    const versions = [
+      ...Object.keys(document.releases ?? {}),
+      String(document.info?.version ?? ''),
+    ];
     return {
       versionCodeUnits: versions.reduce((longest, version) => Math.max(longest, version.length), 0),
     };
@@ -502,10 +513,16 @@ function useOf(corpus: string) {
   }
   for (const [group, rows] of [...counts].sort(([a], [b]) => a.localeCompare(b))) {
     const largest = Object.fromEntries(
-      Object.keys(rows[0] ?? {}).map((key) => [key, core.summarizeCounts(rows.map((row) => row[key] ?? 0)).largest]),
+      Object.keys(rows[0] ?? {}).map((key) => [
+        key,
+        core.summarizeCounts(rows.map((row) => row[key] ?? 0)).largest,
+      ]),
     );
     const total = Object.fromEntries(
-      Object.keys(rows[0] ?? {}).map((key) => [key, rows.reduce((sum, row) => sum + (row[key] ?? 0), 0)]),
+      Object.keys(rows[0] ?? {}).map((key) => [
+        key,
+        rows.reduce((sum, row) => sum + (row[key] ?? 0), 0),
+      ]),
     );
     console.log(JSON.stringify({ group, documents: rows.length, largest, total }));
   }
@@ -529,6 +546,12 @@ for (const { shape, units, run } of await cases()) {
     timings.push(performance.now() - start);
   }
   console.log(
-    JSON.stringify({ node: process.version, counter, shape, units, ...core.timingSummary(timings) }),
+    JSON.stringify({
+      node: process.version,
+      counter,
+      shape,
+      units,
+      ...core.timingSummary(timings),
+    }),
   );
 }
