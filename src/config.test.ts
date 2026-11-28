@@ -651,7 +651,10 @@ describe('C3 configuration amendment', () => {
     expect(Number.isNaN(new Date(days * MS_PER_DAY).getTime())).toBe(false);
     expect(Number.isNaN(new Date(days * MS_PER_DAY + 1).getTime())).toBe(true);
     expect(Number.isSafeInteger(days * MS_PER_DAY)).toBe(true);
-    const at = (minimumReleaseAgeDays: number) => ({ version: 1, policy: { minimumReleaseAgeDays } });
+    const at = (minimumReleaseAgeDays: number) => ({
+      version: 1,
+      policy: { minimumReleaseAgeDays },
+    });
     expect(parseReviewConfig(JSON.stringify(at(days))).ok).toBe(true);
     expect(validateSchema(at(days))).toBe(true);
     for (const value of [days + 1, Number.MAX_SAFE_INTEGER + 1]) {

@@ -252,10 +252,22 @@ test('expands aliases up to the alias cap and refuses one more', () => {
 });
 
 test.each([
-  ['a numeric key', 'version: 2\n1: ignored\nupdates:\n  - package-ecosystem: npm\n    directory: "/web"\n'],
-  ['a null key', 'version: 2\n? null\n: ignored\nupdates:\n  - package-ecosystem: npm\n    directory: "/web"\n'],
-  ['a literal merge key', 'version: 2\n<<: {x: 1}\nupdates:\n  - package-ecosystem: npm\n    directory: "/web"\n'],
-  ['a literal merge key in an entry', 'version: 2\nupdates:\n  - package-ecosystem: npm\n    <<: [1]\n    directory: "/web"\n'],
+  [
+    'a numeric key',
+    'version: 2\n1: ignored\nupdates:\n  - package-ecosystem: npm\n    directory: "/web"\n',
+  ],
+  [
+    'a null key',
+    'version: 2\n? null\n: ignored\nupdates:\n  - package-ecosystem: npm\n    directory: "/web"\n',
+  ],
+  [
+    'a literal merge key',
+    'version: 2\n<<: {x: 1}\nupdates:\n  - package-ecosystem: npm\n    directory: "/web"\n',
+  ],
+  [
+    'a literal merge key in an entry',
+    'version: 2\nupdates:\n  - package-ecosystem: npm\n    <<: [1]\n    directory: "/web"\n',
+  ],
 ])('ignores %s as toJS did, instead of failing the file', (_label, text) => {
   expect(parseDependabotRoots(encode(text))).toEqual({
     kind: 'roots',

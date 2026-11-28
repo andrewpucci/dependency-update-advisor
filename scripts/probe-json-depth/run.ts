@@ -21,9 +21,8 @@ import type * as Core from './core.js';
 
 const ROOT = fileURLToPath(new URL('../../', import.meta.url));
 // Loaded by path, not by a static import, so Node can run this file directly (see check.ts).
-const { BISECTION_LIMIT, jsonDepth, nestedFlowSequences, overflowDepth, summarizeDepths } = (await import(
-  pathToFileURL(join(ROOT, 'scripts/probe-json-depth/core.ts')).href
-)) as typeof Core;
+const { BISECTION_LIMIT, jsonDepth, nestedFlowSequences, overflowDepth, summarizeDepths } =
+  (await import(pathToFileURL(join(ROOT, 'scripts/probe-json-depth/core.ts')).href)) as typeof Core;
 
 const USAGE =
   'usage: npm run probe:json-depth -- overflow\n       npm run probe:json-depth -- nesting <corpus directory>';
@@ -50,7 +49,9 @@ const COMPOSER_OPTIONS = {
 /** Parses and composes YAML; the library reports a stack overflow as a document error. */
 function composeYaml(text: string): void {
   const documents = [...new Composer(COMPOSER_OPTIONS).compose([...new Parser().parse(text)])];
-  if (documents.some((document) => document.errors.some((error) => /call stack/i.test(error.message))))
+  if (
+    documents.some((document) => document.errors.some((error) => /call stack/i.test(error.message)))
+  )
     throw new RangeError('Maximum call stack size exceeded');
 }
 
