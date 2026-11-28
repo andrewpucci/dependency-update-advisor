@@ -717,6 +717,28 @@ function scaledShareEntries(share, dimension) {
 function allScaledShareEntries() {
 	return Object.keys(SCALED_SHARES).flatMap((share) => Object.keys(SHARE_DIMENSIONS).flatMap((dimension) => scaledShareEntries(share, dimension)));
 }
+/**
+* The evidence the readers keep in the evidence phase (Q10, #383): the thirteen byte shares and
+* retained caps Q10 makes configuration, the research readers' retained cap, and the trusted
+* config.
+*/
+const Q10_RETAINED_INPUTS = [
+	"evidence.allocation.transport.snapshot.maxTotalBytes",
+	"evidence.allocation.session.maxTotalBytes",
+	"evidence.allocation.registry.maxTotalBytes",
+	"evidence.allocation.advisory.maxTotalBytes",
+	"evidence.allocation.signals.readers.malware.maxTotalBytes",
+	"evidence.allocation.signals.readers.publishTimes.maxTotalBytes",
+	"evidence.allocation.signals.readers.registry.maxTotalBytes",
+	"evidence.allocation.signals.readers.upstream.maxTotalBytes",
+	"w2.session.maxRetainedBytes",
+	"w2.npm.maxRetainedBytes",
+	"w2.actions.maxRetainedBytes",
+	"w2.uv.maxRetainedBytes",
+	"w2.graph.maxRetainedBytes",
+	"research.maxRetainedBytes",
+	"config.maxBytes"
+];
 const DEFINITIONS = [
 	{
 		id: "packet.bytes",
@@ -760,7 +782,7 @@ const DEFINITIONS = [
 		basis: {
 			kind: "measured",
 			command: "npm run measure:heap",
-			corpus: "the largest-expansion packet the parity builders reach (tests/parity/heap-shapes.ts): the large-inventory scenario at limit:packet.changes changes (124 npm members plus 4 others, 2,889,936 bytes), 63 of the npm transitive updates made direct anchors and the other 61 each proving a path from one, every anchor scope verdict failed for all ten reasons, every evidence entry partial for all ten reasons and every change id padded to limit:packet.idCodeUnits with a three-byte character: 7,564 relationship limits of the structural 8,064, through validation, revalidation, analysis with a stub model (16 calls) and render, with the projection caps lifted; on Node 24.22.3 (V8 13.6) with a 1 MiB semi space",
+			corpus: "the largest-expansion packet the parity builders reach (tests/parity/heap-shapes.ts): the large-inventory scenario at limit:packet.changes changes (124 npm members plus 4 others, 2,889,936 bytes), 63 of the npm transitive updates made direct anchors and the other 61 each proving a path from one, every anchor scope verdict failed for all ten reasons, every evidence entry partial for all ten reasons and every change id padded to limit:packet.idCodeUnits with a three-byte character: 7,564 relationship limits of the structural 8,064, through validation, revalidation, analysis with a stub model (16 calls) and render, first with the projection caps lifted and again within the derived caps, where it also completes at 161 MiB; on Node 24.22.3 (V8 13.6) with a 1 MiB semi space",
 			statistic: "the smallest --max-old-space-size at which it completes (161 MiB) less that of the large plain packet (31 MiB), plus 1 MiB of bisection resolution, less the growth in packet bytes (1,846,320) at the plain rate of 15.71: 108,351,424.08 bytes, rounded up. The projection-findings estimate on branch -l11-packet was about 106 MB ±20%",
 			headroom: "none: a platform property, not a demand. The packet reaches 7,564 of the 8,064 relationship limits the counts allow (its four non-npm changes cannot be anchors), so the structural maximum is about 7% above it in that term",
 			measured: "2026-11-28"
@@ -837,6 +859,38 @@ const DEFINITIONS = [
 			description: "The hard maximum of limit:evidence.envelope.maxResponseBytes: limit:runner.evidenceHeapBytes ÷ (limit:evidence.readsInFlight × limit:runner.heapBytesPerEvidenceByte), rounded down. It does not yet reserve heap for the evidence the other readers retain, which the Q10 joint maximum is to bound. Approved by the maintainer on 2026-11-27 (L11, Q3(a), #383)."
 		},
 		test: "none: the hard maximum of an adopter setting the parser does not read yet (L12, #384); src/limits.test.ts pins its formula"
+	},
+	{
+		id: "runner.heapBytesPerRetainedByte",
+		value: 27.47,
+		unit: "bytes",
+		protects: "States how much heap one retained evidence byte holds after its parse, as readers charge it (the UTF-8 length of its JSON), so the evidence the readers keep can be sized from runner heap apart from the transient parse peak of the response in flight.",
+		basis: {
+			kind: "measured",
+			command: "npm run measure:heap",
+			corpus: "values of exactly 1 MiB of retained JSON bytes each (Buffer.byteLength(JSON.stringify(value)), as src/evidence/npm.ts and src/evidence/policy-signals-read.ts charge them), each parsed from its own text, structured-cloned and deeply frozen as src/evidence/npm-graph.ts keeps its result, with the text and the parsed original dropped (scripts/measure-heap/retained.ts), in three shapes (empty arrays, empty objects, arrays nested to limit:research.maxJsonDepth); on Node 24.22.3 (V8 13.6) with a 1 MiB semi space",
+			statistic: "per shape, the growth in the smallest --max-old-space-size from one value held to 16 held at once, plus 1 MiB of bisection resolution, divided by the 15 MiB of added retained bytes; the largest shape is kept: nested arrays, (476 − 65 + 1) ÷ 15 = 27.467, rounded up to 27.47 (empty arrays 13.4, empty objects 21.4). The difference leaves out the parse peak of the last value, which limit:runner.heapBytesPerEvidenceByte covers",
+			headroom: "none: a platform property, not a demand; the added 1 MiB makes it an upper bound. A reader keeps a typed result, not arbitrary JSON, so a structural bound per reader could be lower",
+			measured: "2026-11-28"
+		},
+		effect: "Not enforced. limit:runner.evidenceRetainedHeapBytes multiplies the retained state by it; a larger value leaves less evidence-phase heap.",
+		test: "src/limits.test.ts > the evidence retained state is sized at the retained rate"
+	},
+	{
+		id: "runner.evidenceRetainedHeapBytes",
+		unit: "bytes",
+		protects: "States the heap the evidence the readers keep may hold at once in the evidence phase, at the Q10 defaults, so the joint maximum of those caps can be checked against runner heap.",
+		effect: "Not enforced yet: the Q10 joint maximum is to keep it, one response at its parse peak and the packet at its evidence-phase rate within limit:runner.heapBytes. At the placeholder limit:runner.systemReservedBytes it exceeds the heap, so limit:packet.bytes does not take the evidence-phase bound until the reserve is measured.",
+		basis: {
+			kind: "derived",
+			inputs: [...Q10_RETAINED_INPUTS, "runner.heapBytesPerRetainedByte"],
+			formula: (...values) => {
+				const rate = values.at(-1) ?? 0;
+				return Math.ceil(values.slice(0, -1).reduce((sum, value) => sum + value, 0) * rate);
+			},
+			description: "The retained state at limit:runner.heapBytesPerRetainedByte: the thirteen Q10 byte shares and retained caps (the snapshot, session, registry and advisory byte shares, the malware, publish-time, registry and upstream signal-reader shares, and the session, npm, actions, uv and graph retained caps), limit:research.maxRetainedBytes, and the trusted config (limit:config.maxBytes), held through the whole phase. The byte shares stand for what their readers keep from the bytes they read; the research shares are also inside limit:research.maxRetainedBytes, so the sum is an upper bound. Q10(a) approved by the maintainer on 2026-11-27, #383."
+		},
+		test: "src/limits.test.ts > the evidence retained state is sized at the retained rate"
 	},
 	{
 		id: "runner.memoryBytes",
