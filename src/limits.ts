@@ -4340,8 +4340,8 @@ const DEFINITIONS = [
       protects:
         'Keeps an adopter setting of the model call timeout from outlasting the analysis time the job window leaves.',
       effect:
-        'Not enforced by the reviewer yet: L12 makes the config parser reject a longer request timeout. check:limits evaluates the register at this value.',
-      test: 'none: the hard maximum of an adopter setting the parser does not read yet (L12, #384); src/limits.test.ts pins its formula',
+        'Not enforced by the reviewer yet: L12 makes the config parser reject a longer request timeout. check:limits evaluates the register at this value. limit:analysis.maxAnalysisMs copies it as the least analysis time a run gets.',
+      test: 'none: the hard maximum of an adopter setting the parser does not read yet (L12, #384); src/limits.test.ts pins its formula and the copy',
     },
   ),
   derived(
@@ -4537,14 +4537,20 @@ const DEFINITIONS = [
       test: 'src/limits.test.ts > no heap setting at its hard maximum takes packet.bytes below its floor',
     },
   ),
-  unjustified('analysis.maxAnalysisMs', 600_000, 'milliseconds', {
-    protects:
-      "Analysis time is capped at the spec's 600 s maximum, so the stage cannot outlast the job's time budget.",
-    effect:
-      'The effective deadline is the earlier of the caller deadline minus the reserve and start plus 600 s. No call dispatches at or after it; in-flight calls end with deadline.',
-    note: "stopped (L11, Q17(a), #383): the approved basis is config with the hard maximum window − freshness − publication − evidence deadline − recheck, limit:job.maxAnalysisTimeMs, which is 471,971 ms at the defaults (840,000 − 240,000 − 34,917 − 58,195 − 34,917), below this default of 600,000. A default above its own hard maximum fails section 5 and check:limits, and no approved change lowers the default or moves the maximum. Stopped again (L11, item 2, 2026-11-28): the approved fix, a default equal to that maximum, 471,971, fails check:limits once implemented. The maximum falls as the evidence deadline rises: with limit:evidence.envelope.totalTimeoutMs at its own hard maximum (limit:job.maxEvidenceDeadlineMs, 471,971), limit:job.maxAnalysisTimeMs is 240,000, the one model call that maximum leaves, so a fixed default of 471,971 is 231,971 above its hard maximum there (\"analysis.maxAnalysisMs: above its hard maximum with evidence.envelope.totalTimeoutMs at its hard maximum\"). A default that holds at every other setting's maximum would be 240,000, a new value no option named. Making it a derived copy of limit:job.maxAnalysisTimeMs (471,971 at the defaults, 240,000 with the evidence deadline at its maximum) would meet the intent, a cap that never passes the job's own analysis bound, but it changes the approved basis from config to derived, so it needs the maintainer's OK first. Value unchanged",
-    test: 'src/analysis/batches.test.ts > no call dispatches at or after the registered analysis time cap from the start',
-  }),
+  derived(
+    'analysis.maxAnalysisMs',
+    'milliseconds',
+    ['job.maxAnalysisTimeMs'],
+    copy,
+    "The analysis time every run is guaranteed, a copy of limit:job.maxAnalysisTimeMs: the job window less the evidence deadline at its setting, the before-model recheck, the publication reserve and the final freshness allowance. 471,971 ms at the defaults (840,000 − 240,000 − 34,917 − 58,195 − 34,917), 267,341 ms with limit:evidence.envelope.totalTimeoutMs at its hard maximum (444,630, where limit:packet.bytes meets its floor), and 240,000 ms, one model call, with it at limit:job.maxEvidenceDeadlineMs. It is a floor, not a ceiling: analysis runs to the job time that actually remains, the caller deadline (job start + limit:job.window − limit:job.freshnessAllowance) less limit:analysis.publicationReserveMs, so evidence that ends early leaves its unspent time to analysis, and evidence that runs to its deadline still leaves this much. The earlier 600,000, timed from the start of analysis, had no basis and passed the job bound at the defaults; a cap of this value timed the same way would cut analysis short whenever evidence ended early. It was approved as configuration (SPEC-limit-register section 5, 2026-11-17), but the time a run leaves is not the adopter's to set, so it is derived. Approved by the maintainer on 2026-11-28 (L11, follow-up to Q17(a), #383).",
+    {
+      protects:
+        'States the least analysis time the job leaves after evidence, so the evidence deadline setting can never leave analysis less than one model call.',
+      effect:
+        'Not enforced as a limit: analysis stops dispatching at the caller deadline less the publication reserve, which is never earlier than this long after analysis starts, because evidence and the recheck end by the evidence deadline and their own timeouts. In-flight calls end with deadline at that cutoff.',
+      test: 'src/analysis/batches.test.ts > analysis runs past the guaranteed analysis time to the caller deadline less the reserve',
+    },
+  ),
   derived(
     'analysis.publicationReserveMs',
     'milliseconds',

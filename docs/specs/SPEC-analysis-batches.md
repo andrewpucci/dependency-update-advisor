@@ -358,6 +358,13 @@ ceilings are `limit:analysis.maxCalls` reserved calls,
 deadline clips the analysis deadline. These are operational limits, not measured
 provider performance; W2 must reconcile them with its own deadline and wiring.
 
+Amended (L11; approved by the maintainer on 2026-11-28,
+[#383](https://github.com/andrewpucci/dependency-update-advisor/issues/383)):
+`limit:analysis.maxAnalysisMs` is no longer a ceiling. The analysis deadline is
+the supplied deadline less the publication reserve, and
+`limit:analysis.maxAnalysisMs`, a copy of `limit:job.maxAnalysisTimeMs`, is the
+least analysis time a run gets.
+
 `analyzeDecisionUnits` accepts the inventory, trusted config, evaluation time,
 credential and monotonic deadline. It returns ordered records, T5 coverage,
 a separate analysis-unavailable flag, and bounded diagnostics. Each record

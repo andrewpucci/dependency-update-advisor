@@ -334,6 +334,16 @@ phase 3:
     structural, `limit:analysis.maxCallsMax`: the calls a run at
     `limit:packet.changes` units needs when every batch splits down to single
     units.
+  - Amended (L11; approved by the maintainer on 2026-11-28,
+    [#383](https://github.com/andrewpucci/dependency-update-advisor/issues/383)):
+    analysis time is not an adopter setting. Analysis runs to the job time
+    that actually remains: the caller deadline, which leaves the final
+    freshness allowance, less `limit:analysis.publicationReserveMs`. No cap
+    from the start of analysis shortens it, so time evidence leaves unspent
+    goes to analysis. `limit:analysis.maxAnalysisMs` is derived, a copy of
+    `limit:job.maxAnalysisTimeMs`: the least analysis time a run gets, when
+    evidence uses its whole deadline. It falls as the evidence deadline
+    rises, to one model call at `limit:job.maxEvidenceDeadlineMs`.
 - **Completion tokens:** `limit:analysis.completionTokens`. Hard maximum: the
   provider's maximum output tokens.
 - **Job budget and evidence deadline:** `limit:job.budget` and

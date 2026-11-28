@@ -28,7 +28,6 @@ export type UnitRecord = Readonly<{
 }>;
 const MAX_CALLS = limit('analysis.maxCalls');
 const MAX_CONCURRENT_CALLS = limit('analysis.maxConcurrentCalls');
-const MAX_ANALYSIS_MS = limit('analysis.maxAnalysisMs');
 const PUBLICATION_RESERVE_MS = limit('analysis.publicationReserveMs');
 type Dependencies = Readonly<{
   now: () => number;
@@ -78,10 +77,10 @@ export async function analyzeDecisionUnits(
       ? (parsedConfig.config.analysis?.model ?? null)
       : null;
   const unitIds = snapshot.inventory.units.map((unit) => unit.id);
-  const deadlineMs = Math.min(
-    selectedOptions.deadlineMs - PUBLICATION_RESERVE_MS,
-    start + MAX_ANALYSIS_MS,
-  );
+  // Analysis gets the job time that remains: the caller's deadline, which already leaves the final
+  // freshness allowance, less the publication reserve. No cap from its own start shortens it, so
+  // time evidence left unspent goes to analysis; limit:analysis.maxAnalysisMs is the least it gets.
+  const deadlineMs = selectedOptions.deadlineMs - PUBLICATION_RESERVE_MS;
   const { records, dispatched, splits, maxSplitDepth, durations } = await scheduleBatches(
     snapshot,
     { ...selectedOptions, deadlineMs },

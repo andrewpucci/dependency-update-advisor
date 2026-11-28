@@ -412,6 +412,15 @@ does not do that.
    `limit:job.freshnessAllowance` and `limit:analysis.publicationReserveMs`
    after the job start and the final check by about `limit:job.budget` minus
    `limit:analysis.publicationReserveMs`.
+
+   Amended (L11; approved by the maintainer on 2026-11-28,
+   [#383](https://github.com/andrewpucci/dependency-update-advisor/issues/383)):
+   the analysis layer stops at that deadline minus its publication reserve
+   alone. `limit:analysis.maxAnalysisMs` no longer caps analysis from its own
+   start; it is the least analysis time a run gets, a copy of
+   `limit:job.maxAnalysisTimeMs`, so evidence that ends early leaves its
+   unspent time to analysis.
+
 3. **Value: `freshnessAllowanceMs` = `limit:job.freshnessAllowance`.** It
    is the derived minimum: three sequential reads (run, PR, comparison) at the
    `limit:github.requestTimeoutMs` request timeout cover one full
@@ -993,6 +1002,12 @@ them.
    [#383](https://github.com/andrewpucci/dependency-update-advisor/issues/383)):
    no call outlasts the job, so the cap is the largest number with as many
    digits as `limit:job.budget`, and it follows the job budget setting.
+   Amended (L11; approved by the maintainer on 2026-11-28,
+   [#383](https://github.com/andrewpucci/dependency-update-advisor/issues/383)):
+   the remaining analysis time is no longer capped at
+   `limit:analysis.maxAnalysisMs`; it is at most the analysis deadline less
+   `limit:analysis.publicationReserveMs`, inside `limit:job.window`, so a
+   production value still has at most six digits.
 6. **Fail-closed preservation.** Neither value changes an outcome, status,
    comment, freshness gate, claim, or write. If a finished assessment is then
    discarded, the reason and the timing are dropped with it, as Amendment 4

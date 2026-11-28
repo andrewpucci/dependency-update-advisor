@@ -192,6 +192,7 @@ test('derived limits are wired to the entries they sum or copy', () => {
     expect.arrayContaining(['evidence.envelope.maxTotalBytes', 'research.cache.maxTotalBytes']),
   );
   expect(dependents(REGISTER, 'job.budget')).toEqual([
+    'analysis.maxAnalysisMs',
     'job.maxAnalysisTimeMs',
     'job.maxEvidenceDeadlineMs',
     'job.window',
@@ -997,6 +998,16 @@ test('the analysis settings are bounded by the change limit, the calls it needs 
       limit('job.freshnessAllowance'),
   );
   expect(limit('job.maxAnalysisTimeMs')).toBe(471_971);
+  // The analysis time cap copies it (L11, 2026-11-28), so it follows the evidence deadline down to
+  // the one model call that limit:job.maxEvidenceDeadlineMs leaves.
+  expect(limit('analysis.maxAnalysisMs')).toBe(limit('job.maxAnalysisTimeMs'));
+  const latest = buildRegister(
+    [...REGISTER.values()].map(({ value, ...entry }): LimitDefinition =>
+      entry.basis.kind === 'derived' ? entry : { ...entry, value },
+    ),
+    new Map([['evidence.envelope.totalTimeoutMs', limit('job.maxEvidenceDeadlineMs')]]),
+  );
+  expect(latest.get('analysis.maxAnalysisMs')?.value).toBe(limit('analysis.requestTimeoutMs'));
   for (const id of [
     'analysis.textBytes',
     'analysis.featureBytes',

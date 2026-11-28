@@ -1118,22 +1118,26 @@ test('a batch packs exactly the registered unit count and the next unit starts a
   expect(await batchSizes(cap + 1)).toEqual([cap, 1]);
 });
 
-test('no call dispatches at or after the registered analysis time cap from the start', async () => {
-  const cap = limit('analysis.maxAnalysisMs');
-  // Six batches, two calls in flight. The third call is prepared at cap - 1 and sets the clock to the cap;
-  // the next batch must then stay undispatched.
+test('analysis runs past the guaranteed analysis time to the caller deadline less the reserve', async () => {
+  // limit:analysis.maxAnalysisMs is the least analysis gets when evidence uses its whole deadline,
+  // not a cap from its own start (L11, 2026-11-28): with time left on the caller deadline, a call
+  // still dispatches after it, and none dispatches once the deadline less the reserve is reached.
+  const least = limit('analysis.maxAnalysisMs');
+  const deadlineMs = least + 300_000;
+  const cutoff = deadlineMs - limit('analysis.publicationReserveMs');
   const input = await inventoryOf(41);
   let time = 0;
   let dispatched = 0;
   const result = await analyzeDecisionUnits(
     input,
-    { apiKey: 'test-key', deadlineMs: 700_000 },
+    { apiKey: 'test-key', deadlineMs },
     {
       now: () => time,
       analyze: (batch, options) => {
         dispatched++;
-        if (dispatched === 2) time = cap - 1;
-        if (dispatched === 3) time = cap;
+        expect(options.deadlineMs).toBe(cutoff);
+        if (dispatched === 2) time = least + 1;
+        if (dispatched === 3) time = cutoff;
         return analyzeMistralBatch(batch, options, {
           now: () => time,
           fetch: async () => validatedReply(batch),
