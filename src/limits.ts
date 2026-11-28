@@ -3344,7 +3344,7 @@ const DEFINITIONS = [
       protects:
         'Caps alias expansions in the Dependabot config, so anchors and aliases cannot amplify the composed document beyond the node budget.',
       effect:
-        'The alias that exceeds the cap fails the whole file with budget, and no roots are read. A merge key (<<) fails it as unsupported.',
+        'The alias that exceeds the cap fails the whole file with budget, and no roots are read. A merge through an alias (<<: *name) fails it as unsupported; a literal << key, like any key the reader does not use, is ignored.',
       test: 'src/dependabot-roots.test.ts > expands aliases up to the alias cap and refuses one more',
     },
   ),

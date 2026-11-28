@@ -136,7 +136,15 @@ export function parseDependabotRoots(bytes: Uint8Array): DependabotRoots {
     if (!isMap(document.contents) && !isSeq(document.contents)) fail('malformed');
     // Aliases expand as in workflow files. The composed nodes get a budget of their own at the
     // node cap, so the cap still bounds the source's nodes and an expansion cannot pass it.
-    return extract(expand(document.contents, limits, { nodes: 0, aliases: 0, occurrences: 0 }));
+    // Keys are read leniently, as toJS read them: extract looks up only the keys it knows.
+    return extract(
+      expand(
+        document.contents,
+        limits,
+        { nodes: 0, aliases: 0, occurrences: 0 },
+        { lenientKeys: true },
+      ),
+    );
   } catch (error) {
     const reason = error instanceof YamlFailure ? error.reason : 'malformed';
     return Object.freeze({ kind: 'unavailable', reason });

@@ -96,8 +96,9 @@ src/packet.ts or coordinator  → passes roots and configRevision to N1/U2
    config. Aliases expand as in workflow files, up to
    `limit:dependabot.maxAliasExpansions`, a copy of
    `limit:w2.actions.maxAliasExpansions`. The expanded document is charged
-   to a node budget of its own at the node cap. A merge key (`<<`) is
-   `unsupported`.
+   to a node budget of its own at the node cap. A merge through an alias
+   (`<<: *name`) is `unsupported`; a literal `<<` key and a non-string key are
+   ignored, as YAML's own conversion ignored them before.
 
 4. **Narrow extraction.** Require `version: 2` and an `updates` sequence. From
    each entry, read only `package-ecosystem` and either `directory` (string)
