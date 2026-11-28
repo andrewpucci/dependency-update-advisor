@@ -8,7 +8,7 @@ import { enrichUpstream } from './upstream.js';
 import { createUpstreamReader } from './upstream-read.js';
 import { createAdvisoryReader } from './advisory-read.js';
 import { enrichAdvisories } from './advisories.js';
-import { validateReviewPacket } from '../schema.js';
+import { PACKET_LIMITS, validateReviewPacket } from '../schema.js';
 import { formDecisionUnits, evaluateUnitPolicy } from '../units.js';
 import { parseReviewConfig } from '../config.js';
 
@@ -176,7 +176,9 @@ test('clipped target notes beside an unavailable comparison keep the whole enric
       if (!/^\/repos\/[^/]+\/[^/]+\/releases(?:\/tags\/|$)/u.test(new URL(url).pathname))
         return response;
       const data = await response.json();
-      const long = (r: Record<string, unknown>) => ({ ...r, body: 'Long notes. '.repeat(300) });
+      // Notes one sentence longer than the packet text cap, so they must be clipped.
+      const notes = 'Long notes. '.repeat(Math.ceil(PACKET_LIMITS.textBytes / 12) + 1);
+      const long = (r: Record<string, unknown>) => ({ ...r, body: notes });
       return Response.json(Array.isArray(data) ? data.map(long) : long(data));
     },
   });

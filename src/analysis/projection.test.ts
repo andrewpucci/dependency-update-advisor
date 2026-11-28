@@ -5,7 +5,7 @@ import { validateReviewPacket } from '../schema.js';
 import { formDecisionUnits } from '../units.js';
 import { ANALYSIS_LIMITS, prepareAnalysisBatch, preparedSnapshot } from './contract.js';
 import { snapshotData } from './projection.js';
-import { limit } from '../limits.js';
+import { ANALYSIS_REQUEST_TEXT, limit } from '../limits.js';
 
 test('projects actual mixed collector units with short aliases and independent coverage', async () => {
   const { input } = await analysisScenario();
@@ -317,6 +317,33 @@ test('does not execute supplied accessors or accept invalid limits, duplicate or
   expect(() =>
     Object.defineProperty(result.batch.request.messages[1], 'content', { value: 'changed' }),
   ).toThrow();
+});
+
+test('the fixed request bytes are the skeleton and system prompt the projection sends', async () => {
+  const { input } = await analysisScenario();
+  const result = prepareAnalysisBatch({ ...input, limits: ANALYSIS_LIMITS });
+  if (result.kind !== 'prepared') throw new Error('preparation');
+  const { request } = result.batch;
+  const [system, user] = request.messages;
+  const bare = {
+    ...request,
+    model: '',
+    max_tokens: Number.MAX_SAFE_INTEGER,
+    messages: [system, { ...user, content: '' }],
+  };
+  expect(Buffer.byteLength(JSON.stringify(bare))).toBe(ANALYSIS_REQUEST_TEXT.fixedBytes);
+  // The model id and the user message are the only other bytes in the request.
+  expect(result.batch.requestBytes).toBe(
+    ANALYSIS_REQUEST_TEXT.fixedBytes -
+      String(Number.MAX_SAFE_INTEGER).length +
+      String(request.max_tokens).length +
+      Buffer.byteLength(request.model) +
+      Buffer.byteLength(JSON.stringify(user.content)) -
+      2,
+  );
+  expect(limit('analysis.fixedRequestBytes')).toBe(
+    ANALYSIS_REQUEST_TEXT.fixedBytes + limit('config.maxModelCodeUnits'),
+  );
 });
 
 test('sends the exact fixed request: greedy sampling with top_p 1 and no reasoning effort', async () => {

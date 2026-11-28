@@ -993,6 +993,22 @@ test.each([
   expect(result.diagnostics.maxSplitDepth).toBe(depth);
 });
 
+test('splitting every batch down to single units makes 2 × units − batches calls', async () => {
+  // Two first-level batches (8 and 4 units), each split by truncation down to single units: a
+  // batch of s units makes 2s − 1 calls, the structure limit:analysis.maxCallsMax counts.
+  const units = limit('analysis.maxUnits') + limit('analysis.maxUnits') / 2;
+  const batches = Math.ceil(units / limit('analysis.maxUnits'));
+  expect(2 * units - batches).toBeLessThanOrEqual(limit('analysis.maxCalls'));
+  const result = await runWithTruncation(await inventoryOf(units), (ids) => ids.length > 1);
+  expect(result.ok).toBe(true);
+  if (!result.ok) throw new Error('fixture failed');
+  expect(result.diagnostics.callsDispatched).toBe(2 * units - batches);
+  expect(result.records.every((record) => record.state.state === 'assessed')).toBe(true);
+  expect(limit('analysis.maxCallsMax')).toBe(
+    2 * limit('packet.changes') - Math.ceil(limit('packet.changes') / limit('analysis.maxUnits')),
+  );
+});
+
 test('independent first-level splits in different waves stay at depth 1', async () => {
   const input = await inventoryOf(24);
   const first = input.inventory.units.map((unit) => unit.id);
