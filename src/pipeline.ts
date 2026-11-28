@@ -438,26 +438,28 @@ async function evaluateEvidence(
           baseSha: binding.baseSha,
           contextRevision: trusted.contextRevision,
         };
-        const assembled = await inStage('packet', () =>
-          assembleReviewPacket({
-            trusted: base,
-            collectContext: (changes) =>
-              inStage('snapshot', () => trusted.collectContext(dependencyIdentities(changes))),
-            isCurrent,
-            openSession: async () => {
-              const opened = await openEvidenceSession({
-                binding,
-                fetch: input.githubFetch,
-                now: input.now,
-                deadline: evidenceDeadline,
-              });
-              evidenceSession = opened.kind;
-              if (opened.kind !== 'ready') throw new Error('no evidence session');
-              return opened.session;
-            },
-            collectors,
-            inventorySource: null,
-          }),
+        let assembled: Awaited<ReturnType<typeof assembleReviewPacket>> | undefined = await inStage(
+          'packet',
+          () =>
+            assembleReviewPacket({
+              trusted: base,
+              collectContext: (changes) =>
+                inStage('snapshot', () => trusted.collectContext(dependencyIdentities(changes))),
+              isCurrent,
+              openSession: async () => {
+                const opened = await openEvidenceSession({
+                  binding,
+                  fetch: input.githubFetch,
+                  now: input.now,
+                  deadline: evidenceDeadline,
+                });
+                evidenceSession = opened.kind;
+                if (opened.kind !== 'ready') throw new Error('no evidence session');
+                return opened.session;
+              },
+              collectors,
+              inventorySource: null,
+            }),
         );
         if (assembled.kind === 'context-failure')
           // A consumer configuration fault stops the review; a failed or limited read is incomplete.
@@ -479,21 +481,28 @@ async function evaluateEvidence(
         // Public research is only worth starting while this attempt still owns the current head.
         const beforeResearch = await recheck();
         if (beforeResearch !== 'current') return halted(beforeResearch);
-        const researched = await inStage('research', () =>
-          runResearch({
-            packet: assembled.packet,
-            trusted: { ...base, context: assembled.packet.context as never },
-            npmInventory: npmInventory as never,
-            comparison: null,
-            fetch: input.publicFetch,
-            cache: researchCache,
-            now: input.now,
-            deadline: evidenceDeadline,
-            evaluationTime: input.evaluationTime,
-            ...(input.wallNow ? { wallNow: input.wallNow } : {}),
-            signal,
-          }),
-        );
+        const { droppedOptional } = assembled;
+        // Research builds the packet analysis reads (src/research.ts), so the assembled packet is
+        // held only by research's input, and both are dropped once research returns: the analysis
+        // phase holds one packet, as limit:packet.bytes assumes (SPEC-limit-register section 5,
+        // heap by phase). Each is cleared explicitly, since a suspended async function can keep a
+        // local alive past its last use.
+        let research: (() => ReturnType<typeof runResearch>) | undefined = runResearch.bind(null, {
+          packet: assembled.packet,
+          trusted: { ...base, context: assembled.packet.context as never },
+          npmInventory: npmInventory as never,
+          comparison: null,
+          fetch: input.publicFetch,
+          cache: researchCache,
+          now: input.now,
+          deadline: evidenceDeadline,
+          evaluationTime: input.evaluationTime,
+          ...(input.wallNow ? { wallNow: input.wallNow } : {}),
+          signal,
+        });
+        assembled = undefined;
+        const researched = await inStage('research', research);
+        research = undefined;
         if (researched.kind !== 'ready')
           return { kind: 'internal-failure', stage: 'research', body: null };
         // Evidence state analysis never reads is dropped first, so the analysis phase holds only
@@ -519,7 +528,7 @@ async function evaluateEvidence(
             model: input.model,
           }),
         );
-        return assessedOutcome(reviewed, assembled.droppedOptional);
+        return assessedOutcome(reviewed, droppedOptional);
       },
     );
   } catch (error) {

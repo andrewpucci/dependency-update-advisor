@@ -1,3 +1,5 @@
+import { setFlagsFromString } from 'node:v8';
+import { runInNewContext } from 'node:vm';
 import { expect, test, vi } from 'vite-plus/test';
 import * as assessmentModule from './assessment.js';
 import * as collectionModule from './collection.js';
@@ -455,6 +457,36 @@ test('runs npm, Actions, and uv changes through research and model analysis to a
   expect(result.body).toEqual(expect.stringContaining(HEAD));
   expect(modelCalls.length).toBeGreaterThan(0);
   expect(publicCalls.some((url) => url.includes('/advisories'))).toBe(true);
+});
+
+test('the analysis phase holds only the packet research built, not the assembled one', async () => {
+  // limit:packet.bytes assumes one packet in the analysis phase. The assembled packet is watched
+  // through a WeakRef; when the model is called, a full collection must have freed it.
+  setFlagsFromString('--expose-gc');
+  const gc = runInNewContext('gc') as () => void;
+  const actual = await vi.importActual<typeof import('./packet.js')>('./packet.js');
+  const actualReview = await vi.importActual<typeof import('./assessment.js')>('./assessment.js');
+  let watched: WeakRef<object> | undefined;
+  let freed: boolean | undefined;
+  vi.mocked(packetModule.assembleReviewPacket).mockImplementationOnce(async (packetInput) => {
+    const assembled = await actual.assembleReviewPacket(packetInput);
+    if (assembled.kind === 'ready') watched = new WeakRef(assembled.packet);
+    return assembled;
+  });
+  vi.mocked(assessmentModule.reviewPacket).mockImplementationOnce(async (reviewInput) => {
+    // The test's own mocks record calls and results; clear them so only the pipeline holds refs.
+    vi.clearAllMocks();
+    // A WeakRef keeps its target until the job that created it ends; let it end first.
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    gc();
+    freed = watched !== undefined && watched.deref() === undefined;
+    return actualReview.reviewPacket(reviewInput);
+  });
+  const { input } = await setup({ evidence: 'changes' });
+  const result = await runReview(input);
+  expect(result.kind).toBe('handed-off');
+  expect(watched).toBeDefined();
+  expect(freed).toBe(true);
 });
 
 test('a full run makes freshness.checksPerRun freshness checks', async () => {
