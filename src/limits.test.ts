@@ -194,6 +194,7 @@ test('derived limits are wired to the entries they sum or copy', () => {
     'job.maxAnalysisTimeMs',
     'job.maxEvidenceDeadlineMs',
     'job.window',
+    'measureDemand.testTimeoutMs',
     'startup.maxReportedDurationMs',
   ]);
 });

@@ -3836,38 +3836,69 @@ const DEFINITIONS = [
     test: 'src/analysis/mistral.test.ts > rejects %s',
   },
   // Complexity report, from scripts/complexity/report.mjs.
-  unjustified('complexity.threshold', 15, 'count', {
+  {
+    id: 'complexity.threshold',
+    value: 15,
+    unit: 'count',
     protects:
       "Flags new or worsened functions too complex to review reliably, the advisory gate the maintainer's review rules name.",
     effect:
       'Functions above the threshold that are new or worse are listed as advisory; nothing fails.',
     test: 'scripts/complexity/report.test.mjs > reports only new or worse functions above 15, matching duplicates by rank',
-    note: 'no recorded reason',
-  }),
-  unjustified('complexity.gitMaxBufferBytes', 32 * MiB, 'bytes', {
+    basis: {
+      kind: 'external',
+      url: 'https://biomejs.dev/linter/rules/no-excessive-cognitive-complexity',
+      checked: '2026-11-28',
+      platformValue: 15,
+      margin:
+        "none: the report flags what Biome's port of the SonarJS cognitive-complexity rule would flag at its documented default ('The default is 15'), so the advisory matches the tool convention",
+    },
+  },
+  {
+    id: 'complexity.gitMaxBufferBytes',
+    value: 32 * MiB,
+    unit: 'bytes',
     protects:
       "git output is buffered in memory by execFileSync; without a cap a large ls-tree or show would grow the script's memory without limit.",
     effect:
       'Output over the cap makes execFileSync throw, so the run fails and produces no report for that revision.',
-    note: 'awaiting L8 measurement',
     test: 'none: the buffer for git output in the advisory complexity report; a run over it fails the report job, which never gates a merge',
-  }),
-  unjustified('complexity.cellInputCodeUnits', 160, 'code units', {
+    basis: {
+      kind: 'safety',
+      reason:
+        'Largest legitimate use: the report buffers one git ls-tree listing and one git show of a source file at a time; at this commit the largest file it reads is 280,793 bytes (src/limits.ts) and the src and scripts listing is 18,272 bytes, so the cap is over 100 times either. Harm: execFileSync keeps the whole output and decodes it to a string, so an unbounded buffer would take heap at GB scale on a huge blob, where the report process would run out of memory. Approved by the maintainer on 2026-11-27 (L11, #383).',
+    },
+  },
+  {
+    id: 'complexity.cellInputCodeUnits',
+    value: 160,
+    unit: 'code units',
     protects:
       'Function names and paths come from the reviewed PR; unbounded cells would inflate the comment past its body ceiling.',
     effect:
       'Each value is cut to the input cap before escaping, so a long name shows truncated with no error.',
-    note: 'no recorded reason',
     test: 'none: a display truncation in the advisory complexity report table, which never gates a merge',
-  }),
-  unjustified('complexity.cellOutputCodeUnits', 200, 'code units', {
+    basis: {
+      kind: 'safety',
+      reason:
+        'Largest legitimate use: function names and paths under 100 code units; at this commit the longest path the report lists is 74 and the longest function name about 30. Harm: escaping is linear in the input, and a name or path is bounded only by the git buffer, so the input cut bounds the escape work per cell before the output cut. 160 is above legitimate names and below where escaping every character could not already fill the output cap. Approved by the maintainer on 2026-11-27 (L11, #383).',
+    },
+  },
+  {
+    id: 'complexity.cellOutputCodeUnits',
+    value: 200,
+    unit: 'code units',
     protects:
       'Escaped cell text can grow well past its input length, so an output cap keeps each cell bounded in the comment.',
     effect:
       'Escaped text is cut to the output cap, then a trailing partial entity is removed, so no broken entity is shown.',
-    note: 'no recorded reason',
     test: 'none: a display truncation in the advisory complexity report table, which never gates a merge',
-  }),
+    basis: {
+      kind: 'safety',
+      reason:
+        'Largest legitimate use: a legitimate name or path escapes to about its own length (under 100 code units), since only & < > | ` and line breaks are escaped. Harm: each row holds two cells, and limit:complexity.maxListedFindings divides the comment cap by the widest row, so every unit of output cap costs listed rows; 200 keeps legitimate cells whole and lists 177 rows. Approved by the maintainer on 2026-11-27 (L11, #383).',
+    },
+  },
   derived(
     'complexity.maxCommentCodeUnits',
     'code units',
@@ -3938,14 +3969,20 @@ const DEFINITIONS = [
     test: 'tests/parity/large-inventory.test.ts > builds 93 members plus two same-named nested copies as standalone npm units',
   },
   // The demand measurement runs one whole review per test, from scripts/measure-demand.
-  unjustified('measureDemand.testTimeoutMs', 900_000, 'milliseconds', {
-    protects:
-      'A hung review run inside the demand measurement would otherwise run indefinitely; the timeout ends that test. It equals the 15-minute review job limit.',
-    effect:
-      "A test past the timeout fails under vitest's timeout behavior, which is not read in this repo.",
-    note: 'awaiting L8 measurement',
-    test: 'none: the timeout of the manual demand measurement, which needs a live token and is not part of npm test',
-  }),
+  derived(
+    'measureDemand.testTimeoutMs',
+    'milliseconds',
+    ['job.budget'],
+    copy,
+    'Each demand test runs one whole review, which the runner allows at most limit:job.budget, so the test timeout copies it. Approved by the maintainer on 2026-11-27 (L11, #383).',
+    {
+      protects:
+        'A hung review run inside the demand measurement would otherwise run indefinitely; the timeout ends that test at the review job limit.',
+      effect:
+        "A test past the timeout fails under vitest's timeout behavior, which is not read in this repo.",
+      test: 'none: the timeout of the manual demand measurement, which needs a live token and is not part of npm test',
+    },
+  ),
   {
     id: 'measureDemand.quotaTraceValueUnits',
     value: 32,
