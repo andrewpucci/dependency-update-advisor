@@ -3645,7 +3645,7 @@ const DEFINITIONS = [
     basis: {
       kind: 'safety',
       reason:
-        'Parse safety on untrusted model output, which section 5 makes never configurable. Largest legitimate use: one concise paragraph per field, the spec\'s "concise per-unit advice", which the system prompt states as under 1,024 bytes. Harm above: the rendered assessments crowd limit:comment.maxBodyCodeUnits, and fitComment (src/reporting.ts) drops whole sections, the assessments last, to fit. Approved by the maintainer on 2026-11-27 (L11, #383).',
+        'Parse safety on untrusted model output, which section 5 makes never configurable. Largest legitimate use: one concise paragraph per field, the spec\'s "concise per-unit advice", which the system prompt states as under 1,024 bytes. Harm above: blocker text (reason, impact, evidence claims, remediation and validation steps) renders in the Reasons-not-to-merge lines of the comment head, which fitComment (src/reporting.ts) never drops, so a longer field makes the run fail with category size sooner; assessment text renders in the sections fitComment drops, the assessments last. The cap alone does not keep the head inside limit:comment.maxBodyCodeUnits (87,381 code units): rendering the malware analysis parity scenario (tests/parity/analysis.ts) with its blocker filled to the caps, a blocker whose reason, impact, one evidence claim and limit:analysis.steps remediation and validation steps are each 1,024 ASCII bytes renders as an 18,830-code-unit line, so 5 such blockers overflow the comment (5 × 18,830 = 94,150) whatever else the head holds; with limit:analysis.references evidence claims at the cap one blocker is 52,868 code units and 2 overflow; text that escapes (each & renders as 5 code units) overflows with 1. Approved by the maintainer on 2026-11-27 (L11, #383).',
     },
     effect:
       'A field over the cap fails validation of the whole reply (category schema), and no assessment is kept.',
@@ -3660,7 +3660,7 @@ const DEFINITIONS = [
     basis: {
       kind: 'safety',
       reason:
-        'Parse safety on untrusted model output, as for limit:analysis.textBytes. Largest legitimate use: one short label naming a capability, below a paragraph, so the cap sits below the text cap. Harm above: the same crowding of the comment. Approved by the maintainer on 2026-11-27 (L11, #383).',
+        'Parse safety on untrusted model output, as for limit:analysis.textBytes. Largest legitimate use: one short label naming a capability, below a paragraph, so the cap sits below the text cap. Harm above: capability lines render in the optional sections fitComment (src/reporting.ts) drops first to fit limit:comment.maxBodyCodeUnits, so longer labels drop them sooner. Approved by the maintainer on 2026-11-27 (L11, #383).',
     },
     effect:
       'An over-cap feature fails validation of the whole reply (category schema), and no assessment is kept.',
