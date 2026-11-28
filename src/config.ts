@@ -130,7 +130,7 @@ function invalidPolicy(policy: unknown): string | undefined {
       // at a time a Date can represent, which also keeps its milliseconds a safe integer.
       !Number.isSafeInteger(policy.minimumReleaseAgeDays) ||
       policy.minimumReleaseAgeDays < 1 ||
-      policy.minimumReleaseAgeDays > limit('date.timeRangeDays'))
+      policy.minimumReleaseAgeDays > limit('config.maxReleaseAgeDays'))
   )
     return 'policy.minimumReleaseAgeDays';
   if (Object.hasOwn(policy, 'verdicts')) {

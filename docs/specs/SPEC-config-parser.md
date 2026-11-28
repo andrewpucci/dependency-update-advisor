@@ -24,9 +24,16 @@ Amendment approved 2026-10-11:
 - Accept the overridable `compatibilityUncertainty`, `supplyChainChange`,
   `licenseChange`, `recentRelease`, and `deprecatedRelease` rules, each
   defaulting to `merge_with_followups`.
-- Accept `policy.minimumReleaseAgeDays`, an integer of at least 1 (no
-  maximum: amended in L11, Q24(b), #383) that defaults to 1.
+- Accept `policy.minimumReleaseAgeDays`, an integer from 1 through
+  `limit:config.maxReleaseAgeDays` that defaults to 1.
 - Treat `maliciousPackage` as a fixed hold, not a configurable rule.
+
+Amended (L11, E18 and Q24(b); approved by the maintainer on 2026-11-27,
+[#383](https://github.com/andrewpucci/dependency-update-advisor/issues/383)):
+`limit:config.maxReleaseAgeDays` is no longer a policy ceiling. No platform or
+Dependabot document gives one, so the window's only maximum is structural: the
+days ECMAScript time values span on each side of the epoch, past which the
+window cannot end at a time a `Date` can represent.
 
 The [C3 policy contract](SPEC-advisory-policy.md) defines applicability, and
 issue #49 implements the parser and schema amendment under parent #7.
@@ -151,7 +158,7 @@ An optional field supplied as `null` is invalid, not equivalent to omission.
 | `context.excerptFiles`              | Array of at most `limit:context.maxSourceCandidates` distinct exact relative path strings | Empty allowlist                                                                 |
 | `policy`                            | Object containing only optional `verdicts` and `minimumReleaseAgeDays`                    | Shared policy defaults                                                          |
 | `policy.verdicts`                   | Object with only the ten named rules below                                                | Shared default for each omitted rule                                            |
-| `policy.minimumReleaseAgeDays`      | Safe integer of at least 1, with no maximum (L11, Q24(b))                                 | `1`                                                                             |
+| `policy.minimumReleaseAgeDays`      | Integer from 1 through `limit:config.maxReleaseAgeDays`                                   | `1`                                                                             |
 
 An empty `analysis` object is invalid. Empty `context`, `policy`, and
 `policy.verdicts` objects retain their respective defaults. Empty source-root

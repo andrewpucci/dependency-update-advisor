@@ -270,19 +270,21 @@ These are never configurable:
   invalid config. It never clamps the value.
 
 One limit is already adopter configuration: `policy.minimumReleaseAgeDays`,
-an integer from 1 that defaults to 1.
+an integer from 1 through `limit:config.maxReleaseAgeDays` that defaults
+to 1. It becomes the first entry with `configurable` set. Its bounds, 1 and
+`limit:config.maxReleaseAgeDays`, need a stated basis like any other limit.
 
 Amended (L11, E18 and Q24(b); approved by the maintainer on 2026-11-27,
 [#383](https://github.com/andrewpucci/dependency-update-advisor/issues/383)):
-the window has no maximum and no register entry. No platform or Dependabot
-document gives one (Dependabot's `cooldown` days have none), and a chosen
-ceiling is not a basis. It is a whole number of days, at least 1, and at
-most `limit:date.timeRangeDays`, the days ECMAScript time values span on each
-side of the epoch. That bound is structural, not a policy cap: a longer window
-cannot end at any time a `Date` can represent, and within it the window's
-milliseconds (at most 8.64 × 10^15) stay a safe integer, so the recheck time
-is exact.
-The lower bound of 1 is a positivity check, not a limit.
+the window has no policy maximum, so it is not a `configurable` entry. No
+platform or Dependabot document gives a maximum (Dependabot's `cooldown` days
+have none), and a chosen ceiling is not a basis.
+`limit:config.maxReleaseAgeDays` is now a structural bound, not a policy cap:
+the days ECMAScript time values span on each side of the epoch. A longer
+window cannot end at any time a `Date` can represent, and within it the
+window's milliseconds (at most 8.64 × 10^15) stay a safe integer, so the
+recheck time is exact. The lower bound of 1 is a positivity check, not a
+limit.
 
 Configuration is read only from the trusted default-branch file, as today. The
 v1 parser rejects unknown keys, so a new `limits` section needs a parser

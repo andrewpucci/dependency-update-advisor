@@ -645,8 +645,8 @@ describe('C3 configuration amendment', () => {
     expect(result.minimumReleaseAgeDaysExplicit).toBe(true);
   });
 
-  test('the release-age window admits date.timeRangeDays and rejects one more day in parser and schema', () => {
-    const days = limit('date.timeRangeDays');
+  test('the release-age window admits config.maxReleaseAgeDays and rejects one more day in parser and schema', () => {
+    const days = limit('config.maxReleaseAgeDays');
     // The bound is the ECMAScript time range: its last millisecond is a valid Date, the next is not.
     expect(Number.isNaN(new Date(days * MS_PER_DAY).getTime())).toBe(false);
     expect(Number.isNaN(new Date(days * MS_PER_DAY + 1).getTime())).toBe(true);

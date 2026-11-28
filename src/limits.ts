@@ -3412,7 +3412,7 @@ const DEFINITIONS = [
     },
   },
   derived(
-    'date.timeRangeDays',
+    'config.maxReleaseAgeDays',
     'count',
     [],
     () => 100_000_000,
@@ -3422,7 +3422,7 @@ const DEFINITIONS = [
         'Keeps the release-age window inside the times a Date can represent, so the recheck time it gives is a real, exact time.',
       effect:
         'A policy.minimumReleaseAgeDays above it fails the config with field policy.minimumReleaseAgeDays, in the parser and the schema.',
-      test: 'src/config.test.ts > the release-age window admits date.timeRangeDays and rejects one more day in parser and schema',
+      test: 'src/config.test.ts > the release-age window admits config.maxReleaseAgeDays and rejects one more day in parser and schema',
     },
   ),
   // Comment bodies, from comments.ts.

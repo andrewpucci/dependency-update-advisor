@@ -20,9 +20,16 @@ Amendment approved 2026-10-11:
 - Accept the overridable `compatibilityUncertainty`, `supplyChainChange`,
   `licenseChange`, `recentRelease`, and `deprecatedRelease` rules, each
   defaulting to `merge_with_followups`.
-- Accept `policy.minimumReleaseAgeDays`, an integer of at least 1 (no
-  maximum, amended in L11) that defaults to 1.
+- Accept `policy.minimumReleaseAgeDays`, an integer from 1 through
+  `limit:config.maxReleaseAgeDays` that defaults to 1.
 - Treat `maliciousPackage` as a fixed hold, not a configurable rule.
+
+Amended (L11, E18 and Q24(b); approved by the maintainer on 2026-11-27,
+[#383](https://github.com/andrewpucci/dependency-update-advisor/issues/383)):
+`limit:config.maxReleaseAgeDays` is no longer a policy ceiling. No platform or
+Dependabot document gives one, so the window's only maximum is structural: the
+days ECMAScript time values span on each side of the epoch, past which the
+window cannot end at a time a `Date` can represent.
 
 The [C3 policy contract](SPEC-advisory-policy.md) defines applicability.
 
@@ -174,18 +181,18 @@ identifies when a local override changed the default recommendation and still
 displays the underlying evidence and coverage status.
 
 `policy.minimumReleaseAgeDays` sets the `recentRelease` window as an integer
-of at least 1 day and defaults to 1. A
+from 1 through `limit:config.maxReleaseAgeDays` days and defaults to 1. A
 verified malware advisory always holds the update with `do_not_merge`; no
 configuration can relax it.
 
 Amended (L11, E18 and Q24(b); approved by the maintainer on 2026-11-27,
 [#383](https://github.com/andrewpucci/dependency-update-advisor/issues/383)):
-the window has no maximum. No platform or Dependabot document gives one
-(Dependabot's `cooldown` days have none), and a chosen ceiling is not a
-basis. It is a whole number of days from 1 through `limit:date.timeRangeDays`,
-the days ECMAScript time values span on each side of the epoch: a structural
-bound, not a policy cap. A longer window cannot end at any time a `Date` can
-represent, and within it the window's milliseconds stay a safe integer.
+the window has no policy maximum. No platform or Dependabot document gives one
+(Dependabot's `cooldown` days have none), and a chosen ceiling is not a basis.
+`limit:config.maxReleaseAgeDays` is now the days ECMAScript time values span on
+each side of the epoch: a structural bound, not a policy cap. A longer window
+cannot end at any time a `Date` can represent, and within it the window's
+milliseconds stay a safe integer.
 
 `incompleteEvidence` applies to an assessed decision unit with a visible
 evidence gap. It cannot turn an unassessed unit's `decision_incomplete` state

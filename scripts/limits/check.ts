@@ -278,7 +278,7 @@ export const SCHEMA_BOUNDS: Readonly<Record<string, string>> = Object.freeze({
   'schemas/review-config-v1.json#/properties/context/properties/excerptFiles/maxItems':
     'context.maxSourceCandidates',
   'schemas/review-config-v1.json#/properties/policy/properties/minimumReleaseAgeDays/maximum':
-    'date.timeRangeDays',
+    'config.maxReleaseAgeDays',
 });
 
 const BOUND_KEYWORDS = new Set([
