@@ -10,6 +10,8 @@ import { heapBytesFor, limit } from './limits.js';
  */
 export const RELAUNCHED_ENV = 'DEPENDENCY_REVIEW_RELAUNCHED';
 const OLD_SPACE_FLAG = '--max-old-space-size';
+/** V8 reads `-` and `_` alike in its flag names, so either spelling sets the old generation. */
+const OLD_SPACE_FLAG_PATTERN = /^--max[-_]old[-_]space[-_]size(?:=|$)/u;
 const FORWARDED_SIGNALS = ['SIGINT', 'SIGTERM', 'SIGHUP'] as const;
 /** The exit code of an action that stops because it cannot have the heap its caps assume. */
 export const HEAP_EXIT_CODE = EXIT_CODE.heap;
@@ -104,10 +106,7 @@ export async function relaunch(current: RelaunchProcess): Promise<Relaunch> {
         );
   };
   if (current.env[RELAUNCHED_ENV] !== undefined) return verified();
-  if (
-    current.execArgv.some((arg) => arg === OLD_SPACE_FLAG || arg.startsWith(`${OLD_SPACE_FLAG}=`))
-  )
-    return verified();
+  if (current.execArgv.some((arg) => OLD_SPACE_FLAG_PATTERN.test(arg))) return verified();
   const mib = oldSpaceMiB(current.memory);
   if (mib === null)
     return failed(`the runner's ${current.memory} bytes of memory leave no heap for the review`);
@@ -140,15 +139,19 @@ export async function relaunch(current: RelaunchProcess): Promise<Relaunch> {
   }
   try {
     return await new Promise<Relaunch>((resolve) => {
-      // An error before the child exits means it could not be started.
-      child.once('error', () =>
-        resolve(failed('Node could not be relaunched with the runner heap')),
-      );
+      // An error with no process id means the child could not be started. Any later error (a
+      // failed signal or message to a running child) leaves the child to exit on its own. The
+      // listener stays, so no error event is ever unhandled.
+      child.on('error', () => {
+        if (child.pid === undefined)
+          resolve(failed('Node could not be relaunched with the runner heap'));
+      });
       child.once('exit', (code, signal) => resolve({ kind: 'exited', code, signal }));
     });
   } finally {
     for (const signal of FORWARDED_SIGNALS) signals.off(signal, forward);
     ipc?.off('message', down);
+    child.off('message', up);
   }
 }
 

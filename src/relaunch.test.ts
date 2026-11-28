@@ -95,6 +95,9 @@ test('never relaunches a relaunched process or one with an old-generation size',
   expect(await relaunch({ ...base, execArgv: ['--max-old-space-size=100'], env: {} })).toEqual({
     kind: 'run',
   });
+  // V8 reads `_` and `-` alike in flag names.
+  for (const flag of ['--max_old_space_size=100', '--max_old-space_size', '--max-old-space-size'])
+    expect(await relaunch({ ...base, execArgv: [flag], env: {} }), flag).toEqual({ kind: 'run' });
   // A runner that leaves no heap stops the action rather than run it at V8's default.
   expect(await relaunch({ ...base, execArgv: [], env: {}, memory: memoryFor(0) })).toMatchObject({
     kind: 'failed',
@@ -224,3 +227,37 @@ test('a relaunched child whose heap limit is below the required heap stops with 
     ),
   );
 }, 60_000);
+
+test('ignores a later child error, never leaves one unhandled, and drops its listeners', async () => {
+  const child = fakeChild();
+  Object.defineProperty(child, 'pid', { value: 4242 });
+  child.send = vi.fn(() => true);
+  Object.defineProperty(child, 'connected', { value: true });
+  const parent = new EventEmitter();
+  const ipc = {
+    send: vi.fn(),
+    on: (event: 'message', listener: (message: unknown) => void) => parent.on(event, listener),
+    off: (event: 'message', listener: (message: unknown) => void) => parent.off(event, listener),
+  };
+  const running = relaunch({
+    execPath: '/node',
+    execArgv: [],
+    argv: ['/node', '/a.js'],
+    env: {},
+    memory: memoryFor(300),
+    spawn: () => child,
+    signals: new EventEmitter() as never,
+    ipc,
+  });
+  // A running child's errors, such as a failed signal, are not a failed start, and a second one
+  // is handled too.
+  child.emit('error', new Error('EPERM'));
+  child.emit('error', new Error('EPERM'));
+  child.emit('message', 'up');
+  expect(ipc.send).toHaveBeenCalledWith('up');
+  child.emit('exit', 0, null);
+  expect(await running).toEqual({ kind: 'exited', code: 0, signal: null });
+  expect(child.listenerCount('message')).toBe(0);
+  expect(parent.listenerCount('message')).toBe(0);
+  expect(() => child.emit('error', new Error('late'))).not.toThrow();
+});
