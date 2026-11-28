@@ -2057,7 +2057,9 @@ test('the packet floor is the largest required-only packet T4 accepts at the cha
   // packet is rejected. A cap that grows without the floor packet following fails here.
   for (const shape of FLOOR_SHAPES) {
     for (const { where, floor } of grownFloors(floorPacket(2, caps, shape)))
-      expect(validateReviewPacket(floor.packet, floor.expected).ok, `${shape} ${where}`).toBe(false);
+      expect(validateReviewPacket(floor.packet, floor.expected).ok, `${shape} ${where}`).toBe(
+        false,
+      );
   }
   // The floor follows each cap it fills.
   for (const key of Object.keys(caps) as (keyof typeof caps)[])

@@ -750,7 +750,11 @@ export const FLOOR_EVIDENCE_REASONS = Object.freeze([
 export const FLOOR_SHAPES = Object.freeze(['npm', 'actions', 'uv'] as const);
 export type FloorShape = (typeof FLOOR_SHAPES)[number];
 /** The required-field caps a floor packet fills (limit:packet.floorBytes's inputs). */
-export type FloorCaps = Readonly<{ listEntries: number; idCodeUnits: number; identityBytes: number }>;
+export type FloorCaps = Readonly<{
+  listEntries: number;
+  idCodeUnits: number;
+  identityBytes: number;
+}>;
 
 const FLOOR_SHA = '0'.repeat(40);
 /** The largest number a packet id field admits (positiveId in src/event.ts). */
@@ -902,7 +906,9 @@ export function floorPacket(changes: number, caps: FloorCaps, shape: FloorShape 
       ecosystem: shape,
       kind: 'update',
       role: 'direct',
-      ...(shape === 'npm' ? { directRoles: ['production', 'development', 'peer', 'optional'] } : {}),
+      ...(shape === 'npm'
+        ? { directRoles: ['production', 'development', 'peer', 'optional'] }
+        : {}),
       evidence,
       from: side(index, 0, changeId),
       to: side(index, 1, changeId),
@@ -1584,7 +1590,12 @@ const DEFINITIONS = [
       "Not enforced at run time. check:limits rejects a register whose limit:packet.bytes falls below it at the defaults or with any setting at its hard maximum, and each heap-spending setting's hard maximum is the largest value at which limit:packet.bytes stays at or above it; L12 makes the config parser apply the same check at the adopter's settings.",
     basis: {
       kind: 'derived',
-      inputs: ['packet.changes', 'packet.listEntries', 'packet.idCodeUnits', 'packet.identityBytes'],
+      inputs: [
+        'packet.changes',
+        'packet.listEntries',
+        'packet.idCodeUnits',
+        'packet.identityBytes',
+      ],
       formula: (changes, listEntries, idCodeUnits, identityBytes) =>
         floorBytes(changes, { listEntries, idCodeUnits, identityBytes }),
       description:
