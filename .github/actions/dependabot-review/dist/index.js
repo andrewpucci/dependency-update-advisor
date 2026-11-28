@@ -688,24 +688,18 @@ const rateAudit = (share, dimension, unit) => ({
 	protects: `Grows the ${share} ${dimension} share with each ${unit} member, so a larger change gets more and a small one fails faster.`,
 	effect: "Adds rate times the count to the share, rounded up and capped at the ceiling; zero leaves the share at its base."
 });
-/** A sized base as its register entry: derived or measured. */
+/** A sized base as its register entry: always derived. */
 function sizedBase(id, base, unit, audit) {
-	if ("inputs" in base) {
-		const entry = derived(id, unit, base.inputs, base.formula, base.description, audit);
-		return base.structuralTest === void 0 ? entry : {
-			...entry,
-			basis: {
-				...entry.basis,
-				structuralTest: base.structuralTest
-			}
-		};
-	}
-	return fitted(id, base.value, unit, {
-		...UV_MEASURE,
-		...base.basis
-	}, audit);
+	const entry = derived(id, unit, base.inputs, base.formula, base.description, audit);
+	return base.structuralTest === void 0 ? entry : {
+		...entry,
+		basis: {
+			...entry.basis,
+			structuralTest: base.structuralTest
+		}
+	};
 }
-/** A #467 sized dimension's base and rate entries: `measured` entries citing #462, or a kept base. */
+/** A #467 sized dimension's base and rate entries: a derived base and `measured` rates citing #462. */
 function sizedShareEntries(share, dimension, sized, unit, units) {
 	const baseId = `research.share.${share}.${dimension}.base`;
 	const baseAudit = {
@@ -1435,12 +1429,12 @@ const DEFINITIONS = [
 		effect: "The ceiling of the scaled upstream request share; the upstream reader stops with budget at the share, and the stage keeps the evidence already gathered.",
 		test: "src/evidence/upstream-read.test.ts > upstream reader spends exactly its request share and refuses the request past it"
 	}),
-	derived("evidence.allocation.upstream.maxTotalBytes", "bytes", ["evidence.envelope.totalTimeoutMs", "upstream.throughputBytesPerSecond"], (totalMs, throughput) => Math.floor(totalMs / 1e3 * throughput / 2), "Half of what the upstream reader can read in the evidence window at the measured upstream throughput (limit:upstream.throughputBytesPerSecond, 640,000 bytes/s on the #462 uv PRs, reproduced by npm run probe:upstream-throughput): limit:evidence.envelope.totalTimeoutMs ÷ 1,000 × 640,000 ÷ 2 = 240 × 640,000 ÷ 2 = 76,800,000 bytes, rounded down, about 120 s of upstream reads; the halving leaves a margin for slower responses. Research runs upstream, then advisories, then signals, one after another, on the one limit:evidence.envelope.totalTimeoutMs deadline: this ceiling and the advisory ceiling (limit:evidence.allocation.advisory.maxRequests) each take half the window at the measured throughput and latency, so together they use the whole window at worst, and signals relies on neither reaching its ceiling. With the derived base of about 29 MiB, the per-member rate reaches it at 62 members ((76,800,000 − 30,408,704) ÷ 750,000 ≈ 61.9). Approved by the maintainer on 2026-11-27, #467; derived rather than written as a value on review of #468; the throughput became a register input with its probe command on 2026-11-27 (L11, #383). It follows the evidence deadline setting (L11, Q1).", {
+	derived("evidence.allocation.upstream.maxTotalBytes", "bytes", ["evidence.envelope.totalTimeoutMs", "upstream.throughputBytesPerSecond"], (totalMs, throughput) => Math.floor(totalMs / 1e3 * throughput / 2), "Half of what the upstream reader can read in the evidence window at the measured upstream throughput (limit:upstream.throughputBytesPerSecond, 640,000 bytes/s on the #462 uv PRs, reproduced by npm run probe:upstream-throughput): limit:evidence.envelope.totalTimeoutMs ÷ 1,000 × 640,000 ÷ 2 = 240 × 640,000 ÷ 2 = 76,800,000 bytes, rounded down, about 120 s of upstream reads; the halving leaves a margin for slower responses. Research runs upstream, then advisories, then signals, one after another, on the one limit:evidence.envelope.totalTimeoutMs deadline: this ceiling and the advisory ceiling (limit:evidence.allocation.advisory.maxRequests) each take half the window at the measured throughput and latency, so together they use the whole window at worst, and signals relies on neither reaching its ceiling. Signals has no time share of its own: its npm publish-time and registry ceilings (2 × limit:packet.changes each, L11 #383) are counts, not sized to the time left, and its reads run one at a time, so on a large npm change the signals readers can stop at the evidence deadline, refused with budget, before they reach their shares. With the derived base of about 29 MiB, the per-member rate reaches it at 62 members ((76,800,000 − 30,408,704) ÷ 750,000 ≈ 61.9). Approved by the maintainer on 2026-11-27, #467; derived rather than written as a value on review of #468; the throughput became a register input with its probe command on 2026-11-27 (L11, #383). It follows the evidence deadline setting (L11, Q1).", {
 		protects: "Caps response bytes of upstream research reads, the ceiling of the per-member upstream byte share, so they cannot take more of the evidence time or runner memory than the evidence window can read.",
 		effect: "The ceiling of the scaled upstream byte share; a response past the share's remaining bytes is refused with budget and the upstream reader stops.",
 		test: "src/evidence/upstream-read.test.ts > upstream reader accepts a byte share exactly and refuses the byte past it"
 	}),
-	derived("evidence.allocation.advisory.maxRequests", "count", ["evidence.envelope.totalTimeoutMs", "osv.slowestResponseMs"], (totalMs, slowest) => Math.floor(totalMs / slowest / 2), "The evidence window, limit:evidence.envelope.totalTimeoutMs, divided by the slowest measured OSV response (limit:osv.slowestResponseMs, 541 ms, reproduced by npm run probe:osv-latency), halved for margin and rounded down: 240,000 ÷ 541 = 443.6, halved 221.8, so 221 sequential lookups fit in half the window, about 120 s of OSV. Research runs upstream, then advisories, then signals, one after another, on the one limit:evidence.envelope.totalTimeoutMs deadline: this ceiling and the upstream byte ceiling (limit:evidence.allocation.upstream.maxTotalBytes) each take half the window at the measured throughput and latency, so together they use the whole window at worst, and signals relies on neither reaching its ceiling. Approved by the maintainer on 2026-11-27, #467; the latency became a register input with its probe command on 2026-11-27 (L11, #383). It follows the evidence deadline setting (L11, Q1).", {
+	derived("evidence.allocation.advisory.maxRequests", "count", ["evidence.envelope.totalTimeoutMs", "osv.slowestResponseMs"], (totalMs, slowest) => Math.floor(totalMs / slowest / 2), "The evidence window, limit:evidence.envelope.totalTimeoutMs, divided by the slowest measured OSV response (limit:osv.slowestResponseMs, 541 ms, reproduced by npm run probe:osv-latency), halved for margin and rounded down: 240,000 ÷ 541 = 443.6, halved 221.8, so 221 sequential lookups fit in half the window, about 120 s of OSV. Research runs upstream, then advisories, then signals, one after another, on the one limit:evidence.envelope.totalTimeoutMs deadline: this ceiling and the upstream byte ceiling (limit:evidence.allocation.upstream.maxTotalBytes) each take half the window at the measured throughput and latency, so together they use the whole window at worst, and signals relies on neither reaching its ceiling. Signals has no time share of its own: its npm publish-time and registry ceilings (2 × limit:packet.changes each, L11 #383) are counts, not sized to the time left, and its reads run one at a time, so on a large npm change the signals readers can stop at the evidence deadline, refused with budget, before they reach their shares. Approved by the maintainer on 2026-11-27, #467; the latency became a register input with its probe command on 2026-11-27 (L11, #383). It follows the evidence deadline setting (L11, Q1).", {
 		protects: "Caps advisory lookups, the ceiling of the per-member advisory share, so a large group cannot take more of the shared evidence time than its lookups can use.",
 		effect: "The ceiling of the scaled advisory request share; requests past the share return budget, and the stage keeps the advisory evidence already read.",
 		test: "src/evidence/advisory-read.test.ts > advisory reader spends exactly its request share and refuses the lookup past it"
@@ -1552,7 +1546,7 @@ const DEFINITIONS = [
 		effect: "Candidates are split into queries of at most this many; the next candidate starts another query.",
 		test: "src/evidence/batches.test.ts > a tag query holds exactly the register maximum of candidates, and one more starts another"
 	},
-	derived("evidence.allocation.signals.readers.publishTimes.maxRequests", "count", ["packet.changes"], (changes) => 2 * changes, "At most one publish-time read per side of a change (src/evidence/policy-signals.ts:140-169 reads head, then base, and reuses the result for an equal name and version set), for at most limit:packet.changes changes: 2 × 128 = 256, the rule the malware and metadata ceilings use (#467). These are npm registry reads, not GitHub reads. The fitted publish-time share binds long before this ceiling. Approved by the maintainer on 2026-11-27 (L11, #383).", {
+	derived("evidence.allocation.signals.readers.publishTimes.maxRequests", "count", ["packet.changes"], (changes) => 2 * changes, "At most one publish-time read per side of a change (src/evidence/policy-signals.ts:140-169 reads head, then base, and reuses the result for an equal name and version set), for at most limit:packet.changes changes: 2 × 128 = 256, the rule the malware and metadata ceilings use (#467). These are npm registry reads, not GitHub reads. The fitted publish-time share binds long before this ceiling. The ceiling is a count with no time accounting: reads run one at a time on the shared limit:evidence.envelope.totalTimeoutMs, after upstream and advisories, so on a large npm change the reader can stop at the evidence deadline, refused with budget, before it reaches its share. Approved by the maintainer on 2026-11-27 (L11, #383).", {
 		protects: "Caps npm publish-time lookups, the ceiling of the per-member publish-time share, so the signals stage stays inside the envelope.",
 		effect: "The ceiling of the scaled publish-time request share; the lookup past the share is refused with budget and no request is sent.",
 		test: "src/evidence/npm-publish-times.test.ts > the publish-time request share allows exactly its count and refuses the next lookup unsent"
@@ -1562,7 +1556,7 @@ const DEFINITIONS = [
 		effect: "A response past the share's remaining bytes returns budget and the reader stops.",
 		test: "src/evidence/npm-publish-times.test.ts > the publish-time byte share allows exactly its total and refuses the read that exceeds it"
 	}),
-	derived("evidence.allocation.signals.readers.registry.maxRequests", "count", ["packet.changes"], (changes) => 2 * changes, "One npm registry policy read per side of a change (npmSide, src/evidence/policy-signals-npm.ts:214-230), for at most limit:packet.changes changes: 2 × 128 = 256, the rule the malware and metadata ceilings use (#467). These are npm registry reads, not GitHub reads. Approved by the maintainer on 2026-11-27 (L11, #383).", {
+	derived("evidence.allocation.signals.readers.registry.maxRequests", "count", ["packet.changes"], (changes) => 2 * changes, "One npm registry policy read per side of a change (npmSide, src/evidence/policy-signals-npm.ts:214-230), for at most limit:packet.changes changes: 2 × 128 = 256, the rule the malware and metadata ceilings use (#467). These are npm registry reads, not GitHub reads. The ceiling is a count with no time accounting: reads run one at a time on the shared limit:evidence.envelope.totalTimeoutMs, after upstream and advisories, so on a large npm change the reader can stop at the evidence deadline, refused with budget, before it reaches its share. Approved by the maintainer on 2026-11-27 (L11, #383).", {
 		protects: "Caps npm registry policy requests in the signals stage, separate from the W2 registry share, so the stage stays inside the envelope.",
 		effect: "The request past the cap returns budget and no request is sent.",
 		test: "src/evidence/npm-registry.test.ts > the signals registry request share allows exactly its count and refuses the next read unsent"
@@ -1931,7 +1925,7 @@ const DEFINITIONS = [
 		protects: "Untrusted upstream JSON cannot nest deeper than the cap, so parsing cannot exhaust the stack or CPU.",
 		basis: {
 			kind: "safety",
-			reason: "Largest legitimate use, counted as the readers count it (the root is depth 0), on 2026-11-28: 4,251 npm version documents read from the public registry nest at most 8 levels (99th percentile 5); 2,000 PyPI project and release documents nest at most 5; the 20 example responses GitHub's OpenAPI description gives for the repository, ref, tag, contents, release, compare, commit and global-advisory reads nest at most 5; and the OSV schema fixes a query response at 9 levels outside its free-form database_specific and ecosystem_specific objects (no OSV response was sampled: the OSV API was unreachable from the session). Harm: the readers walk the parsed value with an explicit stack and keep it with structuredClone, which overflows the call stack at 3,480 levels of nested arrays, and JSON.stringify at 4,167 (measured on 2026-11-28 under Node 22). The cap sits far between the two. The same value bounds TOML and marker nesting in upstream pyproject reads and license-expression nesting, whose inputs the per-response byte cap also bounds. Approved by the maintainer on 2026-11-27 (L11, #383)."
+			reason: "Measured with npm run probe:json-depth on 2026-11-28 under Node 24.22.3, the action's runtime. Largest legitimate use, counted as the readers count it (the root is depth 0), from `nesting` over a downloaded corpus: 4,251 npm version documents from the public registry nest at most 8 levels; 2,000 PyPI project and release documents nest at most 5; and the 20 example responses GitHub's OpenAPI description gives for the repository, ref, tag, contents, release, compare, commit and global-advisory reads nest at most 5. OSV was not sampled: the session's network egress refused api.osv.dev, so no OSV response could be read. The OSV schema instead fixes a query response at 9 levels outside its free-form database_specific and ecosystem_specific objects. Harm, from `overflow`: the readers walk the parsed value with an explicit stack and keep it with structuredClone, which overflows the call stack at 3,301 levels of nested arrays, and JSON.stringify at 4,471. The cap sits far between the two. The same value bounds TOML and marker nesting in upstream pyproject reads and license-expression nesting, whose inputs the per-response byte cap also bounds. Approved by the maintainer on 2026-11-27 (L11, #383)."
 		},
 		effect: "Input nested deeper than the cap fails that reader's read with reason budget; the stage is recorded unavailable.",
 		test: "src/evidence/advisory-read.test.ts > advisory JSON depth accepts the register depth exactly and refuses one level deeper"
@@ -2374,7 +2368,7 @@ const DEFINITIONS = [
 		protects: "Registry deprecation text is untrusted; an unbounded reason would bloat the packet's text and the comment.",
 		effect: "Longer text is cut at the cap without splitting a surrogate pair and marked '[reason truncated]'.",
 		test: "src/evidence/policy-signals-npm.test.ts > a long deprecation reason never splits a surrogate pair",
-		note: "no recorded reason"
+		note: "L11 (#383) recommended deriving it from limit:packet.textBytes as ⌊(2,048 − 19) ÷ 3⌋ = 676, but that bounds only the finding's text field. The reason also lands in the deprecation signal's source excerpt, JSON.stringify of {deprecated: {marker, reason}} (src/evidence/policy-signals-evidence.ts recordSignal), which must fit limit:packet.excerptCodeUnits (500) or the signal is dropped as truncated. At 676 a cut reason is 695 code units and its excerpt 745, so every long reason would lose its deprecation evidence; with 676 the test 'exact PyPI release evidence with an astral-heavy long reason passes T4 with earliest upload and yank findings' fails. The excerpt bounds a cut plain-text reason at 500 − 50 − 19 = 431 code units, and JSON escaping of quotes and backslashes doubles them, so even 350 can overflow it. The value stays until a derivation covers the excerpt path."
 	}),
 	unjustified("signals.npmMaxMaintainers", 32, "count", {
 		protects: "A registry response can list an unbounded number of maintainers; the cap stops an oversized list from entering the publisher facts.",
@@ -2385,7 +2379,7 @@ const DEFINITIONS = [
 	configured("research.maxTagCandidates", 100, "count", {
 		setting: "limits.coverage.tagCandidates",
 		maximum: "evidence.allocation.upstream.maxRequests"
-	}, "The adopter: each release scanned in a range and each tag candidate tried costs upstream requests, and no registry or GitHub document bounds how many releases a repository has, so a larger setting buys coverage of longer release histories with quota and time. Coverage bound category (L11, Q9(a)); its hard maximum is the upstream request ceiling, since every candidate past it would be refused for budget anyway.", {
+	}, "The adopter: no registry or GitHub document bounds how many releases a repository has, so a larger setting buys coverage of longer release histories with quota, CPU and time. Coverage bound category (L11, Q9(a)); its hard maximum is the upstream request ceiling. That is not a per-candidate request bound: the range stage lists releases limit:upstream.releasePageSize (100) to a page, and a release outside the range costs no request beyond its page, so 240 requests could list about 24,000 candidates; only a release inside the range costs its tag, correspondence and recheck reads, and those stop once a member has limit:packet.listEntries range sources.", {
 		protects: "Release and tag candidates from untrusted upstream data are bounded, so tag matching cannot grow requests or CPU without limit (requests and CPU).",
 		effect: "The candidate past the cap fails with reason budget; the upstream stage stops with that reason.",
 		test: "src/evidence/upstream-range.test.ts > range release candidates are counted up to the register cap and refused one past it"
@@ -2411,7 +2405,7 @@ const DEFINITIONS = [
 	unjustified("research.maxAttempts", 512, "count", {
 		protects: "The number of attempt records one enrichment can carry is bounded, so the output built from them stays within memory and output size (memory).",
 		effect: "Output with more attempts than the cap fails the enrichment with reason budget.",
-		note: "awaiting L8 measurement",
+		note: "L11 (#383) recommended deriving it as a structural per-member attempt count (at least 6) × limit:packet.changes, at least 768, but the per-member count is not a fixed number: the range stage records one attempt per release it scans, up to limit:research.maxTagCandidates (100), plus a summary (src/evidence/upstream-range.ts), so a member can record at least 101 attempts, bounded by that setting. 512 already binds legitimate use: R1 #276 recorded 594 attempts for 105 members. A derivation needs limit:research.maxTagCandidates as an input, at least 101 × 128 ≈ 13,000, which the approval did not name, so the value stays until one is approved.",
 		test: "src/evidence/upstream.test.ts > upstream bounds keep exactly research.maxAttempts attempts and refuse one more"
 	}),
 	derived("research.maxFindings", "count", ["packet.findings"], copy, "The research finding cap mirrors the packet's finding cap, since research findings land in the packet.", {
