@@ -3282,22 +3282,37 @@ const DEFINITIONS = [
       test: 'src/context.test.ts > inventory budget bounds %i records including duplicates',
     },
   ),
-  unjustified('context.maxSourceFileBytes', 65_536, 'bytes', {
-    protects:
-      'A source file is read into memory, so each read is capped at 65,536 bytes plus one probe byte.',
-    effect:
-      'A file over the cap is not used: reason file-byte-limit is recorded, no facts come from it, status is partial, and other files are still scanned.',
-    test: 'src/context.test.ts > file cap distinguishes complete exact-boundary content from an overflow',
-    note: 'awaiting L8 measurement',
-  }),
-  unjustified('context.maxTotalSourceReadBytes', MiB, 'bytes', {
-    protects:
-      'Total content read per run is capped, so many medium files cannot together read an unbounded amount.',
-    effect:
-      'When the 1 MiB budget is spent, later files are not read. Reason total-read-limit is recorded and collection stops; facts already found are kept (partial).',
-    test: 'src/context.test.ts > total returned bytes, including overflow probes, never exceed one MiB',
-    note: 'awaiting L8 measurement',
-  }),
+  configured(
+    'context.maxSourceFileBytes',
+    65_536,
+    'bytes',
+    { setting: 'limits.coverage.sourceFileBytes', maximum: 'snapshot.maxBlobBytes' },
+    'The adopter: a larger setting reads longer source files for facts, at the cost of snapshot bytes and heap per file; a smaller one leaves more files unused with file-byte-limit. Coverage bound category (L11, Q9(a)); its hard maximum is the largest blob the snapshot fetches, since a source file arrives as one blob.',
+    {
+      protects:
+        'A source file is read into memory, so each read is capped at 65,536 bytes plus one probe byte.',
+      effect:
+        'A file over the cap is not used: reason file-byte-limit is recorded, no facts come from it, status is partial, and other files are still scanned.',
+      test: 'src/context.test.ts > file cap distinguishes complete exact-boundary content from an overflow',
+    },
+  ),
+  configured(
+    'context.maxTotalSourceReadBytes',
+    MiB,
+    'bytes',
+    {
+      setting: 'limits.coverage.sourceReadBytes',
+      maximum: 'evidence.allocation.transport.snapshot.maxTotalBytes',
+    },
+    "The adopter: a larger setting reads more source files for facts, at the cost of snapshot bytes; a smaller one stops collection earlier with total-read-limit. Coverage bound category (L11, Q9(a)); its hard maximum is the snapshot byte share, through which every source byte is read.",
+    {
+      protects:
+        'Total content read per run is capped, so many medium files cannot together read an unbounded amount.',
+      effect:
+        'When the 1 MiB budget is spent, later files are not read. Reason total-read-limit is recorded and collection stops; facts already found are kept (partial).',
+      test: 'src/context.test.ts > total returned bytes, including overflow probes, never exceed one MiB',
+    },
+  ),
   unjustified('context.generatedMarkerScanLines', 20, 'count', {
     protects:
       "Limits generated-file detection to a file's head, where generators write their markers, so a marker deep in a source file does not exclude it.",
