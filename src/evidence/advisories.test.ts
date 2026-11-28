@@ -592,9 +592,11 @@ test('the pre-pass settles both sides, cites each singleton URL, and sends fewer
     if (source.provenance.kind !== 'upstream') throw new Error('provenance');
     expect(source.provenance.excerpt).toBe(BATCHED);
     for (const subject of source.provenance.subjects) sides.add(subject.side);
-    // The cited URL is the singleton the unbatched run fetched, never the batch it was checked in.
-    expect(plain.sent).toContain(source.provenance.url);
-    expect(batched.sent).not.toContain(source.provenance.url);
+    // The cited URL is the singleton the unbatched run fetched. The batched run sends it at most
+    // once, as a batch of one, which shares its singleton's URL.
+    const cited = source.provenance.url;
+    expect(plain.sent).toContain(cited);
+    expect(batched.sent.filter((u) => u === cited).length).toBeLessThanOrEqual(1);
   }
   expect(sides).toEqual(new Set(['base', 'head']));
   // Apart from that text, the packet fields are the same; `lookups` are diagnostics.
@@ -639,7 +641,8 @@ test('a failed singleton for a record naming two batched packages fails only its
   };
   const answer = (fail: boolean) => (url: URL) => {
     const targets = url.searchParams.get('affects')!.split(',');
-    if (url.searchParams.get('per_page') !== '100')
+    // A batch lists more than one target; a singleton lists one.
+    if (targets.length > 1)
       return Response.json(targets.includes(`${failing.name}@${failing.version}`) ? [shared] : []);
     return fail && targets[0] === `${failing.name}@${failing.version}`
       ? Response.json({}, { status: 500 })
@@ -651,7 +654,9 @@ test('a failed singleton for a record naming two batched packages fails only its
   const result = await enrichAdvisories(input, { reader: run.reader });
   if (expected.kind !== 'enriched' || result.kind !== 'enriched') throw new Error('evidence');
   // Both named packages got their singleton; only the failed one lost its coverage.
-  expect(run.sent.filter((u) => new URL(u).searchParams.get('per_page') === '100')).toHaveLength(2);
+  expect(
+    run.sent.filter((u) => new URL(u).searchParams.get('affects')!.split(',').length === 1),
+  ).toHaveLength(2);
   expect(vulnerability(result, failed.id)).toMatchObject({ status: 'unavailable' });
   for (const member of input.changes.filter((c) => !('basis' in c) && c.id !== failed.id))
     expect(vulnerability(result, member.id)).toEqual(vulnerability(expected, member.id));
@@ -669,7 +674,8 @@ test('a failed versioned query after a discovery batch hit fails only its member
   const hit = 'chromaui/action';
   const answer = (fail: boolean) => (url: URL) => {
     const targets = url.searchParams.get('affects')!.split(',');
-    if (url.searchParams.get('per_page') === '50')
+    // A discovery query is package-only: no `affects` entry names a version.
+    if (targets.every((target) => !target.includes('@')))
       return Response.json(targets.includes(hit) ? [record(hit)] : []);
     return fail && targets[0].startsWith(hit + '@')
       ? Response.json({}, { status: 500 })
@@ -840,16 +846,32 @@ test.each(['none', 'head', 'base'] as const)(
       return s ? [`${s.name}@${s.version}`] : [];
     };
     const failing = new Set(failed === 'none' ? [] : members.flatMap((c) => sideOf(c, failed)));
+    // Only the pre-pass's batches fail; singletons answer. A batch of one shares its singleton's
+    // URL, so the batches are told apart by when they are sent.
+    let settling = false;
     const answer = (url: URL) =>
-      url.searchParams.get('per_page') !== '100' &&
+      settling &&
       url.searchParams
         .get('affects')!
         .split(',')
         .some((a) => failing.has(a))
         ? Response.json({}, { status: 500 })
         : Response.json([]);
-    const baseline = await enrichAdvisories(input, { reader: recordingReader(answer).reader });
-    const real = recordingReader(answer).reader;
+    const prePass = (r: AdvisoryReader): AdvisoryReader => ({
+      ...r,
+      settle: async (values) => {
+        settling = true;
+        try {
+          return (await r.settle?.(values)) ?? null;
+        } finally {
+          settling = false;
+        }
+      },
+    });
+    const baseline = await enrichAdvisories(input, {
+      reader: prePass(recordingReader(answer).reader),
+    });
+    const real = prePass(recordingReader(answer).reader);
     let reads = 0,
       stop = false;
     // Stops after the first member, as a rate limit would; like the real reader, a stopped

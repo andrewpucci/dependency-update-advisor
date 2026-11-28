@@ -308,6 +308,12 @@ phase 3:
   (`limit:analysis.maxConcurrentCalls`), and analysis time
   (`limit:analysis.maxAnalysisMs`). Hard maximum: the provider's documented
   limits and the job window.
+  - Amended (L11, Q17(a); approved by the maintainer on 2026-11-27,
+    [#383](https://github.com/andrewpucci/dependency-update-advisor/issues/383)):
+    Mistral documents no call limit, so the call cap's hard maximum is
+    structural, `limit:analysis.maxCallsMax`: the calls a run at
+    `limit:packet.changes` units needs when every batch splits down to single
+    units.
 - **Completion tokens:** `limit:analysis.completionTokens`. Hard maximum: the
   provider's maximum output tokens.
 - **Job budget and evidence deadline:** `limit:job.budget` and
@@ -347,6 +353,19 @@ each with today's value as its default and the hard maximum named here:
   default; each register entry names its hard maximum. The npm and uv root
   counts are bounded by the roots Dependabot's file may name,
   `limit:dependabot.maxRoots`.
+- **Units per model call** (Q16(a)): `limit:analysis.maxUnits`. The adopter
+  bears the call count and cost a smaller batch spends, and the truncation
+  risk of a larger one. Hard maximum: `limit:packet.changes`, since a unit
+  holds at least one change. It was also the reply's row-count bound, a
+  schema bound shared with model projection, which the list above bars; that
+  bound is now structural instead: a reply may have no more rows than the
+  units in its request.
+- **Model request timeout** (Q18(a)): `limit:analysis.requestTimeoutMs`. The
+  model is consumer configuration, so its speed is not a fixed platform
+  property, and the adopter bears the run time of their chosen model. Hard
+  maximum: `limit:job.maxAnalysisTimeMs`, the analysis time the job window
+  leaves after the evidence deadline, the recheck, the publication reserve and
+  the final freshness allowance.
 - **Response cap** (Q3(a)): `limit:evidence.envelope.maxResponseBytes`. It
   is a parse-safety bound on untrusted responses, which the list above bars;
   this amendment admits it by name, because the cap binds legitimate

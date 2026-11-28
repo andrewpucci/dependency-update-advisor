@@ -1,5 +1,6 @@
 import { limit } from '../limits.js';
 import { githubUrl, type AdvisoryTarget, type QueryKind } from './advisory-read.js';
+import { divisorChain } from './common.js';
 
 /**
  * Approved batch values (C3, 2026-11-26): S1's Batched Lookup Amendment item 2 and the Batching
@@ -7,6 +8,10 @@ import { githubUrl, type AdvisoryTarget, type QueryKind } from './advisory-read.
  */
 export const BATCH_MAX_TARGETS = limit('advisory.batch.maxTargets');
 export const BATCH_PAGE_SIZE = String(limit('advisory.batch.pageSize'));
+/** A batch page over the per-response cap is retried at the next smaller size of this chain. */
+export const BATCH_PAGE_SIZES: readonly number[] = Object.freeze(
+  divisorChain(limit('advisory.batch.pageSize')),
+);
 /** A batch's continuation URL over this cap is `budget`. */
 export const BATCH_URL_BYTES = limit('advisory.batch.urlBytes');
 /** A batch's first URL leaves room under the URL cap for GitHub's `after` cursor. */

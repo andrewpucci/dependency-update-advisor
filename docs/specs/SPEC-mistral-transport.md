@@ -766,6 +766,27 @@ are proposed. M2/W2 still choose their cumulative budgets and publication reserv
 | Follow-ups, remediation steps, validation steps    | `limit:analysis.steps` each                                                | Concrete bounded lists; mandatory nonempty lists where required.                                          |
 | Blockers, finding references, references per claim | `limit:analysis.references` each                                           | Model explains a bounded subset; all deterministic findings remain outside model ownership.               |
 
+Amended (L11, Q13(a), Q15(a) and Q16(a); approved by the maintainer on
+2026-11-27, [#383](https://github.com/andrewpucci/dependency-update-advisor/issues/383)):
+
+- `limit:analysis.requestBytes` derives from the context window of the
+  smallest model the default alias can resolve to,
+  `limit:analysis.model.contextTokens`, less the completion budget and the
+  chat template's `limit:analysis.model.templateTokens`. A Tekken token covers
+  at least one byte, so a request at the cap leaves the completion inside the
+  window.
+- `limit:analysis.unitBytes` is half of the request cap less the fixed
+  request, `limit:analysis.fixedRequestBytes`, so a lone unit at the cap fits
+  beside the fixed request after JSON string escaping. The run-wide
+  projection fields (coverage and the sources it names, context status,
+  policy) are not counted, since their packet-bounded worst case leaves no
+  room for a unit; a request they push past the cap is refused with `budget`
+  before any call.
+- `limit:analysis.sourceBytes` copies `limit:packet.textBytes`, and
+  `limit:analysis.references` copies `limit:packet.listEntries`.
+- A reply's assessment rows are bounded by the units in its request, not by
+  `limit:analysis.maxUnits`, which is now an adopter setting.
+
 Apply lower caller-supplied limits when valid; reject larger, non-finite,
 fractional, unsafe, or incompatible values before I/O. The response cap must
 still cover the selected token allowance and envelope; lowering it requires

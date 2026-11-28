@@ -1,7 +1,12 @@
 import { readFileSync } from 'node:fs';
 import { expect, test } from 'vite-plus/test';
-import { createAdvisoryReader, createMalwareReader } from './advisory-read.js';
+import {
+  createAdvisoryReader,
+  createMalwareReader,
+  DISCOVERY_PAGE_SIZES,
+} from './advisory-read.js';
 import { createResearchCache } from './research-cache.js';
+import { limit } from '../limits.js';
 
 const limits = {
   maxRequests: 20,
@@ -328,11 +333,19 @@ function github(...routes: Route[]) {
     }
     return Response.json({ message: 'unexpected request' }, { status: 418 });
   };
-  const discovery = () => requests.filter((u) => new URL(u).searchParams.get('per_page') === '50');
-  const versioned = () => requests.filter((u) => new URL(u).searchParams.get('per_page') === '100');
+  const discovery = () => requests.filter((u) => isDiscovery(new URL(u)));
+  const versioned = () => requests.filter((u) => !isDiscovery(new URL(u)));
   return { fetch, requests, discovery, versioned };
 }
-const isDiscovery = (u: URL) => u.searchParams.get('per_page') === '50';
+/** A discovery query is package-only: no `affects` entry names a version. */
+const isDiscovery = (u: URL) =>
+  u.searchParams
+    .get('affects')!
+    .split(',')
+    .every((a) => !a.includes('@'));
+const URL_CAP = limit('advisory.discovery.urlBytes');
+const HEADROOM = limit('advisory.discovery.cursorHeadroomBytes');
+const PAGE_SIZE = String(limit('advisory.discovery.pageSize'));
 const ready = (
   factory: typeof createAdvisoryReader,
   fetch: (url: string, init: RequestInit) => Promise<Response>,
@@ -472,7 +485,7 @@ test('a long name splits discovery so every spelling is sent once with cursor he
   expect(result).toMatchObject({ complete: true });
   const urls = server.discovery();
   expect(urls.length).toBeGreaterThan(1);
-  for (const u of urls) expect(u.length).toBeLessThanOrEqual(4096 - 256);
+  for (const u of urls) expect(u.length).toBeLessThanOrEqual(URL_CAP - HEADROOM);
   const sent = spellingsOf(urls);
   expect(sent).toHaveLength(243);
   expect(new Set(sent).size).toBe(243);
@@ -738,13 +751,13 @@ test('a versioned URL of exactly 1,024 bytes is sent; one byte longer is unsuppo
     }
   }
 });
-test('discovery fills a request up to exactly 256 bytes under the cap', async () => {
-  // Find a five-separator name whose spellings fill one request to exactly 3,840 bytes.
+test('discovery fills a request up to exactly the cursor headroom under the cap', async () => {
+  // Find a five-separator name whose spellings fill one request to exactly the cap less the headroom.
   let found: { name: string; count: number } | undefined;
-  for (let n = 1; n < 400 && !found; n++) {
+  for (let n = 1; n < URL_CAP && !found; n++) {
     const name = 'p'.repeat(n) + '-b-c-d-e-f';
-    const fixed = queryUrl('pip', [name], 'malware', '50').length - name.length;
-    const room = 4096 - 256 - fixed + 3;
+    const fixed = queryUrl('pip', [name], 'malware', PAGE_SIZE).length - name.length;
+    const room = URL_CAP - HEADROOM - fixed + 3;
     if (room % (name.length + 3) === 0 && room / (name.length + 3) <= 243)
       found = { name, count: room / (name.length + 3) };
   }
@@ -754,10 +767,10 @@ test('discovery fills a request up to exactly 256 bytes under the cap', async ()
   await reader.read({ ecosystem: 'pip', name: found.name, version: '1.0.0' });
   reader.close();
   const first = server.discovery()[0];
-  expect(first.length).toBe(4096 - 256);
+  expect(first.length).toBe(URL_CAP - HEADROOM);
   expect(new URL(first).searchParams.get('affects')!.split(',')).toHaveLength(found.count);
 });
-test('a continuation URL of exactly 4,096 bytes is followed; one byte longer is budget', async () => {
+test('a continuation URL of exactly the cap is followed; one byte longer is budget', async () => {
   for (const extra of [0, 1]) {
     let followed = false;
     const server = github((u) => {
@@ -768,7 +781,7 @@ test('a continuation URL of exactly 4,096 bytes is followed; one byte longer is 
       }
       const next = new URL(u);
       next.searchParams.set('after', 'c');
-      const cursor = 'c'.repeat(1 + 4096 - next.href.length + extra);
+      const cursor = 'c'.repeat(1 + URL_CAP - next.href.length + extra);
       next.searchParams.set('after', cursor);
       return Response.json([], { headers: { link: `<${next.href}>; rel="next"` } });
     });
@@ -814,5 +827,77 @@ test('one run cache answers each pip package and version from its own OSV query'
     osvQuery('pyyaml', '3.13'),
     osvQuery('pyyaml', '6.0.2'),
     osvQuery('django', '4.2.0'),
+  ]);
+});
+
+test('a discovery page over the response cap is retried at the same cursor at the next smaller page size', async () => {
+  const big = Response.json(['x'.repeat(400)]);
+  const sizes = (requests: string[]) =>
+    requests
+      .filter((u) => isDiscovery(new URL(u)))
+      .map((u) => [new URL(u).searchParams.get('per_page'), new URL(u).searchParams.get('after')]);
+  const server = github((u) => {
+    if (!isDiscovery(u)) return Response.json([]);
+    if (u.searchParams.get('per_page') === PAGE_SIZE) return big.clone();
+    if (u.searchParams.has('after')) return Response.json([]);
+    const next = new URL(u);
+    next.searchParams.set('after', 'c1');
+    return Response.json([], { headers: { link: `<${next.href}>; rel="next"` } });
+  });
+  const reader = ready(createAdvisoryReader, server.fetch, { maxResponseBytes: 200 });
+  const result = await reader.read(tj);
+  reader.close();
+  expect(result).toMatchObject({ complete: true });
+  const half = String(Number(PAGE_SIZE) / 2);
+  expect(sizes(server.requests)).toEqual([
+    [PAGE_SIZE, null],
+    [half, null],
+    [half, 'c1'],
+  ]);
+  // A page over the cap at every size of the ladder fails the read with budget.
+  const always = github((u) => (isDiscovery(u) ? big.clone() : Response.json([])));
+  const stuck = ready(createAdvisoryReader, always.fetch, { maxResponseBytes: 200 });
+  expect(await stuck.read(tj)).toMatchObject({ complete: false, reasons: ['budget'] });
+  stuck.close();
+  expect(sizes(always.requests).map(([size]) => Number(size))).toEqual([...DISCOVERY_PAGE_SIZES]);
+});
+test('a discovery page over the response cap behind a cursor is resent smaller at that cursor', async () => {
+  const big = Response.json(['x'.repeat(400)]);
+  const half = String(Number(PAGE_SIZE) / 2);
+  const server = github((u) => {
+    if (!isDiscovery(u)) return Response.json([]);
+    const after = u.searchParams.get('after');
+    if (after === null) {
+      // The first page fits; its next link carries the cursor GitHub returned.
+      const next = new URL(u);
+      next.searchParams.set('after', 'Y3Vyc29yOjI');
+      return Response.json([], { headers: { link: `<${next.href}>; rel="next"` } });
+    }
+    return u.searchParams.get('per_page') === PAGE_SIZE ? big.clone() : Response.json([]);
+  });
+  const reader = ready(createAdvisoryReader, server.fetch, { maxResponseBytes: 200 });
+  expect(await reader.read(tj)).toMatchObject({ complete: true });
+  reader.close();
+  expect(
+    server
+      .discovery()
+      .map((u) => [new URL(u).searchParams.get('per_page'), new URL(u).searchParams.get('after')]),
+  ).toEqual([
+    [PAGE_SIZE, null],
+    [PAGE_SIZE, 'Y3Vyc29yOjI'],
+    [half, 'Y3Vyc29yOjI'],
+  ]);
+});
+test('an error body over the response cap fails discovery with budget and is not resent', async () => {
+  const server = github((u) =>
+    isDiscovery(u)
+      ? Response.json({ message: 'x'.repeat(400) }, { status: 502 })
+      : Response.json([]),
+  );
+  const reader = ready(createAdvisoryReader, server.fetch, { maxResponseBytes: 200 });
+  expect(await reader.read(tj)).toMatchObject({ complete: false, reasons: ['budget'] });
+  reader.close();
+  expect(server.discovery().map((u) => new URL(u).searchParams.get('per_page'))).toEqual([
+    PAGE_SIZE,
   ]);
 });

@@ -774,7 +774,9 @@ test('serialization budget retains every identity and bounds UTF-8 plus JSON esc
   if (!result.ok) throw new Error('expected context');
   expect(result.dependencies).toHaveLength(32);
   expect(result.reasons).toContain('context-byte-limit');
-  expect(Buffer.byteLength(JSON.stringify(result))).toBeLessThanOrEqual(65_536);
+  expect(Buffer.byteLength(JSON.stringify(result))).toBeLessThanOrEqual(
+    limit('context.maxSourceContextBytes'),
+  );
   expect(result.status).toBe('partial');
 });
 
@@ -1131,43 +1133,70 @@ test('the generated-marker window covers exactly the registered number of leadin
   });
 });
 
-test('the serialized context cap admits the exact reserved size and refuses one byte more', async () => {
+test('the serialized context cap admits a context of exactly the cap and drops the fact one byte past it', async () => {
   const cap = limit('context.maxSourceContextBytes');
   const maxIdCodeUnits = limit('context.maxIdCodeUnits');
   const count = limit('context.maxDependencies');
+  const excerptCodeUnits = limit('context.maxSourceExcerptCodeUnits');
   const root = await fixture();
-  // Measures the reserved empty-context JSON that fitsContextBudget hands to Buffer.byteLength.
-  const probe = async (extra: number) => {
-    const request = enabled(root);
-    let left = extra;
-    request.dependencies = Array.from({ length: count }, (_, i) => {
-      const dependency = { id: `unit-${i}`, name: 'n' };
-      for (const field of ['id', 'name'] as const) {
-        const add = Math.min(left, maxIdCodeUnits - dependency[field].length);
-        dependency[field] += 'x'.repeat(add);
-        left -= add;
-      }
-      return dependency;
-    });
+  // Every identity at its maximum: the widest empty context the collector reserves.
+  const dependencies = Array.from({ length: count }, (_, i) => ({
+    id: `unit-${i}`.padEnd(maxIdCodeUnits, 'x'),
+    name: `p${i}`.padEnd(maxIdCodeUnits, 'x'),
+  }));
+  const line = (i: number, pad: number) =>
+    `import "${dependencies[i].name}"; //${pad > 0 ? ' ' : ''}${'x'.repeat(Math.max(pad - 1, 0))}`;
+  const maxPad = excerptCodeUnits - line(0, 0).length;
+  // One file per dependency, each with one usage line, so file i adds one fact of a chosen length.
+  const probe = async (pads: number[]) => {
+    const paths = pads.map((_, i) => `src/fill-${i}.ts`);
+    for (const [i, pad] of pads.entries()) await source(root, paths[i], line(i, pad));
+    // src/a.ts names none of the dependencies, so the empty probe still reads one file.
+    const request = enabled(root, ['src/a.ts', ...paths]);
+    request.dependencies = dependencies.map((d) => ({ ...d }));
     const spy = vi.spyOn(Buffer, 'byteLength');
     let result: Awaited<ReturnType<typeof collectSourceContext>>;
-    let calls: unknown[][] = [];
+    let reserved: number[] = [];
     try {
       result = await collectSourceContext(request);
-      calls = spy.mock.calls.slice();
+      reserved = spy.mock.calls
+        .map(([text]) => text)
+        .filter((text) => typeof text === 'string' && text.includes('"facts":['))
+        .map((text) => Buffer.byteLength(String(text), 'utf8'));
     } finally {
       spy.mockRestore();
     }
-    const reserved = calls
-      .map(([text]) => text)
-      .find((text) => typeof text === 'string' && text.includes('"facts":[]'));
-    return { result, bytes: Buffer.byteLength(String(reserved), 'utf8') };
+    return { result, largest: Math.max(...reserved), last: reserved.at(-1) };
   };
-  const base = await probe(0);
-  const atLimit = await probe(cap - base.bytes);
-  expect(atLimit.bytes).toBe(cap);
-  expect(atLimit.result).toMatchObject({ ok: true });
-  const overLimit = await probe(cap - base.bytes + 1);
-  expect(overLimit.bytes).toBe(cap + 1);
-  expect(overLimit.result).toMatchObject({ ok: false, error: { category: 'budget' } });
+  const empty = await probe([]);
+  expect(empty.result).toMatchObject({ ok: true });
+  // The reservation of the widest identities fits, so no input reaches the budget refusal before
+  // reading (src/context.ts:312) at the register values.
+  expect(empty.largest).toBe(102_556);
+  expect(empty.largest).toBeLessThan(cap);
+  const one = await probe([0]);
+  const fact = one.largest - empty.largest;
+  const files = Math.floor((cap - empty.largest) / fact);
+  expect(files).toBeLessThanOrEqual(count);
+  const short = await probe(Array.from({ length: files }, () => 0));
+  let missing = cap - short.largest;
+  const pads = Array.from({ length: files }, () => {
+    const pad = Math.min(missing, maxPad);
+    missing -= pad;
+    return pad;
+  });
+  expect(missing).toBe(0);
+  const atCap = await probe(pads);
+  expect(atCap.largest).toBe(cap);
+  expect(atCap.result).toMatchObject({ ok: true });
+  if (!atCap.result.ok) throw new Error('context');
+  expect(atCap.result.reasons).not.toContain('context-byte-limit');
+  const grow = pads.findIndex((pad) => pad < maxPad);
+  pads[grow] += 1;
+  const over = await probe(pads);
+  expect(over.last).toBe(cap + 1);
+  expect(over.result).toMatchObject({ ok: true });
+  if (!over.result.ok) throw new Error('context');
+  expect(over.result.reasons).toContain('context-byte-limit');
+  expect(over.largest).toBe(cap + 1);
 });

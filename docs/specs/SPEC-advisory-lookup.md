@@ -607,6 +607,19 @@ evaluates the version itself. OSV `v1/query` probes on the same day:
    equals the target's canonical name: PEP 503 normalization for `pip`, case
    folding for `actions`. Otherwise the lookup is incomplete with `malformed`.
    The stored forms are the distinct such names, as returned.
+   - Amended (L11, E6 and Q12(a); approved by the maintainer on 2026-11-27,
+     [#383](https://github.com/andrewpucci/dependency-update-advisor/issues/383)):
+     discovery asks for `per_page=` `limit:advisory.discovery.pageSize`, the
+     endpoint's documented maximum, instead of 50. A page over the
+     per-response cap is resent at the same cursor at the next smaller size
+     of a divisor chain down to 1, and the rest of the request keeps that
+     size, as the compare and release ladders do. Only a successful page
+     is resent; an error body over the cap stays `budget`. Each resend is a
+     charged request, and the oversized body's bytes read before the cap
+     stopped it, up to the cap plus one chunk, stay charged to the advisory
+     byte share. A page over the cap at size 1 is `budget`. Batches reuse
+     the page size and the ladder. The URL cap is the longest URL GitHub
+     accepted on this endpoint in `npm run probe:batching`.
 7. **GitHub versioned query.** After a complete discovery, the reader always
    sends one query whose `affects` lists `form@version` for every stored
    form, sorted. When discovery found no form, it lists the normalized name
@@ -721,7 +734,7 @@ Approved values, from probes on 2026-11-20:
 
 | Value                 | Proposed                                                  | Evidence                                                                                                                                     |
 | --------------------- | --------------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------- |
-| Discovery page size   | `limit:advisory.discovery.pageSize`                       | A 100-record `pillow` page was 1,009,662 bytes against the `limit:evidence.envelope.maxResponseBytes` cap; the cited size leaves about half. |
+| Discovery page size   | `limit:advisory.discovery.pageSize`                       | A 100-record `pillow` page was 1,009,662 bytes against the `limit:evidence.envelope.maxResponseBytes` cap; item 6 resends big pages smaller. |
 | Discovery URL cap     | `limit:advisory.discovery.urlBytes`                       | GitHub accepted discovery URLs of 996, 3,399, and 4,371 bytes and returned 414 at 8,259 and 11,499.                                          |
 | Spelling ceiling      | `limit:advisory.discovery.spellingCeiling` (5 separators) | Five-separator names need about 3 discovery requests under the cap; six would need about 9.                                                  |
 | OSV per-response size | existing `limit:evidence.envelope.maxResponseBytes` cap   | OSV has no page size; the `pillow` response was 791,379 bytes.                                                                               |
@@ -1111,7 +1124,7 @@ Ask first. Neither amendment's text is edited.
 | Value                      | Register id                                                                      | Basis                                                                                                                                                                           |
 | -------------------------- | -------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | Targets per advisory batch | `limit:advisory.batch.maxTargets`                                                | GitHub's documented `affects` maximum. On real targets the URL cap binds long before this count.                                                                                |
-| Batch URL length           | `limit:advisory.batch.urlBytes`, less `limit:advisory.batch.cursorHeadroomBytes` | Reuses the discovery cap and headroom. GitHub accepted npm batch URLs up to 5,694 bytes and answered 414 from 8,893; discovery was accepted at 4,371 and answered 414 at 8,259. |
+| Batch URL length           | `limit:advisory.batch.urlBytes`, less `limit:advisory.batch.cursorHeadroomBytes` | Reuses the discovery cap and headroom. GitHub accepted npm batch URLs up to the URL cap and answered 414 from 8,893; discovery was accepted at 4,371 and answered 414 at 8,259. |
 | Batch `per_page`           | `limit:advisory.batch.pageSize`                                                  | Reuses the discovery page size. The largest npm batch page was 121,579 bytes at GitHub's largest page size. The size is discovery's, set from the `pillow` discovery page.      |
 
 - **Proposed maximum.** The batch size the Batched Lookup Amendment's

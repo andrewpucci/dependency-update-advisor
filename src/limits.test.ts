@@ -3,6 +3,7 @@ import { fileURLToPath } from 'node:url';
 import { expect, test } from 'vite-plus/test';
 import { PACKET_LIMITS } from './schema.js';
 import { COMPARE_PAGE_SIZES, RELEASE_PAGE_SIZES } from './evidence/upstream-read.js';
+import { DISCOVERY_PAGE_SIZES } from './evidence/advisory-read.js';
 import {
   PENDING_AUDIT,
   REGISTER,
@@ -189,7 +190,11 @@ test('derived limits are wired to the entries they sum or copy', () => {
   expect(dependents(REGISTER, 'evidence.allocation.registry.maxTotalBytes')).toEqual(
     expect.arrayContaining(['evidence.envelope.maxTotalBytes', 'research.cache.maxTotalBytes']),
   );
-  expect(dependents(REGISTER, 'job.budget')).toEqual(['job.maxEvidenceDeadlineMs', 'job.window']);
+  expect(dependents(REGISTER, 'job.budget')).toEqual([
+    'job.maxAnalysisTimeMs',
+    'job.maxEvidenceDeadlineMs',
+    'job.window',
+  ]);
 });
 
 test('the job budget is derived from the dependabot review workflow timeout', () => {
@@ -237,16 +242,16 @@ test('moved limits that mirror a packet bound are derived from it', () => {
   expect(limit('research.maxFindings')).toBe(PACKET_LIMITS.findings);
 });
 
-test('derived packet bounds keep their formulas and the values they had as fixed numbers', () => {
+test('derived packet bounds keep their formulas and the values the analysis caps give', () => {
   const cases: [LimitId, LimitId[], number, number][] = [
     ['packet.relationships', ['packet.changes'], 2 * limit('packet.changes'), 256],
     [
       'packet.textBytes',
       ['analysis.unitBytes', 'packet.listEntries'],
       Math.floor(limit('analysis.unitBytes') / limit('packet.listEntries')),
-      2_048,
+      3_782,
     ],
-    ['packet.contextBytes', ['analysis.unitBytes'], limit('analysis.unitBytes'), 65_536],
+    ['packet.contextBytes', ['analysis.unitBytes'], limit('analysis.unitBytes'), 121_026],
   ];
   for (const [id, inputs, expected, previous] of cases) {
     const { basis } = limitEntry(id);
@@ -898,4 +903,70 @@ test('the research and signal bounds keep their sources and formulas', () => {
   );
   for (const id of ['research.maxJsonDepth', 'research.maxTagDepth'] as const)
     expect(limitEntry(id).basis.kind, id).toBe('safety');
+});
+
+test('the analysis request and unit caps derive from the context window', () => {
+  for (const id of ['analysis.model.contextTokens', 'analysis.model.templateTokens'] as const)
+    expect(limitEntry(id).basis.kind, id).toBe('external');
+  expect(limit('analysis.requestBytes')).toBe(
+    limit('analysis.model.contextTokens') -
+      limit('analysis.completionTokens') -
+      limit('analysis.model.templateTokens'),
+  );
+  expect(limit('analysis.requestBytes')).toBe(245_755);
+  // A lone unit at the cap, every byte JSON-escaped to two, fits beside the fixed request. The
+  // run-wide projection fields are not counted; see the analysis.unitBytes description.
+  expect(limit('analysis.fixedRequestBytes') + 2 * limit('analysis.unitBytes')).toBeLessThanOrEqual(
+    limit('analysis.requestBytes'),
+  );
+  expect(limit('analysis.unitBytes')).toBe(
+    Math.floor((limit('analysis.requestBytes') - limit('analysis.fixedRequestBytes')) / 2),
+  );
+  expect(limit('analysis.sourceBytes')).toBe(limit('packet.textBytes'));
+  expect(limit('analysis.references')).toBe(limit('packet.listEntries'));
+  // The request follows the completion setting it shares the window with (L11, Q1(a)).
+  for (const id of ['analysis.requestBytes', 'analysis.unitBytes', 'packet.textBytes'] as const)
+    expect(dependents(REGISTER, 'analysis.completionTokens'), id).toContain(id);
+});
+
+test('the analysis settings are bounded by the change limit, the calls it needs and the job', () => {
+  expect(limitEntry('analysis.maxUnits').configurable).toMatchObject({
+    maximum: 'packet.changes',
+  });
+  expect(limitEntry('analysis.maxCalls').configurable).toMatchObject({
+    maximum: 'analysis.maxCallsMax',
+  });
+  expect(limit('analysis.maxCallsMax')).toBe(240);
+  expect(limitEntry('analysis.requestTimeoutMs').configurable).toMatchObject({
+    maximum: 'job.maxAnalysisTimeMs',
+  });
+  expect(limit('job.maxAnalysisTimeMs')).toBe(
+    limit('job.window') -
+      limit('evidence.envelope.totalTimeoutMs') -
+      limit('freshness.readsPerCheck') * limit('github.requestTimeoutMs') -
+      limit('analysis.publicationReserveMs') -
+      limit('job.freshnessAllowance'),
+  );
+  expect(limit('job.maxAnalysisTimeMs')).toBe(471_971);
+  for (const id of [
+    'analysis.textBytes',
+    'analysis.featureBytes',
+    'analysis.maxContentChunks',
+    'analysis.maxProjectionDepth',
+  ] as const)
+    expect(limitEntry(id).basis.kind, id).toBe('safety');
+  expect(settingProblems(REGISTER)).toEqual([]);
+});
+
+test('the advisory discovery bounds keep their sources and formulas', () => {
+  expect(limitEntry('advisory.discovery.urlBytes').basis).toMatchObject({
+    kind: 'external',
+    platformValue: 5_694,
+    probe: { command: 'npm run probe:batching' },
+  });
+  expect(limit('advisory.discovery.pageSize')).toBe(limit('github.pageSize'));
+  expect(limit('advisory.batch.pageSize')).toBe(limit('advisory.discovery.pageSize'));
+  expect(limit('advisory.batch.urlBytes')).toBe(limit('advisory.discovery.urlBytes'));
+  expect(DISCOVERY_PAGE_SIZES).toEqual([100, 50, 25, 5, 1]);
+  expect(Object.isFrozen(DISCOVERY_PAGE_SIZES)).toBe(true);
 });

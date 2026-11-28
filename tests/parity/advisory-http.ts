@@ -1,5 +1,3 @@
-import { BATCH_PAGE_SIZE } from '../../src/evidence/batches.js';
-
 /**
  * Serves S1/S3 advisory requests from a synthetic handler written for one exact GitHub query.
  * Stored-name discovery finds each target stored under its canonical name unless `stored` says
@@ -156,10 +154,11 @@ export function viaAdvisoryHttp(
       const ecosystem = u.searchParams.get('ecosystem'),
         type = u.searchParams.get('type'),
         affects = u.searchParams.get('affects')!.split(',');
-      // npm has no discovery, so an npm query at the batch page size is a batch, even of one.
-      if (ecosystem === 'npm' && u.searchParams.get('per_page') === BATCH_PAGE_SIZE)
-        return npmBatch(github, u, affects, init);
-      if (u.searchParams.get('per_page') === '50') {
+      // npm has no discovery, so an npm query of several targets is a batch. A batch of one has
+      // its singleton's URL, so it is answered as the singleton.
+      if (ecosystem === 'npm' && affects.length > 1) return npmBatch(github, u, affects, init);
+      // A discovery query is package-only: no `affects` entry names a version.
+      if (ecosystem !== 'npm' && affects.every((a) => !a.includes('@'))) {
         const records = new Map<string, GithubRecord>();
         for (const name of affects) {
           discovered.add(JSON.stringify([ecosystem, type, name]));

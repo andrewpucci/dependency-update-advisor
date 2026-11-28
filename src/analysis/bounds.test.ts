@@ -288,12 +288,12 @@ test('budgets fit a reasoning-model reply and keep the response ceiling tied to 
   });
   // The token bound is already in JSON-escaped bytes, so no escape multiplier applies.
   expect(ANALYSIS_LIMITS.responseBytes).toBe(ANALYSIS_LIMITS.completionTokens * 1_024 + 65_536);
-  // Every input bound is unchanged.
+  // The input bounds follow the context window (L11, Q13(a) and Q15(a), #383).
   expect(ANALYSIS_LIMITS).toMatchObject({
     maxUnits: 8,
-    sourceBytes: 2_048,
-    unitBytes: 65_536,
-    requestBytes: 262_144,
+    sourceBytes: 3_782,
+    unitBytes: 121_026,
+    requestBytes: 245_755,
   });
 });
 

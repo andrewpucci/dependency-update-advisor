@@ -1457,7 +1457,9 @@ test('enforces 256-code-unit IDs and 1024-byte identity strings', () => {
 
 test('enforces text and reference-list bounds independently of the packet size', () => {
   const f = findingFixture();
-  f.finding.rationale = 'é'.repeat(1024);
+  // Two-byte text filled to exactly the text cap.
+  const text = PACKET_LIMITS.textBytes;
+  f.finding.rationale = 'é'.repeat(Math.floor(text / 2)) + 'a'.repeat(text % 2);
   expect(accepted(f).findings).toHaveLength(1);
   f.finding.rationale += 'a';
   expect(validateReviewPacket(f.packet, f.expected)).toMatchObject({
@@ -1615,8 +1617,11 @@ test('enforces the context fact count independently of excerpt and packet bounds
   });
 });
 
-test('enforces exactly 65536 serialized context bytes across 128 dependencies', () => {
+test('enforces exactly the serialized context byte cap across 128 dependencies', () => {
   const f = npmFixture(128);
+  const excerpt = PACKET_LIMITS.excerptCodeUnits;
+  // Enough facts per dependency that their excerpts can reach the cap.
+  const facts = Math.ceil(PACKET_LIMITS.contextBytes / (128 * excerpt)) + 1;
   const context = {
     ok: true,
     status: 'available',
@@ -1626,24 +1631,29 @@ test('enforces exactly 65536 serialized context bytes across 128 dependencies', 
       name: c.to.name,
       status: 'available',
       reasons: [],
-      facts: [
-        { kind: 'package-usage', path: 'src/example.ts', excerpt: 'a', excerptTruncated: false },
-      ],
+      facts: Array.from({ length: facts }, (_, i) => ({
+        kind: 'package-usage',
+        path: `src/example-${i}.ts`,
+        excerpt: 'a',
+        excerptTruncated: false,
+      })),
     })),
   };
-  let remaining = 65_536 - Buffer.byteLength(JSON.stringify(context));
-  for (const d of context.dependencies) {
-    const extra = Math.min(499, remaining);
-    d.facts[0].excerpt += 'a'.repeat(extra);
+  let remaining = PACKET_LIMITS.contextBytes - Buffer.byteLength(JSON.stringify(context));
+  for (const fact of context.dependencies.flatMap((d) => d.facts)) {
+    const extra = Math.min(excerpt - 1, remaining);
+    fact.excerpt += 'a'.repeat(extra);
     remaining -= extra;
   }
   expect(remaining).toBe(0);
   const packet = { ...f.packet, context },
     expected = { ...f.expected, context: structuredClone(context) };
   expect(accepted({ packet, expected }).context.dependencies).toHaveLength(128);
-  const last = context.dependencies.find((d) => d.facts[0].excerpt.length < 500);
+  const last = context.dependencies
+    .flatMap((d) => d.facts)
+    .find((fact) => fact.excerpt.length < excerpt);
   if (!last) throw new Error('expected one field with room');
-  last.facts[0].excerpt += 'a';
+  last.excerpt += 'a';
   expect(validateReviewPacket(packet, expected)).toEqual({
     ok: false,
     error: { category: 'budget', field: 'context' },

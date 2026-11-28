@@ -31,7 +31,7 @@
   },
   {
     "file": "docs/specs/SPEC-advisory-lookup.md",
-    "line": "| Discovery page size   | `limit:advisory.discovery.pageSize`                       | A 100-record `pillow` page was 1,009,662 bytes against the `limit:evidence.envelope.maxResponseBytes` cap; the cited size leaves about half. |",
+    "line": "| Discovery page size   | `limit:advisory.discovery.pageSize`                       | A 100-record `pillow` page was 1,009,662 bytes against the `limit:evidence.envelope.maxResponseBytes` cap; item 6 resends big pages smaller. |",
     "values": [100],
     "reason": "measurement: the 100-record pillow page from the 2026-11-20 probe, an observed page, not a register value"
   },

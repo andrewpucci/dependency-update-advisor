@@ -373,7 +373,8 @@ function assessment(value: unknown, snapshot: BatchSnapshot): ValidatedAssessmen
 export function parseAssessments(value: unknown, snapshot: BatchSnapshot): AnalysisResult {
   try {
     const document = object(value, ['assessments']);
-    const rows = list(document.assessments, snapshot.limits.maxUnits);
+    // The reply's rows are bounded by the units in this request, not by the unit setting.
+    const rows = list(document.assessments, snapshot.selected.length);
     check(rows.length === snapshot.selected.length, 'reference');
     const assessments = rows.map((row) => assessment(row, snapshot));
     unique(assessments.map((row) => row.unitId));

@@ -45,7 +45,7 @@ test('the copied query shape matches URLs the reader sent', () => {
   expect(advisoryUrl('pip', ['flo-pro-adk@1.0.0'], 'malware')).toBe(
     fixtureUrl('github-flo-pro-adk-malware-versioned'),
   );
-  expect(advisoryUrl('actions', ['TJ-Actions/Changed-Files'], 'reviewed', '50')).toBe(
+  expect(advisoryUrl('actions', ['TJ-Actions/Changed-Files'], 'reviewed', '100')).toBe(
     fixtureUrl('github-tj-actions-discovery'),
   );
 });
