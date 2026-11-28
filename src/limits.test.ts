@@ -947,6 +947,13 @@ test('the analysis settings are bounded by the change limit, the calls it needs 
       limit('job.freshnessAllowance'),
   );
   expect(limit('job.maxAnalysisTimeMs')).toBe(471_971);
+  for (const id of [
+    'analysis.textBytes',
+    'analysis.featureBytes',
+    'analysis.maxContentChunks',
+    'analysis.maxProjectionDepth',
+  ] as const)
+    expect(limitEntry(id).basis.kind, id).toBe('safety');
   expect(settingProblems(REGISTER)).toEqual([]);
 });
 

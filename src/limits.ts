@@ -3636,22 +3636,36 @@ const DEFINITIONS = [
       test: 'src/limits.test.ts > the heap inputs of packet.bytes keep their sources and formula',
     },
   ),
-  unjustified('analysis.textBytes', 1_024, 'bytes', {
+  {
+    id: 'analysis.textBytes',
+    value: 1_024,
+    unit: 'bytes',
     protects:
-      'Each model text field (reason, impact, action, rationale) is capped at 1,024 UTF-8 bytes, which the spec states as concise per-unit advice. This is a design choice; the downstream comment body is separately checked.',
+      'Each model text field (reason, impact, action, rationale) is capped at 1,024 UTF-8 bytes, which the spec states as concise per-unit advice. The downstream comment body is separately checked.',
+    basis: {
+      kind: 'safety',
+      reason:
+        'Parse safety on untrusted model output, which section 5 makes never configurable. Largest legitimate use: one concise paragraph per field, the spec\'s "concise per-unit advice", which the system prompt states as under 1,024 bytes. Harm above: the rendered assessments crowd limit:comment.maxBodyCodeUnits, and fitComment (src/reporting.ts) drops whole sections, the assessments last, to fit. Approved by the maintainer on 2026-11-27 (L11, #383).',
+    },
     effect:
       'A field over the cap fails validation of the whole reply (category schema), and no assessment is kept.',
     test: 'src/analysis/bounds.test.ts > reason text counts UTF-8 bytes at the exact boundary for %j',
-    note: 'no recorded reason',
-  }),
-  unjustified('analysis.featureBytes', 512, 'bytes', {
+  },
+  {
+    id: 'analysis.featureBytes',
+    value: 512,
+    unit: 'bytes',
     protects:
       'Each capability feature label is capped at 512 bytes, which the spec states as at most one capability per unit.',
+    basis: {
+      kind: 'safety',
+      reason:
+        'Parse safety on untrusted model output, as for limit:analysis.textBytes. Largest legitimate use: one short label naming a capability, below a paragraph, so the cap sits below the text cap. Harm above: the same crowding of the comment. Approved by the maintainer on 2026-11-27 (L11, #383).',
+    },
     effect:
       'An over-cap feature fails validation of the whole reply (category schema), and no assessment is kept.',
     test: 'src/analysis/bounds.test.ts > capability feature, action and rationale use their own byte ceilings',
-    note: 'no recorded reason',
-  }),
+  },
   unjustified('analysis.followupBytes', 280, 'bytes', {
     protects:
       "Follow-up descriptions are capped at 280 bytes, which the spec says does not expand the baseline's 280-character bound.",
@@ -3744,14 +3758,21 @@ const DEFINITIONS = [
       test: 'src/analysis/batches.test.ts > a call ended by the deadline timer records the elapsed time at the cutoff',
     },
   ),
-  unjustified('analysis.maxContentChunks', 64, 'count', {
+  {
+    id: 'analysis.maxContentChunks',
+    value: 64,
+    unit: 'count',
     protects:
       "A reply's content array is capped at 64 chunks, so chunk iteration over untrusted provider output stays bounded.",
+    basis: {
+      kind: 'safety',
+      reason:
+        'Parse safety on the untrusted provider envelope. Largest legitimate use: 2 chunks, a thinking chunk and then the text, as the live probe of SPEC-mistral-transport recorded. Harm above: unbounded iteration and allocation over provider-controlled chunks, whose total bytes limit:analysis.responseBytes already caps. Approved by the maintainer on 2026-11-27 (L11, #383).',
+    },
     effect:
       'More than 64 chunks fails the call as envelope. No text is read and no assessment is kept.',
     test: 'src/analysis/mistral.test.ts > rejects %s',
-    note: 'no recorded reason',
-  }),
+  },
   // Complexity report, from scripts/complexity/report.mjs.
   unjustified('complexity.threshold', 15, 'count', {
     protects:
@@ -3985,13 +4006,20 @@ const DEFINITIONS = [
       test: 'src/analysis/projection.test.ts > a packet near its caps with the largest unit expansion passes the projection',
     },
   ),
-  unjustified('analysis.maxProjectionDepth', 64, 'count', {
+  {
+    id: 'analysis.maxProjectionDepth',
+    value: 64,
+    unit: 'count',
     protects:
       'Snapshot recursion depth is capped at 64, so deeply nested input cannot exhaust the call stack.',
+    basis: {
+      kind: 'safety',
+      reason:
+        'Parse safety on the run input the snapshot copies. Largest legitimate use: the packet, its decision units and the config nest about 10 levels; the run input of the analysis parity scenario (tests/parity/analysis.ts) nests 8. Harm above: recursion over crafted nesting exhausts the V8 stack; npm run probe:json-depth puts that at 3,301 levels for structuredClone and 4,471 for JSON.stringify under Node 24.22.3, and the cap sits far below both. Approved by the maintainer on 2026-11-27 (L11, #383).',
+    },
     effect: 'Input deeper than 64 levels throws a budget error and no snapshot is taken.',
-    note: 'no recorded reason',
     test: 'src/analysis/projection.test.ts > the snapshot depth cap admits a leaf at the registered depth and refuses one level deeper',
-  }),
+  },
   {
     id: 'analysis.maxTokenEscapedBytes',
     value: 1_024,
