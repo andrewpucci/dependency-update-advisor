@@ -3449,14 +3449,6 @@ const DEFINITIONS = [
         'Largest legitimate use: Mistral documents no model id length; the longest of the 59 API ids on its models overview (docs.mistral.ai/getting-started/models/models_overview, read on 2026-11-28), retired ones included, is 37 characters. Harm above: the cap is reserved, one byte per character, in limit:analysis.fixedRequestBytes of every analysis request, so each unit of cap comes out of limit:analysis.unitBytes for every unit; an unbounded id would also flow unchecked into the provider request. 128 keeps every documented id with room for longer names while reserving 128 bytes per request. Approved by the maintainer on 2026-11-27 (L11, #383).',
     },
   },
-  unjustified('config.maxReleaseAgeDays', 30, 'count', {
-    protects:
-      "A mistyped release-age window (say 365) would hold every update as too new for a year; the range keeps an adopter's setting to plausible windows.",
-    effect:
-      'A window below 1 or above 30 fails the config with field policy.minimumReleaseAgeDays.',
-    test: 'src/config.test.ts > rejects window $value in parser and schema',
-    note: 'no recorded reason',
-  }),
   // Comment bodies, from comments.ts.
   {
     id: 'github.comment.maxBodyBytes',

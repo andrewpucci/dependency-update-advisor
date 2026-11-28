@@ -126,9 +126,10 @@ function invalidPolicy(policy: unknown): string | undefined {
   if (
     Object.hasOwn(policy, 'minimumReleaseAgeDays') &&
     (typeof policy.minimumReleaseAgeDays !== 'number' ||
-      !Number.isInteger(policy.minimumReleaseAgeDays) ||
-      policy.minimumReleaseAgeDays < 1 ||
-      policy.minimumReleaseAgeDays > limit('config.maxReleaseAgeDays'))
+      // A safe integer keeps the window's milliseconds exact and finite; there is no maximum
+      // (SPEC-limit-register section 5, L11 Q24(b)).
+      !Number.isSafeInteger(policy.minimumReleaseAgeDays) ||
+      policy.minimumReleaseAgeDays < 1)
   )
     return 'policy.minimumReleaseAgeDays';
   if (Object.hasOwn(policy, 'verdicts')) {

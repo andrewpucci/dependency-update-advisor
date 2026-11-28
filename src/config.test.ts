@@ -623,7 +623,7 @@ describe('loader refusal and read budgets', () => {
 });
 
 describe('C3 configuration amendment', () => {
-  test.each([0, 31, 1.5, '1', null, false, {}, []].map((value) => ({ value })))(
+  test.each([0, -1, 1.5, '1', null, false, {}, []].map((value) => ({ value })))(
     'rejects window $value in parser and schema',
     ({ value: minimumReleaseAgeDays }) => {
       const document = { version: 1, policy: { minimumReleaseAgeDays } };
@@ -635,13 +635,21 @@ describe('C3 configuration amendment', () => {
     },
   );
 
-  test.each([1, 30])('retains an explicit %i day window', (minimumReleaseAgeDays) => {
+  test.each([1, 30, 365, 100_000])('retains an explicit %i day window', (minimumReleaseAgeDays) => {
     const document = { version: 1, policy: { minimumReleaseAgeDays } };
     const result = parseReviewConfig(JSON.stringify(document));
     if (!result.ok) throw new Error('expected valid configuration');
     expect(validateSchema(document)).toBe(true);
     expect(result.config.policy.minimumReleaseAgeDays).toBe(minimumReleaseAgeDays);
     expect(result.minimumReleaseAgeDaysExplicit).toBe(true);
+  });
+
+  test('rejects a window past the safe-integer range, whose milliseconds would lose precision', () => {
+    const document = { version: 1, policy: { minimumReleaseAgeDays: Number.MAX_SAFE_INTEGER + 1 } };
+    expect(parseReviewConfig(JSON.stringify(document))).toMatchObject({
+      ok: false,
+      error: { field: 'policy.minimumReleaseAgeDays' },
+    });
   });
 
   test('defaults the window without making it explicit and freezes shared defaults', () => {

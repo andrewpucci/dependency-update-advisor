@@ -49,8 +49,8 @@ prove the policy invariants without claiming those integrations are complete.
   configuration module and the [C1 parser contract](SPEC-config-parser.md):
   `src/config.ts`, its tests, and the JSON Schema accept the five new rule
   names, each defaulting to `merge_with_followups`, and
-  `policy.minimumReleaseAgeDays`, an integer from 1 through
-  `limit:config.maxReleaseAgeDays` that defaults to 1. `maliciousPackage` is
+  `policy.minimumReleaseAgeDays`, an integer of at least 1 (no maximum since
+  L11, Q24(b), #383) that defaults to 1. `maliciousPackage` is
   not a configuration key; a present `policy.verdicts.maliciousPackage` is an
   unknown field and fails validation. No other configuration field changes.
 - The caller supplies the review evaluation time with the normalized input.
