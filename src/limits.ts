@@ -2955,14 +2955,21 @@ const DEFINITIONS = [
       "Exceeding the cap fails that reader's read with reason budget; the stage stops and is recorded unavailable with its reason.",
     test: 'src/research.test.ts > the npm registry reader counts exactly research.maxJsonEntries entries and refuses one more',
   },
-  unjustified('research.maxJsonDepth', 32, 'count', {
+  {
+    id: 'research.maxJsonDepth',
+    value: 32,
+    unit: 'count',
     protects:
       'Untrusted upstream JSON cannot nest deeper than the cap, so parsing cannot exhaust the stack or CPU.',
+    basis: {
+      kind: 'safety',
+      reason:
+        "Largest legitimate use, counted as the readers count it (the root is depth 0), on 2026-11-28: 4,251 npm version documents read from the public registry nest at most 8 levels (99th percentile 5); 2,000 PyPI project and release documents nest at most 5; the 20 example responses GitHub's OpenAPI description gives for the repository, ref, tag, contents, release, compare, commit and global-advisory reads nest at most 5; and the OSV schema fixes a query response at 9 levels outside its free-form database_specific and ecosystem_specific objects (no OSV response was sampled: the OSV API was unreachable from the session). Harm: the readers walk the parsed value with an explicit stack and keep it with structuredClone, which overflows the call stack at 3,480 levels of nested arrays, and JSON.stringify at 4,167 (measured on 2026-11-28 under Node 22). The cap sits far between the two. The same value bounds TOML and marker nesting in upstream pyproject reads and license-expression nesting, whose inputs the per-response byte cap also bounds. Approved by the maintainer on 2026-11-27 (L11, #383).",
+    },
     effect:
       "Input nested deeper than the cap fails that reader's read with reason budget; the stage is recorded unavailable.",
-    note: 'no recorded reason',
     test: 'src/evidence/advisory-read.test.ts > advisory JSON depth accepts the register depth exactly and refuses one level deeper',
-  }),
+  },
   derived(
     'research.maxRetainedBytes',
     'bytes',
@@ -3722,13 +3729,20 @@ const DEFINITIONS = [
       test: 'src/evidence/upstream-range.test.ts > range release candidates are counted up to the register cap and refused one past it',
     },
   ),
-  unjustified('research.maxTagDepth', 10, 'count', {
+  {
+    id: 'research.maxTagDepth',
+    value: 10,
+    unit: 'count',
     protects:
       'The annotated-tag chain followed from an untrusted GitHub ref is bounded, so peeling cannot loop or cost unbounded requests (requests).',
+    basis: {
+      kind: 'safety',
+      reason:
+        "Largest legitimate use: one level. A release tag is a lightweight ref to a commit (depth 0) or an annotated tag object whose target is the commit (depth 1); a longer chain needs a tag object that tags another tag object, which release tooling does not create. Harm: each level is one more charged GitHub read of up to a full response (src/evidence/upstream-github.ts:116-125), on the shared GITHUB_TOKEN quota, and the release stage reserves the depth for both candidate tags in limit:research.share.upstream.bytes.base; a cycle is already refused by the seen set, so the cap bounds the reads of a long acyclic chain an untrusted repository can build. The cap sits above the one level with room for unusual tooling. Approved by the maintainer on 2026-11-27 (L11, #383).",
+    },
     effect: 'A chain deeper than the cap fails with reason budget.',
-    note: 'no recorded reason',
     test: 'src/evidence/upstream-github.test.ts > annotated tag chains resolve up to the register depth and fail one tag deeper',
-  }),
+  },
   unjustified('research.maxWork', 5_000_000, 'count', {
     protects:
       'The work a research reader does on untrusted data is bounded, so one stage cannot consume unbounded CPU (CPU).',

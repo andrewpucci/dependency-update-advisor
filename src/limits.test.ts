@@ -886,4 +886,6 @@ test('the research and signal bounds keep their sources and formulas', () => {
     expect(limit(id), id).toBe(2 * limit('packet.changes'));
   expect(limit('evidence.allocation.signals.maxRequests')).toBe(1_040);
   expect(limit('research.githubQuota.researchCeiling')).toBe(1_501);
+  for (const id of ['research.maxJsonDepth', 'research.maxTagDepth'] as const)
+    expect(limitEntry(id).basis.kind, id).toBe('safety');
 });
