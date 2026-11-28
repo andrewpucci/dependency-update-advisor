@@ -1,0 +1,28 @@
+name: Runner memory probe (temporary)
+
+on:
+  push:
+    branches: [claude/project-thread-hhm61y-runner-probe]
+
+permissions:
+  contents: read
+
+jobs:
+  probe:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Memory at job start, before any step work
+        run: |
+          nproc
+          free -b
+          grep -E '^(MemTotal|MemAvailable|MemFree|Cached|Buffers):' /proc/meminfo
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: '24'
+          package-manager-cache: false
+      - name: Probe
+        run: npm run probe:runner-memory
