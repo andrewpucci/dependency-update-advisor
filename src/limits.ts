@@ -3411,6 +3411,20 @@ const DEFINITIONS = [
         'Largest legitimate use: Mistral documents no model id length; the longest of the 59 API ids on its models overview (docs.mistral.ai/getting-started/models/models_overview, read on 2026-11-28), retired ones included, is 37 characters. Harm above: the cap is reserved, one byte per character, in limit:analysis.fixedRequestBytes of every analysis request, so each unit of cap comes out of limit:analysis.unitBytes for every unit; an unbounded id would also flow unchecked into the provider request. 128 keeps every documented id with room for longer names while reserving 128 bytes per request. Approved by the maintainer on 2026-11-27 (L11, #383).',
     },
   },
+  derived(
+    'date.timeRangeDays',
+    'count',
+    [],
+    () => 100_000_000,
+    'ECMAScript time values span exactly 100,000,000 days on each side of the epoch (8.64 × 10^15 ms; ECMA-262, Time Values and Time Range): a Date past them is invalid. A structural property of the runtime, not a policy cap. It bounds policy.minimumReleaseAgeDays, whose window must end at a representable time, and 100,000,000 × 86,400,000 ms stays below Number.MAX_SAFE_INTEGER, so the recheck time is exact. Approved by the maintainer on 2026-11-27 (L11, E18 and Q24(b), #383).',
+    {
+      protects:
+        'Keeps the release-age window inside the times a Date can represent, so the recheck time it gives is a real, exact time.',
+      effect:
+        'A policy.minimumReleaseAgeDays above it fails the config with field policy.minimumReleaseAgeDays, in the parser and the schema.',
+      test: 'src/config.test.ts > the release-age window admits date.timeRangeDays and rejects one more day in parser and schema',
+    },
+  ),
   // Comment bodies, from comments.ts.
   {
     id: 'github.comment.maxBodyBytes',

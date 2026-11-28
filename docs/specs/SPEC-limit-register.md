@@ -276,9 +276,13 @@ Amended (L11, E18 and Q24(b); approved by the maintainer on 2026-11-27,
 [#383](https://github.com/andrewpucci/dependency-update-advisor/issues/383)):
 the window has no maximum and no register entry. No platform or Dependabot
 document gives one (Dependabot's `cooldown` days have none), and a chosen
-ceiling is not a basis. It is a whole number of days, at least 1, within
-JavaScript's safe-integer range, so its millisecond window stays exact and
-finite. The lower bound of 1 is a positivity check, not a limit.
+ceiling is not a basis. It is a whole number of days, at least 1, and at
+most `limit:date.timeRangeDays`, the days ECMAScript time values span on each
+side of the epoch. That bound is structural, not a policy cap: a longer window
+cannot end at any time a `Date` can represent, and within it the window's
+milliseconds (at most 8.64 × 10^15) stay a safe integer, so the recheck time
+is exact.
+The lower bound of 1 is a positivity check, not a limit.
 
 Configuration is read only from the trusted default-branch file, as today. The
 v1 parser rejects unknown keys, so a new `limits` section needs a parser

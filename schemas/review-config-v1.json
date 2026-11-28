@@ -160,6 +160,7 @@
         "minimumReleaseAgeDays": {
           "type": "integer",
           "minimum": 1,
+          "maximum": 100000000,
           "default": 1
         }
       }

@@ -182,8 +182,10 @@ Amended (L11, E18 and Q24(b); approved by the maintainer on 2026-11-27,
 [#383](https://github.com/andrewpucci/dependency-update-advisor/issues/383)):
 the window has no maximum. No platform or Dependabot document gives one
 (Dependabot's `cooldown` days have none), and a chosen ceiling is not a
-basis. It is a whole number of days, at least 1, within JavaScript's
-safe-integer range, so its millisecond window stays exact and finite.
+basis. It is a whole number of days from 1 through `limit:date.timeRangeDays`,
+the days ECMAScript time values span on each side of the epoch: a structural
+bound, not a policy cap. A longer window cannot end at any time a `Date` can
+represent, and within it the window's milliseconds stay a safe integer.
 
 `incompleteEvidence` applies to an assessed decision unit with a visible
 evidence gap. It cannot turn an unassessed unit's `decision_incomplete` state

@@ -6,6 +6,7 @@ import { Ajv } from 'ajv';
 import { afterEach, describe, expect, test, vi } from 'vite-plus/test';
 import { DEFAULT_VERDICTS, loadTrustedReviewConfig, parseReviewConfig } from './config.js';
 import { limit } from './limits.js';
+import { MS_PER_DAY } from './format.js';
 
 const schema = JSON.parse(
   readFileSync(new URL('../schemas/review-config-v1.json', import.meta.url), 'utf8'),
@@ -644,12 +645,22 @@ describe('C3 configuration amendment', () => {
     expect(result.minimumReleaseAgeDaysExplicit).toBe(true);
   });
 
-  test('rejects a window past the safe-integer range, whose milliseconds would lose precision', () => {
-    const document = { version: 1, policy: { minimumReleaseAgeDays: Number.MAX_SAFE_INTEGER + 1 } };
-    expect(parseReviewConfig(JSON.stringify(document))).toMatchObject({
-      ok: false,
-      error: { field: 'policy.minimumReleaseAgeDays' },
-    });
+  test('the release-age window admits date.timeRangeDays and rejects one more day in parser and schema', () => {
+    const days = limit('date.timeRangeDays');
+    // The bound is the ECMAScript time range: its last millisecond is a valid Date, the next is not.
+    expect(Number.isNaN(new Date(days * MS_PER_DAY).getTime())).toBe(false);
+    expect(Number.isNaN(new Date(days * MS_PER_DAY + 1).getTime())).toBe(true);
+    expect(Number.isSafeInteger(days * MS_PER_DAY)).toBe(true);
+    const at = (minimumReleaseAgeDays: number) => ({ version: 1, policy: { minimumReleaseAgeDays } });
+    expect(parseReviewConfig(JSON.stringify(at(days))).ok).toBe(true);
+    expect(validateSchema(at(days))).toBe(true);
+    for (const value of [days + 1, Number.MAX_SAFE_INTEGER + 1]) {
+      expect(parseReviewConfig(JSON.stringify(at(value)))).toMatchObject({
+        ok: false,
+        error: { field: 'policy.minimumReleaseAgeDays' },
+      });
+      expect(validateSchema(at(value))).toBe(false);
+    }
   });
 
   test('defaults the window without making it explicit and freezes shared defaults', () => {
