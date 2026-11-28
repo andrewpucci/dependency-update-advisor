@@ -1,5 +1,5 @@
 import { createHash } from 'node:crypto';
-import { collectUvMetadata } from '../../src/evidence/uv.js';
+import { collectUvMetadata, type UvLimits } from '../../src/evidence/uv.js';
 import type { GithubReadSession } from '../../src/github-read.js';
 import { uvMetadataScenario } from './uv-metadata.js';
 
@@ -11,9 +11,16 @@ export function uvPackage(name: string, version: string, fields = '') {
 export function uvLock(version: string, fields = '') {
   return `version=1\nrevision=3\nrequires-python=">=3.11"\n[[package]]\nname="project"\nsource={editable="."}\ndependencies=[{name="orbit"}]\n[package.metadata]\nrequires-dist=[{name="orbit",specifier=">=1"}]\n${uvPackage('orbit', version, fields)}`;
 }
-/** Invented metadata through the real U1 parser; this session is not a live HTTP replay. */
-export async function uvGraphFixture(overrides: Record<string, string | null> = {}) {
+/**
+ * Invented metadata through the real U1 parser; this session is not a live HTTP replay. `limits`
+ * replaces the scenario's collection limits, as the parse-cost probe does with the register's.
+ */
+export async function uvGraphFixture(
+  overrides: Record<string, string | null> = {},
+  limits: Partial<UvLimits> = {},
+) {
   const f = uvMetadataScenario();
+  f.input.limits = { ...f.input.limits, ...limits };
   const files: Record<string, string | null> = {
     'base:pyproject.toml': uvManifest,
     'head:pyproject.toml': uvManifest,
