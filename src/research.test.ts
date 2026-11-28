@@ -1104,26 +1104,32 @@ test('a one-member uv change whose upstream reads pass one response completes up
 
 test('a one-member uv change makes exactly the metadata request base of PyPI reads', async () => {
   // Its base and head metadata reads (src/evidence/upstream.ts), shared by upstream and signals
-  // through the run cache: the structural count the metadata request base is (L11, #383).
-  const { fixture, packet } = await scenario({ uvOnly: true });
+  // through the run cache: the structural count the metadata request base is (L11, #383). Each
+  // read carries a description near the response cap, so together they pass one response, the
+  // share the former flat base got through the floor, and need the two-response byte base.
+  const { fixture, packet } = await scenario({ uvOnly: true, pypiDescriptionBytes: 900_000 });
   const members = packet.changes.filter((c) => !('basis' in c));
   expect(members.map((c) => c.ecosystem)).toEqual(['uv']);
-  let pypi = 0;
+  const reads: number[] = [];
   const result = await runResearch({
     ...base(fixture, packet),
     fetch: async (url, init) => {
-      if (new URL(url).host === 'pypi.org') pypi++;
-      return fixture.fetch(url, init);
+      const response = await fixture.fetch(url, init);
+      if (new URL(url).host === 'pypi.org')
+        reads.push(Buffer.byteLength(await response.clone().text()));
+      return response;
     },
   });
   if (result.kind !== 'ready') throw new Error(result.kind);
-  expect(pypi).toBe(limit('research.share.signals.metadata.requests.base'));
-  expect(pypi).toBe(2);
+  expect(reads).toHaveLength(limit('research.share.signals.metadata.requests.base'));
+  expect(reads).toHaveLength(2);
+  const response = limit('evidence.envelope.maxResponseBytes');
+  const bytes = reads.reduce((total, read) => total + read, 0);
+  for (const read of reads) expect(read).toBeLessThanOrEqual(response);
+  expect(bytes).toBeGreaterThan(response);
+  expect(bytes).toBeLessThanOrEqual(limit('research.share.signals.metadata.bytes.base'));
   expect(result.unavailable).toEqual([]);
-  // Both reads fit the byte base, each at most one response at the cap.
-  expect(limit('research.share.signals.metadata.bytes.base')).toBe(
-    pypi * limit('evidence.envelope.maxResponseBytes'),
-  );
+  expect(JSON.stringify(result.signalAttempts)).not.toContain('budget');
 });
 
 const PLACEHOLDER = { status: 'unavailable', reasons: ['missing'], sourceIds: [] };
