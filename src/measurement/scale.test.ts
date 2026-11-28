@@ -91,11 +91,17 @@ test('the advisory ceiling follows the scaled evidence deadline', () => {
   expect(valueAt(10, id)).toBeLessThan(10 * (production + 1));
 });
 
+test('the CPU harm caps follow the scaled evidence deadline', () => {
+  // A harm cap is the count whose parse takes a quarter of the deadline (L11, 2026-11-28), so a
+  // demand run's longer deadline also lifts it, and the work it measures is not censored.
+  for (const id of ['research.maxWork', 'w2.npm.maxJsonEntries'])
+    expect(valueAt(10, id), id).toBeGreaterThan(REGISTER.get(id)?.value ?? 0);
+});
+
 test('leaves limits outside the read budget unchanged', () => {
   for (const id of [
     'packet.bytes',
     'w2.npm.maxFileBytes',
-    'research.maxWork',
     'job.budget',
     'runner.heapBytesPerPacketByte',
     'runner.unitExpansionHeapBytes',

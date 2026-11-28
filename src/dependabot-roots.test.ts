@@ -180,9 +180,10 @@ test.each([
     encode(`version: 2\nupdates: []\n#${'x'.repeat(DEPENDABOT_ROOT_LIMITS.maxFileBytes)}\n`),
   ],
   [
-    'aliases',
+    // 250 aliases of a 101-node sequence: few source nodes, more expanded nodes than the budget.
+    'YAML nodes an expansion composes',
     encode(
-      `version: 2\nx: &a ["/"]\nupdates:\n${Array.from({ length: DEPENDABOT_ROOT_LIMITS.maxAliasExpansions + 1 }, () => '  - package-ecosystem: npm\n    directories: *a\n').join('')}`,
+      `${file(update('npm', '/'))}x: &a [${'1,'.repeat(100)}1]\ny: [${Array.from({ length: 250 }, () => '*a').join(', ')}]\n`,
     ),
   ],
   [
@@ -228,17 +229,29 @@ test('limits the roots per ecosystem after deduplication', () => {
   ).toMatchObject({ npm: { kind: 'roots' } });
 });
 
-test('expands aliases up to the alias cap and refuses one more', () => {
+test('expands aliases until the node budget refuses one more', () => {
+  // The alias cap copies the workflow reader's CPU harm point (L11, 2026-11-28), far above what
+  // the node budget lets one file expand, so the composed node budget is the one that refuses.
   const at = (count: number) =>
     encode(
-      `version: 2\nx: &a ["/web"]\nupdates:\n${Array.from({ length: count }, () => '  - package-ecosystem: npm\n    directories: *a\n').join('')}`,
+      `version: 2\nx: &a ["/web"]\ny: [${Array.from({ length: count }, () => '*a').join(', ')}]\nupdates:\n  - package-ecosystem: npm\n    directories: *a\n`,
     );
-  expect(parseDependabotRoots(at(DEPENDABOT_ROOT_LIMITS.maxAliasExpansions))).toEqual({
+  const parses = (count: number) => parseDependabotRoots(at(count)).kind === 'roots';
+  let most = 0;
+  let refused = DEPENDABOT_ROOT_LIMITS.maxYamlNodes;
+  while (refused - most > 1) {
+    const middle = Math.floor((most + refused) / 2);
+    if (parses(middle)) most = middle;
+    else refused = middle;
+  }
+  expect(most).toBeGreaterThan(0);
+  expect(most + 1).toBeLessThan(DEPENDABOT_ROOT_LIMITS.maxAliasExpansions);
+  expect(parseDependabotRoots(at(most))).toEqual({
     kind: 'roots',
     npm: { kind: 'roots', roots: ['web'] },
     uv: { kind: 'roots', roots: [] },
   });
-  expect(parseDependabotRoots(at(DEPENDABOT_ROOT_LIMITS.maxAliasExpansions + 1))).toEqual({
+  expect(parseDependabotRoots(at(most + 1))).toEqual({
     kind: 'unavailable',
     reason: 'budget',
   });

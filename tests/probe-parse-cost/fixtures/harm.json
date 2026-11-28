@@ -1,0 +1,189 @@
+{
+  "about": "Combined timings of npm run probe:parse-cost -- harm on 2026-11-28 under Node 24.22.3: per counter and shape, the units counted at each size and the slowest of 5 timed runs in any of 3 separate invocations, in milliseconds, with the largest ratio between the invocations' slowest runs at one size. Aggregates of crafted inputs only; src/limits.test.ts recomputes the register's harm fits from them.",
+  "node": "v24.22.3",
+  "measured": "2026-11-28",
+  "deadlineMs": 240000,
+  "counters": {
+    "research": [
+      {
+        "shape": "numbers",
+        "invocations": 3,
+        "units": [131072, 262144, 524288, 1048576, 2097152],
+        "slowestMs": [54.064, 125.94, 327.153, 760.444, 1434.761],
+        "spread": 1.577,
+        "harmPerInvocation": {
+          "least": 6841205,
+          "most": 7385118
+        }
+      },
+      {
+        "shape": "flat",
+        "invocations": 3,
+        "units": [87382, 174763, 349526, 699051, 1398102],
+        "slowestMs": [77.449, 167.314, 457.343, 968.822, 2025.368],
+        "spread": 1.434,
+        "harmPerInvocation": {
+          "least": 3379932,
+          "most": 4914792
+        }
+      },
+      {
+        "shape": "objects",
+        "invocations": 3,
+        "units": [87382, 174763, 349526, 699051, 1398102],
+        "slowestMs": [110.713, 219.138, 458.822, 1130.375, 2267.941],
+        "spread": 1.673,
+        "harmPerInvocation": {
+          "least": 2953794,
+          "most": 3494708
+        }
+      }
+    ],
+    "research-bytes": [
+      {
+        "shape": "manifest",
+        "invocations": 3,
+        "units": [49152, 98304, 196608, 393216, 786432],
+        "slowestMs": [0.824, 1.032, 2.081, 4.149, 8.302],
+        "spread": 1.563,
+        "harmPerInvocation": {
+          "least": 568181818,
+          "most": 789993416
+        }
+      }
+    ],
+    "npm": [
+      {
+        "shape": "numbers",
+        "invocations": 3,
+        "units": [124998, 249998, 499998, 999998, 1999998],
+        "slowestMs": [26.6, 58.252, 113.491, 265.341, 1283.034],
+        "spread": 1.932,
+        "harmPerInvocation": {
+          "least": 5837249,
+          "most": 13558321
+        }
+      },
+      {
+        "shape": "flat",
+        "invocations": 3,
+        "units": [83332, 166666, 333332, 666666, 1333332],
+        "slowestMs": [20.793, 64.03, 100.561, 282.744, 602.062],
+        "spread": 1.802,
+        "harmPerInvocation": {
+          "least": 7320446,
+          "most": 10670588
+        }
+      },
+      {
+        "shape": "objects",
+        "invocations": 3,
+        "units": [83332, 166666, 333332, 666666, 1333332],
+        "slowestMs": [27.752, 54.264, 129.764, 350.14, 862.506],
+        "spread": 1.71,
+        "harmPerInvocation": {
+          "least": 4988650,
+          "most": 7541756
+        }
+      }
+    ],
+    "registry": [
+      {
+        "shape": "numbers",
+        "invocations": 3,
+        "units": [131071, 262143, 524287, 1048575, 2097151],
+        "slowestMs": [13.836, 23.73, 48.477, 114.597, 256.517],
+        "spread": 1.422,
+        "harmPerInvocation": {
+          "least": 33415702,
+          "most": 40729345
+        }
+      },
+      {
+        "shape": "flat",
+        "invocations": 3,
+        "units": [87381, 174762, 349525, 699050, 1398101],
+        "slowestMs": [32.831, 64.939, 113.308, 223.604, 554.03],
+        "spread": 1.509,
+        "harmPerInvocation": {
+          "least": 10710317,
+          "most": 16042160
+        }
+      },
+      {
+        "shape": "objects",
+        "invocations": 3,
+        "units": [87381, 174762, 349525, 699050, 1398101],
+        "slowestMs": [22.612, 44.587, 54.471, 232.731, 527.488],
+        "spread": 1.604,
+        "harmPerInvocation": {
+          "least": 8994350,
+          "most": 11797482
+        }
+      }
+    ],
+    "toml": [
+      {
+        "shape": "integers",
+        "invocations": 3,
+        "units": [62498, 124998, 249998, 499998, 999998],
+        "slowestMs": [56.126, 214.593, 421.81, 927.058, 1744.474],
+        "spread": 1.599,
+        "harmPerInvocation": {
+          "least": 2707352,
+          "most": 3618305
+        }
+      },
+      {
+        "shape": "tables",
+        "invocations": 3,
+        "units": [41666, 83332, 166666, 333332, 666666],
+        "slowestMs": [74.187, 171.225, 360.709, 720.538, 1418.098],
+        "spread": 1.63,
+        "harmPerInvocation": {
+          "least": 2235859,
+          "most": 2788564
+        }
+      }
+    ],
+    "workflow-nodes": [
+      {
+        "shape": "nodes",
+        "invocations": 3,
+        "units": [124994, 249994, 499994, 999994, 1999994],
+        "slowestMs": [579.079, 1104.113, 2398.624, 4867.384, 9560.09],
+        "spread": 1.264,
+        "harmPerInvocation": {
+          "least": 1309278,
+          "most": 1586462
+        }
+      }
+    ],
+    "workflow-aliases": [
+      {
+        "shape": "aliases",
+        "invocations": 3,
+        "units": [41659, 83326, 166659, 333326, 666659],
+        "slowestMs": [462.612, 1017.449, 1548.989, 3000.418, 6037.123],
+        "spread": 1.564,
+        "harmPerInvocation": {
+          "least": 662544,
+          "most": 719001
+        }
+      }
+    ],
+    "workflow-occurrences": [
+      {
+        "shape": "occurrences",
+        "invocations": 3,
+        "units": [8927, 17855, 35712, 71427, 142855],
+        "slowestMs": [275.884, 517.014, 1062.14, 2414.562, 3855.076],
+        "spread": 1.373,
+        "harmPerInvocation": {
+          "least": 216339,
+          "most": 228310
+        }
+      }
+    ]
+  }
+}

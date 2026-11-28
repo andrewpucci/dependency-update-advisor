@@ -23,7 +23,7 @@ import {
   type LimitDefinition,
   type LimitId,
 } from './limits.js';
-import { COUNTERS } from '../scripts/probe-parse-cost/core.js';
+import { COUNTERS, harmFit } from '../scripts/probe-parse-cost/core.js';
 
 /** V8's maximum string length on 64-bit platforms, (1 << 29) - 24 code units. */
 const V8_MAX_STRING_LENGTH = 536_870_888;
@@ -923,6 +923,89 @@ test('every parse-cost counter the register cites is one the probe runs', () => 
   );
   expect(cited.length).toBeGreaterThan(0);
   for (const [id, counter] of cited) expect(counters, `${id} cites ${counter}`).toContain(counter);
+});
+
+/** The combined harm timings of npm run probe:parse-cost -- harm, aggregates only (see the file). */
+type HarmFixture = {
+  deadlineMs: number;
+  counters: Record<string, { shape: string; units: number[]; slowestMs: number[] }[]>;
+};
+const HARM_FIXTURE = JSON.parse(
+  readFileSync(
+    fileURLToPath(new URL('../tests/probe-parse-cost/fixtures/harm.json', import.meta.url)),
+    'utf8',
+  ),
+) as HarmFixture;
+
+/** The cap, the probe counter and the three fit entries of each CPU harm cap. */
+const HARM_CAPS = [
+  ['research.maxWork', 'research', 'ResearchWorkUnit'],
+  ['w2.npm.maxJsonEntries', 'npm', 'NpmJsonEntry'],
+  ['w2.registry.maxJsonEntries', 'registry', 'RegistryJsonEntry'],
+  ['w2.uv.maxTomlEntries', 'toml', 'UvTomlEntry'],
+  ['w2.actions.maxAliasExpansions', 'workflow-aliases', 'AliasExpansion'],
+] as const;
+
+test('the harm fits recompute from the recorded probe timings', () => {
+  // L11, follow-up to Q8(a), approved 2026-11-28: each fit entry is what harmFit gives on the
+  // timings the probe printed, for the shape whose harm point comes first, and the cap is that
+  // harm point at the default evidence deadline.
+  expect(HARM_FIXTURE.deadlineMs).toBe(limit('evidence.envelope.totalTimeoutMs'));
+  for (const [cap, counter, unit] of HARM_CAPS) {
+    const shapes = HARM_FIXTURE.counters[counter] ?? [];
+    const fits = shapes.map(({ units, slowestMs }) =>
+      harmFit(units, slowestMs, HARM_FIXTURE.deadlineMs),
+    );
+    const first = fits.reduce((a, b) => (b.harm < a.harm ? b : a));
+    const ids = {
+      cost: `runner.parseMsPer${unit}`,
+      count: `runner.parseCount${unit}`,
+      exponent: `runner.parseExponent${unit}`,
+    } as Record<string, LimitId>;
+    expect(limit(ids.cost as LimitId), cap).toBe(first.msPerUnit);
+    expect(limit(ids.count as LimitId), cap).toBe(first.count);
+    expect(limit(ids.exponent as LimitId), cap).toBe(first.exponent);
+    expect(limit(cap), cap).toBe(first.harm);
+    for (const id of Object.values(ids))
+      expect(limitEntry(id).basis, id).toMatchObject({
+        kind: 'measured',
+        command: `npm run probe:parse-cost -- harm ${counter}`,
+      });
+  }
+});
+
+test('each CPU harm cap is its harm point at every evidence deadline', () => {
+  const definitions = [...REGISTER.values()].map(({ value, ...entry }): LimitDefinition =>
+    entry.basis.kind === 'derived' ? entry : { ...entry, value },
+  );
+  const latest = buildRegister(
+    definitions,
+    new Map([['evidence.envelope.totalTimeoutMs', limit('job.maxEvidenceDeadlineMs')]]),
+  );
+  for (const [cap, , unit] of HARM_CAPS) {
+    const cost = limit(`runner.parseMsPer${unit}` as LimitId);
+    const count = limit(`runner.parseCount${unit}` as LimitId);
+    const exponent = limit(`runner.parseExponent${unit}` as LimitId);
+    expect(limitEntry(cap).basis).toMatchObject({
+      kind: 'derived',
+      inputs: [
+        'evidence.envelope.totalTimeoutMs',
+        `runner.parseMsPer${unit}`,
+        `runner.parseCount${unit}`,
+        `runner.parseExponent${unit}`,
+      ],
+    });
+    // The slowest run on a runner 10 times slower takes a quarter of the deadline at the cap.
+    const time = (units: number) => cost * count * (units / count) ** exponent;
+    for (const register of [REGISTER, latest]) {
+      const share = (register.get('evidence.envelope.totalTimeoutMs')?.value ?? 0) / 4 / 10;
+      const value = register.get(cap)?.value ?? 0;
+      expect(time(value), cap).toBeLessThanOrEqual(share * (1 + 1e-12));
+      expect(time(value + 1), cap).toBeGreaterThan(share);
+    }
+  }
+  // The Dependabot alias cap copies the workflow one.
+  expect(limit('dependabot.maxAliasExpansions')).toBe(limit('w2.actions.maxAliasExpansions'));
 });
 
 test('the research and signal bounds keep their sources and formulas', () => {
