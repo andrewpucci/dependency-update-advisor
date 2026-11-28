@@ -3434,14 +3434,21 @@ const DEFINITIONS = [
     test: 'src/config.test.ts > accepts the exact byte limit and rejects overflow',
     note: 'stopped (L11, Q19(a) and E17, #383): the approved basis is derived, the largest valid config, (roots + candidates) × (limit:context.maxPathBytes × e + 3) + skeleton. That size has no bound unless an escape factor e is fixed: the parser puts no length on a path before limit:context.maxPathBytes, JSON lets any character be written as a 6-byte \\u escape, and whitespace between tokens is unlimited, so no structural test can fix e, and no approved option does. Even at e = 1 and no skeleton, the Q19(a) root cap (limit:snapshot.maxTreeEntries, 102,578) and limit:context.maxSourceCandidates (193) give 102,771 × 1,027 = 105,545,817 bytes. The config is retained through the evidence phase at limit:runner.heapBytesPerRetainedByte (27.47), so limit:runner.evidenceRetainedHeapBytes would rise from 4,130,139,553 to 7,029,033,078 bytes, above limit:runner.heapBytes (6,372,196,352), and limit:packet.bytes would fall from 148,312,300 to −48,891,341; it stays positive only below about 79,382,630 config bytes. Q19(b), a safety cap sized against heap, was not approved. A new basis needs a maintainer decision. Value unchanged',
   }),
-  unjustified('config.maxModelCodeUnits', 128, 'code units', {
+  {
+    id: 'config.maxModelCodeUnits',
+    value: 128,
+    unit: 'code units',
     protects:
       'The configured model ID is passed to the analysis provider request; an unbounded string could flow into it, and the cap with the ASCII pattern keeps it a valid identifier.',
     effect:
       'A model over 128 code units, or one that fails the pattern, fails the config with field analysis.model.',
-    note: 'no recorded reason',
     test: 'src/config.test.ts > the model cap admits exactly the registered code units and rejects one more',
-  }),
+    basis: {
+      kind: 'safety',
+      reason:
+        'Largest legitimate use: Mistral documents no model id length; the longest of the 59 API ids on its models overview (docs.mistral.ai/getting-started/models/models_overview, read on 2026-11-28), retired ones included, is 37 characters. Harm above: the cap is reserved, one byte per character, in limit:analysis.fixedRequestBytes of every analysis request, so each unit of cap comes out of limit:analysis.unitBytes for every unit; an unbounded id would also flow unchecked into the provider request. 128 keeps every documented id with room for longer names while reserving 128 bytes per request. Approved by the maintainer on 2026-11-27 (L11, #383).',
+    },
+  },
   unjustified('config.maxReleaseAgeDays', 30, 'count', {
     protects:
       "A mistyped release-age window (say 365) would hold every update as too new for a year; the range keeps an adopter's setting to plausible windows.",
@@ -4343,14 +4350,21 @@ const DEFINITIONS = [
     note: 'awaiting L8 measurement',
     test: 'none: a multiplier inside the corroboration reservation at src/evidence/uv-corroboration.ts:326; the sum is spent against the graph work budget, which graphWork enforces (src/evidence/uv-input.ts:59-61, left < 0 throws budget) with the limit w2.graph.maxGraphWork (src/collection.ts:60)',
   }),
-  unjustified('handoff.maxTraces', 32, 'count', {
+  {
+    id: 'handoff.maxTraces',
+    value: 32,
+    unit: 'count',
     protects:
       'The rehearsal sink is a local, bounded record of runs; an unbounded trace list would grow memory with each run.',
     effect:
       'The 33rd record is refused: record returns false and no trace is kept; existing traces are kept.',
     test: 'src/handoff.test.ts > bounds the rehearsal trace at 32 records and refuses the next',
-    note: 'no recorded reason',
-  }),
+    basis: {
+      kind: 'safety',
+      reason:
+        'Largest legitimate use: one trace per run; startup creates one rehearsal sink and the pipeline records one handoff into it (src/startup.ts, src/pipeline.ts). Harm above: each trace keeps one comment body of up to limit:comment.maxBodyCodeUnits UTF-16 code units, about 174,762 bytes of heap as a two-byte string, outside the heap the register shares out, so the list must stay bounded if a sink is ever reused; 32 traces hold at most about 5.6 MB, under 0.1% of limit:runner.heapBytes. Approved by the maintainer on 2026-11-27 (L11, #383).',
+    },
+  },
   unjustified('startup.maxReportedDurationMs', 999_999, 'milliseconds', {
     protects:
       'Keeps the one-line stderr timing summary bounded: an injected or faulty clock cannot lengthen the line, since each call prints at most six digits.',
