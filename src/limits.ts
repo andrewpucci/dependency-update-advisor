@@ -2273,13 +2273,20 @@ const DEFINITIONS = [
       'Candidates are split into queries of at most this many; the next candidate starts another query.',
     test: 'src/evidence/batches.test.ts > a tag query holds exactly the register maximum of candidates, and one more starts another',
   },
-  unjustified('evidence.allocation.signals.readers.publishTimes.maxRequests', 40, 'count', {
-    protects:
-      'Caps npm publish-time lookups at one per extra changed package, so the signals stage stays inside its share.',
-    effect: 'The lookup past the cap is refused with budget and no request is sent.',
-    note: 'awaiting L8 measurement',
-    test: 'src/evidence/npm-publish-times.test.ts > the publish-time request share allows exactly its count and refuses the next lookup unsent',
-  }),
+  derived(
+    'evidence.allocation.signals.readers.publishTimes.maxRequests',
+    'count',
+    ['packet.changes'],
+    (changes) => 2 * changes,
+    'At most one publish-time read per side of a change (src/evidence/policy-signals.ts:140-169 reads head, then base, and reuses the result for an equal name and version set), for at most limit:packet.changes changes: 2 × 128 = 256, the rule the malware and metadata ceilings use (#467). These are npm registry reads, not GitHub reads. The fitted publish-time share binds long before this ceiling. Approved by the maintainer on 2026-11-27 (L11, #383).',
+    {
+      protects:
+        'Caps npm publish-time lookups, the ceiling of the per-member publish-time share, so the signals stage stays inside the envelope.',
+      effect:
+        'The ceiling of the scaled publish-time request share; the lookup past the share is refused with budget and no request is sent.',
+      test: 'src/evidence/npm-publish-times.test.ts > the publish-time request share allows exactly its count and refuses the next lookup unsent',
+    },
+  ),
   retainedSetting(
     'evidence.allocation.signals.readers.publishTimes.maxTotalBytes',
     'limits.publishTimeSignalBytes',
@@ -2291,12 +2298,19 @@ const DEFINITIONS = [
       test: 'src/evidence/npm-publish-times.test.ts > the publish-time byte share allows exactly its total and refuses the read that exceeds it',
     },
   ),
-  unjustified('evidence.allocation.signals.readers.registry.maxRequests', 64, 'count', {
-    protects:
-      'Caps npm registry policy requests in the signals stage, separate from the W2 registry share, so the stage stays inside the envelope.',
-    effect: 'The request past the cap returns budget and no request is sent.',
-    test: 'src/evidence/npm-registry.test.ts > the signals registry request share allows exactly its count and refuses the next read unsent',
-  }),
+  derived(
+    'evidence.allocation.signals.readers.registry.maxRequests',
+    'count',
+    ['packet.changes'],
+    (changes) => 2 * changes,
+    'One npm registry policy read per side of a change (npmSide, src/evidence/policy-signals-npm.ts:214-230), for at most limit:packet.changes changes: 2 × 128 = 256, the rule the malware and metadata ceilings use (#467). These are npm registry reads, not GitHub reads. Approved by the maintainer on 2026-11-27 (L11, #383).',
+    {
+      protects:
+        'Caps npm registry policy requests in the signals stage, separate from the W2 registry share, so the stage stays inside the envelope.',
+      effect: 'The request past the cap returns budget and no request is sent.',
+      test: 'src/evidence/npm-registry.test.ts > the signals registry request share allows exactly its count and refuses the next read unsent',
+    },
+  ),
   retainedSetting(
     'evidence.allocation.signals.readers.registry.maxTotalBytes',
     'limits.registrySignalBytes',

@@ -878,4 +878,12 @@ test('the research and signal bounds keep their sources and formulas', () => {
   expect(limit('research.maxTagCandidates')).toBeLessThanOrEqual(
     limit('evidence.allocation.upstream.maxRequests'),
   );
+  // One npm read per side of a change; the stage and research sums follow.
+  for (const id of [
+    'evidence.allocation.signals.readers.publishTimes.maxRequests',
+    'evidence.allocation.signals.readers.registry.maxRequests',
+  ] as const)
+    expect(limit(id), id).toBe(2 * limit('packet.changes'));
+  expect(limit('evidence.allocation.signals.maxRequests')).toBe(1_040);
+  expect(limit('research.githubQuota.researchCeiling')).toBe(1_501);
 });

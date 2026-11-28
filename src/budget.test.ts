@@ -30,8 +30,9 @@ test('records the evidence-read envelope', () => {
     // 1,520 + (221 − 80) + (256 − 16) + (256 − 40) requests, the last the malware ceiling, and
     // 54 MiB − 15 MiB − 0.5 MiB + 76,800,000 + 9,484,288 bytes. The structural freshness share
     // (L11, #383) moves them by (17 − 24) requests and (17 − 3) MiB, and the signals upstream
-    // share's floor of one response (L11, Q11(a)) by 0.5 MiB.
-    maxRequests: 2110,
+    // share's floor of one response (L11, Q11(a)) by 0.5 MiB. The npm publish-time and registry
+    // policy ceilings of two reads per change (L11, #383) add (256 − 40) + (256 − 64) requests.
+    maxRequests: 2518,
     maxResponseBytes: MiB,
     maxTotalBytes: 141_858_816,
     requestTimeoutMs: 11_639,
@@ -52,12 +53,12 @@ test('splits the envelope with nothing unallocated or over-allocated', () => {
     upstream: { maxRequests: 240, maxTotalBytes: 76_800_000 },
     advisory: { maxRequests: 221, maxTotalBytes: 5 * MiB },
     signals: {
-      maxRequests: 632,
+      maxRequests: 1_040,
       maxTotalBytes: 15_775_744,
       readers: {
         malware: { maxRequests: 256, maxTotalBytes: 1.5 * MiB },
-        publishTimes: { maxRequests: 40, maxTotalBytes: 1.5 * MiB },
-        registry: { maxRequests: 64, maxTotalBytes: 2 * MiB },
+        publishTimes: { maxRequests: 256, maxTotalBytes: 1.5 * MiB },
+        registry: { maxRequests: 256, maxTotalBytes: 2 * MiB },
         metadata: { maxRequests: 256, maxTotalBytes: 9_484_288 },
         upstream: { maxRequests: 16, maxTotalBytes: MiB },
       },
@@ -294,16 +295,17 @@ test('the fitted values give a one-member change a smaller share than R1 #276', 
   // One transitive npm member: advisory 3 + 2 = 5 and malware 2 + 1 = 3.
   const transitive = researchShares({ ...ONE_UNITS, direct: 0, transitive: 1 });
   expect(fittedRequests(transitive)).toMatchObject({ advisory: 5, malware: 3 });
-  // 105 members, 2 direct: upstream and publish times pass their ceilings. Advisory is
-  // 3 + 3 × 2 + 2 × 103 = 215, under its ceiling of 221, and malware 2 + 2 × 2 + 1 × 105 = 111,
-  // under its ceiling of 256 (#467).
+  // 105 members, 2 direct: upstream passes its ceiling. Advisory is 3 + 3 × 2 + 2 × 103 = 215,
+  // under its ceiling of 221, malware 2 + 2 × 2 + 1 × 105 = 111, under its ceiling of 256 (#467),
+  // and publish times 2 + 1.2 × 105 = 128, under its ceiling of 256 (L11, #383).
   expect(advisory.maxRequests).toBe(221);
   expect(signals.readers.malware.maxRequests).toBe(256);
+  expect(signals.readers.publishTimes.maxRequests).toBe(256);
   expect(fittedRequests(large)).toEqual({
     upstream: upstream.maxRequests,
     advisory: 215,
     malware: 111,
-    publishTimes: signals.readers.publishTimes.maxRequests,
+    publishTimes: 128,
   });
   const largeRequests = fittedRequests(large);
   for (const [share, count] of Object.entries(fittedRequests(small)))
