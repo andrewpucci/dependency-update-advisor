@@ -1,10 +1,13 @@
 /**
  * One parse-cost measurement for the parse-cost probe (run.ts starts it with the flags it needs):
- * one counter's reader, run on a crafted input that fills that reader's own byte cap with the
- * densest form of the counted unit, so it holds the most units the reader can be given. The
- * reader's count caps are lifted for the run, so the whole input is counted. It prints the units
- * counted and the slowest and median of RUNS timed runs after one warm-up. Usage:
- * measure.ts <counter>.
+ * one counter's reader, run on crafted inputs that fill a byte size with the densest form of the
+ * counted unit, at doubling sizes around the reader's own byte cap: two halvings below it and two
+ * doublings above it (four for the Dependabot reader, whose cap is small), set by DOUBLINGS_BELOW,
+ * DOUBLINGS_ABOVE and DEPENDABOT_DOUBLINGS_ABOVE. The reader's count and byte caps are lifted for
+ * the run, so the whole input is counted, and each run checks the reader walked it all. Per size it
+ * prints the units counted and the slowest and median of RUNS timed runs after one warm-up; per
+ * shape, the ratios of successive timings, which stay near 2 when the cost is linear. Usage:
+ * measure.ts <counter>, or measure.ts use <corpus directory>.
  *
  * Counters: `session` (the W2 GitHub read session's JSON entries, src/github-read.ts),
  * `registry` (the npm registry reader's, src/evidence/npm-registry.ts), `npm` (the npm lockfile
@@ -62,12 +65,27 @@ const { reconcileUvGraph } = await load<typeof UvGraph>('src/evidence/uv-graph.t
 const { uvGraphFixture } = await load<typeof UvFixtures>('tests/parity/uv-graph.ts');
 
 const RUNS = Number(process.env.RUNS ?? '5');
+/** Doublings measured below and above each reader's byte cap (see core.doublingSizes). */
+const BELOW = Number(process.env.DOUBLINGS_BELOW ?? '2');
+const ABOVE = Number(process.env.DOUBLINGS_ABOVE ?? '2');
+/** The Dependabot cap is small, so its series runs further above it, nearer its harm point. */
+const DEPENDABOT_ABOVE = Number(process.env.DEPENDABOT_DOUBLINGS_ABOVE ?? '4');
+/**
+ * The register's Dependabot byte cap, which run.ts passes in because HEAP_LIMIT_OVERRIDES lifts the
+ * register value this process reads.
+ */
+const DEPENDABOT_CAP = Number(process.env.DEPENDABOT_MAX_FILE_BYTES);
+if (!Number.isSafeInteger(DEPENDABOT_CAP) || DEPENDABOT_CAP <= 0) {
+  throw new Error('run through npm run probe:parse-cost, which passes DEPENDABOT_MAX_FILE_BYTES');
+}
 /** A count cap lifted out of the way, so the whole input is counted. */
 const LIFTED = Number.MAX_SAFE_INTEGER;
 // No read here waits on a clock, so every timeout is the whole job window.
 const WINDOW_MS = limit('job.window');
 const now = () => 0;
 const encode = (text: string) => new TextEncoder().encode(text);
+const gc = globalThis.gc;
+if (!gc) throw new Error('run with --expose-gc (npm run probe:parse-cost does)');
 
 function stubFetch(body: string) {
   const bytes = encode(body);
@@ -78,131 +96,74 @@ function stubFetch(body: string) {
     });
 }
 
-/** The slowest JSON shape is the one a review cares about, so each JSON counter runs both. */
-function jsonShapes(bytes: number) {
-  return (Object.keys(core.JSON_UNITS) as Core.JsonShape[]).map((shape) => {
-    const body = core.jsonDocument(shape, bytes);
-    return { shape, body, units: core.entryCount(JSON.parse(body)) };
+/** One measured size: its input bytes, the units the reader counts in it, and the timed run. */
+type Point = { bytes: number; units: number; run: () => unknown };
+/** One shape measured at doubling sizes. */
+type Series = { shape: string; points: Point[] };
+
+const sizes = (cap: number, above = ABOVE) => core.doublingSizes(cap, BELOW, above);
+
+/** Fails the probe when a reader did not walk the whole input: the run would time less work. */
+function expectWalked(condition: boolean, what: string): void {
+  if (!condition) throw new Error(`${what}: the reader did not count the whole input`);
+}
+
+/** JSON series, one per shape, each at the doubling sizes of `cap`. */
+async function jsonSeries(
+  cap: number,
+  point: (shape: Core.JsonShape, body: string, bytes: number) => Promise<Point>,
+): Promise<Series[]> {
+  const series: Series[] = [];
+  for (const shape of Object.keys(core.JSON_UNITS) as Core.JsonShape[]) {
+    const points: Point[] = [];
+    for (const bytes of sizes(cap)) points.push(await point(shape, core.jsonDocument(shape, bytes), bytes));
+    series.push({ shape, points });
+  }
+  return series;
+}
+
+/** A read must end in the full-walk outcome: the shaped body is walked, then refused as malformed. */
+const malformed = (result: unknown) =>
+  (result as { kind?: unknown; reason?: unknown }).kind === 'unavailable' &&
+  (result as { reason?: unknown }).reason === 'malformed';
+
+function sessionSeries(): Promise<Series[]> {
+  return jsonSeries(W2_EVIDENCE_LIMITS.session.maxResponseBytes, async (shape, body, bytes) => {
+    const limits = {
+      ...W2_EVIDENCE_LIMITS.session,
+      maxJsonEntries: LIFTED,
+      maxResponseBytes: bytes,
+      maxTotalBytes: LIFTED,
+      totalTimeoutMs: WINDOW_MS,
+    };
+    const run = () => createGithubReadSession({ binding, limits }, { fetch: stubFetch(body), now });
+    expectWalked(malformed(await run()), `session ${shape}`);
+    // The session's count is private; the walk counts every property and element, as entryCount.
+    return { bytes, units: core.entryCount(JSON.parse(body)), run };
   });
 }
 
-type Case = { shape: string; units: number; run: () => unknown };
-
-/** Collection limits that admit the whole input; the byte cap is the register's. */
-const UV_COLLECTION = {
-  ...W2_EVIDENCE_LIMITS.uv,
-  maxTomlEntries: LIFTED,
-  maxPackages: LIFTED,
-  maxDeclarations: LIFTED,
-  maxEdges: LIFTED,
-  maxRetainedBytes: LIFTED,
-};
-
-/** Whether a graph result is complete: nothing in it ran out of budget. */
-const withinBudget = (result: unknown) => !JSON.stringify(result).includes('"budget"');
-
-/**
- * The uv graph stage on a project whose lock fills the uv file cap on both sides, one member
- * changed, then on half that lock, and so on down to the smallest lock: the work grows faster than
- * the package count, so each size is a point. Its units are the least graph work that completes
- * it, found by bisection.
- */
-async function uvGraphCases(): Promise<Case[]> {
-  const cases: Case[] = [];
-  const smallest = BINARY_BYTES.KiB * DECIMAL_RADIX;
-  for (const shape of core.GRAPH_SHAPES) {
-    for (
-      let bytes = W2_EVIDENCE_LIMITS.uv.maxFileBytes;
-      bytes >= smallest;
-      bytes = Math.floor(bytes / 2)
-    ) {
-      const base = core.uvProject(shape, bytes, '1');
-      const head = core.uvProject(shape, bytes, '2');
-      const input = await uvGraphFixture(
-        {
-          'base:pyproject.toml': base.manifest,
-          'head:pyproject.toml': head.manifest,
-          'base:uv.lock': base.lock,
-          'head:uv.lock': head.lock,
-        },
-        UV_COLLECTION,
-      );
-      const run = (maxGraphWork: number) =>
-        reconcileUvGraph({ ...input, limits: { maxGraphWork, maxRetainedBytes: LIFTED } });
-      const units = await core.smallestPassing((work) => withinBudget(run(work)), LIFTED);
-      if (units === null || run(units).kind !== 'inventory') throw new Error(`uv graph ${shape}`);
-      cases.push({ shape: `${shape}, ${base.packages} packages`, units, run: () => run(units) });
-    }
-  }
-  return cases;
-}
-
-/**
- * The corroboration claim regexes (src/evidence/uv-corroboration.ts) on a description of half
- * the graph work cap in code units, the most the stage reads, since it charges one unit per code
- * unit. The description is lines of one shape at the line cap, then half of it, and so on: if the
- * matching is linear, the time stays flat as the lines shorten, and it does not grow with the line.
- */
-async function claimCases(): Promise<Case[]> {
-  const input = await uvGraphFixture();
-  const cap = limit('uv.maxCorroborationCodeUnits');
-  const total = Math.floor(W2_EVIDENCE_LIMITS.graph.maxGraphWork / 2);
-  const cases: Case[] = [];
-  for (const shape of core.CLAIM_SHAPES) {
-    for (let length = cap; length >= cap / DECIMAL_RADIX; length = Math.floor(length / 2)) {
-      const line = core.claimLine(shape, length);
-      const text = Array.from({ length: Math.floor(total / (length + 1)) }, () => line).join('\n');
-      const corroboration = {
-        status: 'available',
-        repository: input.binding.repository,
-        pullNumber: input.binding.pullNumber,
-        headSha: input.binding.headSha,
-        text,
-      };
-      const run = () =>
-        reconcileUvGraph({
-          ...input,
-          corroboration,
-          limits: { maxGraphWork: LIFTED, maxRetainedBytes: LIFTED },
-        });
-      if (run().kind !== 'inventory') throw new Error(`claims ${shape}`);
-      cases.push({ shape: `${shape}, lines of ${length}`, units: text.length, run });
-    }
-  }
-  return cases;
-}
-
-function sessionCases(): Case[] {
-  const limits = {
-    ...W2_EVIDENCE_LIMITS.session,
-    maxJsonEntries: LIFTED,
-    totalTimeoutMs: WINDOW_MS,
-  };
-  return jsonShapes(limits.maxResponseBytes).map(({ shape, body, units }) => ({
-    shape,
-    units,
-    run: () => createGithubReadSession({ binding, limits }, { fetch: stubFetch(body), now }),
-  }));
-}
-
-function registryCases(): Case[] {
-  const limits = {
-    ...W2_EVIDENCE_LIMITS.registry,
-    maxRequests: 1,
-    maxJsonEntries: LIFTED,
-    maxRetainedBytes: W2_EVIDENCE_LIMITS.registry.maxTotalBytes,
-    requestTimeoutMs: WINDOW_MS,
-    totalTimeoutMs: WINDOW_MS,
-  };
-  return jsonShapes(limits.maxResponseBytes).map(({ shape, body, units }) => ({
-    shape,
-    units,
-    run: () => {
+function registrySeries(): Promise<Series[]> {
+  return jsonSeries(W2_EVIDENCE_LIMITS.registry.maxResponseBytes, async (shape, body, bytes) => {
+    const limits = {
+      ...W2_EVIDENCE_LIMITS.registry,
+      maxRequests: 1,
+      maxJsonEntries: LIFTED,
+      maxResponseBytes: bytes,
+      maxTotalBytes: bytes,
+      maxRetainedBytes: bytes,
+      requestTimeoutMs: WINDOW_MS,
+      totalTimeoutMs: WINDOW_MS,
+    };
+    const read = async () => {
       const opened = createNpmRegistryReader(limits, { fetch: stubFetch(body), now });
       if (opened.kind !== 'ready') throw new Error('registry reader');
-      return opened.read(npmRequest);
-    },
-  }));
+      return { result: await opened.read(npmRequest), stopLimit: opened.stopLimit() };
+    };
+    const { result, stopLimit } = await read();
+    expectWalked(malformed(result) && stopLimit === null, `registry ${shape}`);
+    return { bytes, units: core.entryCount(JSON.parse(body)), run: read };
+  });
 }
 
 /** A file session over one npm root whose files are `files(side, path)`, as the collector reads it. */
@@ -244,59 +205,29 @@ function npmSession(
   };
 }
 
-function npmCases(): Case[] {
+function npmSeries(): Promise<Series[]> {
   const { binding: scenario, expected } = npmScenario();
-  const limits = { ...W2_EVIDENCE_LIMITS.npm, maxJsonEntries: LIFTED, maxRoots: 1 };
-  return jsonShapes(limits.maxFileBytes).map(({ shape, body, units }) => ({
-    shape,
-    units,
-    run: () =>
+  return jsonSeries(W2_EVIDENCE_LIMITS.npm.maxFileBytes, async (shape, body, bytes) => {
+    const limits = { ...W2_EVIDENCE_LIMITS.npm, maxFileBytes: bytes, maxJsonEntries: LIFTED, maxRoots: 1 };
+    const run = () =>
       collectNpmInventory(
         { binding: scenario, roots: ['.'], configRevision: expected.contextRevision, limits },
         {
           session: npmSession(scenario, (_, path) => (path.endsWith('package.json') ? '{}' : body)),
         },
-      ),
-  }));
-}
-
-/** The npm graph stage on a lockfile that fills the npm file cap on both sides, as for uv. */
-async function npmGraphCases(): Promise<Case[]> {
-  const { binding: scenario, expected } = npmScenario();
-  const limits = {
-    ...W2_EVIDENCE_LIMITS.npm,
-    maxJsonEntries: LIFTED,
-    maxRoots: 1,
-    maxRetainedBytes: LIFTED,
-  };
-  const integrity = 'sha512-' + Buffer.alloc(DIGEST_BYTES.sha512, 1).toString('base64');
-  const cases: Case[] = [];
-  for (const shape of core.GRAPH_SHAPES) {
-    const base = core.npmProject(shape, limits.maxFileBytes, '1.0.0', integrity);
-    const head = core.npmProject(shape, limits.maxFileBytes, '1.0.1', integrity);
-    const inventory = await collectNpmInventory(
-      { binding: scenario, roots: ['.'], configRevision: expected.contextRevision, limits },
-      {
-        session: npmSession(scenario, (side, path) => {
-          const project = side === 'base' ? base : head;
-          return path.endsWith('package.json') ? project.manifest : project.lock;
-        }),
-      },
+      );
+    // Both sides' lockfiles are counted whole, then each is a malformed gap, never a budget one.
+    const result = (await run()) as { kind?: unknown; gaps?: { path: string; reason: string }[] };
+    const locks = (result.gaps ?? []).filter((gap) => gap.path === 'package-lock.json');
+    expectWalked(
+      result.kind === 'inventory' && locks.length > 0 && locks.every((gap) => gap.reason === 'malformed'),
+      `npm ${shape}`,
     );
-    const run = (maxGraphWork: number) =>
-      proveNpmRelationships({
-        inventory,
-        binding: scenario,
-        limits: { maxGraphWork, maxRetainedBytes: LIFTED },
-      });
-    const units = await core.smallestPassing((work) => withinBudget(run(work)), LIFTED);
-    if (units === null || run(units).kind !== 'inventory') throw new Error(`npm graph ${shape}`);
-    cases.push({ shape: `${shape}, ${base.packages} packages`, units, run: () => run(units) });
-  }
-  return cases;
+    return { bytes, units: locks.length * core.entryCount(JSON.parse(body)), run };
+  });
 }
 
-function researchCases(): Case[] {
+function researchSeries(): Promise<Series[]> {
   const limits = {
     maxRequests: 1,
     maxPages: 1,
@@ -312,82 +243,50 @@ function researchCases(): Case[] {
     requestTimeoutMs: WINDOW_MS,
     totalTimeoutMs: WINDOW_MS,
   };
-  return jsonShapes(limits.maxResponseBytes).map(({ shape, body, units }) => ({
-    shape,
-    units,
-    // The reader parses the body, then copies it, charging one unit of work per entry.
-    run: () => upstreamCopy(JSON.parse(body) as unknown, limits),
-  }));
-}
-
-function tomlCases(): Case[] {
-  const limits = { ...W2_EVIDENCE_LIMITS.uv, maxTomlEntries: LIFTED };
-  return (Object.keys(core.TOML_UNITS) as Core.TomlShape[]).map((shape) => {
-    const bytes = encode(core.tomlDocument(shape, limits.maxFileBytes));
-    const budget = { entries: 0, packages: 0, declarations: 0, edges: 0 };
-    if (readToml(bytes, limits, budget).kind !== 'parsed') throw new Error(`toml ${shape}`);
-    return { shape, units: budget.entries, run: () => readToml(bytes, limits) };
+  return jsonSeries(limits.maxResponseBytes, async (_, body, bytes) => {
+    // The reader parses the body, then copies it, charging one unit of work per entry it counts.
+    const run = () => {
+      const work = { entries: 0 };
+      upstreamCopy(JSON.parse(body) as unknown, limits, work);
+      return work.entries;
+    };
+    return { bytes, units: run(), run };
   });
 }
 
-function workflowCase(shape: Core.WorkflowShape): Case[] {
-  const limits = {
-    ...W2_EVIDENCE_LIMITS.actions,
-    maxYamlNodes: LIFTED,
-    maxAliasExpansions: LIFTED,
-    maxOccurrences: LIFTED,
-  };
-  const bytes = encode(core.workflowDocument(shape, limits.maxFileBytes));
-  const budget = { nodes: 0, aliases: 0, occurrences: 0 };
-  if (readWorkflow(bytes, limits, budget).kind !== 'parsed') throw new Error(`workflow ${shape}`);
-  return [{ shape, units: budget[shape], run: () => readWorkflow(bytes, limits) }];
+function tomlSeries(): Series[] {
+  return (Object.keys(core.TOML_UNITS) as Core.TomlShape[]).map((shape) => ({
+    shape,
+    points: sizes(W2_EVIDENCE_LIMITS.uv.maxFileBytes).map((size) => {
+      const limits = { ...W2_EVIDENCE_LIMITS.uv, maxFileBytes: size, maxTomlEntries: LIFTED };
+      const bytes = encode(core.tomlDocument(shape, size));
+      const budget = { entries: 0, packages: 0, declarations: 0, edges: 0 };
+      expectWalked(readToml(bytes, limits, budget).kind === 'parsed', `toml ${shape}`);
+      return { bytes: size, units: budget.entries, run: () => readToml(bytes, limits) };
+    }),
+  }));
 }
 
-/** The nodes the preflight charges for a document, the count the node cap bounds first. */
-function preflightNodes(text: string): number {
-  const budget = { nodes: 0, aliases: 0, occurrences: 0 };
-  const limits = {
-    maxFileBytes: LIFTED,
-    maxYamlNodes: LIFTED,
-    maxYamlDepth: LIFTED,
-    maxAliasExpansions: LIFTED,
-    maxOccurrences: LIFTED,
-  };
-  for (const token of new Parser().parse(text)) preflight(token, limits, budget);
-  return budget.nodes;
+function workflowSeries(shape: Core.WorkflowShape): Series[] {
+  return [
+    {
+      shape,
+      points: sizes(W2_EVIDENCE_LIMITS.actions.maxFileBytes).map((size) => {
+        const limits = {
+          ...W2_EVIDENCE_LIMITS.actions,
+          maxFileBytes: size,
+          maxYamlNodes: LIFTED,
+          maxAliasExpansions: LIFTED,
+          maxOccurrences: LIFTED,
+        };
+        const bytes = encode(core.workflowDocument(shape, size));
+        const budget = { nodes: 0, aliases: 0, occurrences: 0 };
+        expectWalked(readWorkflow(bytes, limits, budget).kind === 'parsed', `workflow ${shape}`);
+        return { bytes: size, units: budget[shape], run: () => readWorkflow(bytes, limits) };
+      }),
+    },
+  ];
 }
-
-function dependabotCase(shape: Core.DependabotShape): Case[] {
-  // The Dependabot byte cap is lifted with the count caps; the workflow cap sizes the input.
-  const text = core.dependabotDocument(shape, limit('w2.actions.maxFileBytes'));
-  const bytes = encode(text);
-  const parsed = parseDependabotRoots(bytes);
-  if (parsed.kind !== 'roots' || parsed.npm.kind !== 'roots')
-    throw new Error(`dependabot ${shape}`);
-  const units = {
-    nodes: () => preflightNodes(text),
-    updates: () => text.split('package-ecosystem').length - 1,
-    roots: () => (parsed.npm.kind === 'roots' ? parsed.npm.roots.length : 0),
-  }[shape]();
-  return [{ shape, units, run: () => parseDependabotRoots(bytes) }];
-}
-
-const counters: Record<string, () => Case[] | Promise<Case[]>> = {
-  'graph-uv': uvGraphCases,
-  'graph-npm': npmGraphCases,
-  claims: claimCases,
-  session: sessionCases,
-  registry: registryCases,
-  npm: npmCases,
-  research: researchCases,
-  toml: tomlCases,
-  'workflow-nodes': () => workflowCase('nodes'),
-  'workflow-aliases': () => workflowCase('aliases'),
-  'workflow-occurrences': () => workflowCase('occurrences'),
-  'dependabot-nodes': () => dependabotCase('nodes'),
-  'dependabot-updates': () => dependabotCase('updates'),
-  'dependabot-roots': () => dependabotCase('roots'),
-};
 
 /** The readers' composer options (src/dependabot-roots.ts, src/evidence/actions-yaml.ts). */
 const COMPOSER_OPTIONS = {
@@ -410,20 +309,213 @@ const LIFTED_YAML = {
   maxOccurrences: LIFTED,
 };
 
-/** The preflight and composed node counts of a Dependabot config, as its reader charges them. */
-function dependabotNodes(text: string): { preflight: number; composed: number } {
+/**
+ * What the Dependabot roots reader counts in a config, through its own preflight and expansion
+ * (src/evidence/actions-yaml.ts) on the same tokens and composer options: the preflight nodes,
+ * the composed nodes and the length of the composed `updates` list, the list it caps. `refused` is
+ * set when the composition or expansion fails, so a count of 0 is never silent.
+ */
+function dependabotCounts(text: string) {
   const budget = { nodes: 0, aliases: 0, occurrences: 0 };
   const tokens = [...new Parser().parse(text)];
   for (const token of tokens) preflight(token, LIFTED_YAML, budget);
-  const [document] = [...new Composer(COMPOSER_OPTIONS).compose(tokens)];
   const composed = { nodes: 0, aliases: 0, occurrences: 0 };
+  const [document] = [...new Composer(COMPOSER_OPTIONS).compose(tokens)];
+  let updates = 0;
+  let refused: string | null = null;
   try {
-    if (document?.contents) expand(document.contents, LIFTED_YAML, composed, { lenientKeys: true });
-  } catch {
-    // A config the reader refuses still counts the nodes composed before the refusal.
+    if (!document?.contents || document.errors.length > 0) throw new Error('malformed');
+    const value = expand(document.contents, LIFTED_YAML, composed, { lenientKeys: true });
+    const list = value instanceof Map ? value.get('updates') : undefined;
+    if (!Array.isArray(list)) throw new Error('malformed');
+    updates = list.length;
+  } catch (error) {
+    refused = error instanceof Error ? error.message : 'malformed';
   }
-  return { preflight: budget.nodes, composed: composed.nodes };
+  return { preflight: budget.nodes, composed: composed.nodes, updates, refused };
 }
+
+function dependabotSeries(shape: Core.DependabotShape): Series[] {
+  return [
+    {
+      shape,
+      // The reader's own byte cap, and doublings above it (run.ts lifts it for the larger sizes).
+      points: sizes(DEPENDABOT_CAP, DEPENDABOT_ABOVE).map((size) => {
+        const text = core.dependabotDocument(shape, size);
+        const bytes = encode(text);
+        const parsed = parseDependabotRoots(bytes);
+        const counts = dependabotCounts(text);
+        expectWalked(
+          parsed.kind === 'roots' && parsed.npm.kind === 'roots' && counts.refused === null,
+          `dependabot ${shape}`,
+        );
+        const units = {
+          nodes: counts.preflight,
+          updates: counts.updates,
+          roots: parsed.kind === 'roots' && parsed.npm.kind === 'roots' ? parsed.npm.roots.length : 0,
+        }[shape];
+        return { bytes: size, units, run: () => parseDependabotRoots(bytes) };
+      }),
+    },
+  ];
+}
+
+/** Collection limits that admit the whole input; the byte cap is the register's. */
+const UV_COLLECTION = {
+  ...W2_EVIDENCE_LIMITS.uv,
+  maxTomlEntries: LIFTED,
+  maxPackages: LIFTED,
+  maxDeclarations: LIFTED,
+  maxEdges: LIFTED,
+  maxRetainedBytes: LIFTED,
+};
+
+/** The least graph work at which `run` completes without reporting `budget`, by bisection. */
+async function leastWork(run: (work: number) => unknown, what: string): Promise<number> {
+  const units = await core.smallestPassing((work) => !core.reportsBudget(run(work)), LIFTED);
+  if (units === null) throw new Error(`${what}: never completes`);
+  return units;
+}
+
+/**
+ * The uv graph stage on a project whose lock fills the uv file cap on both sides, one member
+ * changed, then on half that lock, and so on down to 10 KiB. Its units are the least graph work
+ * that completes it, found by bisection; the work grows faster than the package count.
+ */
+async function uvGraphSeries(): Promise<Series[]> {
+  const series: Series[] = [];
+  const smallest = BINARY_BYTES.KiB * DECIMAL_RADIX;
+  for (const shape of core.GRAPH_SHAPES) {
+    const points: Point[] = [];
+    for (let size = W2_EVIDENCE_LIMITS.uv.maxFileBytes; size >= smallest; size = Math.floor(size / 2)) {
+      const base = core.uvProject(shape, size, '1');
+      const head = core.uvProject(shape, size, '2');
+      const input = await uvGraphFixture(
+        {
+          'base:pyproject.toml': base.manifest,
+          'head:pyproject.toml': head.manifest,
+          'base:uv.lock': base.lock,
+          'head:uv.lock': head.lock,
+        },
+        UV_COLLECTION,
+      );
+      const run = (maxGraphWork: number) =>
+        reconcileUvGraph({ ...input, limits: { maxGraphWork, maxRetainedBytes: LIFTED } });
+      const units = await leastWork(run, `uv graph ${shape}`);
+      points.unshift({ bytes: size, units, run: () => run(units) });
+      console.error(`graph-uv ${shape}: ${base.packages} packages need ${units} units`);
+    }
+    series.push({ shape, points });
+  }
+  return series;
+}
+
+/** The npm graph stage on lockfiles at the doubling sizes of the npm file cap, as for uv. */
+async function npmGraphSeries(): Promise<Series[]> {
+  const { binding: scenario, expected } = npmScenario();
+  const integrity = 'sha512-' + Buffer.alloc(DIGEST_BYTES.sha512, 1).toString('base64');
+  const series: Series[] = [];
+  for (const shape of core.GRAPH_SHAPES) {
+    const points: Point[] = [];
+    for (const size of sizes(W2_EVIDENCE_LIMITS.npm.maxFileBytes)) {
+      const limits = {
+        ...W2_EVIDENCE_LIMITS.npm,
+        maxFileBytes: size,
+        maxJsonEntries: LIFTED,
+        maxRoots: 1,
+        maxRetainedBytes: LIFTED,
+      };
+      const base = core.npmProject(shape, size, '1.0.0', integrity);
+      const head = core.npmProject(shape, size, '1.0.1', integrity);
+      const inventory = await collectNpmInventory(
+        { binding: scenario, roots: ['.'], configRevision: expected.contextRevision, limits },
+        {
+          session: npmSession(scenario, (side, path) => {
+            const project = side === 'base' ? base : head;
+            return path.endsWith('package.json') ? project.manifest : project.lock;
+          }),
+        },
+      );
+      const run = (maxGraphWork: number) =>
+        proveNpmRelationships({
+          inventory,
+          binding: scenario,
+          limits: { maxGraphWork, maxRetainedBytes: LIFTED },
+        });
+      const units = await leastWork(run, `npm graph ${shape}`);
+      points.push({ bytes: size, units, run: () => run(units) });
+      console.error(`graph-npm ${shape}: ${base.packages} packages need ${units} units`);
+    }
+    series.push({ shape, points });
+  }
+  return series;
+}
+
+/**
+ * The corroboration claim regexes (src/evidence/uv-corroboration.ts) on descriptions of lines of
+ * one shape. Two kinds of series: at a fixed description of half the graph work cap in code units
+ * (the stage charges one unit per code unit), lines from a tenth of the line cap up to the cap,
+ * which shows how a line's cost grows with its length; and at a fixed line length (the cap, and a
+ * quarter of it), descriptions at doubling sizes around that half, which shows how the cost grows
+ * with the text. The cost is linear in the text when the second kind doubles with each size.
+ */
+async function claimSeries(): Promise<Series[]> {
+  const input = await uvGraphFixture();
+  const cap = limit('uv.maxCorroborationCodeUnits');
+  const half = Math.floor(W2_EVIDENCE_LIMITS.graph.maxGraphWork / 2);
+  const point = (shape: Core.ClaimShape, length: number, total: number): Point => {
+    const line = core.claimLine(shape, length);
+    const text = Array.from({ length: Math.floor(total / (length + 1)) }, () => line).join('\n');
+    const corroboration = {
+      status: 'available',
+      repository: input.binding.repository,
+      pullNumber: input.binding.pullNumber,
+      headSha: input.binding.headSha,
+      text,
+    };
+    const run = () =>
+      reconcileUvGraph({
+        ...input,
+        corroboration,
+        limits: { maxGraphWork: LIFTED, maxRetainedBytes: LIFTED },
+      });
+    if (run().kind !== 'inventory') throw new Error(`claims ${shape}`);
+    return { bytes: text.length, units: text.length, run };
+  };
+  const series: Series[] = [];
+  for (const shape of core.CLAIM_SHAPES) {
+    const lengths: number[] = [];
+    for (let length = cap; length >= cap / DECIMAL_RADIX; length = Math.floor(length / 2))
+      lengths.unshift(length);
+    series.push({
+      shape: `${shape}, ${half} code units, lines doubling`,
+      points: lengths.map((length) => point(shape, length, half)),
+    });
+    for (const length of [cap / 2 / 2, cap])
+      series.push({
+        shape: `${shape}, lines of ${length}, text doubling`,
+        points: sizes(half).map((total) => point(shape, length, total)),
+      });
+  }
+  return series;
+}
+
+const counters: Record<Core.Counter, () => Series[] | Promise<Series[]>> = {
+  session: sessionSeries,
+  registry: registrySeries,
+  npm: npmSeries,
+  research: researchSeries,
+  toml: tomlSeries,
+  'workflow-nodes': () => workflowSeries('nodes'),
+  'workflow-aliases': () => workflowSeries('aliases'),
+  'workflow-occurrences': () => workflowSeries('occurrences'),
+  'dependabot-nodes': () => dependabotSeries('nodes'),
+  'dependabot-updates': () => dependabotSeries('updates'),
+  'dependabot-roots': () => dependabotSeries('roots'),
+  'graph-npm': npmGraphSeries,
+  'graph-uv': uvGraphSeries,
+  claims: claimSeries,
+};
 
 /** The counts the readers charge for one legitimate file, by the corpus group it sits in. */
 const groups: Record<string, (bytes: Buffer) => Record<string, number>> = {
@@ -441,7 +533,8 @@ const groups: Record<string, (bytes: Buffer) => Record<string, number>> = {
     const text = bytes.toString('utf8');
     return {
       bytes: bytes.length,
-      ...dependabotNodes(text),
+      preflight: dependabotCounts(text).preflight,
+      composed: dependabotCounts(text).composed,
       updates: text.match(/^\s*-\s*package-ecosystem\s*:/gmu)?.length ?? 0,
       npmRoots: roots('npm'),
       uvRoots: roots('uv'),
@@ -534,24 +627,34 @@ if (counter === 'use') {
   useOf(corpus);
   process.exit(0);
 }
-const cases = counter === undefined ? undefined : counters[counter];
-if (!cases) throw new Error(`counter must be one of ${Object.keys(counters).join(', ')}`);
-for (const { shape, units, run } of await cases()) {
-  // Warm-up: the same run once, so compiled code and module state are in the baseline.
-  await run();
-  const timings: number[] = [];
-  for (let index = 0; index < RUNS; index++) {
-    const start = performance.now();
+const series = counter === undefined ? undefined : counters[counter as Core.Counter];
+if (!series) throw new Error(`counter must be one of ${core.COUNTERS.join(', ')}`);
+for (const { shape, points } of await series()) {
+  const slowest: number[] = [];
+  const medians: number[] = [];
+  for (const { bytes, units, run } of points) {
+    // Each size starts from a collected heap, so one size's garbage is not timed in the next.
+    gc();
+    // Warm-up: the same run once, so compiled code and module state are in the baseline.
     await run();
-    timings.push(performance.now() - start);
+    const timings: number[] = [];
+    for (let index = 0; index < RUNS; index++) {
+      const start = performance.now();
+      await run();
+      timings.push(performance.now() - start);
+    }
+    const summary = core.timingSummary(timings);
+    slowest.push(summary.slowestMs);
+    medians.push(summary.medianMs);
+    console.log(JSON.stringify({ node: process.version, counter, shape, bytes, units, ...summary }));
   }
   console.log(
     JSON.stringify({
-      node: process.version,
       counter,
       shape,
-      units,
-      ...core.timingSummary(timings),
+      units: points.map((point) => point.units),
+      slowestRatios: core.doublingRatios(slowest),
+      medianRatios: core.doublingRatios(medians),
     }),
   );
 }

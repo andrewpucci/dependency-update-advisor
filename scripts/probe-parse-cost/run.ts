@@ -20,6 +20,7 @@ import { execFileSync } from 'node:child_process';
 import { join } from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import type * as Core from './core.js';
+import type * as Limits from '../../src/limits.js';
 
 const ROOT = fileURLToPath(new URL('../../', import.meta.url));
 const FLAGS = [
@@ -35,6 +36,7 @@ const { COUNTERS } = (await import(
   pathToFileURL(join(ROOT, 'scripts/probe-parse-cost/core.ts')).href
 )) as typeof Core;
 const counters: readonly string[] = COUNTERS;
+const { limit } = (await import(pathToFileURL(join(ROOT, 'src/limits.ts')).href)) as typeof Limits;
 /** The register-read caps the Dependabot counters and corpus need lifted. */
 const LIFTED_DEPENDABOT = ['maxFileBytes', 'maxYamlNodes', 'maxUpdates', 'maxRoots']
   .map((key) => `dependabot.${key}=${Number.MAX_SAFE_INTEGER}`)
@@ -47,7 +49,12 @@ function measure(args: string[]): void {
   process.stdout.write(
     execFileSync(process.execPath, [...FLAGS, MEASURE, ...args], {
       cwd: ROOT,
-      env: { ...process.env, HEAP_LIMIT_OVERRIDES: LIFTED_DEPENDABOT },
+      env: {
+        ...process.env,
+        HEAP_LIMIT_OVERRIDES: LIFTED_DEPENDABOT,
+        // The register's own byte cap, which the overrides hide from the child.
+        DEPENDABOT_MAX_FILE_BYTES: String(limit('dependabot.maxFileBytes')),
+      },
       encoding: 'utf8',
     }),
   );
