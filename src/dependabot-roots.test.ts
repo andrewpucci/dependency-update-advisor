@@ -298,8 +298,8 @@ test('a config of the largest recorded legitimate size, 82,528 bytes, is read', 
 
 test('exposes the parsing limits', () => {
   expect(DEPENDABOT_ROOT_LIMITS).toEqual({
-    // A copy of the snapshot blob cap (L11, item 12); it was 65,536.
-    maxFileBytes: limit('snapshot.maxBlobBytes'),
+    // The largest blob one response carries (L11, item 12 and its review follow-up); it was 65,536.
+    maxFileBytes: limit('snapshot.maxReadableBlobBytes'),
     maxYamlNodes: 20_000,
     maxYamlDepth: 16,
     maxAliasExpansions: limit('w2.actions.maxAliasExpansions'),

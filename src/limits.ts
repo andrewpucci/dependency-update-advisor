@@ -883,6 +883,29 @@ const PUBLICATION_REQUESTS = 5;
 
 const copy = (value: number): number => value;
 
+/** GitHub wraps blob content at 60 base64 characters (the Get a blob response, docs.github.com). */
+const BLOB_BASE64_LINE = 60;
+/**
+ * The JSON bytes GitHub's Get a blob response spends on `n` decoded bytes beyond its envelope: the
+ * base64 text, 4 characters per 3 bytes, and an escaped line break (`\n`, 2 bytes) per line of
+ * BLOB_BASE64_LINE characters, the last line counted whole.
+ */
+export const blobContentBytes = (decoded: number): number => {
+  const text = 4 * Math.ceil(decoded / 3);
+  return text + 2 * Math.ceil(text / BLOB_BASE64_LINE);
+};
+/**
+ * The most decoded bytes one Get a blob response of at most `responseBytes`, with an envelope of
+ * `envelopeBytes`, can carry: the largest n with envelope + blobContentBytes(n) <= response. About
+ * (response - envelope) × 45 / 62, since 45 bytes take one 60-character line and its `\n`.
+ */
+export const blobDecodedCapacity = (responseBytes: number, envelopeBytes: number): number => {
+  const room = responseBytes - envelopeBytes;
+  let decoded = Math.max(0, Math.floor((room * 45) / 62) - 64);
+  while (blobContentBytes(decoded + 1) <= room) decoded += 1;
+  return decoded;
+};
+
 /** What the audit (L7) found for an entry; a field it has not filled stays PENDING_AUDIT. */
 type Audit = Readonly<{ protects?: string; effect?: string; test?: string; note?: string }>;
 
@@ -3475,6 +3498,35 @@ const DEFINITIONS = [
     test: 'src/evidence/policy-signals.test.ts > optional attempt exhaustion keeps a bounded explained result and known deprecation findings',
   },
   // Snapshot reads, from snapshot.ts.
+  {
+    id: 'github.blobEnvelopeBytes',
+    value: 512,
+    unit: 'bytes',
+    protects:
+      "Bounds the JSON a Get a blob response spends outside its content, so the decoded bytes one response of limit:github.maxResponseBytes carries can be derived.",
+    basis: {
+      kind: 'safety',
+      reason:
+        'Largest legitimate use: the response holds sha, node_id, size, url, content and encoding (https://docs.github.com/en/rest/git/blobs#get-a-blob, read 2026-11-28), written compactly. Outside the content and the node id that is 75 bytes of keys and punctuation, a 40-character sha, at most 7 size digits for a blob the response cap admits, the 8 characters of base64, and a url of https://api.github.com/repos/{owner}/{repo}/git/blobs/{sha}, at most 220 bytes with GitHub\'s 39-character account and 100-character repository names: 350 bytes, which leaves 162 for the node id, more than either node id format GitHub writes. Harm: none at run time; a larger envelope would make a blob at limit:snapshot.maxReadableBlobBytes fail its response cap with budget, which stops the snapshot read share instead of giving the file\'s own size failure. No recorded blob response pins it yet (L11 item 9 and 12 review follow-up, 2026-11-28).',
+    },
+    effect:
+      'Not enforced: limit:snapshot.maxReadableBlobBytes is derived from it, and through it the config and Dependabot file caps.',
+    test: 'src/snapshot.test.ts > a blob at snapshot.maxReadableBlobBytes fits one GitHub blob response and one byte more does not',
+  },
+  derived(
+    'snapshot.maxReadableBlobBytes',
+    'bytes',
+    ['snapshot.maxBlobBytes', 'github.maxResponseBytes', 'github.blobEnvelopeBytes'],
+    (blob, response, envelope) => Math.min(blob, blobDecodedCapacity(response, envelope)),
+    'The largest file the snapshot can read in one blob response: the smaller of limit:snapshot.maxBlobBytes and the decoded bytes one response of limit:github.maxResponseBytes carries with an envelope of limit:github.blobEnvelopeBytes. GitHub returns blob content base64, wrapped at 60 characters, and each line break is written as an escaped \\n, so 45 decoded bytes cost 62 response bytes (blobDecodedCapacity in src/limits.ts): about (1,048,576 − 512) × 45 ÷ 62. A file between it and limit:snapshot.maxBlobBytes would pass the blob size check and then fail its response cap, which stops the snapshot read share; caps that copy it refuse such a file from its tree size instead. The base64 rule is from the L11 evidence proposal (2026-11-28, #383); added by the L11 item 9 and 12 review follow-up (2026-11-28).',
+    {
+      protects:
+        'Keeps the file caps of blobs the snapshot reads whole at what one blob response can carry, so an oversized file gets its own size failure.',
+      effect:
+        'Not enforced directly: limit:config.maxBytes and limit:dependabot.maxFileBytes copy it.',
+      test: 'src/snapshot.test.ts > a blob at snapshot.maxReadableBlobBytes fits one GitHub blob response and one byte more does not',
+    },
+  ),
   unjustified('snapshot.maxBlobBytes', MiB, 'bytes', {
     protects:
       'A repository blob larger than the cap is refused before it is fetched, so one file cannot make the snapshot read unbounded bytes (memory and network).',
@@ -3762,9 +3814,9 @@ const DEFINITIONS = [
   derived(
     'dependabot.maxFileBytes',
     'bytes',
-    ['snapshot.maxBlobBytes'],
+    ['snapshot.maxReadableBlobBytes'],
     copy,
-    'The Dependabot config is a blob the snapshot reads, so it can be no larger than limit:snapshot.maxBlobBytes, the largest blob the reader fetches; under the approved base64 rule a blob response holds about 760,700 decoded bytes, which binds first. No document gives a Dependabot file size limit, and the file is controlled by the PR, so this is a parse bound and never an adopter setting. It covers the largest recorded legitimate configs (68,918, 71,729 and 82,528 bytes, among the largest dependabot.yml files GitHub code search returned on 2026-11-28), which the earlier 65,536 refused. The parse is transient: at the cap, with the other Dependabot caps of the register, each of the three crafted shapes (densest nodes, updates and roots) is refused with budget at its count cap, after the parser has built the whole document; one parse allocates at most 918,691,592 bytes of heap (an upper bound on its peak, measured with a 1 GiB young generation so no collection runs during it), and after a full collection with the result kept at most 60,928 bytes stay held; the slowest of 5 parses takes 2,646 ms, inside the CPU harm point of limit:dependabot.maxYamlNodes (npm run probe:parse-cost -- heap, on 2026-11-28 under Node 24.22.3). The parse runs in the snapshot, before any evidence is retained, inside limit:runner.heapBytes. Approved by the maintainer on 2026-11-28 (L11, item 12(a), #383).',
+    'The Dependabot config is a blob the snapshot reads, so it can be no larger than limit:snapshot.maxReadableBlobBytes, the largest blob one response carries under the base64 rule, which binds before limit:snapshot.maxBlobBytes; a larger file is refused from its tree size, unfetched, with budget, rather than stopping the snapshot read share at its blob response (L11 item 12 review follow-up, 2026-11-28; it was a copy of limit:snapshot.maxBlobBytes). No document gives a Dependabot file size limit, and the file is controlled by the PR, so this is a parse bound and never an adopter setting. It covers the largest recorded legitimate configs (68,918, 71,729 and 82,528 bytes, among the largest dependabot.yml files GitHub code search returned on 2026-11-28), which the earlier 65,536 refused. The parse is transient: at 1 MiB, above this cap, with the other Dependabot caps of the register, each of the three crafted shapes (densest nodes, updates and roots) is refused with budget at its count cap, after the parser has built the whole document; one parse allocates at most 918,691,592 bytes of heap (an upper bound on its peak, measured with a 1 GiB young generation so no collection runs during it), and after a full collection with the result kept at most 60,928 bytes stay held; the slowest of 5 parses takes 2,646 ms, inside the CPU harm point of limit:dependabot.maxYamlNodes (npm run probe:parse-cost -- heap, on 2026-11-28 under Node 24.22.3). The parse runs in the snapshot, before any evidence is retained, inside limit:runner.heapBytes. Approved by the maintainer on 2026-11-28 (L11, item 12(a), #383).',
     {
       protects:
         'The Dependabot config is parsed in memory, so its size is capped before any YAML parsing.',
@@ -3879,21 +3931,20 @@ const DEFINITIONS = [
     },
   },
   // Configuration file and validator bounds, from config.ts.
-  {
-    id: 'config.maxBytes',
-    value: MiB,
-    unit: 'bytes',
-    protects:
-      'The configuration file is read from the checked-out repository, which can be large or hostile; reading it without a cap allocates unbounded memory before parsing.',
-    effect:
-      'A file over the cap fails with category size before parsing; no default configuration is substituted.',
-    test: 'src/config.test.ts > accepts the exact byte limit and rejects overflow',
-    basis: {
-      kind: 'safety',
-      reason:
-        'A parse bound, so never an adopter setting. Largest legitimate use: about 594 KB, a config listing 385 source roots (the largest recorded Dependabot directory list) and limit:context.maxSourceCandidates excerpt paths, each at limit:context.maxPathBytes and written compactly: 578 × 1,027 = 593,606 bytes and the skeleton. The root count has no bound of its own (L11, item 9), and JSON allows unbounded whitespace, so no derivation gives the largest valid config. Harm: the config is retained through the evidence phase at limit:runner.heapBytesPerRetainedByte and counted in limit:analysis.projectionBytes, so each byte lowers limit:packet.bytes by about 1.87 bytes: 1,048,576 takes 1,928,865 from it against the 16,384 cap (146,383,435 when decided; 144,671,474 once the event buffer of L11 item 11 is counted off heap) and 1,032,192 from limit:runner.maxEvidenceRetainedBytes; it stays positive below 79,382,631 config bytes and at or above limit:packet.floorBytes below 79,368,155 (78,466,511 and 78,452,034 with the event buffer counted). 1 MiB sits between the two, the size of limit:snapshot.maxBlobBytes, the largest blob the snapshot reads. Under the approved base64 rule a blob response holds about 760,700 decoded bytes, so a config larger than that is refused at its blob read (budget), which makes the snapshot unavailable, before this cap is reached. Approved by the maintainer on 2026-11-28 (L11, item 9(a), #383).',
+  derived(
+    'config.maxBytes',
+    'bytes',
+    ['snapshot.maxReadableBlobBytes'],
+    copy,
+    'The review config is a blob the snapshot reads, so it can be no larger than limit:snapshot.maxReadableBlobBytes, the largest blob one response carries under the base64 rule; a larger file gets the parser\'s size failure from its tree size, unfetched, rather than stopping the snapshot read share at its blob response (L11 item 9 review follow-up, 2026-11-28; it was a safety bound of 1 MiB, the size of limit:snapshot.maxBlobBytes, approved by the maintainer on 2026-11-28, L11 item 9(a), #383). A parse bound, so never an adopter setting. Largest legitimate use: about 594 KB, a config listing 385 source roots (the largest recorded Dependabot directory list) and limit:context.maxSourceCandidates excerpt paths, each at limit:context.maxPathBytes and written compactly: 578 × 1,027 = 593,606 bytes and the skeleton, inside this cap. The root count has no bound of its own (L11, item 9), and JSON allows unbounded whitespace, so no derivation gives the largest valid config. Harm: the config is retained through the evidence phase at limit:runner.heapBytesPerRetainedByte and counted in limit:analysis.projectionBytes, so each byte lowers limit:packet.bytes by about 1.87 bytes; it stays positive below about 78.5 MB of config, far above this cap.',
+    {
+      protects:
+        'The configuration file is read from the checked-out repository, which can be large or hostile; reading it without a cap allocates unbounded memory before parsing.',
+      effect:
+        'A file over the cap fails with category size before parsing; no default configuration is substituted.',
+      test: 'src/config.test.ts > accepts the exact byte limit and rejects overflow',
     },
-  },
+  ),
   {
     id: 'config.maxModelCodeUnits',
     value: 128,

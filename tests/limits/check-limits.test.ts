@@ -229,7 +229,7 @@ test('only the unlisted line in a file with an allowlisted one is a problem', ()
 });
 
 test.each([
-  ['Parse at most 1 MiB of JSON.', 'config.maxBytes'],
+  ['Read blobs of at most 1 MiB.', 'snapshot.maxBlobBytes'],
   ['An evidence response holds at most 1 MiB.', 'evidence.envelope.maxResponseBytes'],
   [
     'Each signals reader gets 1.5 MiB.',

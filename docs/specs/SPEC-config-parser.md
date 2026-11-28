@@ -171,12 +171,17 @@ the source-root count bound, formerly `context.maxSourceRoots` (16), is
 deleted. A root only filters paths the snapshot has already listed, so it
 costs no read beyond its own prefixes, and no constraint bounds the count;
 any number of roots is accepted, and the schema sets no `maxItems` for
-`context.sourceRoots`. `limit:config.maxBytes` becomes a safety bound the
-size of `limit:snapshot.maxBlobBytes`, a parse bound and never an adopter
-setting: the largest legitimate config is about 594 KB, and the packet cap
-stays positive below about 79.4 MB of config. The approved lines that cite
-the deleted bound keep their wording; check:limits lists them as superseded
-citations (`scripts/limits/superseded-citations.json`).
+`context.sourceRoots`. `limit:config.maxBytes` becomes a parse bound and
+never an adopter setting: the largest legitimate config is about 594 KB,
+and the packet cap stays positive below about 78.5 MB of config. Since
+the item 9 review follow-up (2026-11-28) it copies
+`limit:snapshot.maxReadableBlobBytes`, the largest blob one GitHub blob
+response carries base64 (about 760,700 bytes, below
+`limit:snapshot.maxBlobBytes`), so a larger config gets its size failure
+from its tree size, unfetched, instead of stopping the snapshot read. The
+approved lines that cite the deleted bound keep their wording;
+check:limits lists them as superseded citations
+(`scripts/limits/superseded-citations.json`).
 
 Each named verdict accepts only `merge`, `merge_with_followups`, or
 `do_not_merge`. Preserve which rules were explicitly overridden so C3 can

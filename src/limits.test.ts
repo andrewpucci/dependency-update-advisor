@@ -1060,9 +1060,10 @@ test('no heap setting at its hard maximum takes packet.bytes below its floor', (
     (id) => id !== 'research.maxRetainedBytes' && id !== 'config.maxBytes',
   );
   const defaults = members.reduce((total, id) => total + limit(id), 0);
-  // 126,100,507 at the 16 KiB config cap; the 1 MiB cap (L11, item 9) takes 1,032,192 more and
-  // the event buffer counted off heap (L11, item 11) 916,121 more.
-  expect(limit('runner.maxEvidenceRetainedBytes')).toBe(124_152_194);
+  // 126,100,507 at the 16 KiB config cap; the 1 MiB cap (L11, item 9) took 1,032,192 more and
+  // the event buffer counted off heap (L11, item 11) 916,121 more, and the config cap at one blob
+  // response's decoded bytes (760,689, the item 9 review follow-up) gives 287,887 back.
+  expect(limit('runner.maxEvidenceRetainedBytes')).toBe(124_440_081);
   expect(limit('runner.maxEvidenceRetainedBytes')).toBeGreaterThan(defaults);
   const share = 'evidence.allocation.session.maxTotalBytes';
   const raised = hardMaximum(REGISTER, share);
