@@ -1709,11 +1709,16 @@ const DEFINITIONS = [
         'context.maxSourceFileBytes',
         'analysis.maxConcurrentCalls',
         'analysis.responseBytes',
+        'startup.maxEventBytes',
       ],
-      formula: (cache, inFlight, response, blob, file, source, calls, reply) =>
-        cache + inFlight * 2 * (response + Math.max(blob, file, source)) + calls * 2 * reply,
+      formula: (cache, inFlight, response, blob, file, source, calls, reply, event) =>
+        cache +
+        inFlight * 2 * (response + Math.max(blob, file, source)) +
+        calls * 2 * reply +
+        event +
+        1,
       description:
-        'Every off-heap buffer the register bounds, summed over both phases because an ArrayBuffer is freed only by a later collection: the research cache bodies (limit:research.cache.maxTotalBytes, Uint8Array, src/evidence/research-cache.ts:106); for each evidence read in flight (limit:evidence.readsInFlight), its body chunks and their concatenation (2 × limit:evidence.envelope.maxResponseBytes, for example src/github-read.ts:412) and the largest decoded file with its copy (2 × the largest of limit:snapshot.maxBlobBytes, src/snapshot.ts:119; limit:w2.session.maxFileBytes; limit:context.maxSourceFileBytes, src/context.ts:494); and for each model call in flight, its reply chunks and their concatenation (2 × limit:analysis.responseBytes, src/analysis/mistral.ts:199-211). Approved by the maintainer on 2026-11-27 (L11, #383).',
+        'Every off-heap buffer the register bounds, summed over both phases because an ArrayBuffer is freed only by a later collection: the research cache bodies (limit:research.cache.maxTotalBytes, Uint8Array, src/evidence/research-cache.ts:106); for each evidence read in flight (limit:evidence.readsInFlight), its body chunks and their concatenation (2 × limit:evidence.envelope.maxResponseBytes, for example src/github-read.ts:412) and the largest decoded file with its copy (2 × the largest of limit:snapshot.maxBlobBytes, src/snapshot.ts:119; limit:w2.session.maxFileBytes; limit:context.maxSourceFileBytes, src/context.ts:494); and for each model call in flight, its reply chunks and their concatenation (2 × limit:analysis.responseBytes, src/analysis/mistral.ts:199-211); and the event read buffer, limit:startup.maxEventBytes plus one probe byte (src/startup.ts readBoundedEvent), added by L11 item 11(b) on 2026-11-28. Approved by the maintainer on 2026-11-27 (L11, #383).',
     },
     test: 'src/limits.test.ts > the runner heap derives from runner memory less what is not old generation',
   },
@@ -3804,14 +3809,24 @@ const DEFINITIONS = [
     },
   ),
   // Event file, from startup.ts.
-  unjustified('startup.maxEventBytes', MiB, 'bytes', {
+  {
+    id: 'startup.maxEventBytes',
+    value: 25_000_000,
+    unit: 'bytes',
     protects:
       'The event file is read whole into a buffer before validation; an oversized file would allocate unbounded memory at startup.',
     effect:
       "A file over the cap throws 'event too large' and startup fails; no partial text is returned.",
     test: 'src/startup.test.ts > reads an event file of %s as bounded text only when it is valid',
-    note: "stopped (L11, E16, #383): the approved basis is external, GitHub's 25 MB webhook payload cap (docs.github.com webhooks#payload-cap), read as 25,000,000 bytes. The register does not hold the parsed event: runStartup parses it and the pipeline keeps it in its input for the whole run, in both heap phases, and no register entry counts it. At 25,000,000 bytes and limit:runner.heapBytesPerRetainedByte (27.47) it would hold about 686,750,000 bytes of heap (about 28,804,383 today), which would lower limit:packet.bytes from 148,312,300 to 101,594,613 (evidence phase; the analysis phase would fall from 256,206,191 to 220,061,454), and its parse peak at limit:runner.heapBytesPerEvidenceByte would be about 1,475,000,000 bytes. Raising the cap needs the event counted in the heap phases, or released after verification, which no approved change covers. Value unchanged",
-  }),
+    basis: {
+      kind: 'external',
+      url: 'https://docs.github.com/en/webhooks/webhook-events-and-payloads#payload-cap',
+      checked: '2026-11-28',
+      platformValue: 25_000_000,
+      margin:
+        "none: \"Payloads are capped at 25 MB\", read as decimal megabytes, the smaller reading; GitHub delivers no larger payload. Since L11 item 11(b) (approved by the maintainer on 2026-11-28, #383) the parsed event is held only for verification (holdEvent, src/pipeline.ts) and is unreachable before the first tree read, so no heap phase holds it and limit:packet.bytes does not count it; its parse peak, about 1,475,000,000 bytes at limit:runner.heapBytesPerEvidenceByte, falls at startup, when nothing else is held, inside limit:runner.heapBytes. The read buffer, the cap plus one byte (src/startup.ts readBoundedEvent), is off the V8 heap and counted in limit:runner.offHeapBytes",
+    },
+  },
   // Configuration file and validator bounds, from config.ts.
   {
     id: 'config.maxBytes',
@@ -3825,7 +3840,7 @@ const DEFINITIONS = [
     basis: {
       kind: 'safety',
       reason:
-        'A parse bound, so never an adopter setting. Largest legitimate use: about 594 KB, a config listing 385 source roots (the largest recorded Dependabot directory list) and limit:context.maxSourceCandidates excerpt paths, each at limit:context.maxPathBytes and written compactly: 578 × 1,027 = 593,606 bytes and the skeleton. The root count has no bound of its own (L11, item 9), and JSON allows unbounded whitespace, so no derivation gives the largest valid config. Harm: the config is retained through the evidence phase at limit:runner.heapBytesPerRetainedByte and counted in limit:analysis.projectionBytes, so each byte lowers limit:packet.bytes by about 1.87 bytes: at 1,048,576 it is 146,383,435 (−1,928,865 from the 16,384 cap) and limit:runner.maxEvidenceRetainedBytes 125,068,315 (−1,032,192); it stays positive below 79,382,631 config bytes and at or above limit:packet.floorBytes below 79,368,155. 1 MiB sits between the two, the size of limit:snapshot.maxBlobBytes, the largest blob the snapshot reads. Under the approved base64 rule a blob response holds about 760,700 decoded bytes, so a config larger than that is refused at its blob read (budget), which makes the snapshot unavailable, before this cap is reached. Approved by the maintainer on 2026-11-28 (L11, item 9(a), #383).',
+        'A parse bound, so never an adopter setting. Largest legitimate use: about 594 KB, a config listing 385 source roots (the largest recorded Dependabot directory list) and limit:context.maxSourceCandidates excerpt paths, each at limit:context.maxPathBytes and written compactly: 578 × 1,027 = 593,606 bytes and the skeleton. The root count has no bound of its own (L11, item 9), and JSON allows unbounded whitespace, so no derivation gives the largest valid config. Harm: the config is retained through the evidence phase at limit:runner.heapBytesPerRetainedByte and counted in limit:analysis.projectionBytes, so each byte lowers limit:packet.bytes by about 1.87 bytes: 1,048,576 takes 1,928,865 from it against the 16,384 cap (146,383,435 when decided; 144,671,474 once the event buffer of L11 item 11 is counted off heap) and 1,032,192 from limit:runner.maxEvidenceRetainedBytes; it stays positive below 79,382,631 config bytes and at or above limit:packet.floorBytes below 79,368,155 (78,466,511 and 78,452,034 with the event buffer counted). 1 MiB sits between the two, the size of limit:snapshot.maxBlobBytes, the largest blob the snapshot reads. Under the approved base64 rule a blob response holds about 760,700 decoded bytes, so a config larger than that is refused at its blob read (budget), which makes the snapshot unavailable, before this cap is reached. Approved by the maintainer on 2026-11-28 (L11, item 9(a), #383).',
     },
   },
   {

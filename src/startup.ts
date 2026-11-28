@@ -13,7 +13,13 @@ import { compareUpstreamVersions } from './evidence/upstream-version.js';
 import fs from 'node:fs/promises';
 import { authenticatedFetch, createEventReads, researchFetch } from './adapters.js';
 import { createRehearsalSink, type RehearsalSink } from './handoff.js';
-import { runReview, type PipelineInput, type PipelineResult } from './pipeline.js';
+import {
+  holdEvent,
+  runReview,
+  type HeldEvent,
+  type PipelineInput,
+  type PipelineResult,
+} from './pipeline.js';
 import { createTestClaimStore, type AnalysisTiming, type ClaimStore } from './review.js';
 import { createGithubTransport, parseRuntime, resolveWorkflow } from './runtime.js';
 import { limit } from './limits.js';
@@ -177,10 +183,11 @@ export async function runStartup(
   try {
     const eventPath = environment.GITHUB_EVENT_PATH;
     const eventName = environment.GITHUB_EVENT_NAME;
-    let payload: unknown;
+    // The parsed event is held for verification alone, never in a local of this frame (L11, item 11).
+    let event: HeldEvent;
     try {
       if (!eventPath || !eventName) throw new Error('no event');
-      payload = JSON.parse(await dependencies.readEvent(eventPath));
+      event = holdEvent(JSON.parse(await dependencies.readEvent(eventPath)));
     } catch {
       writeError('dependabot-review: event unavailable; no review ran.');
       return NOT_WIRED_EXIT_CODE;
@@ -201,7 +208,11 @@ export async function runStartup(
     if (!sink) throw new Error('sink');
     const claims = dependencies.claims ?? createTestClaimStore();
     const result = await runReview({
-      event: { eventName, payload, expected: { repository: runtime.repository, workflow } },
+      event: holdEvent({
+        eventName,
+        payload: event.take(),
+        expected: { repository: runtime.repository, workflow },
+      }),
       repository: runtime.repository,
       llmApiKey: runtime.llmApiKey,
       eventReads: createEventReads(transport, claims),

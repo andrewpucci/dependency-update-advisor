@@ -464,6 +464,17 @@ A runner therefore needs at least `limit:runner.memoryBytes` of memory, the
 smallest supported runner's. A smaller runner stops with exit code 80. This
 includes GitHub-hosted `macos-latest` (7 GB), which is not supported.
 
+Amended (L11, item 11(b); approved by the maintainer on 2026-11-28,
+[#383](https://github.com/andrewpucci/dependency-update-advisor/issues/383)).
+The raw event is state of neither phase. Startup parses it into a one-shot
+holder that verification takes; the pipeline keeps only the bounded binding
+verification returns, so the parsed event is unreachable before the first
+tree read, and a test collects garbage there and checks that it is gone. Its
+parse peak falls at startup, before either phase holds anything, inside
+`limit:runner.heapBytes`, so `limit:startup.maxEventBytes` takes GitHub's
+webhook payload cap as an `external` value. The read buffer, the cap plus one
+probe byte, is outside the V8 heap and counts in `limit:runner.offHeapBytes`.
+
 #### Projection caps
 
 Amended (L11; approved by the maintainer on 2026-11-28,

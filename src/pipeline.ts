@@ -48,7 +48,7 @@ import { withTrustedSnapshot, type SnapshotReads } from './snapshot.js';
 export const OWNERSHIP_WATCH_MS = 2_000;
 
 export type PipelineInput = Readonly<{
-  /** The trusted workflow_run event with its expected repository and workflow. */
+  /** The trusted workflow_run event with its expected repository and workflow, or a holder of it. */
   event: unknown;
   repository: RepositoryIdentity;
   /** Null means no model is configured; no collector or model request is made. */
@@ -219,9 +219,38 @@ export function dependencyIdentities(changes: readonly unknown[]): { id: string;
  * collect and research evidence, assess, and record a redacted publication handoff. Nothing is
  * published; the App token never enters this function.
  */
+const HELD_EVENTS = new WeakSet<object>();
+/** A raw event that verification takes once; afterwards the holder keeps nothing. */
+export type HeldEvent = Readonly<{ take: () => unknown }>;
+
+/**
+ * Holds a raw event for one handoff to verification, so nothing that keeps the pipeline input,
+ * such as the startup frame, holds the parsed event through the evidence phase (L11, item 11):
+ * only the bounded binding verification returns outlives it.
+ */
+export function holdEvent(event: unknown): HeldEvent {
+  let held: { value: unknown } | null = { value: event };
+  const holder = Object.freeze({
+    take: () => {
+      if (!held) throw new Error('event already taken');
+      const { value } = held;
+      held = null;
+      return value;
+    },
+  });
+  HELD_EVENTS.add(holder);
+  return holder;
+}
+
+function takeEvent(event: unknown): unknown {
+  return typeof event === 'object' && event !== null && HELD_EVENTS.has(event)
+    ? (event as HeldEvent).take()
+    : event;
+}
+
 export async function runReview(input: PipelineInput): Promise<PipelineResult> {
   const started = input.jobStartedAt ?? input.now();
-  const verified = await verifyCiEvent(input.event, input.eventReads);
+  const verified = await verifyCiEvent(takeEvent(input.event), input.eventReads);
   if (verified.kind === 'skip') return { kind: 'skipped', reason: verified.reason };
   if (verified.kind === 'error') return { kind: 'not-eligible', reason: 'verification' };
   const binding = verified.binding;
