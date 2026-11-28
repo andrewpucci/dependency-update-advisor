@@ -869,3 +869,13 @@ test('the uv and npm collection bounds keep their sources and formulas', () => {
   ] as const)
     expect(limitEntry(id).basis.kind, id).toBe('safety');
 });
+
+test('the research and signal bounds keep their sources and formulas', () => {
+  // Every tag candidate can cost an upstream request, so the coverage setting stays under them.
+  expect(limitEntry('research.maxTagCandidates').configurable).toMatchObject({
+    maximum: 'evidence.allocation.upstream.maxRequests',
+  });
+  expect(limit('research.maxTagCandidates')).toBeLessThanOrEqual(
+    limit('evidence.allocation.upstream.maxRequests'),
+  );
+});

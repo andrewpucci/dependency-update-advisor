@@ -3681,14 +3681,20 @@ const DEFINITIONS = [
     note: 'no recorded reason',
     test: 'src/evidence/policy-signals-npm.test.ts > a maintainer list at the registered cap is kept and one more is unchecked for budget',
   }),
-  unjustified('research.maxTagCandidates', 100, 'count', {
-    protects:
-      'Release and tag candidates from untrusted upstream data are bounded, so tag matching cannot grow requests or CPU without limit (requests and CPU).',
-    effect:
-      'The candidate past the cap fails with reason budget; the upstream stage stops with that reason.',
-    note: 'awaiting L8 measurement',
-    test: 'src/evidence/upstream-range.test.ts > range release candidates are counted up to the register cap and refused one past it',
-  }),
+  configured(
+    'research.maxTagCandidates',
+    100,
+    'count',
+    { setting: 'limits.coverage.tagCandidates', maximum: 'evidence.allocation.upstream.maxRequests' },
+    'The adopter: each release scanned in a range and each tag candidate tried costs upstream requests, and no registry or GitHub document bounds how many releases a repository has, so a larger setting buys coverage of longer release histories with quota and time. Coverage bound category (L11, Q9(a)); its hard maximum is the upstream request ceiling, since every candidate past it would be refused for budget anyway.',
+    {
+      protects:
+        'Release and tag candidates from untrusted upstream data are bounded, so tag matching cannot grow requests or CPU without limit (requests and CPU).',
+      effect:
+        'The candidate past the cap fails with reason budget; the upstream stage stops with that reason.',
+      test: 'src/evidence/upstream-range.test.ts > range release candidates are counted up to the register cap and refused one past it',
+    },
+  ),
   unjustified('research.maxTagDepth', 10, 'count', {
     protects:
       'The annotated-tag chain followed from an untrusted GitHub ref is bounded, so peeling cannot loop or cost unbounded requests (requests).',
