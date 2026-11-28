@@ -1,6 +1,6 @@
 import { expect, test, vi } from 'vite-plus/test';
 import { PACKET_LIMITS, validateReviewPacket } from './schema.js';
-import { limit } from './limits.js';
+import { floorPacket, limit } from './limits.js';
 
 const HEAD = 'a'.repeat(40);
 const BASE = 'b'.repeat(40);
@@ -1973,4 +1973,29 @@ test('rejects a packet without a retry time field', () => {
   const missing = fixture();
   delete (missing.packet as Record<string, unknown>).retryAfter;
   expect(validateReviewPacket(missing.packet, missing.expected).ok).toBe(false);
+});
+
+test('the packet floor is the smallest packet T4 accepts at the change cap', () => {
+  const changes = limit('packet.changes');
+  const listEntries = limit('packet.listEntries');
+  const floor = floorPacket(changes, listEntries);
+  const result = validateReviewPacket(floor.packet, floor.expected);
+  expect(result.ok).toBe(true);
+  if (!result.ok) throw new Error('floor packet rejected');
+  // T4 keeps the packet as built, so the floor is the bytes it accepts.
+  expect(Buffer.byteLength(JSON.stringify(result.packet))).toBe(limit('packet.floorBytes'));
+  expect(result.packet.changes).toHaveLength(changes);
+  expect(limit('packet.floorBytes')).toBe(27_052);
+  // Each change is a declaration addition, the change kind with no evidence category.
+  for (const change of result.packet.changes) expect(change.evidence).toEqual({});
+  // An id or name one byte shorter is not distinct, and one character more is not shorter: the
+  // ids are the shortest distinct strings T4 admits unescaped.
+  const ids = result.packet.changes.map((change) => change.id);
+  expect(new Set(ids).size).toBe(changes);
+  expect(ids.every((id) => Buffer.byteLength(JSON.stringify(id)) === id.length + 2)).toBe(true);
+  expect(ids.filter((id) => id.length === 1)).toHaveLength(93);
+  // A packet at the floor less one change is smaller, so the floor follows the change cap.
+  const fewer = floorPacket(changes - 1, listEntries);
+  expect(validateReviewPacket(fewer.packet, fewer.expected).ok).toBe(true);
+  expect(Buffer.byteLength(JSON.stringify(fewer.packet))).toBeLessThan(limit('packet.floorBytes'));
 });

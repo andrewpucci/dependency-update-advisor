@@ -12,6 +12,7 @@ import { limit } from './limits.js';
 
 export const PACKET_LIMITS = Object.freeze({
   bytes: limit('packet.bytes'),
+  floorBytes: limit('packet.floorBytes'),
   changes: limit('packet.changes'),
   sources: limit('packet.sources'),
   findings: limit('packet.findings'),

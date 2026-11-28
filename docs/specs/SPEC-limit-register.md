@@ -477,6 +477,33 @@ falls as its own setting rises, the hard maximum is the largest setting that
 still holds. The response cap's maximum behaves this way, because a larger cap
 adds off-heap buffers. `npm run check:limits` evaluates the register there.
 
+#### Packet floor
+
+Amended (L11, A1; approved by the maintainer on 2026-11-28,
+[#383](https://github.com/andrewpucci/dependency-update-advisor/issues/383)).
+`limit:packet.floorBytes` is the smallest packet T4 accepts with
+`limit:packet.changes` changes and no optional evidence. It is derived and
+pinned by an offline test that builds and validates that packet. Below it, no
+valid change at the change cap can produce any packet, so it is a structural
+floor, not demand.
+
+- A setting that spends heap has a hard maximum: the largest value at which
+  `limit:packet.bytes` stays at or above `limit:packet.floorBytes`, with the
+  other settings at their defaults. This replaces the Q14(a) text, which was
+  never written.
+- `limit:analysis.maxConcurrentCalls` and `limit:analysis.completionTokens`
+  are adopter settings under this rule. Their hard maxima are
+  `limit:analysis.maxConcurrentCallsMax`, which also stays at or below
+  `limit:analysis.maxCalls`, and `limit:analysis.completionTokensMax`, which
+  also stays at or below the Q14(a) bound.
+- `limit:runner.maxEvidenceRetainedBytes` is sized beside a packet at the
+  floor, not at today's packet cap.
+- The settings share one heap, so a setting at its maximum leaves the packet
+  cap at the floor. L12 must evaluate the register at the adopter's actual
+  settings and require `limit:packet.bytes` at or above the floor.
+  `npm run check:limits` already rejects a register that falls below it, at
+  the defaults or with any setting at its hard maximum.
+
 #### Retained evidence
 
 Amended (L11, Q10(a); approved by the maintainer on 2026-11-27,
@@ -503,6 +530,14 @@ responses in flight are priced at the parse peak
   default would lower the packet cap. The joint maximum and the response cap's
   hard maximum are therefore their defaults until the heap is shared out
   differently.
+  - Amended (L11, A1; approved by the maintainer on 2026-11-28,
+    [#383](https://github.com/andrewpucci/dependency-update-advisor/issues/383)):
+    the joint maximum no longer equals the sum of the defaults. It is sized
+    beside a packet at `limit:packet.floorBytes` (see
+    [Packet floor](#packet-floor)), so a share may rise until the packet cap
+    reaches the floor. The response cap's hard maximum still follows
+    `limit:packet.bytes` through `limit:runner.evidenceHeapBytes`, so it stays
+    its default.
 - A demand measurement (`npm run measure:demand`) holds `limit:packet.bytes`
   at its production value. Its scaled read budget would otherwise spend the
   packet's heap.

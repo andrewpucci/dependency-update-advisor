@@ -59,7 +59,7 @@ test('PACKET_LIMITS is a frozen view of the register with the same values and ke
   expect(Object.isFrozen(PACKET_LIMITS)).toBe(true);
   const packetIds = [...REGISTER.keys()].filter((id) => id.startsWith('packet.')).sort();
   expect(packetIds).toEqual(keys.map((key) => `packet.${key}`).sort());
-  expect(packetIds).toHaveLength(14);
+  expect(packetIds).toHaveLength(15);
 });
 
 test('checkRegister names an entry whose basis kind is not one of the six', () => {
@@ -1003,4 +1003,61 @@ test('the advisory discovery bounds keep their sources and formulas', () => {
   expect(limit('advisory.batch.urlBytes')).toBe(limit('advisory.discovery.urlBytes'));
   expect(DISCOVERY_PAGE_SIZES).toEqual([100, 50, 25, 5, 1]);
   expect(Object.isFrozen(DISCOVERY_PAGE_SIZES)).toBe(true);
+});
+
+test('no heap setting at its hard maximum takes packet.bytes below its floor', () => {
+  const definitions = [...REGISTER.values()].map(({ value, ...entry }): LimitDefinition =>
+    entry.basis.kind === 'derived' ? entry : { ...entry, value },
+  );
+  const at = (id: LimitId, value: number) => buildRegister(definitions, new Map([[id, value]]));
+  const floor = limit('packet.floorBytes');
+  expect(limitEntry('packet.floorBytes').basis).toMatchObject({
+    kind: 'derived',
+    inputs: ['packet.changes', 'packet.listEntries'],
+  });
+  expect(floor).toBeLessThanOrEqual(limit('packet.bytes'));
+  // Each heap maximum is the largest value at which the packet cap holds the floor, and one more
+  // takes it below the floor.
+  const cases: [LimitId, LimitId, number][] = [
+    ['analysis.maxConcurrentCalls', 'analysis.maxConcurrentCallsMax', 8],
+    ['analysis.completionTokens', 'analysis.completionTokensMax', 71_091],
+  ];
+  for (const [id, maximum, value] of cases) {
+    expect(limitEntry(id).configurable, id).toMatchObject({ maximum });
+    expect(limit(maximum), maximum).toBe(value);
+    expect(hardMaximum(REGISTER, id), id).toBe(value);
+    expect(at(id, value).get('packet.bytes')?.value, id).toBeGreaterThanOrEqual(floor);
+    expect(at(id, value + 1).get('packet.bytes')?.value, id).toBeLessThan(floor);
+  }
+  // At 8 calls the packet cap is 25,145,295 bytes; at 9 it is negative.
+  expect(at('analysis.maxConcurrentCalls', 8).get('packet.bytes')?.value).toBe(25_145_295);
+  // The concurrency maximum never passes the calls a run may make.
+  expect(limit('analysis.maxConcurrentCallsMax')).toBeLessThanOrEqual(limit('analysis.maxCalls'));
+  // The token maximum never passes the Q14(a) bound, the context less the smallest request.
+  expect(limit('analysis.completionTokensMax')).toBeLessThanOrEqual(
+    limit('analysis.model.contextTokens') -
+      limit('analysis.fixedRequestBytes') -
+      limit('analysis.model.templateTokens'),
+  );
+  // The Q10 joint maximum is sized beside a packet at the floor, not at today's packet cap, so it
+  // leaves headroom above the sum of the defaults; one share raised to it leaves the floor.
+  const members = Q10_RETAINED_INPUTS.filter(
+    (id) => id !== 'research.maxRetainedBytes' && id !== 'config.maxBytes',
+  );
+  const defaults = members.reduce((total, id) => total + limit(id), 0);
+  expect(limit('runner.maxEvidenceRetainedBytes')).toBe(126_100_507);
+  expect(limit('runner.maxEvidenceRetainedBytes')).toBeGreaterThan(defaults);
+  const share = 'evidence.allocation.session.maxTotalBytes';
+  const raised = hardMaximum(REGISTER, share);
+  expect(raised).toBe(limit('runner.maxEvidenceRetainedBytes') - defaults + limit(share));
+  expect(at(share, raised).get('packet.bytes')?.value).toBeGreaterThanOrEqual(floor);
+  expect(at(share, raised + 1).get('packet.bytes')?.value).toBeLessThan(floor);
+  // check:limits reports a register whose packet cap falls below the floor.
+  const below = buildRegister(
+    definitions.map((entry) =>
+      entry.id === 'runner.unitExpansionHeapBytes' ? { ...entry, value: limit('runner.heapBytes') } : entry,
+    ),
+  );
+  expect(settingProblems(below)).toContain('packet.bytes: below limit:packet.floorBytes at the defaults');
+  expect(settingProblems(REGISTER)).toEqual([]);
 });

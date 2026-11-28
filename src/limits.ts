@@ -328,13 +328,29 @@ function settingProblemsAt(register: ReadonlyMap<string, Limit>, where: string):
     if (total > valueOf(maximum))
       problems.push(`${maximum}: the settings it bounds sum past it ${where}`);
   }
+  if (!aboveFloor(register)) problems.push(`packet.bytes: below limit:packet.floorBytes ${where}`);
   return problems;
 }
 
-/** Whether a setting's own bound holds in a register evaluated at the settings. */
+/**
+ * Whether the packet cap holds its structural floor (SPEC-limit-register section 5, the floor
+ * rule, approved 2026-11-28, L11 A1, #383): a register without the two entries has no floor.
+ */
+function aboveFloor(register: ReadonlyMap<string, Limit>): boolean {
+  const packet = register.get('packet.bytes')?.value;
+  const floor = register.get('packet.floorBytes')?.value;
+  return packet === undefined || floor === undefined || packet >= floor;
+}
+
+/**
+ * Whether a setting's own bound holds in a register evaluated at the settings, and the packet cap
+ * still holds its floor there: a setting that spends heap may rise only while limit:packet.bytes
+ * stays at or above limit:packet.floorBytes (the floor rule, L11 A1, #383).
+ */
 function withinMaximum(register: ReadonlyMap<string, Limit>, id: string): boolean {
   const setting = register.get(id)?.configurable;
   if (setting === undefined) return true;
+  if (!aboveFloor(register)) return false;
   const maximum = register.get(setting.maximum)?.value ?? Number.NaN;
   const value =
     setting.joint === true
@@ -353,7 +369,9 @@ function withinMaximum(register: ReadonlyMap<string, Limit>, id: string): boolea
  * after the others' defaults. A maximum is read from the register evaluated at the settings, so
  * when it falls as its own setting rises (the response cap's heap maximum does, through the
  * off-heap buffers), the hard maximum is the largest setting that still holds, found by
- * bisection (approved 2026-11-28, #383).
+ * bisection (approved 2026-11-28, #383). Every evaluation also needs limit:packet.bytes at or
+ * above limit:packet.floorBytes, so no setting can take the packet cap below its floor (L11 A1,
+ * approved 2026-11-28, #383).
  */
 export function settingProblems(register: ReadonlyMap<string, Limit>): string[] {
   // A built register carries each derived entry's resolved value; a definition must not.
@@ -592,6 +610,247 @@ export const packetBytesFor = (
     ),
   );
 
+/** The heap the model replies hold at peak: `calls` replies of `bytes` at `perByte`, rounded up. */
+export const replyHeapBytesFor = (calls: number, bytes: number, perByte: number): number =>
+  Math.ceil(calls * bytes * perByte);
+
+/** The register values limit:packet.bytes and limit:runner.heapBytes read, at the defaults. */
+type PacketHeapInputs = Readonly<{
+  memory: number;
+  youngGeneration: number;
+  /** limit:runner.offHeapBytes, which counts the replies in flight at `calls` × `reply`. */
+  offHeap: number;
+  baseline: number;
+  reserved: number;
+  calls: number;
+  reply: number;
+  perReplyByte: number;
+  expansion: number;
+  perPacketByte: number;
+  retained: number;
+  readsInFlight: number;
+  response: number;
+  perResponseByte: number;
+  evidencePerPacketByte: number;
+}>;
+
+/**
+ * limit:packet.bytes with `calls` model replies of `reply` bytes in flight in place of the
+ * register's: the replies' off-heap copies (2 each, as limit:runner.offHeapBytes counts them) move
+ * limit:runner.heapBytes, and their parse peak moves limit:analysis.replyHeapBytes. Every other
+ * input keeps its register value, so this is the packet cap a run at that setting gets.
+ */
+function packetBytesWithReplies(h: PacketHeapInputs, calls: number, reply: number): number {
+  const offHeap = h.offHeap - h.calls * 2 * h.reply + calls * 2 * reply;
+  const heap = heapBytesFor(h.memory, h.youngGeneration, offHeap, h.baseline, h.reserved);
+  return packetBytesFor(
+    heap,
+    replyHeapBytesFor(calls, reply, h.perReplyByte),
+    h.expansion,
+    h.perPacketByte,
+    h.retained,
+    h.readsInFlight,
+    h.response,
+    h.perResponseByte,
+    h.evidencePerPacketByte,
+  );
+}
+
+/** The register ids PacketHeapInputs reads, in its field order. */
+const PACKET_HEAP_INPUTS = [
+  'runner.memoryBytes',
+  'runner.youngGenerationBytes',
+  'runner.offHeapBytes',
+  'runner.baselineBytes',
+  'runner.systemReservedBytes',
+  'analysis.maxConcurrentCalls',
+  'analysis.responseBytes',
+  'runner.heapBytesPerReplyByte',
+  'runner.unitExpansionHeapBytes',
+  'runner.heapBytesPerPacketByte',
+  'runner.evidenceRetainedHeapBytes',
+  'evidence.readsInFlight',
+  'evidence.envelope.maxResponseBytes',
+  'runner.heapBytesPerEvidenceByte',
+  'runner.evidenceHeapBytesPerPacketByte',
+] as const;
+
+const packetHeapInputs = (values: readonly number[]): PacketHeapInputs => {
+  const [
+    memory = 0,
+    youngGeneration = 0,
+    offHeap = 0,
+    baseline = 0,
+    reserved = 0,
+    calls = 0,
+    reply = 0,
+    perReplyByte = 0,
+    expansion = 0,
+    perPacketByte = 0,
+    retained = 0,
+    readsInFlight = 0,
+    response = 0,
+    perResponseByte = 0,
+    evidencePerPacketByte = 0,
+  ] = values;
+  return {
+    memory,
+    youngGeneration,
+    offHeap,
+    baseline,
+    reserved,
+    calls,
+    reply,
+    perReplyByte,
+    expansion,
+    perPacketByte,
+    retained,
+    readsInFlight,
+    response,
+    perResponseByte,
+    evidencePerPacketByte,
+  };
+};
+
+/**
+ * The largest whole value in [1, `ceiling`] at which `packet` (decreasing in it) is at least
+ * `floor`, or 0 when none is (SPEC-limit-register section 5, the floor rule, L11 A1, #383).
+ */
+function largestAtFloor(ceiling: number, floor: number, packet: (value: number) => number): number {
+  if (ceiling < 1 || packet(1) < floor) return 0;
+  let low = 1;
+  let high = Math.floor(ceiling);
+  if (packet(high) >= floor) return high;
+  while (high - low > 1) {
+    const middle = Math.floor((low + high) / 2);
+    if (packet(middle) >= floor) low = middle;
+    else high = middle;
+  }
+  return low;
+}
+
+/**
+ * Printable ASCII a packet id may hold with no JSON escape: 0x20 to 0x7E less `"` and `\`, the
+ * one-byte characters T4's text check admits (src/schema.ts `text`).
+ */
+const FLOOR_ID_ALPHABET = Array.from({ length: 95 }, (_, index) =>
+  String.fromCharCode(32 + index),
+).filter((character) => character !== '"' && character !== '\\');
+
+/** The `index`th shortest distinct string over FLOOR_ID_ALPHABET (bijective base 93). */
+function shortestId(index: number): string {
+  let rest = index + 1;
+  let id = '';
+  while (rest > 0) {
+    rest -= 1;
+    id = `${FLOOR_ID_ALPHABET[rest % FLOOR_ID_ALPHABET.length] ?? ''}${id}`;
+    rest = Math.floor(rest / FLOOR_ID_ALPHABET.length);
+  }
+  return id;
+}
+
+const FLOOR_SHA = '0'.repeat(40);
+
+/**
+ * The smallest review packet T4 accepts with `changes` changes (limit:packet.floorBytes), and the
+ * trusted snapshot it validates against: every change an npm declaration addition, which carries
+ * no evidence category, with the shortest distinct id and name; one root `package.json` head
+ * source per limit:packet.listEntries members; the inventory source; every binding string at its
+ * shortest valid length and every number 1; context disabled; no finding, relationship or
+ * reachability verdict. src/schema.test.ts validates it and pins its bytes.
+ */
+export function floorPacket(changes: number, listEntries: number) {
+  const repository = { id: 1, owner: 'a', name: 'a' };
+  const binding = {
+    repository,
+    workflow: { id: 1, path: 'a' },
+    runId: 1,
+    runAttempt: 1,
+    pullNumber: 1,
+    headRepository: repository,
+    headSha: FLOOR_SHA,
+    baseRef: 'a',
+    baseSha: FLOOR_SHA,
+    mergeBaseSha: FLOOR_SHA,
+    actorId: 1,
+    conclusion: 'success',
+    identity: [1, 1, 1, 1, 1, FLOOR_SHA],
+  };
+  const ids = Array.from({ length: changes }, (_, index) => shortestId(index));
+  const groups = Array.from({ length: Math.ceil(changes / listEntries) }, (_, index) =>
+    ids.slice(index * listEntries, (index + 1) * listEntries),
+  );
+  const inventoryId = shortestId(0);
+  const fileIds = groups.map((_, index) => shortestId(index + 1));
+  const contextRevision = { repository, sha: FLOOR_SHA };
+  const context = { ok: true, status: 'disabled', dependencies: [], reasons: [] };
+  const absent = { status: 'not_applicable', reasons: [], sourceIds: [inventoryId] };
+  const packet = {
+    version: 1,
+    binding,
+    baseSha: FLOOR_SHA,
+    contextRevision,
+    coverage: {
+      npm: { status: 'complete', reasons: [], sourceIds: [inventoryId] },
+      actions: absent,
+      uv: absent,
+    },
+    changes: ids.map((id, index) => ({
+      id,
+      ecosystem: 'npm',
+      basis: 'declaration',
+      kind: 'addition',
+      role: 'direct',
+      evidence: {},
+      from: null,
+      to: {
+        root: '.',
+        name: id,
+        specifiers: { dependencies: '' },
+        sourceId: fileIds[Math.floor(index / listEntries)],
+      },
+    })),
+    sources: [
+      {
+        id: inventoryId,
+        kind: 'file-list',
+        ecosystems: ['npm', 'actions', 'uv'],
+        memberIds: [],
+        status: 'available',
+        reasons: [],
+        provenance: {
+          kind: 'inventory',
+          repository,
+          baseSha: FLOOR_SHA,
+          headSha: FLOOR_SHA,
+          absentEcosystems: ['actions', 'uv'],
+        },
+      },
+      ...groups.map((members, index) => ({
+        id: fileIds[index],
+        kind: 'file',
+        ecosystems: ['npm'],
+        memberIds: members,
+        status: 'available',
+        reasons: [],
+        provenance: {
+          kind: 'file',
+          revision: 'head',
+          repository,
+          sha: FLOOR_SHA,
+          path: 'package.json',
+        },
+      })),
+    ],
+    findings: [],
+    relationships: [],
+    reachability: [],
+    retryAfter: null,
+    context,
+  };
+  return { packet, expected: { binding, baseSha: FLOOR_SHA, contextRevision, context } };
+}
+
 /**
  * Sequential publication requests the publication reserve allows (src/comments.ts:329-365): the
  * comment selection, its re-read, the publication gate, the write and the gate after it.
@@ -642,6 +901,9 @@ function derived<const Id extends string>(
 
 /** The 2026-11-27 approval of the L11 recommendations (#383), which admitted these settings. */
 const L11_APPROVAL = 'approved by the maintainer on 2026-11-27 (L11, #383)';
+/** The 2026-11-28 approval of the decisions for the stopped L11 entries (#383). */
+const L11_STOPS_APPROVAL =
+  'approved by the maintainer on 2026-11-28 (L11, decisions for the stopped entries, #383)';
 
 /**
  * An adopter setting (SPEC-limit-register section 5): `value` is its default, today's value, and
@@ -655,6 +917,7 @@ function configured<const Id extends string>(
   setting: Omit<LimitSetting, 'default'>,
   bears: string,
   audit: Required<Omit<Audit, 'note'>>,
+  approved: string = L11_APPROVAL,
 ) {
   return {
     id,
@@ -662,7 +925,7 @@ function configured<const Id extends string>(
     unit,
     protects: audit.protects,
     effect: audit.effect,
-    basis: { kind: 'config', bears, approved: L11_APPROVAL },
+    basis: { kind: 'config', bears, approved },
     configurable: { ...setting, default: value },
     test: audit.test,
   } as const;
@@ -1116,6 +1379,25 @@ const DEFINITIONS = [
     test: 'src/schema.test.ts > enforces the exact serialized packet budget including multibyte text',
   },
   {
+    id: 'packet.floorBytes',
+    unit: 'bytes',
+    protects:
+      'States the smallest packet a valid change at limit:packet.changes changes can produce, so an adopter setting that spends heap can never take limit:packet.bytes below what any review at the change cap needs.',
+    effect:
+      'Not enforced at run time. check:limits rejects a register whose limit:packet.bytes falls below it at the defaults or with any setting at its hard maximum, and each heap-spending setting\'s hard maximum is the largest value at which limit:packet.bytes stays at or above it; L12 makes the config parser apply the same check at the adopter\'s settings.',
+    basis: {
+      kind: 'derived',
+      inputs: ['packet.changes', 'packet.listEntries'],
+      formula: (changes, listEntries) =>
+        Buffer.byteLength(JSON.stringify(floorPacket(changes, listEntries).packet)),
+      description:
+        "The serialized bytes of the smallest packet T4 accepts with limit:packet.changes changes and no optional evidence (floorPacket in src/limits.ts): every change an npm declaration addition, the change kind with no evidence category, with the shortest distinct ids and names over the 93 printable ASCII characters JSON writes unescaped; one root package.json head source per limit:packet.listEntries members and the inventory source; every binding string at its shortest valid length; context disabled; no finding, relationship or reachability verdict. Below it no valid change at the change cap can produce any packet, so it is a structural floor, not demand. A heap-spending setting's hard maximum is the largest value at which limit:packet.bytes stays at or above it (SPEC-limit-register section 5). Approved by the maintainer on 2026-11-28 (L11, A1, #383).",
+      structuralTest:
+        'src/schema.test.ts > the packet floor is the smallest packet T4 accepts at the change cap',
+    },
+    test: 'src/limits.test.ts > no heap setting at its hard maximum takes packet.bytes below its floor',
+  },
+  {
     id: 'runner.heapBytesPerPacketByte',
     value: 19,
     unit: 'bytes',
@@ -1291,7 +1573,7 @@ const DEFINITIONS = [
       kind: 'derived',
       inputs: [
         'runner.heapBytes',
-        'packet.bytes',
+        'packet.floorBytes',
         'runner.evidenceHeapBytesPerPacketByte',
         'evidence.readsInFlight',
         'evidence.envelope.maxResponseBytes',
@@ -1302,7 +1584,7 @@ const DEFINITIONS = [
       ],
       formula: (
         heap,
-        packet,
+        floor,
         perPacketByte,
         inFlight,
         response,
@@ -1312,12 +1594,12 @@ const DEFINITIONS = [
         config,
       ) =>
         Math.floor(
-          (heap - packet * perPacketByte - inFlight * response * perResponseByte) / perRetained,
+          (heap - floor * perPacketByte - inFlight * response * perResponseByte) / perRetained,
         ) -
         research -
         config,
       description:
-        'The joint hard maximum of the thirteen Q10 byte shares and retained caps: the evidence-phase heap left beside the packet at its evidence-phase rate and the responses in flight at their parse peak, at limit:runner.heapBytesPerRetainedByte, less limit:research.maxRetainedBytes and limit:config.maxBytes, which are held beside them, rounded down. limit:packet.bytes takes the evidence-phase heap the defaults leave, so a setting raised above its default lowers the packet cap rather than passing this maximum. Q10(a) approved by the maintainer on 2026-11-27, #383.',
+        "The joint hard maximum of the thirteen Q10 byte shares and retained caps: the evidence-phase heap left beside a packet at its structural floor (limit:packet.floorBytes) at its evidence-phase rate and the responses in flight at their parse peak, at limit:runner.heapBytesPerRetainedByte, less limit:research.maxRetainedBytes and limit:config.maxBytes, which are held beside them, rounded down. limit:packet.bytes takes the evidence-phase heap the settings leave, so a setting raised above its default lowers the packet cap, and at this maximum the packet cap is the floor (the floor rule, SPEC-limit-register section 5). Q10(a) approved by the maintainer on 2026-11-27, #383; the floor in place of today's packet cap, which left the maximum equal to the sum of the defaults, on 2026-11-28 (L11, A1).",
     },
     test: 'none: the joint hard maximum of adopter settings the parser does not read yet (L12, #384); src/limits.test.ts pins its formula',
   },
@@ -3587,14 +3869,50 @@ const DEFINITIONS = [
       test: 'src/analysis/projection.test.ts > enforces the final escaped UTF-8 request boundary, and truncates only source text',
     },
   ),
-  unjustified('analysis.completionTokens', 16_384, 'tokens', {
-    protects:
-      'max_tokens caps the output one call may produce, which bounds output cost per call and sizes the reply-byte formula. The spec records that reasoning tokens count against this budget.',
-    effect:
-      'A reply that reaches the cap ends with finish_reason length and is reported truncated. The batch splits toward single units, and results from other batches are kept.',
-    test: 'src/analysis/mistral.test.ts > admits a valid stop at the full token-byte, escaping and envelope allowance, but rejects one extra observed byte',
-    note: 'stopped (L11, Q14(a), #383): the approved basis is config with the hard maximum limit:analysis.model.contextTokens less the minimal request, about 258,437 tokens (262,144 − limit:analysis.fixedRequestBytes 3,702 − limit:analysis.model.templateTokens 5). The register cannot hold that maximum: at 258,437 tokens limit:analysis.requestBytes falls to 3,702, limit:analysis.unitBytes and limit:packet.textBytes to 0, and limit:analysis.responseBytes rises to 264,705,024 bytes, so limit:analysis.replyHeapBytes is 21,938,752,390 bytes, more than limit:runner.heapBytes (5,380,243,456 at that setting), and limit:packet.bytes goes negative (−877,203,177). Q14(a) also needs the section 5 amendment text, which the maintainer has not written. Value unchanged.',
-  }),
+  configured(
+    'analysis.completionTokens',
+    16_384,
+    'tokens',
+    { setting: 'limits.analysisCompletionTokens', maximum: 'analysis.completionTokensMax' },
+    'The adopter: the model is consumer configuration, so a larger budget lets a model that reasons at length finish a reply, at the cost of output per call they pay for, a smaller request (limit:analysis.requestBytes), and the heap a reply of limit:analysis.responseBytes takes in flight, which lowers limit:packet.bytes. Section 5 admitted completion tokens as configuration on 2026-11-17; its hard maximum is the floor rule (L11, Q14(a) and A1, approved 2026-11-28, #383).',
+    {
+      protects:
+        'max_tokens caps the output one call may produce, which bounds output cost per call and sizes the reply-byte formula. The spec records that reasoning tokens count against this budget.',
+      effect:
+        'A reply that reaches the cap ends with finish_reason length and is reported truncated. The batch splits toward single units, and results from other batches are kept.',
+      test: 'src/analysis/mistral.test.ts > admits a valid stop at the full token-byte, escaping and envelope allowance, but rejects one extra observed byte',
+    },
+    L11_STOPS_APPROVAL,
+  ),
+  derived(
+    'analysis.completionTokensMax',
+    'tokens',
+    [
+      ...PACKET_HEAP_INPUTS,
+      'packet.floorBytes',
+      'analysis.maxTokenEscapedBytes',
+      'analysis.responseEnvelopeBytes',
+      'analysis.model.contextTokens',
+      'analysis.fixedRequestBytes',
+      'analysis.model.templateTokens',
+    ],
+    (...values) => {
+      const heap = packetHeapInputs(values);
+      const [floor = 0, tokenBytes = 0, envelope = 0, context = 0, fixed = 0, template = 0] =
+        values.slice(PACKET_HEAP_INPUTS.length);
+      return largestAtFloor(context - fixed - template, floor, (tokens) =>
+        packetBytesWithReplies(heap, heap.calls, replyBytesFor(tokens, tokenBytes, envelope)),
+      );
+    },
+    'The hard maximum of limit:analysis.completionTokens: the largest token budget at which limit:packet.bytes stays at or above limit:packet.floorBytes, with every other setting at its default (the floor rule, SPEC-limit-register section 5). A larger budget raises limit:analysis.responseBytes (replyBytesFor), so each reply in flight holds more heap (limit:analysis.replyHeapBytes) and more off-heap memory (limit:runner.offHeapBytes, which lowers limit:runner.heapBytes). It never passes the Q14(a) bound, limit:analysis.model.contextTokens less the smallest request (limit:analysis.fixedRequestBytes) and limit:analysis.model.templateTokens. Approved by the maintainer on 2026-11-28 (L11, Q14(a) and A1, #383).',
+    {
+      protects:
+        'Keeps an adopter setting of the completion budget from taking the packet cap below its structural floor.',
+      effect:
+        'Not enforced by the reviewer yet: L12 makes the config parser reject a larger budget. check:limits evaluates the register at this value.',
+      test: 'src/limits.test.ts > no heap setting at its hard maximum takes packet.bytes below its floor',
+    },
+  ),
   configured(
     'analysis.requestTimeoutMs',
     240_000,
@@ -3674,7 +3992,7 @@ const DEFINITIONS = [
     'analysis.replyHeapBytes',
     'bytes',
     ['analysis.maxConcurrentCalls', 'analysis.responseBytes', 'runner.heapBytesPerReplyByte'],
-    (calls, bytes, perByte) => Math.ceil(calls * bytes * perByte),
+    replyHeapBytesFor,
     'The heap the model replies can hold at peak: limit:analysis.maxConcurrentCalls replies of limit:analysis.responseBytes in flight at once, at limit:runner.heapBytesPerReplyByte each, rounded up. Its measurement includes the process baseline, so limit:packet.bytes needs no separate term for it.',
     {
       protects:
@@ -3775,20 +4093,47 @@ const DEFINITIONS = [
       'Not enforced by the reviewer yet: L12 makes the config parser reject a larger call cap. check:limits evaluates the register at this value.',
     test: 'src/analysis/batches.test.ts > splitting every batch down to single units makes 2 × units − batches calls',
   },
-  unjustified('analysis.maxConcurrentCalls', 2, 'count', {
-    protects:
-      'Provider calls in flight are capped at two per run, the concurrency the spec reserves. No provider or platform limit is cited, so the harm is not established.',
-    effect:
-      'No new call starts while two are in flight. Final records do not depend on completion order.',
-    test: 'src/analysis/batches.test.ts > completion order does not change dispatched batches, concurrency, or final states',
-    note: 'stopped (L11, #383): the approved basis is config with the hard maximum of limit:analysis.maxCalls, limit:analysis.maxCallsMax (240). The register cannot hold it: at 240 concurrent calls limit:analysis.replyHeapBytes is 167,511,274,292 bytes (about 167 GB) and limit:runner.offHeapBytes 8,192,301,056, so limit:runner.heapBytes goes negative (−1,645,215,744) and limit:packet.bytes with it (−8,908,675,867). No smaller hard maximum is approved. Value unchanged.',
-  }),
+  configured(
+    'analysis.maxConcurrentCalls',
+    2,
+    'count',
+    { setting: 'limits.analysisMaxConcurrentCalls', maximum: 'analysis.maxConcurrentCallsMax' },
+    'The adopter: the model is consumer configuration, so more calls in flight finish a run sooner on a provider that allows them, at the cost of the heap each reply in flight takes, which lowers limit:packet.bytes. Section 5 admitted concurrency as configuration on 2026-11-17; its hard maximum is the floor rule (L11, A1, approved 2026-11-28, #383).',
+    {
+      protects:
+        'Provider calls in flight are capped, so the replies held at once stay inside the heap the packet cap leaves.',
+      effect:
+        'No new call starts while this many are in flight. Final records do not depend on completion order.',
+      test: 'src/analysis/batches.test.ts > completion order does not change dispatched batches, concurrency, or final states',
+    },
+    L11_STOPS_APPROVAL,
+  ),
+  derived(
+    'analysis.maxConcurrentCallsMax',
+    'count',
+    [...PACKET_HEAP_INPUTS, 'packet.floorBytes', 'analysis.maxCalls'],
+    (...values) => {
+      const heap = packetHeapInputs(values);
+      const [floor = 0, maxCalls = 0] = values.slice(PACKET_HEAP_INPUTS.length);
+      return largestAtFloor(maxCalls, floor, (calls) =>
+        packetBytesWithReplies(heap, calls, heap.reply),
+      );
+    },
+    'The hard maximum of limit:analysis.maxConcurrentCalls: the largest number of calls in flight at which limit:packet.bytes stays at or above limit:packet.floorBytes, with every other setting at its default (the floor rule, SPEC-limit-register section 5), and never more than the calls a run may make, limit:analysis.maxCalls. Each call in flight holds a reply of limit:analysis.responseBytes at its parse peak (limit:analysis.replyHeapBytes) and two off-heap copies of it (limit:runner.offHeapBytes, which lowers limit:runner.heapBytes). Approved by the maintainer on 2026-11-28 (L11, A1, #383).',
+    {
+      protects:
+        'Keeps an adopter setting of the call concurrency from taking the packet cap below its structural floor.',
+      effect:
+        'Not enforced by the reviewer yet: L12 makes the config parser reject a larger concurrency. check:limits evaluates the register at this value.',
+      test: 'src/limits.test.ts > no heap setting at its hard maximum takes packet.bytes below its floor',
+    },
+  ),
   unjustified('analysis.maxAnalysisMs', 600_000, 'milliseconds', {
     protects:
       "Analysis time is capped at the spec's 600 s maximum, so the stage cannot outlast the job's time budget.",
     effect:
       'The effective deadline is the earlier of the caller deadline minus the reserve and start plus 600 s. No call dispatches at or after it; in-flight calls end with deadline.',
-    note: 'stopped (L11, Q17(a), #383): the approved basis is config with the hard maximum window − freshness − publication − evidence deadline − recheck, limit:job.maxAnalysisTimeMs, which is 471,971 ms at the defaults (840,000 − 240,000 − 34,917 − 58,195 − 34,917), below this default of 600,000. A default above its own hard maximum fails section 5 and check:limits, and no approved change lowers the default or moves the maximum',
+    note: 'stopped (L11, Q17(a), #383): the approved basis is config with the hard maximum window − freshness − publication − evidence deadline − recheck, limit:job.maxAnalysisTimeMs, which is 471,971 ms at the defaults (840,000 − 240,000 − 34,917 − 58,195 − 34,917), below this default of 600,000. A default above its own hard maximum fails section 5 and check:limits, and no approved change lowers the default or moves the maximum. Stopped again (L11, item 2, 2026-11-28): the approved fix, a default equal to that maximum, 471,971, fails check:limits once implemented. The maximum falls as the evidence deadline rises: with limit:evidence.envelope.totalTimeoutMs at its own hard maximum (limit:job.maxEvidenceDeadlineMs, 471,971), limit:job.maxAnalysisTimeMs is 240,000, the one model call that maximum leaves, so a fixed default of 471,971 is 231,971 above its hard maximum there ("analysis.maxAnalysisMs: above its hard maximum with evidence.envelope.totalTimeoutMs at its hard maximum"). A default that holds at every other setting\'s maximum would be 240,000, a new value no option named. Value unchanged',
     test: 'src/analysis/batches.test.ts > no call dispatches at or after the registered analysis time cap from the start',
   }),
   derived(
