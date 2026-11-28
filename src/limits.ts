@@ -527,6 +527,18 @@ export function unitDerivedEntries(
     relationships
   );
 }
+/**
+ * The fixed text of the complexity report (scripts/complexity/report.mjs `render`), in UTF-16
+ * code units, with every number at its widest: 16 digits, the length of Number.MAX_SAFE_INTEGER,
+ * and the mean at 16 digits and two decimals, and each SHA at 64 hex digits (SHA-256 git).
+ * `rowFixedCodeUnits` is one regression row and its line break beside its two cells (line, score
+ * and base score included); `reportFixedCodeUnits` is the rest of a truncated report with
+ * regressions. scripts/complexity/report.test.mjs pins both to the renderer.
+ */
+export const COMPLEXITY_REPORT_TEXT = Object.freeze({
+  rowFixedCodeUnits: 89,
+  reportFixedCodeUnits: 785,
+});
 const sum = (...values: number[]): number => values.reduce((total, value) => total + value, 0);
 
 /**
@@ -3856,14 +3868,38 @@ const DEFINITIONS = [
     note: 'no recorded reason',
     test: 'none: a display truncation in the advisory complexity report table, which never gates a merge',
   }),
-  unjustified('complexity.maxListedFindings', 100, 'count', {
-    protects:
-      'The regression table lists at most this many rows so the comment stays within its body ceiling; the total count is still reported.',
-    effect:
-      "The table shows the first 100 rows and the line 'Showing the first 100 of N findings'.",
-    note: 'no recorded reason',
-    test: 'none: a display cap in the advisory complexity report, which says how many findings it omitted and never gates a merge',
-  }),
+  derived(
+    'complexity.maxCommentCodeUnits',
+    'code units',
+    ['comment.maxBodyCodeUnits'],
+    copy,
+    "The complexity report is posted as a PR comment, so it has the reviewer's comment cap, limit:comment.maxBodyCodeUnits, the worst-case code units of GitHub's probed comment limit. The comment job's literal check in .github/workflows/complexity.yml repeats it, and check:limits compares the two. Approved by the maintainer on 2026-11-27 (L11, E19 and Q26(a), #383).",
+    {
+      protects:
+        'Keeps the complexity comment within GitHub’s comment body limit, so the comment job never posts a body GitHub would reject.',
+      effect:
+        'The comment job throws Invalid complexity report for a longer body and posts nothing; the job summary still has the report.',
+      test: 'scripts/complexity/report.test.mjs > a report at complexity.maxListedFindings rows of the widest kind fits complexity.maxCommentCodeUnits',
+    },
+  ),
+  derived(
+    'complexity.maxListedFindings',
+    'count',
+    ['complexity.maxCommentCodeUnits', 'complexity.cellOutputCodeUnits'],
+    (comment, cell) =>
+      Math.floor(
+        (comment - COMPLEXITY_REPORT_TEXT.reportFixedCodeUnits) /
+          (2 * cell + COMPLEXITY_REPORT_TEXT.rowFixedCodeUnits),
+      ),
+    'As many rows of the widest kind as fit in the comment beside the report’s fixed text: (limit:complexity.maxCommentCodeUnits − COMPLEXITY_REPORT_TEXT.reportFixedCodeUnits) ÷ (2 × limit:complexity.cellOutputCodeUnits + COMPLEXITY_REPORT_TEXT.rowFixedCodeUnits), rounded down, with every number at 16 digits. Approved by the maintainer on 2026-11-27 (L11, E19 and Q26(a), #383).',
+    {
+      protects:
+        'The regression table lists at most this many rows so the comment stays within its body ceiling; the total count is still reported.',
+      effect:
+        "The table shows the first rows up to the cap and the line 'Showing the first N of M findings'.",
+      test: 'scripts/complexity/report.test.mjs > a report at complexity.maxListedFindings rows of the widest kind fits complexity.maxCommentCodeUnits',
+    },
+  ),
   {
     id: 'tests.largeInventoryRenderTimeoutMs',
     value: 30_000,

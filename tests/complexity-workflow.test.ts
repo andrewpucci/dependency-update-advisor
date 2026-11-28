@@ -1,6 +1,7 @@
 import { readFileSync } from 'node:fs';
 import { runInNewContext } from 'node:vm';
 import { expect, test } from 'vite-plus/test';
+import { limit } from '../src/limits.js';
 
 const workflow = readFileSync(
   new URL('../.github/workflows/complexity.yml', import.meta.url),
@@ -58,7 +59,11 @@ test('rejects invalid or oversized report data', async () => {
   await expect(publish([], 'current', 'missing marker')).rejects.toThrow(
     'Invalid complexity report',
   );
-  await expect(publish([], 'current', marker + 'x'.repeat(60000))).rejects.toThrow(
-    'Invalid complexity report',
-  );
+  await expect(
+    publish(
+      [],
+      'current',
+      marker + 'x'.repeat(limit('complexity.maxCommentCodeUnits') - marker.length + 1),
+    ),
+  ).rejects.toThrow('Invalid complexity report');
 });

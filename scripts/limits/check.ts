@@ -122,6 +122,42 @@ export function workflowProblems(
   return problems;
 }
 
+/**
+ * A workflow literal that repeats a register value: YAML and inline scripts cannot import the
+ * register, so check:limits compares them, as it does `timeout-minutes`.
+ */
+export type WorkflowLiteral = Readonly<{ file: string; pattern: RegExp; id: string }>;
+
+export const WORKFLOW_LITERALS: readonly WorkflowLiteral[] = Object.freeze([
+  {
+    file: '.github/workflows/complexity.yml',
+    pattern: /\bbody\.length > (\d+)\b/g,
+    id: 'complexity.maxCommentCodeUnits',
+  },
+]);
+
+/** Each listed workflow literal must exist and equal its register entry. */
+export function workflowLiteralProblems(
+  register: ReadonlyMap<string, Limit>,
+  workflows: readonly SourceFile[],
+  literals: readonly WorkflowLiteral[] = WORKFLOW_LITERALS,
+): string[] {
+  return literals.flatMap(({ file, pattern, id }): string[] => {
+    const entry = register.get(id);
+    if (entry === undefined) return [`${file}: maps a literal to ${id}, which is not in the register`];
+    const workflow = workflows.find((candidate) => candidate.file === file);
+    const matches = workflow ? [...workflow.text.matchAll(pattern)] : [];
+    if (matches.length === 0) return [`${file}: no literal for ${id} matches ${String(pattern)}`];
+    return matches.flatMap((match) =>
+      Number(match[1]) === entry.value
+        ? []
+        : [
+            `${file}:${lineOf(workflow?.text ?? '', match.index ?? 0)}: literal ${match[1]} differs from ${id} (${entry.value})`,
+          ],
+    );
+  });
+}
+
 /** A number followed by a size or duration unit (`16 KiB`, `1.5 MiB`, `240 seconds`). */
 const UNIT_VALUE = /(?<![\w.,])(\d+(?:\.\d+)?)\s*(KiB|MiB|GiB|seconds?|minutes?|min|hours?)\b/g;
 
@@ -415,6 +451,7 @@ function main(): void {
   ) as AllowedSpecLine[];
   const problems = [
     ...workflowProblems(REGISTER, workflows),
+    ...workflowLiteralProblems(REGISTER, workflows),
     ...specProblems(REGISTER, floor, specs, allowlist),
     ...citationProblems(REGISTER, docs),
     ...schemaProblems(REGISTER, schemas),

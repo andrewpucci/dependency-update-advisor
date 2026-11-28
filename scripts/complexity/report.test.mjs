@@ -6,6 +6,7 @@ import { devNull, tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { measure, regressions, render } from './report.mjs';
+import { COMPLEXITY_REPORT_TEXT, limit } from '../../src/limits.ts';
 
 test('measures TypeScript including zero-score functions and nested decisions', () => {
   const functions = measure(
@@ -97,8 +98,47 @@ test('renders scores, revisions, and bounded escaped regression details', () => 
       [],
       'a'.repeat(40),
       'b'.repeat(40),
-    ).length < 60000,
+    ).length <= limit('complexity.maxCommentCodeUnits'),
   );
+});
+
+test('a report at complexity.maxListedFindings rows of the widest kind fits complexity.maxCommentCodeUnits', () => {
+  const listed = limit('complexity.maxListedFindings');
+  const cell = limit('complexity.cellOutputCodeUnits');
+  const widest = Number.MAX_SAFE_INTEGER;
+  const digits = String(widest).length;
+  // An 8-unit prefix and six-unit `&#124;` entities fill a cell to exactly its output cap, which a
+  // plain cell cannot reach past the input cap.
+  const wide = (prefix) => `${prefix}`.padEnd(8, 'x') + '|'.repeat(cell);
+  const fn = (index, score) => ({
+    name: wide(`f${index}`),
+    path: wide(`p${index}`),
+    line: widest,
+    score,
+  });
+  const count = listed + 1;
+  const head = Array.from({ length: count }, (_, index) => fn(index, widest));
+  const base = Array.from({ length: count }, (_, index) => fn(index, widest - 1));
+  const report = render(head, base, 'a'.repeat(64), 'b'.repeat(64));
+  const rows = report.split('\n').filter((line) => line.startsWith('| <code>'));
+  assert.equal(rows.length, listed);
+  for (const row of rows) assert.equal(row.length + 1, 2 * cell + COMPLEXITY_REPORT_TEXT.rowFixedCodeUnits);
+  // The counts here have fewer digits than the 16 the constant allows: the function and over-threshold
+  // counts and the finding count twice, the listed count, and the threshold.
+  const short = (value) => digits - String(value).length;
+  const widened =
+    report.length -
+    rows.length * (2 * cell + COMPLEXITY_REPORT_TEXT.rowFixedCodeUnits) +
+    4 * short(count) +
+    short(listed) +
+    short(limit('complexity.threshold'));
+  assert.equal(widened, COMPLEXITY_REPORT_TEXT.reportFixedCodeUnits);
+  assert.ok(
+    COMPLEXITY_REPORT_TEXT.reportFixedCodeUnits +
+      listed * (2 * cell + COMPLEXITY_REPORT_TEXT.rowFixedCodeUnits) <=
+      limit('complexity.maxCommentCodeUnits'),
+  );
+  assert.ok(report.length <= limit('complexity.maxCommentCodeUnits'));
 });
 
 test('CLI compares immutable git revisions without executing source, and rejects missing bases', () => {

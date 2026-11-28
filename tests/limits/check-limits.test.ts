@@ -8,6 +8,7 @@ import {
   schemaProblems,
   specProblems,
   testProblems,
+  workflowLiteralProblems,
   workflowProblems,
 } from '../../scripts/limits/check.js';
 import { PENDING_AUDIT, REGISTER, limit, type Limit } from '../../src/limits.js';
@@ -76,6 +77,27 @@ test('a workflow entry with no job in the workflow files is a problem', () => {
   expect(problems).toEqual([
     expect.stringContaining('workflow.complexity.report.timeoutMinutes'),
     expect.stringContaining('workflow.complexity.comment.timeoutMinutes'),
+  ]);
+});
+
+const COMMENT_CAP = limit('complexity.maxCommentCodeUnits');
+const commentJob = (cap: number) => [
+  {
+    file: '.github/workflows/complexity.yml',
+    text: `jobs:\n  comment:\n    steps:\n      - with:\n          script: |\n            if (body.length > ${cap}) throw new Error();\n`,
+  },
+];
+
+test('the complexity comment cap literal matches its register entry', () => {
+  expect(workflowLiteralProblems(REGISTER, commentJob(COMMENT_CAP))).toEqual([]);
+});
+
+test('a workflow literal that differs from its register entry, or is missing, is a problem', () => {
+  expect(workflowLiteralProblems(REGISTER, commentJob(COMMENT_CAP + 1))).toEqual([
+    expect.stringContaining(`differs from complexity.maxCommentCodeUnits (${COMMENT_CAP})`),
+  ]);
+  expect(workflowLiteralProblems(REGISTER, [])).toEqual([
+    expect.stringContaining('no literal for complexity.maxCommentCodeUnits'),
   ]);
 });
 

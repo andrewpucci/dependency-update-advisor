@@ -36,12 +36,6 @@
     "reason": "measurement: the 100-record pillow page from the 2026-11-20 probe, an observed page, not a register value"
   },
   {
-    "file": "docs/specs/SPEC-complexity-review.md",
-    "line": "reject reports exceeding 60,000 characters.",
-    "values": [60000],
-    "reason": "pending amendment (L10): approved spec states the value"
-  },
-  {
     "file": "docs/specs/SPEC-event-verification.md",
     "line": "- 3 of 92 open `nodejs/node` PRs and 5 of 100 open `home-assistant/core` PRs",
     "values": [100, 92],
