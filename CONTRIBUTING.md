@@ -302,6 +302,16 @@ subtracts four things that are not old generation:
   it. A run on any other machine, including a Mac, measures a different
   machine.
 
+The relaunch fails closed. If the child process cannot be started, the
+runner's memory leaves no heap, or the running process's V8 heap limit is
+below `limit:runner.heapBytes` plus the young generation, the action prints a
+fixed `dependabot-review: … no review ran.` line and exits with code 80. It
+never falls back to V8's default heap. Runners need at least
+`limit:runner.memoryBytes` of memory. GitHub-hosted `macos-latest` (7 GB) is
+below that and is not supported. To run the action under Node's permission
+model, which forbids child processes, pass `--max-old-space-size` yourself;
+the action then checks its heap limit and runs without relaunching.
+
 ### Token-length probe
 
 `limit:analysis.maxTokenEscapedBytes` is the longest vocabulary token of the

@@ -412,6 +412,20 @@ formula, using the memory of the runner it runs on: the cgroup limit when one
 is set, otherwise physical memory. A relaunched process never relaunches
 again.
 
+The relaunch fails closed. The action stops with a fixed error message and
+exit code 80, and never runs at V8's default heap, in each of these cases:
+
+- the child process cannot be started;
+- the runner's memory leaves no heap for the review;
+- the process that runs the review has a V8 heap limit below
+  `limit:runner.heapBytes` plus `limit:runner.youngGenerationBytes`. This
+  covers both the relaunched child and a process started with its own
+  old-generation size.
+
+A runner therefore needs at least `limit:runner.memoryBytes` of memory, the
+smallest supported runner's. A smaller runner stops with exit code 80. This
+includes GitHub-hosted `macos-latest` (7 GB), which is not supported.
+
 #### Projection caps
 
 Amended (L11; approved by the maintainer on 2026-11-28,
