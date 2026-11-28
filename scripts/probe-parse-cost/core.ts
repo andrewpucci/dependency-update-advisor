@@ -29,6 +29,7 @@ export const COUNTERS = Object.freeze([
   'registry',
   'npm',
   'research',
+  'research-bytes',
   'toml',
   'workflow-nodes',
   'workflow-aliases',

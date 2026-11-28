@@ -142,15 +142,24 @@ export async function immutableContents(
     sha,
     path: fullPath,
   });
+  const bytes = decodedContents(data);
+  reader.spend(bytes.byteLength);
+  requireUpstream(bytes.byteLength <= reader.limits.maxResponseBytes, 'budget');
+  verifyContents(data, bytes);
+  return bytes;
+}
+/** A contents response's file, decoded from its base64 text; the probe times it per byte. */
+export function decodedContents(data: Readonly<Record<string, unknown>>): Buffer {
   requireUpstream(
     data.type === 'file' && data.encoding === 'base64' && typeof data.content === 'string',
     'unsupported',
   );
-  const encoded = data.content.replace(/\n/gu, '');
+  const encoded = (data.content as string).replace(/\n/gu, '');
   requireUpstream(/^(?:[A-Za-z\d+/]{4})*(?:[A-Za-z\d+/]{2}==|[A-Za-z\d+/]{3}=)?$/u.test(encoded));
-  const bytes = Buffer.from(encoded, 'base64');
-  reader.spend(bytes.byteLength);
-  requireUpstream(bytes.byteLength <= reader.limits.maxResponseBytes, 'budget');
+  return Buffer.from(encoded, 'base64');
+}
+/** Requires the decoded bytes to be the blob the response names, by its git object hash. */
+export function verifyContents(data: Readonly<Record<string, unknown>>, bytes: Buffer): void {
   const hash = createHash('sha1')
     .update('blob ' + bytes.byteLength + '\0')
     .update(bytes)
@@ -159,7 +168,6 @@ export async function immutableContents(
     data.sha === hash && (data.size === undefined || data.size === bytes.length),
     'conflict',
   );
-  return bytes;
 }
 async function packageManifest(
   target: PackageResearchTarget,

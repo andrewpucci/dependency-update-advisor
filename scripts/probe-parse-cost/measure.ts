@@ -13,12 +13,14 @@
  * Counters: `session` (the W2 GitHub read session's JSON entries, src/github-read.ts),
  * `registry` (the npm registry reader's, src/evidence/npm-registry.ts), `npm` (the npm lockfile
  * collector's, src/evidence/npm.ts), `research` (a research reader's copy, the unit
- * limit:research.maxWork charges per entry, src/evidence/upstream-read.ts), `toml` (the uv TOML
+ * limit:research.maxWork charges per entry, src/evidence/upstream-read.ts), `research-bytes` (a
+ * research reader's decoded manifest bytes, which limit:research.maxWork also charges), `toml` (the uv TOML
  * reader's entries, src/evidence/uv-toml.ts), `workflow-nodes`, `workflow-aliases` and
  * `workflow-occurrences` (the actions reader, src/evidence/actions-yaml.ts), and
  * `dependabot-nodes`, `dependabot-updates` and `dependabot-roots` (the Dependabot roots reader,
  * src/dependabot-roots.ts, whose caps the runner lifts through HEAP_LIMIT_OVERRIDES).
  */
+import { createHash } from 'node:crypto';
 import { readdirSync, readFileSync } from 'node:fs';
 import { join, relative, sep } from 'node:path';
 import { performance } from 'node:perf_hooks';
@@ -32,6 +34,7 @@ import type * as ActionsYaml from '../../src/evidence/actions-yaml.js';
 import type * as Npm from '../../src/evidence/npm.js';
 import type * as NpmGraph from '../../src/evidence/npm-graph.js';
 import type * as Registry from '../../src/evidence/npm-registry.js';
+import type * as UpstreamGithub from '../../src/evidence/upstream-github.js';
 import type * as UpstreamRead from '../../src/evidence/upstream-read.js';
 import type * as UvToml from '../../src/evidence/uv-toml.js';
 import type * as Format from '../../src/format.js';
@@ -55,9 +58,19 @@ const { expand, preflight, readWorkflow } = await load<typeof ActionsYaml>(
 const { collectNpmInventory } = await load<typeof Npm>('src/evidence/npm.ts');
 const { createNpmRegistryReader } = await load<typeof Registry>('src/evidence/npm-registry.ts');
 const { upstreamCopy } = await load<typeof UpstreamRead>('src/evidence/upstream-read.ts');
+const { decodedContents, verifyContents } = await load<typeof UpstreamGithub>(
+  'src/evidence/upstream-github.ts',
+);
 const { readToml } = await load<typeof UvToml>('src/evidence/uv-toml.ts');
-const { BINARY_BYTES, DECIMAL_RADIX, DIGEST_BYTES, GIT_SHA_HEX_LENGTH, HTTP_STATUS } =
-  await load<typeof Format>('src/format.ts');
+const {
+  BASE64,
+  BINARY_BYTES,
+  DECIMAL_RADIX,
+  DIGEST_BYTES,
+  GIT_SHA_HEX_LENGTH,
+  GITHUB_BASE64_LINE_CHARS,
+  HTTP_STATUS,
+} = await load<typeof Format>('src/format.ts');
 const { limit } = await load<typeof Limits>('src/limits.ts');
 const { binding, npmRequest } = await load<typeof Fixtures>('tests/parity/evidence-reads.ts');
 const { npmScenario } = await load<typeof NpmFixtures>('tests/parity/npm-inventory.ts');
@@ -263,6 +276,49 @@ function researchSeries(): Promise<Series[]> {
     };
     return { bytes, units: run(), run };
   });
+}
+
+/**
+ * A research reader's byte work: the manifest bytes it decodes from a contents response, one unit
+ * a decoded byte (src/evidence/upstream-github.ts, immutableContents), with the decode, the base64
+ * check and the blob hash that follow it timed. A reused cached response is also charged per byte,
+ * but its reuse does no per-byte work (it returns the frozen cached value), so it is not timed.
+ */
+function researchBytesSeries(): Series[] {
+  // A manifest arrives in one response, so its base64 text, at 4 characters for 3 bytes, fits the
+  // response cap: the series halves down from the most bytes that fits, and goes no higher. (The
+  // reader's base64 check overflows the call stack on text a few times larger than the cap.)
+  const top = Math.floor(
+    (limit('evidence.envelope.maxResponseBytes') * BASE64.bytes) / BASE64.chars,
+  );
+  const points = core.doublingSizes(top, BELOW + ABOVE, 0).map((bytes) => {
+    // The decode does the same work whatever the bytes are.
+    const decoded = Buffer.alloc(bytes, 'manifest');
+    const text = decoded.toString('base64');
+    const lines: string[] = [];
+    for (let start = 0; start < text.length; start += GITHUB_BASE64_LINE_CHARS)
+      lines.push(text.slice(start, start + GITHUB_BASE64_LINE_CHARS));
+    const sha = createHash('sha1')
+      .update('blob ' + bytes + '\0')
+      .update(decoded)
+      .digest('hex');
+    const data = {
+      type: 'file',
+      encoding: 'base64',
+      content: lines.join('\n') + '\n',
+      sha,
+      size: bytes,
+    };
+    const run = () => {
+      const read = decodedContents(data);
+      verifyContents(data, read);
+      return read.byteLength;
+    };
+    const units = run();
+    expectWalked(units === bytes, 'research-bytes');
+    return { bytes, units, run };
+  });
+  return [{ shape: 'manifest', points }];
 }
 
 function tomlSeries(): Series[] {
@@ -521,6 +577,7 @@ const counters: Record<Core.Counter, () => Series[] | Promise<Series[]>> = {
   registry: registrySeries,
   npm: npmSeries,
   research: researchSeries,
+  'research-bytes': researchBytesSeries,
   toml: tomlSeries,
   'workflow-nodes': () => workflowSeries('nodes'),
   'workflow-aliases': () => workflowSeries('aliases'),

@@ -53,6 +53,9 @@ export const DIGEST_BYTES = Object.freeze({ sha1: 20, sha256: 32, sha384: 48, sh
 /** Base64 encodes every 3 bytes as 4 characters. */
 export const BASE64 = Object.freeze({ chars: 4, bytes: 3 });
 
+/** GitHub's contents and blob APIs wrap base64 content at 60 characters a line. */
+export const GITHUB_BASE64_LINE_CHARS = 60;
+
 /** Field positions and maxima of an ISO 8601 UTC timestamp (`YYYY-MM-DDTHH:MM:SS...`). */
 export const ISO_DATE_TIME = Object.freeze({
   year: Object.freeze([0, 4] as const),
