@@ -31,10 +31,11 @@ test('records the evidence-read envelope', () => {
     // 54 MiB − 15 MiB − 0.5 MiB + 76,800,000 + 9,484,288 bytes. The structural freshness share
     // (L11, #383) moves them by (17 − 24) requests and (17 − 3) MiB, and the signals upstream
     // share's floor of one response (L11, Q11(a)) by 0.5 MiB. The npm publish-time and registry
-    // policy ceilings of two reads per change (L11, #383) add (256 − 40) + (256 − 64) requests.
+    // policy ceilings of two reads per change (L11, #383) add (256 − 40) + (256 − 64) requests,
+    // and the PyPI metadata byte base of two responses (L11, #383) adds 1.5 MiB.
     maxRequests: 2518,
     maxResponseBytes: MiB,
-    maxTotalBytes: 141_858_816,
+    maxTotalBytes: 143_431_680,
     requestTimeoutMs: 11_639,
     totalTimeoutMs: 240_000,
   });
@@ -54,12 +55,12 @@ test('splits the envelope with nothing unallocated or over-allocated', () => {
     advisory: { maxRequests: 221, maxTotalBytes: 5 * MiB },
     signals: {
       maxRequests: 1_040,
-      maxTotalBytes: 15_775_744,
+      maxTotalBytes: 17_348_608,
       readers: {
         malware: { maxRequests: 256, maxTotalBytes: 1.5 * MiB },
         publishTimes: { maxRequests: 256, maxTotalBytes: 1.5 * MiB },
         registry: { maxRequests: 256, maxTotalBytes: 2 * MiB },
-        metadata: { maxRequests: 256, maxTotalBytes: 9_484_288 },
+        metadata: { maxRequests: 256, maxTotalBytes: 11_057_152 },
         upstream: { maxRequests: 16, maxTotalBytes: MiB },
       },
     },
@@ -213,26 +214,27 @@ test('the upstream byte and PyPI metadata shares grow with uv members up to thei
   expect(metadata.maxRequests).toBe(2 * changes);
   expect(metadata.maxTotalBytes).toBe(byteBase + byteRate * changes);
 
-  // No counted members: upstream bytes get their base; metadata bytes get the one-response floor,
-  // since their base is under it; metadata requests get their base.
+  // No counted members: upstream bytes and metadata get their bases. The metadata bases are one
+  // uv member's two PyPI reads, each a full response (L11, #383), so they sit above the floor.
   const none = researchShares(NO_UNITS);
   expect(none.upstream.maxTotalBytes).toBe(upstreamBase);
   // One member gets the base and one rate.
   expect(researchShares(ONE_UNITS).upstream.maxTotalBytes).toBe(upstreamBase + upstreamRate);
-  expect(byteBase).toBeLessThan(response);
-  expect(none.signals.readers.metadata).toEqual({ maxRequests: 16, maxTotalBytes: response });
+  expect(requestBase).toBe(2);
+  expect(byteBase).toBe(2 * response);
+  expect(none.signals.readers.metadata).toEqual({ maxRequests: 2, maxTotalBytes: 2 * response });
   // Additions and removals alone add no upstream bytes.
   expect(researchShares({ ...NO_UNITS, added: 5, removed: 5 }).upstream.maxTotalBytes).toBe(
     none.upstream.maxTotalBytes,
   );
   // 30 uv members, 15 direct and 15 transitive: the base plus 750,000 × 30 upstream bytes; metadata
-  // 16 + 2.5 × 30 = 91 requests and 524,288 + 70,000 × 30 bytes.
+  // 2 + 2.5 × 30 = 77 requests and 2,097,152 + 70,000 × 30 bytes.
   const uv30 = researchShares(UV30_UNITS);
   expect(uv30.upstream.maxTotalBytes).toBe(52_908_704);
   expect(uv30.upstream.maxTotalBytes).toBe(upstreamBase + upstreamRate * 30);
   expect(uv30.signals.readers.metadata).toEqual({
-    maxRequests: 91,
-    maxTotalBytes: 2_624_288,
+    maxRequests: 77,
+    maxTotalBytes: 4_197_152,
   });
   expect(uv30.signals.readers.metadata.maxRequests).toBe(requestBase + requestRate * 30);
   // Metadata reads scale with uv members only: npm members leave the share at its base.
@@ -258,10 +260,11 @@ test('the upstream byte and PyPI metadata shares grow with uv members up to thei
   );
   expect(researchShares(uv(underUpstream + 1)).upstream.maxTotalBytes).toBe(upstream.maxTotalBytes);
   expect(researchShares(uv(changes)).upstream.maxTotalBytes).toBe(upstream.maxTotalBytes);
-  // Metadata requests: 16 + 2.5 × 96 reaches the ceiling of 256 exactly; 95 members stay under.
-  const toCeiling = (metadata.maxRequests - requestBase) / requestRate;
-  expect(toCeiling).toBe(96);
-  expect(researchShares(uv(toCeiling - 1)).signals.readers.metadata.maxRequests).toBe(254);
+  // Metadata requests: 2 + 2.5 × 101 = 254.5 stays under the ceiling of 256; 102 members pass it
+  // and are capped there.
+  const toCeiling = Math.ceil((metadata.maxRequests - requestBase) / requestRate);
+  expect(toCeiling).toBe(102);
+  expect(researchShares(uv(toCeiling - 1)).signals.readers.metadata.maxRequests).toBe(255);
   expect(researchShares(uv(toCeiling)).signals.readers.metadata.maxRequests).toBe(256);
   expect(researchShares(uv(changes)).signals.readers.metadata.maxRequests).toBe(256);
   // Metadata bytes reach their ceiling exactly at the packet's change limit.

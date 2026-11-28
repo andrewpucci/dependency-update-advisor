@@ -811,10 +811,10 @@ const UV_MEASURE = {
     "four uv Dependabot PRs with 29–34 uv members each, from one of the maintainer's own projects (#462 measurement comment); approved by the maintainer on 2026-11-27, #467",
   measured: '2026-11-27',
 } as const;
-/** A base kept from the former flat share: it has no basis of its own yet. */
-const UV_KEPT_BASE = {
-  note: 'the former flat share, kept as the base for a change with no uv members (approved by the maintainer on 2026-11-27, #467); the eligible rate adds the per-member demand. Awaiting L8 measurement (#380)',
-} as const;
+/** PyPI metadata reads one uv member makes, base and head (src/evidence/upstream.ts:839-842). */
+const METADATA_READS_PER_MEMBER = 2;
+const METADATA_READS_TEST =
+  'src/research.test.ts > a one-member uv change makes exactly the metadata request base of PyPI reads';
 const UV_ZERO = {
   role: {
     statistic: FIT_ZERO_STATISTIC.role,
@@ -828,14 +828,14 @@ const UV_ZERO = {
 } as const;
 
 type SizedValue = Readonly<{ value: number; basis: Omit<MeasuredBasis, keyof typeof UV_MEASURE> }>;
-/** A sized base is measured, derived from other entries, or a kept value marked `unjustified`. */
+/** A sized base is measured or derived from other entries. */
 type SizedBase =
   | SizedValue
-  | Readonly<{ value: number; basis: Readonly<{ note: string }> }>
   | Readonly<{
       inputs: readonly string[];
       formula: (...values: number[]) => number;
       description: string;
+      structuralTest?: string;
     }>;
 type SizedShare = Readonly<{
   base: SizedBase;
@@ -871,7 +871,13 @@ const UV_SIZED: Readonly<Partial<Record<`${ScaledShare}.${ShareDimension}`, Size
     zero: UV_ZERO.role,
   },
   'signals.metadata.requests': {
-    base: { value: 16, basis: UV_KEPT_BASE },
+    base: {
+      inputs: [],
+      formula: () => METADATA_READS_PER_MEMBER,
+      description:
+        "The PyPI reads one uv member makes: its base and head metadata reads (src/evidence/upstream.ts:839-842), which the signals stage shares through the run's cache, so a one-member change can always finish its metadata reads, the rule the upstream byte base uses (#467). A change with no uv members makes none. Approved by the maintainer on 2026-11-27 (L11, #383).",
+      structuralTest: METADATA_READS_TEST,
+    },
     rates: {
       eligible: {
         value: 2.5,
@@ -885,7 +891,12 @@ const UV_SIZED: Readonly<Partial<Record<`${ScaledShare}.${ShareDimension}`, Size
     zero: UV_ZERO.signals,
   },
   'signals.metadata.bytes': {
-    base: { value: 0.5 * MiB, basis: UV_KEPT_BASE },
+    base: {
+      inputs: ['evidence.envelope.maxResponseBytes'],
+      formula: (response) => METADATA_READS_PER_MEMBER * response,
+      description:
+        "The bytes of one uv member's PyPI reads, its base and head metadata reads (src/evidence/upstream.ts:839-842), each a full response at limit:evidence.envelope.maxResponseBytes: 2 × 1,048,576 = 2,097,152, so a one-member change can always finish its metadata reads, the rule the upstream byte base uses (#467). Approved by the maintainer on 2026-11-27 (L11, #383).",
+    },
     rates: {
       eligible: {
         value: 70_000,
@@ -938,17 +949,19 @@ const rateAudit = (share: ScaledShare, dimension: ShareDimension, unit: ShareUni
     'Adds rate times the count to the share, rounded up and capped at the ceiling; zero leaves the share at its base.',
 });
 
-/** A sized base as its register entry: derived, kept (`unjustified`), or measured. */
+/** A sized base as its register entry: derived or measured. */
 function sizedBase<const Id extends string>(
   id: Id,
   base: SizedBase,
   unit: LimitUnit,
   audit: FittedAudit,
 ): LimitDefinition & { id: Id } {
-  if ('inputs' in base)
-    return derived(id, unit, base.inputs, base.formula, base.description, audit);
-  if ('note' in base.basis)
-    return unjustified(id, base.value, unit, { ...audit, note: base.basis.note });
+  if ('inputs' in base) {
+    const entry = derived(id, unit, base.inputs, base.formula, base.description, audit);
+    return base.structuralTest === undefined
+      ? entry
+      : { ...entry, basis: { ...entry.basis, structuralTest: base.structuralTest } };
+  }
   return fitted(id, base.value, unit, { ...UV_MEASURE, ...base.basis }, audit);
 }
 
@@ -2345,7 +2358,7 @@ const DEFINITIONS = [
       'packet.changes',
     ],
     (base, rate, changes) => base + rate * changes,
-    'The largest share the metadata byte formula gives: its base plus its eligible rate for limit:packet.changes uv members, 524,288 + 70,000 × 128 = 9,484,288 bytes. Approved by the maintainer on 2026-11-27, #467.',
+    'The largest share the metadata byte formula gives: its base plus its eligible rate for limit:packet.changes uv members, 2,097,152 + 70,000 × 128 = 11,057,152 bytes. Approved by the maintainer on 2026-11-27, #467; the base derived from the response cap on 2026-11-27 (L11, #383).',
     {
       protects:
         'Caps PyPI metadata response bytes, the ceiling of the per-member metadata byte share, so they cannot exhaust runner memory.',
@@ -2955,7 +2968,7 @@ const DEFINITIONS = [
     'bytes',
     ['research.cache.maxTotalBytes'],
     copy,
-    "A research reader may keep what research may read: the registry, upstream, advisory, and signals byte shares that bound the run's research cache. That is about 102 MB of raw cached bodies; parsed copies and V8 object overhead make the worst-case heap a few hundred MB to about 1 GB, still within the default Node heap on the smallest standard GitHub-hosted Linux runner (2 CPUs and 8 GB for private repositories, https://docs.github.com/en/actions/reference/runners/github-hosted-runners, checked 2026-11-27). Approved by the maintainer on 2026-11-27, #467.",
+    "A research reader may keep what research may read: the registry, upstream, advisory, and signals byte shares that bound the run's research cache. That is about 104 MB of raw cached bodies; parsed copies and V8 object overhead make the worst-case heap a few hundred MB to about 1 GB, still within the default Node heap on the smallest standard GitHub-hosted Linux runner (2 CPUs and 8 GB for private repositories, https://docs.github.com/en/actions/reference/runners/github-hosted-runners, checked 2026-11-27). Approved by the maintainer on 2026-11-27, #467.",
     {
       protects:
         'Bytes a research stage keeps from untrusted responses are bounded, so retained evidence cannot exhaust memory.',

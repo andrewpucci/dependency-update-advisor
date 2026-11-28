@@ -1057,6 +1057,14 @@ register entry; this section cites ids only.
    the formula gives.
 4. **Floor.** The byte base is below the per-response cap, so under A1.5 a
    change with few uv members gets one full response.
+   - Amended (L11; approved by the maintainer on 2026-11-27,
+     [#383](https://github.com/andrewpucci/dependency-update-advisor/issues/383)):
+     the bases are `derived` from one uv member's reads, its base and head
+     metadata reads. The request base is those 2 reads, pinned by a
+     structural test. The byte base is 2 ×
+     `limit:evidence.envelope.maxResponseBytes`, so it sits above the floor,
+     and a one-member change can always finish its metadata reads. This
+     replaces the kept flat-share bases of item 2.
 5. **Measurement.** Under F4, a demand run scales the bases and rates, and
    so the byte ceiling. The request ceiling depends only on
    `limit:packet.changes`, so it stays unscaled; no change can need more.

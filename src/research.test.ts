@@ -455,11 +455,11 @@ test('caps every reader at its share, so the readers together stay inside the en
     expect(share.maxTotalBytes, name).toBeLessThanOrEqual(ceiling.maxTotalBytes);
   }
   // The upstream byte share and the PyPI metadata share scale with members (#467): upstream
-  // bytes are the 29-response base plus 750,000 × 4 members, and the metadata share for its one uv member is 16 + 2.5
-  // requests, rounded up, and 524,288 + 70,000 bytes, raised to the one-response floor. Every
-  // other byte share stays at its ceiling.
+  // bytes are the 29-response base plus 750,000 × 4 members, and the metadata share for its one uv member is 2 + 2.5
+  // requests, rounded up, and 2 × 1 MiB + 70,000 bytes: its base is that member's two PyPI reads
+  // (L11, #383). Every other byte share stays at its ceiling.
   expect(shares.upstream.maxTotalBytes).toBe(33_408_704);
-  expect(computed.metadata).toEqual({ maxRequests: 19, maxTotalBytes: MiB });
+  expect(computed.metadata).toEqual({ maxRequests: 5, maxTotalBytes: 2 * MiB + 70_000 });
   for (const [name, , share, ceiling] of expected)
     if (!['S2 upstream', 'metadata'].includes(name))
       expect(share.maxTotalBytes, name).toBe(ceiling.maxTotalBytes);
@@ -1100,6 +1100,30 @@ test('a one-member uv change whose upstream reads pass one response completes up
   const [member] = result.packet.changes.filter((c) => !('basis' in c));
   expect(member?.evidence.upstream).toMatchObject({ status: 'available', reasons: [] });
   expect(JSON.stringify(result.upstreamAttempts)).not.toContain('budget');
+});
+
+test('a one-member uv change makes exactly the metadata request base of PyPI reads', async () => {
+  // Its base and head metadata reads (src/evidence/upstream.ts), shared by upstream and signals
+  // through the run cache: the structural count the metadata request base is (L11, #383).
+  const { fixture, packet } = await scenario({ uvOnly: true });
+  const members = packet.changes.filter((c) => !('basis' in c));
+  expect(members.map((c) => c.ecosystem)).toEqual(['uv']);
+  let pypi = 0;
+  const result = await runResearch({
+    ...base(fixture, packet),
+    fetch: async (url, init) => {
+      if (new URL(url).host === 'pypi.org') pypi++;
+      return fixture.fetch(url, init);
+    },
+  });
+  if (result.kind !== 'ready') throw new Error(result.kind);
+  expect(pypi).toBe(limit('research.share.signals.metadata.requests.base'));
+  expect(pypi).toBe(2);
+  expect(result.unavailable).toEqual([]);
+  // Both reads fit the byte base, each at most one response at the cap.
+  expect(limit('research.share.signals.metadata.bytes.base')).toBe(
+    pypi * limit('evidence.envelope.maxResponseBytes'),
+  );
 });
 
 const PLACEHOLDER = { status: 'unavailable', reasons: ['missing'], sourceIds: [] };
