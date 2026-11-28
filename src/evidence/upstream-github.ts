@@ -2,6 +2,7 @@ import { createHash } from 'node:crypto';
 import { isPlainObject, isEvidencePath } from './common.js';
 import { readToml } from './uv-toml.js';
 import {
+  byteWork,
   requireUpstream,
   upstreamCopy,
   upstreamText,
@@ -143,7 +144,7 @@ export async function immutableContents(
     path: fullPath,
   });
   const bytes = decodedContents(data);
-  reader.spend(bytes.byteLength);
+  reader.spend(byteWork(bytes.byteLength));
   requireUpstream(bytes.byteLength <= reader.limits.maxResponseBytes, 'budget');
   verifyContents(data, bytes);
   return bytes;

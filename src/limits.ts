@@ -5086,7 +5086,7 @@ const DEFINITIONS = [
       'runner.parseExponentResearchWorkUnit',
     ],
     harmPoint,
-    `The CPU harm point of the research work counter (harmPoint in src/limits.ts): the count at which the slowest run, with the allowance of #467 for a runner 10 times slower, takes a quarter of limit:evidence.envelope.totalTimeoutMs, on the cost curve through the largest count the probe timed, limit:runner.parseCountResearchWorkUnit units at limit:runner.parseMsPerResearchWorkUnit each, growing as the count to the power limit:runner.parseExponentResearchWorkUnit: count × (deadline ÷ 4 ÷ 10 ÷ (cost × count))^(1/exponent), rounded down, so 1,398,102 × (6,000 ÷ 2,269.1)^(1/1.11) = 3,357,250 at the defaults, 2.40 times the largest count timed. It follows the evidence deadline setting. The largest legitimate use is still not recorded (a reader's work sums copied entries, decoded manifest bytes, reused cached bytes and scanned releases, and the #462 measurement recorded entries, not work; npm run measure:demand with the work reported would give it); the earlier 5,000,000 was above the harm point. A count cap of work enlarges no parsed structure: the responses' bytes and limit:research.maxRetainedBytes bound what is parsed and kept. ${L11_HARM_APPROVAL}.`,
+    `The CPU harm point of the research work counter (harmPoint in src/limits.ts): the count at which the slowest run, with the allowance of #467 for a runner 10 times slower, takes a quarter of limit:evidence.envelope.totalTimeoutMs, on the cost curve through the largest count the probe timed, limit:runner.parseCountResearchWorkUnit units at limit:runner.parseMsPerResearchWorkUnit each, growing as the count to the power limit:runner.parseExponentResearchWorkUnit: count × (deadline ÷ 4 ÷ 10 ÷ (cost × count))^(1/exponent), rounded down, so 1,398,102 × (6,000 ÷ 2,269.1)^(1/1.11) = 3,357,250 at the defaults, 2.40 times the largest count timed. It follows the evidence deadline setting. A reader spends one unit per copied entry and per scanned release, and decoded manifest bytes and reused cached bytes at limit:research.byteWorkWeight a byte, so the cap is CPU in copied-entry units. The largest legitimate use is still not recorded (a reader's work sums those charges, and the #462 measurement recorded entries, not work; npm run measure:demand with the work reported would give it); the earlier 5,000,000 was above the harm point. A count cap of work enlarges no parsed structure: the responses' bytes and limit:research.maxRetainedBytes bound what is parsed and kept. ${L11_HARM_APPROVAL}.`,
     {
       protects:
         'The work a research reader does on untrusted data is bounded, so one stage cannot consume unbounded CPU (CPU).',
@@ -5116,6 +5116,38 @@ const DEFINITIONS = [
       exponent: 1.11,
       spread: '1.67 times',
       extrapolation: '2.40',
+    },
+  ),
+  {
+    id: 'runner.parseMsPerResearchByte',
+    value: 0.00001056,
+    unit: 'milliseconds',
+    protects:
+      'Records the CPU time one decoded manifest byte costs a research reader, so limit:research.maxWork can charge byte work at what it costs, not at the price of a copied entry.',
+    basis: {
+      kind: 'measured',
+      command: 'npm run probe:parse-cost -- harm research-bytes',
+      corpus:
+        'contents responses whose base64 text, wrapped at 60 characters as GitHub writes it, decodes to sizes halving down from the most a response at limit:evidence.envelope.maxResponseBytes carries (49,152 to 786,432 bytes), decoded, checked and hashed by the reader (decodedContents and verifyContents in src/evidence/upstream-github.ts); crafted inputs, never a recorded file, on Node 24.22.3 (V8 13.6). Fixture: tests/probe-parse-cost/fixtures/harm.json holds the combined timings',
+      statistic: `Per decoded byte at the largest size: 8.3 ms for 786,432 bytes, ${HARM_FIT_RULE}. Over the series the slowest run takes 0.8, 1.0, 2.1, 4.1 and 8.3 ms, which grows no faster than the bytes (a fit of 0.87, taken as 1), and the invocations differed by up to 1.56 times. A reused cached response is charged per byte too, but its reuse returns the frozen cached value and does no per-byte work, so this cost overstates it`,
+      ...HARM_FIT_BASIS,
+    },
+    effect:
+      'Not enforced. limit:research.byteWorkWeight divides it by the cost of a copied entry; a larger cost charges byte work more.',
+    test: 'src/limits.test.ts > the harm fits recompute from the recorded probe timings',
+  },
+  derived(
+    'research.byteWorkWeight',
+    'count',
+    ['runner.parseMsPerResearchByte', 'runner.parseMsPerResearchWorkUnit'],
+    (byteMs, entryMs) => byteMs / entryMs,
+    'The work units one decoded manifest byte or reused cached byte costs in limit:research.maxWork: its measured CPU cost, limit:runner.parseMsPerResearchByte, over that of a copied entry, limit:runner.parseMsPerResearchWorkUnit, so the work cap measures CPU whatever mix of entries and bytes a reader spends. The reader charges ⌈bytes × weight⌉ (byteWork in src/evidence/upstream-read.ts). Charged one unit a byte, as before, a run that decoded more than about 3.4 MB of manifests stopped with budget although the upstream byte share is limit:evidence.allocation.upstream.maxTotalBytes; at this weight the whole share costs a fraction of the cap. Approved by the maintainer on 2026-11-28 (L11, follow-up to Q8(a), #383).',
+    {
+      protects:
+        'Prices byte work at its measured CPU cost, so decoding legitimate manifests cannot exhaust the work cap meant for parse work.',
+      effect:
+        'Each decoded manifest and each reused cached response spends ⌈bytes × weight⌉ work units; spending past limit:research.maxWork stops the reader with budget.',
+      test: 'src/limits.test.ts > research byte work is charged at its measured weight and the upstream share fits the work cap',
     },
   ),
   {

@@ -2,7 +2,7 @@ import { readFileSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import { expect, test } from 'vite-plus/test';
 import { PACKET_LIMITS } from './schema.js';
-import { COMPARE_PAGE_SIZES, RELEASE_PAGE_SIZES } from './evidence/upstream-read.js';
+import { COMPARE_PAGE_SIZES, RELEASE_PAGE_SIZES, byteWork } from './evidence/upstream-read.js';
 import { DISCOVERY_PAGE_SIZES } from './evidence/advisory-read.js';
 import {
   PENDING_AUDIT,
@@ -972,6 +972,23 @@ test('the harm fits recompute from the recorded probe timings', () => {
         command: `npm run probe:parse-cost -- harm ${counter}`,
       });
   }
+});
+
+test('research byte work is charged at its measured weight and the upstream share fits the work cap', () => {
+  const bytes = HARM_FIXTURE.counters['research-bytes'] ?? [];
+  const [manifest] = bytes.map(({ units, slowestMs }) =>
+    harmFit(units, slowestMs, HARM_FIXTURE.deadlineMs),
+  );
+  expect(limit('runner.parseMsPerResearchByte')).toBe(manifest?.msPerUnit);
+  expect(limit('research.byteWorkWeight')).toBe(
+    limit('runner.parseMsPerResearchByte') / limit('runner.parseMsPerResearchWorkUnit'),
+  );
+  expect(byteWork(0)).toBe(0);
+  expect(byteWork(1)).toBe(1);
+  expect(byteWork(1_000_000)).toBe(Math.ceil(1_000_000 * limit('research.byteWorkWeight')));
+  // Decoding the whole upstream byte share as manifests stays well inside the work cap.
+  const share = limit('evidence.allocation.upstream.maxTotalBytes');
+  expect(byteWork(share)).toBeLessThan(limit('research.maxWork') / 4);
 });
 
 test('each CPU harm cap is its harm point at every evidence deadline', () => {
