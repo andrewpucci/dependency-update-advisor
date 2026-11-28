@@ -74,7 +74,24 @@ type Run = {
   incomplete: Counts;
   disagreements: Counts;
   overUrlCap: Counts;
+  longest: Longest;
 };
+
+/**
+ * The URL lengths that ground the advisory URL cap and its cursor headroom (L11, Q12(a), #383):
+ * the longest URL GitHub answered 200, and the most bytes an `after` cursor added to a query's
+ * URL when appended as the reader appends it.
+ */
+type Longest = { acceptedUrlBytes: number; cursorHeadroomBytes: number };
+
+/** The bytes the reader's continuation adds to `url` for the cursor in GitHub's `next` link. */
+export function cursorHeadroom(url: string, next: string): number {
+  const cursor = new URL(next).searchParams.get('after');
+  if (cursor === null) return 0;
+  const continued = new URL(url);
+  continued.searchParams.set('after', cursor);
+  return continued.href.length - url.length;
+}
 
 function bump(counts: Counts, key: string, by = 1): void {
   if (by) counts[key] = (counts[key] ?? 0) + by;
@@ -147,6 +164,8 @@ async function query(run: Run, url: string): Promise<Query> {
     result.status = page.status;
     result.pages += 1;
     result.maxPageBytes = Math.max(result.maxPageBytes, page.bytes);
+    if (page.status === HTTP_STATUS.ok)
+      run.longest.acceptedUrlBytes = Math.max(run.longest.acceptedUrlBytes, next.length);
     if (page.status !== HTTP_STATUS.ok || !Array.isArray(page.data)) {
       result.complete = false;
       break;
@@ -160,6 +179,11 @@ async function query(run: Run, url: string): Promise<Query> {
       }
     }
     next = nextLink(page.link);
+    if (next)
+      run.longest.cursorHeadroomBytes = Math.max(
+        run.longest.cursorHeadroomBytes,
+        cursorHeadroom(url, next),
+      );
   }
   return result;
 }
@@ -706,6 +730,12 @@ export type ProbeReport = {
    * other failure of such a size is counted in `incomplete`.
    */
   overUrlCap: Counts;
+  /**
+   * The longest URL GitHub answered 200 (the source of `limit:advisory.discovery.urlBytes`) and
+   * the most bytes a returned `after` cursor added to its query's URL (the source of
+   * `limit:advisory.discovery.cursorHeadroomBytes`).
+   */
+  longest: Longest;
   probedAt: string;
   requests: number;
   inputTargets: number;
@@ -786,6 +816,7 @@ export async function runProbe(deps: ProbeDeps): Promise<ProbeReport> {
     incomplete: {},
     disagreements: {},
     overUrlCap: {},
+    longest: { acceptedUrlBytes: 0, cursorHeadroomBytes: 0 },
   };
   const report: ProbeReport = {
     verdict: 'incomplete',
@@ -793,6 +824,7 @@ export async function runProbe(deps: ProbeDeps): Promise<ProbeReport> {
     incomplete: run.incomplete,
     disagreements: run.disagreements,
     overUrlCap: run.overUrlCap,
+    longest: run.longest,
     probedAt: new Date().toISOString(),
     requests: 0,
     inputTargets: deps.input.targets.length,

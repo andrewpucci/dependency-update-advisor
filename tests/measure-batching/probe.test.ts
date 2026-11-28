@@ -798,7 +798,9 @@ test('a positive-last batch at the proposed maximum is sent and is the largest w
 });
 
 test('the batch at the proposed maximum must complete for the run to be complete', async () => {
-  // The proposed maximum is sent after the halving sizes; fail only a padded batch sent again.
+  // The proposed maximum is sent after the probed sizes; fail only a padded batch that is not one
+  // of them, or one sent again, so the result does not depend on where the URL cap falls.
+  const probed = new Set([MAX_BATCH + 1, MAX_BATCH, ...HALVED, 1]);
   const seen = new Set<string>();
   const fake = fakeGitHub({
     advisories: [...SEED_ADVISORIES, SEED_ADVISORY],
@@ -806,7 +808,7 @@ test('the batch at the proposed maximum must complete for the run to be complete
     status: (call) => {
       if (!call.affects.some((a) => FILLER.test(a)) || call.after) return undefined;
       const key = `${call.perPage} ${call.affects.join()}`;
-      if (seen.has(key)) return 502;
+      if (seen.has(key) || !probed.has(call.affects.length)) return 502;
       seen.add(key);
       return undefined;
     },
@@ -876,4 +878,22 @@ test('each sweep batch records its longest page URL, cursor included, and first 
     expect(smallest?.results[i].urlLength).toBe(Math.max(...pages.map((c) => c.urlLength)));
     expect(smallest?.results[i].urlLength).toBeGreaterThan(first?.urlLength ?? Infinity);
   });
+});
+
+test('the report records the longest accepted URL and the most bytes a cursor added', async () => {
+  const fake = fakeGitHub({
+    advisories: [...SEED_ADVISORIES, SEED_ADVISORY],
+    malwareSeed: SEED,
+    maxUrlLength: URL_CAP,
+  });
+  const report = await probe(fake);
+  const advisoryCalls = fake.calls.filter((c) => c.path === '/advisories');
+  const accepted = advisoryCalls.filter((c) => c.urlLength <= URL_CAP).map((c) => c.urlLength);
+  expect(report.longest.acceptedUrlBytes).toBe(Math.max(...accepted));
+  // The reader appends the cursor as one more query parameter.
+  const added = advisoryCalls
+    .filter((c) => c.after !== null)
+    .map((c) => `&${new URLSearchParams({ after: c.after! }).toString()}`.length);
+  expect(added.length).toBeGreaterThan(0);
+  expect(report.longest.cursorHeadroomBytes).toBe(Math.max(...added));
 });
