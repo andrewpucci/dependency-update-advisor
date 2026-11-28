@@ -1633,7 +1633,7 @@ const DEFINITIONS = [
 		protects: "Caps JSON properties and array elements across examined GitHub responses, so a hostile or very large response cannot make the reader walk unbounded structure (memory and CPU).",
 		effect: "Crossing the cumulative count throws budget and marks the session stopped, so the current read fails and later reads are refused.",
 		test: "src/github-read.test.ts > accepts exact cumulative JSON-entry boundary at %s",
-		note: "awaiting L8 measurement"
+		note: "stopped (L11, Q8(a), #383): the approved basis is safety, which merges only with its largest legitimate use and its harm. The harm is measured: as the session reads, parses and walks a response of empty arrays, the costliest of three shapes per entry, doubling around limit:w2.session.maxResponseBytes from 87,381 to 1,398,101 entries, the slowest of 5 runs takes 19.6 to 475.5 ms, each doubling multiplying it by 1.89, 2.08, 3.62 and 1.71 (npm run probe:parse-cost -- harm session, on 2026-11-28 under Node 24.22.3); the cost grows a little faster than the count, as the count to the power 1.21 fitted over the series, so on that curve, with the allowance of #467 for a runner 10 times slower, harm begins near 11.3 million entries, a quarter of limit:evidence.envelope.totalTimeoutMs. The largest legitimate use is not: the count is cumulative across every pull-request, file-list, commit, tree, blob and dependency-comparison response of the run, and their entries depend on the repository's trees and file lists, which no recorded response gives (the 20 recorded GitHub example responses, at most 498 entries each, cover none of these reads). It needs a live run over large repositories. Value unchanged"
 	}),
 	derived("w2.session.maxResponseBytes", "bytes", ["evidence.envelope.maxResponseBytes"], copy, "The session reader's response cap is the envelope's response cap.", {
 		protects: "Caps the streamed bytes of one GitHub response, error bodies included, so one PR-driven response cannot exhaust memory.",
@@ -1681,7 +1681,7 @@ const DEFINITIONS = [
 	unjustified("w2.npm.maxJsonEntries", 1e5, "count", {
 		protects: "Caps cumulative JSON entries across PR-controlled lockfiles, so many or wide objects cannot drive unbounded parse and walk work.",
 		effect: "Crossing the cumulative count throws budget, and the file yields a budget gap so inventory is not claimed complete.",
-		note: "awaiting L8 measurement",
+		note: "stopped (L11, Q8(a), #383): the approved basis is safety, and the check fails: legitimate use reaches the cap. The count is cumulative across the lockfiles and manifests of every changed root, base and head. The larger of the 2 recorded package-lock.json files, within limit:w2.npm.maxFileBytes, has 11,970 entries (npm run probe:parse-cost -- use, on 2026-11-28), so 5 such roots changed in one PR count 119,700, and limit:w2.npm.maxRoots (10) roots count 239,400. Harm, for the record: as the collector parses and counts a base and a head lockfile of empty objects, the costliest of three shapes per entry, doubling around limit:w2.npm.maxFileBytes from 83,332 to 1,333,332 entries, the slowest of 5 runs takes 16.6 to 598.7 ms, each doubling multiplying it by 3.10, 2.94, 1.75 and 2.27 (npm run probe:parse-cost -- harm npm, on 2026-11-28 under Node 24.22.3); the cost grows a little faster than the count, as the count to the power 1.27 fitted over the series, so on that curve, with the allowance of #467 for a runner 10 times slower, harm begins near 8.2 million entries, a quarter of limit:evidence.envelope.totalTimeoutMs. Value unchanged",
 		test: "src/evidence/npm.test.ts > the cumulative JSON entry cap admits exactly the registered count and refuses one more"
 	}),
 	configured("w2.npm.maxRoots", 10, "count", {
@@ -1722,7 +1722,7 @@ const DEFINITIONS = [
 		protects: "Caps YAML nodes per PR-controlled workflow, so a node-amplifying document cannot make composition unbounded (memory and CPU).",
 		effect: "Debiting past the cap throws budget and the workflow read is unavailable with reason budget.",
 		test: "src/evidence/actions-yaml.test.ts > counts cumulative nodes and UTF-8 bytes at exact boundaries and bounds deeply nested flow input before composition",
-		note: "awaiting L8 measurement"
+		note: "stopped (L11, Q8(a), #383): the approved basis is safety, and the check fails: legitimate use reaches the cap. The count is cumulative across every workflow read, base and head, and charges both the preflight and the composition. The largest of the 4 recorded large public workflows charges 3,565 nodes (npm run probe:parse-cost -- use, on 2026-11-28), so 15 such workflows in one PR count 106,950, and limit:w2.actions.maxWorkflows (20) count 142,600; a Dependabot Actions update changes every workflow that uses the action. Harm, for the record: as the reader parses, composes and reads a workflow doubling around limit:w2.actions.maxFileBytes from 124,994 to 1,999,994 nodes, the slowest of 5 runs takes 490 to 7,696 ms, each doubling multiplying it by 1.77, 1.80, 2.36 and 2.08, so the cost is linear in the count (npm run probe:parse-cost -- harm workflow-nodes, on 2026-11-28 under Node 24.22.3); from the largest, with the allowance of #467 for a runner 10 times slower, harm begins near 1.56 million nodes, a quarter of limit:evidence.envelope.totalTimeoutMs. Value unchanged"
 	}),
 	{
 		id: "w2.actions.maxYamlDepth",
@@ -1731,7 +1731,7 @@ const DEFINITIONS = [
 		protects: "Caps YAML nesting depth before composition, so deeply nested input cannot exhaust the recursion stack or CPU in the composer.",
 		basis: {
 			kind: "safety",
-			reason: "Largest legitimate use: a workflow nests about six levels (jobs.<id>.steps[].with.<input>); four large public workflows read on 2026-11-27 (microsoft/vscode pr.yml, nodejs/node test-linux.yml, pytorch/pytorch pull.yml, home-assistant/core ci.yaml) nest five or six. Harm: composition recurses at least once per level, and the yaml library overflows the call stack at about 1,024 levels of nested flow collections (measured on 2026-11-27 under Node 22). The cap is checked before composition and sits far between the two. Approved by the maintainer on 2026-11-27 (L11, #383)."
+			reason: "Largest legitimate use: a workflow nests about six levels (jobs.<id>.steps[].with.<input>); four large public workflows read on 2026-11-27 (microsoft/vscode pr.yml, nodejs/node test-linux.yml, pytorch/pytorch pull.yml, home-assistant/core ci.yaml) nest five or six. Harm: the parse and compose of the yaml library, with the options of this reader, overflow the call stack at 776 levels of nested flow sequences in a fresh process (npm run probe:json-depth -- overflow, yamlCompose, on 2026-11-28 under Node 24.22.3, the runtime of the action); the library reports the overflow as a document error, so the workflow would fail as malformed rather than crash. The cap is checked before composition and sits far between the two. Approved by the maintainer on 2026-11-27 (L11, #383)."
 		},
 		effect: "Exceeding the depth throws budget and the workflow read is unavailable with reason budget.",
 		test: "src/evidence/actions-yaml.test.ts > counts cumulative nodes and UTF-8 bytes at exact boundaries and bounds deeply nested flow input before composition"
@@ -1740,13 +1740,13 @@ const DEFINITIONS = [
 		protects: "Caps alias expansions in one YAML document, so anchors and aliases cannot amplify the composed graph beyond the node budget.",
 		effect: "The alias that exceeds the cap throws budget and the workflow read is unavailable with reason budget.",
 		test: "src/evidence/actions-yaml.test.ts > expands anchored jobs, steps and refs into independent consuming locations",
-		note: "awaiting L8 measurement"
+		note: "stopped (L11, Q8(a), #383): the approved basis is safety, and the check fails: legitimate use reaches the cap. The count is cumulative across every workflow read, base and head. The largest of the 4 recorded large public workflows expands 34 aliases (npm run probe:parse-cost -- use, on 2026-11-28), so 2 such workflows in one PR count 136, and limit:w2.actions.maxWorkflows (20) count 1,360. Harm, for the record: as the reader reads a workflow doubling around limit:w2.actions.maxFileBytes from 41,659 to 666,659 expansions, the slowest of 5 runs takes 304 to 5,066 ms, each doubling multiplying it by 1.90, 2.16, 2.26 and 1.79, so the cost is linear in the count (npm run probe:parse-cost -- harm workflow-aliases, on 2026-11-28 under Node 24.22.3); from the largest, with the allowance of #467 for a runner 10 times slower, harm begins near 784,000 expansions, a quarter of limit:evidence.envelope.totalTimeoutMs (a fit over the series gives the same); the composed nodes are also charged to limit:w2.actions.maxYamlNodes. Value unchanged"
 	}),
 	unjustified("w2.actions.maxOccurrences", 1e3, "count", {
 		protects: "Caps action-use occurrences across read workflows, so a workflow with unbounded uses entries cannot make identity parsing and retained output unbounded (memory and CPU).",
 		effect: "Debiting past the cap throws budget for that workflow read; the shared budget also accumulates across base and head files.",
 		test: "src/evidence/actions.test.ts > occurrence and alias budgets accumulate across base/head files",
-		note: "awaiting L8 measurement"
+		note: "stopped (L11, Q8(a), #383): the approved basis is safety, and the check fails: legitimate use reaches the cap. The count is cumulative across every workflow read, base and head. The largest of the 4 recorded large public workflows has 83 uses: entries (npm run probe:parse-cost -- use, on 2026-11-28), so 7 such workflows in one PR count 1,162, and limit:w2.actions.maxWorkflows (20) count 3,320. Harm, for the record: as the reader reads a workflow of uses: entries doubling around limit:w2.actions.maxFileBytes from 8,927 to 142,855 occurrences, the slowest of 5 runs takes 158 to 3,500 ms, each doubling multiplying it by 3.07, 1.67, 2.00 and 2.16, so the cost is linear in the count (npm run probe:parse-cost -- harm workflow-occurrences, on 2026-11-28 under Node 24.22.3); from the largest, with the allowance of #467 for a runner 10 times slower, harm begins near 237,000 occurrences, a quarter of limit:evidence.envelope.totalTimeoutMs, on a fit over the series. Value unchanged"
 	}),
 	retainedSetting("w2.actions.maxRetainedBytes", "limits.actionsRetainedBytes", 2e6, "bytes", {
 		protects: "Caps the serialized actions inventory bytes kept in memory.",
@@ -1774,7 +1774,7 @@ const DEFINITIONS = [
 		protects: "Caps cumulative TOML object properties and array elements across all uv files, so ignored fields cannot drive unbounded parse work.",
 		effect: "Debiting past the cap throws budget and the file yields a budget gap.",
 		test: "src/evidence/uv.test.ts > enforces exact/over %s through the real collector across both sides",
-		note: "awaiting L8 measurement"
+		note: "stopped (L11, Q8(a), #383): the approved basis is safety, and the check fails: legitimate use reaches the cap. The count is cumulative across the uv.lock and pyproject.toml files of every changed root, base and head. Of the 4 recorded public uv.lock files, the one within limit:w2.uv.maxFileBytes has 6,312 entries, and all 4 hold 102,123 entries in 5,042,143 bytes (npm run probe:parse-cost -- use, on 2026-11-28); so 8 roots like the first changed in one PR count 100,992, and limit:w2.uv.maxRoots (20) roots at the file cap and that average density would count about 405,000. Harm, for the record: as the reader parses and copies a file of inline tables, the costlier of two shapes per entry, doubling around limit:w2.uv.maxFileBytes from 41,666 to 666,666 entries, the slowest of 5 runs takes 55.6 to 1,196 ms, each doubling multiplying it by 1.66, 2.60, 2.64 and 1.88 (npm run probe:parse-cost -- harm toml, on 2026-11-28 under Node 24.22.3); the cost grows a little faster than the count, as the count to the power 1.16 fitted over the series, so on that curve, with the allowance of #467 for a runner 10 times slower, harm begins near 2.7 million entries, a quarter of limit:evidence.envelope.totalTimeoutMs. Value unchanged"
 	}),
 	derived("w2.uv.maxPackages", "count", [
 		"w2.uv.maxRoots",
@@ -1861,7 +1861,7 @@ const DEFINITIONS = [
 		protects: "Caps structural inspection and proof-search steps in the npm and uv graph stages, so PR-controlled dependency graphs cannot drive unbounded CPU time.",
 		effect: "Exhaustion throws budget: the uv graph result is unavailable with reason budget, while the uv core inventory with budget observations is kept at the minimum passing work; npm proofs past the cut are truncated with budget reasons.",
 		test: "src/evidence/uv-paths.test.ts > optional proof-work exhaustion retains the entire usable inventory and an explicit limit",
-		note: "awaiting L8 measurement"
+		note: "stopped (L11, Q8(a), #383): the approved basis is safety, which merges only with its largest legitimate use and its harm, and the largest legitimate use is not established. The probe's locks are synthetic: with one member changed, a lock in uv's format needs 398,072 units at 290 packages and 1,477,888 at 582 when each package depends on the next, and 656,604 at 234 packages and 2,527,674 at 469 when the project depends on every package (npm run probe:parse-cost -- harm graph-uv, on 2026-11-28 under Node 24.22.3), so the uv work grows faster than the package count, but a real lock is a shallow graph, not a chain or a star, and these figures do not say what one needs. Of the 4 recorded public uv.lock files (up to 1,009 packages, npm run probe:parse-cost -- use, on 2026-11-28), only 1, of 97 packages, is within limit:w2.uv.maxFileBytes, and it gives no work figure: no manifest was recorded with it, and against one rebuilt from the lock the stage reports a declaration conflict and unsupported entries and reads no change. It needs a live run over real uv PRs, each lock with its pyproject.toml, base and head. The npm stage needs 71,471 and 81,389 units for the two shapes at limit:w2.npm.maxFileBytes (2,096 and 2,255 packages). Harm, for the record: the npm stage is the costlier per unit; on chain lockfiles doubling around limit:w2.npm.maxFileBytes from 18,125 to 283,087 units, the slowest of 5 runs takes 14.9 to 369.1 ms, each doubling multiplying it by 2.40, 2.00, 1.85 and 2.80 (npm run probe:parse-cost -- harm graph-npm, on 2026-11-28 under Node 24.22.3); the cost grows a little faster than the count, as the count to the power 1.13 fitted over the series, so on that curve, with the allowance of #467 for a runner 10 times slower, harm begins near 3.4 million units, a quarter of limit:evidence.envelope.totalTimeoutMs. Value unchanged"
 	}),
 	retainedSetting("w2.graph.maxRetainedBytes", "limits.graphRetainedBytes", 2e6, "bytes", {
 		protects: "Caps serialized bytes of the graph stage's input and output, so inventories and proofs cannot grow retained memory without bound.",
@@ -1886,7 +1886,7 @@ const DEFINITIONS = [
 	unjustified("w2.registry.maxJsonEntries", 1e5, "count", {
 		protects: "Caps cumulative JSON entries in registry documents, so a very large registry document cannot drive unbounded parse work.",
 		effect: "Crossing the cap throws budget and the read is unavailable with reason budget.",
-		note: "awaiting L8 measurement",
+		note: "stopped (L11, Q8(a), #383): the approved basis is safety, and the check fails: legitimate use reaches the cap. The count is cumulative across the registry documents of the run. The 4,251 recorded npm version documents hold 477,274 entries in 15,021,998 bytes, and the largest 4,248 (npm run probe:parse-cost -- use, on 2026-11-28); a run that spends limit:w2.registry.maxTotalBytes on documents of that average density counts about 133,260 entries, and 24 documents the size of the largest pass the cap. Harm, for the record: as the reader parses and walks a document of empty objects, the costliest of three shapes per entry, doubling around limit:w2.registry.maxResponseBytes from 87,381 to 1,398,101 entries, the slowest of 5 runs takes 18.5 to 471.3 ms, each doubling multiplying it by 2.25, 1.34, 4.81 and 1.76 (npm run probe:parse-cost -- harm registry, on 2026-11-28 under Node 24.22.3); the cost grows a little faster than the count, as the count to the power 1.20 fitted over the series, so on that curve, with the allowance of #467 for a runner 10 times slower, harm begins near 11.6 million entries, a quarter of limit:evidence.envelope.totalTimeoutMs. Value unchanged",
 		test: "src/evidence/npm-registry.test.ts > registry JSON entries at the cap parse and one more entry is a budget failure"
 	}),
 	{
@@ -2079,12 +2079,18 @@ const DEFINITIONS = [
 		test: "src/dependabot-roots.test.ts > accepts values exactly at each limit",
 		note: "stopped (L11, card, #383): the approved basis is safety, which needs the cap above the largest legitimate config. It is not: among the largest dependabot.yml files GitHub code search returned on 2026-11-28 (14 files above 40,000 bytes, of which 8 are Dependabot version-2 configs), 3 configs are 68,918, 71,729 and 82,528 bytes (14, 4 and 200 update entries), and each fails here with budget today. No document gives a Dependabot file size limit, and no larger value has an approved basis. Value unchanged"
 	}),
-	unjustified("dependabot.maxYamlNodes", 2e4, "count", {
+	{
+		id: "dependabot.maxYamlNodes",
+		value: 2e4,
+		unit: "count",
 		protects: "The count of YAML nodes is capped before composition, so untrusted config cannot force unbounded parser work.",
+		basis: {
+			kind: "safety",
+			reason: "Largest legitimate use: among the largest dependabot.yml files GitHub code search returned on 2026-11-28 (14 files above 40,000 bytes, of which 8 are Dependabot version-2 configs), the most nodes the preflight counts is 5,353, and the most the composition charges to its own budget at the same cap is 3,348 (npm run probe:parse-cost -- use, over those files, on 2026-11-28; of the 14, the reader refuses 7, 4 as malformed, 2 at limit:dependabot.maxYamlDepth and 1 for its npm roots, and the counts are taken with the caps lifted). Harm: CPU. As the reader parses, preflights, composes and expands a config at limit:dependabot.maxFileBytes and at doublings up to 16 times it, from 8,185 to 524,281 preflight nodes, the slowest of 5 runs takes 75.5 to 3,546 ms, each doubling multiplying it by 1.53, 1.74, 2.21, 1.79, 2.16 and 2.06, so the cost is linear in the count (npm run probe:parse-cost -- harm dependabot-nodes, on 2026-11-28 under Node 24.22.3, the runtime of the action); from the largest, with the allowance of #467 for a runner 10 times slower, harm begins near 887,000 nodes, where one config would spend a quarter of limit:evidence.envelope.totalTimeoutMs on its parse alone; the 60-second quarter of limit:evidence.envelope.totalTimeoutMs is a borrowed CPU yardstick here, since parseDependabotRoots runs in the snapshot, outside that deadline. The parse is transient: the reader returns only the sorted root lists. The cap sits between the two. Approved by the maintainer on 2026-11-27 (L11, card and Q8(a), #383)."
+		},
 		effect: "Exceeding 20,000 nodes fails the whole file with budget, and no roots are read.",
-		note: "stopped (L11, card and Q8(a), #383): the approved basis is safety, which merges only with its largest legitimate use and its harm. The largest legitimate use is recorded: among the largest dependabot.yml files GitHub code search returned on 2026-11-28 (14 files above 40,000 bytes, of which 8 are Dependabot version-2 configs), the most structural nodes the preflight counts is 5,353; the composed document is charged to its own budget at the same cap. The harm point is not: no bench of YAML composition cost per node exists for this parser (w2.actions.maxYamlNodes waits on the same bench). Value unchanged",
 		test: "src/dependabot-roots.test.ts > the YAML node cap admits exactly the registered node count and refuses one node more"
-	}),
+	},
 	{
 		id: "dependabot.maxYamlDepth",
 		value: 16,
@@ -2097,23 +2103,35 @@ const DEFINITIONS = [
 		effect: "Nesting deeper than 16 fails the whole file with budget, and no roots are read.",
 		test: "src/dependabot-roots.test.ts > reports exceeding the limit on %s as budget"
 	},
-	derived("dependabot.maxAliasExpansions", "count", ["w2.actions.maxAliasExpansions"], copy, "Dependabot's documentation says nothing on YAML anchors, and Dependabot's own parser change to accept them (dependabot-core PR #9653) was still open when checked on 2026-11-28, so whether GitHub accepts them is in doubt; refusing every alias could then reject a legitimate config. The same parser and expansion read workflow files, so the cap copies limit:w2.actions.maxAliasExpansions, and the composed document, aliases expanded, is charged to a node budget of its own at limit:dependabot.maxYamlNodes, so an expansion cannot pass the node cap. The copied entry is itself still unjustified (its Q8 check is pending), so this cap inherits that gap: it is grounded only once limit:w2.actions.maxAliasExpansions is. Approved by the maintainer on 2026-11-27 (L11, D11 and Q23(b), #383).", {
+	derived("dependabot.maxAliasExpansions", "count", ["w2.actions.maxAliasExpansions"], copy, "Dependabot's documentation says nothing on YAML anchors, and Dependabot's own parser change to accept them (dependabot-core PR #9653) was still open when checked on 2026-11-28, so whether GitHub accepts them is in doubt; refusing every alias could then reject a legitimate config. The same parser and expansion read workflow files, so the cap copies limit:w2.actions.maxAliasExpansions, and the composed document, aliases expanded, is charged to a node budget of its own at limit:dependabot.maxYamlNodes, so an expansion cannot pass the node cap. The copied entry is itself still unjustified (its Q8 check stopped: legitimate workflow use reaches it), so this cap inherits that gap: it is grounded only once limit:w2.actions.maxAliasExpansions is. Approved by the maintainer on 2026-11-27 (L11, D11 and Q23(b), #383).", {
 		protects: "Caps alias expansions in the Dependabot config, so anchors and aliases cannot amplify the composed document beyond the node budget.",
 		effect: "The alias that exceeds the cap fails the whole file with budget, and no roots are read. A merge through an alias (<<: *name) fails it as unsupported; a literal << key, like any key the reader does not use, is ignored.",
 		test: "src/dependabot-roots.test.ts > expands aliases up to the alias cap and refuses one more"
 	}),
-	unjustified("dependabot.maxUpdates", 256, "count", {
+	{
+		id: "dependabot.maxUpdates",
+		value: 256,
+		unit: "count",
 		protects: "Each update entry is a Dependabot job definition, and the count is capped so the root scan stays bounded.",
+		basis: {
+			kind: "safety",
+			reason: "Largest legitimate use: among the largest dependabot.yml files GitHub code search returned on 2026-11-28 (14 files above 40,000 bytes, of which 8 are Dependabot version-2 configs), the most update entries in the updates list the reader composes is 200 (npm run probe:parse-cost -- use, over those files, on 2026-11-28; of the 14, the reader refuses 7, 4 as malformed, 2 at limit:dependabot.maxYamlDepth and 1 for its npm roots, and the counts are taken with the caps lifted), in an 82,528-byte config that limit:dependabot.maxFileBytes refuses today. Harm: CPU. As the reader parses and reads a config at limit:dependabot.maxFileBytes and at doublings up to 16 times it, from 419 to 26,885 npm update entries, the slowest of 5 runs takes 33.9 to 943.8 ms, each doubling multiplying it by 1.10, 1.68, 2.10, 1.72, 2.05 and 2.04, so the cost is linear in the count (npm run probe:parse-cost -- harm dependabot-updates, on 2026-11-28 under Node 24.22.3, the runtime of the action); from the largest, with the allowance of #467 for a runner 10 times slower, harm begins near 171,000 entries, where one config would spend a quarter of limit:evidence.envelope.totalTimeoutMs on its parse alone; the 60-second quarter of limit:evidence.envelope.totalTimeoutMs is a borrowed CPU yardstick here, since parseDependabotRoots runs in the snapshot, outside that deadline. The cap sits between the two. Approved by the maintainer on 2026-11-27 (L11, card and Q8(a), #383)."
+		},
 		effect: "More than 256 update entries fail the whole file with budget before any entry is read.",
-		test: "src/dependabot-roots.test.ts > accepts values exactly at each limit",
-		note: "stopped (L11, card, #383): the approved basis is safety. The largest legitimate use is recorded: among the largest dependabot.yml files GitHub code search returned on 2026-11-28 (14 files above 40,000 bytes, of which 8 are Dependabot version-2 configs), the most update entries is 200, in an 82,528-byte config that limit:dependabot.maxFileBytes already refuses. No harm point is recorded: an entry is read by a fixed loop over a list the byte and node caps already bound, and no bench shows a count where the loop harms memory or CPU. Value unchanged"
-	}),
-	unjustified("dependabot.maxRoots", 256, "count", {
+		test: "src/dependabot-roots.test.ts > accepts values exactly at each limit"
+	},
+	{
+		id: "dependabot.maxRoots",
+		value: 256,
+		unit: "count",
 		protects: "Distinct roots per ecosystem are capped, so the root list handed to collectors stays bounded.",
+		basis: {
+			kind: "safety",
+			reason: "Largest legitimate use: among the largest dependabot.yml files GitHub code search returned on 2026-11-28 (14 files above 40,000 bytes, of which 8 are Dependabot version-2 configs), the most distinct npm roots in one config is 207 and the most uv roots 1 (npm run probe:parse-cost -- use, over those files, on 2026-11-28; of the 14, the reader refuses 7, 4 as malformed, 2 at limit:dependabot.maxYamlDepth and 1 for its npm roots, and the counts are taken with the caps lifted); a longer list for an ecosystem this reader ignores is never counted. Harm: CPU. As the reader parses and reads a config at limit:dependabot.maxFileBytes and at doublings up to 16 times it, from 3,530 to 182,750 distinct npm directories, the slowest of 5 runs takes 33.3 to 1,516 ms, each doubling multiplying it by 1.51, 2.04, 2.03, 1.98, 1.98 and 1.86, so the cost is linear in the count (npm run probe:parse-cost -- harm dependabot-roots, on 2026-11-28 under Node 24.22.3, the runtime of the action); from the largest, with the allowance of #467 for a runner 10 times slower, harm begins near 723,000 roots, where one config would spend a quarter of limit:evidence.envelope.totalTimeoutMs on its parse alone; the 60-second quarter of limit:evidence.envelope.totalTimeoutMs is a borrowed CPU yardstick here, since parseDependabotRoots runs in the snapshot, outside that deadline. The collectors read at most limit:w2.npm.maxRoots and limit:w2.uv.maxRoots of the list. The cap sits between the two. Approved by the maintainer on 2026-11-27 (L11, card and Q8(a), #383)."
+		},
 		effect: "More than 256 distinct roots for one ecosystem makes only that ecosystem unavailable with reason budget. The other ecosystem is unaffected, and no partial list is returned.",
-		test: "src/dependabot-roots.test.ts > limits the roots per ecosystem after deduplication",
-		note: "stopped (L11, card, #383): the approved basis is safety. The largest legitimate use is recorded: among the largest dependabot.yml files GitHub code search returned on 2026-11-28 (14 files above 40,000 bytes, of which 8 are Dependabot version-2 configs), the most distinct npm roots in one config is 207, and the most for any ecosystem 385 (an ecosystem this reader ignores). No harm point is recorded: the collectors read at most limit:w2.npm.maxRoots and limit:w2.uv.maxRoots of these roots, so a longer list costs only its strings, which the byte cap bounds. Value unchanged"
-	}),
+		test: "src/dependabot-roots.test.ts > limits the roots per ecosystem after deduplication"
+	},
 	derived("dependabot.maxPathBytes", "bytes", ["packet.identityBytes"], copy, "The Dependabot path cap mirrors the packet's identity byte cap that bounds every path.", {
 		protects: "Dependabot paths are capped at the packet identity byte cap (1,024), so a path the packet cannot carry is refused.",
 		effect: "A path over 1,024 bytes marks only its ecosystem malformed. The other ecosystem stays usable, and no truncated path enters roots.",
@@ -2527,7 +2545,7 @@ const DEFINITIONS = [
 	unjustified("research.maxWork", 5e6, "count", {
 		protects: "The work a research reader does on untrusted data is bounded, so one stage cannot consume unbounded CPU (CPU).",
 		effect: "Spending past the cap sets the stop to budget and throws; the stage stops and its stop is recorded as unavailable.",
-		note: "awaiting L8 measurement",
+		note: "stopped (L11, Q8(a), #383): the approved basis is safety, which merges only with its largest legitimate use and its harm. The harm is measured: the costliest unit is a copied entry, the reader's own work counter. As a reader parses and copies a response of empty objects, the costliest of three shapes per entry, doubling around limit:evidence.envelope.maxResponseBytes from 87,382 to 1,398,102 units, the slowest of 5 runs takes 74.7 to 2,292 ms, each doubling multiplying it by 2.46, 2.20, 2.50 and 2.27 (npm run probe:parse-cost -- harm research, on 2026-11-28 under Node 24.22.3); the cost grows a little faster than the count, as the count to the power 1.23 fitted over the series, so on that curve, with the allowance of #467 for a runner 10 times slower, harm begins near 3.0 million units, a quarter of limit:evidence.envelope.totalTimeoutMs, below the cap of 5,000,000. The largest legitimate use is not: a reader's work counts the entries it copies, the bytes of the manifests it decodes, the bytes of every cached response it reuses and one unit per release it scans, and no recorded run gives their sum (the #462 measurement recorded entries, not work). It needs a live run (npm run measure:demand with the work reported). Value unchanged",
 		test: "src/research.test.ts > the upstream reader spends exactly research.maxWork units and refuses the next one"
 	}),
 	unjustified("research.maxAttempts", 512, "count", {
@@ -2775,16 +2793,22 @@ const DEFINITIONS = [
 		effect: "A compare page that does not fit is retried at the next smaller size of a divisor chain from this value down to 1, and each later page returns to the largest size whose boundary falls on the commits already read; a page of one commit over the cap fails the comparison with reason budget. Each retry is an ordinary request against the upstream share.",
 		test: "src/evidence/upstream-github.test.ts > a compare page over the response cap is halved until it fits"
 	}),
-	unjustified("uv.maxCorroborationCodeUnits", 4096, "code units", {
+	{
+		id: "uv.maxCorroborationCodeUnits",
+		value: 4096,
+		unit: "code units",
 		protects: "Lines over the cap are skipped before the claim regex runs, so untrusted changelog text cannot make the matcher do unbounded work (CPU).",
+		basis: {
+			kind: "safety",
+			reason: "Largest legitimate use: a claim line is \"Bumps [name](url) from a to b.\"; with the longest project name in the PyPI simple index read on 2026-11-28 (188 code units, among 951,539 names), a GitHub repository URL at the documented 39-character owner and 100-character repository name limits, and the longest version among the 2,000 recorded PyPI project and release documents (23) on both sides, it is 414 code units (npm run probe:parse-cost -- use, over those files, on 2026-11-28). Harm: CPU. On a description of about 250,000 code units, half of limit:w2.graph.maxGraphWork, which the stage charges one unit per code unit, lines that each reopen a Markdown link whose URL never closes take a median of 18.1, 28.4, 38.9 and 48.7 ms at 512, 1,024, 2,048 and 4,096 code units a line, against 8.6 to 10.2 ms for plain text: within a line the cost grows with its length, by 1.29 to 1.68 a doubling, until the link scan reaches the 1,024 bound of its repetitions. At a fixed line length the cost is linear in the text: doubling such a description from about 61,500 to 1 million code units multiplies the slowest of 5 runs by 2.17, 2.10, 1.66 and 2.30 at lines of 1,024, and by 1.89, 2.14, 2.10 and 2.89 at lines of limit:uv.maxCorroborationCodeUnits (medians 1.96, 2.14, 2.01 and 2.00), up to 375.2 ms (npm run probe:parse-cost -- harm claims, on 2026-11-28 under Node 24.22.3, the runtime of the action). On a fit over the slowest runs at the cap, time grows as the length to the power 1.13, with the allowance of #467 for a runner 10 times slower, harm begins near 11.6 million code units, a quarter of limit:evidence.envelope.totalTimeoutMs. The cap sits far between the two. Approved by the maintainer on 2026-11-27 (L11, Q8(a), #383)."
+		},
 		effect: "A longer line is skipped and yields no claim; the remaining lines are still read.",
-		note: "no recorded reason",
 		test: "src/evidence/uv-corroboration.test.ts > a changelog line at the registered code-unit cap is read and one code unit longer is skipped"
-	}),
+	},
 	unjustified("uv.corroborationWorkPerEntry", 64, "count", {
 		protects: "Each corroborated entry reserves a fixed work cost before any contradiction is learned, so corroboration cannot run past the work budget (CPU).",
 		effect: "Work that exceeds the graph budget stops corroboration with reason budget, while the validated inventory is kept.",
-		note: "awaiting L8 measurement",
+		note: "stopped (L11, #383): the approved basis is derived from a structural test with no inputs, and no structural count gives 64. The reservation stands in for work that the candidate and comparison steps of src/evidence/uv-corroboration.ts do without charging it. corroborateUv builds the candidate twice, and each build visits every claim, changed member and source a fixed small number of times (the claim lines, their join and the canonical form hashed for the assertion id; each member's source chunk, its chunk id and the member list; the source filter and, on a conflict, the status map); the comparison visits each claim once more, besides the claims × changes term the reservation already adds. That is fewer than ten visits per entry, plus a sort of the members and SHA-256 hashing proportional to the claim text's bytes, and the observations and gaps each build copies are not in the reserved sum at all. The approval said the row then moves to a changed value, which needs a new approval. Value unchanged",
 		test: "none: a multiplier inside the corroboration reservation at src/evidence/uv-corroboration.ts:326; the sum is spent against the graph work budget, which graphWork enforces (src/evidence/uv-input.ts:59-61, left < 0 throws budget) with the limit w2.graph.maxGraphWork (src/collection.ts:60)"
 	}),
 	{

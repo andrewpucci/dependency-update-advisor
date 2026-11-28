@@ -11,6 +11,7 @@
     "probe:comment-limit": "node scripts/probe-comment-limit/run.ts",
     "probe:json-depth": "node scripts/probe-json-depth/run.ts",
     "probe:name-separators": "node scripts/probe-name-separators/run.ts",
+    "probe:parse-cost": "node scripts/probe-parse-cost/run.ts",
     "probe:osv-latency": "node scripts/probe-research-timing/run.ts osv",
     "probe:upstream-throughput": "node scripts/probe-research-timing/run.ts upstream",
     "probe:runner-memory": "node scripts/probe-runner-memory/run.ts",
