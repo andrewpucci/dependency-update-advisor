@@ -1398,6 +1398,13 @@ export const SIGNAL_EXCERPT = Object.freeze({
   maintainerCodeUnits: 4,
 });
 
+/**
+ * The snapshot reads made before any excerpt blob in the shallowest layout: repository, commit,
+ * root listing, .github listing, config blob, Dependabot blob, and one source-root listing.
+ * Pinned by the structural test named on context.maxSourceCandidates.
+ */
+export const SNAPSHOT_FIXED_READS = 7;
+
 const DEFINITIONS = [
   {
     id: 'packet.bytes',
@@ -3570,7 +3577,7 @@ const DEFINITIONS = [
       protects:
         'The packet rejects a context whose serialized JSON exceeds limit:packet.contextBytes (budget), so the collector must stop before that point.',
       effect:
-        'The empty-context check (src/context.ts:312) fails a context with category budget when its widest reservation is over the cap, but at limit:context.maxDependencies identities of limit:context.maxIdCodeUnits that reservation is 102,556 bytes, below the cap, so no input reaches it at the register values; the test pins that margin. During collection the fact that would overflow is dropped with reason context-byte-limit and collection stops, keeping facts already added (partial).',
+        'The empty-context check (src/context.ts:319) fails a context with category budget when its widest reservation is over the cap, but at limit:context.maxDependencies identities of limit:context.maxIdCodeUnits that reservation is 103,717 bytes (102,556 before the L11 budget reason, item 8), below the cap, so no input reaches it at the register values; the test pins that margin. During collection the fact that would overflow is dropped with reason context-byte-limit and collection stops, keeping facts already added (partial).',
       test: 'src/context.test.ts > the serialized context cap admits a context of exactly the cap and drops the fact one byte past it',
     },
   ),
@@ -3610,14 +3617,23 @@ const DEFINITIONS = [
     note: 'stopped (L11, Q19(a), #383): the approved basis is a copy of limit:snapshot.maxTreeEntries (102,578), which must move together with limit:config.maxBytes, and that entry stops: a JSON config holding 102,578 roots does not fit today\'s 16,384-byte cap (the smallest root, `"a",`, is 4 bytes, so at most about 4,090 roots fit, and 102,579 roots need at least 410,316 bytes for the over-cap boundary test). Raising the root cap alone would admit a count no valid config can reach. Value unchanged',
     test: 'src/config.test.ts > the source root cap admits exactly the registered count and rejects one more',
   }),
-  unjustified('context.maxSourceCandidates', 128, 'count', {
+  {
+    id: 'context.maxSourceCandidates',
+    unit: 'count',
     protects:
-      'Each excerpt file is stat-checked and matched against the tracked inventory, so the number of excerpt files is capped.',
+      'Each excerpt file is stat-checked, matched against the tracked inventory and read with one blob request, so the number of excerpt files is capped.',
     effect:
-      'More than 128 excerptFiles fails config validation. The runtime candidate-limit (src/context.ts) would stop scanning with reason candidate-limit, but validated config keeps the selected set at 128 or fewer, so that branch cannot trigger.',
-    note: 'stopped (L11, Q20(a), #383): the approved basis is the snapshot request share (limit:evidence.allocation.transport.snapshot.maxRequests, 200) less the fixed snapshot reads. The fixed reads are 7 (repository, commit, root listing, .github listing, config blob, Dependabot blob, one source-root listing) only in the shallowest layout: one excerpt directory and a config that is not a link. Each further directory an excerpt path passes through costs one more tree read, and each config link one more blob read, so at 200 − 7 = 193 excerpt files split across src/ and src/lib/ the snapshot needs 201 reads. Running out of the share inside collectContext makes the whole snapshot unavailable, which the pipeline reports as internal-failure at snapshot, and SPEC-source-context promises no partial result with budget for it. Tree reads grow with path depth, so no structural count of fixed reads holds for every layout. Today 128 leaves 72 reads for directories and links. Value unchanged',
+      'More excerptFiles than the cap fails config validation. The runtime candidate-limit (src/context.ts) would stop scanning with reason candidate-limit, but validated config keeps the selected set at the cap or fewer, so that branch cannot trigger. A layout whose directories need more reads than the snapshot share holds stops reading where the share runs out and reports budget, keeping the context already read (partial).',
+    basis: {
+      kind: 'derived',
+      inputs: ['evidence.allocation.transport.snapshot.maxRequests'],
+      formula: (requests) => requests - SNAPSHOT_FIXED_READS,
+      description: `The excerpt files whose blobs the snapshot request share can read after its ${SNAPSHOT_FIXED_READS} fixed reads in the shallowest layout: the repository, the commit, the root listing, the .github listing, the config blob, the Dependabot blob and one source-root listing (src/snapshot.ts). So 200 − ${SNAPSHOT_FIXED_READS} = 193; it follows the snapshot share setting. A deeper layout costs one more tree read for each directory on an excerpt path, and a config link one more blob read; when the share runs out inside collectContext the snapshot stops reading, keeps what it read, and reports budget for every configured path not yet read, never missing-source (SPEC-source-context, Amended L11), so no count of excerpt files can make the snapshot unavailable. Approved by the maintainer on 2026-11-28 (L11, item 8(a), #383).`,
+      structuralTest:
+        'src/snapshot.test.ts > a single-directory layout reads exactly the snapshot share for the excerpt file cap',
+    },
     test: 'src/config.test.ts > the excerpt file cap admits exactly the registered count and rejects one more',
-  }),
+  },
   derived(
     'context.maxTrackedPathEntries',
     'count',

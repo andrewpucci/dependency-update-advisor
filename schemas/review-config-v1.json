@@ -51,7 +51,7 @@
         },
         "excerptFiles": {
           "type": "array",
-          "maxItems": 128,
+          "maxItems": 193,
           "uniqueItems": true,
           "default": [],
           "items": {

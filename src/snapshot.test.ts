@@ -9,7 +9,7 @@ import {
   type SnapshotTreeEntry,
 } from './snapshot.js';
 import { createGithubTransport } from './runtime.js';
-import { limit } from './limits.js';
+import { limit, SNAPSHOT_FIXED_READS } from './limits.js';
 
 const repository = { id: 101, owner: 'example', name: 'consumer' };
 const revision = 'a'.repeat(40);
@@ -549,6 +549,7 @@ test('lists only the directories on configured paths, so repository size cannot 
     (snapshot) => snapshot.collectContext([{ id: 'unit-1', name: 'example-package' }]),
   );
 
+  (await import('node:fs')).writeFileSync('/tmp/claude-0/-home-user/763b32b3-7484-52a2-b84a-49921b64c703/scratchpad/l11s/r8.json', JSON.stringify({ result, calls: reader.calls.length, first: reader.calls.slice(0, 10) }));
   expect(result).toMatchObject({ kind: 'ready', value: { ok: true, status: 'available' } });
   expect(reader.calls).not.toContain(`tree:${bigTree}`);
 });
@@ -999,4 +1000,97 @@ test('a released snapshot drops its tree, and a later tree read is unavailable',
   if (result.kind !== 'ready') throw new Error(result.kind);
   expect(result.value.before).toMatchObject({ kind: 'roots' });
   expect(result.value.after).not.toMatchObject({ kind: 'roots' });
+});
+
+/** The snapshot reads of `reader`, refused with budget past `share` requests as the transport does. */
+function withShare(reader: ReturnType<typeof reads>, share: number): SnapshotReads {
+  let spent = 0;
+  const charged =
+    <A extends unknown[], R>(read: (...args: A) => Promise<R>) =>
+    async (...args: A) =>
+      ++spent > share ? ({ kind: 'unavailable', reason: 'budget' } as const) : read(...args);
+  return {
+    readRepository: charged(reader.readRepository),
+    readCommit: charged(reader.readCommit),
+    readTree: charged(reader.readTree),
+    readBlob: charged(reader.readBlob),
+  };
+}
+
+/**
+ * A repository whose excerpt files each use one package: the first `deep` in a directory of their
+ * own under `src`, which costs one tree read each, and the rest in `src` itself.
+ */
+function excerptLayout(count: number, deep: number) {
+  const files = Array.from({ length: count }, (_, i) => ({
+    path: i < deep ? `src/d${i}/f.ts` : `src/f${i}.ts`,
+    sha: (i + 1).toString(16).padStart(40, '0'),
+  }));
+  const directories = Array.from({ length: deep }, (_, i) =>
+    entry(`src/d${i}`, '040000', (i + 1).toString(16).padStart(40, '7'), 'tree'),
+  );
+  const reader = reads(
+    [
+      ...configTree,
+      entry('.github/dependabot.yml', '100644', dependabotBlob),
+      entry('src', '040000', 'f'.repeat(40), 'tree'),
+      ...directories,
+      ...files.map((file) => entry(file.path, '100644', file.sha)),
+    ],
+    {
+      [configBlob]: JSON.stringify({
+        version: 1,
+        context: { sendSourceExcerptsToModel: true, excerptFiles: files.map((f) => f.path) },
+      }),
+      [dependabotBlob]: dependabotFile,
+      ...Object.fromEntries(files.map((file) => [file.sha, 'import x from "example-package";'])),
+    },
+  );
+  return reader;
+}
+
+test('a single-directory layout reads exactly the snapshot share for the excerpt file cap', async () => {
+  const share = limit('evidence.allocation.transport.snapshot.maxRequests');
+  const cap = limit('context.maxSourceCandidates');
+  const reader = excerptLayout(cap, 0);
+  const result = await withTrustedSnapshot(
+    { repository, reads: withShare(reader, share), temporaryRoot: tempRoot() },
+    async (snapshot) => {
+      await snapshot.dependabotRoots();
+      return snapshot.collectContext([{ id: 'unit-1', name: 'example-package' }]);
+    },
+  );
+  // One package per file meets the per-dependency fact cap, the only limit reached.
+  expect(result).toMatchObject({ kind: 'ready', value: { ok: true, reasons: ['fact-limit'] } });
+  // Every read fits the share, and the fixed reads are the share less one blob per file.
+  expect(reader.calls).toHaveLength(share);
+  expect(reader.calls.filter((call) => call.startsWith('blob:0'))).toHaveLength(cap);
+  expect(reader.calls.length - cap).toBe(SNAPSHOT_FIXED_READS);
+});
+
+test('a layout deeper than the snapshot share keeps the context it read and reports budget', async () => {
+  const share = limit('evidence.allocation.transport.snapshot.maxRequests');
+  const cap = limit('context.maxSourceCandidates');
+  // 100 extra directories: the prefixes fit the share, and it runs out among the blob reads.
+  const deep = 100;
+  const reader = excerptLayout(cap, deep);
+  const result = await withTrustedSnapshot(
+    { repository, reads: withShare(reader, share), temporaryRoot: tempRoot() },
+    async (snapshot) => {
+      await snapshot.dependabotRoots();
+      return snapshot.collectContext([{ id: 'unit-1', name: 'example-package' }]);
+    },
+  );
+  // Before L11 item 8 the share ran out inside collectContext and the snapshot was unavailable.
+  expect(result).toMatchObject({ kind: 'ready', value: { ok: true, status: 'partial' } });
+  if (result.kind !== 'ready' || !result.value.ok) throw new Error('context');
+  expect(result.value.reasons).toContain('budget');
+  expect(result.value.reasons).not.toContain('missing-source');
+  const [dependency] = result.value.dependencies;
+  expect(dependency.reasons).toContain('budget');
+  // The files read before the share ran out contribute their facts.
+  expect(dependency.facts.length).toBeGreaterThan(0);
+  const blobs = reader.calls.filter((call) => call.startsWith('blob:0'));
+  expect(blobs).toHaveLength(share - SNAPSHOT_FIXED_READS - deep);
+  expect(reader.calls).toHaveLength(share);
 });

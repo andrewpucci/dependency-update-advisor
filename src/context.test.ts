@@ -1038,6 +1038,20 @@ test('a missing config file disables context without checking the default root',
   expect(await validateSourceContextInput(request)).toEqual({ ok: true, state: 'disabled' });
 });
 
+test('paths the snapshot could not read are budget, never missing source, and are not read', async () => {
+  const root = await fixture();
+  await source(root, 'src/b.ts', 'import value from "example-package";');
+  // src/absent.ts was never listed; src/b.ts is a placeholder whose blob was never fetched.
+  const request = enabled(root, ['src/a.ts', 'src/absent.ts', 'src/b.ts']);
+  request.unread = new Set(['src/absent.ts', 'src/b.ts']);
+  const result = await collectSourceContext(request);
+  expect(result).toMatchObject({ ok: true, reasons: ['budget'] });
+  if (!result.ok) throw new Error('context');
+  expect(result.reasons).not.toContain('missing-source');
+  expect(result.dependencies.every((d) => d.reasons.includes('budget'))).toBe(true);
+  expect(result.dependencies.flatMap((d) => d.facts.map((f) => f.path))).not.toContain('src/b.ts');
+});
+
 test('missing ordinary paths remain availability limits and empty roots do not default', async () => {
   const root = await fixture();
   const result = await validateSourceContextInput(
@@ -1181,8 +1195,8 @@ test('the serialized context cap admits a context of exactly the cap and drops t
   const empty = await probe([]);
   expect(empty.result).toMatchObject({ ok: true });
   // The reservation of the widest identities fits, so no input reaches the budget refusal before
-  // reading (src/context.ts:312) at the register values.
-  expect(empty.largest).toBe(102_556);
+  // reading (src/context.ts:319) at the register values.
+  expect(empty.largest).toBe(103_717);
   expect(empty.largest).toBeLessThan(cap);
   const one = await probe([0]);
   const fact = one.largest - empty.largest;

@@ -473,6 +473,7 @@ const CONTEXT_REASONS = [
   'excerpt-limit',
   'fact-limit',
   'context-byte-limit',
+  'budget',
 ] as const;
 function context(value: unknown): PacketContext {
   const r = object(value, ['ok', 'status', 'dependencies', 'reasons'], [], 'context');

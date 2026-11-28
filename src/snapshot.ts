@@ -94,6 +94,20 @@ class Unavailable extends Error {
   }
 }
 
+/**
+ * Runs one read step; true when it stopped because the snapshot's read share ran out. Any other
+ * failure still makes the snapshot unavailable.
+ */
+async function shareStop(step: () => Promise<unknown>): Promise<boolean> {
+  try {
+    await step();
+    return false;
+  } catch (error) {
+    if (error instanceof Unavailable && error.reason === 'budget') return true;
+    throw error;
+  }
+}
+
 function available<T>(value: T): SnapshotRead<T> {
   return { kind: 'available', value };
 }
@@ -432,9 +446,9 @@ class Materializer {
    * C2 reads at most its aggregate budget. Local placeholders preserve its limit result without
    * downloading a source blob that C2 would never inspect.
    */
-  async materializeSourceFiles(paths: readonly string[]): Promise<void> {
+  async materializeSourceFiles(paths: readonly string[], unread: Set<string>): Promise<void> {
     let remaining = MAX_TOTAL_SOURCE_READ_BYTES;
-    for (const path of paths) {
+    for (const [index, path] of paths.entries()) {
       if (remaining === 0) return;
       const entry = await this.tree.get(path);
       if (!entry || entry.kind !== 'file') continue;
@@ -443,7 +457,13 @@ class Materializer {
         await this.materialize(path, 'limit-placeholder', { limit: remaining });
         return;
       }
-      await this.materialize(path, 'payload', { limit: MAX_SOURCE_FILE_BYTES });
+      const stopped = await shareStop(() =>
+        this.materialize(path, 'payload', { limit: MAX_SOURCE_FILE_BYTES }),
+      );
+      if (stopped) {
+        for (const rest of paths.slice(index)) unread.add(rest);
+        return;
+      }
       remaining -= sourceReadBytes;
     }
   }
@@ -594,11 +614,19 @@ export async function withTrustedSnapshot<T>(
       release: () => tree.release(),
       collectContext: async (dependencies) => {
         try {
-          for (const path of [
+          // Running out of the snapshot share stops reading: what was read stays, and every path
+          // not yet read is reported as budget rather than missing (L11, item 8).
+          const unread = new Set<string>();
+          const configured = [
             ...config.config.context.sourceRoots,
             ...config.config.context.excerptFiles,
-          ])
-            await materializer.materializePrefixes(path);
+          ];
+          for (const [index, path] of configured.entries()) {
+            const stopped = await shareStop(() => materializer.materializePrefixes(path));
+            if (!stopped) continue;
+            for (const rest of configured.slice(index)) unread.add(rest);
+            break;
+          }
           active();
           const files = inventory(tree);
           const input = {
@@ -607,6 +635,7 @@ export async function withTrustedSnapshot<T>(
             visibility: repository.value.visibility,
             dependencies,
             trackedFiles: trackedFiles(files),
+            unread,
           };
           const validation = await validateSourceContextInput(input);
           if (!validation.ok || validation.state !== 'ready') return collectSourceContext(input);
@@ -615,7 +644,7 @@ export async function withTrustedSnapshot<T>(
             trackedFiles: trackedFiles(files),
           });
           if (!candidates.ok) return candidates;
-          await materializer.materializeSourceFiles(candidates.paths);
+          await materializer.materializeSourceFiles(candidates.paths, unread);
           active();
           return await collectSourceContext({ ...input, trackedFiles: trackedFiles(files) });
         } catch (error) {

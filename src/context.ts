@@ -29,6 +29,7 @@ const REASONS = [
   'excerpt-limit',
   'fact-limit',
   'context-byte-limit',
+  'budget',
 ] as const;
 
 type ContextReason = (typeof REASONS)[number];
@@ -66,6 +67,11 @@ export type SourceContextInput = {
   visibility: unknown;
   dependencies: readonly DependencyIdentity[];
   trackedFiles: AsyncIterable<string>;
+  /**
+   * Configured paths the snapshot could not read before its request share ran out. They are
+   * reported as budget, never as missing source, and a placeholder left for one is never read.
+   */
+  unread?: ReadonlySet<string>;
 };
 type SourceContextValidation =
   | SourceContextFailure
@@ -261,6 +267,7 @@ async function checkConfiguredPaths(
   checkoutRoot: string,
   roots: string[],
   files: string[],
+  unread: ReadonlySet<string>,
 ): Promise<
   | SourceContextFailure
   | { ok: true; existingRoots: string[]; existingFiles: string[]; reasons: ContextReason[] }
@@ -275,8 +282,9 @@ async function checkConfiguredPaths(
     for (const path of paths) {
       const checked = await checkPath(checkoutRoot, path, directory, field);
       if (!checked.ok) return checked;
-      if (checked.exists) existing.push(path);
-      else if (!reasons.includes('missing-source')) reasons.push('missing-source');
+      const reason: ContextReason = unread.has(path) ? 'budget' : 'missing-source';
+      if (checked.exists && !(unread.has(path) && !directory)) existing.push(path);
+      else if (!reasons.includes(reason)) reasons.push(reason);
     }
   }
   return { ok: true, existingRoots, existingFiles, reasons };
@@ -304,7 +312,7 @@ export async function validateSourceContextInput(
   }
   // Missing-file defaults configure no boundary, so only an existing file's paths are checked.
   if (input.config.origin === 'missing') return { ok: true, state: 'disabled' };
-  const checked = await checkConfiguredPaths(checkoutRoot, roots, files);
+  const checked = await checkConfiguredPaths(checkoutRoot, roots, files, input.unread ?? new Set());
   if (!checked.ok) return checked;
   const { existingRoots, existingFiles, reasons } = checked;
   if (!context.sendSourceExcerptsToModel) return { ok: true, state: 'disabled' };
