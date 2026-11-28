@@ -4012,7 +4012,7 @@ const DEFINITIONS = [
         'none: "each step is restricted to a maximum size of 1MiB", read as 1,048,576 bytes; GitHub fails the upload of a larger summary. The renderer measures the summary in UTF-8 bytes against it. Approved by the maintainer on 2026-11-28 (L11, B1, #383).',
     },
     effect:
-      'A review whose full text is larger is not rendered: the renderer returns size, which W2 reports as render-size, and the prior comment is kept.',
+      'A review whose full text is larger is not rendered: the renderer returns size, which W2 reports as render-size, and the prior comment is kept. The digest replaces only the comment, so a full review over this cap still fails as size: at the caps, limit:packet.changes units × limit:analysis.steps follow-ups of limit:analysis.followupBytes, each byte escaped to at most 5 (&amp;), are 1,433,600 bytes alone, so the largest groups still fail closed (L11, item 1 review follow-up, 2026-11-28). Until D4 writes the summary, the handoff records its byte length and SHA-256.',
     test: 'src/reporting.test.ts > replaces required content too long for the comment with a digest and keeps the full review for the step summary',
   },
   derived(

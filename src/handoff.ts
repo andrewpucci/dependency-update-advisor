@@ -1,3 +1,4 @@
+import { createHash } from 'node:crypto';
 import { limit } from './limits.js';
 import type { PacketGap } from './packet.js';
 import type { DroppedOptional } from './optional-evidence.js';
@@ -27,7 +28,14 @@ type ReviewHandoffBase = Readonly<{
   gaps: readonly PacketGap[];
   /** Bounded, redacted accounting for optional packet evidence removed to meet a budget. */
   droppedOptional: OptionalEvidenceDropCounts;
+  /**
+   * Set only when the body is the decision digest: the full review the run's step summary holds,
+   * by its UTF-8 byte length and SHA-256, until D4 writes it (L11, item 1).
+   */
+  stepSummary?: StepSummaryRecord;
 }>;
+/** A step summary named by its size and digest; its text never enters the handoff. */
+export type StepSummaryRecord = Readonly<{ bytes: number; sha256: string }>;
 export type ReviewHandoff =
   | (ReviewHandoffBase & Readonly<{ kind: 'internal-failure'; stage: InternalFailureStage }>)
   | (ReviewHandoffBase &
@@ -38,6 +46,8 @@ export type HandoffDetail = Readonly<{
   body: boolean;
   gaps: readonly PacketGap[];
   droppedOptional?: readonly DroppedOptional[];
+  /** The full review for the step summary, when the body is the decision digest. */
+  summary?: string;
   /** Required for internal failures; defaults to the safe catch-all for direct callers. */
   stage?: InternalFailureStage;
 }>;
@@ -72,6 +82,12 @@ function countDroppedOptional(dropped: readonly DroppedOptional[]): OptionalEvid
     else proof += 1;
   return Object.freeze({ reachability, proof });
 }
+function stepSummaryRecord(summary: string): StepSummaryRecord {
+  return Object.freeze({
+    bytes: Buffer.byteLength(summary),
+    sha256: createHash('sha256').update(summary).digest('hex'),
+  });
+}
 export type HandoffResult =
   | Readonly<{ kind: 'ready'; handoff: ReviewHandoff }>
   | Readonly<{ kind: 'stale' }>;
@@ -99,6 +115,7 @@ export async function createReviewHandoff(
     body: detail.body ? ('present' as const) : ('absent' as const),
     gaps: copyGaps(detail.gaps),
     droppedOptional: countDroppedOptional(detail.droppedOptional ?? []),
+    ...(detail.summary === undefined ? {} : { stepSummary: stepSummaryRecord(detail.summary) }),
   };
   return {
     kind: 'ready',
@@ -118,6 +135,7 @@ type RehearsalTraceBase = Readonly<{
   body: ReviewHandoff['body'];
   gaps: ReviewHandoff['gaps'];
   droppedOptional: ReviewHandoff['droppedOptional'];
+  stepSummary?: StepSummaryRecord;
   analysisTiming?: AnalysisTiming;
 }>;
 export type RehearsalTrace =
@@ -232,6 +250,14 @@ export function createRehearsalSink(appToken: string | null): RehearsalSink | nu
         body: handoff.body,
         gaps: copyGaps(handoff.gaps),
         droppedOptional: handoff.droppedOptional,
+        ...(handoff.stepSummary
+          ? {
+              stepSummary: Object.freeze({
+                bytes: handoff.stepSummary.bytes,
+                sha256: handoff.stepSummary.sha256,
+              }),
+            }
+          : {}),
       };
       traces.push(
         Object.freeze({

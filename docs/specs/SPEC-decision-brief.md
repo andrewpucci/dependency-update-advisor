@@ -150,6 +150,15 @@ is a planning choice.
      does not fit the comment or the full body does not fit the step summary.
      The step summary is written when publication is wired (D4), under the
      same gates as the comment.
+   - Amended (L11, item 1 review follow-up, 2026-11-28,
+     [#383](https://github.com/andrewpucci/dependency-update-advisor/issues/383)):
+     until D4 writes it, the handoff records that a step summary exists by its
+     byte length and `sha256` digest (SPEC-review-orchestration requirement 7).
+     A full review over `limit:github.stepSummary.maxBytes` still fails as
+     `size`: the digest replaces only the comment, and the step summary has
+     no fallback of its own. At the caps the escaped follow-ups alone reach
+     about 1.43 MB, above that limit, so the largest groups still fail
+     closed.
 
 **Comment Capacity Amendment companion (approved for planning, 2026-11-16):**
 [#348](https://github.com/andrewpucci/dependency-update-advisor/issues/348)

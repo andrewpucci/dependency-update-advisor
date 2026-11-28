@@ -1,3 +1,4 @@
+import { createHash } from 'node:crypto';
 import { setFlagsFromString } from 'node:v8';
 import { runInNewContext } from 'node:vm';
 import { expect, test, vi } from 'vite-plus/test';
@@ -1846,7 +1847,15 @@ test('hands a group too large for the comment off with its digest and the full r
   expect(Buffer.byteLength(result.summary!)).toBeLessThanOrEqual(
     limit('github.stepSummary.maxBytes'),
   );
-  expect(sink.traces()[0]).toMatchObject({ body: 'present' });
+  // Until D4 writes the step summary, the handoff and its trace record that it exists by its
+  // size and SHA-256, never its text.
+  const stepSummary = {
+    bytes: Buffer.byteLength(result.summary!),
+    sha256: createHash('sha256').update(result.summary!).digest('hex'),
+  };
+  expect(result.handoff.stepSummary).toEqual(stepSummary);
+  expect(sink.traces()[0]).toMatchObject({ body: 'present', stepSummary });
+  expect(JSON.stringify(sink.traces())).not.toContain('## Non-blocking follow-ups');
 });
 
 test('starts no further public request once ownership is lost during a registry or research request', async () => {

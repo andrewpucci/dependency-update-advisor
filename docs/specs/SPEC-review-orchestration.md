@@ -283,6 +283,15 @@ receives `process.env` or a general fetch function.
    Skipped, stale, unverified, or unowned outcomes authorize neither status nor
    comment publication. This contract calls neither T2/T3 writer nor a real
    App-token request; the later publisher rechecks freshness and ownership.
+
+   Amended (L11, item 1 review follow-up, 2026-11-28,
+   [#383](https://github.com/andrewpucci/dependency-update-advisor/issues/383)):
+   when the body is the decision digest, the full review for the run's step
+   summary is returned beside it, and nothing writes it until publication is
+   wired (D4). Until then the handoff gains one optional field,
+   `stepSummary`, set only in that case: the summary's UTF-8 byte length and
+   its `sha256` digest in lowercase hex, never its text. The rehearsal trace
+   copies it. No other handoff, status, or comment field changes.
 8. **No-write rehearsal.** A rehearsal sink records intended pending/failure/
    success/comment operations, binding, and ordering without a network write.
    It refuses a real App token, has no live-client fallback, and emits only

@@ -351,6 +351,7 @@ export async function runReview(input: PipelineInput): Promise<PipelineResult> {
       body: outcome.body !== null,
       gaps: outcome.gaps ?? [],
       droppedOptional: outcome.droppedOptional ?? [],
+      ...(outcome.summary === undefined ? {} : { summary: outcome.summary }),
       ...(outcome.kind === 'internal-failure' ? { stage: outcome.stage } : {}),
     });
     if (handoff.kind !== 'ready') return { kind: 'not-eligible', reason: 'ownership' };
