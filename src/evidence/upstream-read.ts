@@ -1,6 +1,6 @@
 import { createNpmRegistryReader } from './npm-registry.js';
 import { copyAdvisoryData, AdvisoryFailure, type AdvisoryLimits } from './advisory-read.js';
-import { freeze, isPlainObject, isEvidencePath } from './common.js';
+import { divisorChain, freeze, isPlainObject, isEvidencePath } from './common.js';
 import type { EvidenceReason, PackageSource } from '../schema.js';
 import { BoundedClock, boundedGet } from './bounded-request.js';
 import {
@@ -13,20 +13,6 @@ import type { ResearchCache } from './research-cache.js';
 import { limit } from '../limits.js';
 import { HTTP_STATUS } from '../format.js';
 
-/**
- * A page-size retry ladder from a register page size down to 1: each size is the one above divided
- * by its smallest prime factor, so every size divides every larger one. From a power of two this is
- * plain halving.
- */
-function divisorChain(start: number): number[] {
-  const sizes = [start];
-  for (let size = start; size > 1; sizes.push(size)) {
-    let factor = 2;
-    while (size % factor !== 0) factor++;
-    size /= factor;
-  }
-  return sizes;
-}
 export const RELEASE_PAGE_SIZES: readonly number[] = Object.freeze(
   divisorChain(limit('upstream.releasePageSize')),
 );

@@ -54,3 +54,18 @@ export function longestFittingPrefix<T>(
   }
   return prefix(low);
 }
+
+/**
+ * A page-size retry ladder from a register page size down to 1: each size is the one above divided
+ * by its smallest prime factor, so every size divides every larger one. From a power of two this is
+ * plain halving.
+ */
+export function divisorChain(start: number): number[] {
+  const sizes = [start];
+  for (let size = start; size > 1; sizes.push(size)) {
+    let factor = 2;
+    while (size % factor !== 0) factor++;
+    size /= factor;
+  }
+  return sizes;
+}

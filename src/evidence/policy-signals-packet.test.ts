@@ -316,11 +316,12 @@ test('a record a batch attributes to a member below the cut leaves it at budget,
     cap.bytes = packetBytes(baseline);
     const result = await enrichPolicySignals(input, { malwareReader: reader });
     if (result.kind !== 'enriched') throw new Error(JSON.stringify(result));
-    // The batch settled every npm member: no npm singleton query was sent.
+    // The batch settled every npm member: no npm singleton query was sent, only batches.
     expect(
       requests.some(
         (u) =>
-          u.searchParams.get('ecosystem') === 'npm' && u.searchParams.get('per_page') === '100',
+          u.searchParams.get('ecosystem') === 'npm' &&
+          u.searchParams.get('affects')!.split(',').length === 1,
       ),
     ).toBe(false);
     expect(result.changes.find((c) => c.id === below.id)!.evidence.malware).toEqual({

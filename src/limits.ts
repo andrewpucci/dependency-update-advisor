@@ -2172,35 +2172,56 @@ const DEFINITIONS = [
       test: 'src/evidence/advisory-read.test.ts > malware reader accepts a byte share exactly and refuses the byte past it',
     },
   ),
-  unjustified('advisory.discovery.pageSize', 50, 'count', {
+  derived(
+    'advisory.discovery.pageSize',
+    'count',
+    ['github.pageSize'],
+    copy,
+    'Discovery starts at the per_page maximum GitHub documents for the global advisories list, limit:github.pageSize (https://docs.github.com/en/rest/security-advisories/global-advisories#list-global-security-advisories, "max 100"), so record sets that fit read in the fewest pages. A page that does not fit limit:evidence.envelope.maxResponseBytes, as the 100-record pillow discovery page of 1,009,662 bytes nearly did, is retried at the same cursor down the page-size ladder (DISCOVERY_PAGE_SIZES, src/evidence/advisory-read.ts) instead of failing the read, as the compare and release ladders do (#471). Approved by the maintainer on 2026-11-27 (L11, E6, #383).',
+    {
+      protects:
+        'The start size of the discovery page-size ladder is bounded, so a discovery page of heavily advised packages that does not fit the per-response cap is retried smaller instead of failing the read (response size and memory).',
+      effect:
+        'Discovery asks for this many records per page and follows every page under the cursor rules. A page over the per-response cap is resent at the same cursor at the next smaller size of the ladder, and the rest of the query keeps that size; each resend is a charged request, and a page over the cap at size 1 fails the read with budget.',
+      test: 'src/evidence/advisory-read.name-forms.test.ts > a discovery page over the response cap is retried at the same cursor at the next smaller page size',
+    },
+  ),
+  {
+    id: 'advisory.discovery.urlBytes',
+    value: 5_694,
+    unit: 'bytes',
     protects:
-      'A stored-name discovery page of heavily advised packages fits the 1 MiB per-response cap (a 100-record pillow page did not).',
-    effect:
-      'Discovery asks for this many records per page and follows every page under the cursor rules.',
-    note: "approved 2026-11-20 from GitHub probes recorded in S1's Package Name Form Amendment; no repository command reproduces them",
-    test: 'src/evidence/advisory-read.name-forms.test.ts > a long name splits discovery so every spelling is sent once with cursor headroom',
-  }),
-  unjustified('advisory.discovery.urlBytes', 4096, 'bytes', {
-    protects:
-      'Discovery URLs stay under the length GitHub accepted (414 at 8,259 bytes). Batch URLs reuse it through limit:advisory.batch.urlBytes.',
+      'Discovery URLs stay within the longest URL GitHub accepted on the global advisories endpoint. Batch URLs reuse it through limit:advisory.batch.urlBytes.',
+    basis: {
+      kind: 'external',
+      url: 'https://github.com/andrewpucci/dependency-update-advisor/issues/390',
+      checked: '2026-11-26',
+      platformValue: 5_694,
+      margin:
+        'none: GitHub documents no URL limit, so the cap is the longest URL its global advisories endpoint answered 200 in the C3 batching probe (npm run probe:batching over the L8 corpus targets, 2026-11-26): npm batch URLs up to 5,694 bytes were answered and 414 came from 8,893 bytes. The limit belongs to the host, not the query: the earlier discovery points (200 at 4,371, 414 at 8,259) agree with it. A first URL leaves limit:advisory.discovery.cursorHeadroomBytes under it, so every continuation stays within it. Approved by the maintainer on 2026-11-27 (L11, Q12(a), #383).',
+      probe: {
+        command: 'npm run probe:batching',
+        repositoryType:
+          "GitHub's public global advisory database (api.github.com/advisories); the targets file names the corpus targets, and the report holds lengths and counts only",
+      },
+    },
     effect:
       'Spellings split across as many discovery requests as the cap requires; a continuation URL over it is budget.',
-    note: "approved 2026-11-20 from GitHub probes recorded in S1's Package Name Form Amendment; no repository command reproduces them",
-    test: 'src/evidence/advisory-read.name-forms.test.ts > a continuation URL of exactly 4,096 bytes is followed; one byte longer is budget',
-  }),
+    test: 'src/evidence/advisory-read.name-forms.test.ts > a continuation URL of exactly the cap is followed; one byte longer is budget',
+  },
   unjustified('advisory.discovery.cursorHeadroomBytes', 256, 'bytes', {
     protects:
       "Each discovery request's first URL leaves room under the URL cap for GitHub's `after` cursor.",
     effect: 'A first discovery URL is filled to at most the URL cap minus this headroom.',
-    note: "approved 2026-11-20 from GitHub probes recorded in S1's Package Name Form Amendment; no repository command reproduces them",
-    test: 'src/evidence/advisory-read.name-forms.test.ts > discovery fills a request up to exactly 256 bytes under the cap',
+    note: "stopped (L11, Q12(a), #383): the approved basis is external, the most bytes an `after` cursor GitHub returned adds to a query URL, from npm run probe:batching, which now reports it as longest.cursorHeadroomBytes. The C3 run of 2026-11-26 predates that field, and the probe needs a GitHub token and the corpus targets file, neither of which this session has, so the probed value is unknown and 256 stays. Run the probe and set the value it reports, with no margin",
+    test: 'src/evidence/advisory-read.name-forms.test.ts > discovery fills a request up to exactly the cursor headroom under the cap',
   }),
   unjustified('advisory.discovery.spellingCeiling', 243, 'count', {
     protects:
       'A pip name with many separators cannot fan out into an unbounded number of discovery requests.',
     effect:
       'A name with more spellings (more than 5 separators) is unsupported before any request.',
-    note: "approved 2026-11-20 from GitHub probes recorded in S1's Package Name Form Amendment; no repository command reproduces them",
+    note: 'stopped (L11, E8 and Q8(a), #383). The safety check fails: npm run probe:name-separators over the PyPI simple index (951,539 project names, 2026-11-28) finds 6,089 names (0.64%) with more than 5 separators, up to 28, so 243 binds legitimate names. The fallback E8(b), 81, has no derivation at the new limit:advisory.discovery.urlBytes: under its 5,438-byte first-URL room, one request holds every spelling of a 5-separator name up to 19 characters and of a 4-separator name up to 63, so the largest spelling count that always fits depends on name length, and no register entry bounds a PyPI name length except limit:packet.idCodeUnits (256), which would give 9. 81 came from corpus name lengths, which are measured demand. A new basis needs a maintainer decision',
     test: 'src/evidence/advisory-read.name-forms.test.ts > a name over the spelling ceiling sends no request',
   }),
   // Request batching values, approved by the user on 2026-11-26 from the C3 probe run (#390).
@@ -2227,10 +2248,10 @@ const DEFINITIONS = [
     'bytes',
     ['advisory.discovery.urlBytes'],
     copy,
-    'Batch URLs reuse the discovery URL cap (user-approved 2026-11-26). The C3 probe (`npm run probe:batching`, L8 corpus targets) saw npm batch URLs answered 200 up to 5,694 bytes and 414 from 8,893 bytes; the discovery probe saw 200 at 4,371 and 414 at 8,259.',
+    'Batch URLs reuse the discovery URL cap (user-approved 2026-11-26), which is the longest accepted URL of the same probe (L11, Q12(a), 2026-11-27, #383). The C3 probe (`npm run probe:batching`, L8 corpus targets) saw npm batch URLs answered 200 up to 5,694 bytes and 414 from 8,893 bytes; the discovery probe saw 200 at 4,371 and 414 at 8,259.',
     {
       protects:
-        'Batch URLs stay below the shortest URL GitHub rejected as too long on any advisory query (8,259 bytes, on discovery; npm batches from 8,893), with margin.',
+        'Batch URLs stay within the longest URL GitHub accepted on the advisory endpoint, below the shortest it rejected as too long (8,259 bytes, on discovery; npm batches from 8,893).',
       effect:
         "A batch's first URL is filled to at most this cap less limit:advisory.batch.cursorHeadroomBytes, and the next target starts another batch; a target that cannot fit alone is left to its singleton query. In the batching probe, which fits URLs at the longer per_page=100 form and so can measure one target fewer than production fits, a sweep batch's first URL and the batch at the proposed maximum stay within the same bound, and only a 414 to a batch size whose URL is over this cap leaves the verdict unaffected (tests/measure-batching/probe.test.ts > a URL of exactly the cap is inside it and one byte longer is over it; > the sweep fits each first URL at the longest page size, leaving the cursor headroom; > sizes GitHub rejects as too long are reported as rejected and do not block complete).",
       test: 'src/evidence/batches.test.ts > a batch first URL of exactly the cap less the cursor headroom fits; one byte longer does not',
@@ -2254,10 +2275,12 @@ const DEFINITIONS = [
     'count',
     ['advisory.discovery.pageSize'],
     copy,
-    "Batches reuse discovery's page size (user-approved 2026-11-26). The C3 probe's largest npm batch page was 121,579 bytes at per_page=100; the size reuses discovery's, whose 100-record pillow discovery page (1,009,662 bytes) shows how heavily advised record sets approach limit:evidence.envelope.maxResponseBytes.",
+    "Batches reuse discovery's page size and its page-size ladder (user-approved 2026-11-26; the ladder L11, E6, 2026-11-27, #383). The C3 probe's largest npm batch page was 121,579 bytes at per_page=100; discovery's 100-record pillow page (1,009,662 bytes) shows how heavily advised record sets approach limit:evidence.envelope.maxResponseBytes, which the ladder handles by retrying smaller.",
     {
-      protects: 'A batch page of heavily advised packages fits the per-response byte cap.',
-      effect: 'A batch asks for this many records per page and follows every page.',
+      protects:
+        'The start size of the batch page-size ladder is bounded, so a batch page of heavily advised packages that does not fit the per-response cap is retried smaller.',
+      effect:
+        'A batch asks for this many records per page and follows every page. A page over the per-response cap is resent at the same cursor at the next smaller size (BATCH_PAGE_SIZES, src/evidence/batches.ts).',
       test: 'src/evidence/batches.test.ts > a batch URL asks for the register page size',
     },
   ),

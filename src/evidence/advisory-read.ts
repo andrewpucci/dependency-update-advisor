@@ -1,6 +1,6 @@
 import { types } from 'node:util';
 import { PACKET_LIMITS, type EvidenceReason, type EvidenceStatus } from '../schema.js';
-import { freeze, isPlainObject } from './common.js';
+import { divisorChain, freeze, isPlainObject } from './common.js';
 import { BoundedClock, boundedGet } from './bounded-request.js';
 import { waitForRetry, type GithubQuotaGuard } from './github-quota.js';
 import type { ResearchCache } from './research-cache.js';
@@ -11,6 +11,7 @@ import {
   batchUrl,
   splitBatches,
   BATCH_MAX_TARGETS,
+  BATCH_PAGE_SIZES,
   BATCH_URL_BYTES,
 } from './batches.js';
 
@@ -85,6 +86,15 @@ type Dependencies = {
 export class AdvisoryFailure extends Error {
   constructor(readonly reason: EvidenceReason) {
     super(reason);
+  }
+}
+/**
+ * A response larger than the per-response byte cap, while the reader's byte share still had room:
+ * the page, not the share, is too large, so a page-size ladder may retry it at a smaller size.
+ */
+class ResponseTooLarge extends AdvisoryFailure {
+  constructor() {
+    super('budget');
   }
 }
 export function advisoryCheck(value: unknown, reason: EvidenceReason = 'malformed'): asserts value {
@@ -180,6 +190,15 @@ const DISCOVERY_PAGE_SIZE = String(limit('advisory.discovery.pageSize'));
 const DISCOVERY_URL_CAP = limit('advisory.discovery.urlBytes');
 const DISCOVERY_CURSOR_HEADROOM = limit('advisory.discovery.cursorHeadroomBytes');
 const SPELLING_CEILING = limit('advisory.discovery.spellingCeiling');
+/**
+ * The page sizes a discovery read retries at when a page does not fit the per-response cap: a
+ * divisor chain from the register page size down to 1, as the compare and release ladders use.
+ * Discovery and batches page by cursor, so a smaller page at the same cursor resumes exactly
+ * where the refused one would have started.
+ */
+export const DISCOVERY_PAGE_SIZES: readonly number[] = Object.freeze(
+  divisorChain(limit('advisory.discovery.pageSize')),
+);
 /** PEP 503 treats each of these as the same separator. */
 const PIP_SEPARATORS = ['-', '_', '.'] as const;
 /** One GitHub global advisory query URL, with the reader's fixed filters. */
@@ -456,6 +475,12 @@ function httpReason(response: Response, data: unknown): EvidenceReason {
     return 'permission';
   return response.status === HTTP_STATUS.notFound ? 'missing' : 'unknown';
 }
+/** The URL with its `per_page` set to `size`, every other parameter kept in place. */
+function withPerPage(url: string, size: number): string {
+  const result = new URL(url);
+  result.searchParams.set('per_page', String(size));
+  return result.href;
+}
 function continuation(link: string | null, original: string, seen: Set<string>): string | null {
   if (!link) return null;
   let next: string | null = null;
@@ -567,11 +592,8 @@ class Reader implements AdvisoryReader {
         if (chunk.done) return Buffer.concat(chunks, size);
         size += chunk.value.byteLength;
         if (!cached) this.bytes += chunk.value.byteLength;
-        advisoryCheck(
-          size <= this.limits.maxResponseBytes &&
-            (cached || this.bytes <= this.limits.maxTotalBytes),
-          'budget',
-        );
+        advisoryCheck(cached || this.bytes <= this.limits.maxTotalBytes, 'budget');
+        if (size > this.limits.maxResponseBytes) throw new ResponseTooLarge();
         this.remaining(provider);
         chunks.push(chunk.value);
       }
@@ -738,17 +760,38 @@ class Reader implements AdvisoryReader {
       tokens.add(token);
     }
   }
-  /** Every page of one GitHub query, from the original URL through validated cursors. */
-  private async github(url: string, each: (value: unknown) => void, cap?: number) {
+  /**
+   * Every page of one GitHub query, from the original URL through validated cursors. With
+   * `sizes`, a page-size ladder whose first size is the URL's `per_page`: a page over the
+   * per-response cap is retried at the same cursor at the next smaller size, and the rest of the
+   * query keeps that size. Every retry is an ordinary charged request.
+   */
+  private async github(
+    url: string,
+    each: (value: unknown) => void,
+    cap?: number,
+    sizes: readonly number[] = [],
+  ) {
+    let query = url;
     let next: string | null = url;
     const seen = new Set<string>();
     while (next) {
       advisoryCheck(cap === undefined || next.length <= cap, 'budget');
       seen.add(next);
-      const page = await this.page('github', next);
+      let page: Awaited<ReturnType<Reader['page']>>;
+      try {
+        page = await this.page('github', next);
+      } catch (error) {
+        const perPage = Number(new URL(next).searchParams.get('per_page'));
+        const smaller = sizes.find((size) => size < perPage);
+        if (!(error instanceof ResponseTooLarge) || smaller === undefined) throw error;
+        query = withPerPage(query, smaller);
+        next = withPerPage(next, smaller);
+        continue;
+      }
       advisoryCheck(Array.isArray(page.data));
       for (const value of page.data) each(value);
-      next = continuation(page.link, url, seen);
+      next = continuation(page.link, query, seen);
     }
   }
   /** The stored spellings of the target's package, from package-only queries. */
@@ -767,6 +810,7 @@ class Reader implements AdvisoryReader {
             url,
             (value) => names.push(...storedForms(value, t, this.kind)),
             DISCOVERY_URL_CAP,
+            DISCOVERY_PAGE_SIZES,
           );
           found = { forms: names };
         } catch (error) {
@@ -936,7 +980,7 @@ class Reader implements AdvisoryReader {
       const values: unknown[] = [];
       const affects = batch.map((t) => `${t.name}@${t.version}`);
       const url = batchUrl('npm', affects, this.kind);
-      await this.github(url, (value) => values.push(value), BATCH_URL_BYTES);
+      await this.github(url, (value) => values.push(value), BATCH_URL_BYTES, BATCH_PAGE_SIZES);
       for (const value of values) {
         // npm names are compared exactly as the query sent them.
         const named = [
@@ -1004,7 +1048,12 @@ class Reader implements AdvisoryReader {
       for (const url of this.deps.discoveryPlan?.(planned) ?? planned) {
         advisoryCheck(planned.includes(url));
         const values: unknown[] = [];
-        await this.github(url, (value) => values.push(value), DISCOVERY_URL_CAP);
+        await this.github(
+          url,
+          (value) => values.push(value),
+          DISCOVERY_URL_CAP,
+          DISCOVERY_PAGE_SIZES,
+        );
         for (const value of values)
           for (const [key, names] of batchNames(value, ecosystem, this.kind, nameKey))
             forms.set(key, new Set([...(forms.get(key) ?? []), ...names]));

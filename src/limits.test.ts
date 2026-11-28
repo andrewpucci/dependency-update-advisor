@@ -3,6 +3,7 @@ import { fileURLToPath } from 'node:url';
 import { expect, test } from 'vite-plus/test';
 import { PACKET_LIMITS } from './schema.js';
 import { COMPARE_PAGE_SIZES, RELEASE_PAGE_SIZES } from './evidence/upstream-read.js';
+import { DISCOVERY_PAGE_SIZES } from './evidence/advisory-read.js';
 import {
   PENDING_AUDIT,
   REGISTER,
@@ -898,4 +899,17 @@ test('the research and signal bounds keep their sources and formulas', () => {
   );
   for (const id of ['research.maxJsonDepth', 'research.maxTagDepth'] as const)
     expect(limitEntry(id).basis.kind, id).toBe('safety');
+});
+
+test('the advisory discovery bounds keep their sources and formulas', () => {
+  expect(limitEntry('advisory.discovery.urlBytes').basis).toMatchObject({
+    kind: 'external',
+    platformValue: 5_694,
+    probe: { command: 'npm run probe:batching' },
+  });
+  expect(limit('advisory.discovery.pageSize')).toBe(limit('github.pageSize'));
+  expect(limit('advisory.batch.pageSize')).toBe(limit('advisory.discovery.pageSize'));
+  expect(limit('advisory.batch.urlBytes')).toBe(limit('advisory.discovery.urlBytes'));
+  expect(DISCOVERY_PAGE_SIZES).toEqual([100, 50, 25, 5, 1]);
+  expect(Object.isFrozen(DISCOVERY_PAGE_SIZES)).toBe(true);
 });

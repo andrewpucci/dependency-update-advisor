@@ -27,7 +27,6 @@ const limits = {
   totalTimeoutMs: 10_000,
 };
 const BATCH_PAGE = String(limit('advisory.batch.pageSize'));
-const DISCOVERY_PAGE = String(limit('advisory.discovery.pageSize'));
 
 type Route = (url: URL) => Response | undefined;
 /** GitHub and OSV fake: each route may answer; anything unanswered is a loud 418. */
@@ -41,13 +40,21 @@ function server(...routes: Route[]) {
     }
     return Response.json({ message: 'unexpected request' }, { status: 418 });
   };
-  /** Batch and discovery requests: the only ones sent at their page size. */
-  const batches = () => requests.filter((u) => perPage(u) === BATCH_PAGE);
-  const singletons = () => requests.filter((u) => perPage(u) === '100');
+  /** Batch and discovery requests, told apart from versioned singletons by their targets. */
+  const batches = () => requests.filter((u) => isBatch(new URL(u)));
+  const singletons = () => requests.filter((u) => !isBatch(new URL(u)));
   return { fetch, requests, batches, singletons };
 }
-const perPage = (u: string) => new URL(u).searchParams.get('per_page');
-const isBatch = (u: URL) => u.searchParams.get('per_page') === BATCH_PAGE;
+/**
+ * Batches and discovery share the singletons' page size, so the targets tell them apart: an npm
+ * batch lists more than one target, and a discovery query names no version.
+ */
+const isBatch = (u: URL) => {
+  const targets = u.searchParams.get('affects')!.split(',');
+  return u.searchParams.get('ecosystem') === 'npm'
+    ? targets.length > 1
+    : targets.every((target) => !target.includes('@'));
+};
 const affectsOf = (u: string) => new URL(u).searchParams.get('affects')!.split(',');
 function ready(
   kind: QueryKind,
@@ -295,8 +302,9 @@ test.each([
   );
 });
 test('a continuation URL over the batch URL cap is budget, and the batch falls back', async () => {
-  // Forty long names fill one batch's first URL close to the cap less the cursor headroom.
-  const targets = Array.from({ length: 40 }, (_, i) => npm(`p${i}-${'x'.repeat(80)}`));
+  // Enough long names to fill one batch's first URL close to the cap less the cursor headroom.
+  const count = Math.ceil(BATCH_URL_BYTES / 80);
+  const targets = Array.from({ length: count }, (_, i) => npm(`p${i}-${'x'.repeat(80)}`));
   const cursor = 'c'.repeat(PACKET_LIMITS.identityBytes);
   const fake = server((u) => {
     if (!isBatch(u) || u.searchParams.has('after')) return Response.json([]);
@@ -363,9 +371,9 @@ test('duplicate targets are batched once and settled once', async () => {
   const reader = ready('reviewed', fake.fetch);
   expect(await reader.settle([npmTargets[0], npmTargets[1], { ...npmTargets[0] }])).toBe(2);
   expect(fake.batches().map(affectsOf)).toEqual([['widget@1.0.0', '@scope/gadget@2.0.0']]);
-  // Settled targets are not batched again.
+  // Settled targets are not batched again: the second pre-pass is a batch of one.
   expect(await reader.settle(npmTargets)).toBe(1);
-  expect(fake.batches().map(affectsOf)[1]).toEqual(['left-pad@1.3.0']);
+  expect(fake.requests.map(affectsOf)[1]).toEqual(['left-pad@1.3.0']);
   reader.close();
 });
 test('settle on a busy reader settles nothing and says so', async () => {
@@ -405,7 +413,8 @@ test('a GitHub rate limit leaves unsettled targets rate_limit and still lets OSV
 test('a record from the batch holding one version is attributed to that version only', async () => {
   const hit = record('reviewed', ['npm', 'widget', '< 2.0.0']);
   const fake = server((u) =>
-    Response.json(isBatch(u) && affectsOf(u.href).includes('widget@1.0.0') ? [hit] : []),
+    // Each version is a batch of one, whose URL is its singleton's.
+    Response.json(affectsOf(u.href).includes('widget@1.0.0') ? [hit] : []),
   );
   const reader = ready('reviewed', fake.fetch);
   await reader.settle([npm('widget'), npm('widget', '2.0.0')]);
@@ -421,7 +430,8 @@ test('two versions of one npm package are never in one batch', async () => {
   const reader = ready('reviewed', fake.fetch);
   await reader.settle([npm('widget'), npm('left-pad'), npm('widget', '2.0.0')]);
   reader.close();
-  expect(fake.batches().map(affectsOf)).toEqual([
+  // The second version is a batch of one, whose URL is its singleton's.
+  expect(fake.requests.map(affectsOf)).toEqual([
     ['widget@1.0.0', 'left-pad@1.0.0'],
     ['widget@2.0.0'],
   ]);
@@ -454,7 +464,12 @@ test.each([
 
 // S1 Batching Reconciliation fixtures: discovery batches (D3), Actions reviewed and pip malware.
 
-const isDiscovery = (u: URL) => u.searchParams.get('per_page') === DISCOVERY_PAGE;
+/** A discovery query is package-only: no `affects` entry names a version. */
+const isDiscovery = (u: URL) =>
+  u.searchParams
+    .get('affects')!
+    .split(',')
+    .every((target) => !target.includes('@'));
 const pip = (name: string, version = '1.0.0') =>
   ({ ecosystem: 'pip', name, version }) as AdvisoryTarget;
 // The long name's 243 spellings need several discovery requests.
@@ -631,7 +646,10 @@ test('an oversized discovery page drops only its own batch', async () => {
   reader.close();
 });
 test('packages share a discovery batch only while their spellings fit one request', async () => {
-  const many = Array.from({ length: 30 }, (_, i) => pip(`pkg${i}-alpha-beta`));
+  // More spellings than one request holds: 9 per name.
+  const many = Array.from({ length: Math.ceil(limit('advisory.discovery.urlBytes') / 100) }, (_, i) =>
+    pip(`pkg${i}-alpha-beta`),
+  );
   const fake = server(() => Response.json([]));
   const reader = ready('malware', fake.fetch);
   expect(await reader.settle(many)).toBe(many.length);
