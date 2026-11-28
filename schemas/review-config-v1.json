@@ -39,7 +39,6 @@
       "properties": {
         "sourceRoots": {
           "type": "array",
-          "maxItems": 16,
           "items": {
             "$ref": "#/definitions/relativePath"
           },
@@ -51,7 +50,7 @@
         },
         "excerptFiles": {
           "type": "array",
-          "maxItems": 128,
+          "maxItems": 193,
           "uniqueItems": true,
           "default": [],
           "items": {

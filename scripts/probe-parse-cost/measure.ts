@@ -7,17 +7,20 @@
  * the run, so the whole input is counted, and each run checks the reader walked it all. Per size it
  * prints the units counted and the slowest and median of RUNS timed runs after one warm-up; per
  * shape, the ratios of successive timings, which stay near 2 when the cost is linear. Usage:
- * measure.ts <counter>, or measure.ts use <corpus directory>.
+ * measure.ts <counter>, measure.ts use <corpus directory>, or measure.ts heap (the Dependabot
+ * reader's heap at its own caps; see run.ts).
  *
  * Counters: `session` (the W2 GitHub read session's JSON entries, src/github-read.ts),
  * `registry` (the npm registry reader's, src/evidence/npm-registry.ts), `npm` (the npm lockfile
  * collector's, src/evidence/npm.ts), `research` (a research reader's copy, the unit
- * limit:research.maxWork charges per entry, src/evidence/upstream-read.ts), `toml` (the uv TOML
+ * limit:research.maxWork charges per entry, src/evidence/upstream-read.ts), `research-bytes` (a
+ * research reader's decoded manifest bytes, which limit:research.maxWork also charges), `toml` (the uv TOML
  * reader's entries, src/evidence/uv-toml.ts), `workflow-nodes`, `workflow-aliases` and
  * `workflow-occurrences` (the actions reader, src/evidence/actions-yaml.ts), and
  * `dependabot-nodes`, `dependabot-updates` and `dependabot-roots` (the Dependabot roots reader,
  * src/dependabot-roots.ts, whose caps the runner lifts through HEAP_LIMIT_OVERRIDES).
  */
+import { createHash } from 'node:crypto';
 import { readdirSync, readFileSync } from 'node:fs';
 import { join, relative, sep } from 'node:path';
 import { performance } from 'node:perf_hooks';
@@ -31,6 +34,7 @@ import type * as ActionsYaml from '../../src/evidence/actions-yaml.js';
 import type * as Npm from '../../src/evidence/npm.js';
 import type * as NpmGraph from '../../src/evidence/npm-graph.js';
 import type * as Registry from '../../src/evidence/npm-registry.js';
+import type * as UpstreamGithub from '../../src/evidence/upstream-github.js';
 import type * as UpstreamRead from '../../src/evidence/upstream-read.js';
 import type * as UvToml from '../../src/evidence/uv-toml.js';
 import type * as Format from '../../src/format.js';
@@ -54,9 +58,19 @@ const { expand, preflight, readWorkflow } = await load<typeof ActionsYaml>(
 const { collectNpmInventory } = await load<typeof Npm>('src/evidence/npm.ts');
 const { createNpmRegistryReader } = await load<typeof Registry>('src/evidence/npm-registry.ts');
 const { upstreamCopy } = await load<typeof UpstreamRead>('src/evidence/upstream-read.ts');
+const { decodedContents, verifyContents } = await load<typeof UpstreamGithub>(
+  'src/evidence/upstream-github.ts',
+);
 const { readToml } = await load<typeof UvToml>('src/evidence/uv-toml.ts');
-const { BINARY_BYTES, DECIMAL_RADIX, DIGEST_BYTES, GIT_SHA_HEX_LENGTH, HTTP_STATUS } =
-  await load<typeof Format>('src/format.ts');
+const {
+  BASE64,
+  BINARY_BYTES,
+  DECIMAL_RADIX,
+  DIGEST_BYTES,
+  GIT_SHA_HEX_LENGTH,
+  GITHUB_BASE64_LINE_CHARS,
+  HTTP_STATUS,
+} = await load<typeof Format>('src/format.ts');
 const { limit } = await load<typeof Limits>('src/limits.ts');
 const { binding, npmRequest } = await load<typeof Fixtures>('tests/parity/evidence-reads.ts');
 const { npmScenario } = await load<typeof NpmFixtures>('tests/parity/npm-inventory.ts');
@@ -86,6 +100,8 @@ const now = () => 0;
 const encode = (text: string) => new TextEncoder().encode(text);
 const gc = globalThis.gc;
 if (!gc) throw new Error('run with --expose-gc (npm run probe:parse-cost does)');
+/** The narrowed collector, for functions that run after the check above. */
+const collect: () => void = gc;
 
 function stubFetch(body: string) {
   const bytes = encode(body);
@@ -260,6 +276,49 @@ function researchSeries(): Promise<Series[]> {
     };
     return { bytes, units: run(), run };
   });
+}
+
+/**
+ * A research reader's byte work: the manifest bytes it decodes from a contents response, one unit
+ * a decoded byte (src/evidence/upstream-github.ts, immutableContents), with the decode, the base64
+ * check and the blob hash that follow it timed. A reused cached response is also charged per byte,
+ * but its reuse does no per-byte work (it returns the frozen cached value), so it is not timed.
+ */
+function researchBytesSeries(): Series[] {
+  // A manifest arrives in one response, so its base64 text, at 4 characters for 3 bytes, fits the
+  // response cap: the series halves down from the most bytes that fits, and goes no higher. (The
+  // reader's base64 check overflows the call stack on text a few times larger than the cap.)
+  const top = Math.floor(
+    (limit('evidence.envelope.maxResponseBytes') * BASE64.bytes) / BASE64.chars,
+  );
+  const points = core.doublingSizes(top, BELOW + ABOVE, 0).map((bytes) => {
+    // The decode does the same work whatever the bytes are.
+    const decoded = Buffer.alloc(bytes, 'manifest');
+    const text = decoded.toString('base64');
+    const lines: string[] = [];
+    for (let start = 0; start < text.length; start += GITHUB_BASE64_LINE_CHARS)
+      lines.push(text.slice(start, start + GITHUB_BASE64_LINE_CHARS));
+    const sha = createHash('sha1')
+      .update('blob ' + bytes + '\0')
+      .update(decoded)
+      .digest('hex');
+    const data = {
+      type: 'file',
+      encoding: 'base64',
+      content: lines.join('\n') + '\n',
+      sha,
+      size: bytes,
+    };
+    const run = () => {
+      const read = decodedContents(data);
+      verifyContents(data, read);
+      return read.byteLength;
+    };
+    const units = run();
+    expectWalked(units === bytes, 'research-bytes');
+    return { bytes, units, run };
+  });
+  return [{ shape: 'manifest', points }];
 }
 
 function tomlSeries(): Series[] {
@@ -518,6 +577,7 @@ const counters: Record<Core.Counter, () => Series[] | Promise<Series[]>> = {
   registry: registrySeries,
   npm: npmSeries,
   research: researchSeries,
+  'research-bytes': researchBytesSeries,
   toml: tomlSeries,
   'workflow-nodes': () => workflowSeries('nodes'),
   'workflow-aliases': () => workflowSeries('aliases'),
@@ -670,7 +730,132 @@ function useOf(corpus: string) {
   }
 }
 
+/**
+ * The Dependabot reader's heap at its register caps, per crafted shape at its byte cap: what one
+ * parse allocates, what stays held after a full collection while the result is kept, and the
+ * slowest and median of RUNS parses.
+ */
+function heapOf(): void {
+  const used = () => process.memoryUsage().heapUsed;
+  for (const shape of core.DEPENDABOT_SHAPES) {
+    const bytes = encode(core.dependabotDocument(shape, DEPENDABOT_CAP));
+    parseDependabotRoots(bytes);
+    collect();
+    collect();
+    const before = used();
+    const result = parseDependabotRoots(bytes);
+    const allocatedBytes = used() - before;
+    collect();
+    collect();
+    const retainedBytes = used() - before;
+    const timings = Array.from({ length: RUNS }, () => {
+      const start = performance.now();
+      parseDependabotRoots(bytes);
+      return performance.now() - start;
+    });
+    console.log(
+      JSON.stringify({
+        node: process.version,
+        reader: 'dependabot',
+        shape,
+        bytes: bytes.byteLength,
+        outcome: result.kind,
+        allocatedBytes,
+        retainedBytes,
+        resultBytes: Buffer.byteLength(JSON.stringify(result)),
+        ...core.timingSummary(timings),
+      }),
+    );
+  }
+}
+
+/** The densest forms of a JSON event: the elements a parse makes the most heap for per byte. */
+const EVENT_SHAPES = {
+  numbers: '0',
+  objects: '{}',
+  arrays: '[]',
+  strings: '""',
+  keyed: '{"a":0}',
+} as const;
+
+/**
+ * One webhook-shaped event of exactly `bytes` bytes, `{"action":"completed","padding":[...]}`,
+ * its padding the densest form of `shape`, filled to the byte with trailing spaces.
+ */
+function eventDocument(shape: keyof typeof EVENT_SHAPES, bytes: number): string {
+  const head = '{"action":"completed","padding":[';
+  const tail = ']}';
+  const element = EVENT_SHAPES[shape];
+  const count = Math.floor((bytes - head.length - tail.length + 1) / (element.length + 1));
+  const body = Array.from({ length: count }, () => element).join(',');
+  const text = head + body + tail;
+  return text + ' '.repeat(bytes - text.length);
+}
+
+/**
+ * The event parse at limit:startup.maxEventBytes (L11, item 11 review follow-up), for one dense shape:
+ * the heap the decoded text takes and what JSON.parse allocates on top of it (an upper bound on
+ * its peak, with the young generation sized so no collection runs during it), what stays held
+ * after a full collection with the result kept, and the slowest and median of RUNS parses.
+ */
+function eventHeapOf(shape: keyof typeof EVENT_SHAPES): void {
+  const cap = limit('startup.maxEventBytes');
+  const used = () => process.memoryUsage().heapUsed;
+  const external = () => process.memoryUsage().external;
+  {
+    // The file's bytes, off the V8 heap as readBoundedEvent's buffer is, then its decoded text.
+    const bytes = encode(eventDocument(shape, cap));
+    collect();
+    collect();
+    const empty = used(),
+      emptyExternal = external();
+    const text = new TextDecoder('utf-8', { fatal: true }).decode(bytes);
+    // An ASCII text may be held outside the V8 heap, as an external string.
+    const textBytes = used() - empty;
+    const textExternalBytes = external() - emptyExternal;
+    collect();
+    collect();
+    const before = used();
+    const result: unknown = JSON.parse(text);
+    const allocatedBytes = used() - before;
+    collect();
+    collect();
+    const retainedBytes = used() - before;
+    const elements = (result as { padding: unknown[] }).padding.length;
+    const timings = Array.from({ length: RUNS }, () => {
+      const start = performance.now();
+      JSON.parse(text);
+      return performance.now() - start;
+    });
+    console.log(
+      JSON.stringify({
+        node: process.version,
+        reader: 'event',
+        shape,
+        bytes: bytes.byteLength,
+        textBytes,
+        textExternalBytes,
+        allocatedBytes,
+        peakBytes: textBytes + allocatedBytes,
+        retainedBytes,
+        elements,
+        ...core.timingSummary(timings),
+      }),
+    );
+  }
+}
+
 const [counter, corpus] = process.argv.slice(2);
+if (counter === 'event') {
+  if (!corpus || !(corpus in EVENT_SHAPES))
+    throw new Error(`usage: measure.ts event <${Object.keys(EVENT_SHAPES).join('|')}>`);
+  eventHeapOf(corpus as keyof typeof EVENT_SHAPES);
+  process.exit(0);
+}
+if (counter === 'heap') {
+  heapOf();
+  process.exit(0);
+}
 if (counter === 'use') {
   if (corpus === undefined) throw new Error('usage: measure.ts use <corpus directory>');
   useOf(corpus);

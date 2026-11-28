@@ -13,7 +13,13 @@ import { compareUpstreamVersions } from './evidence/upstream-version.js';
 import fs from 'node:fs/promises';
 import { authenticatedFetch, createEventReads, researchFetch } from './adapters.js';
 import { createRehearsalSink, type RehearsalSink } from './handoff.js';
-import { runReview, type PipelineInput, type PipelineResult } from './pipeline.js';
+import {
+  holdEvent,
+  runReview,
+  type HeldEvent,
+  type PipelineInput,
+  type PipelineResult,
+} from './pipeline.js';
 import { createTestClaimStore, type AnalysisTiming, type ClaimStore } from './review.js';
 import { createGithubTransport, parseRuntime, resolveWorkflow } from './runtime.js';
 import { limit } from './limits.js';
@@ -82,13 +88,25 @@ export type StartupDependencies = Readonly<{
   sink?: RehearsalSink;
 }>;
 
+/**
+ * Reads the event file whole into a buffer sized from its own length, one probe byte past it and
+ * never past the cap plus that byte, so an ordinary event allocates only its own size. A file over
+ * the cap, or one that grew past its stated length while read, fails closed.
+ */
 export async function readBoundedEvent(path: string): Promise<string> {
   const handle = await fs.open(path, 'r');
   try {
-    const buffer = Buffer.alloc(MAX_EVENT_BYTES + 1);
-    const { bytesRead } = await handle.read(buffer, 0, buffer.length, 0);
-    if (bytesRead > MAX_EVENT_BYTES) throw new Error('event too large');
-    return new TextDecoder('utf-8', { fatal: true }).decode(buffer.subarray(0, bytesRead));
+    const { size } = await handle.stat();
+    const buffer = Buffer.alloc(Math.min(size, MAX_EVENT_BYTES) + 1);
+    let length = 0;
+    for (;;) {
+      const { bytesRead } = await handle.read(buffer, length, buffer.length - length, length);
+      if (bytesRead === 0) break;
+      length += bytesRead;
+      if (length > MAX_EVENT_BYTES) throw new Error('event too large');
+      if (length === buffer.length) throw new Error('event changed while read');
+    }
+    return new TextDecoder('utf-8', { fatal: true }).decode(buffer.subarray(0, length));
   } finally {
     await handle.close();
   }
@@ -177,10 +195,11 @@ export async function runStartup(
   try {
     const eventPath = environment.GITHUB_EVENT_PATH;
     const eventName = environment.GITHUB_EVENT_NAME;
-    let payload: unknown;
+    // The parsed event is held for verification alone, never in a local of this frame (L11, item 11).
+    let event: HeldEvent;
     try {
       if (!eventPath || !eventName) throw new Error('no event');
-      payload = JSON.parse(await dependencies.readEvent(eventPath));
+      event = holdEvent(JSON.parse(await dependencies.readEvent(eventPath)));
     } catch {
       writeError('dependabot-review: event unavailable; no review ran.');
       return NOT_WIRED_EXIT_CODE;
@@ -201,7 +220,11 @@ export async function runStartup(
     if (!sink) throw new Error('sink');
     const claims = dependencies.claims ?? createTestClaimStore();
     const result = await runReview({
-      event: { eventName, payload, expected: { repository: runtime.repository, workflow } },
+      event: holdEvent({
+        eventName,
+        payload: event.take(),
+        expected: { repository: runtime.repository, workflow },
+      }),
       repository: runtime.repository,
       llmApiKey: runtime.llmApiKey,
       eventReads: createEventReads(transport, claims),

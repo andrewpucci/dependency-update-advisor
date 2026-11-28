@@ -783,7 +783,9 @@ test('the cumulative JSON entry cap admits exactly the registered count and refu
   const cap = limit('w2.npm.maxJsonEntries');
   const padded = (extra: number) => {
     const f = fixture();
-    f.input.limits.maxFileBytes = 500_000;
+    // The cap is the CPU harm point (L11, 2026-11-28), above what one file at the byte cap can
+    // hold, so the file cap is lifted to reach it: each padding entry takes 2 bytes.
+    f.input.limits.maxFileBytes = 4 * cap;
     f.input.limits.maxJsonEntries = cap;
     const others = ['base:package.json', 'head:package.json', 'base:package-lock.json'].reduce(
       (n, key) => n + jsonEntries(f.files[key]),
@@ -802,7 +804,7 @@ test('the cumulative JSON entry cap admits exactly the registered count and refu
   const refused = inventory(await collectNpmInventory(over.input, { session: over.session }));
   expect(refused.coverage.status).not.toBe('complete');
   expect(refused.coverage.reasons).toContain('budget');
-});
+}, 60_000);
 
 test('the changed npm root cap reads exactly the registered number of roots and records a budget gap for the rest', async () => {
   const cap = limit('w2.npm.maxRoots');

@@ -2,7 +2,7 @@ import { readFileSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import { expect, test } from 'vite-plus/test';
 import { PACKET_LIMITS } from './schema.js';
-import { COMPARE_PAGE_SIZES, RELEASE_PAGE_SIZES } from './evidence/upstream-read.js';
+import { COMPARE_PAGE_SIZES, RELEASE_PAGE_SIZES, byteWork } from './evidence/upstream-read.js';
 import { DISCOVERY_PAGE_SIZES } from './evidence/advisory-read.js';
 import {
   PENDING_AUDIT,
@@ -23,7 +23,7 @@ import {
   type LimitDefinition,
   type LimitId,
 } from './limits.js';
-import { COUNTERS } from '../scripts/probe-parse-cost/core.js';
+import { COUNTERS, harmFit } from '../scripts/probe-parse-cost/core.js';
 
 /** V8's maximum string length on 64-bit platforms, (1 << 29) - 24 code units. */
 const V8_MAX_STRING_LENGTH = 536_870_888;
@@ -59,7 +59,7 @@ test('PACKET_LIMITS is a frozen view of the register with the same values and ke
   expect(Object.isFrozen(PACKET_LIMITS)).toBe(true);
   const packetIds = [...REGISTER.keys()].filter((id) => id.startsWith('packet.')).sort();
   expect(packetIds).toEqual(keys.map((key) => `packet.${key}`).sort());
-  expect(packetIds).toHaveLength(14);
+  expect(packetIds).toHaveLength(15);
 });
 
 test('checkRegister names an entry whose basis kind is not one of the six', () => {
@@ -192,6 +192,7 @@ test('derived limits are wired to the entries they sum or copy', () => {
     expect.arrayContaining(['evidence.envelope.maxTotalBytes', 'research.cache.maxTotalBytes']),
   );
   expect(dependents(REGISTER, 'job.budget')).toEqual([
+    'analysis.maxAnalysisMs',
     'job.maxAnalysisTimeMs',
     'job.maxEvidenceDeadlineMs',
     'job.window',
@@ -201,10 +202,22 @@ test('derived limits are wired to the entries they sum or copy', () => {
 });
 
 test('the job budget is derived from the dependabot review workflow timeout', () => {
-  expect(dependents(REGISTER, 'workflow.dependabotReview.review.timeoutMinutes')).toEqual(
-    expect.arrayContaining(['job.budget', 'job.window']),
+  // Since L11 item 10(b) the budget is the review step's timeout; the job's follows from it.
+  expect(dependents(REGISTER, 'workflow.dependabotReview.review.steps.1.timeoutMinutes')).toEqual(
+    expect.arrayContaining([
+      'job.budget',
+      'job.window',
+      'workflow.dependabotReview.review.timeoutMinutes',
+    ]),
+  );
+  expect(dependents(REGISTER, 'workflow.dependabotReview.review.steps.0.timeoutMinutes')).toEqual(
+    expect.arrayContaining([
+      'job.reviewStepMaxMinutes',
+      'workflow.dependabotReview.review.timeoutMinutes',
+    ]),
   );
   expect(limit('job.budget')).toBe(900_000);
+  expect(limit('workflow.dependabotReview.review.timeoutMinutes')).toBe(18);
 });
 
 /** Each copy of a packet limit, paired with the packet entry whose value it mirrors. */
@@ -226,14 +239,14 @@ test('copies wired: a packet copy is a derived mirror of its packet entry', () =
   }
 });
 
-test('copies wired: the source-root and candidate bounds are one entry each, read by config and context', () => {
-  expect(limit('context.maxSourceRoots')).toBe(16);
-  expect(limit('context.maxSourceCandidates')).toBe(128);
-  expect(dependents(REGISTER, 'context.maxSourceRoots')).toEqual([]);
+test('copies wired: the candidate bound is one entry read by config and context, and roots have none', () => {
+  // The source-root count is deleted (L11, item 9): a root only filters paths already listed.
+  expect(REGISTER.has('context.maxSourceRoots' as LimitId)).toBe(false);
+  expect(limit('context.maxSourceCandidates')).toBe(193);
   expect(dependents(REGISTER, 'context.maxSourceCandidates')).toEqual([]);
   for (const file of ['src/config.ts', 'src/context.ts']) {
     const source = readFileSync(fileURLToPath(new URL(`../${file}`, import.meta.url)), 'utf8');
-    expect(source, file).toContain("limit('context.maxSourceRoots')");
+    expect(source, file).not.toContain('context.maxSourceRoots');
     expect(source, file).toContain("limit('context.maxSourceCandidates')");
   }
 });
@@ -430,7 +443,8 @@ test('the runner heap derives from runner memory less what is not old generation
     command: 'npm run probe:runtime-baseline',
   });
   // The off-heap buffers: the research cache, two copies of each read in flight and its largest
-  // decoded file, and two copies of each model reply in flight.
+  // decoded file, two copies of each model reply in flight, the event read buffer (L11, 11) and
+  // the event's decoded text, which V8 keeps as an external string (its review follow-up).
   expect(limit('runner.offHeapBytes')).toBe(
     limit('research.cache.maxTotalBytes') +
       limit('evidence.readsInFlight') *
@@ -441,7 +455,9 @@ test('the runner heap derives from runner memory less what is not old generation
             limit('w2.session.maxFileBytes'),
             limit('context.maxSourceFileBytes'),
           )) +
-      limit('analysis.maxConcurrentCalls') * 2 * limit('analysis.responseBytes'),
+      limit('analysis.maxConcurrentCalls') * 2 * limit('analysis.responseBytes') +
+      2 * limit('startup.maxEventBytes') +
+      1,
   );
   // The OS and agent reserve is MemTotal − MemAvailable recorded on a GitHub-hosted runner.
   expect(limitEntry('runner.systemReservedBytes').basis).toMatchObject({
@@ -909,6 +925,106 @@ test('every parse-cost counter the register cites is one the probe runs', () => 
   for (const [id, counter] of cited) expect(counters, `${id} cites ${counter}`).toContain(counter);
 });
 
+/** The combined harm timings of npm run probe:parse-cost -- harm, aggregates only (see the file). */
+type HarmFixture = {
+  deadlineMs: number;
+  counters: Record<string, { shape: string; units: number[]; slowestMs: number[] }[]>;
+};
+const HARM_FIXTURE = JSON.parse(
+  readFileSync(
+    fileURLToPath(new URL('../tests/probe-parse-cost/fixtures/harm.json', import.meta.url)),
+    'utf8',
+  ),
+) as HarmFixture;
+
+/** The cap, the probe counter and the three fit entries of each CPU harm cap. */
+const HARM_CAPS = [
+  ['research.maxWork', 'research', 'ResearchWorkUnit'],
+  ['w2.npm.maxJsonEntries', 'npm', 'NpmJsonEntry'],
+  ['w2.registry.maxJsonEntries', 'registry', 'RegistryJsonEntry'],
+  ['w2.uv.maxTomlEntries', 'toml', 'UvTomlEntry'],
+  ['w2.actions.maxAliasExpansions', 'workflow-aliases', 'AliasExpansion'],
+] as const;
+
+test('the harm fits recompute from the recorded probe timings', () => {
+  // L11, follow-up to Q8(a), approved 2026-11-28: each fit entry is what harmFit gives on the
+  // timings the probe printed, for the shape whose harm point comes first, and the cap is that
+  // harm point at the default evidence deadline.
+  expect(HARM_FIXTURE.deadlineMs).toBe(limit('evidence.envelope.totalTimeoutMs'));
+  for (const [cap, counter, unit] of HARM_CAPS) {
+    const shapes = HARM_FIXTURE.counters[counter] ?? [];
+    const fits = shapes.map(({ units, slowestMs }) =>
+      harmFit(units, slowestMs, HARM_FIXTURE.deadlineMs),
+    );
+    const first = fits.reduce((a, b) => (b.harm < a.harm ? b : a));
+    const ids = {
+      cost: `runner.parseMsPer${unit}`,
+      count: `runner.parseCount${unit}`,
+      exponent: `runner.parseExponent${unit}`,
+    } as Record<string, LimitId>;
+    expect(limit(ids.cost as LimitId), cap).toBe(first.msPerUnit);
+    expect(limit(ids.count as LimitId), cap).toBe(first.count);
+    expect(limit(ids.exponent as LimitId), cap).toBe(first.exponent);
+    expect(limit(cap), cap).toBe(first.harm);
+    for (const id of Object.values(ids))
+      expect(limitEntry(id).basis, id).toMatchObject({
+        kind: 'measured',
+        command: `npm run probe:parse-cost -- harm ${counter}`,
+      });
+  }
+});
+
+test('research byte work is charged at its measured weight and the upstream share fits the work cap', () => {
+  const bytes = HARM_FIXTURE.counters['research-bytes'] ?? [];
+  const [manifest] = bytes.map(({ units, slowestMs }) =>
+    harmFit(units, slowestMs, HARM_FIXTURE.deadlineMs),
+  );
+  expect(limit('runner.parseMsPerResearchByte')).toBe(manifest?.msPerUnit);
+  expect(limit('research.byteWorkWeight')).toBe(
+    limit('runner.parseMsPerResearchByte') / limit('runner.parseMsPerResearchWorkUnit'),
+  );
+  expect(byteWork(0)).toBe(0);
+  expect(byteWork(1)).toBe(1);
+  expect(byteWork(1_000_000)).toBe(Math.ceil(1_000_000 * limit('research.byteWorkWeight')));
+  // Decoding the whole upstream byte share as manifests stays well inside the work cap.
+  const share = limit('evidence.allocation.upstream.maxTotalBytes');
+  expect(byteWork(share)).toBeLessThan(limit('research.maxWork') / 4);
+});
+
+test('each CPU harm cap is its harm point at every evidence deadline', () => {
+  const definitions = [...REGISTER.values()].map(({ value, ...entry }): LimitDefinition =>
+    entry.basis.kind === 'derived' ? entry : { ...entry, value },
+  );
+  const latest = buildRegister(
+    definitions,
+    new Map([['evidence.envelope.totalTimeoutMs', limit('job.maxEvidenceDeadlineMs')]]),
+  );
+  for (const [cap, , unit] of HARM_CAPS) {
+    const cost = limit(`runner.parseMsPer${unit}` as LimitId);
+    const count = limit(`runner.parseCount${unit}` as LimitId);
+    const exponent = limit(`runner.parseExponent${unit}` as LimitId);
+    expect(limitEntry(cap).basis).toMatchObject({
+      kind: 'derived',
+      inputs: [
+        'evidence.envelope.totalTimeoutMs',
+        `runner.parseMsPer${unit}`,
+        `runner.parseCount${unit}`,
+        `runner.parseExponent${unit}`,
+      ],
+    });
+    // The slowest run on a runner 10 times slower takes a quarter of the deadline at the cap.
+    const time = (units: number) => cost * count * (units / count) ** exponent;
+    for (const register of [REGISTER, latest]) {
+      const share = (register.get('evidence.envelope.totalTimeoutMs')?.value ?? 0) / 4 / 10;
+      const value = register.get(cap)?.value ?? 0;
+      expect(time(value), cap).toBeLessThanOrEqual(share * (1 + 1e-12));
+      expect(time(value + 1), cap).toBeGreaterThan(share);
+    }
+  }
+  // The Dependabot alias cap copies the workflow one.
+  expect(limit('dependabot.maxAliasExpansions')).toBe(limit('w2.actions.maxAliasExpansions'));
+});
+
 test('the research and signal bounds keep their sources and formulas', () => {
   // The coverage setting's hard maximum is the upstream request ceiling (Q9(a)); a listed release
   // outside the range costs no request beyond its page, so it is not a per-candidate bound.
@@ -982,6 +1098,16 @@ test('the analysis settings are bounded by the change limit, the calls it needs 
       limit('job.freshnessAllowance'),
   );
   expect(limit('job.maxAnalysisTimeMs')).toBe(471_971);
+  // The analysis time cap copies it (L11, 2026-11-28), so it follows the evidence deadline down to
+  // the one model call that limit:job.maxEvidenceDeadlineMs leaves.
+  expect(limit('analysis.maxAnalysisMs')).toBe(limit('job.maxAnalysisTimeMs'));
+  const latest = buildRegister(
+    [...REGISTER.values()].map(({ value, ...entry }): LimitDefinition =>
+      entry.basis.kind === 'derived' ? entry : { ...entry, value },
+    ),
+    new Map([['evidence.envelope.totalTimeoutMs', limit('job.maxEvidenceDeadlineMs')]]),
+  );
+  expect(latest.get('analysis.maxAnalysisMs')?.value).toBe(limit('analysis.requestTimeoutMs'));
   for (const id of [
     'analysis.textBytes',
     'analysis.featureBytes',
@@ -1003,4 +1129,74 @@ test('the advisory discovery bounds keep their sources and formulas', () => {
   expect(limit('advisory.batch.urlBytes')).toBe(limit('advisory.discovery.urlBytes'));
   expect(DISCOVERY_PAGE_SIZES).toEqual([100, 50, 25, 5, 1]);
   expect(Object.isFrozen(DISCOVERY_PAGE_SIZES)).toBe(true);
+});
+
+test('no heap setting at its hard maximum takes packet.bytes below its floor', () => {
+  const definitions = [...REGISTER.values()].map(({ value, ...entry }): LimitDefinition =>
+    entry.basis.kind === 'derived' ? entry : { ...entry, value },
+  );
+  const at = (id: LimitId, value: number) => buildRegister(definitions, new Map([[id, value]]));
+  const floor = limit('packet.floorBytes');
+  expect(limitEntry('packet.floorBytes').basis).toMatchObject({
+    kind: 'derived',
+    inputs: ['packet.changes', 'packet.listEntries', 'packet.idCodeUnits', 'packet.identityBytes'],
+  });
+  expect(floor).toBeLessThanOrEqual(limit('packet.bytes'));
+  // Each heap maximum is the largest value at which the packet cap holds the floor, and one more
+  // takes it below the floor.
+  const cases: [LimitId, LimitId, number][] = [
+    ['analysis.maxConcurrentCalls', 'analysis.maxConcurrentCallsMax', 8],
+    // 71,091 before the 25,000,001-byte event buffer was counted off heap (L11, item 11), 70,807
+    // before its decoded text was (the item 11 review follow-up), and 70,535 beside the smallest
+    // valid packet (27,052 bytes) rather than the largest required-only one (the A1 follow-up).
+    ['analysis.completionTokens', 'analysis.completionTokensMax', 66_974],
+  ];
+  for (const [id, maximum, value] of cases) {
+    expect(limitEntry(id).configurable, id).toMatchObject({ maximum });
+    expect(limit(maximum), maximum).toBe(value);
+    expect(hardMaximum(REGISTER, id), id).toBe(value);
+    expect(at(id, value).get('packet.bytes')?.value, id).toBeGreaterThanOrEqual(floor);
+    expect(at(id, value + 1).get('packet.bytes')?.value, id).toBeLessThan(floor);
+  }
+  // At 8 calls the packet cap is 22,496,261 bytes; at 9 it is negative.
+  expect(at('analysis.maxConcurrentCalls', 8).get('packet.bytes')?.value).toBe(22_496_261);
+  // The concurrency maximum never passes the calls a run may make.
+  expect(limit('analysis.maxConcurrentCallsMax')).toBeLessThanOrEqual(limit('analysis.maxCalls'));
+  // The token maximum never passes the Q14(a) bound, the context less the smallest request.
+  expect(limit('analysis.completionTokensMax')).toBeLessThanOrEqual(
+    limit('analysis.model.contextTokens') -
+      limit('analysis.fixedRequestBytes') -
+      limit('analysis.model.templateTokens'),
+  );
+  // The Q10 joint maximum is sized beside a packet at the floor, not at today's packet cap, so it
+  // leaves headroom above the sum of the defaults; one share raised to it leaves the floor.
+  const members = Q10_RETAINED_INPUTS.filter(
+    (id) => id !== 'research.maxRetainedBytes' && id !== 'config.maxBytes',
+  );
+  const defaults = members.reduce((total, id) => total + limit(id), 0);
+  // 126,100,507 at the 16 KiB config cap; the 1 MiB cap (L11, item 9) took 1,032,192 more and
+  // the event buffer counted off heap (L11, item 11) 916,121 more, and the config cap at one blob
+  // response's decoded bytes (760,689, the item 9 review follow-up) gave 287,887 back, and the
+  // event's decoded text counted off heap (the item 11 review follow-up) takes 916,120.
+  // The floor at the largest required-only packet rather than the smallest valid one (the A1
+  // follow-up) takes 8,926,825.
+  expect(limit('runner.maxEvidenceRetainedBytes')).toBe(114_597_136);
+  expect(limit('runner.maxEvidenceRetainedBytes')).toBeGreaterThan(defaults);
+  const share = 'evidence.allocation.session.maxTotalBytes';
+  const raised = hardMaximum(REGISTER, share);
+  expect(raised).toBe(limit('runner.maxEvidenceRetainedBytes') - defaults + limit(share));
+  expect(at(share, raised).get('packet.bytes')?.value).toBeGreaterThanOrEqual(floor);
+  expect(at(share, raised + 1).get('packet.bytes')?.value).toBeLessThan(floor);
+  // check:limits reports a register whose packet cap falls below the floor.
+  const below = buildRegister(
+    definitions.map((entry) =>
+      entry.id === 'runner.unitExpansionHeapBytes'
+        ? { ...entry, value: limit('runner.heapBytes') }
+        : entry,
+    ),
+  );
+  expect(settingProblems(below)).toContain(
+    'packet.bytes: below limit:packet.floorBytes at the defaults',
+  );
+  expect(settingProblems(REGISTER)).toEqual([]);
 });

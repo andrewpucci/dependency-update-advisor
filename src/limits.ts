@@ -328,13 +328,29 @@ function settingProblemsAt(register: ReadonlyMap<string, Limit>, where: string):
     if (total > valueOf(maximum))
       problems.push(`${maximum}: the settings it bounds sum past it ${where}`);
   }
+  if (!aboveFloor(register)) problems.push(`packet.bytes: below limit:packet.floorBytes ${where}`);
   return problems;
 }
 
-/** Whether a setting's own bound holds in a register evaluated at the settings. */
+/**
+ * Whether the packet cap holds its structural floor (SPEC-limit-register section 5, the floor
+ * rule, approved 2026-11-28, L11 A1, #383): a register without the two entries has no floor.
+ */
+function aboveFloor(register: ReadonlyMap<string, Limit>): boolean {
+  const packet = register.get('packet.bytes')?.value;
+  const floor = register.get('packet.floorBytes')?.value;
+  return packet === undefined || floor === undefined || packet >= floor;
+}
+
+/**
+ * Whether a setting's own bound holds in a register evaluated at the settings, and the packet cap
+ * still holds its floor there: a setting that spends heap may rise only while limit:packet.bytes
+ * stays at or above limit:packet.floorBytes (the floor rule, L11 A1, #383).
+ */
 function withinMaximum(register: ReadonlyMap<string, Limit>, id: string): boolean {
   const setting = register.get(id)?.configurable;
   if (setting === undefined) return true;
+  if (!aboveFloor(register)) return false;
   const maximum = register.get(setting.maximum)?.value ?? Number.NaN;
   const value =
     setting.joint === true
@@ -353,7 +369,9 @@ function withinMaximum(register: ReadonlyMap<string, Limit>, id: string): boolea
  * after the others' defaults. A maximum is read from the register evaluated at the settings, so
  * when it falls as its own setting rises (the response cap's heap maximum does, through the
  * off-heap buffers), the hard maximum is the largest setting that still holds, found by
- * bisection (approved 2026-11-28, #383).
+ * bisection (approved 2026-11-28, #383). Every evaluation also needs limit:packet.bytes at or
+ * above limit:packet.floorBytes, so no setting can take the packet cap below its floor (L11 A1,
+ * approved 2026-11-28, #383).
  */
 export function settingProblems(register: ReadonlyMap<string, Limit>): string[] {
   // A built register carries each derived entry's resolved value; a definition must not.
@@ -592,6 +610,397 @@ export const packetBytesFor = (
     ),
   );
 
+/** The heap the model replies hold at peak: `calls` replies of `bytes` at `perByte`, rounded up. */
+export const replyHeapBytesFor = (calls: number, bytes: number, perByte: number): number =>
+  Math.ceil(calls * bytes * perByte);
+
+/** The register values limit:packet.bytes and limit:runner.heapBytes read, at the defaults. */
+type PacketHeapInputs = Readonly<{
+  memory: number;
+  youngGeneration: number;
+  /** limit:runner.offHeapBytes, which counts the replies in flight at `calls` × `reply`. */
+  offHeap: number;
+  baseline: number;
+  reserved: number;
+  calls: number;
+  reply: number;
+  perReplyByte: number;
+  expansion: number;
+  perPacketByte: number;
+  retained: number;
+  readsInFlight: number;
+  response: number;
+  perResponseByte: number;
+  evidencePerPacketByte: number;
+}>;
+
+/**
+ * limit:packet.bytes with `calls` model replies of `reply` bytes in flight in place of the
+ * register's: the replies' off-heap copies (2 each, as limit:runner.offHeapBytes counts them) move
+ * limit:runner.heapBytes, and their parse peak moves limit:analysis.replyHeapBytes. Every other
+ * input keeps its register value, so this is the packet cap a run at that setting gets.
+ */
+function packetBytesWithReplies(h: PacketHeapInputs, calls: number, reply: number): number {
+  const offHeap = h.offHeap - h.calls * 2 * h.reply + calls * 2 * reply;
+  const heap = heapBytesFor(h.memory, h.youngGeneration, offHeap, h.baseline, h.reserved);
+  return packetBytesFor(
+    heap,
+    replyHeapBytesFor(calls, reply, h.perReplyByte),
+    h.expansion,
+    h.perPacketByte,
+    h.retained,
+    h.readsInFlight,
+    h.response,
+    h.perResponseByte,
+    h.evidencePerPacketByte,
+  );
+}
+
+/** The register ids PacketHeapInputs reads, in its field order. */
+const PACKET_HEAP_INPUTS = [
+  'runner.memoryBytes',
+  'runner.youngGenerationBytes',
+  'runner.offHeapBytes',
+  'runner.baselineBytes',
+  'runner.systemReservedBytes',
+  'analysis.maxConcurrentCalls',
+  'analysis.responseBytes',
+  'runner.heapBytesPerReplyByte',
+  'runner.unitExpansionHeapBytes',
+  'runner.heapBytesPerPacketByte',
+  'runner.evidenceRetainedHeapBytes',
+  'evidence.readsInFlight',
+  'evidence.envelope.maxResponseBytes',
+  'runner.heapBytesPerEvidenceByte',
+  'runner.evidenceHeapBytesPerPacketByte',
+] as const;
+
+const packetHeapInputs = (values: readonly number[]): PacketHeapInputs => {
+  const [
+    memory = 0,
+    youngGeneration = 0,
+    offHeap = 0,
+    baseline = 0,
+    reserved = 0,
+    calls = 0,
+    reply = 0,
+    perReplyByte = 0,
+    expansion = 0,
+    perPacketByte = 0,
+    retained = 0,
+    readsInFlight = 0,
+    response = 0,
+    perResponseByte = 0,
+    evidencePerPacketByte = 0,
+  ] = values;
+  return {
+    memory,
+    youngGeneration,
+    offHeap,
+    baseline,
+    reserved,
+    calls,
+    reply,
+    perReplyByte,
+    expansion,
+    perPacketByte,
+    retained,
+    readsInFlight,
+    response,
+    perResponseByte,
+    evidencePerPacketByte,
+  };
+};
+
+/**
+ * The largest whole value in [1, `ceiling`] at which `packet` (decreasing in it) is at least
+ * `floor`, or 0 when none is (SPEC-limit-register section 5, the floor rule, L11 A1, #383).
+ */
+function largestAtFloor(ceiling: number, floor: number, packet: (value: number) => number): number {
+  if (ceiling < 1 || packet(1) < floor) return 0;
+  let low = 1;
+  let high = Math.floor(ceiling);
+  if (packet(high) >= floor) return high;
+  while (high - low > 1) {
+    const middle = Math.floor((low + high) / 2);
+    if (packet(middle) >= floor) low = middle;
+    else high = middle;
+  }
+  return low;
+}
+
+/**
+ * The reasons T4 admits for an unavailable evidence category (EVIDENCE_REASONS in src/schema.ts,
+ * which imports this module; src/schema.test.ts checks the two match).
+ */
+export const FLOOR_EVIDENCE_REASONS = Object.freeze([
+  'permission',
+  'rate_limit',
+  'timeout',
+  'missing',
+  'malformed',
+  'unsupported',
+  'truncated',
+  'budget',
+  'conflict',
+  'unknown',
+] as const);
+
+/** The ecosystems a floor packet can take; limit:packet.floorBytes is the largest of them. */
+export const FLOOR_SHAPES = Object.freeze(['npm', 'actions', 'uv'] as const);
+export type FloorShape = (typeof FLOOR_SHAPES)[number];
+/** The required-field caps a floor packet fills (limit:packet.floorBytes's inputs). */
+export type FloorCaps = Readonly<{
+  listEntries: number;
+  idCodeUnits: number;
+  identityBytes: number;
+}>;
+
+const FLOOR_SHA = '0'.repeat(40);
+/** The largest number a packet id field admits (positiveId in src/event.ts). */
+const FLOOR_NUMBER = Number.MAX_SAFE_INTEGER;
+/** The longest CI conclusion the binding admits (CONCLUSIONS in src/event.ts). */
+const FLOOR_CONCLUSION = 'startup_failure';
+/** The first of the 20,000 three-byte CJK characters floorId writes. */
+const FLOOR_CJK_FIRST = 0x4e00;
+const FLOOR_CJK_COUNT = 20_000;
+/** The uv ids floorId draws per change: the change, its two file sources and two name lists. */
+const FLOOR_ID_STRIDE = 8;
+/** The registry identity's fixed prefix. */
+const FLOOR_REGISTRY = 'https://a/';
+const FLOOR_LIST_STRIDE = 100;
+
+/**
+ * `units` code units of three-byte text, the most bytes an id serializes to under the code-unit
+ * cap; its first two characters keep it distinct for each `index` below 20,000 squared.
+ */
+function floorId(index: number, units: number): string {
+  const tag = String.fromCharCode(
+    FLOOR_CJK_FIRST + (index % FLOOR_CJK_COUNT),
+    FLOOR_CJK_FIRST + Math.floor(index / FLOOR_CJK_COUNT),
+  );
+  return `${tag}${'中'.repeat(units)}`.slice(0, units);
+}
+
+/** `"` written `bytes` times: one byte the cap counts, two serialized, the most T4 admits. */
+function quoted(bytes: number): string {
+  return '"'.repeat(Math.max(0, bytes));
+}
+
+/** `prefix` padded with `"` to `bytes`. */
+function padded(prefix: string, bytes: number): string {
+  return `${prefix}${quoted(bytes - prefix.length)}`;
+}
+
+/**
+ * The largest review packet T4 accepts with `changes` changes of one `shape` and no optional
+ * evidence (limit:packet.floorBytes), and the trusted snapshot it validates against. Every
+ * required field sits at its cap: each change an update with both sides, its required evidence
+ * categories unavailable for every reason, its own base and head file source, and every id, path
+ * and identity at limit:packet.idCodeUnits or limit:packet.identityBytes in the characters that
+ * serialize longest; uv carries its extras and groups at limit:packet.listEntries; the binding's
+ * strings at their caps and its numbers at the largest safe integer; context disabled; no
+ * finding, relationship or reachability verdict. src/schema.test.ts validates it and pins its
+ * bytes.
+ */
+export function floorPacket(changes: number, caps: FloorCaps, shape: FloorShape = 'uv') {
+  const { listEntries, idCodeUnits, identityBytes } = caps;
+  const repository = {
+    id: FLOOR_NUMBER,
+    owner: 'a'.repeat(identityBytes),
+    name: 'a'.repeat(identityBytes),
+  };
+  const binding = {
+    repository,
+    workflow: { id: FLOOR_NUMBER, path: quoted(identityBytes) },
+    runId: FLOOR_NUMBER,
+    runAttempt: FLOOR_NUMBER,
+    pullNumber: FLOOR_NUMBER,
+    headRepository: repository,
+    headSha: FLOOR_SHA,
+    baseRef: quoted(identityBytes),
+    baseSha: FLOOR_SHA,
+    mergeBaseSha: FLOOR_SHA,
+    actorId: FLOOR_NUMBER,
+    conclusion: FLOOR_CONCLUSION,
+    identity: [FLOOR_NUMBER, FLOOR_NUMBER, FLOOR_NUMBER, FLOOR_NUMBER, FLOOR_NUMBER, FLOOR_SHA],
+  };
+  const id = (index: number) => floorId(index, idCodeUnits);
+  const inventoryId = id(changes * FLOOR_ID_STRIDE);
+  const categories =
+    shape === 'npm'
+      ? ['upstream', 'vulnerability', 'malware', 'installScript']
+      : ['upstream', 'vulnerability', 'malware'];
+  const evidence = Object.fromEntries(
+    categories.map((key) => [
+      key,
+      { status: 'unavailable', reasons: [...FLOOR_EVIDENCE_REASONS], sourceIds: [] },
+    ]),
+  );
+  const registry = { kind: 'registry', identity: padded(FLOOR_REGISTRY, identityBytes) };
+  const files: Record<string, unknown>[] = [];
+  const side = (index: number, salt: number, changeId: string) => {
+    const sourceId = id(index * FLOOR_ID_STRIDE + 1 + salt);
+    const version = `${quoted(identityBytes - 1)}${salt}`;
+    let path: string;
+    let fields: Record<string, unknown>;
+    if (shape === 'actions') {
+      const prefix = `.github/workflows/w${index}-${salt}`;
+      path = `${padded(prefix, identityBytes - '.yml'.length)}.yml`;
+      fields = {
+        workflow: path,
+        jobId: id(index * FLOOR_ID_STRIDE + 3),
+        stepIndex: FLOOR_NUMBER,
+        action: `a/${'中'.repeat(idCodeUnits - 2)}`,
+        ref: version,
+        refKind: 'tag',
+      };
+    } else if (shape === 'npm') {
+      const root = padded(`r${index}-${salt}/`, identityBytes - '/package-lock.json'.length);
+      path = `${root}/package-lock.json`;
+      fields = {
+        root,
+        name: id(index * FLOOR_ID_STRIDE + 3),
+        lockPath: version,
+        version,
+        source: registry,
+      };
+    } else {
+      const root = padded(`r${index}-${salt}/`, identityBytes - '/pyproject.toml'.length);
+      path = `${root}/pyproject.toml`;
+      const list = (kind: number) =>
+        Array.from({ length: listEntries }, (_, entry) =>
+          id((index * FLOOR_LIST_STRIDE + entry) * FLOOR_ID_STRIDE + kind),
+        ).sort();
+      fields = {
+        root,
+        name: `a${index}-${'b'.repeat(idCodeUnits - String(index).length - 2)}`,
+        version,
+        source: registry,
+        marker: quoted(identityBytes),
+        extras: list(6),
+        groups: list(7),
+      };
+    }
+    files.push({
+      id: sourceId,
+      kind: 'file',
+      ecosystems: [shape],
+      memberIds: [changeId],
+      status: 'available',
+      reasons: [],
+      provenance: {
+        kind: 'file',
+        revision: salt === 0 ? 'base' : 'head',
+        repository,
+        sha: FLOOR_SHA,
+        path,
+      },
+    });
+    return { ...fields, sourceId };
+  };
+  const packetChanges = Array.from({ length: changes }, (_, index) => {
+    const changeId = id(index * FLOOR_ID_STRIDE);
+    return {
+      id: changeId,
+      ecosystem: shape,
+      kind: 'update',
+      role: 'direct',
+      ...(shape === 'npm'
+        ? { directRoles: ['production', 'development', 'peer', 'optional'] }
+        : {}),
+      evidence,
+      from: side(index, 0, changeId),
+      to: side(index, 1, changeId),
+    };
+  });
+  const coverage = Object.fromEntries(
+    FLOOR_SHAPES.map((ecosystem) => [
+      ecosystem,
+      {
+        status: ecosystem === shape ? 'complete' : 'not_applicable',
+        reasons: [],
+        sourceIds: [inventoryId],
+      },
+    ]),
+  );
+  const contextRevision = { repository, sha: FLOOR_SHA };
+  const context = { ok: true, status: 'disabled', dependencies: [], reasons: [] };
+  const packet = {
+    version: 1,
+    binding,
+    baseSha: FLOOR_SHA,
+    contextRevision,
+    coverage,
+    changes: packetChanges,
+    sources: [
+      {
+        id: inventoryId,
+        kind: 'file-list',
+        ecosystems: [...FLOOR_SHAPES],
+        memberIds: [],
+        status: 'available',
+        reasons: [],
+        provenance: {
+          kind: 'inventory',
+          repository,
+          baseSha: FLOOR_SHA,
+          headSha: FLOOR_SHA,
+          absentEcosystems: FLOOR_SHAPES.filter((ecosystem) => ecosystem !== shape),
+        },
+      },
+      ...files,
+    ],
+    findings: [],
+    relationships: [],
+    reachability: [],
+    retryAfter: null,
+    context,
+  };
+  return { packet, expected: { binding, baseSha: FLOOR_SHA, contextRevision, context } };
+}
+
+const floorCache = new Map<string, number>();
+
+/** The serialized bytes of the largest floor packet over FLOOR_SHAPES (limit:packet.floorBytes). */
+export function floorBytes(changes: number, caps: FloorCaps): number {
+  const key = JSON.stringify([changes, caps.listEntries, caps.idCodeUnits, caps.identityBytes]);
+  let bytes = floorCache.get(key);
+  if (bytes === undefined) {
+    bytes = Math.max(
+      ...FLOOR_SHAPES.map((shape) =>
+        Buffer.byteLength(JSON.stringify(floorPacket(changes, caps, shape).packet)),
+      ),
+    );
+    floorCache.set(key, bytes);
+  }
+  return bytes;
+}
+
+/**
+ * Fixed text of a stored-name discovery URL (githubUrl in src/evidence/advisory-read.ts) for pip
+ * with no spelling, at the longer query kind (`type=reviewed`) and the register page size; each
+ * further spelling after the first adds its `,`, which URLSearchParams writes as `%2C`.
+ * src/evidence/advisory-read.name-forms.test.ts pins both against githubUrl.
+ */
+export const DISCOVERY_URL_TEXT = Object.freeze({ fixedBytes: 83, separatorBytes: 3 });
+/** PEP 503 separators (`-`, `_`, `.`) and the two discovery query kinds (reviewed, malware). */
+const PIP_SEPARATOR_COUNT = 3;
+const DISCOVERY_QUERY_KINDS = 2;
+
+/**
+ * Discovery requests for every spelling of the shortest PyPI name with `separators` separators
+ * (one character per part, 2n + 1 characters), for both query kinds, under a first-URL room of
+ * `room` bytes past the fixed text.
+ */
+export const spellingRequests = (separators: number, room: number): number => {
+  const perUrl = Math.floor(
+    (room + DISCOVERY_URL_TEXT.separatorBytes) /
+      (2 * separators + 1 + DISCOVERY_URL_TEXT.separatorBytes),
+  );
+  return DISCOVERY_QUERY_KINDS * Math.ceil(PIP_SEPARATOR_COUNT ** separators / perUrl);
+};
+
 /**
  * Sequential publication requests the publication reserve allows (src/comments.ts:329-365): the
  * comment selection, its re-read, the publication gate, the write and the gate after it.
@@ -599,6 +1008,53 @@ export const packetBytesFor = (
 const PUBLICATION_REQUESTS = 5;
 
 const copy = (value: number): number => value;
+
+/** The share of the evidence deadline at which a parse or work count does harm (L11, Q8(a)). */
+export const HARM_DEADLINE_SHARE = 4;
+/** The allowance of #467 for a hosted runner slower than the machine that measured the cost. */
+export const HARM_SLOWER_RUNNER = 10;
+
+/**
+ * The CPU harm point of a parse or work counter (L11, follow-up to Q8(a), approved 2026-11-28,
+ * #383): the count at which the slowest run, on a runner HARM_SLOWER_RUNNER times slower, takes
+ * 1 / HARM_DEADLINE_SHARE of the evidence deadline, on the measured cost curve
+ * time = msPerUnit × count × (units ÷ count)^exponent through the probe's largest count, rounded
+ * down. npm run probe:parse-cost -- harm prints the same figure from its own timings.
+ */
+export const harmPoint = (
+  deadlineMs: number,
+  msPerUnit: number,
+  count: number,
+  exponent: number,
+): number =>
+  Math.floor(
+    count *
+      (deadlineMs / HARM_DEADLINE_SHARE / HARM_SLOWER_RUNNER / (msPerUnit * count)) **
+        (1 / exponent),
+  );
+
+/** GitHub wraps blob content at 60 base64 characters (the Get a blob response, docs.github.com). */
+const BLOB_BASE64_LINE = 60;
+/**
+ * The JSON bytes GitHub's Get a blob response spends on `n` decoded bytes beyond its envelope: the
+ * base64 text, 4 characters per 3 bytes, and an escaped line break (`\n`, 2 bytes) per line of
+ * BLOB_BASE64_LINE characters, the last line counted whole.
+ */
+export const blobContentBytes = (decoded: number): number => {
+  const text = 4 * Math.ceil(decoded / 3);
+  return text + 2 * Math.ceil(text / BLOB_BASE64_LINE);
+};
+/**
+ * The most decoded bytes one Get a blob response of at most `responseBytes`, with an envelope of
+ * `envelopeBytes`, can carry: the largest n with envelope + blobContentBytes(n) <= response. About
+ * (response - envelope) × 45 / 62, since 45 bytes take one 60-character line and its `\n`.
+ */
+export const blobDecodedCapacity = (responseBytes: number, envelopeBytes: number): number => {
+  const room = responseBytes - envelopeBytes;
+  let decoded = Math.max(0, Math.floor((room * 45) / 62) - 64);
+  while (blobContentBytes(decoded + 1) <= room) decoded += 1;
+  return decoded;
+};
 
 /** What the audit (L7) found for an entry; a field it has not filled stays PENDING_AUDIT. */
 type Audit = Readonly<{ protects?: string; effect?: string; test?: string; note?: string }>;
@@ -642,6 +1098,106 @@ function derived<const Id extends string>(
 
 /** The 2026-11-27 approval of the L11 recommendations (#383), which admitted these settings. */
 const L11_APPROVAL = 'approved by the maintainer on 2026-11-27 (L11, #383)';
+/** The 2026-11-28 approval of the decisions for the stopped L11 entries (#383). */
+const L11_STOPS_APPROVAL =
+  'approved by the maintainer on 2026-11-28 (L11, decisions for the stopped entries, #383)';
+/** The 2026-11-28 approval that set five parse and work caps at their measured CPU harm points. */
+const L11_HARM_APPROVAL =
+  'Approved by the maintainer on 2026-11-28 (L11, follow-up to Q8(a), #383): the basis is a measured platform property, which E4 admits when the measuring command is recorded';
+
+/** How npm run probe:parse-cost -- harm measured one counter, and the fit it printed. */
+type ParseFit = {
+  /** The probe counter. */
+  counter: string;
+  /** The inputs it timed, without the shared part every counter has. */
+  corpus: string;
+  /** The costliest shape, whose harm point comes first, and its doubling series. */
+  shape: string;
+  series: string;
+  /** The largest count timed on that shape, the slowest run there of any invocation, and the cost. */
+  count: number;
+  slowestMs: string;
+  msPerUnit: number;
+  /** The fitted exponent before and after the rounding rule. */
+  fitted: string;
+  exponent: number;
+  /** The run-to-run spread, and how far beyond `count` the harm point lies at the default deadline. */
+  spread: string;
+  extrapolation: string;
+};
+
+/** The shared part of every harm fit's measured basis. */
+const HARM_FIT_BASIS = {
+  headroom:
+    'none: a platform property, not a demand; the cap that derives from it applies the allowance of #467 for a runner 10 times slower',
+  measured: '2026-11-28',
+} as const;
+/** The rounding rule every harm fit follows (HARM_FIT_ROUNDING in scripts/probe-parse-cost/core.ts). */
+const HARM_FIT_RULE =
+  'the slowest run of 3 separate invocations of 5 timed runs each, after a warm-up; the per-unit cost is rounded up to 4 significant figures and the exponent, the least-squares slope of log time on log count over the series, rounded up to 2 decimals and to at least 1';
+
+/**
+ * The three measured entries of one counter's harm fit: its per-unit cost at the largest count
+ * timed, that count, and the exponent its cost grows by. A cap derives from them with harmPoint.
+ */
+function parseFit<
+  const Cost extends string,
+  const Count extends string,
+  const Exponent extends string,
+>(ids: { cost: Cost; count: Count; exponent: Exponent }, cap: string, fit: ParseFit) {
+  const command = `npm run probe:parse-cost -- harm ${fit.counter}`;
+  const corpus = `${fit.corpus}; crafted inputs, never a recorded file, on Node 24.22.3 (V8 13.6). Fixture: tests/probe-parse-cost/fixtures/harm.json holds the combined timings`;
+  const derives = `Not enforced. limit:${cap} derives from it with limit:${ids.cost}, limit:${ids.count} and limit:${ids.exponent}.`;
+  const test = 'src/limits.test.ts > the harm fits recompute from the recorded probe timings';
+  return [
+    {
+      id: ids.cost,
+      value: fit.msPerUnit,
+      unit: 'milliseconds',
+      protects: `Records the CPU time one unit costs the reader at the largest count the probe timed, on the costliest shape, so limit:${cap} can be set at a share of the evidence deadline.`,
+      basis: {
+        kind: 'measured',
+        command,
+        corpus,
+        statistic: `Per unit, at the largest size of the costliest shape, ${fit.shape}: ${fit.slowestMs} ms for ${fit.count.toLocaleString('en-US')} units, ${HARM_FIT_RULE}. Over the doubling series, ${fit.series}. The slowest run at one size differed by up to ${fit.spread} between the invocations, and at the default deadline the harm point lies ${fit.extrapolation} times beyond the largest count timed`,
+        ...HARM_FIT_BASIS,
+      },
+      effect: `${derives} A larger cost lowers the cap.`,
+      test,
+    },
+    {
+      id: ids.count,
+      value: fit.count,
+      unit: 'count',
+      protects: `Records the largest count the probe timed for limit:${cap}, where the cost curve is anchored.`,
+      basis: {
+        kind: 'measured',
+        command,
+        corpus,
+        statistic: `the units the reader counted at the largest size of the costliest shape, ${fit.shape}`,
+        ...HARM_FIT_BASIS,
+      },
+      effect: `${derives} The curve runs through the cost at this count.`,
+      test,
+    },
+    {
+      id: ids.exponent,
+      value: fit.exponent,
+      // The register has no ratio unit: the value is the power the cost grows by with the count.
+      unit: 'count',
+      protects: `Records how the reader's cost grows with the count, so limit:${cap} extrapolates the measured cost along the curve, not linearly.`,
+      basis: {
+        kind: 'measured',
+        command,
+        corpus,
+        statistic: `the least-squares slope of log slowest time on log count over the series of the costliest shape, ${fit.shape}: ${fit.fitted}, under the rule of ${HARM_FIT_RULE}`,
+        ...HARM_FIT_BASIS,
+      },
+      effect: `${derives} A larger exponent lowers the cap when the harm point lies beyond the largest count timed.`,
+      test,
+    },
+  ] as const;
+}
 
 /**
  * An adopter setting (SPEC-limit-register section 5): `value` is its default, today's value, and
@@ -655,6 +1211,7 @@ function configured<const Id extends string>(
   setting: Omit<LimitSetting, 'default'>,
   bears: string,
   audit: Required<Omit<Audit, 'note'>>,
+  approved: string = L11_APPROVAL,
 ) {
   return {
     id,
@@ -662,7 +1219,7 @@ function configured<const Id extends string>(
     unit,
     protects: audit.protects,
     effect: audit.effect,
-    basis: { kind: 'config', bears, approved: L11_APPROVAL },
+    basis: { kind: 'config', bears, approved },
     configurable: { ...setting, default: value },
     test: audit.test,
   } as const;
@@ -1088,6 +1645,36 @@ export const Q10_RETAINED_INPUTS = [
   'config.maxBytes',
 ] as const;
 
+/**
+ * The attempts one upstream member records outside the range scan, at most: 2 metadata reads and
+ * the metadata fallback record, 2 release tag candidates, the comparison and its final recheck,
+ * and 3 changelog paths. Pinned by the structural test named on research.maxAttempts.
+ */
+export const UPSTREAM_FIXED_ATTEMPTS = 10;
+
+/**
+ * The parts of a signal excerpt around untrusted registry text, in UTF-16 code units, pinned by
+ * the structural tests named on the entries that use them. A deprecation excerpt is
+ * JSON.stringify of {deprecated: {marker: 'deprecated', reason}}: 50 units around the reason (the
+ * PyPI yank marker is shorter), and a cut reason ends with the 19-unit marker. A publisher excerpt
+ * is JSON.stringify of {level: 'registry_reported', maintainers: {kind: 'known', value: names}}:
+ * 71 units around the names, and each name takes at least 4 (a one-character name, its quotes and
+ * its comma), the last one 3.
+ */
+export const SIGNAL_EXCERPT = Object.freeze({
+  reasonWrapperCodeUnits: 50,
+  reasonMarker: ' [reason truncated]',
+  maintainersWrapperCodeUnits: 71,
+  maintainerCodeUnits: 4,
+});
+
+/**
+ * The snapshot reads made before any excerpt blob in the shallowest layout: repository, commit,
+ * root listing, .github listing, config blob, Dependabot blob, and one source-root listing.
+ * Pinned by the structural test named on context.maxSourceCandidates.
+ */
+export const SNAPSHOT_FIXED_READS = 7;
+
 const DEFINITIONS = [
   {
     id: 'packet.bytes',
@@ -1114,6 +1701,30 @@ const DEFINITIONS = [
         'The largest packet whose heap fits in both phases, the smaller of two values. Analysis: (limit:runner.heapBytes − limit:analysis.replyHeapBytes − limit:runner.unitExpansionHeapBytes) ÷ limit:runner.heapBytesPerPacketByte; the concurrent model replies and the decision-unit expansion at its structural maximum come off first, and the snapshot tree, research cache and npm inventory are released before analysis (src/pipeline.ts), so no evidence state is held beside them. Evidence: (limit:runner.heapBytes − limit:runner.evidenceRetainedHeapBytes − limit:evidence.readsInFlight × limit:evidence.envelope.maxResponseBytes × limit:runner.heapBytesPerEvidenceByte) ÷ limit:runner.evidenceHeapBytesPerPacketByte; the evidence the readers keep at the Q10 settings and the responses in flight at their parse peak come off first. Each is rounded down. The packet is never sent to the model whole, so runner heap is its only real limit. Approved by the maintainer on 2026-11-27 (L11, #383); the expansion, the released state and the evidence-phase bound on 2026-11-28.',
     },
     test: 'src/schema.test.ts > enforces the exact serialized packet budget including multibyte text',
+  },
+  {
+    id: 'packet.floorBytes',
+    unit: 'bytes',
+    protects:
+      'States the largest packet a valid change set at limit:packet.changes changes needs with no optional evidence, so an adopter setting that spends heap can never take limit:packet.bytes below what any review at the change cap needs.',
+    effect:
+      "Not enforced at run time. check:limits rejects a register whose limit:packet.bytes falls below it at the defaults or with any setting at its hard maximum, and each heap-spending setting's hard maximum is the largest value at which limit:packet.bytes stays at or above it; L12 makes the config parser apply the same check at the adopter's settings.",
+    basis: {
+      kind: 'derived',
+      inputs: [
+        'packet.changes',
+        'packet.listEntries',
+        'packet.idCodeUnits',
+        'packet.identityBytes',
+      ],
+      formula: (changes, listEntries, idCodeUnits, identityBytes) =>
+        floorBytes(changes, { listEntries, idCodeUnits, identityBytes }),
+      description:
+        "The serialized bytes of the largest required-only packet T4 accepts with limit:packet.changes changes (floorPacket and floorBytes in src/limits.ts), so any valid PR at the change cap fits. Each change is an update with both sides and only its required evidence categories, each unavailable for all ten reasons; each side has its own base or head file source; every id, name, path, version, marker and identity sits at limit:packet.idCodeUnits or limit:packet.identityBytes in the characters that serialize longest (three-byte text under the code-unit cap, an escaped quote elsewhere); the binding's strings sit at their caps and its numbers at the largest safe integer; context is disabled; there is no finding, relationship or reachability verdict. The floor is the largest of the three ecosystem shapes, and uv binds: its extras and groups at limit:packet.listEntries each make it about 16.7 MB at the change cap, against about 4.2 MB for npm and 3.4 MB for Actions. The proposal's estimate of 1 to 10 MB was not part of the definition. Below the floor some valid change at the change cap cannot produce its packet, so it is a structural floor, not demand. A heap-spending setting's hard maximum is the largest value at which limit:packet.bytes stays at or above it (SPEC-limit-register section 5). Approved by the maintainer on 2026-11-28 (L11, A1, #383).",
+      structuralTest:
+        'src/schema.test.ts > the packet floor is the largest required-only packet T4 accepts at the change cap',
+    },
+    test: 'src/limits.test.ts > no heap setting at its hard maximum takes packet.bytes below its floor',
   },
   {
     id: 'runner.heapBytesPerPacketByte',
@@ -1291,7 +1902,7 @@ const DEFINITIONS = [
       kind: 'derived',
       inputs: [
         'runner.heapBytes',
-        'packet.bytes',
+        'packet.floorBytes',
         'runner.evidenceHeapBytesPerPacketByte',
         'evidence.readsInFlight',
         'evidence.envelope.maxResponseBytes',
@@ -1302,7 +1913,7 @@ const DEFINITIONS = [
       ],
       formula: (
         heap,
-        packet,
+        floor,
         perPacketByte,
         inFlight,
         response,
@@ -1312,12 +1923,12 @@ const DEFINITIONS = [
         config,
       ) =>
         Math.floor(
-          (heap - packet * perPacketByte - inFlight * response * perResponseByte) / perRetained,
+          (heap - floor * perPacketByte - inFlight * response * perResponseByte) / perRetained,
         ) -
         research -
         config,
       description:
-        'The joint hard maximum of the thirteen Q10 byte shares and retained caps: the evidence-phase heap left beside the packet at its evidence-phase rate and the responses in flight at their parse peak, at limit:runner.heapBytesPerRetainedByte, less limit:research.maxRetainedBytes and limit:config.maxBytes, which are held beside them, rounded down. limit:packet.bytes takes the evidence-phase heap the defaults leave, so a setting raised above its default lowers the packet cap rather than passing this maximum. Q10(a) approved by the maintainer on 2026-11-27, #383.',
+        "The joint hard maximum of the thirteen Q10 byte shares and retained caps: the evidence-phase heap left beside a packet at its structural floor (limit:packet.floorBytes) at its evidence-phase rate and the responses in flight at their parse peak, at limit:runner.heapBytesPerRetainedByte, less limit:research.maxRetainedBytes and limit:config.maxBytes, which are held beside them, rounded down. limit:packet.bytes takes the evidence-phase heap the settings leave, so a setting raised above its default lowers the packet cap, and at this maximum the packet cap is the floor (the floor rule, SPEC-limit-register section 5). Q10(a) approved by the maintainer on 2026-11-27, #383; the floor in place of today's packet cap, which left the maximum equal to the sum of the defaults, on 2026-11-28 (L11, A1).",
     },
     test: 'none: the joint hard maximum of adopter settings the parser does not read yet (L12, #384); src/limits.test.ts pins its formula',
   },
@@ -1373,11 +1984,16 @@ const DEFINITIONS = [
         'context.maxSourceFileBytes',
         'analysis.maxConcurrentCalls',
         'analysis.responseBytes',
+        'startup.maxEventBytes',
       ],
-      formula: (cache, inFlight, response, blob, file, source, calls, reply) =>
-        cache + inFlight * 2 * (response + Math.max(blob, file, source)) + calls * 2 * reply,
+      formula: (cache, inFlight, response, blob, file, source, calls, reply, event) =>
+        cache +
+        inFlight * 2 * (response + Math.max(blob, file, source)) +
+        calls * 2 * reply +
+        2 * event +
+        1,
       description:
-        'Every off-heap buffer the register bounds, summed over both phases because an ArrayBuffer is freed only by a later collection: the research cache bodies (limit:research.cache.maxTotalBytes, Uint8Array, src/evidence/research-cache.ts:106); for each evidence read in flight (limit:evidence.readsInFlight), its body chunks and their concatenation (2 × limit:evidence.envelope.maxResponseBytes, for example src/github-read.ts:412) and the largest decoded file with its copy (2 × the largest of limit:snapshot.maxBlobBytes, src/snapshot.ts:119; limit:w2.session.maxFileBytes; limit:context.maxSourceFileBytes, src/context.ts:494); and for each model call in flight, its reply chunks and their concatenation (2 × limit:analysis.responseBytes, src/analysis/mistral.ts:199-211). Approved by the maintainer on 2026-11-27 (L11, #383).',
+        'Every off-heap buffer the register bounds, summed over both phases because an ArrayBuffer is freed only by a later collection: the research cache bodies (limit:research.cache.maxTotalBytes, Uint8Array, src/evidence/research-cache.ts:106); for each evidence read in flight (limit:evidence.readsInFlight), its body chunks and their concatenation (2 × limit:evidence.envelope.maxResponseBytes, for example src/github-read.ts:412) and the largest decoded file with its copy (2 × the largest of limit:snapshot.maxBlobBytes, src/snapshot.ts:119; limit:w2.session.maxFileBytes; limit:context.maxSourceFileBytes, src/context.ts:494); and for each model call in flight, its reply chunks and their concatenation (2 × limit:analysis.responseBytes, src/analysis/mistral.ts:199-211); and the event read buffer, at most limit:startup.maxEventBytes plus one probe byte (src/startup.ts readBoundedEvent, sized from the file since the item 11 review follow-up), added by L11 item 11(b) on 2026-11-28, and its decoded text, limit:startup.maxEventBytes more, which V8 keeps outside its heap as an external string when the event is ASCII (npm run probe:parse-cost -- event, textExternalBytes 25,000,000 on 2026-11-28 under Node 24.22.3), added by the item 11 review follow-up. Approved by the maintainer on 2026-11-27 (L11, #383).',
     },
     test: 'src/limits.test.ts > the runner heap derives from runner memory less what is not old generation',
   },
@@ -1619,34 +2235,116 @@ const DEFINITIONS = [
     basis: { kind: 'unjustified', note: 'awaiting L8 measurement' },
     test: 'src/schema.test.ts > enforces the context fact count independently of excerpt and packet bounds',
   },
-  // Workflow timeouts, copied from the YAML `timeout-minutes` of each job.
+  // Workflow timeouts, copied from the YAML `timeout-minutes` of each job and step.
   configured(
-    'workflow.dependabotReview.review.timeoutMinutes',
+    'workflow.dependabotReview.review.steps.1.timeoutMinutes',
     15,
     'minutes',
     {
       setting: 'reusable-workflow input timeout-minutes (L13, provisional)',
-      maximum: 'github.hostedJobMaxMinutes',
+      maximum: 'job.reviewStepMaxMinutes',
     },
-    "The adopter: a longer job spends more of their Actions minutes and leaves a PR waiting longer for its review, and a shorter one leaves less time for evidence and analysis. Section 5 admitted the job budget as configuration on 2026-11-17 through a reusable-workflow input (L13); its hard maximum is GitHub's hosted-job limit.",
+    "The adopter: a longer review spends more of their Actions minutes and leaves a PR waiting longer for its review, and a shorter one leaves less time for evidence and analysis. Section 5 admitted the job budget as configuration on 2026-11-17 through a reusable-workflow input (L13). Since L11 item 10 the timeout is on the review step, which the runner times from the step's own start, after the action download and the app-token step; its hard maximum is GitHub's hosted-job limit less the time before the step.",
     {
       protects:
-        "The runner kills the review job at its timeout-minutes, so the pipeline's deadlines must finish inside that wall-clock limit.",
+        "The runner kills the review step at its timeout-minutes, timed from the step's start, so the pipeline's deadlines must finish inside that wall-clock limit.",
       effect:
-        'The runner cancels the job when the timeout passes; the pipeline derives its job budget from this value, so its deadlines are set to end before it.',
-      test: 'none: checked against the workflow file by check:limits (L6); the workflow input that sets it lands with L13',
+        'The runner cancels the step when the timeout passes; the pipeline derives its job budget from this value, so its deadlines are set to end before it.',
+      test: 'tests/reusable-workflow.test.ts > R10 bounds execution without concurrency or ignored failures',
+    },
+    L11_STOPS_APPROVAL,
+  ),
+  {
+    id: 'appToken.maxRequests',
+    value: 12,
+    unit: 'count',
+    protects:
+      'Records how many GitHub requests the pinned app-token action can make in its main step, so that step can carry a timeout derived from the request timeout.',
+    basis: {
+      kind: 'external',
+      url: 'https://github.com/actions/create-github-app-token/blob/f418cff399f7aef4c2f0ad47e25ca7a6abbdd6fc/lib/main.js',
+      checked: '2026-11-28',
+      platformValue: 12,
+      margin:
+        "none. At the pinned v3.4.0, main.js retries the token request with p-retry (retries: 3, so 4 attempts, only on a 5xx or network error); each attempt is GET /repos/{owner}/{repo}/installation through the @octokit/auth-app 8.3.1 hook (dist-src/hook.js), which repeats a JWT request once after a clock-skew 401, and POST /app/installations/{installation_id}/access_tokens on the plain request (dist-src/get-installation-authentication.js), which has no retry: 4 × (2 + 1) = 12. The post step's one DELETE /installation/token (lib/post.js) runs after the review step and is not counted here",
+    },
+    effect:
+      'Not enforced: limit:workflow.dependabotReview.review.steps.0.timeoutMinutes is derived from it.',
+    test: 'tests/reusable-workflow.test.ts > R10 bounds execution without concurrency or ignored failures',
+  },
+  {
+    id: 'appToken.retryWaitMs',
+    value: 7_000,
+    unit: 'milliseconds',
+    protects:
+      "Records the waits between the pinned app-token action's token attempts, so that step's timeout covers them.",
+    basis: {
+      kind: 'external',
+      url: 'https://github.com/actions/create-github-app-token/blob/f418cff399f7aef4c2f0ad47e25ca7a6abbdd6fc/lib/main.js',
+      checked: '2026-11-28',
+      platformValue: 7_000,
+      margin:
+        'none. main.js sets only retries: 3, so p-retry 8.0.1 (the version its package-lock.json resolves) waits minTimeout × factor^(n − 1) before retry n with its defaults minTimeout 1,000, factor 2 and randomize false: 1,000 + 2,000 + 4,000 = 7,000 ms',
+    },
+    effect:
+      'Not enforced: limit:workflow.dependabotReview.review.steps.0.timeoutMinutes is derived from it.',
+    test: 'tests/reusable-workflow.test.ts > R10 bounds execution without concurrency or ignored failures',
+  },
+  derived(
+    'workflow.dependabotReview.review.steps.0.timeoutMinutes',
+    'minutes',
+    ['appToken.maxRequests', 'github.requestTimeoutMs', 'appToken.retryWaitMs'],
+    (requests, requestMs, waitMs) => Math.ceil((requests * requestMs + waitMs) / 60_000),
+    "The app-token step's timeout: its requests (limit:appToken.maxRequests), each allowed the reviewer's own GitHub request timeout (limit:github.requestTimeoutMs), and the waits between its attempts (limit:appToken.retryWaitMs), rounded up to whole minutes: ⌈(12 × 11,639 + 7,000) ÷ 60,000⌉ = 3. The action sets no request timeout of its own, so the step timeout is what bounds it. Added by the L11 item 10 review follow-up (2026-11-28, #383) in place of job.preStepAllowance, the user's 2026-11-11 allowance, which is deleted.",
+    {
+      protects:
+        'The runner kills the app-token step at its timeout-minutes, so a stalled token request cannot spend the job timeout the review step needs.',
+      effect:
+        'The runner cancels the step when the timeout passes; the job fails before the review starts, which fails closed.',
+      test: 'tests/reusable-workflow.test.ts > R10 bounds execution without concurrency or ignored failures',
+    },
+  ),
+  derived(
+    'job.reviewStepMaxMinutes',
+    'minutes',
+    ['github.hostedJobMaxMinutes', 'workflow.dependabotReview.review.steps.0.timeoutMinutes'],
+    (hosted, appToken) => hosted - appToken,
+    "The longest review step a hosted job can hold: GitHub's hosted-job limit less the app-token step's timeout (limit:workflow.dependabotReview.review.steps.0.timeoutMinutes). Approved by the maintainer on 2026-11-28 (L11, item 10(b), #383). Since the item 10 review follow-up (2026-11-28) the app-token step's timeout stands in place of job.preStepAllowance, which is deleted.",
+    {
+      protects:
+        "Keeps the adopter's review-step timeout, with the app-token step's, inside GitHub's hosted-job limit.",
+      effect:
+        'Not enforced: check:limits evaluates the register with the step timeout at this value; the workflow input that sets it lands with L13.',
+      test: 'none: the hard maximum of a setting the workflow does not read yet (L13); check:limits evaluates it',
+    },
+  ),
+  derived(
+    'workflow.dependabotReview.review.timeoutMinutes',
+    'minutes',
+    [
+      'workflow.dependabotReview.review.steps.0.timeoutMinutes',
+      'workflow.dependabotReview.review.steps.1.timeoutMinutes',
+    ],
+    (appToken, review) => appToken + review,
+    "The job's timeout: the app-token step's timeout and the review step's, so the runner ends the job no earlier than either step's own timeout. The job setup (the action download) and the app-token post step's one revocation request are bounded by no register value; they run in the app-token step's minutes that step does not spend, and if they pass them the job timeout ends the review step early, which fails closed. Approved by the maintainer on 2026-11-28 (L11, item 10(b), #383). Since the item 10 review follow-up (2026-11-28) the app-token step's timeout stands in place of job.preStepAllowance, which is deleted.",
+    {
+      protects:
+        "The runner kills the job at its timeout-minutes, timed from the job's start, so the job must outlast both steps' own timeouts.",
+      effect:
+        "The runner cancels the job when the timeout passes; the review step ends first at its own timeout unless the job setup, the app-token step and its post step together pass the app-token step's timeout.",
+      test: 'tests/reusable-workflow.test.ts > R10 bounds execution without concurrency or ignored failures',
     },
   ),
   // Job timing, from budget.ts.
   derived(
     'job.budget',
     'milliseconds',
-    ['workflow.dependabotReview.review.timeoutMinutes'],
+    ['workflow.dependabotReview.review.steps.1.timeoutMinutes'],
     (minutes) => minutes * 60_000,
-    "The runner's wall-clock limit is the reusable workflow's timeout-minutes, in milliseconds.",
+    "The runner's wall-clock limit for the review is the review step's timeout-minutes, in milliseconds, timed from the step's start (L11, item 10(b)).",
     {
       protects:
-        "The runner's wall-clock limit for the review job; every pipeline deadline is measured against it.",
+        "The runner's wall-clock limit for the review step; every pipeline deadline is measured against it.",
       effect:
         "Not reached directly; it is the input to job.window, which sets the pipeline's deadlines.",
       test: 'none: derived into job.window; no code compares against job.budget itself. JOB_BUDGET_MS (src/budget.ts:4) is read only by budget.test.ts, and job.window (src/budget.ts:15) is compared in src/runtime.ts:187 (now - started >= window) and used as the analysis deadline in src/pipeline.ts:500',
@@ -1654,10 +2352,10 @@ const DEFINITIONS = [
   ),
   unjustified('job.preStartupAllowance', 60_000, 'milliseconds', {
     protects:
-      "The pipeline clock starts at runStartup, after the runner has spent time on the app-token step, action download, Node load and self-check; this allowance keeps the window inside the runner's timeout.",
+      "The pipeline clock starts at runStartup, after the review step has spent time on Node load, the relaunch and the self-check; this allowance keeps the window inside the step's timeout.",
     effect:
       'Shortens the job window by 60,000 ms, so the analysis and freshness deadlines move earlier; it converts no outcome to success.',
-    note: "stopped (L11, D9 and Q22(b), #383): the approved option anchors the job window at the runner's job start, read once at startup, and deletes this entry. Implemented, it relocates the chosen margin rather than removing it. GitHub gives a job's start only as a wall-clock started_at, to the second, in the run's jobs listing, which names the job only by its runner_name; the window is kept on the monotonic clock (src/startup.ts), so the anchor must convert GitHub's clock to the runner's. That conversion is off by the clock skew between GitHub and the runner, which no GitHub document bounds, so keeping the window inside the runner's timeout would need a new chosen skew allowance. The run's run_started_at, already read during event verification, is earlier than the job start by the queue time, which is also unbounded. Value unchanged; a basis needs a maintainer decision on the skew",
+    note: "pending a hosted-runner run (L11, item 10(b), approved by the maintainer on 2026-11-28, #383): the review's timeout is now on its step (limit:workflow.dependabotReview.review.steps.1.timeoutMinutes), which the runner times from the step's own start, so the action download and the app-token step no longer count against it (they count against the job timeout, limit:workflow.dependabotReview.review.timeoutMinutes). What remains is the in-step time before runStartup takes the job start: Node load, the relaunch and the self-check, a platform property. The recorded command is npm run probe:runtime-baseline, after npm run build, inside a workflow step on the smallest supported hosted runner (ubuntu-latest, 2 CPUs); it reports startupMs, the slowest of 5 runs from the parent's process start to the relaunched child's exit, which follows right after the job start. It has not been run: the proposal expects it to free about 55 s of the 60,000. The value stays the user's 2026-11-11 choice until that run gives a basis",
     test: 'none: subtracted only inside job.window (src/budget.ts:9 and :15); the window is enforced by src/runtime.ts:187, covered by the existing test in src/runtime.test.ts:267, and the analysis deadline at src/pipeline.ts:500 is pinned by the existing deadline tests',
   }),
   derived(
@@ -2216,14 +2914,44 @@ const DEFINITIONS = [
     note: 'stopped (L11, Q12(a), #383): the approved basis is external, the most bytes an `after` cursor GitHub returned adds to a query URL, from npm run probe:batching, which now reports it as longest.cursorHeadroomBytes. The C3 run of 2026-11-26 predates that field, and the probe needs a GitHub token and the corpus targets file, neither of which this session has, so the probed value is unknown and 256 stays. Run the probe and set the value it reports, with no margin',
     test: 'src/evidence/advisory-read.name-forms.test.ts > discovery fills a request up to exactly the cursor headroom under the cap',
   }),
-  unjustified('advisory.discovery.spellingCeiling', 243, 'count', {
-    protects:
-      'A pip name with many separators cannot fan out into an unbounded number of discovery requests.',
-    effect:
-      'A name with more spellings (more than 5 separators) is unsupported before any request.',
-    note: 'stopped (L11, E8 and Q8(a), #383). The safety check fails: npm run probe:name-separators over the PyPI simple index (951,539 project names, 2026-11-28) finds 6,089 names (0.64%) with more than 5 separators, up to 28, so 243 binds legitimate names. The fallback E8(b), 81, has no derivation at the new limit:advisory.discovery.urlBytes: under its 5,438-byte first-URL room, one request holds every spelling of a 5-separator name up to 19 characters and of a 4-separator name up to 63, so the largest spelling count that always fits depends on name length, and no register entry bounds a PyPI name length except limit:packet.idCodeUnits (256), which would give 9. 81 came from corpus name lengths, which are measured demand. A new basis needs a maintainer decision',
-    test: 'src/evidence/advisory-read.name-forms.test.ts > a name over the spelling ceiling sends no request',
-  }),
+  configured(
+    'advisory.discovery.spellingCeiling',
+    243,
+    'count',
+    { setting: 'limits.coverage.pipSpellings', maximum: 'advisory.discovery.spellingCeilingMax' },
+    'The adopter: a PyPI name with n separators has 3^n spellings, every one a discovery query, so a larger setting covers names with more separators at the cost of the shared advisory request share (limit:evidence.allocation.advisory.maxRequests) and the time it takes; names past it stay unsupported. npm run probe:name-separators over the PyPI simple index (951,539 names, 2026-11-28) found 6,089 (0.64%) with more than 5 separators, up to 28, so the default of 243 (3^5) leaves them unsupported. Coverage bound category (L11, Q9(a)); approved as configuration on 2026-11-28 (L11, item 4(a), #383).',
+    {
+      protects:
+        'A pip name with many separators cannot fan out into an unbounded number of discovery requests.',
+      effect:
+        'A name with more spellings than the setting (more than 5 separators at the default) is unsupported before any request.',
+      test: 'src/evidence/advisory-read.name-forms.test.ts > a name over the spelling ceiling sends no request',
+    },
+    L11_STOPS_APPROVAL,
+  ),
+  derived(
+    'advisory.discovery.spellingCeilingMax',
+    'count',
+    [
+      'advisory.discovery.urlBytes',
+      'advisory.discovery.cursorHeadroomBytes',
+      'evidence.allocation.advisory.maxRequests',
+    ],
+    (urlBytes, headroom, requests) => {
+      const room = urlBytes - headroom - DISCOVERY_URL_TEXT.fixedBytes;
+      let separators = 0;
+      while (spellingRequests(separators + 1, room) <= requests) separators += 1;
+      return PIP_SEPARATOR_COUNT ** separators;
+    },
+    'The hard maximum of limit:advisory.discovery.spellingCeiling: the largest 3^n for which every spelling of the shortest name with n separators (one character per part), for both query kinds, fits the advisory request share, limit:evidence.allocation.advisory.maxRequests. Each first URL has limit:advisory.discovery.urlBytes less limit:advisory.discovery.cursorHeadroomBytes less the fixed URL text (DISCOVERY_URL_TEXT, 83 bytes) of room, 5,355 bytes at the defaults, and each spelling takes 2n + 1 bytes and its 3-byte encoded comma (spellingRequests). At the defaults n = 9 needs 162 requests and n = 10 needs 530, against 221, so the maximum is 3^9 = 19,683. Longer names need more requests, so the maximum covers only the shortest names in full; a setting at it can spend the whole advisory share on one target. It follows the request share and URL settings. Approved by the maintainer on 2026-11-28 (L11, item 4(a), #383).',
+    {
+      protects:
+        'Keeps an adopter setting of the spelling ceiling from fanning one name out past the advisory request share.',
+      effect:
+        'Not enforced by the reviewer yet: L12 makes the config parser reject a larger ceiling. check:limits evaluates the register at this value.',
+      test: 'src/evidence/advisory-read.name-forms.test.ts > the spelling ceiling maximum is the largest power of three whose shortest spellings fit the advisory share',
+    },
+  ),
   // Request batching values, approved by the user on 2026-11-26 from the C3 probe run (#390).
   {
     id: 'advisory.batch.maxTargets',
@@ -2594,14 +3322,48 @@ const DEFINITIONS = [
       'Depth over the cap throws budget: the input envelope is reported invalid with no reads, and a parsed file yields a budget gap.',
     test: 'src/evidence/npm.test.ts > counts the input envelope as depth 1 like parsed files',
   },
-  unjustified('w2.npm.maxJsonEntries', 100_000, 'count', {
-    protects:
-      'Caps cumulative JSON entries across PR-controlled lockfiles, so many or wide objects cannot drive unbounded parse and walk work.',
-    effect:
-      'Crossing the cumulative count throws budget, and the file yields a budget gap so inventory is not claimed complete.',
-    note: 'stopped (L11, Q8(a), #383): the approved basis is safety, and the check fails: legitimate use reaches the cap. The count is cumulative across the lockfiles and manifests of every changed root, base and head. The larger of the 2 recorded package-lock.json files, within limit:w2.npm.maxFileBytes, has 11,970 entries (npm run probe:parse-cost -- use, on 2026-11-28), so 5 such roots changed in one PR count 119,700, and limit:w2.npm.maxRoots (10) roots count 239,400. Harm, for the record: as the collector parses and counts a base and a head lockfile of empty objects, the costliest of three shapes per entry, doubling around limit:w2.npm.maxFileBytes from 83,332 to 1,333,332 entries, the slowest of 5 runs takes 16.6 to 598.7 ms, each doubling multiplying it by 3.10, 2.94, 1.75 and 2.27 (npm run probe:parse-cost -- harm npm, on 2026-11-28 under Node 24.22.3); the cost grows a little faster than the count, as the count to the power 1.27 fitted over the series, so on that curve, with the allowance of #467 for a runner 10 times slower, harm begins near 8.2 million entries, a quarter of limit:evidence.envelope.totalTimeoutMs. Value unchanged',
-    test: 'src/evidence/npm.test.ts > the cumulative JSON entry cap admits exactly the registered count and refuses one more',
-  }),
+  derived(
+    'w2.npm.maxJsonEntries',
+    'count',
+    [
+      'evidence.envelope.totalTimeoutMs',
+      'runner.parseMsPerNpmJsonEntry',
+      'runner.parseCountNpmJsonEntry',
+      'runner.parseExponentNpmJsonEntry',
+    ],
+    harmPoint,
+    `The CPU harm point of the cumulative npm JSON entry count (harmPoint in src/limits.ts): the count at which the slowest run, with the allowance of #467 for a runner 10 times slower, takes a quarter of limit:evidence.envelope.totalTimeoutMs, on the cost curve through the largest count the probe timed, limit:runner.parseCountNpmJsonEntry entries at limit:runner.parseMsPerNpmJsonEntry each, growing as the count to the power limit:runner.parseExponentNpmJsonEntry: count × (deadline ÷ 4 ÷ 10 ÷ (cost × count))^(1/exponent), rounded down, so 1,333,332 × (6,000 ÷ 862.5)^(1/1.27) = 6,140,819 at the defaults, 4.61 times the largest count timed. It follows the evidence deadline setting. Legitimate use is far below it: the larger of the 2 recorded package-lock.json files within limit:w2.npm.maxFileBytes has 11,970 entries (npm run probe:parse-cost -- use, on 2026-11-28), so limit:w2.npm.maxRoots (10) such roots count 239,400; the earlier 100,000 refused 9. A higher count enlarges no parsed structure beyond what the bytes read allow: the parsed files are held inside the session byte share, which the evidence-phase heap holds at limit:runner.heapBytesPerRetainedByte. The bytes do not always bind first: a JSON entry takes at least 2 bytes, so limit:w2.session.maxTotalBytes (12,582,912, decoded files included) holds up to 6,291,456 entries, 150,637 more than this cap, so on files of the densest entries the count cap can bind before the bytes run out. limit:packet.bytes does not depend on it. ${L11_HARM_APPROVAL}.`,
+    {
+      protects:
+        'Caps cumulative JSON entries across PR-controlled lockfiles, so many or wide objects cannot drive unbounded parse and walk work.',
+      effect:
+        'Crossing the cumulative count throws budget, and the file yields a budget gap so inventory is not claimed complete.',
+      test: 'src/evidence/npm.test.ts > the cumulative JSON entry cap admits exactly the registered count and refuses one more',
+    },
+  ),
+  ...parseFit(
+    {
+      cost: 'runner.parseMsPerNpmJsonEntry',
+      count: 'runner.parseCountNpmJsonEntry',
+      exponent: 'runner.parseExponentNpmJsonEntry',
+    },
+    'w2.npm.maxJsonEntries',
+    {
+      counter: 'npm',
+      corpus:
+        'a base and a head package-lock.json of numbers, empty arrays and empty objects filling doubling sizes around limit:w2.npm.maxFileBytes, parsed and counted by the npm collector (src/evidence/npm.ts) with its count caps lifted',
+      shape: 'empty objects',
+      series:
+        '83,332 to 1,333,332 entries, the slowest run takes 27.8, 54.3, 129.8, 350.1 and 862.5 ms',
+      count: 1_333_332,
+      slowestMs: '862.5',
+      msPerUnit: 0.0006469,
+      fitted: '1.2606',
+      exponent: 1.27,
+      spread: '1.93 times',
+      extrapolation: '4.61',
+    },
+  ),
   configured(
     'w2.npm.maxRoots',
     10,
@@ -2655,7 +3417,7 @@ const DEFINITIONS = [
     effect:
       'Debiting past the cap throws budget and the workflow read is unavailable with reason budget.',
     test: 'src/evidence/actions-yaml.test.ts > counts cumulative nodes and UTF-8 bytes at exact boundaries and bounds deeply nested flow input before composition',
-    note: 'stopped (L11, Q8(a), #383): the approved basis is safety, and the check fails: legitimate use reaches the cap. The count is cumulative across every workflow read, base and head, and charges both the preflight and the composition. The largest of the 4 recorded large public workflows charges 3,565 nodes (npm run probe:parse-cost -- use, on 2026-11-28), so 15 such workflows in one PR count 106,950, and limit:w2.actions.maxWorkflows (20) count 142,600; a Dependabot Actions update changes every workflow that uses the action. Harm, for the record: as the reader parses, composes and reads a workflow doubling around limit:w2.actions.maxFileBytes from 124,994 to 1,999,994 nodes, the slowest of 5 runs takes 490 to 7,696 ms, each doubling multiplying it by 1.77, 1.80, 2.36 and 2.08, so the cost is linear in the count (npm run probe:parse-cost -- harm workflow-nodes, on 2026-11-28 under Node 24.22.3); from the largest, with the allowance of #467 for a runner 10 times slower, harm begins near 1.56 million nodes, a quarter of limit:evidence.envelope.totalTimeoutMs. Value unchanged',
+    note: 'stopped (L11, Q8(a), #383): the approved basis is safety, and the check fails: legitimate use reaches the cap. The count is cumulative across every workflow read, base and head, and charges both the preflight and the composition. The largest of the 4 recorded large public workflows charges 3,565 nodes (npm run probe:parse-cost -- use, on 2026-11-28), so 15 such workflows in one PR count 106,950, and limit:w2.actions.maxWorkflows (20) count 142,600; a Dependabot Actions update changes every workflow that uses the action. Harm: as the reader parses, composes and reads a workflow doubling around limit:w2.actions.maxFileBytes from 124,994 to 1,999,994 nodes, the slowest run of 3 invocations of 5 takes 579.1, 1,104.1, 2,398.6, 4,867.4 and 9,560.1 ms, the invocations differing by up to 1.26 times, so the cost grows as the count to the power 1.03, 0.004781 ms a node at the largest (npm run probe:parse-cost -- harm workflow-nodes, on 2026-11-28 under Node 24.22.3); with the allowance of #467 for a runner 10 times slower, harm begins near 1,272,000 nodes (harmPoint), a quarter of limit:evidence.envelope.totalTimeoutMs. Stopped again (L11, follow-up to Q8(a), 2026-11-28): the approved move to that harm point fails its heap check. Aliases decouple the composed document from the bytes read: every expansion composes the anchored subtree again as new plain values, charged only to this cap, so no byte cap bounds it. A 12,650-byte workflow that anchors a map of 1,000 keys and aliases it 1,555 times composes 1,559,114 nodes, which hold 44,774,736 bytes of heap after a full collection, 28.7 a node (10.4 a node for a sequence of scalars; measured on 2026-11-28 under Node 24.22.3), so at the current cap of 100,000 nodes such a document holds about 2.9 MB, and at the harm point about 36.5 MB. That heap is about 3,540 bytes per byte read, beyond the 59 of limit:runner.heapBytesPerEvidenceByte and the 27.47 of limit:runner.heapBytesPerRetainedByte, and no register term sets it aside. limit:packet.bytes would not move (nothing derives from this cap), but the cap needs a heap term of its own, or a node charge per byte read, before it can rise. Value unchanged',
   }),
   {
     id: 'w2.actions.maxYamlDepth',
@@ -2672,21 +3434,55 @@ const DEFINITIONS = [
       'Exceeding the depth throws budget and the workflow read is unavailable with reason budget.',
     test: 'src/evidence/actions-yaml.test.ts > counts cumulative nodes and UTF-8 bytes at exact boundaries and bounds deeply nested flow input before composition',
   },
-  unjustified('w2.actions.maxAliasExpansions', 100, 'count', {
-    protects:
-      'Caps alias expansions in one YAML document, so anchors and aliases cannot amplify the composed graph beyond the node budget.',
-    effect:
-      'The alias that exceeds the cap throws budget and the workflow read is unavailable with reason budget.',
-    test: 'src/evidence/actions-yaml.test.ts > expands anchored jobs, steps and refs into independent consuming locations',
-    note: 'stopped (L11, Q8(a), #383): the approved basis is safety, and the check fails: legitimate use reaches the cap. The count is cumulative across every workflow read, base and head. The largest of the 4 recorded large public workflows expands 34 aliases (npm run probe:parse-cost -- use, on 2026-11-28), so 2 such workflows in one PR count 136, and limit:w2.actions.maxWorkflows (20) count 1,360. Harm, for the record: as the reader reads a workflow doubling around limit:w2.actions.maxFileBytes from 41,659 to 666,659 expansions, the slowest of 5 runs takes 304 to 5,066 ms, each doubling multiplying it by 1.90, 2.16, 2.26 and 1.79, so the cost is linear in the count (npm run probe:parse-cost -- harm workflow-aliases, on 2026-11-28 under Node 24.22.3); from the largest, with the allowance of #467 for a runner 10 times slower, harm begins near 784,000 expansions, a quarter of limit:evidence.envelope.totalTimeoutMs (a fit over the series gives the same); the composed nodes are also charged to limit:w2.actions.maxYamlNodes. Value unchanged',
-  }),
+  derived(
+    'w2.actions.maxAliasExpansions',
+    'count',
+    [
+      'evidence.envelope.totalTimeoutMs',
+      'runner.parseMsPerAliasExpansion',
+      'runner.parseCountAliasExpansion',
+      'runner.parseExponentAliasExpansion',
+    ],
+    harmPoint,
+    `The CPU harm point of the cumulative alias expansion count (harmPoint in src/limits.ts): the count at which the slowest run, with the allowance of #467 for a runner 10 times slower, takes a quarter of limit:evidence.envelope.totalTimeoutMs, on the cost curve through the largest count the probe timed, limit:runner.parseCountAliasExpansion expansions at limit:runner.parseMsPerAliasExpansion each, growing as the count to the power limit:runner.parseExponentAliasExpansion: count × (deadline ÷ 4 ÷ 10 ÷ (cost × count))^(1/exponent), rounded down, so 666,659 × (6,000 ÷ 6,037.3)^(1/1) = 662,544 at the defaults, 0.99 times the largest count timed. It follows the evidence deadline setting. Legitimate use is far below it: the largest of the 4 recorded large public workflows expands 34 aliases (npm run probe:parse-cost -- use, on 2026-11-28), so limit:w2.actions.maxWorkflows (20) such workflows count 1,360, which the earlier 100 refused. A higher count enlarges no structure: every expansion composes at least one node, charged to limit:w2.actions.maxYamlNodes, so the node cap binds first and bounds the composed document as before; limit:dependabot.maxAliasExpansions copies this cap, and limit:packet.bytes does not depend on it. ${L11_HARM_APPROVAL}.`,
+    {
+      protects:
+        'Caps alias expansions in one YAML document, so anchors and aliases cannot amplify the composed graph beyond the node budget.',
+      effect:
+        'The alias that exceeds the cap throws budget and the workflow read is unavailable with reason budget. While limit:w2.actions.maxYamlNodes is below this cap, the node budget refuses first, with the same reason.',
+      test: 'src/evidence/actions-yaml.test.ts > expands anchored jobs, steps and refs into independent consuming locations',
+    },
+  ),
+  ...parseFit(
+    {
+      cost: 'runner.parseMsPerAliasExpansion',
+      count: 'runner.parseCountAliasExpansion',
+      exponent: 'runner.parseExponentAliasExpansion',
+    },
+    'w2.actions.maxAliasExpansions',
+    {
+      counter: 'workflow-aliases',
+      corpus:
+        'workflows whose flow sequence aliases one anchored scalar, filling doubling sizes around limit:w2.actions.maxFileBytes, parsed, composed and read by the actions reader (src/evidence/actions-yaml.ts) with its count caps lifted',
+      shape: 'aliased scalars',
+      series:
+        '41,659 to 666,659 expansions, the slowest run takes 462.6, 1,017.4, 1,549.0, 3,000.4 and 6,037.1 ms',
+      count: 666_659,
+      slowestMs: '6,037.1',
+      msPerUnit: 0.009056,
+      fitted: '0.8972',
+      exponent: 1,
+      spread: '1.56 times',
+      extrapolation: '0.99',
+    },
+  ),
   unjustified('w2.actions.maxOccurrences', 1_000, 'count', {
     protects:
       'Caps action-use occurrences across read workflows, so a workflow with unbounded uses entries cannot make identity parsing and retained output unbounded (memory and CPU).',
     effect:
       'Debiting past the cap throws budget for that workflow read; the shared budget also accumulates across base and head files.',
     test: 'src/evidence/actions.test.ts > occurrence and alias budgets accumulate across base/head files',
-    note: 'stopped (L11, Q8(a), #383): the approved basis is safety, and the check fails: legitimate use reaches the cap. The count is cumulative across every workflow read, base and head. The largest of the 4 recorded large public workflows has 83 uses: entries (npm run probe:parse-cost -- use, on 2026-11-28), so 7 such workflows in one PR count 1,162, and limit:w2.actions.maxWorkflows (20) count 3,320. Harm, for the record: as the reader reads a workflow of uses: entries doubling around limit:w2.actions.maxFileBytes from 8,927 to 142,855 occurrences, the slowest of 5 runs takes 158 to 3,500 ms, each doubling multiplying it by 3.07, 1.67, 2.00 and 2.16, so the cost is linear in the count (npm run probe:parse-cost -- harm workflow-occurrences, on 2026-11-28 under Node 24.22.3); from the largest, with the allowance of #467 for a runner 10 times slower, harm begins near 237,000 occurrences, a quarter of limit:evidence.envelope.totalTimeoutMs, on a fit over the series. Value unchanged',
+    note: 'stopped (L11, Q8(a), #383): the approved basis is safety, and the check fails: legitimate use reaches the cap. The count is cumulative across every workflow read, base and head. The largest of the 4 recorded large public workflows has 83 uses: entries (npm run probe:parse-cost -- use, on 2026-11-28), so 7 such workflows in one PR count 1,162, and limit:w2.actions.maxWorkflows (20) count 3,320. Harm: as the reader reads a workflow of uses: entries doubling around limit:w2.actions.maxFileBytes from 8,927 to 142,855 occurrences, the slowest run of 3 invocations of 5 takes 275.9, 517.0, 1,062.1, 2,414.6 and 3,855.1 ms, the invocations differing by up to 1.37 times, so the cost is linear in the count (a fit of 0.98, taken as 1), 0.02699 ms an occurrence at the largest (npm run probe:parse-cost -- harm workflow-occurrences, on 2026-11-28 under Node 24.22.3); with the allowance of #467 for a runner 10 times slower, harm begins near 222,000 occurrences (harmPoint), a quarter of limit:evidence.envelope.totalTimeoutMs. Stopped again (L11, follow-up to Q8(a), 2026-11-28): the approved move to that harm point fails its heap check. The reader keeps every parsed occurrence in its state until the inventory is assembled, and only then checks the result against limit:w2.actions.maxRetainedBytes (2,000,000), so this count, not a byte cap, bounds what is held in flight. Aliases decouple it from the bytes read: an 11,194-byte workflow that anchors 100 steps and aliases them in 300 jobs holds 30,000 occurrences, 3,608,326 bytes of JSON and 5,575,136 bytes of heap after a full collection, from 62,608 nodes (measured on 2026-11-28 under Node 24.22.3). At the current limit:w2.actions.maxYamlNodes the reachable count is about 48,000, about 5.8 MB of JSON held in flight, nearly 3 times the retained cap; at the harm point with the node cap raised it would be about 26.7 MB. limit:packet.bytes would not move (nothing derives from this cap), but the in-flight state needs a byte bound before the cap can rise. Value unchanged',
   }),
   retainedSetting(
     'w2.actions.maxRetainedBytes',
@@ -2728,13 +3524,47 @@ const DEFINITIONS = [
     effect: 'Exceeding the depth throws budget for that file and the side yields a budget gap.',
     test: 'src/evidence/uv.test.ts > enforces exact/over %s through the real collector across both sides',
   },
-  unjustified('w2.uv.maxTomlEntries', 100_000, 'count', {
-    protects:
-      'Caps cumulative TOML object properties and array elements across all uv files, so ignored fields cannot drive unbounded parse work.',
-    effect: 'Debiting past the cap throws budget and the file yields a budget gap.',
-    test: 'src/evidence/uv.test.ts > enforces exact/over %s through the real collector across both sides',
-    note: 'stopped (L11, Q8(a), #383): the approved basis is safety, and the check fails: legitimate use reaches the cap. The count is cumulative across the uv.lock and pyproject.toml files of every changed root, base and head. Of the 4 recorded public uv.lock files, the one within limit:w2.uv.maxFileBytes has 6,312 entries, and all 4 hold 102,123 entries in 5,042,143 bytes (npm run probe:parse-cost -- use, on 2026-11-28); so 8 roots like the first changed in one PR count 100,992, and limit:w2.uv.maxRoots (20) roots at the file cap and that average density would count about 405,000. Harm, for the record: as the reader parses and copies a file of inline tables, the costlier of two shapes per entry, doubling around limit:w2.uv.maxFileBytes from 41,666 to 666,666 entries, the slowest of 5 runs takes 55.6 to 1,196 ms, each doubling multiplying it by 1.66, 2.60, 2.64 and 1.88 (npm run probe:parse-cost -- harm toml, on 2026-11-28 under Node 24.22.3); the cost grows a little faster than the count, as the count to the power 1.16 fitted over the series, so on that curve, with the allowance of #467 for a runner 10 times slower, harm begins near 2.7 million entries, a quarter of limit:evidence.envelope.totalTimeoutMs. Value unchanged',
-  }),
+  derived(
+    'w2.uv.maxTomlEntries',
+    'count',
+    [
+      'evidence.envelope.totalTimeoutMs',
+      'runner.parseMsPerUvTomlEntry',
+      'runner.parseCountUvTomlEntry',
+      'runner.parseExponentUvTomlEntry',
+    ],
+    harmPoint,
+    `The CPU harm point of the cumulative uv TOML entry count (harmPoint in src/limits.ts): the count at which the slowest run, with the allowance of #467 for a runner 10 times slower, takes a quarter of limit:evidence.envelope.totalTimeoutMs, on the cost curve through the largest count the probe timed, limit:runner.parseCountUvTomlEntry entries at limit:runner.parseMsPerUvTomlEntry each, growing as the count to the power limit:runner.parseExponentUvTomlEntry: count × (deadline ÷ 4 ÷ 10 ÷ (cost × count))^(1/exponent), rounded down, so 666,666 × (6,000 ÷ 1,418.7)^(1/1.06) = 2,598,545 at the defaults, 3.90 times the largest count timed. It follows the evidence deadline setting. Legitimate use is below it: of the 4 recorded public uv.lock files, the one within limit:w2.uv.maxFileBytes has 6,312 entries, and all 4 hold 102,123 entries in 5,042,143 bytes (npm run probe:parse-cost -- use, on 2026-11-28), so limit:w2.uv.maxRoots (20) roots at the file cap and that density would count about 405,000, which the earlier 100,000 refused. A higher count enlarges no parsed structure beyond what the bytes read allow: TOML has no aliases, and the parsed files are held inside the session byte share. The bytes do not bind first: an entry takes at least 2 bytes, so limit:w2.session.maxTotalBytes (12,582,912) holds up to 6,291,456 entries, more than this cap, and the count cap binds on dense files. The register's heap rates were measured on JSON; the heap a TOML byte costs at its parse peak is not measured, so the session share's rate covers it only by assumption. limit:packet.bytes does not depend on it. ${L11_HARM_APPROVAL}.`,
+    {
+      protects:
+        'Caps cumulative TOML object properties and array elements across all uv files, so ignored fields cannot drive unbounded parse work.',
+      effect: 'Debiting past the cap throws budget and the file yields a budget gap.',
+      test: 'src/evidence/uv.test.ts > enforces exact/over %s through the real collector across both sides',
+    },
+  ),
+  ...parseFit(
+    {
+      cost: 'runner.parseMsPerUvTomlEntry',
+      count: 'runner.parseCountUvTomlEntry',
+      exponent: 'runner.parseExponentUvTomlEntry',
+    },
+    'w2.uv.maxTomlEntries',
+    {
+      counter: 'toml',
+      corpus:
+        'uv files of integer arrays and empty inline tables filling doubling sizes around limit:w2.uv.maxFileBytes, parsed and copied by the uv TOML reader (src/evidence/uv-toml.ts) with its count caps lifted',
+      shape: 'inline tables',
+      series:
+        '41,666 to 666,666 entries, the slowest run takes 74.2, 171.2, 360.7, 720.5 and 1,418.1 ms',
+      count: 666_666,
+      slowestMs: '1,418.1',
+      msPerUnit: 0.002128,
+      fitted: '1.0586',
+      exponent: 1.06,
+      spread: '1.63 times',
+      extrapolation: '3.90',
+    },
+  ),
   derived(
     'w2.uv.maxPackages',
     'count',
@@ -2908,13 +3738,47 @@ const DEFINITIONS = [
       test: 'src/evidence/npm-registry.test.ts > total deadlines and byte exhaustion stop later requests',
     },
   ),
-  unjustified('w2.registry.maxJsonEntries', 100_000, 'count', {
-    protects:
-      'Caps cumulative JSON entries in registry documents, so a very large registry document cannot drive unbounded parse work.',
-    effect: 'Crossing the cap throws budget and the read is unavailable with reason budget.',
-    note: 'stopped (L11, Q8(a), #383): the approved basis is safety, and the check fails: legitimate use reaches the cap. The count is cumulative across the registry documents of the run. The 4,251 recorded npm version documents hold 477,274 entries in 15,021,998 bytes, and the largest 4,248 (npm run probe:parse-cost -- use, on 2026-11-28); a run that spends limit:w2.registry.maxTotalBytes on documents of that average density counts about 133,260 entries, and 24 documents the size of the largest pass the cap. Harm, for the record: as the reader parses and walks a document of empty objects, the costliest of three shapes per entry, doubling around limit:w2.registry.maxResponseBytes from 87,381 to 1,398,101 entries, the slowest of 5 runs takes 18.5 to 471.3 ms, each doubling multiplying it by 2.25, 1.34, 4.81 and 1.76 (npm run probe:parse-cost -- harm registry, on 2026-11-28 under Node 24.22.3); the cost grows a little faster than the count, as the count to the power 1.20 fitted over the series, so on that curve, with the allowance of #467 for a runner 10 times slower, harm begins near 11.6 million entries, a quarter of limit:evidence.envelope.totalTimeoutMs. Value unchanged',
-    test: 'src/evidence/npm-registry.test.ts > registry JSON entries at the cap parse and one more entry is a budget failure',
-  }),
+  derived(
+    'w2.registry.maxJsonEntries',
+    'count',
+    [
+      'evidence.envelope.totalTimeoutMs',
+      'runner.parseMsPerRegistryJsonEntry',
+      'runner.parseCountRegistryJsonEntry',
+      'runner.parseExponentRegistryJsonEntry',
+    ],
+    harmPoint,
+    `The CPU harm point of the cumulative registry JSON entry count (harmPoint in src/limits.ts): the count at which the slowest run, with the allowance of #467 for a runner 10 times slower, takes a quarter of limit:evidence.envelope.totalTimeoutMs, on the cost curve through the largest count the probe timed, limit:runner.parseCountRegistryJsonEntry entries at limit:runner.parseMsPerRegistryJsonEntry each, growing as the count to the power limit:runner.parseExponentRegistryJsonEntry: count × (deadline ÷ 4 ÷ 10 ÷ (cost × count))^(1/exponent), rounded down, so 1,398,101 × (6,000 ÷ 527.5)^(1/1.15) = 11,580,704 at the defaults, 8.28 times the largest count timed. It follows the evidence deadline setting. Legitimate use is below it: the 4,251 recorded npm version documents hold 477,274 entries in 15,021,998 bytes (npm run probe:parse-cost -- use, on 2026-11-28), so a run that spends limit:w2.registry.maxTotalBytes at that density counts about 133,260, which the earlier 100,000 refused. A higher count enlarges no parsed structure: a JSON entry takes at least 2 bytes, so limit:w2.registry.maxTotalBytes (4,194,304) holds at most 2,097,152 entries across the run, below this cap, and binds first; the registry byte share is held in the evidence-phase heap at limit:runner.heapBytesPerRetainedByte, and limit:packet.bytes does not depend on it. ${L11_HARM_APPROVAL}.`,
+    {
+      protects:
+        'Caps cumulative JSON entries in registry documents, so a very large registry document cannot drive unbounded parse work.',
+      effect: 'Crossing the cap throws budget and the read is unavailable with reason budget.',
+      test: 'src/evidence/npm-registry.test.ts > registry JSON entries at the cap parse and one more entry is a budget failure',
+    },
+  ),
+  ...parseFit(
+    {
+      cost: 'runner.parseMsPerRegistryJsonEntry',
+      count: 'runner.parseCountRegistryJsonEntry',
+      exponent: 'runner.parseExponentRegistryJsonEntry',
+    },
+    'w2.registry.maxJsonEntries',
+    {
+      counter: 'registry',
+      corpus:
+        'registry documents of numbers, empty arrays and empty objects filling doubling sizes around limit:w2.registry.maxResponseBytes, parsed and walked by the npm registry reader (src/evidence/npm-registry.ts) with its count caps lifted',
+      shape: 'empty objects',
+      series:
+        '87,381 to 1,398,101 entries, the slowest run takes 22.6, 44.6, 54.5, 232.7 and 527.5 ms',
+      count: 1_398_101,
+      slowestMs: '527.5',
+      msPerUnit: 0.0003773,
+      fitted: '1.1472',
+      exponent: 1.15,
+      spread: '1.60 times',
+      extrapolation: '8.28',
+    },
+  ),
   {
     id: 'w2.registry.maxJsonDepth',
     value: 32,
@@ -3022,6 +3886,35 @@ const DEFINITIONS = [
     test: 'src/evidence/policy-signals.test.ts > optional attempt exhaustion keeps a bounded explained result and known deprecation findings',
   },
   // Snapshot reads, from snapshot.ts.
+  {
+    id: 'github.blobEnvelopeBytes',
+    value: 512,
+    unit: 'bytes',
+    protects:
+      'Bounds the JSON a Get a blob response spends outside its content, so the decoded bytes one response of limit:github.maxResponseBytes carries can be derived.',
+    basis: {
+      kind: 'safety',
+      reason:
+        "Largest legitimate use: the response holds sha, node_id, size, url, content and encoding (https://docs.github.com/en/rest/git/blobs#get-a-blob, read 2026-11-28), written compactly. Outside the content and the node id that is 75 bytes of keys and punctuation, a 40-character sha, at most 7 size digits for a blob the response cap admits, the 8 characters of base64, and a url of https://api.github.com/repos/{owner}/{repo}/git/blobs/{sha}, at most 220 bytes with GitHub's 39-character account and 100-character repository names: 350 bytes, which leaves 162 for the node id, more than either node id format GitHub writes. Harm: none at run time; a larger envelope would make a blob at limit:snapshot.maxReadableBlobBytes fail its response cap with budget, which stops the snapshot read share instead of giving the file's own size failure. No recorded blob response pins it yet (L11 item 9 and 12 review follow-up, 2026-11-28).",
+    },
+    effect:
+      'Not enforced: limit:snapshot.maxReadableBlobBytes is derived from it, and through it the config and Dependabot file caps.',
+    test: 'src/snapshot.test.ts > a blob at snapshot.maxReadableBlobBytes fits one GitHub blob response and one byte more does not',
+  },
+  derived(
+    'snapshot.maxReadableBlobBytes',
+    'bytes',
+    ['snapshot.maxBlobBytes', 'github.maxResponseBytes', 'github.blobEnvelopeBytes'],
+    (blob, response, envelope) => Math.min(blob, blobDecodedCapacity(response, envelope)),
+    'The largest file the snapshot can read in one blob response: the smaller of limit:snapshot.maxBlobBytes and the decoded bytes one response of limit:github.maxResponseBytes carries with an envelope of limit:github.blobEnvelopeBytes. GitHub returns blob content base64, wrapped at 60 characters, and each line break is written as an escaped \\n, so 45 decoded bytes cost 62 response bytes (blobDecodedCapacity in src/limits.ts): about (1,048,576 − 512) × 45 ÷ 62. A file between it and limit:snapshot.maxBlobBytes would pass the blob size check and then fail its response cap, which stops the snapshot read share; caps that copy it refuse such a file from its tree size instead. The base64 rule is from the L11 evidence proposal (2026-11-28, #383); added by the L11 item 9 and 12 review follow-up (2026-11-28).',
+    {
+      protects:
+        'Keeps the file caps of blobs the snapshot reads whole at what one blob response can carry, so an oversized file gets its own size failure.',
+      effect:
+        'Not enforced directly: limit:config.maxBytes and limit:dependabot.maxFileBytes copy it.',
+      test: 'src/snapshot.test.ts > a blob at snapshot.maxReadableBlobBytes fits one GitHub blob response and one byte more does not',
+    },
+  ),
   unjustified('snapshot.maxBlobBytes', MiB, 'bytes', {
     protects:
       'A repository blob larger than the cap is refused before it is fetched, so one file cannot make the snapshot read unbounded bytes (memory and network).',
@@ -3211,7 +4104,7 @@ const DEFINITIONS = [
       protects:
         'The packet rejects a context whose serialized JSON exceeds limit:packet.contextBytes (budget), so the collector must stop before that point.',
       effect:
-        'The empty-context check (src/context.ts:312) fails a context with category budget when its widest reservation is over the cap, but at limit:context.maxDependencies identities of limit:context.maxIdCodeUnits that reservation is 102,556 bytes, below the cap, so no input reaches it at the register values; the test pins that margin. During collection the fact that would overflow is dropped with reason context-byte-limit and collection stops, keeping facts already added (partial).',
+        'The empty-context check (src/context.ts:319) fails a context with category budget when its widest reservation is over the cap, but at limit:context.maxDependencies identities of limit:context.maxIdCodeUnits that reservation is 103,717 bytes (102,556 before the L11 budget reason, item 8), below the cap, so no input reaches it at the register values; the test pins that margin. During collection the fact that would overflow is dropped with reason context-byte-limit and collection stops, keeping facts already added (partial).',
       test: 'src/context.test.ts > the serialized context cap admits a context of exactly the cap and drops the fact one byte past it',
     },
   ),
@@ -3243,22 +4136,23 @@ const DEFINITIONS = [
       test: 'src/context.test.ts > line and fact caps retain identity, complete characters, and visible limits',
     },
   ),
-  unjustified('context.maxSourceRoots', 16, 'count', {
+  {
+    id: 'context.maxSourceCandidates',
+    unit: 'count',
     protects:
-      'Each configured root is walked with lstat and matched against the inventory, so an unbounded root list would make config validation and path checks unbounded.',
+      'Each excerpt file is stat-checked, matched against the tracked inventory and read with one blob request, so the number of excerpt files is capped.',
     effect:
-      'A config with more than 16 sourceRoots fails validation (field context.sourceRoots, category config), so the config is rejected.',
-    note: 'stopped (L11, Q19(a), #383): the approved basis is a copy of limit:snapshot.maxTreeEntries (102,578), which must move together with limit:config.maxBytes, and that entry stops: a JSON config holding 102,578 roots does not fit today\'s 16,384-byte cap (the smallest root, `"a",`, is 4 bytes, so at most about 4,090 roots fit, and 102,579 roots need at least 410,316 bytes for the over-cap boundary test). Raising the root cap alone would admit a count no valid config can reach. Value unchanged',
-    test: 'src/config.test.ts > the source root cap admits exactly the registered count and rejects one more',
-  }),
-  unjustified('context.maxSourceCandidates', 128, 'count', {
-    protects:
-      'Each excerpt file is stat-checked and matched against the tracked inventory, so the number of excerpt files is capped.',
-    effect:
-      'More than 128 excerptFiles fails config validation. The runtime candidate-limit (src/context.ts) would stop scanning with reason candidate-limit, but validated config keeps the selected set at 128 or fewer, so that branch cannot trigger.',
-    note: 'stopped (L11, Q20(a), #383): the approved basis is the snapshot request share (limit:evidence.allocation.transport.snapshot.maxRequests, 200) less the fixed snapshot reads. The fixed reads are 7 (repository, commit, root listing, .github listing, config blob, Dependabot blob, one source-root listing) only in the shallowest layout: one excerpt directory and a config that is not a link. Each further directory an excerpt path passes through costs one more tree read, and each config link one more blob read, so at 200 − 7 = 193 excerpt files split across src/ and src/lib/ the snapshot needs 201 reads. Running out of the share inside collectContext makes the whole snapshot unavailable, which the pipeline reports as internal-failure at snapshot, and SPEC-source-context promises no partial result with budget for it. Tree reads grow with path depth, so no structural count of fixed reads holds for every layout. Today 128 leaves 72 reads for directories and links. Value unchanged',
+      'More excerptFiles than the cap fails config validation. The runtime candidate-limit (src/context.ts) would stop scanning with reason candidate-limit, but validated config keeps the selected set at the cap or fewer, so that branch cannot trigger. A layout whose directories need more reads than the snapshot share holds stops reading where the share runs out and reports budget, keeping the context already read (partial).',
+    basis: {
+      kind: 'derived',
+      inputs: ['evidence.allocation.transport.snapshot.maxRequests'],
+      formula: (requests) => requests - SNAPSHOT_FIXED_READS,
+      description: `The excerpt files whose blobs the snapshot request share can read after its ${SNAPSHOT_FIXED_READS} fixed reads in the shallowest layout: the repository, the commit, the root listing, the .github listing, the config blob, the Dependabot blob and one source-root listing (src/snapshot.ts). So 200 − ${SNAPSHOT_FIXED_READS} = 193; it follows the snapshot share setting. A deeper layout costs one more tree read for each directory on an excerpt path, and a config link one more blob read; when the share runs out inside collectContext the snapshot stops reading, keeps what it read, and reports budget for every configured path not yet read, never missing-source (SPEC-source-context, Amended L11), so no count of excerpt files can make the snapshot unavailable. Approved by the maintainer on 2026-11-28 (L11, item 8(a), #383).`,
+      structuralTest:
+        'src/snapshot.test.ts > a single-directory layout reads exactly the snapshot share for the excerpt file cap',
+    },
     test: 'src/config.test.ts > the excerpt file cap admits exactly the registered count and rejects one more',
-  }),
+  },
   derived(
     'context.maxTrackedPathEntries',
     'count',
@@ -3305,14 +4199,20 @@ const DEFINITIONS = [
     },
   ),
   // Dependabot roots, from dependabot-roots.ts.
-  unjustified('dependabot.maxFileBytes', 65_536, 'bytes', {
-    protects:
-      'The Dependabot config is parsed in memory, so its size is capped before any YAML parsing.',
-    effect:
-      'A file over 65,536 bytes is not parsed. The whole file is unavailable with reason budget, and no roots are kept.',
-    test: 'src/dependabot-roots.test.ts > accepts values exactly at each limit',
-    note: 'stopped (L11, card, #383): the approved basis is safety, which needs the cap above the largest legitimate config. It is not: among the largest dependabot.yml files GitHub code search returned on 2026-11-28 (14 files above 40,000 bytes, of which 8 are Dependabot version-2 configs), 3 configs are 68,918, 71,729 and 82,528 bytes (14, 4 and 200 update entries), and each fails here with budget today. No document gives a Dependabot file size limit, and no larger value has an approved basis. Value unchanged',
-  }),
+  derived(
+    'dependabot.maxFileBytes',
+    'bytes',
+    ['snapshot.maxReadableBlobBytes'],
+    copy,
+    'The Dependabot config is a blob the snapshot reads, so it can be no larger than limit:snapshot.maxReadableBlobBytes, the largest blob one response carries under the base64 rule, which binds before limit:snapshot.maxBlobBytes; a larger file is refused from its tree size, unfetched, with budget, rather than stopping the snapshot read share at its blob response (L11 item 12 review follow-up, 2026-11-28; it was a copy of limit:snapshot.maxBlobBytes). No document gives a Dependabot file size limit, and the file is controlled by the PR, so this is a parse bound and never an adopter setting. It covers the largest recorded legitimate configs (68,918, 71,729 and 82,528 bytes, among the largest dependabot.yml files GitHub code search returned on 2026-11-28), which the earlier 65,536 refused. The parse is transient: at 1 MiB, above this cap, with the other Dependabot caps of the register, each of the three crafted shapes (densest nodes, updates and roots) is refused with budget at its count cap, after the parser has built the whole document; one parse allocates at most 918,691,592 bytes of heap (an upper bound on its peak, measured with a 1 GiB young generation so no collection runs during it), and after a full collection with the result kept at most 60,928 bytes stay held; the slowest of 5 parses takes 2,646 ms, inside the CPU harm point of limit:dependabot.maxYamlNodes (npm run probe:parse-cost -- heap, on 2026-11-28 under Node 24.22.3). The parse runs in the snapshot, before any evidence is retained, inside limit:runner.heapBytes. Approved by the maintainer on 2026-11-28 (L11, item 12(a), #383).',
+    {
+      protects:
+        'The Dependabot config is parsed in memory, so its size is capped before any YAML parsing.',
+      effect:
+        'A file over the cap is not parsed. The whole file is unavailable with reason budget, and no roots are kept.',
+      test: 'src/dependabot-roots.test.ts > accepts values exactly at each limit',
+    },
+  ),
   {
     id: 'dependabot.maxYamlNodes',
     value: 20_000,
@@ -3346,13 +4246,13 @@ const DEFINITIONS = [
     'count',
     ['w2.actions.maxAliasExpansions'],
     copy,
-    "Dependabot's documentation says nothing on YAML anchors, and Dependabot's own parser change to accept them (dependabot-core PR #9653) was still open when checked on 2026-11-28, so whether GitHub accepts them is in doubt; refusing every alias could then reject a legitimate config. The same parser and expansion read workflow files, so the cap copies limit:w2.actions.maxAliasExpansions, and the composed document, aliases expanded, is charged to a node budget of its own at limit:dependabot.maxYamlNodes, so an expansion cannot pass the node cap. The copied entry is itself still unjustified (its Q8 check stopped: legitimate workflow use reaches it), so this cap inherits that gap: it is grounded only once limit:w2.actions.maxAliasExpansions is. Approved by the maintainer on 2026-11-27 (L11, D11 and Q23(b), #383).",
+    "Dependabot's documentation says nothing on YAML anchors, and Dependabot's own parser change to accept them (dependabot-core PR #9653) was still open when checked on 2026-11-28, so whether GitHub accepts them is in doubt; refusing every alias could then reject a legitimate config. The same parser and expansion read workflow files, so the cap copies limit:w2.actions.maxAliasExpansions, and the composed document, aliases expanded, is charged to a node budget of its own at limit:dependabot.maxYamlNodes, so an expansion cannot pass the node cap. Approved by the maintainer on 2026-11-27 (L11, D11 and Q23(b), #383). The copied entry has been the CPU harm point of the workflow reader since 2026-11-28 (L11, follow-up to Q8(a)), far above anything this file can reach: every expansion composes at least one node, so limit:dependabot.maxYamlNodes binds first, and limit:dependabot.maxUpdates bounds the entries that use one, so the composed document is no larger than before.",
     {
       protects:
         'Caps alias expansions in the Dependabot config, so anchors and aliases cannot amplify the composed document beyond the node budget.',
       effect:
-        'The alias that exceeds the cap fails the whole file with budget, and no roots are read. A merge through an alias (<<: *name) fails it as unsupported; a literal << key, like any key the reader does not use, is ignored.',
-      test: 'src/dependabot-roots.test.ts > expands aliases up to the alias cap and refuses one more',
+        'The alias that exceeds the cap fails the whole file with budget, and no roots are read; at the copied value the node budget refuses first, with the same outcome. A merge through an alias (<<: *name) fails it as unsupported; a literal << key, like any key the reader does not use, is ignored.',
+      test: 'src/dependabot-roots.test.ts > expands aliases until the node budget refuses one more',
     },
   ),
   {
@@ -3400,23 +4300,39 @@ const DEFINITIONS = [
     },
   ),
   // Event file, from startup.ts.
-  unjustified('startup.maxEventBytes', MiB, 'bytes', {
+  {
+    id: 'startup.maxEventBytes',
+    value: 25_000_000,
+    unit: 'bytes',
     protects:
       'The event file is read whole into a buffer before validation; an oversized file would allocate unbounded memory at startup.',
     effect:
       "A file over the cap throws 'event too large' and startup fails; no partial text is returned.",
     test: 'src/startup.test.ts > reads an event file of %s as bounded text only when it is valid',
-    note: "stopped (L11, E16, #383): the approved basis is external, GitHub's 25 MB webhook payload cap (docs.github.com webhooks#payload-cap), read as 25,000,000 bytes. The register does not hold the parsed event: runStartup parses it and the pipeline keeps it in its input for the whole run, in both heap phases, and no register entry counts it. At 25,000,000 bytes and limit:runner.heapBytesPerRetainedByte (27.47) it would hold about 686,750,000 bytes of heap (about 28,804,383 today), which would lower limit:packet.bytes from 148,312,300 to 101,594,613 (evidence phase; the analysis phase would fall from 256,206,191 to 220,061,454), and its parse peak at limit:runner.heapBytesPerEvidenceByte would be about 1,475,000,000 bytes. Raising the cap needs the event counted in the heap phases, or released after verification, which no approved change covers. Value unchanged",
-  }),
+    basis: {
+      kind: 'external',
+      url: 'https://docs.github.com/en/webhooks/webhook-events-and-payloads#payload-cap',
+      checked: '2026-11-28',
+      platformValue: 25_000_000,
+      margin:
+        'none: "Payloads are capped at 25 MB", read as decimal megabytes, the smaller reading; GitHub delivers no larger payload. Since L11 item 11(b) (approved by the maintainer on 2026-11-28, #383) the parsed event is held only for verification (holdEvent, src/pipeline.ts) and is unreachable before the first tree read, so no heap phase holds it and limit:packet.bytes does not count it; its parse peak falls at startup, when nothing else is held, inside limit:runner.heapBytes: JSON.parse of an event at the cap allocates at most 533,423,208 bytes of heap, for the densest of five shapes, an array of empty objects (numbers 100,005,064, arrays 333,354,360, strings 66,671,776, objects with one key 125,011,208), measured with a 1 GiB young generation so no collection runs during it, and the slowest of 5 parses takes 1,547 ms (npm run probe:parse-cost -- event, on 2026-11-28 under Node 24.22.3; it replaces the earlier estimate of about 1,475,000,000 at limit:runner.heapBytesPerEvidenceByte, item 11 review follow-up). The read buffer, sized from the file and at most the cap plus one byte (src/startup.ts readBoundedEvent), and the decoded text, an external string outside the V8 heap for an ASCII event, are counted in limit:runner.offHeapBytes',
+    },
+  },
   // Configuration file and validator bounds, from config.ts.
-  unjustified('config.maxBytes', 16_384, 'bytes', {
-    protects:
-      'The configuration file is read from the checked-out repository, which can be large or hostile; reading it without a cap allocates unbounded memory before parsing.',
-    effect:
-      'A file over the cap fails with category size before parsing; no default configuration is substituted.',
-    test: 'src/config.test.ts > accepts the exact byte limit and rejects overflow',
-    note: 'stopped (L11, Q19(a) and E17, #383): the approved basis is derived, the largest valid config, (roots + candidates) × (limit:context.maxPathBytes × e + 3) + skeleton. The escape factor is bounded: JSON writes any character in at most 6 bytes (a \\u escape), so e ≤ 6. What has no bound is the whitespace JSON allows between tokens, which the formula does not count and the parser does not limit, so the largest valid config is unbounded; no approved option fixes a whitespace allowance. Even at e = 1 and no skeleton or whitespace, the Q19(a) root cap (limit:snapshot.maxTreeEntries, 102,578) and limit:context.maxSourceCandidates (193) give 102,771 × 1,027 = 105,545,817 bytes. The config is retained through the evidence phase at limit:runner.heapBytesPerRetainedByte (27.47), so limit:runner.evidenceRetainedHeapBytes would rise from 4,130,139,553 to 7,029,033,078 bytes, above limit:runner.heapBytes (6,372,196,352), and limit:packet.bytes would fall from 148,312,300 to −48,891,341; it stays positive only below about 79,382,630 config bytes. At e = 6 the same lists give 102,771 × 6,147 = 631,733,337 bytes. Q19(b), a safety cap sized against heap, was not approved. A new basis needs a maintainer decision. Value unchanged',
-  }),
+  derived(
+    'config.maxBytes',
+    'bytes',
+    ['snapshot.maxReadableBlobBytes'],
+    copy,
+    "The review config is a blob the snapshot reads, so it can be no larger than limit:snapshot.maxReadableBlobBytes, the largest blob one response carries under the base64 rule; a larger file gets the parser's size failure from its tree size, unfetched, rather than stopping the snapshot read share at its blob response (L11 item 9 review follow-up, 2026-11-28; it was a safety bound of 1 MiB, the size of limit:snapshot.maxBlobBytes, approved by the maintainer on 2026-11-28, L11 item 9(a), #383). A parse bound, so never an adopter setting. Largest legitimate use: about 594 KB, a config listing 385 source roots (the largest recorded Dependabot directory list) and limit:context.maxSourceCandidates excerpt paths, each at limit:context.maxPathBytes and written compactly: 578 × 1,027 = 593,606 bytes and the skeleton, inside this cap. The root count has no bound of its own (L11, item 9), and JSON allows unbounded whitespace, so no derivation gives the largest valid config. Harm: the config is retained through the evidence phase at limit:runner.heapBytesPerRetainedByte and counted in limit:analysis.projectionBytes, so each byte lowers limit:packet.bytes by about 1.87 bytes; it stays positive below about 77.6 MB of config, far above this cap.",
+    {
+      protects:
+        'The configuration file is read from the checked-out repository, which can be large or hostile; reading it without a cap allocates unbounded memory before parsing.',
+      effect:
+        'A file over the cap fails with category size before parsing; no default configuration is substituted.',
+      test: 'src/config.test.ts > accepts the exact byte limit and rejects overflow',
+    },
+  ),
   {
     id: 'config.maxModelCodeUnits',
     value: 128,
@@ -3468,6 +4384,24 @@ const DEFINITIONS = [
     effect:
       'A longer body is refused by GitHub with a 422; the reviewer never sends one, because its cap derives from this.',
     test: "src/limits.test.ts > the comment cap is derived from GitHub's byte limit so any body within it fits",
+  },
+  {
+    id: 'github.stepSummary.maxBytes',
+    value: MiB,
+    unit: 'bytes',
+    protects:
+      "Records GitHub's limit on one step's job summary, which holds the full review when its required content does not fit the comment.",
+    basis: {
+      kind: 'external',
+      url: 'https://docs.github.com/en/actions/reference/workflows-and-actions/workflow-commands',
+      checked: '2026-11-28',
+      platformValue: MiB,
+      margin:
+        'none: "each step is restricted to a maximum size of 1MiB", read as 1,048,576 bytes; GitHub fails the upload of a larger summary. The renderer measures the summary in UTF-8 bytes against it. Approved by the maintainer on 2026-11-28 (L11, B1, #383).',
+    },
+    effect:
+      'A review whose full text is larger is not rendered: the renderer returns size, which W2 reports as render-size, and the prior comment is kept. The digest replaces only the comment, so a full review over this cap still fails as size: at the caps, limit:packet.changes units × limit:analysis.steps follow-ups of limit:analysis.followupBytes, each byte escaped to at most 5 (&amp;), are 1,433,600 bytes alone, so the largest groups still fail closed (L11, item 1 review follow-up, 2026-11-28). Until D4 writes the summary, the handoff records its byte length and SHA-256.',
+    test: 'src/reporting.test.ts > replaces required content too long for the comment with a digest and keeps the full review for the step summary',
   },
   derived(
     'comment.maxBodyCodeUnits',
@@ -3587,14 +4521,50 @@ const DEFINITIONS = [
       test: 'src/analysis/projection.test.ts > enforces the final escaped UTF-8 request boundary, and truncates only source text',
     },
   ),
-  unjustified('analysis.completionTokens', 16_384, 'tokens', {
-    protects:
-      'max_tokens caps the output one call may produce, which bounds output cost per call and sizes the reply-byte formula. The spec records that reasoning tokens count against this budget.',
-    effect:
-      'A reply that reaches the cap ends with finish_reason length and is reported truncated. The batch splits toward single units, and results from other batches are kept.',
-    test: 'src/analysis/mistral.test.ts > admits a valid stop at the full token-byte, escaping and envelope allowance, but rejects one extra observed byte',
-    note: 'stopped (L11, Q14(a), #383): the approved basis is config with the hard maximum limit:analysis.model.contextTokens less the minimal request, about 258,437 tokens (262,144 − limit:analysis.fixedRequestBytes 3,702 − limit:analysis.model.templateTokens 5). The register cannot hold that maximum: at 258,437 tokens limit:analysis.requestBytes falls to 3,702, limit:analysis.unitBytes and limit:packet.textBytes to 0, and limit:analysis.responseBytes rises to 264,705,024 bytes, so limit:analysis.replyHeapBytes is 21,938,752,390 bytes, more than limit:runner.heapBytes (5,380,243,456 at that setting), and limit:packet.bytes goes negative (−877,203,177). Q14(a) also needs the section 5 amendment text, which the maintainer has not written. Value unchanged.',
-  }),
+  configured(
+    'analysis.completionTokens',
+    16_384,
+    'tokens',
+    { setting: 'limits.analysisCompletionTokens', maximum: 'analysis.completionTokensMax' },
+    'The adopter: the model is consumer configuration, so a larger budget lets a model that reasons at length finish a reply, at the cost of output per call they pay for, a smaller request (limit:analysis.requestBytes), and the heap a reply of limit:analysis.responseBytes takes in flight, which lowers limit:packet.bytes. Section 5 admitted completion tokens as configuration on 2026-11-17; its hard maximum is the floor rule (L11, Q14(a) and A1, approved 2026-11-28, #383).',
+    {
+      protects:
+        'max_tokens caps the output one call may produce, which bounds output cost per call and sizes the reply-byte formula. The spec records that reasoning tokens count against this budget.',
+      effect:
+        'A reply that reaches the cap ends with finish_reason length and is reported truncated. The batch splits toward single units, and results from other batches are kept.',
+      test: 'src/analysis/mistral.test.ts > admits a valid stop at the full token-byte, escaping and envelope allowance, but rejects one extra observed byte',
+    },
+    L11_STOPS_APPROVAL,
+  ),
+  derived(
+    'analysis.completionTokensMax',
+    'tokens',
+    [
+      ...PACKET_HEAP_INPUTS,
+      'packet.floorBytes',
+      'analysis.maxTokenEscapedBytes',
+      'analysis.responseEnvelopeBytes',
+      'analysis.model.contextTokens',
+      'analysis.fixedRequestBytes',
+      'analysis.model.templateTokens',
+    ],
+    (...values) => {
+      const heap = packetHeapInputs(values);
+      const [floor = 0, tokenBytes = 0, envelope = 0, context = 0, fixed = 0, template = 0] =
+        values.slice(PACKET_HEAP_INPUTS.length);
+      return largestAtFloor(context - fixed - template, floor, (tokens) =>
+        packetBytesWithReplies(heap, heap.calls, replyBytesFor(tokens, tokenBytes, envelope)),
+      );
+    },
+    'The hard maximum of limit:analysis.completionTokens: the largest token budget at which limit:packet.bytes stays at or above limit:packet.floorBytes, with every other setting at its default (the floor rule, SPEC-limit-register section 5). A larger budget raises limit:analysis.responseBytes (replyBytesFor), so each reply in flight holds more heap (limit:analysis.replyHeapBytes) and more off-heap memory (limit:runner.offHeapBytes, which lowers limit:runner.heapBytes). It never passes the Q14(a) bound, limit:analysis.model.contextTokens less the smallest request (limit:analysis.fixedRequestBytes) and limit:analysis.model.templateTokens. Approved by the maintainer on 2026-11-28 (L11, Q14(a) and A1, #383).',
+    {
+      protects:
+        'Keeps an adopter setting of the completion budget from taking the packet cap below its structural floor.',
+      effect:
+        'Not enforced by the reviewer yet: L12 makes the config parser reject a larger budget. check:limits evaluates the register at this value.',
+      test: 'src/limits.test.ts > no heap setting at its hard maximum takes packet.bytes below its floor',
+    },
+  ),
   configured(
     'analysis.requestTimeoutMs',
     240_000,
@@ -3627,8 +4597,8 @@ const DEFINITIONS = [
       protects:
         'Keeps an adopter setting of the model call timeout from outlasting the analysis time the job window leaves.',
       effect:
-        'Not enforced by the reviewer yet: L12 makes the config parser reject a longer request timeout. check:limits evaluates the register at this value.',
-      test: 'none: the hard maximum of an adopter setting the parser does not read yet (L12, #384); src/limits.test.ts pins its formula',
+        'Not enforced by the reviewer yet: L12 makes the config parser reject a longer request timeout. check:limits evaluates the register at this value. limit:analysis.maxAnalysisMs copies it as the least analysis time a run gets.',
+      test: 'none: the hard maximum of an adopter setting the parser does not read yet (L12, #384); src/limits.test.ts pins its formula and the copy',
     },
   ),
   derived(
@@ -3674,7 +4644,7 @@ const DEFINITIONS = [
     'analysis.replyHeapBytes',
     'bytes',
     ['analysis.maxConcurrentCalls', 'analysis.responseBytes', 'runner.heapBytesPerReplyByte'],
-    (calls, bytes, perByte) => Math.ceil(calls * bytes * perByte),
+    replyHeapBytesFor,
     'The heap the model replies can hold at peak: limit:analysis.maxConcurrentCalls replies of limit:analysis.responseBytes in flight at once, at limit:runner.heapBytesPerReplyByte each, rounded up. Its measurement includes the process baseline, so limit:packet.bytes needs no separate term for it.',
     {
       protects:
@@ -3692,7 +4662,7 @@ const DEFINITIONS = [
     basis: {
       kind: 'safety',
       reason:
-        'Parse safety on untrusted model output, which section 5 makes never configurable. Largest legitimate use: one concise paragraph per field, the spec\'s "concise per-unit advice", which the system prompt states as under 1,024 bytes. Harm above: blocker text (reason, impact, evidence claims, remediation and validation steps) renders in the Reasons-not-to-merge lines of the comment head, which fitComment (src/reporting.ts) never drops, so a longer field makes the run fail with category size sooner; assessment text renders in the sections fitComment drops, the assessments last. The cap alone does not keep the head inside limit:comment.maxBodyCodeUnits (87,381 code units): rendering the malware analysis parity scenario (tests/parity/analysis.ts) with its blocker filled to the caps, a blocker whose reason, impact, one evidence claim and limit:analysis.steps remediation and validation steps are each 1,024 ASCII bytes renders as an 18,830-code-unit line, so 5 such blockers overflow the comment (5 × 18,830 = 94,150) whatever else the head holds; with limit:analysis.references evidence claims at the cap one blocker is 52,868 code units and 2 overflow; text that escapes (each & renders as 5 code units) overflows with 1. Approved by the maintainer on 2026-11-27 (L11, #383).',
+        'Parse safety on untrusted model output, which section 5 makes never configurable. Largest legitimate use: one concise paragraph per field, the spec\'s "concise per-unit advice", which the system prompt states as under 1,024 bytes. Harm above: blocker text (reason, impact, evidence claims, remediation and validation steps) renders in the Reasons-not-to-merge lines of the comment head, which fitComment (src/reporting.ts) never drops, so a longer field makes the run fail with category size sooner; assessment text renders in the sections fitComment drops, the assessments last. The cap alone does not keep the head inside limit:comment.maxBodyCodeUnits (87,381 code units): rendering the malware analysis parity scenario (tests/parity/analysis.ts) with its blocker filled to the caps, a blocker whose reason, impact, one evidence claim and limit:analysis.steps remediation and validation steps are each 1,024 ASCII bytes renders as an 18,830-code-unit line, so 5 such blockers overflow the comment (5 × 18,830 = 94,150) whatever else the head holds; with limit:analysis.references evidence claims at the cap one blocker is 52,868 code units and 2 overflow; text that escapes (each & renders as 5 code units) overflows with 1. Approved by the maintainer on 2026-11-27 (L11, #383). Since 2026-11-28 (L11, B1, #383) a head too long for the comment renders as the decision digest, one line per unit with its blocker count, and the full review goes to the step summary (limit:github.stepSummary.maxBytes); only a full review above that fails with size.',
     },
     effect:
       'A field over the cap fails validation of the whole reply (category schema), and no assessment is kept.',
@@ -3713,22 +4683,36 @@ const DEFINITIONS = [
       'An over-cap feature fails validation of the whole reply (category schema), and no assessment is kept.',
     test: 'src/analysis/bounds.test.ts > capability feature, action and rationale use their own byte ceilings',
   },
-  unjustified('analysis.followupBytes', 280, 'bytes', {
+  {
+    id: 'analysis.followupBytes',
+    value: 280,
+    unit: 'bytes',
     protects:
       "Follow-up descriptions are capped at 280 bytes, which the spec says does not expand the baseline's 280-character bound.",
+    basis: {
+      kind: 'safety',
+      reason:
+        "Parse safety on untrusted model output, which section 5 makes never configurable. Largest legitimate use: one short follow-up sentence, the baseline's 280-character bound. Harm above: follow-ups are required content, so fitComment (src/reporting.ts) never drops them; limit:packet.changes units × limit:analysis.steps follow-ups × 280 bytes is 286,720 code units of description alone, above limit:comment.maxBodyCodeUnits (87,381). When required content does not fit, the comment carries the decision digest, one line per unit with its blocker and follow-up counts, at most about 50,000 code units at the change cap with ids at limit:packet.idCodeUnits (src/reporting.test.ts), and the full review goes to the step summary, limit:github.stepSummary.maxBytes. At the change cap with every follow-up unit at 8 follow-ups of 280 ASCII bytes, the comment is an 18,235-code-unit digest and the full review 364,664 bytes; with every character an & (5 code units escaped) the follow-up text alone is about 1.39 MB, above the step summary, so that run still fails with size (render-size). Approved by the maintainer on 2026-11-28 (L11, B1, #383).",
+    },
     effect:
       'An over-cap description fails validation of the whole reply (category schema), and no assessment is kept.',
     test: 'src/analysis/bounds.test.ts > follow-up descriptions and list lengths accept the byte ceiling and reject overflow',
-    note: 'stopped (L11, Q17, #383): the approved basis is safety, which holds only once a render test at the change limit passes or limit:analysis.steps is lowered for follow-ups. It does not pass: fitComment (src/reporting.ts) never drops required follow-ups, and limit:packet.changes (128) units × limit:analysis.steps (8) follow-ups × 280 bytes is 286,720 code units of description alone, above limit:comment.maxBodyCodeUnits (87,381), so a worst-case merge_with_followups run fails with size. No lowered step count was approved',
-  }),
-  unjustified('analysis.steps', 8, 'count', {
+  },
+  {
+    id: 'analysis.steps',
+    value: 8,
+    unit: 'count',
     protects:
       'Remediation, validation and follow-up lists are capped at 8 entries, which the spec states as concrete bounded lists. The list length bounds the output each assessment carries.',
+    basis: {
+      kind: 'safety',
+      reason:
+        "Parse safety on untrusted model output, as for limit:analysis.followupBytes. Largest legitimate use: a short ordered list of concrete steps, the spec's bounded lists. Harm above: each entry is required content the comment never drops, so a longer list makes more reviews too long for the comment; they then render as the decision digest with the full review in the step summary (limit:github.stepSummary.maxBytes), and only a full review above that fails with size. The figures at the change cap are those of limit:analysis.followupBytes. Approved by the maintainer on 2026-11-28 (L11, B1, #383).",
+    },
     effect:
       'A ninth entry fails validation of the whole reply (category schema), and no assessment is kept.',
     test: 'src/analysis/bounds.test.ts > blocker text, evidence claims and remediation/validation lists preserve their exact limits',
-    note: 'stopped (L11, Q17, #383): as limit:analysis.followupBytes. The safety reason needs the comment check at the change limit, which fails: 128 × 8 × 280 = 286,720 code units of required follow-ups against limit:comment.maxBodyCodeUnits (87,381). Lowering the follow-up count would be a new value no constraint has been approved for',
-  }),
+  },
   derived(
     'analysis.references',
     'count',
@@ -3775,22 +4759,55 @@ const DEFINITIONS = [
       'Not enforced by the reviewer yet: L12 makes the config parser reject a larger call cap. check:limits evaluates the register at this value.',
     test: 'src/analysis/batches.test.ts > splitting every batch down to single units makes 2 × units − batches calls',
   },
-  unjustified('analysis.maxConcurrentCalls', 2, 'count', {
-    protects:
-      'Provider calls in flight are capped at two per run, the concurrency the spec reserves. No provider or platform limit is cited, so the harm is not established.',
-    effect:
-      'No new call starts while two are in flight. Final records do not depend on completion order.',
-    test: 'src/analysis/batches.test.ts > completion order does not change dispatched batches, concurrency, or final states',
-    note: 'stopped (L11, #383): the approved basis is config with the hard maximum of limit:analysis.maxCalls, limit:analysis.maxCallsMax (240). The register cannot hold it: at 240 concurrent calls limit:analysis.replyHeapBytes is 167,511,274,292 bytes (about 167 GB) and limit:runner.offHeapBytes 8,192,301,056, so limit:runner.heapBytes goes negative (−1,645,215,744) and limit:packet.bytes with it (−8,908,675,867). No smaller hard maximum is approved. Value unchanged.',
-  }),
-  unjustified('analysis.maxAnalysisMs', 600_000, 'milliseconds', {
-    protects:
-      "Analysis time is capped at the spec's 600 s maximum, so the stage cannot outlast the job's time budget.",
-    effect:
-      'The effective deadline is the earlier of the caller deadline minus the reserve and start plus 600 s. No call dispatches at or after it; in-flight calls end with deadline.',
-    note: 'stopped (L11, Q17(a), #383): the approved basis is config with the hard maximum window − freshness − publication − evidence deadline − recheck, limit:job.maxAnalysisTimeMs, which is 471,971 ms at the defaults (840,000 − 240,000 − 34,917 − 58,195 − 34,917), below this default of 600,000. A default above its own hard maximum fails section 5 and check:limits, and no approved change lowers the default or moves the maximum',
-    test: 'src/analysis/batches.test.ts > no call dispatches at or after the registered analysis time cap from the start',
-  }),
+  configured(
+    'analysis.maxConcurrentCalls',
+    2,
+    'count',
+    { setting: 'limits.analysisMaxConcurrentCalls', maximum: 'analysis.maxConcurrentCallsMax' },
+    'The adopter: the model is consumer configuration, so more calls in flight finish a run sooner on a provider that allows them, at the cost of the heap each reply in flight takes, which lowers limit:packet.bytes. Section 5 admitted concurrency as configuration on 2026-11-17; its hard maximum is the floor rule (L11, A1, approved 2026-11-28, #383).',
+    {
+      protects:
+        'Provider calls in flight are capped, so the replies held at once stay inside the heap the packet cap leaves.',
+      effect:
+        'No new call starts while this many are in flight. Final records do not depend on completion order.',
+      test: 'src/analysis/batches.test.ts > completion order does not change dispatched batches, concurrency, or final states',
+    },
+    L11_STOPS_APPROVAL,
+  ),
+  derived(
+    'analysis.maxConcurrentCallsMax',
+    'count',
+    [...PACKET_HEAP_INPUTS, 'packet.floorBytes', 'analysis.maxCalls'],
+    (...values) => {
+      const heap = packetHeapInputs(values);
+      const [floor = 0, maxCalls = 0] = values.slice(PACKET_HEAP_INPUTS.length);
+      return largestAtFloor(maxCalls, floor, (calls) =>
+        packetBytesWithReplies(heap, calls, heap.reply),
+      );
+    },
+    'The hard maximum of limit:analysis.maxConcurrentCalls: the largest number of calls in flight at which limit:packet.bytes stays at or above limit:packet.floorBytes, with every other setting at its default (the floor rule, SPEC-limit-register section 5), and never more than the calls a run may make, limit:analysis.maxCalls. Each call in flight holds a reply of limit:analysis.responseBytes at its parse peak (limit:analysis.replyHeapBytes) and two off-heap copies of it (limit:runner.offHeapBytes, which lowers limit:runner.heapBytes). Approved by the maintainer on 2026-11-28 (L11, A1, #383).',
+    {
+      protects:
+        'Keeps an adopter setting of the call concurrency from taking the packet cap below its structural floor.',
+      effect:
+        'Not enforced by the reviewer yet: L12 makes the config parser reject a larger concurrency. check:limits evaluates the register at this value.',
+      test: 'src/limits.test.ts > no heap setting at its hard maximum takes packet.bytes below its floor',
+    },
+  ),
+  derived(
+    'analysis.maxAnalysisMs',
+    'milliseconds',
+    ['job.maxAnalysisTimeMs'],
+    copy,
+    "The analysis time every run is guaranteed, a copy of limit:job.maxAnalysisTimeMs: the job window less the evidence deadline at its setting, the before-model recheck, the publication reserve and the final freshness allowance. 471,971 ms at the defaults (840,000 − 240,000 − 34,917 − 58,195 − 34,917), 267,341 ms with limit:evidence.envelope.totalTimeoutMs at its hard maximum (444,630, where limit:packet.bytes meets its floor), and 240,000 ms, one model call, with it at limit:job.maxEvidenceDeadlineMs. It is a floor, not a ceiling: analysis runs to the job time that actually remains, the caller deadline (job start + limit:job.window − limit:job.freshnessAllowance) less limit:analysis.publicationReserveMs, so evidence that ends early leaves its unspent time to analysis, and evidence that runs to its deadline still leaves this much. The earlier 600,000, timed from the start of analysis, had no basis and passed the job bound at the defaults; a cap of this value timed the same way would cut analysis short whenever evidence ended early. It was approved as configuration (SPEC-limit-register section 5, 2026-11-17), but the time a run leaves is not the adopter's to set, so it is derived. Approved by the maintainer on 2026-11-28 (L11, follow-up to Q17(a), #383).",
+    {
+      protects:
+        'States the least analysis time the job leaves after evidence, so the evidence deadline setting can never leave analysis less than one model call.',
+      effect:
+        'Not enforced as a limit: analysis stops dispatching at the caller deadline less the publication reserve, which is never earlier than this long after analysis starts, because evidence and the recheck end by the evidence deadline and their own timeouts. In-flight calls end with deadline at that cutoff.',
+      test: 'src/analysis/batches.test.ts > analysis runs past the guaranteed analysis time to the caller deadline less the reserve',
+    },
+  ),
   derived(
     'analysis.publicationReserveMs',
     'milliseconds',
@@ -3984,22 +5001,50 @@ const DEFINITIONS = [
     test: 'src/measurement/demand.test.ts > a quota trace reports an unexpected header value as invalid',
   },
   // Limits moved from call sites by the L5 register sweep (issue #377).
-  unjustified('signals.reasonCodeUnits', 350, 'code units', {
+  {
+    id: 'signals.reasonCodeUnits',
+    unit: 'code units',
     protects:
       "Registry deprecation text is untrusted; an unbounded reason would bloat the packet's text and the comment.",
     effect:
       "Longer text is cut at the cap without splitting a surrogate pair and marked '[reason truncated]'.",
+    basis: {
+      kind: 'derived',
+      inputs: ['packet.excerptCodeUnits'],
+      formula: (excerpt) =>
+        Math.floor(
+          (excerpt - SIGNAL_EXCERPT.reasonWrapperCodeUnits - SIGNAL_EXCERPT.reasonMarker.length) /
+            2,
+        ),
+      description:
+        "The longest reason whose deprecation excerpt always fits limit:packet.excerptCodeUnits, so a cut reason never loses its deprecation evidence as truncated. The excerpt is JSON.stringify of {deprecated: {marker, reason}} (src/evidence/policy-signals-npm.ts npmDeprecation, src/evidence/policy-signals-evidence.ts recordSignal): 50 code units around the reason, and a cut reason ends with the 19-unit ' [reason truncated]'. boundedReason replaces control characters and lone surrogates, so only a quote or a backslash escapes, each to 2 units. So ⌊(500 − 50 − 19) ÷ 2⌋ = 215: a reason of 215 quotes and the marker is a 499-unit excerpt, and 216 would be 501. The finding's rationale, 46 units and the cut reason, is at most 280 units and 710 UTF-8 bytes, inside limit:packet.textBytes. It follows the excerpt setting (Q27). Approved by the maintainer on 2026-11-28 (L11, item 6(a), #383).",
+      structuralTest:
+        'src/evidence/policy-signals-npm.test.ts > a deprecation reason of quotes cut at the cap keeps its excerpt inside the excerpt cap',
+    },
     test: 'src/evidence/policy-signals-npm.test.ts > a long deprecation reason never splits a surrogate pair',
-    note: "L11 (#383) recommended deriving it from limit:packet.textBytes as ⌊(2,048 − 19) ÷ 3⌋ = 676, but that bounds only the finding's text field. The reason also lands in the deprecation signal's source excerpt, JSON.stringify of {deprecated: {marker, reason}} (src/evidence/policy-signals-evidence.ts recordSignal), which must fit limit:packet.excerptCodeUnits (500) or the signal is dropped as truncated. At 676 a cut reason is 695 code units and its excerpt 745, so every long reason would lose its deprecation evidence; with 676 the test 'exact PyPI release evidence with an astral-heavy long reason passes T4 with earliest upload and yank findings' fails. The excerpt bounds a cut plain-text reason at 500 − 50 − 19 = 431 code units, and JSON escaping of quotes and backslashes doubles them, so even 350 can overflow it. The value stays until a derivation covers the excerpt path.",
-  }),
-  unjustified('signals.npmMaxMaintainers', 32, 'count', {
+  },
+  {
+    id: 'signals.npmMaxMaintainers',
+    unit: 'count',
     protects:
       'A registry response can list an unbounded number of maintainers; the cap stops an oversized list from entering the publisher facts.',
     effect:
-      'Above 32 maintainers, the maintainers check fails with budget and that observation is recorded as unchecked.',
-    note: 'no recorded reason',
+      'Above the cap, the maintainers check fails with budget and that observation is recorded as unchecked.',
+    basis: {
+      kind: 'derived',
+      inputs: ['packet.excerptCodeUnits'],
+      formula: (excerpt) =>
+        Math.floor(
+          (excerpt - SIGNAL_EXCERPT.maintainersWrapperCodeUnits + 1) /
+            SIGNAL_EXCERPT.maintainerCodeUnits,
+        ),
+      description:
+        "The longest maintainer list that could ever fit the publisher excerpt, so the cap never refuses a list the excerpt could record. The excerpt is JSON.stringify of {level: 'registry_reported', maintainers: {kind: 'known', value: names}} (src/evidence/policy-signals-npm.ts factSource): 71 code units around the names, each name at least 4 (a one-character name, its quotes and its comma) and the last 3. Names match [a-z\\d_.-]+, so nothing escapes. So ⌊(500 − 71 + 1) ÷ 4⌋ = 107. The cap counts the listed entries before deduplication, which only shrinks the list. A longer list of realistic names still overflows the excerpt and is recorded as truncated, a Q27 matter. Largest recorded use: 12 of 4,251 npm version documents in the L11 corpus run list more than 32 maintainers, at most 74. It follows the excerpt setting (Q27). Approved by the maintainer on 2026-11-28 (L11, item 7(a), #383).",
+      structuralTest:
+        'src/evidence/policy-signals-npm.test.ts > the publisher excerpt takes 71 code units around the maintainer names and 4 for each name',
+    },
     test: 'src/evidence/policy-signals-npm.test.ts > a maintainer list at the registered cap is kept and one more is unchecked for budget',
-  }),
+  },
   configured(
     'research.maxTagCandidates',
     100,
@@ -4031,21 +5076,96 @@ const DEFINITIONS = [
     effect: 'A chain deeper than the cap fails with reason budget.',
     test: 'src/evidence/upstream-github.test.ts > annotated tag chains resolve up to the register depth and fail one tag deeper',
   },
-  unjustified('research.maxWork', 5_000_000, 'count', {
+  derived(
+    'research.maxWork',
+    'count',
+    [
+      'evidence.envelope.totalTimeoutMs',
+      'runner.parseMsPerResearchWorkUnit',
+      'runner.parseCountResearchWorkUnit',
+      'runner.parseExponentResearchWorkUnit',
+    ],
+    harmPoint,
+    `The CPU harm point of the research work counter (harmPoint in src/limits.ts): the count at which the slowest run, with the allowance of #467 for a runner 10 times slower, takes a quarter of limit:evidence.envelope.totalTimeoutMs, on the cost curve through the largest count the probe timed, limit:runner.parseCountResearchWorkUnit units at limit:runner.parseMsPerResearchWorkUnit each, growing as the count to the power limit:runner.parseExponentResearchWorkUnit: count × (deadline ÷ 4 ÷ 10 ÷ (cost × count))^(1/exponent), rounded down, so 1,398,102 × (6,000 ÷ 2,269.1)^(1/1.11) = 3,357,250 at the defaults, 2.40 times the largest count timed. It follows the evidence deadline setting. A reader spends one unit per copied entry and per scanned release, and decoded manifest bytes and reused cached bytes at limit:research.byteWorkWeight a byte, so the cap is CPU in copied-entry units. The largest legitimate use is still not recorded (a reader's work sums those charges, and the #462 measurement recorded entries, not work; npm run measure:demand with the work reported would give it); the earlier 5,000,000 was above the harm point. A count cap of work enlarges no parsed structure: the responses' bytes and limit:research.maxRetainedBytes bound what is parsed and kept. ${L11_HARM_APPROVAL}.`,
+    {
+      protects:
+        'The work a research reader does on untrusted data is bounded, so one stage cannot consume unbounded CPU (CPU).',
+      effect:
+        'Spending past the cap sets the stop to budget and throws; the stage stops and its stop is recorded as unavailable.',
+      test: 'src/research.test.ts > the upstream reader spends exactly research.maxWork units and refuses the next one',
+    },
+  ),
+  ...parseFit(
+    {
+      cost: 'runner.parseMsPerResearchWorkUnit',
+      count: 'runner.parseCountResearchWorkUnit',
+      exponent: 'runner.parseExponentResearchWorkUnit',
+    },
+    'research.maxWork',
+    {
+      counter: 'research',
+      corpus:
+        'responses of numbers, empty arrays and empty objects filling doubling sizes around limit:evidence.envelope.maxResponseBytes, read and copied by a research reader (src/evidence/upstream-read.ts) with its count caps lifted, one unit per copied entry',
+      shape: 'empty objects',
+      series:
+        '87,382 to 1,398,102 units, the slowest run takes 110.7, 219.1, 458.8, 1,130.4 and 2,267.9 ms',
+      count: 1_398_102,
+      slowestMs: '2,267.9',
+      msPerUnit: 0.001623,
+      fitted: '1.1080',
+      exponent: 1.11,
+      spread: '1.67 times',
+      extrapolation: '2.40',
+    },
+  ),
+  {
+    id: 'runner.parseMsPerResearchByte',
+    value: 0.00001056,
+    unit: 'milliseconds',
     protects:
-      'The work a research reader does on untrusted data is bounded, so one stage cannot consume unbounded CPU (CPU).',
+      'Records the CPU time one decoded manifest byte costs a research reader, so limit:research.maxWork can charge byte work at what it costs, not at the price of a copied entry.',
+    basis: {
+      kind: 'measured',
+      command: 'npm run probe:parse-cost -- harm research-bytes',
+      corpus:
+        'contents responses whose base64 text, wrapped at 60 characters as GitHub writes it, decodes to sizes halving down from the most a response at limit:evidence.envelope.maxResponseBytes carries (49,152 to 786,432 bytes), decoded, checked and hashed by the reader (decodedContents and verifyContents in src/evidence/upstream-github.ts); crafted inputs, never a recorded file, on Node 24.22.3 (V8 13.6). Fixture: tests/probe-parse-cost/fixtures/harm.json holds the combined timings',
+      statistic: `Per decoded byte at the largest size: 8.3 ms for 786,432 bytes, ${HARM_FIT_RULE}. Over the series the slowest run takes 0.8, 1.0, 2.1, 4.1 and 8.3 ms, which grows no faster than the bytes (a fit of 0.87, taken as 1), and the invocations differed by up to 1.56 times. A reused cached response is charged per byte too, but its reuse returns the frozen cached value and does no per-byte work, so this cost overstates it`,
+      ...HARM_FIT_BASIS,
+    },
     effect:
-      'Spending past the cap sets the stop to budget and throws; the stage stops and its stop is recorded as unavailable.',
-    note: "stopped (L11, Q8(a), #383): the approved basis is safety, which merges only with its largest legitimate use and its harm. The harm is measured: the costliest unit is a copied entry, the reader's own work counter. As a reader parses and copies a response of empty objects, the costliest of three shapes per entry, doubling around limit:evidence.envelope.maxResponseBytes from 87,382 to 1,398,102 units, the slowest of 5 runs takes 74.7 to 2,292 ms, each doubling multiplying it by 2.46, 2.20, 2.50 and 2.27 (npm run probe:parse-cost -- harm research, on 2026-11-28 under Node 24.22.3); the cost grows a little faster than the count, as the count to the power 1.23 fitted over the series, so on that curve, with the allowance of #467 for a runner 10 times slower, harm begins near 3.0 million units, a quarter of limit:evidence.envelope.totalTimeoutMs, below the cap of 5,000,000. The largest legitimate use is not: a reader's work counts the entries it copies, the bytes of the manifests it decodes, the bytes of every cached response it reuses and one unit per release it scans, and no recorded run gives their sum (the #462 measurement recorded entries, not work). It needs a live run (npm run measure:demand with the work reported). Value unchanged",
-    test: 'src/research.test.ts > the upstream reader spends exactly research.maxWork units and refuses the next one',
-  }),
-  unjustified('research.maxAttempts', 512, 'count', {
+      'Not enforced. limit:research.byteWorkWeight divides it by the cost of a copied entry; a larger cost charges byte work more.',
+    test: 'src/limits.test.ts > the harm fits recompute from the recorded probe timings',
+  },
+  derived(
+    'research.byteWorkWeight',
+    'count',
+    ['runner.parseMsPerResearchByte', 'runner.parseMsPerResearchWorkUnit'],
+    (byteMs, entryMs) => byteMs / entryMs,
+    'The work units one decoded manifest byte or reused cached byte costs in limit:research.maxWork: its measured CPU cost, limit:runner.parseMsPerResearchByte, over that of a copied entry, limit:runner.parseMsPerResearchWorkUnit, so the work cap measures CPU whatever mix of entries and bytes a reader spends. The reader charges ⌈bytes × weight⌉ (byteWork in src/evidence/upstream-read.ts). Charged one unit a byte, as before, a run that decoded more than about 3.4 MB of manifests stopped with budget although the upstream byte share is limit:evidence.allocation.upstream.maxTotalBytes; at this weight the whole share costs a fraction of the cap. Approved by the maintainer on 2026-11-28 (L11, follow-up to Q8(a), #383).',
+    {
+      protects:
+        'Prices byte work at its measured CPU cost, so decoding legitimate manifests cannot exhaust the work cap meant for parse work.',
+      effect:
+        'Each decoded manifest and each reused cached response spends ⌈bytes × weight⌉ work units; spending past limit:research.maxWork stops the reader with budget.',
+      test: 'src/limits.test.ts > research byte work is charged at its measured weight and the upstream share fits the work cap',
+    },
+  ),
+  {
+    id: 'research.maxAttempts',
+    unit: 'count',
     protects:
       'The number of attempt records one enrichment can carry is bounded, so the output built from them stays within memory and output size (memory).',
     effect: 'Output with more attempts than the cap fails the enrichment with reason budget.',
-    note: 'L11 (#383) recommended deriving it as a structural per-member attempt count (at least 6) × limit:packet.changes, at least 768, but the per-member count is not a fixed number: the range stage records one attempt per release it scans, up to limit:research.maxTagCandidates (100), plus a summary (src/evidence/upstream-range.ts), so a member can record at least 101 attempts, bounded by that setting. 512 already binds legitimate use: R1 #276 recorded 594 attempts for 105 members. A derivation needs limit:research.maxTagCandidates as an input, at least 101 × 128 ≈ 13,000, which the approval did not name, so the value stays until one is approved.',
+    basis: {
+      kind: 'derived',
+      inputs: ['packet.changes', 'research.maxTagCandidates'],
+      formula: (changes, candidates) => changes * (candidates + 1 + UPSTREAM_FIXED_ATTEMPTS),
+      description: `The most attempts the members of one packet can record: limit:packet.changes members, each at most limit:research.maxTagCandidates range attempts (one per release the scan reads, src/evidence/upstream-range.ts), 1 range summary or stop, and ${UPSTREAM_FIXED_ATTEMPTS} fixed attempts outside the scan: 2 metadata reads (base and head) and the metadata fallback record (src/evidence/upstream.ts), 2 release tag candidates (src/evidence/upstream-github.ts, packageTags), the comparison and its final tag recheck, and 3 changelog paths (src/evidence/upstream-range.ts). An Actions member records fewer: 2 mappings, 1 release-notes failure, 4 ref rechecks and 1 comparison. So 128 × (100 + 1 + ${UPSTREAM_FIXED_ATTEMPTS}) = 14,208 at the defaults; it follows both settings. R1 #276 recorded 594 attempts for 105 members, which the earlier 512 refused. Approved by the maintainer on 2026-11-28 (L11, item 5(a), #383). The L11 proposal estimated 6 fixed attempts (13,696); the structural test counts ${UPSTREAM_FIXED_ATTEMPTS}. The test drives one path, and it is the worst one because every recording site in src/evidence records at most a fixed number per member on any path, and that path reaches each at its most: metadataAttempt once per side (2) and the fallback record once (upstream.ts); the target release, one per packageTags candidate, which is at most 2, or 1 when the repository fails first (upstream-github.ts); the comparison, its exact comparison and final recheck (2), or 1 when it fails first; the range scan, one per release read, refused past limit:research.maxTagCandidates, and then its summary or its stop (1, upstream-range.ts); and the changelog, one per path, at most 3, or 1 when the repository fails first. researchAttempts copies each stage's attempts one for one, and skippedStages records only for stages that did not run, so a path that skips a stage records at most as many as one that runs and fails it: 4 skipped stages after missing metadata, 3 after the target release, 2 after the comparison or for a one-sided change, each no more than the attempts those stages record when they run and fail. A rollback only truncates. The attempts' bytes are still bounded by limit:research.maxRetainedBytes and limit:packet.bytes in the same check, and at the worst-case record size the byte cap binds first: a record with a 768-byte member id, a name@version target, a range, an encoded registry URL, all ten reasons and one source id serializes to 12,089 bytes, so 14,208 of them would need 171,760,512 bytes against the 103,585,792 limit:research.maxRetainedBytes allows, which holds about 8,568 (the count cap would bind only below about 7,290 bytes a record). An overflow fails with budget. This count is therefore a structural ceiling on the attempts one packet can record, and the retained-bytes cap is the binding one; no value changes.`,
+      structuralTest:
+        'src/evidence/upstream.test.ts > a package member records at most research.maxTagCandidates + 1 + the fixed attempts',
+    },
     test: 'src/evidence/upstream.test.ts > upstream bounds keep exactly research.maxAttempts attempts and refuse one more',
-  }),
+  },
   derived(
     'research.maxFindings',
     'count',

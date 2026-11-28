@@ -78,6 +78,7 @@ function validPath(value: unknown, exactFile: boolean): value is string {
   return value.split('/').every((segment) => segment.length > 0 && !segment.startsWith('.'));
 }
 
+/** Paths valid for their field; a list longer than `limit` is invalid (roots have none, L11). */
 function validPaths(value: unknown, limit: number, exactFile: boolean): value is string[] {
   return (
     Array.isArray(value) &&
@@ -105,7 +106,7 @@ function invalidContext(context: unknown): string | undefined {
     return 'context';
   if (
     Object.hasOwn(context, 'sourceRoots') &&
-    !validPaths(context.sourceRoots, limit('context.maxSourceRoots'), false)
+    !validPaths(context.sourceRoots, Number.POSITIVE_INFINITY, false)
   )
     return 'context.sourceRoots';
   if (

@@ -1,7 +1,9 @@
 import fs from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { expect, test, vi } from 'vite-plus/test';
+import { setFlagsFromString } from 'node:v8';
+import { runInNewContext } from 'node:vm';
+import { describe, expect, test, vi } from 'vite-plus/test';
 import { analysisDocument } from '../tests/parity/analysis.js';
 import { HEAD, NEXT, eventFile, mockGithub } from '../tests/parity/startup-github.js';
 import { upstreamScenario } from '../tests/parity/upstream.js';
@@ -746,8 +748,107 @@ test.each([
   }
 });
 
+test('sizes the event read buffer from the file, not the cap', async () => {
+  const directory = await fs.mkdtemp(join(tmpdir(), 'startup-event-'));
+  const alloc = vi.spyOn(Buffer, 'alloc');
+  try {
+    const path = join(directory, 'event.json');
+    await fs.writeFile(path, eventFile);
+    await expect(readBoundedEvent(path)).resolves.toBe(eventFile);
+    // The file's own length and one probe byte, never the 25,000,001 bytes of the cap.
+    expect(alloc).toHaveBeenCalledWith(Buffer.byteLength(eventFile) + 1);
+    expect(alloc).not.toHaveBeenCalledWith(MAX_EVENT_BYTES + 1);
+  } finally {
+    alloc.mockRestore();
+    await fs.rm(directory, { recursive: true, force: true });
+  }
+});
+
+test('fails closed on an event file that grows past its stated size while read', async () => {
+  const content = Buffer.from('{"action":"completed"}');
+  const open = vi.spyOn(fs, 'open').mockResolvedValue({
+    stat: async () => ({ size: 4 }),
+    read: async (buffer: Buffer, offset: number, length: number, position: number) => ({
+      bytesRead: content.copy(buffer, offset, position, position + length),
+      buffer,
+    }),
+    close: async () => undefined,
+  } as never);
+  try {
+    await expect(readBoundedEvent('/event.json')).rejects.toThrow('event changed while read');
+  } finally {
+    open.mockRestore();
+  }
+});
+
+describe('an event at the webhook payload cap', { timeout: 60_000 }, () => {
+  test('an event near startup.maxEventBytes is read, parsed and verified end to end', async () => {
+    const directory = await fs.mkdtemp(join(tmpdir(), 'startup-event-'));
+    try {
+      // The fixture's event with dense padding the verifier ignores, to one byte under the cap.
+      const head = eventFile.slice(0, -1) + ',"padding":[';
+      const room = MAX_EVENT_BYTES - 1 - head.length - ']}'.length;
+      const padding = Array.from({ length: Math.floor((room + 1) / 2) }, () => '0').join(',');
+      const text = head + padding + ']}';
+      const file = text + ' '.repeat(MAX_EVENT_BYTES - 1 - text.length);
+      expect(Buffer.byteLength(file)).toBe(MAX_EVENT_BYTES - 1);
+      const path = join(directory, 'event.json');
+      await fs.writeFile(path, file);
+      const github = mockGithub();
+      const { code, stderr } = await start(
+        github,
+        { GITHUB_EVENT_PATH: path },
+        { readEvent: readBoundedEvent },
+      );
+      expect(stderr).toEqual([
+        'dependabot-review: no-write rehearsal recorded complete; analysis 0 calls, max split depth 0; nothing was published.',
+      ]);
+      expect(code).toBe(NOT_WIRED_EXIT_CODE);
+    } finally {
+      await fs.rm(directory, { recursive: true, force: true });
+    }
+  });
+});
+
 test('rejects a missing event file', async () => {
   await expect(
     readBoundedEvent(join(tmpdir(), 'startup-event-missing', 'event.json')),
   ).rejects.toThrow();
+});
+
+test('the raw event is unreachable once verification is done, before the first tree read', async () => {
+  setFlagsFromString('--expose_gc');
+  const gc = runInNewContext('gc') as () => void;
+  const github = mockGithub();
+  // A plain wrapper, not a spy: a spy would keep every parsed value in its call record.
+  const parse = JSON.parse;
+  let parsed: WeakRef<object> | undefined;
+  JSON.parse = function (text: string, reviver?: Parameters<typeof parse>[1]) {
+    const value: unknown = parse(text, reviver);
+    if (text === eventFile && value && typeof value === 'object') parsed = new WeakRef(value);
+    return value;
+  } as typeof JSON.parse;
+  let reachable: boolean | undefined;
+  try {
+    const { code } = await start(
+      github,
+      {},
+      {
+        fetch: async (url, init) => {
+          if (reachable === undefined && url.includes('/git/trees/')) {
+            // A new task, so the WeakRef's creation no longer keeps its target alive.
+            await new Promise((resolve) => setTimeout(resolve, 0));
+            gc();
+            reachable = parsed?.deref() !== undefined;
+          }
+          return github.fetch(url, init);
+        },
+      },
+    );
+    expect(code).toBe(NOT_WIRED_EXIT_CODE);
+  } finally {
+    JSON.parse = parse;
+  }
+  expect(parsed).toBeDefined();
+  expect(reachable).toBe(false);
 });

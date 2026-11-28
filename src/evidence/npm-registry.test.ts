@@ -244,18 +244,20 @@ test('registry JSON entries at the cap parse and one more entry is a budget fail
   // Root has six values (_id, name, version, dist, scripts, pad), dist and scripts one each,
   // and the pad array one per element.
   const withEntries = (entries: number) => document({ pad: Array(entries - 8).fill(0) });
+  // The cap is the CPU harm point (L11, 2026-11-28), above what a document at the byte caps can
+  // hold, so they are lifted to reach it: each padding entry takes 2 bytes.
   const roomy = {
     maxJsonEntries: cap,
-    maxResponseBytes: 1 << 20,
-    maxTotalBytes: 1 << 20,
-    maxRetainedBytes: 1 << 20,
+    maxResponseBytes: 4 * cap,
+    maxTotalBytes: 8 * cap,
+    maxRetainedBytes: 4 * cap,
   };
   expect(await reader(withEntries(cap), roomy).read(request)).toMatchObject({ kind: 'metadata' });
   expect(await reader(withEntries(cap + 1), roomy).read(request)).toMatchObject({
     kind: 'unavailable',
     reason: 'budget',
   });
-});
+}, 60_000);
 
 test('registry JSON nesting at the depth cap parses and one level deeper is a budget failure', async () => {
   const cap = limit('w2.registry.maxJsonDepth');

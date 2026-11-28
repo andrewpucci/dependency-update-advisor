@@ -5,15 +5,19 @@ import {
   CLAIM_SHAPES,
   COUNTERS,
   claimLine,
+  combineInvocations,
   dependabotDocument,
   doublingRatios,
   doublingSizes,
   entryCount,
   filled,
+  fitExponent,
+  harmFit,
   jsonDocument,
   npmBudgetFindingId,
   npmProject,
   reportsBudget,
+  roundUpSignificant,
   smallestPassing,
   summarizeCounts,
   timingSummary,
@@ -125,4 +129,42 @@ test('a graph result reports budget only through a reason, a reason list or a bu
 
 test('the counters are distinct', () => {
   expect(new Set(COUNTERS).size).toBe(COUNTERS.length);
+});
+
+test('invocations combine to the slowest run at each size, with their spread', () => {
+  const point = (units: number, slowestMs: number, medianMs = 1) => ({
+    counter: 'toml',
+    shape: 'tables',
+    bytes: units * 3,
+    units,
+    slowestMs,
+    medianMs,
+  });
+  expect(
+    combineInvocations([
+      [point(10, 4), point(20, 8)],
+      [point(10, 5, 2), point(20, 6)],
+    ]),
+  ).toEqual([
+    { ...point(10, 5, 2), invocations: 2, spread: 1.25 },
+    { ...point(20, 8), invocations: 2, spread: 8 / 6 },
+  ]);
+  expect(() => combineInvocations([[point(10, 4)], [point(11, 4)]])).toThrow(/different sizes/);
+});
+
+test('a harm fit rounds the cost up to 4 figures and the exponent up to 2 decimals, at least 1', () => {
+  expect(roundUpSignificant(0.00191614, 4)).toBe(0.001917);
+  expect(roundUpSignificant(0.001917, 4)).toBe(0.001917);
+  // Doubling count, time times 2^1.3 each step: the fit recovers the exponent.
+  const units = [1_000, 2_000, 4_000, 8_000];
+  const slowest = units.map((count) => (count / 1_000) ** 1.3);
+  expect(fitExponent(units, slowest)).toBeCloseTo(1.3, 10);
+  const fit = harmFit(units, slowest, 240_000);
+  expect(fit).toMatchObject({ count: 8_000, exponent: 1.3, msPerUnit: 0.001867 });
+  // 6,000 ms is a quarter of the deadline on a runner 10 times slower.
+  expect(fit.msPerUnit * 8_000 * (fit.harm / 8_000) ** 1.3).toBeLessThanOrEqual(6_000);
+  expect(fit.msPerUnit * 8_000 * ((fit.harm + 1) / 8_000) ** 1.3).toBeGreaterThan(6_000);
+  expect(fit.extrapolation).toBe(fit.harm / 8_000);
+  // A fit below linear is taken as linear.
+  expect(harmFit([1, 2, 4], [1, 1.5, 2.2], 240_000).exponent).toBe(1);
 });

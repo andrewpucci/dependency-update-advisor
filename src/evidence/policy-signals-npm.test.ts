@@ -8,7 +8,7 @@ import { createUpstreamReader } from './upstream-read.js';
 import { enrichUpstream } from './upstream.js';
 import { upstreamScenario, upstreamTestLimits } from '../../tests/parity/upstream.js';
 import { validateReviewPacket } from '../schema.js';
-import { limit } from '../limits.js';
+import { limit, SIGNAL_EXCERPT } from '../limits.js';
 
 test('npm exact-version publishing facts exclude email and retain independent mechanisms', () => {
   const f = npmPublishingFacts({
@@ -29,9 +29,10 @@ test('npm exact-version publishing facts exclude email and retain independent me
   expect(JSON.stringify(f)).not.toContain('example.invalid');
 });
 test('a long deprecation reason never splits a surrogate pair', () => {
-  const f = npmPublishingFacts({ deprecated: 'x'.repeat(349) + '\u{1F600} tail' });
+  const cap = limit('signals.reasonCodeUnits');
+  const f = npmPublishingFacts({ deprecated: 'x'.repeat(cap - 1) + '\u{1F600} tail' });
   if (f.deprecated.kind !== 'known' || !f.deprecated.value) throw new Error('deprecated');
-  expect(f.deprecated.value.reason).toBe('x'.repeat(349) + ' [reason truncated]');
+  expect(f.deprecated.value.reason).toBe('x'.repeat(cap - 1) + ' [reason truncated]');
   expect(/\p{Cs}/u.test(f.deprecated.value.reason)).toBe(false);
 });
 test('trusted publisher uses provider/configuration identity rather than its display name', () => {
@@ -209,4 +210,105 @@ test.each([
         f.references.every((id) => out.sources.find((s) => s.id === id)?.kind === 'trust'),
       ),
     ).toBe(true);
+});
+
+/** Runs the real npm signal stage with the proposed version's registry document rewritten. */
+async function proposedSignals(
+  rewrite: (data: Record<string, unknown>) => Record<string, unknown>,
+) {
+  const f = await upstreamScenario();
+  const ur = createUpstreamReader(upstreamTestLimits, { now: () => 0, fetch: f.fetch });
+  if (ur.kind !== 'ready') throw new Error('reader');
+  const upstream = await enrichUpstream(f.input, ur);
+  ur.reader.close();
+  if (upstream.kind !== 'enriched') throw new Error('upstream');
+  const npm = createNpmRegistryReader(upstreamTestLimits, {
+    now: () => 0,
+    fetch: async (url, init) => {
+      const version = new URL(url).pathname.split('/').at(-1);
+      const data = await (await f.fetch(url, init)).json();
+      const document = { ...data, _npmUser: { name: 'alice' }, maintainers: [{ name: 'alice' }] };
+      return Response.json(version === '2.0.0' ? rewrite(document) : document);
+    },
+  });
+  const times = createNpmPublishTimeReader(
+    { ...upstreamTestLimits, maxWork: 100000 },
+    {
+      now: () => 0,
+      fetch: async (url) =>
+        Response.json({
+          name: decodeURIComponent(new URL(url).pathname.slice(1)),
+          time: { '1.0.0': '2026-10-01T00:00:00Z', '2.0.0': '2026-11-01T00:00:00Z' },
+        }),
+    },
+  );
+  const malware = createMalwareReader(f.advisoryLimits, {
+    now: () => 0,
+    fetch: async () => Response.json([]),
+  });
+  if (npm.kind !== 'ready' || times.kind !== 'ready' || malware.kind !== 'ready')
+    throw new Error('reader');
+  const out = await enrichPolicySignals(
+    {
+      ...f.input,
+      ...upstream,
+      limits: { ...f.advisoryLimits, maxAttempts: 1000 },
+      evaluationTime: Date.parse('2026-11-07T00:00:00Z'),
+    },
+    { malwareReader: malware, publishTimeReader: times, npmReader: npm },
+  );
+  malware.close();
+  times.close();
+  if (out.kind !== 'enriched') throw new Error(JSON.stringify(out));
+  return out;
+}
+/** The distinct excerpts of the proposed sides' sources of one kind; every npm member shares them. */
+const excerpts = (out: Awaited<ReturnType<typeof proposedSignals>>, kind: string, key: string) => [
+  ...new Set(
+    out.sources.flatMap((s) =>
+      s.kind === kind &&
+      s.provenance.kind === 'upstream' &&
+      s.provenance.subjects.some((subject) => subject.side === 'head') &&
+      s.provenance.excerpt.includes(key)
+        ? [s.provenance.excerpt]
+        : [],
+    ),
+  ),
+];
+test('a deprecation reason of quotes cut at the cap keeps its excerpt inside the excerpt cap', async () => {
+  const cap = limit('signals.reasonCodeUnits'),
+    excerptCap = limit('packet.excerptCodeUnits');
+  const { reasonWrapperCodeUnits: wrapper, reasonMarker: marker } = SIGNAL_EXCERPT;
+  // The wrapper: a one-unit reason makes a 51-unit excerpt.
+  const plain = await proposedSignals((d) => ({ ...d, deprecated: 'x' }));
+  expect(excerpts(plain, 'deprecation', '"deprecated"').map((e) => e.length)).toEqual([
+    wrapper + 1,
+  ]);
+  // The worst escaping: every kept unit is a quote, which JSON doubles.
+  const quoted = await proposedSignals((d) => ({ ...d, deprecated: '"'.repeat(3 * cap) }));
+  const [excerpt] = excerpts(quoted, 'deprecation', '"deprecated"');
+  expect(excerpt).toHaveLength(wrapper + 2 * cap + marker.length);
+  expect(excerpt.length).toBeLessThanOrEqual(excerptCap);
+  // One unit more would not fit, so the cap is the largest that always does.
+  expect(wrapper + 2 * (cap + 1) + marker.length).toBeGreaterThan(excerptCap);
+  expect(
+    quoted.findings.some((f) => f.kind === 'releaseMetadata' && 'deprecated' in f && f.deprecated),
+  ).toBe(true);
+});
+test('the publisher excerpt takes 71 code units around the maintainer names and 4 for each name', async () => {
+  const lengths = [];
+  for (const names of [['a'], ['a', 'b']]) {
+    const out = await proposedSignals((d) => ({
+      ...d,
+      maintainers: names.map((name) => ({ name })),
+    }));
+    lengths.push(...excerpts(out, 'publisher', '"maintainers"').map((e) => e.length));
+  }
+  const { maintainersWrapperCodeUnits: wrapper, maintainerCodeUnits: perName } = SIGNAL_EXCERPT;
+  expect(lengths).toEqual([wrapper + perName - 1, wrapper + 2 * perName - 1]);
+  // The cap is the longest list of one-character names whose excerpt could fit.
+  const cap = limit('signals.npmMaxMaintainers'),
+    excerptCap = limit('packet.excerptCodeUnits');
+  expect(wrapper + cap * perName - 1).toBeLessThanOrEqual(excerptCap);
+  expect(wrapper + (cap + 1) * perName - 1).toBeGreaterThan(excerptCap);
 });

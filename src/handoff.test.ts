@@ -1,3 +1,4 @@
+import { createHash } from 'node:crypto';
 import { expect, test } from 'vite-plus/test';
 import { createRehearsalSink, createReviewHandoff } from './handoff.js';
 import { createTestClaimStore } from './review.js';
@@ -107,6 +108,34 @@ test('records whether a body exists and which sources gave no usable evidence', 
   });
   expect(Object.isFrozen(result.handoff.gaps)).toBe(true);
   expect(Object.isFrozen(sink.traces()[0].gaps)).toBe(true);
+});
+
+test('records a step summary by its size and digest only, and no record without one', async () => {
+  const claims = createTestClaimStore();
+  const claimed = await claims.claim([101, 301, 401, 1, 42, 'a'.repeat(40)]);
+  if (claimed.kind !== 'owned') throw new Error('fixture must own');
+  const summary = '## Non-blocking follow-ups\n\n- Recheck é before merging.';
+  const result = await createReviewHandoff(claims, claimed, 'complete', {
+    body: true,
+    gaps: [],
+    summary,
+  });
+  if (result.kind !== 'ready') throw new Error('expected handoff');
+  const stepSummary = {
+    bytes: Buffer.byteLength(summary),
+    sha256: createHash('sha256').update(summary).digest('hex'),
+  };
+  expect(stepSummary.bytes).toBe(summary.length + 1);
+  expect(result.handoff.stepSummary).toEqual(stepSummary);
+  expect(Object.isFrozen(result.handoff.stepSummary)).toBe(true);
+  const sink = createRehearsalSink(null);
+  if (!sink) throw new Error('expected sink');
+  sink.record(result.handoff);
+  expect(sink.traces()[0].stepSummary).toEqual(stepSummary);
+  expect(JSON.stringify(sink.traces())).not.toContain('Recheck');
+  const plain = await createReviewHandoff(claims, claimed, 'complete', { body: true, gaps: [] });
+  if (plain.kind !== 'ready') throw new Error('expected handoff');
+  expect(plain.handoff).not.toHaveProperty('stepSummary');
 });
 
 test('records bounded counts when packet fitting drops optional evidence', async () => {

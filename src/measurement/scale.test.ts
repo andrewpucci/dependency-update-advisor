@@ -18,9 +18,12 @@ test('scales the hand-set evidence shares, envelope values, and research caps', 
     'evidence.allocation.upstream.maxTotalBytes',
     'evidence.envelope.totalTimeoutMs',
     'evidence.envelope.maxResponseBytes',
-    'research.maxAttempts',
+    'research.maxJsonEntries',
   ])
     expect(valueAt(10, id), id).toBe(10 * (REGISTER.get(id)?.value ?? 0));
+  // The attempt cap is derived from the change cap and the tag candidates (L11, item 5): no run
+  // can record more, so it stays.
+  expect(valueAt(10, 'research.maxAttempts')).toBe(REGISTER.get('research.maxAttempts')?.value);
 });
 
 test('scales the fitted share bases and rates with their ceilings, without binary noise', () => {
@@ -88,11 +91,17 @@ test('the advisory ceiling follows the scaled evidence deadline', () => {
   expect(valueAt(10, id)).toBeLessThan(10 * (production + 1));
 });
 
+test('the CPU harm caps follow the scaled evidence deadline', () => {
+  // A harm cap is the count whose parse takes a quarter of the deadline (L11, 2026-11-28), so a
+  // demand run's longer deadline also lifts it, and the work it measures is not censored.
+  for (const id of ['research.maxWork', 'w2.npm.maxJsonEntries'])
+    expect(valueAt(10, id), id).toBeGreaterThan(REGISTER.get(id)?.value ?? 0);
+});
+
 test('leaves limits outside the read budget unchanged', () => {
   for (const id of [
     'packet.bytes',
     'w2.npm.maxFileBytes',
-    'research.maxWork',
     'job.budget',
     'runner.heapBytesPerPacketByte',
     'runner.unitExpansionHeapBytes',
@@ -110,6 +119,12 @@ test('the packet byte limit stays at its production value while the heap terms s
     expect(at(id), id).toBeGreaterThan(REGISTER.get(id)?.value ?? 0);
   expect(at('packet.bytes')).toBe(REGISTER.get('packet.bytes')?.value);
   expect(at('analysis.projectionBytes')).toBe(REGISTER.get('analysis.projectionBytes')?.value);
+  // The config cap, a parse bound held beside the packet, stays too, though the blob one scaled
+  // response carries grows.
+  expect(at('snapshot.maxReadableBlobBytes')).toBeGreaterThan(
+    REGISTER.get('snapshot.maxReadableBlobBytes')?.value ?? 0,
+  );
+  expect(at('config.maxBytes')).toBe(REGISTER.get('config.maxBytes')?.value);
 });
 
 test('rejects a scale that is not a positive integer', () => {

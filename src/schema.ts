@@ -12,6 +12,7 @@ import { limit } from './limits.js';
 
 export const PACKET_LIMITS = Object.freeze({
   bytes: limit('packet.bytes'),
+  floorBytes: limit('packet.floorBytes'),
   changes: limit('packet.changes'),
   sources: limit('packet.sources'),
   findings: limit('packet.findings'),
@@ -472,6 +473,7 @@ const CONTEXT_REASONS = [
   'excerpt-limit',
   'fact-limit',
   'context-byte-limit',
+  'budget',
 ] as const;
 function context(value: unknown): PacketContext {
   const r = object(value, ['ok', 'status', 'dependencies', 'reasons'], [], 'context');

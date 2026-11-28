@@ -1,6 +1,6 @@
 import { expect, test, vi } from 'vite-plus/test';
-import { PACKET_LIMITS, validateReviewPacket } from './schema.js';
-import { limit } from './limits.js';
+import { EVIDENCE_REASONS, PACKET_LIMITS, validateReviewPacket } from './schema.js';
+import { FLOOR_EVIDENCE_REASONS, FLOOR_SHAPES, floorBytes, floorPacket, limit } from './limits.js';
 
 const HEAD = 'a'.repeat(40);
 const BASE = 'b'.repeat(40);
@@ -1973,4 +1973,96 @@ test('rejects a packet without a retry time field', () => {
   const missing = fixture();
   delete (missing.packet as Record<string, unknown>).retryAfter;
   expect(validateReviewPacket(missing.packet, missing.expected).ok).toBe(false);
+});
+
+/** `value` with every string equal to `from` in it replaced by `to`, shared objects once. */
+function replaceText(value: object, from: string, to: string, seen = new Set<object>()) {
+  if (seen.has(value)) return;
+  seen.add(value);
+  const record = value as Record<string, unknown>;
+  for (const [key, child] of Object.entries(record)) {
+    if (child === from) record[key] = to;
+    else if (child && typeof child === 'object') replaceText(child, from, to, seen);
+  }
+}
+
+/**
+ * Each leaf and non-empty list of `floor`, grown by one character, one unit or one entry. A grown
+ * string is grown everywhere it occurs, so an id keeps its references; a list gains an entry just
+ * above its last, so a sorted, distinct list stays sorted and distinct.
+ */
+function grownFloors(floor: ReturnType<typeof floorPacket>) {
+  const grown: { where: string; floor: ReturnType<typeof floorPacket> }[] = [];
+  const seen = new Set<object>();
+  const visit = (value: object, path: (string | number)[]) => {
+    if (seen.has(value)) return;
+    seen.add(value);
+    for (const [key, child] of Object.entries(value)) {
+      const at = [...path, Array.isArray(value) ? Number(key) : key];
+      const copy = structuredClone(floor);
+      if (typeof child === 'string') {
+        replaceText(copy, child, child + child.slice(-1));
+        grown.push({ where: at.join('.'), floor: copy });
+      } else if (typeof child === 'number') {
+        let parent: Record<string | number, unknown> = copy;
+        for (const step of at.slice(0, -1)) parent = parent[step] as typeof parent;
+        parent[key] = child + 1;
+        grown.push({ where: at.join('.'), floor: copy });
+      } else if (child && typeof child === 'object') {
+        if (Array.isArray(child) && child.length > 0) {
+          let list: Record<string | number, unknown> = copy;
+          for (const step of at) list = list[step] as typeof list;
+          const last: unknown = child.at(-1);
+          (list as unknown as unknown[]).push(
+            typeof last === 'string'
+              ? last.slice(0, -1) + String.fromCharCode(last.charCodeAt(last.length - 1) + 1)
+              : structuredClone(last),
+          );
+          grown.push({ where: `${at.join('.')}[+1]`, floor: copy });
+        }
+        visit(child, at);
+      }
+    }
+  };
+  visit(floor, []);
+  return grown;
+}
+
+test('the packet floor is the largest required-only packet T4 accepts at the change cap', () => {
+  const changes = limit('packet.changes');
+  const caps = {
+    listEntries: limit('packet.listEntries'),
+    idCodeUnits: limit('packet.idCodeUnits'),
+    identityBytes: limit('packet.identityBytes'),
+  };
+  expect(FLOOR_EVIDENCE_REASONS).toEqual(EVIDENCE_REASONS);
+  const bytes = Object.fromEntries(
+    FLOOR_SHAPES.map((shape) => {
+      const floor = floorPacket(changes, caps, shape);
+      const result = validateReviewPacket(floor.packet, floor.expected);
+      expect(result.ok, shape).toBe(true);
+      if (!result.ok) throw new Error(`${shape} floor packet rejected`);
+      expect(result.packet.changes).toHaveLength(changes);
+      // T4 keeps the packet as built, so its size is the bytes it accepts.
+      return [shape, Buffer.byteLength(JSON.stringify(result.packet))];
+    }),
+  );
+  // uv binds: its extras and groups at the list cap outweigh npm's fourth evidence category.
+  expect(bytes).toEqual({ npm: 4_231_491, actions: 3_355_071, uv: 16_708_676 });
+  expect(limit('packet.floorBytes')).toBe(bytes.uv);
+  // One more change is past the change cap.
+  const more = floorPacket(changes + 1, caps);
+  expect(validateReviewPacket(more.packet, more.expected).ok).toBe(false);
+  // Every required field is at its cap: one more character, unit or entry anywhere in a floor
+  // packet is rejected. A cap that grows without the floor packet following fails here.
+  for (const shape of FLOOR_SHAPES) {
+    for (const { where, floor } of grownFloors(floorPacket(2, caps, shape)))
+      expect(validateReviewPacket(floor.packet, floor.expected).ok, `${shape} ${where}`).toBe(
+        false,
+      );
+  }
+  // The floor follows each cap it fills.
+  for (const key of Object.keys(caps) as (keyof typeof caps)[])
+    expect(floorBytes(changes, { ...caps, [key]: caps[key] + 1 }), key).toBeGreaterThan(bytes.uv);
+  expect(floorBytes(changes - 1, caps)).toBeLessThan(bytes.uv);
 });

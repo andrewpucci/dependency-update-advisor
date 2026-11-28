@@ -13,6 +13,14 @@ import type { ResearchCache } from './research-cache.js';
 import { limit } from '../limits.js';
 import { HTTP_STATUS } from '../format.js';
 
+/** Work units one decoded manifest or reused cached byte costs, in copied-entry units. */
+const BYTE_WORK_WEIGHT = limit('research.byteWorkWeight');
+/**
+ * The work `bytes` decoded manifest or reused cached bytes cost: a byte costs far less CPU than a
+ * copied entry, so it is charged at its measured weight, rounded up (L11, 2026-11-28, #383).
+ */
+export const byteWork = (bytes: number): number => Math.ceil(bytes * BYTE_WORK_WEIGHT);
+
 export const RELEASE_PAGE_SIZES: readonly number[] = Object.freeze(
   divisorChain(limit('upstream.releasePageSize')),
 );
@@ -402,7 +410,7 @@ class Reader {
   }
   private cached(url: string) {
     const cached = this.cache.get(url);
-    if (cached) this.spend(this.cacheSizes.get(url)!);
+    if (cached) this.spend(byteWork(this.cacheSizes.get(url)!));
     return cached;
   }
   private remember(url: string, data: Readonly<Record<string, unknown>>) {

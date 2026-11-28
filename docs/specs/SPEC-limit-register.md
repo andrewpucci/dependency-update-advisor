@@ -218,6 +218,14 @@ covers everything else. They fail when:
 - **Tests:** an entry names a test that doesn't exist.
 - **Migration:** after phase 2, any entry is still `unjustified`.
 
+Amended (L11, item 9(a) follow-up, 2026-11-28,
+[#383](https://github.com/andrewpucci/dependency-update-advisor/issues/383)):
+when an approved amendment deletes a limit, the approved spec lines that cite
+it keep their wording. `scripts/limits/superseded-citations.json` lists each
+such line by its trimmed text, with the deleted id and the amendment that
+deleted it, and the citation check accepts that id on that line only. An entry
+is a problem when its id is back in the register or no doc line has its text.
+
 **Register scope** (L11, Q5 and Q25; approved by the maintainer on
 2026-11-27,
 [#383](https://github.com/andrewpucci/dependency-update-advisor/issues/383)).
@@ -326,6 +334,16 @@ phase 3:
     structural, `limit:analysis.maxCallsMax`: the calls a run at
     `limit:packet.changes` units needs when every batch splits down to single
     units.
+  - Amended (L11; approved by the maintainer on 2026-11-28,
+    [#383](https://github.com/andrewpucci/dependency-update-advisor/issues/383)):
+    analysis time is not an adopter setting. Analysis runs to the job time
+    that actually remains: the caller deadline, which leaves the final
+    freshness allowance, less `limit:analysis.publicationReserveMs`. No cap
+    from the start of analysis shortens it, so time evidence leaves unspent
+    goes to analysis. `limit:analysis.maxAnalysisMs` is derived, a copy of
+    `limit:job.maxAnalysisTimeMs`: the least analysis time a run gets, when
+    evidence uses its whole deadline. It falls as the evidence deadline
+    rises, to one model call at `limit:job.maxEvidenceDeadlineMs`.
 - **Completion tokens:** `limit:analysis.completionTokens`. Hard maximum: the
   provider's maximum output tokens.
 - **Job budget and evidence deadline:** `limit:job.budget` and
@@ -365,6 +383,13 @@ each with today's value as its default and the hard maximum named here:
   default; each register entry names its hard maximum. The npm and uv root
   counts are bounded by the roots Dependabot's file may name,
   `limit:dependabot.maxRoots`.
+  - Amended (L11, item 4(a); approved by the maintainer on 2026-11-28,
+    [#383](https://github.com/andrewpucci/dependency-update-advisor/issues/383)):
+    `limit:advisory.discovery.spellingCeiling` joins the coverage bounds,
+    with today's value as its default. Its hard maximum,
+    `limit:advisory.discovery.spellingCeilingMax`, is the largest power of
+    three whose spellings of the shortest name fit the advisory request
+    share for both query kinds.
 - **Units per model call** (Q16(a)): `limit:analysis.maxUnits`. The adopter
   bears the call count and cost a smaller batch spends, and the truncation
   risk of a larger one. Hard maximum: `limit:packet.changes`, since a unit
@@ -457,6 +482,29 @@ A runner therefore needs at least `limit:runner.memoryBytes` of memory, the
 smallest supported runner's. A smaller runner stops with exit code 80. This
 includes GitHub-hosted `macos-latest` (7 GB), which is not supported.
 
+Amended (L11, item 11(b); approved by the maintainer on 2026-11-28,
+[#383](https://github.com/andrewpucci/dependency-update-advisor/issues/383)).
+The raw event is state of neither phase. Startup parses it into a one-shot
+holder that verification takes; the pipeline keeps only the bounded binding
+verification returns, so the parsed event is unreachable before the first
+tree read, and a test collects garbage there and checks that it is gone. Its
+parse peak falls at startup, before either phase holds anything, inside
+`limit:runner.heapBytes`, so `limit:startup.maxEventBytes` takes GitHub's
+webhook payload cap as an `external` value. The read buffer, the cap plus one
+probe byte, is outside the V8 heap and counts in `limit:runner.offHeapBytes`.
+
+Amended (L11, item 11 review follow-up, 2026-11-28,
+[#383](https://github.com/andrewpucci/dependency-update-advisor/issues/383)).
+The read buffer is sized from the file, one probe byte past its length and at
+most the cap plus that byte, so the off-heap term keeps its worst case; a file
+that grows past its stated length while read fails closed. A recorded probe,
+`npm run probe:parse-cost -- event`, replaces the parse-peak estimate: an event
+at the cap in its densest shape allocates at most about 533 MB of heap. It
+also shows that V8 keeps an ASCII event's decoded text outside its heap, as an
+external string, so `limit:runner.offHeapBytes` counts the cap a second time
+for it. A test reads, parses and verifies an event one byte under the cap end
+to end.
+
 #### Projection caps
 
 Amended (L11; approved by the maintainer on 2026-11-28,
@@ -476,6 +524,45 @@ A hard maximum is read from the register evaluated at the settings. When it
 falls as its own setting rises, the hard maximum is the largest setting that
 still holds. The response cap's maximum behaves this way, because a larger cap
 adds off-heap buffers. `npm run check:limits` evaluates the register there.
+
+#### Packet floor
+
+Amended (L11, A1; approved by the maintainer on 2026-11-28,
+[#383](https://github.com/andrewpucci/dependency-update-advisor/issues/383)).
+`limit:packet.floorBytes` is the largest required-only packet T4 accepts with
+`limit:packet.changes` changes, so any valid PR at the change cap fits. It is
+derived and pinned by an offline test that builds and validates that packet.
+Below it, some valid change at the change cap cannot produce its packet, so it
+is a structural floor, not demand.
+
+- Amended (L11, A1 review follow-up, 2026-11-28): the floor was first the
+  smallest valid packet, about 27 KB. It is now the largest. Every change is
+  an update with both sides and only its required evidence categories, each
+  unavailable for every reason. Every id, path, version and identity is at
+  `limit:packet.idCodeUnits` or `limit:packet.identityBytes`, and so are the
+  binding's strings.
+- The uv shape binds, at about 16.7 MB: its extras and groups each hold
+  `limit:packet.listEntries` names. For context, the npm shape is about
+  4.2 MB and the Actions shape about 3.4 MB. The proposal's estimate of 1 to
+  10 MB was not part of the definition. The test fails if any field of the
+  floor packet can grow by one character or entry and still be accepted, so a
+  cap that grows without the floor following is caught.
+- A setting that spends heap has a hard maximum: the largest value at which
+  `limit:packet.bytes` stays at or above `limit:packet.floorBytes`, with the
+  other settings at their defaults. This replaces the Q14(a) text, which was
+  never written.
+- `limit:analysis.maxConcurrentCalls` and `limit:analysis.completionTokens`
+  are adopter settings under this rule. Their hard maxima are
+  `limit:analysis.maxConcurrentCallsMax`, which also stays at or below
+  `limit:analysis.maxCalls`, and `limit:analysis.completionTokensMax`, which
+  also stays at or below the Q14(a) bound.
+- `limit:runner.maxEvidenceRetainedBytes` is sized beside a packet at the
+  floor, not at today's packet cap.
+- The settings share one heap, so a setting at its maximum leaves the packet
+  cap at the floor. L12 must evaluate the register at the adopter's actual
+  settings and require `limit:packet.bytes` at or above the floor.
+  `npm run check:limits` already rejects a register that falls below it, at
+  the defaults or with any setting at its hard maximum.
 
 #### Retained evidence
 
@@ -503,6 +590,14 @@ responses in flight are priced at the parse peak
   default would lower the packet cap. The joint maximum and the response cap's
   hard maximum are therefore their defaults until the heap is shared out
   differently.
+  - Amended (L11, A1; approved by the maintainer on 2026-11-28,
+    [#383](https://github.com/andrewpucci/dependency-update-advisor/issues/383)):
+    the joint maximum no longer equals the sum of the defaults. It is sized
+    beside a packet at `limit:packet.floorBytes` (see
+    [Packet floor](#packet-floor)), so a share may rise until the packet cap
+    reaches the floor. The response cap's hard maximum still follows
+    `limit:packet.bytes` through `limit:runner.evidenceHeapBytes`, so it stays
+    its default.
 - A demand measurement (`npm run measure:demand`) holds `limit:packet.bytes`
   at its production value. Its scaled read budget would otherwise spend the
   packet's heap.

@@ -356,6 +356,18 @@ for every identity, so final omission metadata cannot overflow the packet.
 Account for final reason/status changes and JSON escaping. Never remove an
 identity or an unavailable entry to make the serialized result fit.
 
+Amended (L11, item 8(a); approved by the maintainer on 2026-11-28,
+[#383](https://github.com/andrewpucci/dependency-update-advisor/issues/383)):
+when the trusted snapshot's read share runs out while it lists the directories
+on configured paths or fetches excerpt blobs (a read refused with `budget`),
+it stops reading and C2 keeps what was already read. Every configured path not
+yet read is reported with the fixed reason `budget`, on the result and on every
+dependency entry, and never as missing source; a placeholder left for an unread
+file is never read as source. Any other read failure still makes the snapshot
+unavailable. Because read cost grows with path depth, this partial result is
+what lets `limit:context.maxSourceCandidates` follow the snapshot request
+share, less its fixed reads, for every layout.
+
 ### Shared Path Exclusions
 
 Use case-insensitive comparisons for exclusions, with slash-separated path

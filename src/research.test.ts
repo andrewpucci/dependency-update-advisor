@@ -1777,8 +1777,11 @@ function registryReader(
       maxResponseBytes: MiB8,
       maxTotalBytes: MiB8,
       maxJsonDepth: 32,
-      requestTimeoutMs: 1000,
-      totalTimeoutMs: 10000,
+      // A real timer bounds each request while the reader streams about 104 MB at the retained
+      // cap, so the request timeout sits far above that stream's time on a loaded runner; the
+      // total runs on the fixed clock below.
+      requestTimeoutMs: 120_000,
+      totalTimeoutMs: 120_000,
       ...limits,
     },
     {

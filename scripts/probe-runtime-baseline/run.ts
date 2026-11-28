@@ -1,5 +1,6 @@
 /**
- * The runtime baseline probe, for `limit:runner.baselineBytes`. Usage, after `npm run build`:
+ * The runtime baseline probe, for `limit:runner.baselineBytes` and `limit:job.preStartupAllowance`.
+ * Usage, after `npm run build`:
  *
  *   npm run probe:runtime-baseline
  *
@@ -10,6 +11,12 @@
  * parent plus child footprint over the runs. It counts each process's whole resident set,
  * including the small heap the self-check uses, so it overstates what is outside the heap. Run
  * it on Linux and Node 24, the action's platform. It makes no network request.
+ *
+ * It also reports `startupMs`, the slowest in-step startup over the runs: from the parent's
+ * process start to the child's exit, which follows right after runStartup takes the job start,
+ * so it covers Node load, the relaunch and the self-check (L11, item 10). For the allowance it
+ * must run inside a workflow step on the smallest supported hosted runner; the runner's own
+ * launch of the step's process is outside it.
  */
 import { spawnSync } from 'node:child_process';
 import { join } from 'node:path';
@@ -34,7 +41,9 @@ const runs = Array.from({ length: RUNS }, () => {
   return { status: result.status, reports: core.reports(result.stderr) };
 });
 const baseline = core.baseline(runs.map((run) => run.reports));
-if (baseline === null) throw new Error('a run did not report both its parent and its child');
+const startupMs = core.slowestStartup(runs.map((run) => run.reports));
+if (baseline === null || startupMs === null)
+  throw new Error('a run did not report both its parent and its child');
 console.log(
   JSON.stringify(
     {
@@ -42,6 +51,7 @@ console.log(
       platform: process.platform,
       runs: runs.map((run) => ({ status: run.status, reports: run.reports })),
       baselineBytes: baseline,
+      startupMs,
     },
     null,
     2,

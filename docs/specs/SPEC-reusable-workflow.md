@@ -278,6 +278,24 @@ not rely on the exact-shape test (Requirement 5) to catch its defect.
 10. **Bounded execution.** The job sets `timeout-minutes: 15`. No
     `continue-on-error`, and no `concurrency` key, at workflow, job, or step
     level; W2's claim design owns serialization.
+
+    Amended (L11, item 10(b); approved by the maintainer on 2026-11-28,
+    [#383](https://github.com/andrewpucci/dependency-update-advisor/issues/383)):
+    the reviewer step sets `timeout-minutes` to
+    `limit:workflow.dependabotReview.review.steps.1.timeoutMinutes`, which
+    the runner times from the step's own start, and the job sets it to
+    `limit:workflow.dependabotReview.review.timeoutMinutes`, the reviewer
+    step's timeout plus the app-token step's. The app-token step sets
+    `timeout-minutes` to
+    `limit:workflow.dependabotReview.review.steps.0.timeoutMinutes`, its 12
+    requests at `limit:github.requestTimeoutMs` and its retry waits rounded
+    up to whole minutes, since the action sets no request timeout of its
+    own (item 10 review follow-up, 2026-11-28, in place of the deleted
+    job.preStepAllowance). The app-token step's keys are `id`, `uses`,
+    `timeout-minutes`, and `with`, and the reviewer step's are `uses`,
+    `timeout-minutes`, and `with`; item 5 and the expected workflow above are
+    narrowed accordingly.
+
 11. **Publication point.** The SHA callers pin is a commit whose push-to-`main`
     CI run passed (A1 requirement 5). The exact SHA, commands, and outcomes
     are recorded on #25. The workflow cannot contain its own SHA.

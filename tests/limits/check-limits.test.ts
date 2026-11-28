@@ -31,7 +31,7 @@ function reading(files: Record<string, string>): (path: string) => string | null
 const CLEAN_WORKFLOWS = [
   {
     file: '.github/workflows/dependabot-review.yml',
-    text: 'jobs:\n  review:\n    timeout-minutes: 15\n',
+    text: 'jobs:\n  review:\n    timeout-minutes: 18\n    steps:\n      - id: app-token\n        timeout-minutes: 3\n      - uses: review\n        timeout-minutes: 15\n',
   },
   { file: '.github/workflows/ci.yml', text: 'jobs:\n  quality:\n    timeout-minutes: 10\n' },
   {
@@ -48,7 +48,7 @@ test('a workflow job timeout that differs from its register entry is a problem',
   const workflows = [
     {
       file: '.github/workflows/dependabot-review.yml',
-      text: 'jobs:\n  review:\n    timeout-minutes: 16\n',
+      text: 'jobs:\n  review:\n    timeout-minutes: 17\n    steps:\n      - id: app-token\n        timeout-minutes: 3\n      - uses: review\n        timeout-minutes: 15\n',
     },
     CLEAN_WORKFLOWS[1],
     CLEAN_WORKFLOWS[2],
@@ -142,6 +142,29 @@ test('a limit citation naming an id outside the register is a problem', () => {
   expect(citationProblems(REGISTER, docs('See `limit:packet.bytes`.'))).toEqual([]);
 });
 
+test('a superseded citation is accepted on its listed line only', () => {
+  const file = 'docs/specs/SPEC-example.md';
+  const line = '4. Allow at most `limit:context.maxSourceRoots` source roots.';
+  const superseded = [{ file, line, id: 'context.maxSourceRoots', amendment: 'deleted' }];
+  const docs = (text: string) => [{ file, text }];
+  expect(citationProblems(REGISTER, docs(`Intro.\n  ${line}\n`), superseded)).toEqual([]);
+  // The same id on another line, or the listed line in another file, is still a problem.
+  expect(
+    citationProblems(
+      REGISTER,
+      docs(`${line}\nAt most \`limit:context.maxSourceRoots\`.`),
+      superseded,
+    ),
+  ).toHaveLength(1);
+  expect(
+    citationProblems(REGISTER, [{ file: 'docs/specs/SPEC-other.md', text: line }], superseded),
+  ).toHaveLength(2);
+  // An entry no line matches is stale, and an id back in the register is no longer superseded.
+  expect(citationProblems(REGISTER, docs('Nothing.'), superseded)).toHaveLength(1);
+  const restored = [{ ...superseded[0], id: 'packet.bytes', line: 'See `limit:packet.bytes`.' }];
+  expect(citationProblems(REGISTER, docs('See `limit:packet.bytes`.'), restored)).toHaveLength(1);
+});
+
 test('a test reference naming a missing title is a problem', () => {
   const only = (patch: Partial<Limit>) =>
     new Map([['packet.bytes', { ...entryOf('packet.bytes'), ...patch }]]);
@@ -210,7 +233,7 @@ test('only the unlisted line in a file with an allowlisted one is a problem', ()
 });
 
 test.each([
-  ['Parse at most 16 KiB of JSON.', 'config.maxBytes'],
+  ['Read blobs of at most 1 MiB.', 'snapshot.maxBlobBytes'],
   ['An evidence response holds at most 1 MiB.', 'evidence.envelope.maxResponseBytes'],
   [
     'Each signals reader gets 1.5 MiB.',
@@ -347,7 +370,7 @@ test('a schema bound with no mapping, or a mapping to an unknown id, is a proble
 test('a mapping to a bound the schema lacks is a problem', () => {
   const extra = {
     ...MODEL_BOUND,
-    [`${SCHEMA}#/properties/gone/maxItems`]: 'context.maxSourceRoots',
+    [`${SCHEMA}#/properties/gone/maxItems`]: 'context.maxSourceCandidates',
   };
   expect(schemaProblems(REGISTER, [schemaWith(128)], extra)).toEqual([
     expect.stringContaining('names a bound the schema lacks'),

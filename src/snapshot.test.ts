@@ -9,7 +9,7 @@ import {
   type SnapshotTreeEntry,
 } from './snapshot.js';
 import { createGithubTransport } from './runtime.js';
-import { limit } from './limits.js';
+import { limit, SNAPSHOT_FIXED_READS } from './limits.js';
 
 const repository = { id: 101, owner: 'example', name: 'consumer' };
 const revision = 'a'.repeat(40);
@@ -582,7 +582,10 @@ test("gives an oversized excerpt C2's per-file limit without fetching its bytes"
 });
 
 test("gives an oversized config C1's size failure without fetching its bytes", async () => {
-  const reader = reads([configTree[0], { ...configTree[1], size: 16_385 }], {});
+  const reader = reads(
+    [configTree[0], { ...configTree[1], size: limit('config.maxBytes') + 1 }],
+    {},
+  );
 
   const result = await withTrustedSnapshot(
     { repository, reads: reader, temporaryRoot: tempRoot() },
@@ -726,7 +729,10 @@ test('returns a frozen outcome for every kind', async () => {
     roots(reads([], {})),
     roots(
       dependabotReader([
-        { ...entry('.github/dependabot.yml', '100644', dependabotBlob), size: 65_537 },
+        {
+          ...entry('.github/dependabot.yml', '100644', dependabotBlob),
+          size: limit('dependabot.maxFileBytes') + 1,
+        },
       ]),
     ),
   ]);
@@ -779,7 +785,10 @@ test('reports a .github submodule as unsupported, never absent', async () => {
 
 test('rejects an oversized file from its tree size without fetching it', async () => {
   const reader = dependabotReader([
-    { ...entry('.github/dependabot.yml', '100644', dependabotBlob), size: 65_537 },
+    {
+      ...entry('.github/dependabot.yml', '100644', dependabotBlob),
+      size: limit('dependabot.maxFileBytes') + 1,
+    },
   ]);
   await expect(roots(reader)).resolves.toEqual({
     kind: 'ready',
@@ -999,4 +1008,239 @@ test('a released snapshot drops its tree, and a later tree read is unavailable',
   if (result.kind !== 'ready') throw new Error(result.kind);
   expect(result.value.before).toMatchObject({ kind: 'roots' });
   expect(result.value.after).not.toMatchObject({ kind: 'roots' });
+});
+
+/** The snapshot reads of `reader`, refused with budget past `share` requests as the transport does. */
+function withShare(reader: ReturnType<typeof reads>, share: number): SnapshotReads {
+  let spent = 0;
+  const charged =
+    <A extends unknown[], R>(read: (...args: A) => Promise<R>) =>
+    async (...args: A) =>
+      ++spent > share ? ({ kind: 'unavailable', reason: 'budget' } as const) : read(...args);
+  return {
+    readRepository: charged(reader.readRepository),
+    readCommit: charged(reader.readCommit),
+    readTree: charged(reader.readTree),
+    readBlob: charged(reader.readBlob),
+  };
+}
+
+/**
+ * A repository whose excerpt files each use one package: the first `deep` in a directory of their
+ * own under `src`, which costs one tree read each, and the rest in `src` itself.
+ */
+function excerptLayout(count: number, deep: number) {
+  const files = Array.from({ length: count }, (_, i) => ({
+    path: i < deep ? `src/d${i}/f.ts` : `src/f${i}.ts`,
+    sha: (i + 1).toString(16).padStart(40, '0'),
+  }));
+  const directories = Array.from({ length: deep }, (_, i) =>
+    entry(`src/d${i}`, '040000', (i + 1).toString(16).padStart(40, '7'), 'tree'),
+  );
+  const reader = reads(
+    [
+      ...configTree,
+      entry('.github/dependabot.yml', '100644', dependabotBlob),
+      entry('src', '040000', 'f'.repeat(40), 'tree'),
+      ...directories,
+      ...files.map((file) => entry(file.path, '100644', file.sha)),
+    ],
+    {
+      [configBlob]: JSON.stringify({
+        version: 1,
+        context: { sendSourceExcerptsToModel: true, excerptFiles: files.map((f) => f.path) },
+      }),
+      [dependabotBlob]: dependabotFile,
+      ...Object.fromEntries(files.map((file) => [file.sha, 'import x from "example-package";'])),
+    },
+  );
+  return reader;
+}
+
+test('a single-directory layout reads exactly the snapshot share for the excerpt file cap', async () => {
+  const share = limit('evidence.allocation.transport.snapshot.maxRequests');
+  const cap = limit('context.maxSourceCandidates');
+  const reader = excerptLayout(cap, 0);
+  const result = await withTrustedSnapshot(
+    { repository, reads: withShare(reader, share), temporaryRoot: tempRoot() },
+    async (snapshot) => {
+      await snapshot.dependabotRoots();
+      return snapshot.collectContext([{ id: 'unit-1', name: 'example-package' }]);
+    },
+  );
+  // One package per file meets the per-dependency fact cap, the only limit reached.
+  expect(result).toMatchObject({ kind: 'ready', value: { ok: true, reasons: ['fact-limit'] } });
+  // Every read fits the share, and the fixed reads are the share less one blob per file.
+  expect(reader.calls).toHaveLength(share);
+  expect(reader.calls.filter((call) => call.startsWith('blob:0'))).toHaveLength(cap);
+  expect(reader.calls.length - cap).toBe(SNAPSHOT_FIXED_READS);
+});
+
+test('a layout deeper than the snapshot share keeps the context it read and reports budget', async () => {
+  const share = limit('evidence.allocation.transport.snapshot.maxRequests');
+  const cap = limit('context.maxSourceCandidates');
+  // 100 extra directories: the prefixes fit the share, and it runs out among the blob reads.
+  const deep = 100;
+  const reader = excerptLayout(cap, deep);
+  const result = await withTrustedSnapshot(
+    { repository, reads: withShare(reader, share), temporaryRoot: tempRoot() },
+    async (snapshot) => {
+      await snapshot.dependabotRoots();
+      return snapshot.collectContext([{ id: 'unit-1', name: 'example-package' }]);
+    },
+  );
+  // Before L11 item 8 the share ran out inside collectContext and the snapshot was unavailable.
+  expect(result).toMatchObject({ kind: 'ready', value: { ok: true, status: 'partial' } });
+  if (result.kind !== 'ready' || !result.value.ok) throw new Error('context');
+  expect(result.value.reasons).toContain('budget');
+  expect(result.value.reasons).not.toContain('missing-source');
+  const [dependency] = result.value.dependencies;
+  expect(dependency.reasons).toContain('budget');
+  // The files read before the share ran out contribute their facts.
+  expect(dependency.facts.length).toBeGreaterThan(0);
+  const blobs = reader.calls.filter((call) => call.startsWith('blob:0'));
+  expect(blobs).toHaveLength(share - SNAPSHOT_FIXED_READS - deep);
+  expect(reader.calls).toHaveLength(share);
+});
+
+/** GitHub's Get a blob body for `bytes`: base64 wrapped at 60 characters, its envelope padded by
+ * the node id to exactly github.blobEnvelopeBytes. */
+function blobResponse(sha: string, bytes: Uint8Array): string {
+  const content = (
+    Buffer.from(bytes)
+      .toString('base64')
+      .match(/.{1,60}/gu) ?? []
+  )
+    .map((line) => `${line}\n`)
+    .join('');
+  const body = (nodeId: string) =>
+    JSON.stringify({
+      sha,
+      node_id: nodeId,
+      size: bytes.byteLength,
+      url: `https://api.github.com/repos/example/consumer/git/blobs/${sha}`,
+      content,
+      encoding: 'base64',
+    });
+  const envelope = Buffer.byteLength(body('')) - Buffer.byteLength(JSON.stringify(content)) + 2;
+  return body('B'.repeat(limit('github.blobEnvelopeBytes') - envelope));
+}
+
+/** A GitHub API stub over `tree` and `blobs`, for the real transport and snapshot reads. */
+function githubApi(
+  tree: readonly SnapshotTreeEntry[],
+  blobs: Readonly<Record<string, Uint8Array>>,
+) {
+  const calls: string[] = [];
+  const directories = new Map<string, string>([[treeRevision, '']]);
+  for (const item of tree) if (item.type === 'tree') directories.set(item.sha, item.path);
+  const fetch = async (url: string) => {
+    const path = new URL(url).pathname.replace('/repos/example/consumer', '');
+    calls.push(path);
+    if (path === '/commits/main')
+      return Response.json({ sha: revision, commit: { tree: { sha: treeRevision } } });
+    if (path.startsWith('/git/trees/')) {
+      const directory = directories.get(path.slice('/git/trees/'.length)) ?? '';
+      const prefix = directory ? `${directory}/` : '';
+      const children = tree
+        .filter(
+          (item) => item.path.startsWith(prefix) && !item.path.slice(prefix.length).includes('/'),
+        )
+        .map((item) => ({
+          ...item,
+          path: item.path.slice(prefix.length),
+          ...(item.type === 'blob' && !('size' in item)
+            ? { size: blobs[item.sha]?.byteLength ?? 0 }
+            : {}),
+        }));
+      return Response.json({ truncated: false, tree: children });
+    }
+    if (path.startsWith('/git/blobs/')) {
+      const sha = path.slice('/git/blobs/'.length);
+      const bytes = blobs[sha];
+      return bytes ? new Response(blobResponse(sha, bytes)) : Response.json({}, { status: 404 });
+    }
+    return Response.json({ private: false, default_branch: 'main' });
+  };
+  const reader = createGithubSnapshotReads(
+    createGithubTransport({ token: 'read-token', now: () => 0, fetch }),
+  );
+  return { reader, calls };
+}
+
+test('a blob at snapshot.maxReadableBlobBytes fits one GitHub blob response and one byte more does not', async () => {
+  const cap = limit('snapshot.maxReadableBlobBytes');
+  // The response cap binds before the blob size check: about (1 MiB − 512) × 45 ÷ 62.
+  expect(cap).toBe(760_689);
+  expect(cap).toBeLessThan(limit('snapshot.maxBlobBytes'));
+  const sha = 'a1'.repeat(20);
+  const bytesOf = (size: number) => new Uint8Array(size).fill(120);
+  expect(Buffer.byteLength(blobResponse(sha, bytesOf(cap)))).toBeLessThanOrEqual(
+    limit('github.maxResponseBytes'),
+  );
+  expect(Buffer.byteLength(blobResponse(sha, bytesOf(cap + 1)))).toBeGreaterThan(
+    limit('github.maxResponseBytes'),
+  );
+  // Through the real transport: the read at the cap decodes whole, one byte more is refused.
+  const at = githubApi([], { [sha]: bytesOf(cap) });
+  const read = await at.reader.readBlob(repository, sha);
+  expect(read.kind === 'available' && read.value.byteLength).toBe(cap);
+  const past = githubApi([], { [sha]: bytesOf(cap + 1) });
+  await expect(past.reader.readBlob(repository, sha)).resolves.toEqual({
+    kind: 'unavailable',
+    reason: 'budget',
+  });
+});
+
+test('a config or Dependabot file one byte past one blob response gets its own size failure unfetched', async () => {
+  const cap = limit('snapshot.maxReadableBlobBytes');
+  expect(limit('config.maxBytes')).toBe(cap);
+  expect(limit('dependabot.maxFileBytes')).toBe(cap);
+  const github = entry('.github', '040000', 'e'.repeat(40), 'tree');
+  const config = entry('.github/dependabot-review.json', '100644', configBlob);
+  const dependabot = entry('.github/dependabot.yml', '100644', dependabotBlob);
+  const atCap = new TextEncoder().encode('{"version":1}'.padEnd(cap));
+  const dependabotBytes = new TextEncoder().encode(dependabotFile);
+
+  // A config at the cap is read whole through the real transport.
+  const read = githubApi([github, config, dependabot], {
+    [configBlob]: atCap,
+    [dependabotBlob]: dependabotBytes,
+  });
+  const ready = await withTrustedSnapshot(
+    { repository, reads: read.reader, temporaryRoot: tempRoot() },
+    (snapshot) => snapshot.dependabotRoots(),
+  );
+  expect(ready).toMatchObject({ kind: 'ready', value: { kind: 'roots' } });
+  expect(read.calls).toContain(`/git/blobs/${configBlob}`);
+
+  // One byte more is the parser's size failure, and the blob is never fetched.
+  const oversized = githubApi([github, { ...config, size: cap + 1 }, dependabot], {
+    [configBlob]: new Uint8Array(cap + 1),
+    [dependabotBlob]: dependabotBytes,
+  });
+  await expect(
+    withTrustedSnapshot(
+      { repository, reads: oversized.reader, temporaryRoot: tempRoot() },
+      async () => 'unreachable',
+    ),
+  ).resolves.toMatchObject({
+    kind: 'invalid-config',
+    config: { ok: false, error: { category: 'size' } },
+  });
+  expect(oversized.calls).not.toContain(`/git/blobs/${configBlob}`);
+
+  // A Dependabot file one byte past it is unavailable for budget, unfetched, and the snapshot it
+  // sits in stays ready.
+  const large = githubApi([github, config, { ...dependabot, size: cap + 1 }], {
+    [configBlob]: new TextEncoder().encode('{"version":1}'),
+    [dependabotBlob]: new Uint8Array(cap + 1),
+  });
+  await expect(
+    withTrustedSnapshot(
+      { repository, reads: large.reader, temporaryRoot: tempRoot() },
+      (snapshot) => snapshot.dependabotRoots(),
+    ),
+  ).resolves.toEqual({ kind: 'ready', value: { kind: 'unavailable', reason: 'budget' } });
+  expect(large.calls).not.toContain(`/git/blobs/${dependabotBlob}`);
 });

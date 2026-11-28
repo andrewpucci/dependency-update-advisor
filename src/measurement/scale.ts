@@ -1,16 +1,22 @@
 import type { Limit, LimitDefinition } from '../limits.js';
 
-/** The packet cap a demand run keeps at its production value; see scaledDefinitions. */
-const HELD_PACKET_CAP = 'packet.bytes';
-const SCALED_RESEARCH = new Set(['research.maxAttempts', 'research.maxJsonEntries']);
+/**
+ * The derived entries a demand run keeps at their production value; see scaledDefinitions. The
+ * config cap copies the blob one response carries, which a scaled response cap would lift, but it
+ * is a parse bound, not a read budget, and it is held beside the packet (L11, item 9 review
+ * follow-up).
+ */
+const HELD = new Set(['packet.bytes', 'config.maxBytes']);
+const SCALED_RESEARCH = new Set(['research.maxJsonEntries']);
 /** Scaled-share bases and rates, so a share lifts with its ceiling and the run sees uncut demand. */
 const SHARE_PREFIXES = ['research.share.', 'collection.share.'];
 
 /**
  * The hand-set read budget a demand measurement lifts: every evidence share and envelope value,
- * every scaled-share base and rate, the research attempt cap, and the research JSON entry cap.
- * The entry cap stopped upstream on every real uv change measured for #462, so a run shows that
- * demand while production keeps the register value. Derived entries are left for `buildRegister`
+ * every scaled-share base and rate, and the research JSON entry cap. The research attempt cap is
+ * derived from limit:packet.changes and the tag candidate setting (L11, item 5), so it needs no
+ * lift: no run can record more. The entry cap stopped upstream on every real uv change measured
+ * for #462, so a run shows that demand while production keeps the register value. Derived entries are left for `buildRegister`
  * to recompute, so totals and copies of these values scale with them: the retained-byte cap
  * follows the research cache total (#467), and the advisory and upstream byte ceilings follow the
  * evidence deadline. A ceiling derived only from `packet.changes` stays unscaled, since no change
@@ -52,7 +58,7 @@ export function scaledDefinitions(
     // The packet cap is held at its production value: it is the runner heap left beside the
     // retained evidence, which a scaled read budget would spend, and a demand run measures reads,
     // not heap, so it must still admit every packet production admits.
-    if (entry.id === HELD_PACKET_CAP && entry.basis.kind === 'derived')
+    if (HELD.has(entry.id) && entry.basis.kind === 'derived')
       return { ...entry, basis: { ...entry.basis, inputs: [], formula: () => value } };
     // A built register carries each derived entry's resolved value; a definition must not.
     if (entry.basis.kind === 'derived') return entry;

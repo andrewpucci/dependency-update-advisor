@@ -100,6 +100,15 @@ src/packet.ts or coordinator  → passes roots and configRevision to N1/U2
    (`<<: *name`) is `unsupported`; a literal `<<` key and a non-string key are
    ignored, as YAML's own conversion ignored them before.
 
+   Amended (L11, follow-up to Q8(a); approved by the maintainer on
+   2026-11-28,
+   [#383](https://github.com/andrewpucci/dependency-update-advisor/issues/383)):
+   `limit:w2.actions.maxAliasExpansions` is now the workflow reader's CPU
+   harm point, far above what one Dependabot file can expand. Every expansion
+   composes at least one node, so the composed node budget at
+   `limit:dependabot.maxYamlNodes` refuses first, with `budget`, and the
+   composed document is no larger than before.
+
 4. **Narrow extraction.** Require `version: 2` and an `updates` sequence. From
    each entry, read only `package-ecosystem` and either `directory` (string)
    or `directories` (string list). Other keys may be present but are neither

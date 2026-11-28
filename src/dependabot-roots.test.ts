@@ -180,9 +180,10 @@ test.each([
     encode(`version: 2\nupdates: []\n#${'x'.repeat(DEPENDABOT_ROOT_LIMITS.maxFileBytes)}\n`),
   ],
   [
-    'aliases',
+    // 250 aliases of a 101-node sequence: few source nodes, more expanded nodes than the budget.
+    'YAML nodes an expansion composes',
     encode(
-      `version: 2\nx: &a ["/"]\nupdates:\n${Array.from({ length: DEPENDABOT_ROOT_LIMITS.maxAliasExpansions + 1 }, () => '  - package-ecosystem: npm\n    directories: *a\n').join('')}`,
+      `${file(update('npm', '/'))}x: &a [${'1,'.repeat(100)}1]\ny: [${Array.from({ length: 250 }, () => '*a').join(', ')}]\n`,
     ),
   ],
   [
@@ -228,17 +229,29 @@ test('limits the roots per ecosystem after deduplication', () => {
   ).toMatchObject({ npm: { kind: 'roots' } });
 });
 
-test('expands aliases up to the alias cap and refuses one more', () => {
+test('expands aliases until the node budget refuses one more', () => {
+  // The alias cap copies the workflow reader's CPU harm point (L11, 2026-11-28), far above what
+  // the node budget lets one file expand, so the composed node budget is the one that refuses.
   const at = (count: number) =>
     encode(
-      `version: 2\nx: &a ["/web"]\nupdates:\n${Array.from({ length: count }, () => '  - package-ecosystem: npm\n    directories: *a\n').join('')}`,
+      `version: 2\nx: &a ["/web"]\ny: [${Array.from({ length: count }, () => '*a').join(', ')}]\nupdates:\n  - package-ecosystem: npm\n    directories: *a\n`,
     );
-  expect(parseDependabotRoots(at(DEPENDABOT_ROOT_LIMITS.maxAliasExpansions))).toEqual({
+  const parses = (count: number) => parseDependabotRoots(at(count)).kind === 'roots';
+  let most = 0;
+  let refused = DEPENDABOT_ROOT_LIMITS.maxYamlNodes;
+  while (refused - most > 1) {
+    const middle = Math.floor((most + refused) / 2);
+    if (parses(middle)) most = middle;
+    else refused = middle;
+  }
+  expect(most).toBeGreaterThan(0);
+  expect(most + 1).toBeLessThan(DEPENDABOT_ROOT_LIMITS.maxAliasExpansions);
+  expect(parseDependabotRoots(at(most))).toEqual({
     kind: 'roots',
     npm: { kind: 'roots', roots: ['web'] },
     uv: { kind: 'roots', roots: [] },
   });
-  expect(parseDependabotRoots(at(DEPENDABOT_ROOT_LIMITS.maxAliasExpansions + 1))).toEqual({
+  expect(parseDependabotRoots(at(most + 1))).toEqual({
     kind: 'unavailable',
     reason: 'budget',
   });
@@ -284,9 +297,22 @@ test('returns a deeply frozen result', () => {
   expect(Object.isFrozen(result.npm.roots)).toBe(true);
 });
 
+test('a config of the largest recorded legitimate size, 82,528 bytes, is read', () => {
+  // The 65,536-byte cap refused it before L11 item 12.
+  const head = 'version: 2\nupdates:\n  - package-ecosystem: npm\n    directory: "/web"\n#';
+  const text = head + 'x'.repeat(82_528 - head.length - 1) + '\n';
+  const bytes = encode(text);
+  expect(bytes.byteLength).toBe(82_528);
+  expect(parseDependabotRoots(bytes)).toMatchObject({
+    kind: 'roots',
+    npm: { kind: 'roots', roots: ['web'] },
+  });
+});
+
 test('exposes the parsing limits', () => {
   expect(DEPENDABOT_ROOT_LIMITS).toEqual({
-    maxFileBytes: 65_536,
+    // The largest blob one response carries (L11, item 12 and its review follow-up); it was 65,536.
+    maxFileBytes: limit('snapshot.maxReadableBlobBytes'),
     maxYamlNodes: 20_000,
     maxYamlDepth: 16,
     maxAliasExpansions: limit('w2.actions.maxAliasExpansions'),

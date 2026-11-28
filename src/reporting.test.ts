@@ -9,7 +9,7 @@ import {
   type ReviewPacket,
 } from './schema.js';
 import { formDecisionUnits, summarizeDecisionCoverage, type DecisionUnit } from './units.js';
-import { evidenceGap, renderDecisionBrief } from './reporting.js';
+import { digestLine, evidenceGap, renderDecisionBrief } from './reporting.js';
 import { limit } from './limits.js';
 
 // Many tests here build and render a 93-member inventory, a second or two each locally and several
@@ -1140,7 +1140,16 @@ test('retains every unresolved action at exactly the comment limit and rejects o
   expect(overflow.ok && overflow.body).toContain('omitted');
   if (!overflow.ok) throw new Error('overflow rendering failed');
   verifyQueue(overflow.body);
-  expect(renderDecisionBrief(make('é'.repeat(length + 5_000) + '<'))).toEqual({
+  // Required content too long for the comment becomes the decision digest, with the full review,
+  // every unresolved action in it, kept for the step summary.
+  const digest = renderDecisionBrief(make('é'.repeat(length + 5_000) + '<'));
+  if (!digest.ok || digest.summary === undefined) throw new Error('digest rendering failed');
+  expect(digest.body.length).toBeLessThanOrEqual(limit('comment.maxBodyCodeUnits'));
+  expect(digest.body).toContain('## Decision digest');
+  verifyQueue(digest.summary);
+  // A full review larger than the step summary allows is still refused.
+  const summaryUnits = Math.ceil(limit('github.stepSummary.maxBytes') / 2);
+  expect(renderDecisionBrief(make('é'.repeat(summaryUnits) + '<'))).toEqual({
     ok: false,
     category: 'size',
   });
@@ -3421,24 +3430,37 @@ test('the checked-state fixture names each checked member once and names the par
   expect(entryPattern(render, member).test(gap!.slice(2, gap!.indexOf(': ')))).toBe(true);
 });
 
-test('the irreducible boundary fixture returns size, not a rendered brief', async () => {
+test('the irreducible boundary is a full review larger than the step summary', async () => {
   const { largeInventoryScenario } = await import('../tests/parity/large-inventory.js');
-  const followupText = (index: number, name: string) =>
+  const render = async (followupText: (index: number, name: string) => string) =>
+    renderDecisionBrief(
+      (
+        await largeInventoryScenario({
+          // 124 npm members, 2 nested copies and 2 others: limit:packet.changes changes, units.
+          members: 124,
+          duplicateNames: 2,
+          followups: 124,
+          followupsPerUnit: limit('analysis.steps'),
+          followupText,
+        })
+      ).render,
+    );
+  // At the change cap, every follow-up unit at limit:analysis.steps follow-ups: too long for the
+  // comment, it renders as the decision digest with the full review beside it.
+  const plain = await render((index, name) =>
     `Follow-up ${index} for ${name}: ${'Confirm the recorded evidence with a fresh lookup. '.repeat(6)}`.slice(
       0,
       270,
-    );
-  const scenario = await largeInventoryScenario({
-    members: 93,
-    duplicateNames: 2,
-    followups: 71,
-    followupsPerUnit: 8,
-    followupText,
-  });
-  // Under the comment limit, an oversized brief is reported as size; W2 maps this
-  // to `render-size`, which src/pipeline.test.ts "hands a group too large to render off as a
-  // failure that says so, never as a defect" pins for a real oversized brief.
-  expect(renderDecisionBrief(scenario.render)).toMatchObject({ ok: false, category: 'size' });
+    ),
+  );
+  expect(plain).toMatchObject({ ok: true, summary: expect.any(String) });
+  // Follow-ups at the byte cap whose every character escapes to five code units (`&amp;`) make a
+  // full review the step summary cannot hold, which is reported as size; W2 maps this to
+  // `render-size`, and the prior comment is kept.
+  const escaped = await render(
+    (index) => `${index} ${'&'.repeat(limit('analysis.followupBytes') - String(index).length - 1)}`,
+  );
+  expect(escaped).toMatchObject({ ok: false, category: 'size' });
 });
 
 test.each([
@@ -3524,3 +3546,135 @@ test.each([1, 21])(
     expect(queue).not.toContain('Rerun CI later.');
   },
 );
+
+/** A follow-up of exactly limit:analysis.followupBytes ASCII bytes, distinct per unit and index. */
+function longFollowup(index: number, name: string) {
+  const prefix = `Recheck ${name} (${index}) before merging: `;
+  return prefix + 'x'.repeat(limit('analysis.followupBytes') - prefix.length);
+}
+
+test('replaces required content too long for the comment with a digest and keeps the full review for the step summary', async () => {
+  const { largeInventoryScenario } = await import('../tests/parity/large-inventory.js');
+  // limit:analysis.steps follow-ups of limit:analysis.followupBytes on each of 71 units: far more
+  // required text than the comment holds, which fitComment can never drop.
+  const scenario = await largeInventoryScenario({
+    members: 93,
+    duplicateNames: 2,
+    followups: 71,
+    followupsPerUnit: limit('analysis.steps'),
+    followupText: longFollowup,
+  });
+  const result = renderDecisionBrief(scenario.render);
+  expect(result.ok).toBe(true);
+  if (!result.ok || result.summary === undefined) throw new Error('expected a digest');
+  const { body, summary } = result;
+  expect(body.length).toBeLessThanOrEqual(limit('comment.maxBodyCodeUnits'));
+  expect(Buffer.byteLength(summary)).toBeLessThanOrEqual(limit('github.stepSummary.maxBytes'));
+  // The comment keeps the decision and one line per unit, each with its counts.
+  expect(body).toMatch(/^<!-- dependabot-intelligent-review -->\n/u);
+  expect(body).toContain('**Recommendation:**');
+  expect(body).toContain('**Next action:**');
+  expect(body).not.toContain('## Non-blocking follow-ups');
+  const units = scenario.render.coverage.inventory.units;
+  const lines = body.split('```text\n')[1].split('\n```')[0].split('\n');
+  expect(lines).toHaveLength(units.length);
+  const records = scenario.render.records;
+  const counted = lines.reduce(
+    (total, line) => total + Number(/; (\d+) follow-ups?;/u.exec(line)?.[1]),
+    0,
+  );
+  const followups = records.reduce(
+    (total, record) => total + (record.assessment?.followups.length ?? 0),
+    0,
+  );
+  expect(followups).toBe(71 * limit('analysis.steps'));
+  // Each line counts its unit's follow-ups and, for an assessed unit, its evidence gaps: the
+  // lines together count exactly those, no more.
+  const assessed = scenario.render.coverage.policyProvenance.assessments.units;
+  const gaps = records.reduce(
+    (total, record, index) => total + (record.assessment ? assessed[index].gaps.length : 0),
+    0,
+  );
+  expect(gaps).toBeGreaterThan(0);
+  expect(counted).toBe(gaps + followups);
+  for (const [index, unit] of units.entries())
+    expect(lines[index], unit.id).toContain(`${index + 1}. `);
+  // The step summary holds every follow-up, unshortened.
+  for (const record of records)
+    for (const followup of record.assessment?.followups ?? [])
+      expect(summary).toContain(renderedText(followup.description));
+  expect(summary).toContain('## Non-blocking follow-ups');
+});
+
+test('the decision digest at the change cap fits the comment beside the largest head', async () => {
+  const changes = limit('packet.changes');
+  const { largeInventoryScenario } = await import('../tests/parity/large-inventory.js');
+  // A real render at the change cap: every child carries an evidence gap and limit:analysis.steps
+  // follow-ups of limit:analysis.followupBytes, far more than the comment holds.
+  const scenario = await largeInventoryScenario({
+    // The fixture adds an unchanged anchor's two fixed changes beside its children.
+    members: changes - 2,
+    duplicateNames: 0,
+    followups: changes - 2,
+    followupsPerUnit: limit('analysis.steps'),
+    followupText: longFollowup,
+  });
+  expect(scenario.render.coverage.inventory.packet.changes).toHaveLength(changes);
+  // The longest metadata and attribution the renderer accepts: an owner and repository name at
+  // limit:packet.identityBytes, written through every id and link that carries them, and a review
+  // digest. The header names no model id; its attribution is the reviewed head and the time.
+  const long = (letter: string) => letter.repeat(limit('packet.identityBytes'));
+  const fixture = JSON.stringify(scenario.render);
+  expect(fixture).toContain('"owner":"example","name":"consumer"');
+  const render = {
+    ...(JSON.parse(
+      fixture.replaceAll('example', long('o')).replaceAll('consumer', long('n')),
+    ) as typeof scenario.render),
+    reviewDigest: 'f'.repeat(64),
+  };
+  const result = renderDecisionBrief(render);
+  if (!result.ok || result.summary === undefined)
+    throw new Error(`expected a digest: ${JSON.stringify(result)}`);
+  const { body } = result;
+  expect(body.length).toBeLessThanOrEqual(limit('comment.maxBodyCodeUnits'));
+  expect(body).toContain(`# Dependabot review: ${long('o')}/${long('n')} PR `);
+  const head = body.slice(0, body.indexOf('\n## Decision digest'));
+  // The next action is the one header field of untrusted text. Its longest form is the longest
+  // remediation or gap action escaped at 5 code units per character (`&amp;`), the heaviest escape
+  // the renderer writes, with two recovery sentences, the longest of which is below.
+  const prefix = '**Next action:** ';
+  const next = head.split('\n').find((line) => line.startsWith(prefix)) ?? '';
+  const longestRecovery =
+    'Investigate the failed review data or validation, correct the cause, then rerun CI.';
+  const nextAction =
+    5 * Math.max(limit('packet.textBytes'), limit('analysis.textBytes')) +
+    2 * (1 + longestRecovery.length);
+  expect(next.length - prefix.length).toBeGreaterThan(0);
+  expect(next.length - prefix.length).toBeLessThanOrEqual(nextAction);
+  // The widest line the digest can hold: the last position, the most blockers (every packet
+  // finding and every model blocker) and follow-ups (every evidence category of every member, and
+  // every model follow-up) one unit can carry, every change in one unit, and an id at the cap made
+  // of `<!--`, which is the only text the digest changes.
+  const widest = digestLine(changes, {
+    unresolved: true,
+    blockers: limit('packet.findings') + limit('analysis.references'),
+    followups: 8 * changes + limit('analysis.steps'),
+    members: changes,
+    id: '<!--'.repeat(limit('packet.idCodeUnits') / 4),
+  });
+  expect(widest).not.toContain('<!--');
+  // The rendered head, with its next action widened to that longest form, and a digest of the
+  // change cap's widest lines, still fit.
+  const digestText = body.slice(head.length, body.indexOf('```text\n') + '```text\n'.length);
+  // The fixture's pull number has 2 digits; the largest safe integer has 16.
+  const pullDigits = String(Number.MAX_SAFE_INTEGER).length - 2;
+  expect(
+    head.length -
+      (next.length - prefix.length) +
+      nextAction +
+      pullDigits +
+      digestText.length +
+      changes * (widest.length + 1) +
+      '```'.length,
+  ).toBeLessThanOrEqual(limit('comment.maxBodyCodeUnits'));
+});

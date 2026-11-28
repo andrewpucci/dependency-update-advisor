@@ -283,6 +283,16 @@ receives `process.env` or a general fetch function.
    Skipped, stale, unverified, or unowned outcomes authorize neither status nor
    comment publication. This contract calls neither T2/T3 writer nor a real
    App-token request; the later publisher rechecks freshness and ownership.
+
+   Amended (L11, item 1 review follow-up, 2026-11-28,
+   [#383](https://github.com/andrewpucci/dependency-update-advisor/issues/383)):
+   when the body is the decision digest, the full review for the run's step
+   summary is returned beside it, and nothing writes it until publication is
+   wired (D4). Until then the handoff gains one optional field,
+   `stepSummary`, set only in that case: the summary's UTF-8 byte length and
+   its `sha256` digest in lowercase hex, never its text. The rehearsal trace
+   copies it. No other handoff, status, or comment field changes.
+
 8. **No-write rehearsal.** A rehearsal sink records intended pending/failure/
    success/comment operations, binding, and ordering without a network write.
    It refuses a real App token, has no live-client fallback, and emits only
@@ -402,6 +412,15 @@ does not do that.
    `limit:job.freshnessAllowance` and `limit:analysis.publicationReserveMs`
    after the job start and the final check by about `limit:job.budget` minus
    `limit:analysis.publicationReserveMs`.
+
+   Amended (L11; approved by the maintainer on 2026-11-28,
+   [#383](https://github.com/andrewpucci/dependency-update-advisor/issues/383)):
+   the analysis layer stops at that deadline minus its publication reserve
+   alone. `limit:analysis.maxAnalysisMs` no longer caps analysis from its own
+   start; it is the least analysis time a run gets, a copy of
+   `limit:job.maxAnalysisTimeMs`, so evidence that ends early leaves its
+   unspent time to analysis.
+
 3. **Value: `freshnessAllowanceMs` = `limit:job.freshnessAllowance`.** It
    is the derived minimum: three sequential reads (run, PR, comparison) at the
    `limit:github.requestTimeoutMs` request timeout cover one full
@@ -616,6 +635,29 @@ publication spends that reserve.
 8. **Revisit with publication.** The reserve this amendment protects is first
    spent by publication. The publication work re-checks the allowance against
    its own measured pre-startup time and records the result in its spec.
+
+Amended (L11, item 10(b); approved by the maintainer on 2026-11-28,
+[#383](https://github.com/andrewpucci/dependency-update-advisor/issues/383)):
+the review's `timeout-minutes` moves from the job to the review step
+(`limit:workflow.dependabotReview.review.steps.1.timeoutMinutes`), which the
+runner times from the step's own start, after the action download and the
+app-token step. `JOB_BUDGET_MS` (`limit:job.budget`) is that step timeout. The
+job's `timeout-minutes` (`limit:workflow.dependabotReview.review.timeoutMinutes`)
+is the step timeout plus the app-token step's own `timeout-minutes`
+(`limit:workflow.dependabotReview.review.steps.0.timeoutMinutes`), derived
+from that action's 12 requests at `limit:github.requestTimeoutMs` and its
+retry waits, rounded up to 3 minutes; this replaces the user's 2026-11-11
+allowance for the time before the step (job.preStepAllowance, deleted in the
+item 10 review follow-up). The runner ends the job no earlier than either
+step's own timeout unless the job setup and the app-token post step pass the
+minutes the app-token step leaves, which fails closed.
+`preStartupAllowanceMs` now covers only the in-step time before `runStartup`
+takes the job start: Node load, the relaunch, and the self-check. It keeps
+its value until a hosted-runner run of the recorded command,
+`npm run probe:runtime-baseline` (its `startupMs`), gives a basis; that run
+has not been made. Item 1's "`timeout-minutes` and
+`JOB_BUDGET_MS` are unchanged" is narrowed accordingly; no job-start anchor is
+read and no clock is converted.
 
 ### Amendment 3 Boundaries
 
@@ -960,6 +1002,12 @@ them.
    [#383](https://github.com/andrewpucci/dependency-update-advisor/issues/383)):
    no call outlasts the job, so the cap is the largest number with as many
    digits as `limit:job.budget`, and it follows the job budget setting.
+   Amended (L11; approved by the maintainer on 2026-11-28,
+   [#383](https://github.com/andrewpucci/dependency-update-advisor/issues/383)):
+   the remaining analysis time is no longer capped at
+   `limit:analysis.maxAnalysisMs`; it is at most the analysis deadline less
+   `limit:analysis.publicationReserveMs`, inside `limit:job.window`, so a
+   production value still has at most six digits.
 6. **Fail-closed preservation.** Neither value changes an outcome, status,
    comment, freshness gate, claim, or write. If a finished assessment is then
    discarded, the reason and the timing are dropped with it, as Amendment 4
