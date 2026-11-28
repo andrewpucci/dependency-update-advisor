@@ -4,6 +4,7 @@
  *
  *   npm run probe:parse-cost -- harm [counter ...]
  *   npm run probe:parse-cost -- use <corpus directory>
+ *   npm run probe:parse-cost -- heap
  *
  * `harm` runs each counter (all by default) in its own Node process, measure.ts with the flags it
  * needs: the reader on an input that fills the reader's byte cap with the densest form of the
@@ -16,6 +17,12 @@
  * measure.ts). Both print aggregates only, never a file name, package name or URL, and the corpus is
  * never committed. The timings depend on the machine, so the probe is not
  * part of the test suite; run it on Node 24, the action's runtime.
+ *
+ * `heap` (L11, item 12) runs the Dependabot roots reader with the register's own caps on each
+ * crafted shape at limit:dependabot.maxFileBytes and prints, per shape, its outcome, the heap the
+ * parse allocates (an upper bound on its peak: the young generation is sized so no collection runs
+ * during one parse) and the heap still held after a full collection with the result kept, which
+ * shows whether the parse is transient.
  */
 import { execFileSync } from 'node:child_process';
 import { join } from 'node:path';
@@ -44,15 +51,18 @@ const LIFTED_DEPENDABOT = ['maxFileBytes', 'maxYamlNodes', 'maxUpdates', 'maxRoo
   .join(',');
 
 const USAGE =
-  'usage: npm run probe:parse-cost -- harm [counter ...]\n       npm run probe:parse-cost -- use <corpus directory>';
+  'usage: npm run probe:parse-cost -- harm [counter ...]\n       npm run probe:parse-cost -- use <corpus directory>\n       npm run probe:parse-cost -- heap';
+/** A young generation no single parse fills, so the heap after it counts all it allocated. */
+const HEAP_FLAGS = ['--min-semi-space-size=1024', '--max-semi-space-size=1024'];
 
-function measure(args: string[]): void {
+function measure(args: string[], lifted = true): void {
+  const flags = lifted ? FLAGS : [...FLAGS, ...HEAP_FLAGS];
   process.stdout.write(
-    execFileSync(process.execPath, [...FLAGS, MEASURE, ...args], {
+    execFileSync(process.execPath, [...flags, MEASURE, ...args], {
       cwd: ROOT,
       env: {
         ...process.env,
-        HEAP_LIMIT_OVERRIDES: LIFTED_DEPENDABOT,
+        HEAP_LIMIT_OVERRIDES: lifted ? LIFTED_DEPENDABOT : '',
         // The register's own byte cap, which the overrides hide from the child.
         DEPENDABOT_MAX_FILE_BYTES: String(limit('dependabot.maxFileBytes')),
       },
@@ -71,6 +81,8 @@ if (mode === 'harm') {
   for (const counter of rest.length > 0 ? rest : COUNTERS) measure([counter]);
 } else if (mode === 'use' && rest.length === 1) {
   measure(['use', rest[0] as string]);
+} else if (mode === 'heap' && rest.length === 0) {
+  measure(['heap'], false);
 } else {
   console.error(USAGE);
   process.exit(1);

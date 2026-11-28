@@ -284,9 +284,22 @@ test('returns a deeply frozen result', () => {
   expect(Object.isFrozen(result.npm.roots)).toBe(true);
 });
 
+test('a config of the largest recorded legitimate size, 82,528 bytes, is read', () => {
+  // The 65,536-byte cap refused it before L11 item 12.
+  const head = 'version: 2\nupdates:\n  - package-ecosystem: npm\n    directory: "/web"\n#';
+  const text = head + 'x'.repeat(82_528 - head.length - 1) + '\n';
+  const bytes = encode(text);
+  expect(bytes.byteLength).toBe(82_528);
+  expect(parseDependabotRoots(bytes)).toMatchObject({
+    kind: 'roots',
+    npm: { kind: 'roots', roots: ['web'] },
+  });
+});
+
 test('exposes the parsing limits', () => {
   expect(DEPENDABOT_ROOT_LIMITS).toEqual({
-    maxFileBytes: 65_536,
+    // A copy of the snapshot blob cap (L11, item 12); it was 65,536.
+    maxFileBytes: limit('snapshot.maxBlobBytes'),
     maxYamlNodes: 20_000,
     maxYamlDepth: 16,
     maxAliasExpansions: limit('w2.actions.maxAliasExpansions'),

@@ -7,7 +7,8 @@
  * the run, so the whole input is counted, and each run checks the reader walked it all. Per size it
  * prints the units counted and the slowest and median of RUNS timed runs after one warm-up; per
  * shape, the ratios of successive timings, which stay near 2 when the cost is linear. Usage:
- * measure.ts <counter>, or measure.ts use <corpus directory>.
+ * measure.ts <counter>, measure.ts use <corpus directory>, or measure.ts heap (the Dependabot
+ * reader's heap at its own caps; see run.ts).
  *
  * Counters: `session` (the W2 GitHub read session's JSON entries, src/github-read.ts),
  * `registry` (the npm registry reader's, src/evidence/npm-registry.ts), `npm` (the npm lockfile
@@ -86,6 +87,8 @@ const now = () => 0;
 const encode = (text: string) => new TextEncoder().encode(text);
 const gc = globalThis.gc;
 if (!gc) throw new Error('run with --expose-gc (npm run probe:parse-cost does)');
+/** The narrowed collector, for functions that run after the check above. */
+const collect: () => void = gc;
 
 function stubFetch(body: string) {
   const bytes = encode(body);
@@ -670,7 +673,50 @@ function useOf(corpus: string) {
   }
 }
 
+/**
+ * The Dependabot reader's heap at its register caps, per crafted shape at its byte cap: what one
+ * parse allocates, what stays held after a full collection while the result is kept, and the
+ * slowest and median of RUNS parses.
+ */
+function heapOf(): void {
+  const used = () => process.memoryUsage().heapUsed;
+  for (const shape of core.DEPENDABOT_SHAPES) {
+    const bytes = encode(core.dependabotDocument(shape, DEPENDABOT_CAP));
+    parseDependabotRoots(bytes);
+    collect();
+    collect();
+    const before = used();
+    const result = parseDependabotRoots(bytes);
+    const allocatedBytes = used() - before;
+    collect();
+    collect();
+    const retainedBytes = used() - before;
+    const timings = Array.from({ length: RUNS }, () => {
+      const start = performance.now();
+      parseDependabotRoots(bytes);
+      return performance.now() - start;
+    });
+    console.log(
+      JSON.stringify({
+        node: process.version,
+        reader: 'dependabot',
+        shape,
+        bytes: bytes.byteLength,
+        outcome: result.kind,
+        allocatedBytes,
+        retainedBytes,
+        resultBytes: Buffer.byteLength(JSON.stringify(result)),
+        ...core.timingSummary(timings),
+      }),
+    );
+  }
+}
+
 const [counter, corpus] = process.argv.slice(2);
+if (counter === 'heap') {
+  heapOf();
+  process.exit(0);
+}
 if (counter === 'use') {
   if (corpus === undefined) throw new Error('usage: measure.ts use <corpus directory>');
   useOf(corpus);

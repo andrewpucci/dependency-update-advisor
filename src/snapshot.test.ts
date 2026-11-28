@@ -727,7 +727,10 @@ test('returns a frozen outcome for every kind', async () => {
     roots(reads([], {})),
     roots(
       dependabotReader([
-        { ...entry('.github/dependabot.yml', '100644', dependabotBlob), size: 65_537 },
+        {
+          ...entry('.github/dependabot.yml', '100644', dependabotBlob),
+          size: limit('dependabot.maxFileBytes') + 1,
+        },
       ]),
     ),
   ]);
@@ -780,7 +783,7 @@ test('reports a .github submodule as unsupported, never absent', async () => {
 
 test('rejects an oversized file from its tree size without fetching it', async () => {
   const reader = dependabotReader([
-    { ...entry('.github/dependabot.yml', '100644', dependabotBlob), size: 65_537 },
+    { ...entry('.github/dependabot.yml', '100644', dependabotBlob), size: limit('dependabot.maxFileBytes') + 1 },
   ]);
   await expect(roots(reader)).resolves.toEqual({
     kind: 'ready',

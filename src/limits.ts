@@ -3714,14 +3714,20 @@ const DEFINITIONS = [
     },
   ),
   // Dependabot roots, from dependabot-roots.ts.
-  unjustified('dependabot.maxFileBytes', 65_536, 'bytes', {
-    protects:
-      'The Dependabot config is parsed in memory, so its size is capped before any YAML parsing.',
-    effect:
-      'A file over 65,536 bytes is not parsed. The whole file is unavailable with reason budget, and no roots are kept.',
-    test: 'src/dependabot-roots.test.ts > accepts values exactly at each limit',
-    note: 'stopped (L11, card, #383): the approved basis is safety, which needs the cap above the largest legitimate config. It is not: among the largest dependabot.yml files GitHub code search returned on 2026-11-28 (14 files above 40,000 bytes, of which 8 are Dependabot version-2 configs), 3 configs are 68,918, 71,729 and 82,528 bytes (14, 4 and 200 update entries), and each fails here with budget today. No document gives a Dependabot file size limit, and no larger value has an approved basis. Value unchanged',
-  }),
+  derived(
+    'dependabot.maxFileBytes',
+    'bytes',
+    ['snapshot.maxBlobBytes'],
+    copy,
+    'The Dependabot config is a blob the snapshot reads, so it can be no larger than limit:snapshot.maxBlobBytes, the largest blob the reader fetches; under the approved base64 rule a blob response holds about 760,700 decoded bytes, which binds first. No document gives a Dependabot file size limit, and the file is controlled by the PR, so this is a parse bound and never an adopter setting. It covers the largest recorded legitimate configs (68,918, 71,729 and 82,528 bytes, among the largest dependabot.yml files GitHub code search returned on 2026-11-28), which the earlier 65,536 refused. The parse is transient: at the cap, with the other Dependabot caps of the register, each of the three crafted shapes (densest nodes, updates and roots) is refused with budget at its count cap, after the parser has built the whole document; one parse allocates at most 918,691,592 bytes of heap (an upper bound on its peak, measured with a 1 GiB young generation so no collection runs during it), and after a full collection with the result kept at most 60,928 bytes stay held; the slowest of 5 parses takes 2,646 ms, inside the CPU harm point of limit:dependabot.maxYamlNodes (npm run probe:parse-cost -- heap, on 2026-11-28 under Node 24.22.3). The parse runs in the snapshot, before any evidence is retained, inside limit:runner.heapBytes. Approved by the maintainer on 2026-11-28 (L11, item 12(a), #383).',
+    {
+      protects:
+        'The Dependabot config is parsed in memory, so its size is capped before any YAML parsing.',
+      effect:
+        'A file over the cap is not parsed. The whole file is unavailable with reason budget, and no roots are kept.',
+      test: 'src/dependabot-roots.test.ts > accepts values exactly at each limit',
+    },
+  ),
   {
     id: 'dependabot.maxYamlNodes',
     value: 20_000,
