@@ -3633,7 +3633,8 @@ test('the decision digest at the change cap fits the comment beside the largest 
     reviewDigest: 'f'.repeat(64),
   };
   const result = renderDecisionBrief(render);
-  if (!result.ok || result.summary === undefined) throw new Error(`expected a digest: ${JSON.stringify(result)}`);
+  if (!result.ok || result.summary === undefined)
+    throw new Error(`expected a digest: ${JSON.stringify(result)}`);
   const { body } = result;
   expect(body.length).toBeLessThanOrEqual(limit('comment.maxBodyCodeUnits'));
   expect(body).toContain(`# Dependabot review: ${long('o')}/${long('n')} PR `);

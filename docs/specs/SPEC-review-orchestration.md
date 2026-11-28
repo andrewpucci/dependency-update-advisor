@@ -292,6 +292,7 @@ receives `process.env` or a general fetch function.
    `stepSummary`, set only in that case: the summary's UTF-8 byte length and
    its `sha256` digest in lowercase hex, never its text. The rehearsal trace
    copies it. No other handoff, status, or comment field changes.
+
 8. **No-write rehearsal.** A rehearsal sink records intended pending/failure/
    success/comment operations, binding, and ordering without a network write.
    It refuses a real App token, has no live-client fallback, and emits only

@@ -1106,7 +1106,11 @@ test('a layout deeper than the snapshot share keeps the context it read and repo
 /** GitHub's Get a blob body for `bytes`: base64 wrapped at 60 characters, its envelope padded by
  * the node id to exactly github.blobEnvelopeBytes. */
 function blobResponse(sha: string, bytes: Uint8Array): string {
-  const content = (Buffer.from(bytes).toString('base64').match(/.{1,60}/gu) ?? [])
+  const content = (
+    Buffer.from(bytes)
+      .toString('base64')
+      .match(/.{1,60}/gu) ?? []
+  )
     .map((line) => `${line}\n`)
     .join('');
   const body = (nodeId: string) =>
@@ -1123,7 +1127,10 @@ function blobResponse(sha: string, bytes: Uint8Array): string {
 }
 
 /** A GitHub API stub over `tree` and `blobs`, for the real transport and snapshot reads. */
-function githubApi(tree: readonly SnapshotTreeEntry[], blobs: Readonly<Record<string, Uint8Array>>) {
+function githubApi(
+  tree: readonly SnapshotTreeEntry[],
+  blobs: Readonly<Record<string, Uint8Array>>,
+) {
   const calls: string[] = [];
   const directories = new Map<string, string>([[treeRevision, '']]);
   for (const item of tree) if (item.type === 'tree') directories.set(item.sha, item.path);
@@ -1217,7 +1224,10 @@ test('a config or Dependabot file one byte past one blob response gets its own s
       { repository, reads: oversized.reader, temporaryRoot: tempRoot() },
       async () => 'unreachable',
     ),
-  ).resolves.toMatchObject({ kind: 'invalid-config', config: { ok: false, error: { category: 'size' } } });
+  ).resolves.toMatchObject({
+    kind: 'invalid-config',
+    config: { ok: false, error: { category: 'size' } },
+  });
   expect(oversized.calls).not.toContain(`/git/blobs/${configBlob}`);
 
   // A Dependabot file one byte past it is unavailable for budget, unfetched, and the snapshot it

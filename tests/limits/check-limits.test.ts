@@ -150,7 +150,11 @@ test('a superseded citation is accepted on its listed line only', () => {
   expect(citationProblems(REGISTER, docs(`Intro.\n  ${line}\n`), superseded)).toEqual([]);
   // The same id on another line, or the listed line in another file, is still a problem.
   expect(
-    citationProblems(REGISTER, docs(`${line}\nAt most \`limit:context.maxSourceRoots\`.`), superseded),
+    citationProblems(
+      REGISTER,
+      docs(`${line}\nAt most \`limit:context.maxSourceRoots\`.`),
+      superseded,
+    ),
   ).toHaveLength(1);
   expect(
     citationProblems(REGISTER, [{ file: 'docs/specs/SPEC-other.md', text: line }], superseded),

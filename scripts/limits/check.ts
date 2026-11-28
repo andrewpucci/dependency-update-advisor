@@ -347,7 +347,9 @@ export function citationProblems(
   docs: readonly SourceFile[],
   superseded: readonly SupersededCitation[] = [],
 ): string[] {
-  const listed = new Set(superseded.map((entry) => specKey(entry.file, `${entry.id} ${entry.line}`)));
+  const listed = new Set(
+    superseded.map((entry) => specKey(entry.file, `${entry.id} ${entry.line}`)),
+  );
   const seen = new Set<string>();
   const problems = docs.flatMap(({ file, text }) => {
     const lines = text.split('\n');
