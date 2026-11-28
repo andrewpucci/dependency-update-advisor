@@ -861,3 +861,16 @@ test('a discovery page over the response cap is retried at the same cursor at th
   stuck.close();
   expect(sizes(always.requests).map(([size]) => Number(size))).toEqual([...DISCOVERY_PAGE_SIZES]);
 });
+test('an error body over the response cap fails discovery with budget and is not resent', async () => {
+  const server = github((u) =>
+    isDiscovery(u)
+      ? Response.json({ message: 'x'.repeat(400) }, { status: 502 })
+      : Response.json([]),
+  );
+  const reader = ready(createAdvisoryReader, server.fetch, { maxResponseBytes: 200 });
+  expect(await reader.read(tj)).toMatchObject({ complete: false, reasons: ['budget'] });
+  reader.close();
+  expect(server.discovery().map((u) => new URL(u).searchParams.get('per_page'))).toEqual([
+    PAGE_SIZE,
+  ]);
+});

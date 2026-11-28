@@ -89,8 +89,8 @@ export class AdvisoryFailure extends Error {
   }
 }
 /**
- * A response larger than the per-response byte cap, while the reader's byte share still had room:
- * the page, not the share, is too large, so a page-size ladder may retry it at a smaller size.
+ * A 200 response larger than the per-response byte cap, while the reader's byte share still had
+ * room: the page, not the share, is too large, so a page-size ladder may retry it smaller.
  */
 class ResponseTooLarge extends AdvisoryFailure {
   constructor() {
@@ -582,6 +582,7 @@ class Reader implements AdvisoryReader {
     provider: Provider,
     cached: boolean,
   ) {
+    const ok = response.status === HTTP_STATUS.ok;
     advisoryCheck(response.body);
     const stream = response.body.getReader(),
       chunks: Uint8Array[] = [];
@@ -593,7 +594,11 @@ class Reader implements AdvisoryReader {
         size += chunk.value.byteLength;
         if (!cached) this.bytes += chunk.value.byteLength;
         advisoryCheck(cached || this.bytes <= this.limits.maxTotalBytes, 'budget');
-        if (size > this.limits.maxResponseBytes) throw new ResponseTooLarge();
+        // Only a 200 page may be resent smaller; an error body over the cap fails as budget. The
+        // oversized body's bytes, up to the cap plus the chunk that crossed it, stay charged to
+        // the byte share above, so each resend costs one more request and those bytes.
+        if (size > this.limits.maxResponseBytes)
+          throw ok ? new ResponseTooLarge() : new AdvisoryFailure('budget');
         this.remaining(provider);
         chunks.push(chunk.value);
       }
@@ -764,7 +769,9 @@ class Reader implements AdvisoryReader {
    * Every page of one GitHub query, from the original URL through validated cursors. With
    * `sizes`, a page-size ladder whose first size is the URL's `per_page`: a page over the
    * per-response cap is retried at the same cursor at the next smaller size, and the rest of the
-   * query keeps that size. Every retry is an ordinary charged request.
+   * query keeps that size. Only a 200 page is resent. Every retry is an ordinary charged request,
+   * and the oversized body it replaces stays charged to the byte share, up to the per-response
+   * cap plus the chunk that crossed it.
    */
   private async github(
     url: string,

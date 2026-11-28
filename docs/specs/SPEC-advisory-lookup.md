@@ -613,8 +613,11 @@ evaluates the version itself. OSV `v1/query` probes on the same day:
      endpoint's documented maximum, instead of 50. A page over the
      per-response cap is resent at the same cursor at the next smaller size
      of a divisor chain down to 1, and the rest of the request keeps that
-     size, as the compare and release ladders do. Each resend is a charged
-     request, and a page over the cap at size 1 is `budget`. Batches reuse
+     size, as the compare and release ladders do. Only a successful page
+     is resent; an error body over the cap stays `budget`. Each resend is a
+     charged request, and the oversized body's bytes read before the cap
+     stopped it, up to the cap plus one chunk, stay charged to the advisory
+     byte share. A page over the cap at size 1 is `budget`. Batches reuse
      the page size and the ladder. The URL cap is the longest URL GitHub
      accepted on this endpoint in `npm run probe:batching`.
 7. **GitHub versioned query.** After a complete discovery, the reader always

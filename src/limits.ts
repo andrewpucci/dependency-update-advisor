@@ -2191,7 +2191,7 @@ const DEFINITIONS = [
       protects:
         'The start size of the discovery page-size ladder is bounded, so a discovery page of heavily advised packages that does not fit the per-response cap is retried smaller instead of failing the read (response size and memory).',
       effect:
-        'Discovery asks for this many records per page and follows every page under the cursor rules. A page over the per-response cap is resent at the same cursor at the next smaller size of the ladder, and the rest of the query keeps that size; each resend is a charged request, and a page over the cap at size 1 fails the read with budget.',
+        'Discovery asks for this many records per page and follows every page under the cursor rules. A page over the per-response cap is resent at the same cursor at the next smaller size of the ladder, and the rest of the query keeps that size; only a 200 page is resent, and an error body over the cap fails as budget. Each resend is a charged request, and the oversized body it replaces stays charged to limit:evidence.allocation.advisory.maxTotalBytes, up to limit:evidence.envelope.maxResponseBytes plus the chunk that crossed it, so at the defaults the 5 MiB share holds at most 4 such bodies. A page over the cap at size 1 fails the read with budget.',
       test: 'src/evidence/advisory-read.name-forms.test.ts > a discovery page over the response cap is retried at the same cursor at the next smaller page size',
     },
   ),
@@ -2289,7 +2289,7 @@ const DEFINITIONS = [
       protects:
         'The start size of the batch page-size ladder is bounded, so a batch page of heavily advised packages that does not fit the per-response cap is retried smaller.',
       effect:
-        'A batch asks for this many records per page and follows every page. A page over the per-response cap is resent at the same cursor at the next smaller size (BATCH_PAGE_SIZES, src/evidence/batches.ts).',
+        'A batch asks for this many records per page and follows every page. A page over the per-response cap is resent at the same cursor at the next smaller size (BATCH_PAGE_SIZES, src/evidence/batches.ts), charged as for limit:advisory.discovery.pageSize.',
       test: 'src/evidence/batches.test.ts > a batch URL asks for the register page size',
     },
   ),
