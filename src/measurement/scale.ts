@@ -2,15 +2,16 @@ import type { Limit, LimitDefinition } from '../limits.js';
 
 /** The packet cap a demand run keeps at its production value; see scaledDefinitions. */
 const HELD_PACKET_CAP = 'packet.bytes';
-const SCALED_RESEARCH = new Set(['research.maxAttempts', 'research.maxJsonEntries']);
+const SCALED_RESEARCH = new Set(['research.maxJsonEntries']);
 /** Scaled-share bases and rates, so a share lifts with its ceiling and the run sees uncut demand. */
 const SHARE_PREFIXES = ['research.share.', 'collection.share.'];
 
 /**
  * The hand-set read budget a demand measurement lifts: every evidence share and envelope value,
- * every scaled-share base and rate, the research attempt cap, and the research JSON entry cap.
- * The entry cap stopped upstream on every real uv change measured for #462, so a run shows that
- * demand while production keeps the register value. Derived entries are left for `buildRegister`
+ * every scaled-share base and rate, and the research JSON entry cap. The research attempt cap is
+ * derived from limit:packet.changes and the tag candidate setting (L11, item 5), so it needs no
+ * lift: no run can record more. The entry cap stopped upstream on every real uv change measured
+ * for #462, so a run shows that demand while production keeps the register value. Derived entries are left for `buildRegister`
  * to recompute, so totals and copies of these values scale with them: the retained-byte cap
  * follows the research cache total (#467), and the advisory and upstream byte ceilings follow the
  * evidence deadline. A ceiling derived only from `packet.changes` stays unscaled, since no change

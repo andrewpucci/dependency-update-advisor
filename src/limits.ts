@@ -1375,6 +1375,13 @@ export const Q10_RETAINED_INPUTS = [
   'config.maxBytes',
 ] as const;
 
+/**
+ * The attempts one upstream member records outside the range scan, at most: 2 metadata reads and
+ * the metadata fallback record, 2 release tag candidates, the comparison and its final recheck,
+ * and 3 changelog paths. Pinned by the structural test named on research.maxAttempts.
+ */
+export const UPSTREAM_FIXED_ATTEMPTS = 10;
+
 const DEFINITIONS = [
   {
     id: 'packet.bytes',
@@ -4470,13 +4477,22 @@ const DEFINITIONS = [
     note: "stopped (L11, Q8(a), #383): the approved basis is safety, which merges only with its largest legitimate use and its harm. The harm is measured: the costliest unit is a copied entry, the reader's own work counter. As a reader parses and copies a response of empty objects, the costliest of three shapes per entry, doubling around limit:evidence.envelope.maxResponseBytes from 87,382 to 1,398,102 units, the slowest of 5 runs takes 74.7 to 2,292 ms, each doubling multiplying it by 2.46, 2.20, 2.50 and 2.27 (npm run probe:parse-cost -- harm research, on 2026-11-28 under Node 24.22.3); the cost grows a little faster than the count, as the count to the power 1.23 fitted over the series, so on that curve, with the allowance of #467 for a runner 10 times slower, harm begins near 3.0 million units, a quarter of limit:evidence.envelope.totalTimeoutMs, below the cap of 5,000,000. The largest legitimate use is not: a reader's work counts the entries it copies, the bytes of the manifests it decodes, the bytes of every cached response it reuses and one unit per release it scans, and no recorded run gives their sum (the #462 measurement recorded entries, not work). It needs a live run (npm run measure:demand with the work reported). Value unchanged",
     test: 'src/research.test.ts > the upstream reader spends exactly research.maxWork units and refuses the next one',
   }),
-  unjustified('research.maxAttempts', 512, 'count', {
+  {
+    id: 'research.maxAttempts',
+    unit: 'count',
     protects:
       'The number of attempt records one enrichment can carry is bounded, so the output built from them stays within memory and output size (memory).',
     effect: 'Output with more attempts than the cap fails the enrichment with reason budget.',
-    note: 'L11 (#383) recommended deriving it as a structural per-member attempt count (at least 6) × limit:packet.changes, at least 768, but the per-member count is not a fixed number: the range stage records one attempt per release it scans, up to limit:research.maxTagCandidates (100), plus a summary (src/evidence/upstream-range.ts), so a member can record at least 101 attempts, bounded by that setting. 512 already binds legitimate use: R1 #276 recorded 594 attempts for 105 members. A derivation needs limit:research.maxTagCandidates as an input, at least 101 × 128 ≈ 13,000, which the approval did not name, so the value stays until one is approved.',
+    basis: {
+      kind: 'derived',
+      inputs: ['packet.changes', 'research.maxTagCandidates'],
+      formula: (changes, candidates) => changes * (candidates + 1 + UPSTREAM_FIXED_ATTEMPTS),
+      description: `The most attempts the members of one packet can record: limit:packet.changes members, each at most limit:research.maxTagCandidates range attempts (one per release the scan reads, src/evidence/upstream-range.ts), 1 range summary or stop, and ${UPSTREAM_FIXED_ATTEMPTS} fixed attempts outside the scan: 2 metadata reads (base and head) and the metadata fallback record (src/evidence/upstream.ts), 2 release tag candidates (src/evidence/upstream-github.ts, packageTags), the comparison and its final tag recheck, and 3 changelog paths (src/evidence/upstream-range.ts). An Actions member records fewer: 2 mappings, 1 release-notes failure, 4 ref rechecks and 1 comparison. So 128 × (100 + 1 + ${UPSTREAM_FIXED_ATTEMPTS}) = 14,208 at the defaults; it follows both settings. R1 #276 recorded 594 attempts for 105 members, which the earlier 512 refused. Approved by the maintainer on 2026-11-28 (L11, item 5(a), #383). The L11 proposal estimated 6 fixed attempts (13,696); the structural test counts ${UPSTREAM_FIXED_ATTEMPTS}. The attempts' bytes are still bounded by limit:research.maxRetainedBytes and limit:packet.bytes in the same check.`,
+      structuralTest:
+        'src/evidence/upstream.test.ts > a package member records at most research.maxTagCandidates + 1 + the fixed attempts',
+    },
     test: 'src/evidence/upstream.test.ts > upstream bounds keep exactly research.maxAttempts attempts and refuse one more',
-  }),
+  },
   derived(
     'research.maxFindings',
     'count',

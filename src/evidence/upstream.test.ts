@@ -1,7 +1,8 @@
 import { expect, test } from 'vite-plus/test';
+import { createHash } from 'node:crypto';
 import { collectAdvisoryNpm, collectAdvisoryUv } from '../../tests/parity/advisories.js';
 import { enrichUpstream, attachUpstreamResearch, upstreamBounds } from './upstream.js';
-import { limit } from '../limits.js';
+import { limit, UPSTREAM_FIXED_ATTEMPTS } from '../limits.js';
 import { createUpstreamReader } from './upstream-read.js';
 
 const integrity = 'sha512-' + Buffer.alloc(64, 7).toString('base64');
@@ -432,4 +433,89 @@ test('upstream bounds keep exactly research.maxAttempts attempts and refuse one 
     reason = (error as { reason?: unknown }).reason;
   }
   expect(reason).toBe('budget');
+});
+
+test('a package member records at most research.maxTagCandidates + 1 + the fixed attempts', async () => {
+  // The worst path: every stage runs and every fixed site records its attempt. Both release tags
+  // fail, the comparison is unavailable and its final recheck fails, every release the range scan
+  // reads fails and the next one stops the scan, and all three changelog paths are missing.
+  const input = await fixture(3);
+  const index = input.changes.findIndex((c) => c.from && c.to);
+  const member = input.changes[index] as {
+    id: string;
+    from: { name: string; version: string };
+    to: { name: string; version: string };
+  };
+  const { name } = member.to,
+    base = member.from.version,
+    head = member.to.version;
+  expect([base, head]).toEqual(['1.0.0', '1.1.0']);
+  const candidates = 3;
+  const repo = '/repos/fixture/orbit';
+  const sha = { head: 'a'.repeat(40), base: 'd'.repeat(40), moved: 'e'.repeat(40) };
+  const baseReads = { count: 0 };
+  const ref = (tag: string, object: string) =>
+    Response.json({ ref: 'refs/tags/' + tag, object: { type: 'commit', sha: object } });
+  const manifest = (version: string) => {
+    const bytes = Buffer.from(JSON.stringify({ name, version }));
+    return Response.json({
+      type: 'file',
+      encoding: 'base64',
+      content: bytes.toString('base64'),
+      sha: createHash('sha1')
+        .update('blob ' + bytes.length + '\0')
+        .update(bytes)
+        .digest('hex'),
+    });
+  };
+  const releases = Array.from({ length: candidates + 1 }, (_, i) => ({
+    id: i + 1,
+    tag_name: `v1.0.${i + 1}`,
+    draft: false,
+    published_at: '2026-10-01T00:00:00Z',
+    name: `v1.0.${i + 1}`,
+    body: 'Intermediate notes.',
+    html_url: `https://github.com/fixture/orbit/releases/tag/v1.0.${i + 1}`,
+  }));
+  const r = registryReader(
+    { maxRequests: 200, maxTagCandidates: candidates, maxAttempts: 1000 },
+    (url) => {
+      const u = new URL(url);
+      if (u.hostname === 'registry.npmjs.org') {
+        const parts = u.pathname.split('/').map(decodeURIComponent);
+        if (parts[1] !== name) return null;
+        return Response.json({
+          _id: parts[1] + '@' + parts[2],
+          name: parts[1],
+          version: parts[2],
+          dist: { integrity },
+          description: 'Exact version description.',
+          repository: { url: 'https://github.com/fixture/orbit' },
+        });
+      }
+      const path = u.pathname.replace(repo, '');
+      if (!path) return Response.json({ private: false, full_name: 'fixture/orbit' });
+      if (path === '/git/ref/tags/v' + head) return ref('v' + head, sha.head);
+      // The base tag holds still for its resolution and check, then moves before the recheck.
+      if (path === '/git/ref/tags/v' + base)
+        return ref('v' + base, ++baseReads.count <= 2 ? sha.base : sha.moved);
+      if (path === '/contents/package.json')
+        return manifest(u.searchParams.get('ref') === sha.base ? base : head);
+      if (path === '/releases') return Response.json(releases);
+      return Response.json({}, { status: 404 });
+    },
+  );
+  const result = await enrichUpstream(await fixture(3, { maxRequests: 200, maxTagCandidates: candidates, maxAttempts: 1000 }), { reader: r.reader });
+  r.reader.close();
+  if (result.kind !== 'enriched') throw new Error('enrichment');
+  const stages = result.attempts.filter((a) => a.memberId === member.id).map((a) => a.stage);
+  const count = (stage: string) => stages.filter((s) => s === stage).length;
+  expect({
+    metadata: count('metadata'),
+    release: count('release'),
+    compare: count('compare'),
+    range: count('range'),
+    changelog: count('changelog'),
+  }).toEqual({ metadata: 3, release: 2, compare: 2, range: candidates + 1, changelog: 3 });
+  expect(stages).toHaveLength(candidates + 1 + UPSTREAM_FIXED_ATTEMPTS);
 });

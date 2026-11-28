@@ -18,9 +18,12 @@ test('scales the hand-set evidence shares, envelope values, and research caps', 
     'evidence.allocation.upstream.maxTotalBytes',
     'evidence.envelope.totalTimeoutMs',
     'evidence.envelope.maxResponseBytes',
-    'research.maxAttempts',
+    'research.maxJsonEntries',
   ])
     expect(valueAt(10, id), id).toBe(10 * (REGISTER.get(id)?.value ?? 0));
+  // The attempt cap is derived from the change cap and the tag candidates (L11, item 5): no run
+  // can record more, so it stays.
+  expect(valueAt(10, 'research.maxAttempts')).toBe(REGISTER.get('research.maxAttempts')?.value);
 });
 
 test('scales the fitted share bases and rates with their ceilings, without binary noise', () => {
