@@ -3372,13 +3372,20 @@ const DEFINITIONS = [
     effect: 'Nesting deeper than 16 fails the whole file with budget, and no roots are read.',
     test: 'src/dependabot-roots.test.ts > reports exceeding the limit on %s as budget',
   },
-  unjustified('dependabot.maxAliasExpansions', 0, 'count', {
-    protects:
-      'YAML aliases are refused, so untrusted input cannot expand shared nodes into a much larger structure.',
-    effect: 'Any alias fails the whole file with budget, and no roots are read.',
-    test: 'src/dependabot-roots.test.ts > reports exceeding the limit on %s as budget',
-    note: 'no recorded reason',
-  }),
+  derived(
+    'dependabot.maxAliasExpansions',
+    'count',
+    ['w2.actions.maxAliasExpansions'],
+    copy,
+    "Dependabot's documentation says nothing on YAML anchors, and Dependabot's own parser change to accept them (dependabot-core PR #9653) was still open when checked on 2026-11-28, so whether GitHub accepts them is in doubt; refusing every alias could then reject a legitimate config. The same parser and expansion read workflow files, so the cap copies limit:w2.actions.maxAliasExpansions, and the composed document, aliases expanded, is charged to a node budget of its own at limit:dependabot.maxYamlNodes, so an expansion cannot pass the node cap. Approved by the maintainer on 2026-11-27 (L11, D11 and Q23(b), #383).",
+    {
+      protects:
+        'Caps alias expansions in the Dependabot config, so anchors and aliases cannot amplify the composed document beyond the node budget.',
+      effect:
+        'The alias that exceeds the cap fails the whole file with budget, and no roots are read. A merge key (<<) fails it as unsupported.',
+      test: 'src/dependabot-roots.test.ts > expands aliases up to the alias cap and refuses one more',
+    },
+  ),
   unjustified('dependabot.maxUpdates', 256, 'count', {
     protects:
       'Each update entry is a Dependabot job definition, and the count is capped so the root scan stays bounded.',

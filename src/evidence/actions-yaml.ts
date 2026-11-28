@@ -147,7 +147,12 @@ function queueCollection(node: Node, frame: Entry, stack: Frame[]) {
     }
   }
 }
-function expand(root: Node, limits: YamlLimits, budget: YamlBudget): Value {
+/**
+ * Composes a parsed document into plain values, expanding each alias against
+ * `limits.maxAliasExpansions` and charging every composed node to the node budget; a merge key
+ * (`<<`) is unsupported.
+ */
+export function expand(root: Node, limits: YamlLimits, budget: YamlBudget): Value {
   const targets = aliases(root),
     active = new Set<Node>();
   let result: Value = null;
