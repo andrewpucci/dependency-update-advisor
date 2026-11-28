@@ -380,11 +380,16 @@ Generated content markers: in the leading comment block, case-insensitive
 Amended (L11, D8 and Q21(b); approved by the maintainer on 2026-11-27,
 [#383](https://github.com/andrewpucci/dependency-update-advisor/issues/383)):
 the leading comment block replaces a fixed count of leading lines, which no
-constraint gave. It is every line before the first line that is neither blank
-nor a comment: a `//` line, a `/* … */` or `<!-- … -->` block, or a `#!`
-first line. This follows Go's rule that the generated-code line comes before
-the first non-comment text. It has no line count, and
-`limit:context.maxSourceFileBytes` bounds it.
+constraint gave. It is the comment text before the first text that is neither
+whitespace nor a comment: `//` comments, `/* … */` or `<!-- … -->` blocks
+(which may close and reopen on one line), and a `#!` first line. Code after a
+closing comment ends the block, and that code is not searched. This follows
+Go's rule that the generated-code line comes before the first non-comment
+text. It has no line count, and `limit:context.maxSourceFileBytes` bounds it.
+
+Known limit: a `"use strict";` directive, or a Svelte `<script>` tag, before
+the marker ends the block, so a marker after either no longer excludes the
+file, though the old line window saw it. The scan is not widened for them.
 Inspecting those markers is permitted only after path/type eligibility;
 path-excluded files must never be opened. The reserved names intentionally
 exclude some ordinary code; expand eligibility only through review.

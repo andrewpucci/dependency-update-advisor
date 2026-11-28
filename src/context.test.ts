@@ -1116,6 +1116,7 @@ test.each([
   ['a markup comment', '<!--\n  auto-generated\n-->'],
   ['a shebang and blank lines', '#!/usr/bin/env node\n\n// This is a generated file.'],
   ['a long leading block', `${'// license line\n'.repeat(40)}// @generated`],
+  ['a block that reopens on its closing line', '/* a */ /* b\n * @generated\n */'],
 ])(
   'a generated marker anywhere in the leading comment block excludes the file: %s',
   async (_label, head) => {
@@ -1131,6 +1132,8 @@ test.each([
 test.each([
   ['after the first code line', 'const filler = 1;\n// @generated'],
   ['in a comment after code', 'import value from "example-package";\n/* @generated */'],
+  ['in code after a closing comment', '/* hdr */ const a = "@generated";'],
+  ['after code that follows a closed block', '/*\n*/ import x from "x";\n// @generated'],
 ])('a generated marker outside the leading comment block is ignored: %s', async (_label, text) => {
   const root = await fixture();
   await source(root, 'src/a.ts', `${text}\nimport value from "example-package";`);
