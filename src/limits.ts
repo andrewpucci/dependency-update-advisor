@@ -3270,7 +3270,7 @@ const DEFINITIONS = [
       'Each configured root is walked with lstat and matched against the inventory, so an unbounded root list would make config validation and path checks unbounded.',
     effect:
       'A config with more than 16 sourceRoots fails validation (field context.sourceRoots, category config), so the config is rejected.',
-    note: 'no recorded reason',
+    note: "stopped (L11, Q19(a), #383): the approved basis is a copy of limit:snapshot.maxTreeEntries (102,578), which must move together with limit:config.maxBytes, and that entry stops: a JSON config holding 102,578 roots does not fit today's 16,384-byte cap (the smallest root, `\"a\",`, is 4 bytes, so at most about 4,090 roots fit, and 102,579 roots need at least 410,316 bytes for the over-cap boundary test). Raising the root cap alone would admit a count no valid config can reach. Value unchanged",
     test: 'src/config.test.ts > the source root cap admits exactly the registered count and rejects one more',
   }),
   derived(
@@ -3408,7 +3408,7 @@ const DEFINITIONS = [
     effect:
       'A file over the cap fails with category size before parsing; no default configuration is substituted.',
     test: 'src/config.test.ts > accepts the exact byte limit and rejects overflow',
-    note: 'awaiting L8 measurement',
+    note: 'stopped (L11, Q19(a) and E17, #383): the approved basis is derived, the largest valid config, (roots + candidates) × (limit:context.maxPathBytes × e + 3) + skeleton. That size has no bound unless an escape factor e is fixed: the parser puts no length on a path before limit:context.maxPathBytes, JSON lets any character be written as a 6-byte \\u escape, and whitespace between tokens is unlimited, so no structural test can fix e, and no approved option does. Even at e = 1 and no skeleton, the Q19(a) root cap (limit:snapshot.maxTreeEntries, 102,578) and limit:context.maxSourceCandidates (193) give 102,771 × 1,027 = 105,545,817 bytes. The config is retained through the evidence phase at limit:runner.heapBytesPerRetainedByte (27.47), so limit:runner.evidenceRetainedHeapBytes would rise from 4,130,139,553 to 7,029,033,078 bytes, above limit:runner.heapBytes (6,372,196,352), and limit:packet.bytes would fall from 148,312,300 to −48,891,341; it stays positive only below about 79,382,630 config bytes. Q19(b), a safety cap sized against heap, was not approved. A new basis needs a maintainer decision. Value unchanged',
   }),
   unjustified('config.maxModelCodeUnits', 128, 'code units', {
     protects:
