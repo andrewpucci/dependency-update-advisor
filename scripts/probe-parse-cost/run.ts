@@ -11,9 +11,10 @@
  * RUNS (default 5) timed runs after a warm-up. The Dependabot caps are lifted through
  * HEAP_LIMIT_OVERRIDES (scripts/measure-heap/hooks.mjs), the only reader whose caps are read from
  * the register rather than passed in. `use` prints, per top-level subdirectory of a corpus of
- * legitimate files the caller downloaded, the file count and the largest and total value of each count
- * the readers charge (see measure.ts). Both print aggregates only, never a file name, package name or
- * URL, and the corpus is never committed. The timings depend on the machine, so the probe is not
+ * legitimate files the caller downloaded (numbered, never named), the file count, the largest and
+ * total value of each count the readers charge, and the files a reader refused, by reason (see
+ * measure.ts). Both print aggregates only, never a file name, package name or URL, and the corpus is
+ * never committed. The timings depend on the machine, so the probe is not
  * part of the test suite; run it on Node 24, the action's runtime.
  */
 import { execFileSync } from 'node:child_process';

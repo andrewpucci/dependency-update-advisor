@@ -517,12 +517,23 @@ const counters: Record<Core.Counter, () => Series[] | Promise<Series[]>> = {
   claims: claimSeries,
 };
 
-/** The counts the readers charge for one legitimate file, by the corpus group it sits in. */
-const groups: Record<string, (bytes: Buffer) => Record<string, number>> = {
+/** uv parse limits that admit a lock of any size, so a legitimate lock is counted whole. */
+const UV_COLLECTION_UNBOUNDED = { ...UV_COLLECTION, maxFileBytes: LIFTED, maxStringBytes: LIFTED };
+
+/** One file's counts, and the reason the reader refused it, if it did. */
+type Reading = { counts: Record<string, number>; refused: string | null };
+
+const parsedJson = (bytes: Buffer): unknown => JSON.parse(bytes.toString('utf8'));
+
+/** The counts the readers charge for one legitimate file, by the reader its corpus group names. */
+const readers: Record<string, (bytes: Buffer) => Reading> = {
   workflows: (bytes) => {
     const budget = { nodes: 0, aliases: 0, occurrences: 0 };
-    readWorkflow(bytes, LIFTED_YAML, budget);
-    return { bytes: bytes.length, ...budget };
+    const read = readWorkflow(bytes, LIFTED_YAML, budget);
+    return {
+      counts: { bytes: bytes.length, ...budget },
+      refused: read.kind === 'unavailable' ? read.reason : null,
+    };
   },
   dependabot: (bytes) => {
     const parsed = parseDependabotRoots(bytes);
@@ -530,14 +541,16 @@ const groups: Record<string, (bytes: Buffer) => Record<string, number>> = {
       parsed.kind === 'roots' && parsed[ecosystem].kind === 'roots'
         ? parsed[ecosystem].roots.length
         : 0;
-    const text = bytes.toString('utf8');
+    const { refused, ...counts } = dependabotCounts(bytes.toString('utf8'));
+    const ecosystems = (['npm', 'uv'] as const).filter(
+      (ecosystem) => parsed.kind === 'roots' && parsed[ecosystem].kind === 'unavailable',
+    );
     return {
-      bytes: bytes.length,
-      preflight: dependabotCounts(text).preflight,
-      composed: dependabotCounts(text).composed,
-      updates: text.match(/^\s*-\s*package-ecosystem\s*:/gmu)?.length ?? 0,
-      npmRoots: roots('npm'),
-      uvRoots: roots('uv'),
+      counts: { bytes: bytes.length, ...counts, npmRoots: roots('npm'), uvRoots: roots('uv') },
+      refused:
+        parsed.kind === 'unavailable'
+          ? parsed.reason
+          : (refused ?? (ecosystems.length > 0 ? `${ecosystems.join(' and ')} roots` : null)),
     };
   },
   'uv-lock': (bytes) => {
@@ -545,79 +558,90 @@ const groups: Record<string, (bytes: Buffer) => Record<string, number>> = {
     const read = readToml(bytes, UV_COLLECTION_UNBOUNDED, budget);
     const packages = read.kind === 'parsed' ? read.value.package : undefined;
     return {
-      bytes: bytes.length,
-      entries: budget.entries,
-      packages: Array.isArray(packages) ? packages.length : 0,
+      counts: {
+        bytes: bytes.length,
+        entries: budget.entries,
+        packages: Array.isArray(packages) ? packages.length : 0,
+      },
+      refused: read.kind === 'unavailable' ? read.reason : null,
     };
   },
   // A PEP 691 JSON simple index: the longest project name, which a claim line can carry.
   'pypi-index': (bytes) => {
-    const index = JSON.parse(bytes.toString('utf8')) as { projects?: { name?: unknown }[] };
+    const index = parsedJson(bytes) as { projects?: { name?: unknown }[] };
+    const projects = index.projects ?? [];
     return {
-      projects: index.projects?.length ?? 0,
-      nameCodeUnits: (index.projects ?? []).reduce(
-        (longest, { name }) => Math.max(longest, String(name).length),
-        0,
-      ),
+      counts: {
+        projects: projects.length,
+        nameCodeUnits: projects.reduce((longest, { name }) => Math.max(longest, String(name).length), 0),
+      },
+      refused: projects.length === 0 ? 'no projects' : null,
     };
   },
   // PyPI project or release documents: the longest version, which a claim line carries twice.
   pypi: (bytes) => {
-    const document = JSON.parse(bytes.toString('utf8')) as {
+    const document = parsedJson(bytes) as {
       info?: { version?: unknown };
       releases?: Record<string, unknown>;
     };
-    const versions = [
-      ...Object.keys(document.releases ?? {}),
-      String(document.info?.version ?? ''),
-    ];
+    const versions = [...Object.keys(document.releases ?? {}), String(document.info?.version ?? '')];
     return {
-      versionCodeUnits: versions.reduce((longest, version) => Math.max(longest, version.length), 0),
+      counts: {
+        versionCodeUnits: versions.reduce((longest, version) => Math.max(longest, version.length), 0),
+      },
+      refused: document.info === undefined ? 'no info' : null,
     };
   },
   json: (bytes) => ({
-    bytes: bytes.length,
-    entries: core.entryCount(JSON.parse(bytes.toString('utf8')) as unknown),
+    counts: { bytes: bytes.length, entries: core.entryCount(parsedJson(bytes)) },
+    refused: null,
   }),
 };
 
-/** uv parse limits that admit a lock of any size, so a legitimate lock is counted whole. */
-const UV_COLLECTION_UNBOUNDED = {
-  ...UV_COLLECTION,
-  maxFileBytes: LIFTED,
-  maxStringBytes: LIFTED,
-};
-
 /**
- * Per top-level subdirectory of a corpus of legitimate files the caller downloaded: the file
- * count and the largest and total value of each count, aggregates only. A subdirectory is read by the group
- * its name starts with (`workflows`, `dependabot`, `uv-lock`, `pypi-index`, `pypi`, or `json` for
- * the entries of any JSON documents).
+ * Per top-level subdirectory of a corpus of legitimate files the caller downloaded, numbered in
+ * name order and never named: the reader it is read by (the first of `workflows`, `dependabot`,
+ * `uv-lock`, `pypi-index`, `pypi` and `json` that its name starts with), the file count, the
+ * largest and total value of each count, and the files the reader refused, by reason. A file that
+ * is not valid JSON prints only its number, counted over the sorted file list.
  */
 function useOf(corpus: string) {
-  const counts = new Map<string, Record<string, number>[]>();
-  for (const entry of readdirSync(corpus, { withFileTypes: true, recursive: true })) {
-    if (!entry.isFile()) continue;
-    const path = relative(corpus, join(entry.parentPath, entry.name));
-    const group = path.split(sep)[0] as string;
-    const read = Object.entries(groups).find(([name]) => group.startsWith(name))?.[1];
-    if (!read || !path.includes(sep)) continue;
-    counts.set(group, [...(counts.get(group) ?? []), read(readFileSync(join(corpus, path)))]);
+  const files = readdirSync(corpus, { withFileTypes: true, recursive: true })
+    .filter((entry) => entry.isFile())
+    .map((entry) => relative(corpus, join(entry.parentPath, entry.name)))
+    .filter((path) => path.includes(sep))
+    .sort();
+  const names = [...new Set(files.map((path) => path.split(sep)[0] as string))];
+  const groups = new Map<string, { reader: string; rows: Record<string, number>[]; refused: Record<string, number> }>();
+  for (const [index, path] of files.entries()) {
+    const name = path.split(sep)[0] as string;
+    const reader = Object.keys(readers).find((key) => name.startsWith(key));
+    if (reader === undefined) continue;
+    const group = groups.get(name) ?? { reader, rows: [], refused: {} };
+    groups.set(name, group);
+    let reading: Reading;
+    try {
+      reading = (readers[reader] as (bytes: Buffer) => Reading)(readFileSync(join(corpus, path)));
+    } catch (error) {
+      if (!(error instanceof SyntaxError)) throw error;
+      console.log(`parse error in file ${index + 1}`);
+      group.refused.parse = (group.refused.parse ?? 0) + 1;
+      continue;
+    }
+    group.rows.push(reading.counts);
+    if (reading.refused !== null)
+      group.refused[reading.refused] = (group.refused[reading.refused] ?? 0) + 1;
   }
-  for (const [group, rows] of [...counts].sort(([a], [b]) => a.localeCompare(b))) {
+  for (const [name, { reader, rows, refused }] of groups) {
+    const keys = Object.keys(rows[0] ?? {});
     const largest = Object.fromEntries(
-      Object.keys(rows[0] ?? {}).map((key) => [
-        key,
-        core.summarizeCounts(rows.map((row) => row[key] ?? 0)).largest,
-      ]),
+      keys.map((key) => [key, core.summarizeCounts(rows.map((row) => row[key] ?? 0)).largest]),
     );
     const total = Object.fromEntries(
-      Object.keys(rows[0] ?? {}).map((key) => [
-        key,
-        rows.reduce((sum, row) => sum + (row[key] ?? 0), 0),
-      ]),
+      keys.map((key) => [key, rows.reduce((sum, row) => sum + (row[key] ?? 0), 0)]),
     );
-    console.log(JSON.stringify({ group, documents: rows.length, largest, total }));
+    const group = names.indexOf(name) + 1;
+    console.log(JSON.stringify({ group, reader, documents: rows.length, largest, total, refused }));
   }
 }
 
